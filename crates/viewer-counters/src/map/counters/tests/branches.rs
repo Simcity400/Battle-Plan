@@ -109,7 +109,7 @@ fn transcript(workers: Option<viewer_foundation::parallel::Workers>) -> Vec<Stri
                 ..inputs
             };
             inputs.settings.color_mode = CounterColorMode::Allegiance;
-            let mut prepared = prepare_cached(&inputs, &frame, &tables).unwrap();
+            let mut prepared = prepare_cached(&inputs, &tables).unwrap();
             let mut windows = naval_windows::Windows::default();
             let mut pings = PoolView::default();
             let mut bases = BaseView::default();

@@ -288,9 +288,10 @@ impl Orders {
         self.marked
     }
 
-    /// The plan made from the rows at `hour`, waiting for them and for the build (the previous
-    /// plan when the build read tables not declared yet): for a caller that plays the playhead
-    /// itself, never the window. Only rows standing at `hour` answer it, never rows past it.
+    /// The plan made from the rows at `hour`, waiting for them and for the build, and for the rows
+    /// of every table a build read that it had not declared, then built again: for a caller that
+    /// plays the playhead itself, never the window. Only rows standing at `hour` answer it, never
+    /// rows past it.
     fn settle_at(&mut self, hour: Hour, limit: Duration) -> io::Result<()> {
         let until = Instant::now() + limit;
         self.take_vision();
@@ -298,9 +299,6 @@ impl Orders {
             {
                 let rows = self.rows.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
                 let Some(reader) = rows.as_ref() else { return Err(io::Error::other("The orders layer has no rows at the head")) };
-                if self.relearning && reader.frame().is_none() {
-                    return Ok(());
-                }
                 // A whole settle wants the rows of its hour whatever is on the worker.
                 reader.ready();
                 if let Err(error) = reader.wait_through(hour, until.saturating_duration_since(Instant::now())) {
@@ -308,7 +306,7 @@ impl Orders {
                 }
             }
             self.exchange(true);
-            if self.in_flight == 0 && self.looked == Some(hour) {
+            if self.in_flight == 0 && !self.relearning && self.looked == Some(hour) {
                 return Ok(());
             }
             if Instant::now() >= until {

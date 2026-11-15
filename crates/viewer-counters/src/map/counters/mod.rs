@@ -3771,32 +3771,28 @@ pub fn hour_tables_profiled(
 }
 
 #[cfg(test)]
-pub fn prepare_cached(
-    inputs: &CounterInputs<'_>,
-    frame: &DecodedFrame,
-    tables: &HourTables,
-) -> io::Result<PreparedCounters> {
-    prepare_with(inputs, frame, tables, None)
+pub fn prepare_cached(inputs: &CounterInputs<'_>, tables: &HourTables) -> io::Result<PreparedCounters> {
+    prepare_with(inputs, tables, None)
 }
 
 /// The retained view memo contains pure values only, never native window history.
 pub fn prepare_retained(
     inputs: &CounterInputs<'_>,
-    frame: &DecodedFrame,
     tables: &HourTables,
     resources: u64,
     retained: &mut Preparation,
 ) -> io::Result<PreparedCounters> {
     retained.bind(inputs, tables, resources);
-    prepare_with(inputs, frame, tables, Some(retained))
+    prepare_with(inputs, tables, Some(retained))
 }
 
+/// Laid out over the rows `tables` were read from and no others: the tables keep row positions.
 fn prepare_with(
     inputs: &CounterInputs<'_>,
-    frame: &DecodedFrame,
     tables: &HourTables,
     mut retained: Option<&mut Preparation>,
 ) -> io::Result<PreparedCounters> {
+    let frame: &DecodedFrame = &tables.frame;
     let mut out = CounterFrame::default();
     let owner = |raw: u32| tables.links.get(&raw).copied();
     let layered = retained.as_deref().map(|retained| retained.layered().clone()).unwrap_or_default();

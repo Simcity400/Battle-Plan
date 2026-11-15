@@ -7,11 +7,23 @@ use replay_data::Hour;
 use std::{collections::VecDeque, sync::Arc};
 
 /// One consumer: its reader, its next shared step, and the steps made for it alone, each handed
-/// once every shared step before `before` is taken.
+/// once every shared step before `before` is taken. A parked one ([`Ring::park_behind`]) takes
+/// nothing and holds no step of its piece; it keeps the hour it stood at, and only steps past a
+/// reset or a gap after that hour wait for it.
 struct Seat {
     reader: Reader,
     next: u64,
     own: VecDeque<(u64, Arc<Step>)>,
+    parked: Option<Hour>,
+    /// The last step it took left every table at its last hour (one that took none holds no table):
+    /// its tables stand where it stands.
+    whole: bool,
+    /// It has said where its frames stand ([`crate::Consumer::advance`]). One that never has takes
+    /// steps at hours another reader gives it (a request on a map's behalf), so it is never parked:
+    /// its steps are as far behind as that reader's, which is.
+    asks: bool,
+    /// It lands itself when far behind ([`crate::Consumer::lands_itself`]): never parked.
+    lands_itself: bool,
 }
 
 /// A step built past the hour the frames are at: its seq, hours, and whether it is a gap.
@@ -37,6 +49,15 @@ pub(crate) struct Ring {
     taken: Option<Hour>,
     /// The epoch's newest reset (the seek's, or a piece's first hour): its seq and hour.
     reset: Option<(u64, Hour)>,
+    /// The last hour of the newest step built.
+    published: Option<Hour>,
+    /// The most bytes it keeps for a consumer behind: the lanes' cells, the state its steps change.
+    bound: usize,
+}
+
+/// Every table of `step` stands at its last hour.
+fn whole(step: &Step) -> bool {
+    step.tables.iter().all(|changes| changes.short() == 0 && changes.head().is_none_or(|head| head >= step.last))
 }
 
 fn next_of(built: &VecDeque<Arc<Step>>, next: u64) -> usize {
@@ -50,20 +71,35 @@ fn place(own: &VecDeque<(u64, Arc<Step>)>, before: u64) -> usize {
 
 impl Ring {
     pub(crate) fn new(size: usize) -> Self {
-        Self { epoch: 0, size, next_seq: 0, built: VecDeque::new(), lent: Vec::new(), consumers: Vec::new(), orphans: Vec::new(), taken: None, reset: None }
+        Self { epoch: 0, size, next_seq: 0, built: VecDeque::new(), lent: Vec::new(), consumers: Vec::new(), orphans: Vec::new(), taken: None, reset: None, published: None, bound: usize::MAX }
     }
 
     /// Fewer than its size of the steps built end past `head`, and fewer than its size are not yet
     /// taken by the consumer furthest on. The head bounds how far ahead of the clock the stepper
     /// builds; the furthest consumer bounds how far ahead of every reader, so a head driven to the
     /// newest step does not chase the stepper. A step the head has passed and a slower consumer has
-    /// not taken waits for it, shared, and takes no room: a consumer late to take holds nobody.
+    /// not taken waits for it, shared, and takes no room: a consumer late to take holds nobody, and
+    /// once those steps hold more than the lanes' state it is parked ([`Self::park_behind`]).
     pub(crate) fn room(&self, head: Hour) -> bool {
         self.past(head) < self.size && self.untaken() < self.size
     }
 
     fn furthest(&self) -> Option<u64> {
-        self.consumers.iter().flatten().map(|seat| seat.next).max()
+        self.consumers.iter().flatten().filter(|seat| seat.parked.is_none()).map(|seat| seat.next).max()
+    }
+
+    /// Where a seat holds the steps from: its next, or for a parked one the first reset or gap past
+    /// the hour it stood at.
+    fn holds_from(&self, seat: &Seat) -> u64 {
+        match seat.parked {
+            None => seat.next,
+            Some(from) => self.piece_end(from).map_or(self.next_seq, |step| step.seq),
+        }
+    }
+
+    /// The first step built after `from` that leaves its piece: a reset or a gap.
+    fn piece_end(&self, from: Hour) -> Option<&Arc<Step>> {
+        self.built.iter().find(|step| step.first > from && (step.reset || step.piece.is_none()))
     }
 
     /// The steps built that no consumer has taken yet (with no consumer, every one).
@@ -82,6 +118,56 @@ impl Ring {
         self.built.len()
     }
 
+    /// The bytes of the steps the consumer furthest on has taken and a slower one has not: what
+    /// the ring keeps for consumers behind (the steps past the furthest are its read-ahead).
+    #[cfg(test)]
+    pub(crate) fn trailing_bytes(&self) -> usize {
+        self.built.range(..self.trailing_end()).map(|step| step.payload()).sum()
+    }
+
+    pub(crate) fn set_bound(&mut self, bytes: usize) {
+        self.bound = bytes;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn largest_kept(&self) -> usize {
+        self.built.iter().map(|step| step.payload()).max().unwrap_or(0)
+    }
+
+    /// The place after the steps the consumer furthest on has taken: one that is there, not parked
+    /// and holding no landing it has not taken yet.
+    fn trailing_end(&self) -> usize {
+        let furthest = self.consumers.iter().flatten().filter(|seat| seat.parked.is_none() && seat.own.is_empty()).map(|seat| seat.next).max();
+        furthest.map_or(0, |next| next_of(&self.built, next))
+    }
+
+    /// Each consumer for whom it keeps more than its bound (the bytes of the steps the consumer
+    /// furthest on has taken and it has not) is parked: it lets go of them and takes nothing until [`Self::land_at`] or
+    /// [`Self::jump`]. Not one that never said where it stands, holds a step made for it alone,
+    /// stands before a reset, or was left short by the last step it took (its tables stand before
+    /// the hour it does).
+    fn park_behind(&mut self) {
+        let end = self.trailing_end();
+        if self.built.range(..end).map(|step| step.payload()).sum::<usize>() <= self.bound {
+            return;
+        }
+        let mut parks = Vec::new();
+        for (id, seat) in self.consumers.iter().enumerate() {
+            let Some(seat) = seat.as_ref().filter(|seat| seat.asks && !seat.lands_itself && seat.parked.is_none() && seat.own.is_empty() && seat.whole) else { continue };
+            let at = next_of(&self.built, seat.next);
+            let held: usize = self.built.range(at.min(end)..end).map(|step| step.payload()).sum();
+            if let Some(first) = self.built.get(at).filter(|step| held > self.bound && !step.reset) {
+                parks.push((id, first.first - 1));
+            }
+        }
+        let next = self.next_seq;
+        for (id, from) in parks {
+            if let Some(seat) = self.consumers[id].as_mut() {
+                (seat.next, seat.parked) = (next, Some(from));
+            }
+        }
+    }
+
     /// Every step of the epoch is abandoned, those made for one consumer included: a new one begins.
     pub(crate) fn abandon(&mut self) -> u64 {
         self.epoch += 1;
@@ -90,6 +176,7 @@ impl Ring {
         let next = self.next_seq;
         for seat in self.consumers.iter_mut().flatten() {
             seat.next = next;
+            seat.parked = None;
             self.lent.extend(seat.own.drain(..).map(|(_, step)| step));
         }
         self.lent.extend(self.orphans.drain(..).map(|(_, _, step)| step));
@@ -106,6 +193,7 @@ impl Ring {
         if held.reset {
             self.reset = Some((held.seq, held.last));
         }
+        self.published = Some(held.last);
         self.next_seq += 1;
         self.built.push_back(step);
         Ok(())
@@ -150,7 +238,7 @@ impl Ring {
                 at += 1;
             }
         }
-        self.consumers.push(Some(Seat { reader, next: start, own }));
+        self.consumers.push(Some(Seat { reader, next: start, own, parked: None, whole: true, asks: false, lands_itself: false }));
         self.consumers.len() - 1
     }
 
@@ -168,15 +256,95 @@ impl Ring {
         self.lent.extend(gone.into_iter().map(|(_, _, step)| step));
     }
 
+    pub(crate) fn lands_itself(&mut self, id: usize) {
+        if let Some(seat) = self.consumers.get_mut(id).and_then(Option::as_mut) {
+            seat.lands_itself = true;
+        }
+    }
+
+    /// Consumer `id` says where its frames stand.
+    pub(crate) fn asks(&mut self, id: usize) {
+        if let Some(seat) = self.consumers.get_mut(id).and_then(Option::as_mut) {
+            seat.asks = true;
+        }
+    }
+
     pub(crate) fn reader_of(&self, id: usize) -> Option<Reader> {
         self.consumers.get(id)?.as_ref().map(|seat| seat.reader)
+    }
+
+    /// The hour consumer `id` stands at by the steps it took: before the first shared step it has not
+    /// taken, or the newest step's last. None when parked, left short by its last step, or standing
+    /// before a reset.
+    pub(crate) fn stands_at(&self, id: usize) -> Option<Hour> {
+        let seat = self.consumers.get(id)?.as_ref().filter(|seat| seat.parked.is_none() && seat.whole)?;
+        match self.built.get(next_of(&self.built, seat.next)) {
+            Some(step) => (!step.reset).then(|| step.first - 1),
+            None => self.published,
+        }
+    }
+
+    /// The consumers holding `step`, made for them alone.
+    pub(crate) fn holding(&self, step: &Arc<Step>) -> Vec<usize> {
+        self.consumers.iter().enumerate().filter(|(_, seat)| seat.as_ref().is_some_and(|seat| seat.own.iter().any(|(_, held)| Arc::ptr_eq(held, step)))).map(|(id, _)| id).collect()
+    }
+
+    /// Consumer `id`, still standing at `hour` and holding `revoke`, takes `step` before anything
+    /// else, and `revoke` no more. Given back otherwise.
+    pub(crate) fn land_standing(&mut self, id: usize, hour: Hour, step: Arc<Step>, revoke: &Arc<Step>) -> Result<(), Arc<Step>> {
+        if self.stands_at(id) != Some(hour) {
+            return Err(step);
+        }
+        let Some(seat) = self.consumers[id].as_mut() else { return Err(step) };
+        let Some(at) = seat.own.iter().position(|(_, held)| Arc::ptr_eq(held, revoke)) else { return Err(step) };
+        self.lent.extend(seat.own.remove(at).map(|(_, held)| held));
+        seat.own.push_front((seat.next, step));
+        Ok(())
+    }
+
+    /// The hour parked consumer `id` stood at.
+    pub(crate) fn parked(&self, id: usize) -> Option<Hour> {
+        self.consumers.get(id)?.as_ref()?.parked
+    }
+
+    /// Every parked consumer, its reader and the hour it stood at.
+    pub(crate) fn parked_seats(&self) -> Vec<(usize, Reader, Hour)> {
+        self.consumers.iter().enumerate().filter_map(|(id, seat)| seat.as_ref().and_then(|seat| Some((id, seat.reader, seat.parked?)))).collect()
+    }
+
+    /// Where the frames are, for parked consumer `id`: the hour the consumer furthest on stands at
+    /// (with none, the newest step's), no later than the end of the piece it stood in.
+    pub(crate) fn catch_hour(&self, id: usize) -> Option<Hour> {
+        let from = self.parked(id)?;
+        let hour = match self.furthest() {
+            Some(next) => self.built.get(next_of(&self.built, next)).map(|step| step.first - 1).or(self.published)?,
+            None => self.published?,
+        };
+        Some(self.piece_end(from).map_or(hour, |step| hour.min(step.first - 1)))
+    }
+
+    /// Parked consumer `id` takes `steps` first, then the steps built after `hour`: from the first
+    /// step built past it (after any of no hours ending there, which caught a table up to it), or
+    /// from the next built when `hour` is the newest step's last. Given back when neither holds.
+    pub(crate) fn land_at(&mut self, id: usize, hour: Hour, steps: Vec<Arc<Step>>) -> Result<(), Vec<Arc<Step>>> {
+        let position = match self.built.iter().find(|step| step.last > hour) {
+            Some(step) if step.first == hour + 1 => step.seq,
+            None if self.published == Some(hour) => self.next_seq,
+            _ => return Err(steps),
+        };
+        let Some(seat) = self.consumers.get_mut(id).and_then(Option::as_mut).filter(|seat| seat.parked.is_some()) else { return Err(steps) };
+        (seat.next, seat.parked) = (position, None);
+        seat.own.extend(steps.into_iter().map(|step| (position, step)));
+        self.park_behind();
+        self.trim();
+        Ok(())
     }
 
     /// The steps consumer `id` has not taken whose last hour `head` has reached, in order: the
     /// shared ones and those made for it alone, each of these once every shared step before its
     /// place is taken.
     pub(crate) fn take(&mut self, id: usize, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
-        let Some(seat) = self.consumers[id].as_mut() else { return 0 };
+        let Some(seat) = self.consumers[id].as_mut().filter(|seat| seat.parked.is_none()) else { return 0 };
         let mut taken = 0;
         let mut at = next_of(&self.built, seat.next);
         loop {
@@ -186,6 +354,7 @@ impl Ring {
                 if step.last > head {
                     break;
                 }
+                seat.whole = whole(step);
                 out.push(Arc::clone(step));
                 self.lent.push(seat.own.pop_front().expect("held").1);
                 taken += 1;
@@ -196,12 +365,14 @@ impl Ring {
                 break;
             }
             self.taken = self.taken.max(Some(step.last));
+            seat.whole = whole(step);
             out.push(Arc::clone(step));
             seat.next = step.seq + 1;
             at += 1;
             taken += 1;
         }
         if taken > 0 {
+            self.park_behind();
             self.trim();
         }
         taken
@@ -210,7 +381,7 @@ impl Ring {
     /// The steps consumer `id` has not taken, in the order its takes bring them, each shared and
     /// none taken by looking.
     pub(crate) fn ahead(&self, id: usize, out: &mut Vec<Arc<Step>>) {
-        let Some(seat) = &self.consumers[id] else { return };
+        let Some(seat) = self.consumers[id].as_ref().filter(|seat| seat.parked.is_none()) else { return };
         let mut next = seat.next;
         let mut own = seat.own.iter().peekable();
         for step in self.built.range(next_of(&self.built, next)..) {
@@ -225,7 +396,7 @@ impl Ring {
 
     /// Whether a step consumer `id` has not taken ends at or before `head`.
     pub(crate) fn reaches(&self, id: usize, head: Hour) -> bool {
-        let Some(seat) = &self.consumers[id] else { return false };
+        let Some(seat) = self.consumers[id].as_ref().filter(|seat| seat.parked.is_none()) else { return false };
         match seat.own.front().filter(|(before, _)| *before <= seat.next) {
             Some((_, step)) => step.last <= head,
             None => self.built.get(next_of(&self.built, seat.next)).is_some_and(|step| step.last <= head),
@@ -303,18 +474,6 @@ impl Ring {
         self.consumers.iter().flatten().any(|seat| seat.own.iter().any(|(_, held)| Arc::ptr_eq(held, step))) || self.orphans.iter().any(|(_, _, held)| Arc::ptr_eq(held, step))
     }
 
-    /// `step`, made for one consumer alone and not yet taken, is withdrawn.
-    pub(crate) fn revoke(&mut self, step: &Arc<Step>) {
-        for seat in self.consumers.iter_mut().flatten() {
-            if let Some(at) = seat.own.iter().position(|(_, held)| Arc::ptr_eq(held, step)) {
-                self.lent.extend(seat.own.remove(at).map(|(_, held)| held));
-            }
-        }
-        if let Some(at) = self.orphans.iter().position(|(_, _, held)| Arc::ptr_eq(held, step)) {
-            self.lent.push(self.orphans.remove(at).2);
-        }
-    }
-
     /// Consumer `id` passes over every step built and every step made for it alone; the next it
     /// takes is `step`, once its head reaches it, then the steps built after.
     pub(crate) fn jump(&mut self, id: usize, step: Arc<Step>) {
@@ -323,9 +482,10 @@ impl Ring {
             self.lent.push(step);
             return;
         };
-        seat.next = next;
+        (seat.next, seat.parked) = (next, None);
         self.lent.extend(seat.own.drain(..).map(|(_, held)| held));
         seat.own.push_back((next, step));
+        self.park_behind();
         self.trim();
     }
 
@@ -340,7 +500,7 @@ impl Ring {
         let (mut owed, mut landing) = (Vec::new(), Vec::new());
         let tables = |step: &Step| step.tables.iter().map(Changes::table).collect::<Vec<_>>();
         for (id, seat) in self.consumers.iter_mut().enumerate() {
-            let Some(seat) = seat else { continue };
+            let Some(seat) = seat.as_mut().filter(|seat| seat.parked.is_none()) else { continue };
             if seat.next > position {
                 seat.next = position;
                 landing.push(id);
@@ -369,7 +529,7 @@ impl Ring {
 
     /// Steps every consumer has taken leave the ring. With no consumer, none does.
     fn trim(&mut self) {
-        let Some(least) = self.consumers.iter().flatten().map(|seat| seat.next).min() else { return };
+        let Some(least) = self.consumers.iter().flatten().map(|seat| self.holds_from(seat)).min() else { return };
         while self.built.front().is_some_and(|step| step.seq < least) {
             self.lent.push(self.built.pop_front().expect("held"));
         }

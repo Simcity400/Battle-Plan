@@ -16,6 +16,12 @@ pub(crate) fn head(from: i32, speed: f64, elapsed_s: f64, last: i32) -> f64 {
     (f64::from(from) + elapsed_s * speed).min(f64::from(last))
 }
 
+/// The hour a paced run sought back to `back` plays on to: `seconds` at its speed, or the branch's
+/// last hour if that comes first, since the head stops there.
+pub(crate) fn seek_back_end(back: i32, speed: f64, seconds: f64, last: i32) -> f64 {
+    (f64::from(back) + seconds * speed).min(f64::from(last))
+}
+
 /// The head's whole hour and the fraction past it.
 pub(crate) fn split(head: f64) -> (i32, f64) {
     let hour = head.floor();
@@ -160,6 +166,23 @@ mod tests {
         assert!(!late_start(2, 33_333.3, 33_000.0));
         assert!(!late_start(2, 33_333.3, 33_333.3));
         assert!(late_start(2, 33_333.3, 40_000.0));
+    }
+
+    #[test]
+    fn a_run_sought_back_near_the_branch_end_ends_past_its_seek_where_the_head_can_reach() {
+        // The branch ends at 1000; the playhead shows whole hours, the run's own clock fractions.
+        for (back, speed, ends) in [(990, 60.0, 1000.0), (999, 0.75, 1000.0), (900, 2.5, 905.0), (900, 0.3, 900.6), (998, 0.75, 999.5)] {
+            let target = seek_back_end(back, speed, 2.0, 1000);
+            assert!((target - ends).abs() < 1e-9, "{back} at {speed}: {target}");
+            assert!(target > f64::from(back), "{back} at {speed}: the run plays on past its seek");
+            // Every frame up to the one whose head stands at the branch end.
+            let frames = (f64::from(1000 - back) / speed * 60.0).ceil() as u32;
+            for whole in [false, true] {
+                let reached = (0..=frames).map(|frame| head(back, speed, f64::from(frame) / 60.0, 1000)).map(|head| if whole { head.floor() } else { head });
+                assert!(reached.clone().any(|head| head >= target), "{back} at {speed}, whole hours {whole}: never reaches {target}");
+                assert!(reached.take(1).all(|head| head < target), "{back} at {speed}: the seek's own frame is shown");
+            }
+        }
     }
 
     #[test]

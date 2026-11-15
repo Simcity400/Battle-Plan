@@ -51,7 +51,7 @@ mod p6;
 mod naval;
 mod highlight;
 
-const USAGE: &str = "viewer --playhead-proof <recording.battleplan> --out <dir> [--layers political] [--select <file>] [--every 6] [--seeks 20] [--hours N] [--timing] [--budget-ms 3] [--speed 1440] [--fog on|off] [--rows units,combat,world,triggers,all,details] [--camera fit|x,z,height] [--viewport 2048x1152] [--hovers all|none] [--map-mode operatives] [--scripts on|off[@tables.txt]] [--paced]";
+const USAGE: &str = "viewer --playhead-proof <recording.battleplan> --out <dir> [--layers political] [--select <file>] [--every 6] [--seeks 20] [--seek-to H,...] [--from-hour H] [--hours N] [--timing] [--budget-ms 3] [--speed 1440] [--fog on|off] [--rows units,combat,world,triggers,all,details] [--camera fit|x,z,height] [--viewport 2048x1152] [--hovers all|none] [--map-mode operatives] [--scripts on|off[@tables.txt]] [--paced]";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
@@ -132,6 +132,10 @@ struct Options {
     select: Option<PathBuf>,
     every: u64,
     seeks: usize,
+    /// `--seek-to`: the hours sought after flat play, in order, in place of the spread `seeks`.
+    seek_to: Vec<Hour>,
+    /// `--from-hour`: where flat play starts; the timeline's first hour without it.
+    from: Option<Hour>,
     hours: Option<u32>,
     timing: bool,
     budget: Duration,
@@ -164,6 +168,8 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
         select: None,
         every: 6,
         seeks: 20,
+        seek_to: Vec::new(),
+        from: None,
         hours: None,
         timing: false,
         budget: playhead_host::BUDGET,
@@ -186,6 +192,8 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
             "--select" => options.select = Some(PathBuf::from(value()?)),
             "--every" => options.every = number(value()?)?.max(1.0) as u64,
             "--seeks" => options.seeks = number(value()?)? as usize,
+            "--seek-to" => options.seek_to = value()?.split(',').map(|hour| number(hour.to_owned()).map(|hour| hour as Hour)).collect::<io::Result<_>>()?,
+            "--from-hour" => options.from = Some(number(value()?)? as Hour),
             "--hours" => options.hours = Some(number(value()?)? as u32),
             "--budget-ms" => options.budget = Duration::from_secs_f64(number(value()?)? / 1e3),
             "--speed" => options.speed = number(value()?)?,
@@ -262,8 +270,13 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     let timeline = units.timeline.clone();
     let runs: Vec<(usize, Hour, Hour)> = units.pages.runs().iter().enumerate().map(|(run, held)| (run, held.first_hour, held.last_hour())).collect();
     eprintln!("The recording's runs (run, first, last hour): {runs:?}; branch {branch} plays pieces {:?}", timeline.pieces());
+    let first = options.from.unwrap_or(timeline.first());
+    let within = |hour: Hour| timeline.first() <= hour && hour <= timeline.last();
+    if let Some(&outside) = std::iter::once(&first).chain(&options.seek_to).find(|&&hour| !within(hour)) {
+        return Err(invalid(format!("Hour {outside} is outside branch {branch}'s timeline, {} to {}", timeline.first(), timeline.last())));
+    }
     let loaded = Instant::now();
-    let initial = InitialHour { branch: Some(branch), hour: Some(timeline.first()), hour_fraction: 0.0 };
+    let initial = InitialHour { branch: Some(branch), hour: Some(first), hour_fraction: 0.0 };
     let mut document = Document::load(&options.recording, &resolve, false, &initial, None, 0)?;
     engine_executable::executable_tables::enter(document.content.tables);
     let load_seconds = loaded.elapsed().as_secs_f64();
@@ -280,7 +293,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         (options.view.camera, options.view.camera_height) = (Some(placement), camera.height);
     }
     let options = options;
-    let last = options.hours.map_or(timeline.last(), |hours| (timeline.first() + hours as Hour - 1).min(timeline.last()));
+    let last = options.hours.map_or(timeline.last(), |hours| (first + hours as Hour - 1).min(timeline.last()));
     let engaged = match &options.engaged {
         Some(viewers) => {
             let (results, folded) = engaged::run(&document, &units.pages, &timeline, viewers, last)?;
@@ -367,14 +380,14 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     give_vision(&side, &document, &options.view.perspective)?;
     // The rows' readers are declared to the playhead before the first seek, so their tables are in its reset.
     playhead_host::rows::Rows::of(&entry, playhead_host::rows::Recording { branch })?.settled();
-    side.anchor(timeline.first(), true, options.speed, true);
-    let flat = proof.play_flat(&mut side, &mut document, branch, &timeline, last)?;
+    side.anchor(first, true, options.speed, true);
+    let flat = proof.play_flat(&mut side, &mut document, branch, &timeline, first, last)?;
     let seeks = proof.seek_all(&mut side, &mut document, branch, &timeline, last)?;
     proof.frames.flush()?;
     proof.compares.flush()?;
     let (report, peak, counters) = entry.playhead().held();
     let summary = json!({
-        "recording": options.recording, "playhead": playhead, "first": timeline.first(), "last": last,
+        "recording": options.recording, "playhead": playhead, "first": first, "last": last,
         "layers": options.layers.iter().map(|line| line.name).collect::<Vec<_>>(), "select": options.select,
         "timing": options.timing, "fog": options.view.fog, "budget_ms": options.budget.as_secs_f64() * 1e3, "load_seconds": load_seconds,
         "flat": flat, "seeks": seeks, "steps": proof.steps, "skipped_samples": proof.skipped,
@@ -469,11 +482,11 @@ impl Proof<'_> {
         Ok(())
     }
 
-    /// Plays from the timeline's first hour to `last` as fast as steps are built, the head a step
+    /// Plays from `first` to `last` as fast as steps are built, the head a step
     /// past the last applied but never past the newest built, so steps keep their length and a
     /// frame takes one; a comparison every `every` frames and at the steps either side of every
     /// block end.
-    fn play_flat(&mut self, side: &mut MapSide, document: &mut Document, branch: replay_data::BranchId, timeline: &Timeline, last: Hour) -> io::Result<Value> {
+    fn play_flat(&mut self, side: &mut MapSide, document: &mut Document, branch: replay_data::BranchId, timeline: &Timeline, first: Hour, last: Hour) -> io::Result<Value> {
         let started = Instant::now();
         let quantum = (self.options.speed / 60.0).max(1.0) as Hour;
         let mut applied = None;
@@ -490,7 +503,7 @@ impl Proof<'_> {
             if let Some(error) = side.entry().playhead().error() {
                 return Err(io::Error::other(format!("The playhead stopped: {error}")));
             }
-            let newest = side.entry().playhead().newest().unwrap_or(timeline.first());
+            let newest = side.entry().playhead().newest().unwrap_or(first);
             let head = applied.map_or(newest, |hour| newest.min(hour + quantum));
             self.tell(side, "flat")?;
             if let Some(rows) = &mut self.rows {
@@ -544,8 +557,8 @@ impl Proof<'_> {
         Ok(json!({"seconds": started.elapsed().as_secs_f64(), "last": applied}))
     }
 
-    /// Seeks to hours either side of block ends and to hours spread over the span, each compared
-    /// once its reset is composed and swapped in.
+    /// Seeks to hours either side of block ends and to hours spread over the span, or to the hours
+    /// `--seek-to` names, each compared once its reset is composed and swapped in.
     fn seek_all(&mut self, side: &mut MapSide, document: &mut Document, branch: replay_data::BranchId, timeline: &Timeline, last: Hour) -> io::Result<Value> {
         let first = timeline.first();
         let mut targets = Vec::new();
@@ -566,6 +579,9 @@ impl Proof<'_> {
             targets.push(first + ((seed >> 33) % (last - first + 1) as u64) as Hour);
         }
         targets.truncate(self.options.seeks);
+        if !self.options.seek_to.is_empty() {
+            targets.clone_from(&self.options.seek_to);
+        }
         let mut done = Vec::new();
         for target in targets {
             side.anchor(target, false, self.options.speed, true);

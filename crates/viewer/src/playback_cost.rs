@@ -175,6 +175,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
         complete_models: false,
         paced: None,
         seeks: 0,
+        seek_back: None,
         playhead: true,
         layers_only: false,
         layers: None,
@@ -274,6 +275,14 @@ fn run(args: &[OsString]) -> io::Result<()> {
                     .and_then(|v| v.parse::<u32>().ok())
                     .ok_or_else(|| invalid("--seeks needs a count"))?;
             }
+            Some("--seek-back") => {
+                schedule.seek_back = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .and_then(|v| v.parse::<i32>().ok())
+                        .ok_or_else(|| invalid("--seek-back needs a game hour"))?,
+                );
+            }
             Some("--laid-proof") => {
                 schedule.laid_proof = Some(
                     args.next()
@@ -342,6 +351,9 @@ fn run(args: &[OsString]) -> io::Result<()> {
     if schedule.layers_only && !schedule.playhead {
         return Err(invalid("--layers-only draws the map's layers alone, which --no-playhead turns off"));
     }
+    if schedule.seek_back.is_some() && (schedule.pan.is_some() || schedule.paused || (schedule.paced.is_some() && !schedule.playhead)) {
+        return Err(invalid("--seek-back seeks as the window does after the run's hours: not with --pan or --paused, and a paced run seeks the map's playhead, which --no-playhead turns off"));
+    }
     let hours = hours.ok_or_else(|| invalid("--playback-cost requires --hours N"))?;
     if !from {
         return Err(invalid("--playback-cost requires --from-hour H"));
@@ -381,6 +393,9 @@ fn run(args: &[OsString]) -> io::Result<()> {
     let end = i64::from(options.hour.unwrap()) + span;
     options.playback_cost_end =
         Some(i32::try_from(end).map_err(|_| invalid("Hour range overflows"))?);
+    if schedule.seek_back.is_some_and(|back| i64::from(back) >= end) {
+        return Err(invalid("--seek-back takes an hour before the run's last"));
+    }
     let recording = fs::canonicalize(options.replay.as_ref().unwrap())?;
     let output = options.out.as_ref().unwrap();
     let parent = fs::canonicalize(

@@ -274,7 +274,7 @@ fn a_hidden_unit_pass_reads_no_naval_table() {
     );
     let error = NavalContext::read(true, &frame, sources).err().unwrap();
     assert!(
-        error.to_string().contains("another table's rows"),
+        error.to_string().contains("ships holds rows of another kind"),
         "{error}"
     );
 }
@@ -824,6 +824,115 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
                     "must compare real setter streams, not only refused/empty plans"
                 );
             });
+        },
+    );
+}
+
+/// A view sought back from 14 Sep 1940 to 8 Jun 1940 still holds the counter tables made at the
+/// later hour while the rows at the head are the earlier hour's. Its counters lay out the rows
+/// their tables were made from, never one hour's port rosters over another hour's task forces,
+/// and its retained memory never carries a port plan from one hour's tables to another's.
+#[test]
+fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another() {
+    use replay_data::rows::TaskForceCounterInputRow;
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let guis = native::Guis::new(vec![(
+        MAPICONS_GUI.into(),
+        native::read(
+            br#"guiTypes={
+        containerWindowType={name=unit_counter_navy size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}
+            iconType={name=mission_type spriteType=GFX_synthetic_actions}}
+        containerWindowType={name=naval_combat_mapicon}
+        containerWindowType={name=naval_base_mapicon size={width=81 height=29}}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+    }"#,
+        ),
+    )]);
+    crate::map::counters::tests::with_counter_inputs_fixture(
+        guis,
+        |_| {},
+        |content| content.aggression = Arc::new(vec![1]),
+        |mut inputs| {
+            inputs.visibility.political_mode = false;
+            let frame = |hour: i32, forces: &[u64]| {
+                let mut frame = DecodedFrame {
+                    branch: 1,
+                    hour,
+                    metrics: Default::default(),
+                    tables: TableId::ALL
+                        .map(|table| TableView::Complete(TableRows::empty(table)).into()),
+                };
+                *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(
+                    forces
+                        .iter()
+                        .map(|&id| TaskForceRow { id, province: 7, roster_owner: 10, logical_owner: 10, ..Default::default() })
+                        .collect(),
+                ));
+                *frame.tables[TableId::TaskForceCounterInputs.index()] = TableView::Complete(TableRows::TaskForceCounterInputs(
+                    forces.iter().map(|&task_force| TaskForceCounterInputRow { task_force, ..Default::default() }).collect(),
+                ));
+                frame
+            };
+            let tables = |frame: &DecodedFrame, rosters: BTreeMap<u32, Vec<(usize, u32)>>| {
+                let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+                let mut tables = hour_tables(
+                    frame,
+                    inputs.map,
+                    Arc::new(Vision::sharing(1, [])),
+                    inputs.content,
+                    inputs.assets,
+                    inputs.equipment,
+                    inputs.localisation,
+                    &Default::default(),
+                    None,
+                    None,
+                    None,
+                    &type_tint::Memo::new(type_tint::TABLES),
+                    &MissionMemo::new(),
+                    moves.movement_reads(),
+                    Err("unreached synthetic naval topology".into()),
+                )
+                .unwrap();
+                tables.links = [(10, 1)].into();
+                tables.countries = Arc::new(Countries { sides: [(1, Allegiance::Ours)].into(), ..Default::default() });
+                tables.ports = PortTables { rosters, ..Default::default() };
+                tables
+            };
+            // Each port's items, by the task forces each item holds.
+            let members = |prepared: &PreparedCounters| -> BTreeMap<u32, Vec<Vec<u64>>> {
+                let pass = prepared.fixed.naval.bases.as_ref().expect("the naval base windows are planned");
+                let ports = pass.ports.as_ref().expect("the port items are decided").as_ref().expect("and filled");
+                ports
+                    .iter()
+                    .map(|(&province, items)| {
+                        let items = items.as_ref().expect("the port's roster is decided");
+                        (province, items.iter().map(|item| item.selectable.as_ref().map_or_else(Vec::new, |(_, members)| members.to_vec())).collect())
+                    })
+                    .collect()
+            };
+            // Three task forces in port at the later hour; one, the third, at the earlier hour. Port 8's
+            // roster holds the first row at both hours, a different task force at each.
+            let late = frame(60_800_559, &[1, 2, 3]);
+            let early = frame(60_798_213, &[3]);
+            let late_tables = tables(&late, [(7, vec![(1, 0), (2, 1)]), (8, vec![(0, 0)])].into());
+            let early_tables = tables(&early, [(8, vec![(0, 0)])].into());
+            let mut memo = Preparation::default();
+            // Played, then sought back: the view lays out the later hour's tables again (art loaded
+            // meanwhile) until the earlier hour's arrive, and nothing of their plans is taken over.
+            for resources in [0, 1] {
+                let played = prepare_retained(&inputs, &late_tables, resources, &mut memo).unwrap();
+                assert_eq!(members(&played), [(7, vec![vec![2, 3]]), (8, vec![vec![1]])].into());
+            }
+            let arrived = prepare_retained(&inputs, &early_tables, 1, &mut memo).unwrap();
+            assert_eq!(members(&arrived), [(8, vec![vec![3]])].into());
+            let fresh = prepare_cached(&inputs, &early_tables).unwrap();
+            assert_eq!(members(&arrived), members(&fresh));
+            assert_eq!(arrived.fixed.report, fresh.fixed.report);
         },
     );
 }

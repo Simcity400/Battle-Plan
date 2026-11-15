@@ -108,9 +108,29 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
         .unwrap_or("a panic without a message")
 }
 
+thread_local! {
+    /// Where this thread's last panic was raised, which the caught payload does not carry.
+    static PANICKED_AT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Notes each panic's location for the thread that raised it, then reports it as before.
+fn note_panic_locations() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            let at = info.location().map(|at| format!("{}:{}", at.file(), at.line()));
+            PANICKED_AT.with(|held| *held.borrow_mut() = at);
+            previous(info);
+        }));
+    });
+}
+
 /// Runs a map, a panic in it included, to how it ended. A map whose device was lost ended for
 /// that, whatever followed the loss.
 pub(crate) fn contain<T>(lost: &Lost, run: impl FnOnce() -> Result<T, String>) -> Result<T, Ending> {
+    note_panic_locations();
+    PANICKED_AT.with(|held| held.borrow_mut().take());
     let result = panic::catch_unwind(AssertUnwindSafe(run));
     if let Some(reason) = lost.reason() {
         return Err(Ending::DeviceLost(reason));
@@ -118,7 +138,13 @@ pub(crate) fn contain<T>(lost: &Lost, run: impl FnOnce() -> Result<T, String>) -
     match result {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(reason)) => Err(Ending::Failed(reason)),
-        Err(payload) => Err(Ending::Failed(format!("The map stopped: {}", panic_message(&*payload)))),
+        Err(payload) => {
+            let message = panic_message(&*payload);
+            Err(Ending::Failed(match PANICKED_AT.with(|held| held.borrow_mut().take()) {
+                Some(at) => format!("The map stopped: {message} (at {at})"),
+                None => format!("The map stopped: {message}"),
+            }))
+        }
     }
 }
 
@@ -303,18 +329,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_panic_in_the_map_ends_it_by_name_and_the_next_map_starts() {
+    fn a_panic_in_the_map_ends_it_by_name_and_where_and_the_next_map_starts() {
+        let at = line!() + 2;
         let failed = run("map (test)", |_: &Lost| -> Result<(), String> {
             panic!("the picture's layer list is empty")
         })
         .unwrap();
         assert_eq!(
             failed,
-            Err(Ending::Failed("The map stopped: the picture's layer list is empty".into()))
+            Err(Ending::Failed(format!("The map stopped: the picture's layer list is empty (at {}:{at})", file!())))
         );
         let reason = String::from("formatted: 3 layers");
+        let at = line!() + 1;
         let failed = run("map (test)", move |_: &Lost| -> Result<(), String> { panic!("{reason}") }).unwrap();
-        assert_eq!(failed, Err(Ending::Failed("The map stopped: formatted: 3 layers".into())));
+        assert_eq!(failed, Err(Ending::Failed(format!("The map stopped: formatted: 3 layers (at {}:{at})", file!()))));
         assert_eq!(run("map (test)", |_: &Lost| Ok::<_, String>(7)).unwrap(), Ok(7));
         assert_eq!(
             run("map (test)", |_: &Lost| Err::<(), _>("no folders".to_owned())).unwrap(),

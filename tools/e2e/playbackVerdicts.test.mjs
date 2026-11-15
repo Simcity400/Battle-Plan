@@ -37,6 +37,19 @@ test('a paced run is whole only when it exited 0, ran its span to the end and ma
   const cut = { ...short.report, game_hours: 24 * 120 };
   assert.match(wholeHarness({ ...short.run, args: short.run.args.map(value => (value === String(24 * 60) ? String(24 * 120) : value)) }, cut, short.frames).reasons.join(), /the head reached 2440, asked 3880/);
   assert.match(wholeHarness({ ...run.run, args: [...run.run.args, '--seeks', '2'] }, { ...run.report, layers: { seeks: [{ frame: 90, frames_to_shown: 2 }] } }, run.frames).reasons.join(), /1 of 2 seeks shown/);
+  // Sought back after its span (`--seek-back`): whole once a drawn frame reached the end, the seek was shown and the head
+  // ended past the hour sought; a step run draws one frame more.
+  const back = paced(120, frames => { for (let k = 100; k < 120; k++) frames[k].head_hour = FROM + 240 + 24 * (k - 100); frames[99].head_hour = FROM + 24 * 120; });
+  const sought = { ...back.run, args: [...back.run.args, '--seek-back', String(FROM + 240)] };
+  const shown = { ...back.report, seek_back: FROM + 240, layers: { seeks: [{ hour: FROM + 240, frame: 100, frames_to_shown: 2 }] } };
+  assert.deepEqual(wholeHarness(sought, shown, back.frames), { whole: true, reasons: [], accepted: null });
+  assert.match(wholeHarness(sought, { ...shown, layers: { seeks: [] } }, back.frames).reasons.join(), /the seek back to 1240 was not shown/);
+  assert.match(wholeHarness(sought, { ...shown, seek_back: null }, back.frames).reasons.join(), /asked to seek back to 1240, the report says none/);
+  assert.match(wholeHarness(back.run, back.report, back.frames).reasons.join(), /the head reached 1720, asked 3880/);
+  const step = (extra = []) => ({ exit: 0, args: ['--playback-cost', 'rec', '--from-hour', String(FROM), '--hours', '3', '--speed', 'max', ...extra], playhead: true, label: 'layers' });
+  const stepped = n => ({ frames: Array.from({ length: n }, (_, k) => ({ frame: k })), cut: false });
+  assert.equal(wholeHarness(step(['--seek-back', String(FROM)]), { from_hour: FROM, game_hours: 3, seek_back: FROM }, stepped(4)).whole, true);
+  assert.match(wholeHarness(step(['--seek-back', String(FROM)]), { from_hour: FROM, game_hours: 3, seek_back: FROM }, stepped(3)).reasons.join(), /3 of 4 frames/);
 });
 
 test('a run whose last frame was long reached its end inside that frame, so it is whole', () => {

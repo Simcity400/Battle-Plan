@@ -118,9 +118,9 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
                     &empty
                 };
                 let (mut cached, counts) = plan_probe::collect(|| {
-                    prepare_retained(&inputs, &frame, &tables, 0, &mut retained).unwrap()
+                    prepare_retained(&inputs, &tables, 0, &mut retained).unwrap()
                 });
-                let mut fresh = prepare_cached(&inputs, &frame, &tables).unwrap();
+                let mut fresh = prepare_cached(&inputs, &tables).unwrap();
                 hits += counts.semantic_plan_hits;
                 equal_groups += counts.ordered_group_members_equal;
                 assert_eq!(
@@ -251,10 +251,10 @@ fn a_new_land_product_lays_out_and_draws_again_only_the_column_whose_members_cha
             for (at, stacks) in products.into_iter().enumerate() {
                 let published = Layered { land: Some(Arc::new(stacks)), ..Layered::default() };
                 retained.set_layered(published.clone(), Kinds::LAND, Kinds::default());
-                let (mut kept, prepared) = plan_probe::collect(|| prepare_retained(&inputs, &frame, &tables, 0, &mut retained).unwrap());
+                let (mut kept, prepared) = plan_probe::collect(|| prepare_retained(&inputs, &tables, 0, &mut retained).unwrap());
                 let mut made = Preparation::default();
                 made.set_layered(published, Kinds::LAND, Kinds::default());
-                let mut fresh = prepare_retained(&inputs, &frame, &tables, 0, &mut made).unwrap();
+                let mut fresh = prepare_retained(&inputs, &tables, 0, &mut made).unwrap();
                 assert_eq!(kept.fixed.report, fresh.fixed.report, "prepare {at}");
                 assert!(prepared.ordered_groups >= 3, "three sources apart, each its own column: {prepared:?}");
                 let missed = prepared.semantic_plans - prepared.semantic_plan_hits;
@@ -389,13 +389,13 @@ fn land_plates_against_fresh(
                 let published = Layered { land: Some(Arc::new(step.stacks)), ..Layered::default() };
                 retained.set_layered(published.clone(), Kinds::LAND, Kinds::default());
                 let (mut kept, prepared) =
-                    plan_probe::collect(|| prepare_retained(&inputs, &frame, &tables, 0, &mut retained).unwrap());
+                    plan_probe::collect(|| prepare_retained(&inputs, &tables, 0, &mut retained).unwrap());
                 if let Some(mut old) = held.take() {
                     kept.keep_drawn(&mut old);
                 }
                 let mut made = Preparation::default();
                 made.set_layered(published, Kinds::LAND, Kinds::default());
-                let mut fresh = prepare_retained(&inputs, &frame, &tables, 0, &mut made).unwrap();
+                let mut fresh = prepare_retained(&inputs, &tables, 0, &mut made).unwrap();
                 let time = at as f32 / 240.;
                 inputs.schedule = &schedules[0];
                 let ((), drawn) = plan_probe::collect(|| {
@@ -521,10 +521,10 @@ fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
                 let tables = hour_tables(&inputs);
                 let mut laid = Preparation::default();
                 laid.set_layered(published.clone(), Kinds::LAND, Kinds::default());
-                let mut kept = prepare_retained(&inputs, &frame, &tables, 0, &mut laid).unwrap();
+                let mut kept = prepare_retained(&inputs, &tables, 0, &mut laid).unwrap();
                 let mut made = Preparation::default();
                 made.set_layered(published, Kinds::LAND, Kinds::default());
-                let mut fresh = prepare_retained(&inputs, &frame, &tables, 0, &mut made).unwrap();
+                let mut fresh = prepare_retained(&inputs, &tables, 0, &mut made).unwrap();
                 assert_eq!(kept.fixed.report, fresh.fixed.report, "prepare {at}");
                 if let Some(mut old) = held.take() {
                     kept.keep_drawn_by_value(&mut old);
@@ -728,9 +728,9 @@ fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
                     // A pan by itself must not invalidate a pure semantic plan.
                     inputs.camera.center[0] += 0.125;
                     let (cached, counts) = plan_probe::collect(|| {
-                        prepare_retained(&inputs, &frame, &tables, resources, &mut memo).unwrap()
+                        prepare_retained(&inputs, &tables, resources, &mut memo).unwrap()
                     });
-                    let fresh = prepare_cached(&inputs, &frame, &tables).unwrap();
+                    let fresh = prepare_cached(&inputs, &tables).unwrap();
                     assert_eq!(
                         cached.fixed.report, fresh.fixed.report,
                         "change {change} repeat {repeat}"
@@ -743,7 +743,7 @@ fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
             tables = tables.clone();
             assert_eq!(
                 plan_probe::collect(|| prepare_retained(
-                    &inputs, &frame, &tables, resources, &mut memo
+                    &inputs, &tables, resources, &mut memo
                 )
                 .unwrap())
                 .1
@@ -753,7 +753,7 @@ fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
             tables.epoch = Arc::new(());
             assert_eq!(
                 plan_probe::collect(|| prepare_retained(
-                    &inputs, &frame, &tables, resources, &mut memo
+                    &inputs, &tables, resources, &mut memo
                 )
                 .unwrap())
                 .1
@@ -1062,14 +1062,13 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                     actual_markers += tables.land_combats.markers.len();
                     let mut expected = prepare_retained(
                         &inputs,
-                        &frame,
                         &expected_tables,
                         0,
                         &mut Preparation::default(),
                     )
                     .unwrap();
                     let mut refined =
-                        prepare_retained(&inputs, &frame, &tables, 0, &mut memo).unwrap();
+                        prepare_retained(&inputs, &tables, 0, &mut memo).unwrap();
                     assert_eq!(
                         expected.fixed.report, refined.fixed.report,
                         "case {case} frame {at}"
@@ -1553,7 +1552,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                 let mut tables = synthetic_hour(&inputs, &frame);
                 let mut prepared = [expected, actual].map(|icons| {
                     tables.base_icons = icons;
-                    prepare_cached(&inputs, &frame, &tables).unwrap()
+                    prepare_cached(&inputs, &tables).unwrap()
                 });
                 assert_eq!(prepared[0].fixed.report, prepared[1].fixed.report);
                 for (side, prepared) in prepared.iter_mut().enumerate() {

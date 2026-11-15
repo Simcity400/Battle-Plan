@@ -74,7 +74,8 @@ function worstOf(items, of) {
 }
 
 /** Whether a paced or step-mode harness run covered what it was asked: exit 0 and not stopped, a report and an uncut frame
- * log, consecutive frames, the span asked, the head at the end (paced), every frame asked (step), every seek made. */
+ * log, consecutive frames, the span asked, the head at the end (paced), every frame asked (step), every seek made; with
+ * `--seek-back`, the seek back made after the span (paced: shown, the head past it; step: one more frame). */
 export function wholeHarness(run, report, frames, { acceptReconciliation = false } = {}) {
   const reasons = machineReasons(run);
   if (run.stopped) reasons.push(`stopped by the runner: ${run.stopped}`);
@@ -83,7 +84,7 @@ export function wholeHarness(run, report, frames, { acceptReconciliation = false
   const reconciliation = run.exit === 1 && check?.passed === false;
   const off = reconciliation ? `${(100 * check.process_minus_scopes_ns / check.process_cpu_ns).toFixed(1)}% on ${(check.process_cpu_ns / 1e9).toFixed(1)} s of CPU` : '';
   if (run.exit !== 0 && !(acceptReconciliation && reconciliation)) reasons.push(reconciliation ? `exit 1: the harness's CPU reconciliation failed (process CPU off its scopes by ${off})` : `exit ${run.exit ?? 'not recorded'}`);
-  const from = num(run.args, '--from-hour'), hours = num(run.args, '--hours');
+  const from = num(run.args, '--from-hour'), hours = num(run.args, '--hours'), back = num(run.args, '--seek-back');
   const held = (run.args ?? []).includes('--paused');
   if (!report) reasons.push('no report.json');
   if (!frames) reasons.push('no frames.jsonl');
@@ -99,6 +100,7 @@ export function wholeHarness(run, report, frames, { acceptReconciliation = false
   const gaps = list.filter((frame, index) => frame.frame !== index).length;
   if (gaps) reasons.push(`${gaps} frames out of sequence`);
   if (todayOff(run) && report.layers_only?.on !== true) reasons.push('asked with today\'s pipeline off, the report says it ran');
+  if (back !== null && report.seek_back !== back) reasons.push(`asked to seek back to ${back}, the report says ${report.seek_back ?? 'none'}`);
   if (arg(run.args, '--paced') !== null) {
     const paced = report.paced;
     if (!paced) reasons.push('no paced section in the report');
@@ -109,14 +111,20 @@ export function wholeHarness(run, report, frames, { acceptReconciliation = false
       const last = list.at(-1);
       // The harness stops before the frame whose head reaches the end: the last head plus its travel to the stop.
       const reached = last ? last.head_hour + paced.speed_hours_per_second * (paced.seconds - last.start_us / 1e6) : null;
-      if (reached === null || reached < from + hours) reasons.push(`the head reached ${reached === null ? 'nothing' : Math.floor(reached)}, asked ${from + hours}`);
+      // Sought back, a drawn frame reached the end before the seek, and the run ends past the hour sought.
+      const spanned = back === null ? reached : Math.max(...list.map(frame => frame.head_hour));
+      if (spanned === null || spanned < from + hours) reasons.push(`the head reached ${spanned === null ? 'nothing' : Math.floor(spanned)}, asked ${from + hours}`);
+      if (back !== null) {
+        if (!(report.layers?.seeks ?? []).some(seek => seek.hour === back && seek.frames_to_shown != null)) reasons.push(`the seek back to ${back} was not shown`);
+        if (reached === null || reached <= back) reasons.push(`the head ended at ${reached === null ? 'nothing' : Math.floor(reached)}, not past ${back}`);
+      }
     }
     const seeks = num(run.args, '--seeks');
     if (seeks) {
       const made = (report.layers?.seeks ?? []).filter(seek => seek.frames_to_shown != null).length;
       if (made < seeks) reasons.push(`${made} of ${seeks} seeks shown`);
     }
-  } else if (list.length !== hours) reasons.push(`${list.length} of ${hours} frames`);
+  } else if (list.length !== hours + (back === null ? 0 : 1)) reasons.push(`${list.length} of ${hours + (back === null ? 0 : 1)} frames`);
   return { whole: reasons.length === 0, reasons, accepted: reasons.length === 0 && acceptReconciliation && reconciliation ? `judged with exit 1 from the harness's CPU reconciliation only (${off}): not a result under the rule` : null };
 }
 
@@ -132,7 +140,8 @@ export function wholeProof(run, summary, frames) {
   if (!summary) return { whole: false, reasons };
   const reached = summary.flat?.last ?? null;
   if (reached === null || reached < summary.last) reasons.push(`flat play reached ${reached} of ${summary.last}`);
-  const seeks = num(run.args, '--seeks') ?? 20;
+  const seekTo = arg(run.args, '--seek-to');
+  const seeks = seekTo === null ? num(run.args, '--seeks') ?? 20 : seekTo.split(',').length;
   if ((summary.resets ?? []).length < seeks) reasons.push(`${(summary.resets ?? []).length} of ${seeks} seeks`);
   if (!summary.frames?.count) reasons.push('no frames recorded');
   if (!summary.timing) {

@@ -414,7 +414,7 @@ type FollowHost = dashboard_follow::host::PlayheadHost<crate::playhead_host::Ent
 type FollowKey = (String, u64, i32);
 
 /// Follow on the map's playheads: one `Follow` a playhead, its hook in the host's slot, its reader
-/// bound to `redeclare`, and its driver stepping the playhead when no map is drawn.
+/// bound to `redeclare`, and its driver standing its reader at the clock's head.
 struct FollowPlayheads {
     push: Arc<dashboard_follow::push::Push>,
     hosts: Mutex<BTreeMap<FollowKey, Arc<FollowHost>>>,
@@ -467,7 +467,7 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         entry.hooks().add(follow.hook(due.sink()));
         let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
         let rows = Arc::new(FollowRows { entry: Arc::clone(&entry), branch });
-        let host = dashboard_follow::host::PlayheadHost::new(entry, crate::playhead_host::Entry::playhead, |entry, anchor| entry.anchor(anchor.hour, anchor.playing, anchor.speed, anchor.sought), crate::playhead_host::Entry::drawn, follow, due, held).map_err(|error| error.to_string())?;
+        let host = dashboard_follow::host::PlayheadHost::new(entry, crate::playhead_host::Entry::playhead, |entry, anchor| entry.anchor(anchor.hour, anchor.playing, anchor.speed, anchor.sought), follow, due, held).map_err(|error| error.to_string())?;
         host.show_panels(rows, Arc::clone(push));
         self.hosts.lock().unwrap_or_else(|error| error.into_inner()).insert(key, Arc::clone(&host));
         Ok(host as Arc<dyn dashboard_follow::registry::Hosted>)

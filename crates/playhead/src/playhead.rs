@@ -1,10 +1,11 @@
 //! The playhead: every selected table's lane kept at the playback head of a timeline, stepped
 //! ahead of the frame on one thread. The stepper owns the lanes and builds steps of owned change
 //! sets into a ring; fetchers read and open parts ahead, run seeks and the readers' rebuilds, and
-//! free what the stepper retired, so the stepper never touches the file. The frame side asks the
-//! clock for the head ([`Playhead::head`]), calls [`Playhead::advance`] with it and
-//! [`Consumer::take`], none of which waits on a step or a read; a part missing when its hour is
-//! stepped is a stall, counted, and the next step takes it up.
+//! free what the stepper retired, so the stepper never touches the file. Each reader's frame side
+//! asks the clock for the head ([`Playhead::head`]), calls [`Consumer::advance`] with it and
+//! [`Consumer::take`], none of which waits on a step or a read; the stepper builds toward the
+//! furthest head any reader stands at. A part missing when its hour is stepped is a stall,
+//! counted, and the next step takes it up.
 
 use crate::{
     changes::{Changes, Texts},
@@ -282,6 +283,22 @@ pub struct Counters {
     /// or [`Consumer::land`]), and the nanoseconds their readers' rebuilds took.
     pub landings: u64,
     pub landing_rebuild_ns: u64,
+    /// Consumers whose steps not taken held more bytes than the lanes' cells (the state those steps
+    /// change): landed from memory, or, a reader of a log or of passing rows, caught up from the file.
+    pub landed_behind: u64,
+    /// Of those, the catch-ups from the file that landed, and the nanoseconds from letting go of a
+    /// consumer's steps to handing it the steps of the hours it skipped, summed and at the most.
+    pub caught_up: u64,
+    pub catch_up_ns: u64,
+    pub catch_up_most_ns: u64,
+    /// At each catch-up's landing check, why it could not land: a read of its lanes out, a lane
+    /// short of the frames' hour, no record of where the lanes the steps are built from stood there,
+    /// or the frames moved on before it landed.
+    pub catch_waits: [u64; 4],
+    /// Reads made from the file for a reader standing short of a landing given it, and those let go
+    /// unneeded (it moved on, or took that landing, before the read was in).
+    pub standing_reads: u64,
+    pub standing_dropped: u64,
     /// Times the steps past the frames were rebuilt for a pace asking smaller steps
     /// ([`Step::restep`]).
     pub resteps: u64,
@@ -343,6 +360,7 @@ enum Fed {
     Slot(usize),
     Join,
     Restep,
+    CatchUp(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,6 +369,7 @@ enum Purpose {
     Join,
     Piece(usize),
     Restep,
+    CatchUp,
 }
 
 struct Prepare {
@@ -525,7 +544,11 @@ impl Jobs {
 
 struct Control {
     version: u64,
+    /// The furthest head any reader asked last in this seek ([`Self::ask`]): the stepper builds
+    /// toward it, so a reader that asks less often or less far holds no other.
     head: Hour,
+    /// Each reader's head as it asked it last in this seek, by consumer (none: [`Playhead::advance`]).
+    asks: BTreeMap<Option<usize>, Hour>,
     pace: (f64, f64),
     seek: Option<(Hour, u64)>,
     /// When the seek waiting for the stepper was asked.
@@ -565,12 +588,33 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+impl Control {
+    /// Reader `who` stands at `head`. The head is the furthest any reader stands; asking the head
+    /// it stands at is a frame that finds it standing.
+    fn ask(&mut self, who: Option<usize>, head: Hour) {
+        self.asks.insert(who, head);
+        let furthest = self.asks.values().copied().max().unwrap_or(head);
+        if furthest != self.head {
+            self.head = furthest;
+        } else if head == furthest {
+            self.stood += 1;
+        }
+        self.version += 1;
+    }
+}
+
 impl Shared {
     fn nudge(&self, change: impl FnOnce(&mut Control)) {
         let mut control = lock(&self.control);
         change(&mut control);
         control.version += 1;
         drop(control);
+        self.wake.notify_all();
+    }
+
+    fn ask(&self, who: Option<usize>, head: Hour) {
+        let head = self.timeline.clamp(head);
+        lock(&self.control).ask(who, head);
         self.wake.notify_all();
     }
 
@@ -584,6 +628,7 @@ impl Shared {
             control.seek = Some((hour, epoch));
             control.asked = Some(Instant::now());
             control.head = hour;
+            control.asks.clear();
             control.newest = None;
         });
         drop(clock);
@@ -800,6 +845,8 @@ pub struct Consumer {
     shared: Arc<Shared>,
     id: usize,
     reader: Reader,
+    /// It has said where its frames stand: the ring is told once.
+    asked: std::sync::atomic::AtomicBool,
 }
 
 impl Consumer {
@@ -826,6 +873,22 @@ impl Consumer {
     /// position's, from its reset on.
     pub fn ahead(&self, out: &mut Vec<Arc<Step>>) {
         lock(&self.shared.ring).ahead(self.id, out);
+    }
+
+    /// This reader's frame stands at `head`, as often as it likes; never waits. The stepper builds
+    /// toward the furthest head any reader stands at, so a reader whose frames are slow or held
+    /// holds no other: the steps it has not taken wait for it ([`Self::take`]).
+    pub fn advance(&self, head: Hour) {
+        self.shared.ask(Some(self.id), head);
+        if !self.asked.swap(true, Ordering::Relaxed) {
+            lock(&self.shared.ring).asks(self.id);
+        }
+    }
+
+    /// This consumer lands itself when far behind ([`Self::land`], by its own measure): the ring
+    /// never parks it for being behind.
+    pub fn lands_itself(&self) {
+        lock(&self.shared.ring).lands_itself(self.id);
     }
 
     /// Whether a step it has not taken ends at or before `head`: its next take at `head` moves it.
@@ -862,7 +925,10 @@ impl Consumer {
 impl Drop for Consumer {
     fn drop(&mut self) {
         lock(&self.shared.ring).leave(self.id);
-        self.shared.nudge(|_| {});
+        let id = self.id;
+        self.shared.nudge(|control| {
+            control.asks.remove(&Some(id));
+        });
     }
 }
 
@@ -885,6 +951,7 @@ impl Playhead {
             control: Mutex::new(Control {
                 version: 0,
                 head: first,
+                asks: BTreeMap::new(),
                 pace: (settings.speed, settings.rate),
                 seek: None,
                 asked: None,
@@ -1001,7 +1068,7 @@ impl Playhead {
     /// those made for its reader alone that no consumer of it has taken.
     pub fn consumer(&self, reader: Reader) -> Consumer {
         let id = lock(&self.shared.ring).join(reader);
-        Consumer { shared: Arc::clone(&self.shared), id, reader }
+        Consumer { shared: Arc::clone(&self.shared), id, reader, asked: std::sync::atomic::AtomicBool::new(false) }
     }
 
     /// The frame's head at `now`, from the clock; never waits. Held at a seek's hour until the
@@ -1057,19 +1124,10 @@ impl Playhead {
         self.shared.freed_ns.load(Ordering::Relaxed)
     }
 
-    /// The head's game hour, as often as the frame likes; never waits.
+    /// The head's game hour for a caller with no consumer, as often as it likes; never waits. A
+    /// reader with a consumer says its own ([`Consumer::advance`]).
     pub fn advance(&self, head: Hour) {
-        let head = self.shared.timeline.clamp(head);
-        let mut control = lock(&self.shared.control);
-        if control.head != head {
-            control.head = head;
-        } else {
-            // The head stands: a landing past it is not reached until it moves.
-            control.stood += 1;
-        }
-        control.version += 1;
-        drop(control);
-        self.shared.wake.notify_all();
+        self.shared.ask(None, head);
     }
 
     /// The frames stand at the head they last asked, as a frame asking it again does
@@ -1175,6 +1233,12 @@ impl Playhead {
     fn kept(&self) -> usize {
         lock(&self.shared.ring).steps_kept()
     }
+
+    /// The bytes the ring keeps for consumers behind, and the largest step it keeps.
+    fn kept_bytes(&self) -> (usize, usize) {
+        let ring = lock(&self.shared.ring);
+        (ring.trailing_bytes(), ring.largest_kept())
+    }
 }
 
 impl Drop for Playhead {
@@ -1258,8 +1322,37 @@ struct Join {
     readers: Vec<Reader>,
     prepared: Option<Box<Prepared>>,
     fetching: bool,
-    /// Landings from memory its readers stand short of, withdrawn when it lands for them.
-    revoke: Vec<Arc<Step>>,
+}
+
+/// A consumer's tables read from the file at the hour it stood at, each a lane of the selection's
+/// columns ([`Stepper::land_catch_ups`]). For a parked consumer ([`Stepper::adopt_parked`]), every
+/// table of its reader, stepped in memory toward where the frames are: the steps those made, to be
+/// handed it in order, and the hour they reach. For a standing one ([`Stepper::read_for_standing`]),
+/// the tables of a landing given past where it stands, reset there with its reader's states.
+struct CatchUp {
+    id: usize,
+    reader: Reader,
+    piece: Option<usize>,
+    from: Hour,
+    at: Hour,
+    lanes: BTreeMap<usize, (u64, Option<Slot>)>,
+    steps: Vec<Arc<Step>>,
+    started: Instant,
+    standing: Option<Standing>,
+}
+
+/// A standing consumer's read: its tables, its reader's states rebuilt there, and the landing from
+/// memory past where it stands, which the read replaces.
+struct Standing {
+    tables: Vec<usize>,
+    states: Vec<Rebuilt>,
+    revoke: Arc<Step>,
+}
+
+impl CatchUp {
+    fn lanes(self) -> (Vec<Box<Lane>>, Vec<Arc<Step>>, Option<Vec<Rebuilt>>) {
+        (self.lanes.into_values().filter_map(|(_, slot)| slot.map(|slot| slot.lane)).collect(), self.steps, self.standing.map(|standing| standing.states))
+    }
 }
 
 /// A landing from memory at the newest step built, given to a reader's consumers while the clock
@@ -1322,6 +1415,7 @@ struct Stepper {
     holding: Option<Instant>,
     /// Why its last build stopped, an index of [`Counters::idle_ns`].
     why: usize,
+    catching: Vec<CatchUp>,
 }
 
 impl Stepper {
@@ -1363,6 +1457,7 @@ impl Stepper {
             failed: false,
             holding: None,
             why: IDLE_OTHER,
+            catching: Vec::new(),
         }
     }
 
@@ -1452,7 +1547,9 @@ impl Stepper {
                     moved |= self.read_for_standing();
                     moved |= self.land_joins()?;
                     moved |= self.restep_ahead()?;
+                    moved |= self.adopt_parked();
                     moved |= self.land_owed()?;
+                    moved |= self.land_catch_ups()?;
                     self.schedule();
                     // A declaration since this loop began is applied before the next step is built.
                     let declared = lock(&self.shared.control).selection != self.selection_seen;
@@ -1517,6 +1614,10 @@ impl Stepper {
 
     fn begin_seek(&mut self, hour: Hour, epoch: u64, asked: Instant) {
         self.epoch = epoch;
+        let catching: Vec<_> = std::mem::take(&mut self.catching).into_iter().map(CatchUp::lanes).collect();
+        if !catching.is_empty() {
+            self.shared.free(catching);
+        }
         self.given.clear();
         self.counters.declarations_applied = self.selection_seen;
         self.counters.seeks += 1;
@@ -1671,9 +1772,9 @@ impl Stepper {
     }
 
     /// A job's result. One a newer seek abandoned (the stepper may not have begun that seek yet), or
-    /// that no lane, join or restep waits for any more, is let go before it is looked at: its error
-    /// is no error of the playhead's. So is the error of a table no reader declares now, whose jobs
-    /// the next pass retires.
+    /// that no lane, join, restep or catch-up waits for any more, is let go before it is looked at:
+    /// its error is no error of the playhead's. So is the error of a table no reader declares now,
+    /// whose jobs the next pass retires.
     fn receive(&mut self, done: Done) -> io::Result<()> {
         match done {
             Done::Fetched { epoch, table, generation, result } => {
@@ -1687,7 +1788,7 @@ impl Stepper {
                 } else if self.restepping.as_ref().and_then(|restep| restep.ready.get(&table)).is_some_and(|(prepared, _)| prepared.generation == generation) {
                     Some(Fed::Restep)
                 } else {
-                    None
+                    self.catching.iter().position(|catch| catch.lanes.get(&table).is_some_and(|(held, slot)| *held == generation && slot.is_some())).map(Fed::CatchUp)
                 };
                 let Some(wanted) = wanted else {
                     if let Ok(fetched) = result {
@@ -1718,6 +1819,11 @@ impl Stepper {
                         *fetching = false;
                         prepared.lane.give(fetched)?;
                     }
+                    Fed::CatchUp(at) => {
+                        let slot = self.catching[at].lanes.get_mut(&table).and_then(|(_, slot)| slot.as_mut()).expect("a catch-up waits");
+                        slot.fetching = false;
+                        slot.lane.give(fetched)?;
+                    }
                 }
             }
             Done::Prepared { epoch, purpose, table, generation, result } => {
@@ -1726,6 +1832,7 @@ impl Stepper {
                         Purpose::Seek => self.seek.as_ref().is_some_and(|seek| seek.pending.get(&table) == Some(&generation)),
                         Purpose::Piece(piece) => self.next_piece.as_ref().is_some_and(|next| next.piece == piece && next.pending.get(&table) == Some(&generation)),
                         Purpose::Restep => self.restepping.as_ref().is_some_and(|restep| restep.pending.get(&table) == Some(&generation)),
+                        Purpose::CatchUp => self.catching.iter().any(|catch| catch.lanes.get(&table).is_some_and(|(held, slot)| *held == generation && slot.is_none())),
                         Purpose::Join => self.joining.get(&table).is_some_and(|join| join.generation == generation),
                     };
                 if !wanted {
@@ -1757,6 +1864,14 @@ impl Stepper {
                         let restep = self.restepping.as_mut().expect("a restep waits");
                         restep.pending.remove(&table);
                         restep.ready.insert(table, (prepared, false));
+                    }
+                    Purpose::CatchUp => {
+                        let catch = self.catching.iter_mut().find(|catch| catch.lanes.get(&table).is_some_and(|(held, slot)| *held == generation && slot.is_none())).expect("a catch-up waits");
+                        let Prepared { lane, states, .. } = *prepared;
+                        if let Some(standing) = &mut catch.standing {
+                            standing.states.extend(states.into_iter().map(|(reader, state)| Rebuilt { reader, table, state }));
+                        }
+                        catch.lanes.insert(table, (generation, Some(Slot::new(generation, lane))));
                     }
                     Purpose::Join => self.joining.get_mut(&table).expect("a join waits").prepared = Some(prepared),
                 }
@@ -1835,6 +1950,9 @@ impl Stepper {
         self.lend_join_threads(count);
         if !abandoned.is_empty() {
             self.shared.free(abandoned);
+        }
+        if !self.catching.is_empty() {
+            self.restart_catch_ups();
         }
         joins
     }
@@ -1920,7 +2038,7 @@ impl Stepper {
             frames: Some((piece.last, span)),
             rebuilds: selected.rebuilds(Some(&readers)),
         };
-        self.joining.insert(table, Join { generation: self.generation, columns: selected.columns.clone(), keyed: selected.keyed, passing: selected.passing, readers, prepared: None, fetching: false, revoke: Vec::new() });
+        self.joining.insert(table, Join { generation: self.generation, columns: selected.columns.clone(), keyed: selected.keyed, passing: selected.passing, readers, prepared: None, fetching: false });
         self.counters.joins_open = self.joining.len() as u64;
         Job::Prepare(prepare)
     }
@@ -2068,7 +2186,7 @@ impl Stepper {
                     fresh.push(true);
                 }
             }
-            landed.push((table, join.readers, states, join.revoke));
+            landed.push((table, join.readers, states));
         }
         let places: Vec<usize> = ready.iter().map(|&table| self.slot_of(table).expect("landed")).collect();
         let mut view = Step { epoch: self.epoch, first: hour + 1, last: hour, piece: Some(piece), tables: resets, ..Step::default() };
@@ -2161,26 +2279,13 @@ impl Stepper {
         }
         // A table's sets go to its last reader, and a copy to each before it.
         let lasts: Vec<Option<Reader>> = landed.iter().map(|(_, held, ..)| held.iter().max().copied()).collect();
-        // A landing from memory a read was made for is withdrawn as this lands; one its consumer took
-        // meanwhile (its head moved on) leaves this landing unneeded for that reader.
-        let revokes: Vec<Vec<Arc<Step>>> = landed.iter().map(|(.., revoke)| revoke.clone()).collect();
         let mut states: BTreeMap<Reader, Vec<Rebuilt>> = BTreeMap::new();
-        for (table, _, rebuilt, _) in landed {
+        for (table, _, rebuilt) in landed {
             for (reader, state) in rebuilt {
                 states.entry(reader).or_default().push(Rebuilt { reader, table, state });
             }
         }
         for (reader, indexes) in readers {
-            let mut withdrawn: Vec<&Arc<Step>> = indexes.iter().flat_map(|&index| &revokes[index]).collect();
-            withdrawn.dedup_by(|a, b| Arc::ptr_eq(a, b));
-            if !withdrawn.iter().all(|step| ring.holds_own(step)) {
-                self.counters.join_answers_dropped += 1;
-                states.remove(&reader);
-                continue;
-            }
-            for step in withdrawn {
-                ring.revoke(step);
-            }
             let mut steps = Vec::with_capacity(own.len());
             for (round, sets) in own.iter_mut().enumerate() {
                 let mut tables = Vec::with_capacity(indexes.len());
@@ -2210,57 +2315,51 @@ impl Stepper {
     }
 
     /// A landing from memory (at the newest step built, given while the clock played) that a
-    /// consumer's head stands short of: a frame has asked the head it stood at since the landing was
-    /// given, and the landing lies past that head, which takes no step past it until it moves. Its
-    /// tables are read for that reader at the hour the frames are at; the head does not move while
-    /// the read is out, so the read lands exactly there and withdraws the landing from memory
-    /// ([`Self::land_joins`]). A landing its consumer took meanwhile (the head moved on) needs no
-    /// read: the read made for it is dropped, its answer let go.
+    /// consumer stands short of: a frame has stood since it was given, and the consumer stands at an
+    /// hour before it, by the steps it took. Its tables are read from the file for that consumer at
+    /// that hour, beside the steps it holds ([`Self::land_standing`]), whatever any other reader's
+    /// head: a reader standing beside one that steps on gets them where it stands. A landing its
+    /// consumer takes meanwhile (it moved on) leaves the read unneeded.
     fn read_for_standing(&mut self) -> bool {
-        if self.given.is_empty() && self.joining.values().all(|join| join.revoke.is_empty()) {
+        if self.given.is_empty() {
             return false;
         }
+        let stood = self.stood;
         let ring = lock(&self.shared.ring);
         self.given.retain(|given| ring.holds_own(&given.step));
-        let unneeded: Vec<usize> = self.joining.iter().filter(|(_, join)| !join.revoke.is_empty() && !join.revoke.iter().any(|step| ring.holds_own(step))).map(|(&table, _)| table).collect();
+        let mut reads = Vec::new();
+        for (at, given) in self.given.iter().enumerate() {
+            if given.read || stood <= given.stood || given.tables.iter().any(|table| self.joining.contains_key(table) || self.slot_of(*table).is_none() || !self.selection.contains_key(table)) {
+                continue;
+            }
+            for id in ring.holding(&given.step) {
+                if self.catching.iter().any(|catch| catch.id == id) {
+                    continue;
+                }
+                if let Some(hour) = ring.stands_at(id).filter(|&hour| hour < given.hour) {
+                    reads.push((at, id, given.reader, hour, given.tables.clone(), Arc::clone(&given.step)));
+                }
+            }
+        }
         drop(ring);
-        let mut moved = false;
-        for table in unneeded {
-            let join = self.joining.remove(&table).expect("joining");
-            if let Some(prepared) = join.prepared {
-                self.counters.join_answers_dropped += 1;
-                self.shared.free(vec![prepared]);
-            }
-            moved = true;
-        }
-        let (head, stood) = (self.head, self.stood);
         let mut jobs = Vec::new();
-        for at in 0..self.given.len() {
-            let given = &self.given[at];
-            if given.read || stood <= given.stood || given.hour <= head {
-                continue;
-            }
-            if given.tables.iter().any(|table| self.joining.contains_key(table) || self.slot_of(*table).is_none() || !self.selection.contains_key(table)) {
-                continue;
-            }
-            let (reader, tables, step) = (given.reader, given.tables.clone(), Arc::clone(&given.step));
-            for table in tables {
-                let selected = self.selection.get(&table).cloned().expect("selected");
-                jobs.push(self.join(table, &selected, vec![reader]));
-                self.joining.get_mut(&table).expect("joined").revoke.push(Arc::clone(&step));
-            }
+        for (at, id, reader, hour, tables, revoke) in reads {
+            let Region::Piece(piece) = self.shared.timeline.region(hour) else { continue };
             self.given[at].read = true;
+            let mut catch = CatchUp { id, reader, piece: Some(piece), from: hour, at: hour, lanes: BTreeMap::new(), steps: Vec::new(), started: Instant::now(), standing: Some(Standing { tables, states: Vec::new(), revoke }) };
+            jobs.extend(self.catch_reads(&mut catch));
+            self.catching.push(catch);
+            self.counters.standing_reads += 1;
         }
-        if !jobs.is_empty() {
-            let count = jobs.len();
-            self.shared.queue_joins(jobs);
-            self.lend_join_threads(count);
-            moved = true;
+        if jobs.is_empty() {
+            return false;
         }
-        if moved {
-            self.counters.joins_open = self.joining.len() as u64;
-        }
-        moved
+        let count = jobs.len();
+        self.shared.queue_joins(jobs);
+        self.lend_join_threads(count);
+        lock(&self.shared.report).2 = self.counters;
+        self.shared.nudge(|_| {});
+        true
     }
 
     /// What is owed, joined for its readers: the clock is held short of the newest step.
@@ -2477,6 +2576,15 @@ impl Stepper {
             !clock.playing() || clock.held().is_some()
         };
         if held && lock(&self.shared.ring).frames().is_some_and(|(_, hour)| hour.min(last) < newest.min(last)) {
+            // A parked consumer is caught up to where the frames are instead.
+            let parked: Vec<(usize, Reader, Hour)> = {
+                let ring = lock(&self.shared.ring);
+                self.lands.iter().filter_map(|&id| Some((id, ring.reader_of(id)?, ring.parked(id)?))).collect()
+            };
+            self.lands.retain(|id| !parked.iter().any(|(held, ..)| held == id));
+            for (id, reader, from) in parked {
+                self.catch_up(id, reader, from);
+            }
             return Ok(self.join_owed());
         }
         let mut targets: Vec<(Option<usize>, Reader, Vec<usize>)> = Vec::new();
@@ -2580,7 +2688,8 @@ impl Stepper {
         let slots = self.slots.iter_mut().map(|slot| (slot.table, slot.generation, &mut slot.fetching, &mut slot.lane));
         let joins = self.joining.iter_mut().filter_map(|(&table, join)| join.prepared.as_mut().map(|prepared| (table, join.generation, &mut join.fetching, &mut prepared.lane)));
         let resteps = self.restepping.iter_mut().flat_map(|restep| restep.ready.iter_mut()).map(|(&table, (prepared, fetching))| (table, prepared.generation, fetching, &mut prepared.lane));
-        for (table, generation, fetching, lane) in slots.chain(joins).chain(resteps) {
+        let catches = self.catching.iter_mut().flat_map(|catch| catch.lanes.iter_mut()).filter_map(|(&table, (_, slot))| slot.as_mut().map(|slot| (table, slot.generation, &mut slot.fetching, &mut slot.lane)));
+        for (table, generation, fetching, lane) in slots.chain(joins).chain(resteps).chain(catches) {
             if *fetching {
                 continue;
             }
@@ -2658,6 +2767,258 @@ impl Stepper {
         }
     }
 
+    /// Whether `reader` reads a log or a table declared passing: rows its skipped steps saw
+    /// appended, or born and gone, that no state holds.
+    fn every_step(&self, reader: Reader) -> bool {
+        self.selection.iter().any(|(&table, selected)| selected.readings.iter().any(|reading| reading.reader == reader && (reading.passing || self.slot_of(table).is_some_and(|place| self.slots[place].lane.log().is_some()))))
+    }
+
+    /// A standing consumer's read, once in: its tables reset at the hour it stands at, with its
+    /// reader's states, taken before the steps it holds (which carry those tables on, the lanes
+    /// holding them), and the landing from memory it replaces withdrawn. A consumer that moved on, or
+    /// took that landing meanwhile, needs it no more: let go, and a later stand may read again.
+    /// Whether it is done.
+    fn land_standing(&mut self, index: usize) -> io::Result<bool> {
+        if self.catching[index].lanes.values().any(|(_, slot)| slot.is_none()) {
+            self.counters.catch_waits[0] += 1;
+            return Ok(false);
+        }
+        let mut catch = self.catching.swap_remove(index);
+        let standing = catch.standing.take().expect("a standing read");
+        let mut tables = Vec::with_capacity(catch.lanes.len());
+        for (_, slot) in catch.lanes.values() {
+            let mut changes = Changes::default();
+            slot.as_ref().expect("read").lane.reset_into(&mut changes)?;
+            tables.push(changes);
+        }
+        let step = Arc::new(Step { epoch: self.epoch, first: catch.from + 1, last: catch.from, piece: catch.piece, tables, states: Mutex::new(standing.states), ..Step::default() });
+        let landed = lock(&self.shared.ring).land_standing(catch.id, catch.from, step, &standing.revoke);
+        if let Err(step) = landed {
+            if let Some(given) = self.given.iter_mut().find(|given| Arc::ptr_eq(&given.step, &standing.revoke)) {
+                given.read = false;
+            }
+            self.counters.standing_dropped += 1;
+            self.shared.free(step);
+        }
+        let held = catch.lanes();
+        self.shared.free(held);
+        lock(&self.shared.report).2 = self.counters;
+        self.shared.nudge(|_| {});
+        Ok(true)
+    }
+
+    /// Each consumer the ring parked for being behind by more than the lanes' cells
+    /// ([`Ring::park_behind`]) lands: from memory at the newest step ([`Self::land_owed`]), or, a
+    /// reader of a log or of passing rows, or with the clock held short of the newest step, caught
+    /// up from the file ([`Self::catch_up`]).
+    fn adopt_parked(&mut self) -> bool {
+        let parked = lock(&self.shared.ring).parked_seats();
+        let held = {
+            let clock = lock(&self.shared.clock);
+            !clock.playing() || clock.held().is_some()
+        };
+        let mut moved = false;
+        for (id, reader, from) in parked {
+            if self.lands.contains(&id) || self.catching.iter().any(|catch| catch.id == id) {
+                continue;
+            }
+            if held || self.every_step(reader) {
+                self.catch_up(id, reader, from);
+            } else {
+                self.lands.push(id);
+            }
+            self.counters.landed_behind += 1;
+            moved = true;
+        }
+        moved
+    }
+
+    /// Parked consumer `id` of `reader`, which stood at `from`, has its reader's tables read from the
+    /// file from that hour, in the selection's columns, on the joins' threads. Standing in a gap,
+    /// it reads nothing: no table changes there.
+    fn catch_up(&mut self, id: usize, reader: Reader, from: Hour) {
+        let piece = match self.shared.timeline.region(from) {
+            Region::Piece(piece) => Some(piece),
+            Region::Gap { .. } => None,
+        };
+        let mut catch = CatchUp { id, reader, piece, from, at: from, lanes: BTreeMap::new(), steps: Vec::new(), started: Instant::now(), standing: None };
+        let jobs = self.catch_reads(&mut catch);
+        self.catching.push(catch);
+        let count = jobs.len();
+        self.shared.queue_joins(jobs);
+        self.lend_join_threads(count);
+    }
+
+    /// The reads of a catch-up's tables from its first hour, as the selection declares them now.
+    fn catch_reads(&mut self, catch: &mut CatchUp) -> Vec<Job> {
+        let Some(piece) = catch.piece.map(|piece| self.shared.timeline.pieces[piece]) else { return Vec::new() };
+        let through = catch.from + self.shared.settings.ahead as Hour * self.quantum();
+        let mut jobs = Vec::new();
+        let wanted = |table: &usize, selected: &Selected| match &catch.standing {
+            Some(standing) => standing.tables.contains(table),
+            None => selected.readings.iter().any(|reading| reading.reader == catch.reader),
+        };
+        let reads: Vec<(usize, Selected)> = self.selection.iter().filter(|(table, selected)| wanted(table, selected)).map(|(&table, selected)| (table, selected.clone())).collect();
+        for (table, selected) in reads {
+            self.generation += 1;
+            catch.lanes.insert(table, (self.generation, None));
+            jobs.push(Job::Prepare(Prepare {
+                epoch: self.epoch,
+                purpose: Purpose::CatchUp,
+                table,
+                generation: self.generation,
+                run: piece.run,
+                columns: selected.columns.clone(),
+                keyed: selected.keyed,
+                passing: selected.passing,
+                hour: catch.from,
+                through,
+                frames: None,
+                rebuilds: if catch.standing.is_some() { selected.rebuilds(Some(&[catch.reader])) } else { Vec::new() },
+            }));
+        }
+        jobs
+    }
+
+    /// The selection changed: each catch-up is read again from its first hour in the columns
+    /// declared now, what it made let go.
+    fn restart_catch_ups(&mut self) {
+        let mut jobs = Vec::new();
+        for mut catch in std::mem::take(&mut self.catching) {
+            let lanes: Vec<Box<Lane>> = std::mem::take(&mut catch.lanes).into_values().filter_map(|(_, slot)| slot.map(|slot| slot.lane)).collect();
+            let states = catch.standing.as_mut().map(|standing| std::mem::take(&mut standing.states));
+            self.shared.free((lanes, std::mem::take(&mut catch.steps), states));
+            catch.at = catch.from;
+            jobs.extend(self.catch_reads(&mut catch));
+            self.catching.push(catch);
+        }
+        let count = jobs.len();
+        self.shared.queue_joins(jobs);
+        self.lend_join_threads(count);
+    }
+
+    /// Each catch-up whose reads are in steps its lanes, in memory, to the hour the frames are at
+    /// ([`Ring::catch_hour`]), no further than its piece: each table to where the lanes the steps are
+    /// built from stood there, so the steps built after carry it on exactly. Its consumer takes the
+    /// steps they made, then the steps built after that hour. While a lane waits for a read, or the
+    /// frames moved on before it landed, it tries again later.
+    fn land_catch_ups(&mut self) -> io::Result<bool> {
+        if self.catching.is_empty() || self.shared.epoch.load(Ordering::Acquire) != self.epoch {
+            return Ok(false);
+        }
+        let mut moved = false;
+        let mut index = 0;
+        while index < self.catching.len() {
+            if self.catching[index].standing.is_some() {
+                if self.land_standing(index)? {
+                    moved = true;
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            let target = lock(&self.shared.ring).catch_hour(self.catching[index].id);
+            let Some(target) = target else {
+                // Landed by asking, or gone: nothing is owed it.
+                let held = self.catching.swap_remove(index).lanes();
+                self.shared.free(held);
+                moved = true;
+                continue;
+            };
+            let catch = &mut self.catching[index];
+            if catch.lanes.values().any(|(_, slot)| slot.as_ref().is_none_or(|slot| slot.fetching)) {
+                self.counters.catch_waits[0] += 1;
+                index += 1;
+                continue;
+            }
+            if catch.lanes.values().any(|(_, slot)| slot.as_ref().is_some_and(|slot| !slot.lane.holds_through(target))) {
+                self.counters.catch_waits[1] += 1;
+                index += 1;
+                continue;
+            }
+            // Each table to where the lanes the steps are built from stood at `target`: short of it
+            // where they were (the steps after catch it up), or, at its piece's end, there (the next
+            // piece's reset carries every table on).
+            let ends = catch.piece.map(|piece| self.shared.timeline.pieces[piece].last);
+            let tables: Vec<usize> = catch.lanes.keys().copied().collect();
+            let goals: Option<BTreeMap<usize, Hour>> = tables.iter().map(|&table| Some((table, if ends == Some(target) { target } else { self.slots[self.slot_of(table)?].head_at(target)? }))).collect();
+            let Some(goals) = goals else {
+                self.counters.catch_waits[2] += 1;
+                index += 1;
+                continue;
+            };
+            let catch = &mut self.catching[index];
+            let at_goal = |catch: &CatchUp| catch.lanes.iter().all(|(table, (_, slot))| slot.as_ref().is_some_and(|slot| slot.lane.head().is_some_and(|head| head >= goals[table])));
+            // A round a step, each lane stopping at a block's end; the last reaches `target`.
+            loop {
+                let mut tables = Vec::new();
+                let mut stepped = false;
+                for (table, (_, slot)) in &mut catch.lanes {
+                    let Some(slot) = slot.as_mut() else { continue };
+                    let before = slot.lane.head();
+                    if before.is_some_and(|head| head >= goals[table]) {
+                        continue;
+                    }
+                    let mut changes = Changes::default();
+                    step_slot(slot, goals[table], &mut changes)?;
+                    stepped |= slot.lane.head() != before;
+                    tables.push(changes);
+                }
+                let done = at_goal(catch);
+                if done {
+                    // The last step holds every table, so a table its goal left short says so (its
+                    // head before the step's last hour) and its consumer stands short with it.
+                    for (table, (_, slot)) in &mut catch.lanes {
+                        let Some(slot) = slot.as_mut() else { continue };
+                        if !tables.iter().any(|changes: &Changes| changes.table() == *table) {
+                            let mut changes = Changes::default();
+                            step_slot(slot, goals[table], &mut changes)?;
+                            tables.push(changes);
+                        }
+                    }
+                    tables.sort_by_key(Changes::table);
+                }
+                let last = if done { target } else { catch.lanes.values().filter_map(|(_, slot)| slot.as_ref()?.lane.head()).max().unwrap_or(catch.at).max(catch.at) };
+                if last > catch.at || !tables.is_empty() {
+                    catch.steps.push(Arc::new(Step { epoch: self.epoch, first: catch.at + 1, last, piece: catch.piece, tables, ..Step::default() }));
+                    catch.at = last;
+                    moved = true;
+                }
+                if done || !stepped {
+                    break;
+                }
+            }
+            if !at_goal(catch) {
+                self.counters.catch_waits[1] += 1;
+                index += 1;
+                continue;
+            }
+            let at = catch.at;
+            let (id, steps) = (self.catching[index].id, std::mem::take(&mut self.catching[index].steps));
+            let landed = lock(&self.shared.ring).land_at(id, at, steps);
+            match landed {
+                Ok(()) => {
+                    let catch = self.catching.swap_remove(index);
+                    let ns = catch.started.elapsed().as_nanos() as u64;
+                    self.counters.caught_up += 1;
+                    self.counters.catch_up_ns += ns;
+                    self.counters.catch_up_most_ns = self.counters.catch_up_most_ns.max(ns);
+                    let held = catch.lanes();
+                    self.shared.free(held);
+                    lock(&self.shared.report).2 = self.counters;
+                    self.shared.nudge(|_| {});
+                    moved = true;
+                }
+                Err(steps) => {
+                    self.counters.catch_waits[3] += 1;
+                    self.catching[index].steps = steps;
+                    index += 1;
+                }
+            }
+        }
+        Ok(moved)
+    }
+
     fn publish(&mut self, step: Arc<Step>) {
         // The hook saw the hours of the steps a new pace rebuilt already: it sees the steps after them.
         if let Some(hook) = &mut self.hook
@@ -2690,6 +3051,8 @@ impl Stepper {
     /// waits for a step, none is built.
     fn build(&mut self) -> io::Result<bool> {
         let Some(newest) = self.newest else { return Ok(false) };
+        // The head as asked now: a take that made room came after any head asked before it.
+        self.head = lock(&self.shared.control).head;
         if !lock(&self.shared.ring).room(self.head) {
             self.why = if newest < self.head { IDLE_ROOM_BEHIND } else { IDLE_RING_FULL };
             self.hold();
@@ -2882,7 +3245,14 @@ impl Stepper {
         for slot in &self.slots {
             report.held.add(&slot.lane.held());
         }
-        let steps = lock(&self.shared.ring).steps();
+        let steps = {
+            let mut ring = lock(&self.shared.ring);
+            // Measured over lanes there are: none while a seek prepares them.
+            if !self.slots.is_empty() {
+                ring.set_bound(report.held.cells);
+            }
+            ring.steps()
+        };
         report.ring_steps = steps.len();
         report.ring_bytes = steps.iter().map(|step| step.bytes_held()).sum();
         drop(steps);

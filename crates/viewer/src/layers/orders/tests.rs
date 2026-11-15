@@ -87,6 +87,61 @@ fn a_plan_is_kept_while_its_rows_are_unchanged_and_made_again_from_the_hour_one_
     assert_eq!(layer.marked()[0], 2);
 }
 
+/// The links plan, which reads the countries too once two links are recorded: as an invasion's
+/// triggers reach tables past the memo tables only once the plan holds one.
+struct Reaching;
+
+impl Plans for Reaching {
+    fn build(&self, frame: &DecodedFrame, ours: u32, show_allied: bool) -> io::Result<OrderField> {
+        let mut plan = Links.build(frame, ours, show_allied)?;
+        if plan.report.recorded == 2 {
+            plan.report.drawn = frame.complete::<tables::Countries>()?.len();
+        }
+        Ok(plan)
+    }
+}
+
+/// [`campaign`] with the countries recorded, none of them a row.
+fn campaign_with_countries(at: u32, store: &mut Store) {
+    campaign(at, store);
+    store.status(TableId::Countries.index(), Status::Complete, true, Some(at as i32), true).unwrap();
+}
+
+/// A whole settle at the hour a build first reads a table it had not declared waits for that
+/// table's rows and builds again: the plan it shows is the plan of the hour. On the base it handed
+/// back the plan of an earlier hour as soon as it declared the table (`orders:today` differing
+/// on full13 in 1940, where invasion plans learned their trigger tables one round at a time).
+#[test]
+fn a_whole_settle_that_learns_a_table_shows_the_plan_of_its_hour_made_once_the_table_joined() {
+    let entry = open(recorded::record("orders learning", 60, campaign_with_countries), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    entry.set_capture(CaptureMode::Full);
+    let rows = Rows::of(&entry, Recording { branch: 0 }).unwrap();
+    let mut layer = Orders::new(Arc::new(Reaching));
+    layer.attach(Arc::clone(&rows));
+    layer.set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
+    rows.settled();
+    rows.drive(0);
+    entry.playhead().seek(0);
+    let through = |layer: &mut Orders, to: i32| loop {
+        let head = entry.playhead().newest().unwrap_or(0);
+        rows.drive(head);
+        layer.settle_at(head, LIMIT).unwrap();
+        if head >= to {
+            break head;
+        }
+    };
+
+    through(&mut layer, 36);
+    assert_eq!(layer.marked()[1], 0, "no table learned while one link is recorded");
+
+    let head = through(&mut layer, 45);
+    let (hour, plan) = layer.plan().expect("a plan");
+    assert_eq!(layer.marked()[1], 1, "the countries learned once, at the hour the second link came");
+    assert_eq!(layer.made_for(), Some(head), "the plan stands for the rows at the hour settled, not for rows before the table was learned");
+    assert!((45..=head).contains(&hour), "made from rows after the second link, at {hour}, settled at {head}");
+    assert_eq!((plan.report.recorded, plan.report.drawn), (2, 0), "both links, and the countries read");
+}
+
 /// Every memo table recorded; the viewing country (slot 0) holds theatre 5 and its orders group 77
 /// with a plan from hour 0, and the group's first order from hour 20. Each row is written whole,
 /// as the recorder gives it: a cell an insert leaves unwritten is not recorded, and a row with one

@@ -31,6 +31,9 @@ pub(crate) struct Schedule {
     pub paced: Option<f64>,
     /// Paced, with the map's layers on: seeks while playing, spread over the run.
     pub seeks: u32,
+    /// After the run's hours, a seek to this hour as the window seeks: stepped, one more frame
+    /// there; paced, playing on from it for [`SEEK_BACK_SECONDS`] or to the branch end.
+    pub seek_back: Option<i32>,
     /// The map drawn from the recording's playhead; without it, today's pipeline alone.
     pub playhead: bool,
     /// Today's hour pipeline stops once its first hour is on screen; only the layers move.
@@ -43,6 +46,9 @@ pub(crate) struct Schedule {
     /// Paced: the camera flies this path ([`crate::playback_cost::flight`]).
     pub flight: Option<crate::playback_cost::flight::Flight>,
 }
+
+/// How long a paced run sought back plays on before it ends.
+const SEEK_BACK_SECONDS: f64 = 2.0;
 
 /// A frame's camera in its record: the game's look-at camera by its centre and height, a free eye
 /// by its place, heading, pitch and lens.
@@ -591,6 +597,8 @@ pub(crate) fn measure(
         }
     }
     let mut sought = 0u32;
+    let last = document.playback.range(branch).map_or(options.playback_cost_end.expect("the harness sets the run's end"), |(_, last)| last);
+    let mut sought_back = None::<f64>;
     let mut seed = 0x2545_f491_4f6c_dd1d_u64;
     let mut paced_end_us = 0.0;
     let mut harness_wait_us = 0.0;
@@ -598,11 +606,8 @@ pub(crate) fn measure(
         let end = options
             .playback_cost_end
             .expect("the harness sets the run's end");
-        let last = document
-            .playback
-            .range(branch)
-            .map_or(end, |(_, last)| last);
         let mut drawn = None::<i32>;
+        let mut reached_end = false;
         // The seeks spread over the frames the run would take unsought, at least 15 frames apart.
         let seek_every = (f64::from(end - start) / speed * schedule.refresh_hz / f64::from(schedule.seeks + 1)).max(15.0) as u64;
         let t0 = Instant::now();
@@ -619,6 +624,15 @@ pub(crate) fn measure(
             }
             let frame_start = if index == 0 { t0 } else { Instant::now() };
             let start_us = frame_start.duration_since(t0).as_secs_f64() * 1e6;
+            // The frame after the head reached the end seeks back, as the window seeks, and draws.
+            if let Some(back) = schedule.seek_back
+                && sought_back.is_none()
+                && reached_end
+            {
+                viewer.anchor_playback(Playhead { branch, hour: back, fraction: 0.0 }, true, speed, true, Instant::now(), last);
+                layered.seek(index, back, start_us);
+                sought_back = Some(paced::seek_back_end(back, speed, SEEK_BACK_SECONDS, last));
+            }
             // Held (`--paused`), the hour stays and the run is `--hours` frames, the camera panning.
             let head = match &viewer.playhead_map {
                 _ if schedule.paused => f64::from(start),
@@ -648,7 +662,10 @@ pub(crate) fn measure(
                 layered.seek(index, target, start_us);
                 sought += 1;
             }
-            if (schedule.paused && index >= u64::from(hours)) || (!schedule.paused && head >= f64::from(end)) {
+            let ends = sought_back.unwrap_or(f64::from(end));
+            if schedule.seek_back.is_some() && sought_back.is_none() && head >= ends {
+                reached_end = true;
+            } else if (schedule.paused && index >= u64::from(hours)) || (!schedule.paused && head >= ends) {
                 paced_end_us = start_us;
                 break;
             }
@@ -815,14 +832,21 @@ pub(crate) fn measure(
             paced_frames.push(frame);
         }
     }
-    let stepped = if schedule.paced.is_some() { 0 } else { hours };
+    let stepped = if schedule.paced.is_some() { 0 } else { hours + u32::from(schedule.seek_back.is_some()) };
     for index in 0..stepped {
         let offset = if schedule.pan.is_some() || schedule.paused {
             0
         } else {
             i64::from(index) * i64::from(schedule.step)
         };
-        let hour = i32::try_from(i64::from(start) + offset).map_err(io::Error::other)?;
+        let hour = match schedule.seek_back.filter(|_| index == hours) {
+            Some(back) => {
+                let speed = f64::from(schedule.step.max(1)) * crate::playhead_host::settings().rate;
+                viewer.anchor_playback(Playhead { branch, hour: back, fraction: 0.0 }, false, speed, true, Instant::now(), last);
+                back
+            }
+            None => i32::try_from(i64::from(start) + offset).map_err(io::Error::other)?,
+        };
         if let Some(pan) = schedule.pan {
             let mut placement = camera.placement();
             placement.center[0] = (placement.center[0] + pan * index as f32).rem_euclid(map_width);
@@ -950,6 +974,7 @@ pub(crate) fn measure(
         "live"
     });
     report["png_frames"] = json!(schedule.pngs);
+    report["seek_back"] = json!(schedule.seek_back);
     report["playhead"] = json!(viewer.playhead_map.is_some());
     report["today_started"] = json!(viewer.hours.is_some());
     report["layers_only"] = json!({"on": schedule.layers_only, "today_started": viewer.hours.is_some()});

@@ -200,8 +200,7 @@ pub(crate) struct Entry {
     /// The recording's capture mode, given once by whoever opened the recording, which says why a
     /// table is not recorded.
     capture: std::sync::OnceLock<replay_data::scope::CaptureMode>,
-    /// Maps drawing from this playhead: while any is, its frame advances the playhead and no
-    /// other driver does.
+    /// Maps drawing from this playhead: while any is, the rows follow the head its frame side took.
     maps: std::sync::atomic::AtomicUsize,
     /// The head the map's frame side took last and the seek of the steps it had applied then
     /// ([`seek_head`]; [`NO_HEAD`] before any).
@@ -276,7 +275,7 @@ impl Entry {
         Some((held != NO_HEAD && held >> 32 == seek_bits(self.playhead.epoch())).then(|| held as u32 as i32))
     }
 
-    /// Whether a map draws from this playhead (and so advances it on its frames).
+    /// Whether a map draws from this playhead.
     pub(crate) fn drawn(&self) -> bool {
         self.maps.load(Ordering::Acquire) > 0
     }
@@ -1228,7 +1227,7 @@ impl MapSide {
         let mut frame = Frame { head, layers: vec![LayerFrame::default(); self.names.len()], ..Frame::default() };
         let take_lap = replay_frame::cpu::scope("frame.refresh.take", Some("other"));
         let playhead = &self.entry.playhead;
-        playhead.advance(head);
+        self.consumer.advance(head);
         if self.composing {
             if playhead.epoch() != self.epoch {
                 self.cancel.store(true, Ordering::Release);

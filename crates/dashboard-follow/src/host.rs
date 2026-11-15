@@ -1,6 +1,6 @@
-//! Follow hosted on a playhead: its reader declared and bound, and a driver that advances the
-//! playhead to its clock's head sixty times a second and takes the steps for the reader, so the
-//! stepper runs whether or not a map is drawn; the follow's messages go as it takes their steps
+//! Follow hosted on a playhead: its reader declared and bound, and a driver that stands its reader
+//! at the clock's head sixty times a second and takes its steps, so the stepper runs at the
+//! clock's pace however slow a map's frames are; the follow's messages go as it takes their steps
 //! ([`Due`]), and the playhead is kept exact while paused, so a followed value is the clock's hour's.
 //! The hook itself is the owner's to place (the viewer's host slot, or `Playhead::new` in a bench),
 //! with [`Due::sink`]. Panels shown on the playhead are evaluated on a thread of their own from rows
@@ -233,9 +233,8 @@ pub struct PlayheadHost<E: Send + Sync + 'static> {
 
 impl<E: Send + Sync + 'static> PlayheadHost<E> {
     /// `follow` on the playhead `get` finds in `owner`, whose files hold the tables `held` marks,
-    /// its hook's messages held in `due`; anchors go through `anchored`, and while `drawn` holds a
-    /// map advances the playhead and the driver only takes its steps.
-    pub fn new(owner: Arc<E>, get: fn(&E) -> &Playhead, anchored: fn(&E, Anchor), drawn: fn(&E) -> bool, follow: Follow, due: Arc<Due>, held: Vec<bool>) -> std::io::Result<Arc<Self>> {
+    /// its hook's messages held in `due`; anchors go through `anchored`.
+    pub fn new(owner: Arc<E>, get: fn(&E) -> &Playhead, anchored: fn(&E, Anchor), follow: Follow, due: Arc<Due>, held: Vec<bool>) -> std::io::Result<Arc<Self>> {
         let playhead = get(&owner);
         playhead.exact_when_paused();
         let reader = playhead.declare(Vec::new(), None)?;
@@ -250,9 +249,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             while !stopping.load(Ordering::Acquire) {
                 let playhead = get(&driven);
                 let head = playhead.head(Instant::now());
-                if !drawn(&driven) {
-                    playhead.advance(head);
-                }
+                consumer.advance(head);
                 consumer.take(head, &mut taken);
                 if let Some(step) = taken.last() {
                     due.reached(step.epoch(), step.last());

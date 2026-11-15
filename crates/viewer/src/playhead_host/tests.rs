@@ -945,19 +945,19 @@ fn a_camera_move_reaches_the_layers_without_a_redeclare_or_a_compose() {
 }
 
 #[test]
-fn a_map_and_follow_on_one_recording_make_one_seek_and_the_map_advances() {
+fn a_map_and_follow_on_one_recording_make_one_seek() {
     let (recording, _) = record(1, BLOCK, busy);
     let entry = open(units(recording, "map and follow"), quick()).unwrap();
-    assert!(!entry.drawn(), "with no map, follow's driver advances");
+    assert!(!entry.drawn(), "no map draws yet");
     let composes = Arc::new(Mutex::new(0));
     let side = MapSide::new(Arc::clone(&entry), vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
-    assert!(entry.drawn(), "with a map, the map's frame advances and follow's driver does not");
+    assert!(entry.drawn(), "a map draws");
     side.anchor(300, true, 4.0, true);
     let epoch = entry.playhead().holding().expect("held at the seek");
     entry.anchor(300, true, 4.0, true);
     assert_eq!(entry.playhead().holding(), Some(epoch), "follow's anchor of the same hour makes no second seek");
     drop(side);
-    assert!(!entry.drawn(), "the map gone, follow's driver advances again");
+    assert!(!entry.drawn(), "the map gone, none draws");
 }
 
 #[test]
@@ -1263,14 +1263,18 @@ fn real_key_shapes_do_not_collide_into_long_chains() {
 
 
 /// Two maps of one recording on one frame thread, each with more settle work than the frame has:
-/// the frame's settle across both stays within its one budget, and both keep settling. The budget's
-/// clock is the test's: each entity settled costs 3 µs of it, so the test counts work, not time.
+/// the frame's settle across both stays within its one budget, and neither starves. A map left
+/// holding more than the lanes' state untaken is landed (parked, its layer composed at the hour on
+/// its worker, outside the budget): a landing is its progress, and its count is read once home.
+/// The budget's clock is the test's: each entity settled costs `COST` of it, so the test counts work.
 #[test]
 fn two_maps_share_one_frame_budget_and_neither_starves() {
+    const COST: Duration = Duration::from_micros(8);
     struct Costly {
         dirty: Dirty,
         frame: u64,
         settled: u64,
+        composed: u64,
     }
     impl Layer for Costly {
         fn name(&self) -> &'static str {
@@ -1281,6 +1285,7 @@ fn two_maps_share_one_frame_budget_and_neither_starves() {
             inputs.index(table(0), 0)
         }
         fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
+            self.composed += 1;
             Ok(())
         }
         fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
@@ -1293,7 +1298,7 @@ fn two_maps_share_one_frame_budget_and_neither_starves() {
             self.frame += 1;
             let settled = &mut self.settled;
             self.dirty.settle(budget, |_| {
-                crate::layers::clock::advance(Duration::from_micros(3));
+                crate::layers::clock::advance(COST);
                 *settled += 1;
                 Ok(())
             })
@@ -1311,7 +1316,9 @@ fn two_maps_share_one_frame_budget_and_neither_starves() {
             self
         }
     }
-    let (recording, _) = record(1, BLOCK, |at, table, store| {
+    // Each hour rewrites 40 of the 2,000 rows, turning over: a map a swap frame and a few steps behind
+    // holds well under the lanes' state, so landings stay rare and both maps settle side by side.
+    let (recording, _) = record(1, 2 * BLOCK, |at, table, store| {
         store.status(table, Status::Complete, true, Some(at as i32), true).unwrap();
         let mut changes = store.table(table).unwrap();
         if at == 0 {
@@ -1319,7 +1326,7 @@ fn two_maps_share_one_frame_budget_and_neither_starves() {
                 changes.insert_at(slot, u128::from(slot) + 1).unwrap();
             }
         }
-        for slot in 0..2_000 {
+        for slot in (0..40).map(|row| (at * 40 + row) % 2_000) {
             changes.write(slot, 0, Cell::I32(at as i32 + slot as i32)).unwrap();
         }
     });
@@ -1328,23 +1335,52 @@ fn two_maps_share_one_frame_budget_and_neither_starves() {
     let budget = Duration::from_millis(2);
     let mut maps: Vec<MapSide> = (0..2)
         .map(|_| {
-            let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Costly { dirty: Dirty::default(), frame: 0, settled: 0 })], View::default()).unwrap();
+            let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Costly { dirty: Dirty::default(), frame: 0, settled: 0, composed: 0 })], View::default()).unwrap();
             side.set_budget(budget);
             side
         })
         .collect();
     entry.playhead().play(4.0);
     entry.playhead().seek(0);
-    let costly = |side: &MapSide| side.parts().map_or(0, |(_, layers)| layers[0].any().downcast_ref::<Costly>().unwrap().settled);
+    // (settled, composed), or none while the layer is away composing.
+    let costly = |side: &MapSide| {
+        side.parts().map(|(_, layers)| {
+            let layer = layers[0].any().downcast_ref::<Costly>().unwrap();
+            (layer.settled, layer.composed)
+        })
+    };
+    // Each compose under way brought home, settling nothing meanwhile, and each map's counts read.
+    let home = |maps: &mut [MapSide]| -> Vec<(u64, u64)> {
+        let held: Vec<_> = maps.iter().map(MapSide::hold_settles).collect();
+        for _ in 0..50_000_000u64 {
+            if maps.iter().all(|side| !side.composing()) {
+                break;
+            }
+            let head = entry.playhead().newest().unwrap();
+            maps.iter_mut().filter(|side| side.composing()).for_each(|side| drop(side.frame(head).unwrap()));
+            std::thread::yield_now();
+        }
+        drop(held);
+        maps.iter().map(|side| costly(side).expect("every compose came home")).collect()
+    };
+    // Both maps' first composes come home at the seek's hour before the clock is followed: a loaded
+    // worker composing spends no hours of the recording.
+    for _ in 0..50_000_000u64 {
+        if maps.iter().all(|side| costly(side).is_some_and(|(_, composed)| composed > 0)) {
+            break;
+        }
+        maps.iter_mut().for_each(|side| drop(side.frame(0).unwrap()));
+        std::thread::yield_now();
+    }
     let (mut frames, mut over) = (0, Vec::new());
     for _ in 0..5_000_000u64 {
         let head = entry.playhead().newest().unwrap_or(0);
         let parts: Vec<super::Frame> = maps.iter_mut().map(|side| side.frame(head).unwrap()).collect();
-        let settling = parts.iter().all(|frame| !frame.composing && frame.swapped.is_none()) && maps.iter().all(|side| costly(side) > 0);
+        let settling = parts.iter().all(|frame| !frame.composing && frame.swapped.is_none()) && maps.iter().all(|side| costly(side).is_some_and(|(settled, _)| settled > 0));
         if settling {
             let ns: u64 = parts.iter().map(|frame| frame.layers[0].settle_ns).sum();
             // Each map may pass the budget by what it settles between two of its checks (32 entities).
-            if Duration::from_nanos(ns) > budget + Duration::from_micros(2 * 32 * 3) {
+            if Duration::from_nanos(ns) > budget + 2 * 32 * COST {
                 over.push(ns);
             }
             frames += 1;
@@ -1356,22 +1392,28 @@ fn two_maps_share_one_frame_budget_and_neither_starves() {
             std::thread::yield_now();
         }
     }
-    assert_eq!(frames, 40, "the maps settled for 40 frames");
+    assert_eq!(frames, 40, "the maps settled for 40 frames: at hours {:?}", maps.iter().map(MapSide::applied).collect::<Vec<_>>());
     assert!(over.is_empty(), "frames whose settle across both maps overran one budget: {over:?}");
     // Each of these frames brings both maps a step's work, so each has work and a share for it: a
     // step past both maps' hours is waited for, as a loaded machine can leave one behind the other.
-    let before: Vec<u64> = maps.iter().map(costly).collect();
+    let before = home(&mut maps);
     for _ in 0..20 {
+        let past = |maps: &[MapSide]| maps.iter().all(|side| entry.playhead().newest() > side.applied());
         for _ in 0..50_000_000u64 {
-            if maps.iter().all(|side| entry.playhead().newest() > side.applied()) {
+            if past(&maps) {
                 break;
             }
             std::thread::yield_now();
         }
+        assert!(past(&maps), "a step past both maps: newest {:?}, maps at {:?}", entry.playhead().newest(), maps.iter().map(MapSide::applied).collect::<Vec<_>>());
         let head = entry.playhead().newest().unwrap();
         maps.iter_mut().for_each(|side| drop(side.frame(head).unwrap()));
     }
-    assert!(maps.iter().zip(&before).all(|(side, &before)| costly(side) > before), "both maps kept settling");
+    let after = home(&mut maps);
+    assert!(
+        after.iter().zip(&before).all(|(after, before)| after.0 > before.0 || after.1 > before.1),
+        "both maps kept settling or were landed: (settled, composed) {before:?} to {after:?}"
+    );
 }
 
 /// One map, two independent layers, each given more settle work every step than the frame's budget
@@ -2490,19 +2532,22 @@ fn a_map_composing_slowly_holds_neither_the_clock_nor_another_map_on_its_playhea
     release.send(()).unwrap();
 }
 
-/// The dashboard's follow host beside a map that is not drawn: the host's driver takes the reset,
-/// which starts the clock. Before, the map's consumer held the clock until a frame of the map
-/// showed the reset, so the followed widgets waited on a map that never drew.
+/// The dashboard's follow host beside a map: the host's driver takes the reset, which starts the
+/// clock, and steps on past the map while the map's frames are held. The map, let go, shows
+/// exactly the hour it reaches. Before, the map's consumer held the clock until a frame of the map
+/// showed the reset; and while a map drew only its frames advanced the playhead, so stepping, and
+/// the followed values with it, stopped a ring's size past the held map's last frame.
 #[test]
-fn a_follow_host_is_not_held_by_a_map_beside_it() {
-    let (recording, _) = record(1, BLOCK, busy);
-    let entry = open(units(recording, "follow beside a map"), quick()).unwrap();
-    let hidden = MapSide::new(Arc::clone(&entry), vec![Box::new(Sum::new(&Arc::new(Mutex::new(0))))], View::default()).unwrap();
+fn a_follow_host_is_held_neither_by_a_map_beside_it_nor_by_its_frames() {
+    let (recording, states) = record(1, 2 * BLOCK, busy);
+    let settings = Settings { rate: 60.0, ..quick() };
+    let entry = open(units(recording, "follow beside a map"), settings).unwrap();
+    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Sum::new(&Arc::new(Mutex::new(0))))], View::default()).unwrap();
     let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
     let anchored = |entry: &super::Entry, anchor: dashboard_follow::registry::Anchor| entry.anchor(anchor.hour, anchor.playing, anchor.speed, anchor.sought);
     let due = dashboard_follow::due::Due::new(Arc::new(dashboard_follow::push::Push::default()));
-    let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), super::Entry::playhead, anchored, super::Entry::drawn, dashboard_follow::Follow::new(64 << 10), due, held).unwrap();
-    entry.playhead().play(4.0);
+    let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), super::Entry::playhead, anchored, dashboard_follow::Follow::new(64 << 10), due, held).unwrap();
+    entry.playhead().play(240.0);
     entry.playhead().seek(100);
     let deadline = Instant::now() + Duration::from_secs(60);
     while entry.playhead().holding().is_some() {
@@ -2510,8 +2555,22 @@ fn a_follow_host_is_not_held_by_a_map_beside_it() {
         std::thread::yield_now();
     }
     runs_from(&entry, 100, "the map beside the follow host");
+    frames_until(&mut side, |side, frame| frame.applied.is_some_and(|hour| hour >= 100) && !side.composing());
+    // The map's frames are held from here.
+    let last = side.last_frame().head;
+    let past = last + 4 * (settings.ring as i32 + 2);
+    while entry.playhead().newest().is_none_or(|newest| newest < past) {
+        assert!(Instant::now() < deadline, "stepping stopped at {:?}, the ring's size past the held map's last head {last}", entry.playhead().newest());
+        std::thread::yield_now();
+    }
+    frames_until(&mut side, |side, frame| frame.applied.is_some_and(|hour| hour >= past) && !side.composing());
+    side.settle_all().unwrap();
+    let mirror = side.parts().unwrap().0.get(table(0)).unwrap();
+    let hour = mirror.head().unwrap();
+    assert_eq!(differ(mirror, &states[0][hour as usize], &[0]), None, "the map let go, at hour {hour}");
+    assert_eq!(sum_layer(&side, 0).total(), sum_of(mirror, Num::of(table(0), 0)), "the layer's arrays at hour {hour}");
     drop(host);
-    drop(hidden);
+    drop(side);
 }
 
 /// What the test lets a fed worker do: every job, or this many more.

@@ -104,6 +104,8 @@ pub(crate) trait Ground: Send + Sync {
     fn bounds(&self) -> &BTreeMap<u32, [f32; 4]>;
     /// The camera height at and above which no land unit model is drawn.
     fn units_cutoff(&self) -> f32;
+    /// The camera height at and above which no ship model is drawn.
+    fn ships_cutoff(&self) -> f32;
     /// The map a camera placement is put on.
     fn map(&self) -> (MapSize, MapDefines);
 }
@@ -128,6 +130,10 @@ impl Ground for crate::document::Content {
 
     fn units_cutoff(&self) -> f32 {
         self.unit_models.gates.units
+    }
+
+    fn ships_cutoff(&self) -> f32 {
+        self.unit_models.gates.ships
     }
 
     fn map(&self) -> (MapSize, MapDefines) {
@@ -1494,6 +1500,60 @@ impl Units {
         }
         (differing, first)
     }
+
+    /// Its models' worker, started once in the window.
+    fn start_models(&mut self) {
+        if let Some(window) = &self.window
+            && self.models.is_none()
+        {
+            self.models = Some(models::Models::new(Arc::clone(&window.select), &window.rows, &window.tables));
+        }
+    }
+
+    /// The land figures: the divisions' sights, stacks, figures and meshes.
+    fn settle_land(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) {
+        let layer = upstream.get::<VisionLayer>().filter(|_| self.reading);
+        if let Some(vision) = layer {
+            self.take_upstream(vision, upstream, mirrors);
+        }
+        let before = self.marked;
+        self.settle_dirty(mirrors, budget, layer);
+        self.to_upload |= self.marked != before;
+        // Each stack's mesh: the stacks the settle touched handed on with the hour it settled.
+        if self.meshes.is_some() {
+            self.ask();
+        } else {
+            self.touched.clear();
+        }
+        let ours = layer.and_then(VisionLayer::ours).or_else(|| self.vision.as_ref().map(|(_, vision)| vision.ours()));
+        let hour = mirrors.get(TableId::Divisions).and_then(Mirror::head);
+        if let (Some(meshes), Some(ours), Some(hour), None) = (&mut self.meshes, ours, hour, &self.refused) {
+            let asks = std::mem::take(&mut self.asks);
+            self.to_upload |= meshes.exchange(hour, ours, asks, budget.unlimited_now());
+        }
+        if viewer_foundation::view_record::on() {
+            self.record_view();
+        }
+    }
+
+    /// Today's models of the ships, raid units and convoys made on its worker, the ships layer's ships
+    /// joined while it stands in for today's.
+    fn exchange_models(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) {
+        let convoys = upstream.get::<crate::layers::convoys::Convoys>().filter(|convoys| convoys.refused().is_none()).map(|convoys| (convoys.product_seq(), &convoys.product().convoys[..]));
+        // The ships layer's ships, while it stands in for today's, are joined to the models.
+        let ships = upstream.get::<crate::layers::ships::Ships>();
+        // With no land figure drawn it holds no sight: the viewer is the vision layer's.
+        let layered = upstream.get::<VisionLayer>().filter(|_| self.reading && self.columns.is_none()).map(VisionLayer::choice);
+        let choice = layered.or(self.vision.as_ref().map(|(choice, _)| choice)).or(self.choice.as_ref());
+        if let (Some(models), Some(choice)) = (&mut self.models, choice) {
+            let head = mirrors.get(TableId::Divisions).and_then(Mirror::head).or_else(|| ships.and_then(crate::layers::ships::Ships::head));
+            let whole = head.filter(|_| budget.unlimited_now());
+            let exchanged = models.exchange(choice, convoys, !ships.is_some_and(crate::layers::ships::Ships::stands_in), whole);
+            let joined = models.join_ships(ships);
+            self.models_new |= exchanged | joined;
+            self.to_upload |= exchanged | joined;
+        }
+    }
 }
 
 impl Layer for Units {
@@ -1511,6 +1571,8 @@ impl Layer for Units {
             self.camera_dirty = true;
         }
         let drawn = view.camera.is_none_or(|camera| camera.height < self.ground.units_cutoff()) && visibility::of(&view.map_mode).land_models;
+        // The ships, raid units and convoys of its models are drawn below the ships' cutoff too.
+        let movers = view.camera.is_none_or(|camera| camera.height < self.ground.ships_cutoff().max(self.ground.units_cutoff()));
         if !drawn {
             self.columns = None;
             self.refused = Some("no land unit model is drawn at this view".into());
@@ -1523,7 +1585,12 @@ impl Layer for Units {
             self.divisions = Dirty::default();
             self.moved = Dirty::default();
             (self.route_rows, self.icon_rows, self.status_rows, self.every) = (Rows::default(), Rows::default(), Rows::default(), false);
-            self.uploaded = Vec::new();
+            // Its models kept, their field is uploaded again without the land figures it held.
+            if movers && self.models.is_some() {
+                self.to_upload |= !self.uploaded.is_empty();
+            } else {
+                self.uploaded = Vec::new();
+            }
             if let (Some(window), Some(meshes)) = (&mut self.window, &self.meshes) {
                 window.meshes = meshes.tables().to_vec();
             }
@@ -1536,18 +1603,15 @@ impl Layer for Units {
             self.deferred_count = 0;
             (self.province_known, self.province_in, self.statuses) = (Vec::new(), Vec::new(), HashMap::new());
             (self.choice, self.sight_epoch) = (None, None);
-            // The window then poses today's models: the raid units and convoys are not this layer's.
-            if let (Some(window), Some(models)) = (&mut self.window, self.models.take()) {
+            if movers {
+                self.start_models();
+            } else if let (Some(window), Some(models)) = (&mut self.window, self.models.take()) {
                 window.tables = models.tables().to_vec();
                 self.to_upload = false;
             }
             return Ok(());
         }
-        if let Some(window) = &self.window
-            && self.models.is_none()
-        {
-            self.models = Some(models::Models::new(Arc::clone(&window.select), &window.rows, &window.tables));
-        }
+        self.start_models();
         if let Some(window) = &self.window
             && self.meshes.is_none()
         {
@@ -1686,43 +1750,11 @@ impl Layer for Units {
     }
 
     fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
-        // A view that draws no land figure does no unit work.
-        if self.columns.is_none() {
-            return Ok(());
+        // A view that draws no land figure does no land work; its models go on below the ships' cutoff.
+        if self.columns.is_some() {
+            self.settle_land(mirrors, upstream, budget);
         }
-        let layer = upstream.get::<VisionLayer>().filter(|_| self.reading);
-        if let Some(vision) = layer {
-            self.take_upstream(vision, upstream, mirrors);
-        }
-        let before = self.marked;
-        self.settle_dirty(mirrors, budget, layer);
-        self.to_upload |= self.marked != before;
-        // Each stack's mesh: the stacks the settle touched handed on with the hour it settled.
-        if self.meshes.is_some() {
-            self.ask();
-        } else {
-            self.touched.clear();
-        }
-        let ours = layer.and_then(VisionLayer::ours).or_else(|| self.vision.as_ref().map(|(_, vision)| vision.ours()));
-        let hour = mirrors.get(TableId::Divisions).and_then(Mirror::head);
-        if let (Some(meshes), Some(ours), Some(hour), None) = (&mut self.meshes, ours, hour, &self.refused) {
-            let asks = std::mem::take(&mut self.asks);
-            self.to_upload |= meshes.exchange(hour, ours, asks, budget.unlimited_now());
-        }
-        if viewer_foundation::view_record::on() {
-            self.record_view();
-        }
-        let convoys = upstream.get::<crate::layers::convoys::Convoys>().filter(|convoys| convoys.refused().is_none()).map(|convoys| (convoys.product_seq(), &convoys.product().convoys[..]));
-        // The ships layer's ships, while it stands in for today's, are joined to the models.
-        let ships = upstream.get::<crate::layers::ships::Ships>();
-        let choice = self.vision.as_ref().map(|(choice, _)| choice).or(self.choice.as_ref());
-        if let (Some(models), Some(choice)) = (&mut self.models, choice) {
-            let whole = mirrors.get(TableId::Divisions).and_then(Mirror::head).filter(|_| budget.unlimited_now());
-            let exchanged = models.exchange(choice, convoys, !ships.is_some_and(crate::layers::ships::Ships::stands_in), whole);
-            let joined = models.join_ships(ships);
-            self.models_new |= exchanged | joined;
-            self.to_upload |= exchanged | joined;
-        }
+        self.exchange_models(mirrors, upstream, budget);
         Ok(())
     }
 
@@ -1747,7 +1779,7 @@ impl Layer for Units {
     }
 
     fn published(&self) -> Published {
-        let Some(models) = self.models.as_ref().filter(|_| self.columns.is_some()) else { return Published::Current };
+        let Some(models) = self.models.as_ref() else { return Published::Current };
         let meshes = self.meshes.as_ref();
         match &models.prepared {
             None if models.waiting() => Published::Nothing,

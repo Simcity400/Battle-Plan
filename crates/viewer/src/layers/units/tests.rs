@@ -27,7 +27,8 @@ use viewer_world::map::{
 };
 
 /// Anchors at the province's id, none past province 1000; province `p`'s box ten units wide at
-/// x `100 p`, z 1000; no route geometry; unit models drawn below a camera height of 500.
+/// x `100 p`, z 1000; no route geometry; land unit models drawn below a camera height of 500, ship
+/// models below 800.
 struct Flat {
     bounds: BTreeMap<u32, [f32; 4]>,
 }
@@ -56,6 +57,10 @@ impl Ground for Flat {
 
     fn units_cutoff(&self) -> f32 {
         500.0
+    }
+
+    fn ships_cutoff(&self) -> f32 {
+        800.0
     }
 
     fn map(&self) -> (MapSize, MapDefines) {
@@ -638,7 +643,7 @@ fn frames_at(side: &mut MapSide, head: Option<i32>, at: usize, what: &str, mut d
 /// it, publishes nothing before its first models (so the map's drawn hour does not pass them), and
 /// steps go on being applied and settled; once the job is answered the map's drawn hour follows the
 /// applied hour. On the base the job out was carried work and the layer published `Current`. The
-/// head moves only when the test moves it: held while the job goes out, then one step on.
+/// test moves the head to hour 4 while the first job goes out, then one step on.
 #[test]
 fn a_models_job_out_is_not_carried_and_the_layer_publishes_nothing_before_its_first_models() {
     use crate::layers::Published;
@@ -650,7 +655,7 @@ fn a_models_job_out_is_not_carried_and_the_layer_publishes_nothing_before_its_fi
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(Sight::new(content)), Box::new(units)];
     let mut side = playing(&entry, layers, View::default());
     let out = |side: &MapSide| side.parts().is_some() && reading(side).models.as_ref().is_some_and(|models| models.in_flight() > 0);
-    frames_at(&mut side, None, 1, "the models job going out with nothing carried", |side| out(side) && reading(side).carried().entities == 0);
+    frames_at(&mut side, Some(4), 1, "the models job going out with nothing carried", |side| out(side) && reading(side).carried().entities == 0);
     assert_eq!(reading(&side).published(), Published::Nothing, "no models made yet");
     let sent_at = side.applied().expect("composed");
     let next = sent_at + 4;
@@ -725,7 +730,8 @@ impl super::models::Select for CountedChoices {
 /// The window's layer hands its meshes' worker only the stacks a step changed: division 102's
 /// template changes at hours 100 and 101, so only its stack (102 leads it) is chosen again, and
 /// every admitted figure placed holds the mesh chosen for its oldest member. On the base the meshes
-/// came from today's whole models job, which chose every stack every time.
+/// came from today's whole models job, which chose every stack every time. Its recording's name is
+/// its own: a test opening the same name shares its playhead.
 #[test]
 fn a_step_that_changes_one_division_chooses_that_stacks_mesh_and_no_other() {
     let entry = open(record("units-meshes"), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
@@ -760,7 +766,7 @@ fn a_step_that_changes_one_division_chooses_that_stacks_mesh_and_no_other() {
 #[test]
 fn a_figure_waiting_to_be_placed_again_keeps_what_its_stack_asked() {
     let choices = Arc::new(CountedChoices::default());
-    let mut side = meshes_side(record("units-meshes"), &choices);
+    let mut side = meshes_side(record("units-meshes-waiting-asks"), &choices);
     let units = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Units>()).expect("the units layer");
     let stack = units.asking.get(&101).map(|&(stack, _)| stack).expect("101's stack asks a mesh");
     if let Some(figure) = &mut units.stacks[stack as usize].figure {
@@ -780,7 +786,7 @@ fn a_figure_waiting_to_be_placed_again_keeps_what_its_stack_asked() {
 #[test]
 fn a_figure_waiting_to_be_placed_again_is_drawn_where_it_was_until_it_is_placed() {
     let choices = Arc::new(CountedChoices::default());
-    let mut side = meshes_side(record("units-meshes"), &choices);
+    let mut side = meshes_side(record("units-meshes-waiting-drawn"), &choices);
     let units = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Units>()).expect("the units layer");
     let stack = units.asking.get(&101).map(|&(stack, _)| stack).expect("101's stack asks a mesh");
     let drawn = |units: &Units| -> Vec<(u32, [f32; 3])> {
@@ -921,4 +927,47 @@ fn a_step_applied_every_frame_starts_a_mesh_build_once_the_one_before_answers_an
     side.settle_all().unwrap();
     assert_eq!(layer(&side).figures()[&(10, 3, None)].selection.template, 1060);
     assert_eq!(layer(&side).meshes().and_then(|meshes| meshes.get(&102).copied()), Some(102), "the newest stack's mesh, settled whole");
+}
+
+/// Today's unit models made at once with nothing in them: what the window's ships, raid units and
+/// convoys stand on in a test.
+struct NoModels;
+
+impl super::models::Select for NoModels {
+    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_world::map::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_world::map::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
+        Ok(super::meshes::Chosen { meshes: Vec::new(), made: viewer_world::map::unit_models::Made::default() })
+    }
+
+    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_world::map::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_world::map::unit_models::PreparedModels> {
+        Ok(viewer_world::map::unit_models::PreparedModels::drawn_by_layers())
+    }
+}
+
+/// Above the land cutoff and below the ships' the layer draws no land figure and reads no land
+/// table, but keeps making the models the window draws the ships, raid units and convoys with (the
+/// ships layer's joined) and has their field to upload; above both it keeps nothing. On the base it
+/// let its models go above the land cutoff, and the layers alone drew no ship model there.
+/// The test advances to hour 8 before checking the prepared models.
+#[test]
+fn a_view_above_the_land_cutoff_and_below_the_ships_draws_the_ships_and_no_land_figure() {
+    let kinds = replay::columnar_frames::schema().unwrap();
+    let (entry, content) = sight_world("units-ships-only", false);
+    let rows = crate::playhead_host::rows::Rows::of(&entry, crate::playhead_host::rows::Recording { branch: 0 }).unwrap();
+    let mut alone = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>, &rows);
+    let mut inputs = crate::layers::Inputs::new(&kinds, "units");
+    alone.inputs(&over(10, 600.0), &mut inputs).unwrap();
+    assert!(inputs.into_tables().is_empty(), "no land figure is drawn: it reads no land table");
+    assert!(alone.models.is_some(), "ship models are drawn at 600: the layer keeps the models they join");
+    let mut inputs = crate::layers::Inputs::new(&kinds, "units");
+    alone.inputs(&over(10, 900.0), &mut inputs).unwrap();
+    assert!(alone.models.is_none(), "above both cutoffs it keeps nothing");
+    drop(alone);
+
+    let mut units = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>, &rows);
+    units.window.as_mut().expect("in the window").tables = vec![TableId::Divisions];
+    let layers: Vec<Box<dyn Layer>> = vec![Box::new(Sight::new(content)), Box::new(units)];
+    let mut side = playing(&entry, layers, over(10, 600.0));
+    frames_at(&mut side, Some(8), 1, "the models made at a view that draws ships and no land figure", |side| side.parts().is_some() && !side.composing() && reading(side).prepared().is_some());
+    assert_eq!(reading(&side).stack_count(), 0, "it holds no land figure");
+    assert!(!reading(&side).uploaded(), "the field the ships are drawn with is to be uploaded");
 }

@@ -291,6 +291,8 @@ struct Wanted {
     /// Frames published to it, and the playhead's resets taken when its frame was made.
     published: u64,
     resets: u64,
+    /// The seek ([`playhead::Playhead::epoch`]) of the newest step its frame's rows stand through.
+    seek: u64,
     told: Option<Telling>,
 }
 
@@ -422,7 +424,7 @@ impl Rows {
         let mut control = lock(&self.shared.control);
         let id = control.next;
         control.next += 1;
-        control.readers.insert(id, Wanted { tables: indexes(needs), declared: 0, cadence, opened, frame: None, through: 0, ready: true, keyed: Vec::new(), frame_keys: Vec::new(), published: 0, resets: 0, told: told.then(Telling::default) });
+        control.readers.insert(id, Wanted { tables: indexes(needs), declared: 0, cadence, opened, frame: None, through: 0, ready: true, keyed: Vec::new(), frame_keys: Vec::new(), published: 0, resets: 0, seek: 0, told: told.then(Telling::default) });
         control.version += 1;
         drop(control);
         self.shared.wake.notify_all();
@@ -663,6 +665,14 @@ impl RowReader {
         let control = lock(&self.rows.shared.control);
         let wanted = control.readers.get(&self.id)?;
         wanted.frame.as_ref().filter(|newest| std::ptr::eq(Arc::as_ptr(newest), frame)).map(|_| wanted.through)
+    }
+
+    /// [`Self::through`] with the seek ([`playhead::Playhead::epoch`]) of the newest step those rows
+    /// stand through: rows of an older seek than the reader's may stand past an hour it sought back to.
+    pub(crate) fn through_seek(&self, frame: *const DecodedFrame) -> Option<(Hour, u64)> {
+        let control = lock(&self.rows.shared.control);
+        let wanted = control.readers.get(&self.id)?;
+        wanted.frame.as_ref().filter(|newest| std::ptr::eq(Arc::as_ptr(newest), frame)).map(|_| (wanted.through, wanted.seek))
     }
 
     /// It has finished with the frame it took: a reader [`Cadence::Ready`] is made its next frame
@@ -1540,6 +1550,8 @@ struct Worker<'a> {
     hour: Option<Hour>,
     /// Steps taken that reset every table.
     resets: u64,
+    /// The seek of the newest step taken.
+    seek: u64,
     order: Vec<(u128, u32)>,
     /// Where every reader's cadence clock starts.
     epoch: Instant,
@@ -1565,7 +1577,9 @@ impl<'a> Worker<'a> {
         let playhead = shared.entry.playhead();
         let reader = playhead.declare(Vec::new(), Some(super::mirror::rebuild(std::sync::Arc::clone(&shared.entry.pages))))?;
         let consumer = playhead.consumer(reader);
-        Ok(Self { shared, reader, consumer, kept: (0..TABLE_COUNT).map(|_| None).collect(), shown: HashMap::new(), version: u64::MAX, hour: None, resets: 0, order: Vec::new(), epoch: Instant::now(), skipping: None, applied: (0, 0), landing: None, arriving_ns: 0 })
+        // Far behind, it lands itself by what its own mirrors cost to rebuild ([`Self::lands`]).
+        consumer.lands_itself();
+        Ok(Self { shared, reader, consumer, kept: (0..TABLE_COUNT).map(|_| None).collect(), shown: HashMap::new(), version: u64::MAX, hour: None, resets: 0, seek: 0, order: Vec::new(), epoch: Instant::now(), skipping: None, applied: (0, 0), landing: None, arriving_ns: 0 })
     }
 
     fn run(mut self) -> io::Result<()> {
@@ -1607,7 +1621,7 @@ impl<'a> Worker<'a> {
                 }
             }
             // While a map draws, the rows follow the head its frame side took (a held clock's hour
-            // may be another), and the map advances the playhead.
+            // may be another).
             let counting = counts::enabled();
             let phase = || counting.then(counts::Phase::begin);
             let spent = |phase: Option<counts::Phase>| phase.map(counts::Phase::end).unwrap_or_default();
@@ -1626,9 +1640,7 @@ impl<'a> Worker<'a> {
             };
             steps.clear();
             if let Some(head) = head {
-                if map.is_none() {
-                    playhead.advance(head);
-                }
+                self.consumer.advance(head);
                 self.consumer.take(head, &mut steps);
             }
             let mut wake = counts::Wake { taken: steps.len() as u64, take: spent(taking), wait_ns, ..counts::Wake::default() };
@@ -1671,6 +1683,9 @@ impl<'a> Worker<'a> {
                     wake.apply.grew = self.mirror_bytes() as i64 - held as i64;
                 }
                 wake.apply_cpu_ns = wake.apply.cpu_ns;
+            }
+            if let Some(step) = steps.last() {
+                self.seek = step.epoch();
             }
             idle = if steps.is_empty() { idle.saturating_add(1) } else { 0 };
             // Two wakes without a step mean a held head only when the clock is not playing: a
@@ -1752,8 +1767,9 @@ impl<'a> Worker<'a> {
             }
             let mut stood = false;
             for (id, declared, hour) in standing {
-                if let Some(wanted) = control.readers.get_mut(&id).filter(|wanted| wanted.declared == declared && wanted.frame.is_some() && wanted.through < hour) {
-                    wanted.through = hour;
+                // A seek's reset that changed none of its tables stands its frame at the seek's hour.
+                if let Some(wanted) = control.readers.get_mut(&id).filter(|wanted| wanted.declared == declared && wanted.frame.is_some() && (wanted.through < hour || wanted.seek != self.seek)) {
+                    (wanted.through, wanted.seek) = (hour, self.seek);
                     stood = true;
                 }
             }
@@ -1765,7 +1781,7 @@ impl<'a> Worker<'a> {
                     wanted.frame_keys = keys;
                     wanted.ready = wanted.cadence != Cadence::Ready;
                     wanted.published += 1;
-                    wanted.resets = self.resets;
+                    (wanted.resets, wanted.seek) = (self.resets, self.seek);
                     if let Some(telling) = &mut wanted.told {
                         for (table, rows) in std::mem::take(&mut telling.pending) {
                             tell(&mut telling.unread, table, rows.as_ref());

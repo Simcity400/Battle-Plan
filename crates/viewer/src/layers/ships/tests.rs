@@ -477,18 +477,38 @@ fn the_window_draws_the_layers_ships_and_todays_where_a_land_occupant_competes()
     assert_eq!(layer(&side).warnings(), report.warnings(), "kept as the handover words them, the refusal named");
 }
 
-/// [`Fake`]'s rosters, held on the worker while the test holds the gate (a minute at most, after
-/// which the batch goes on and the test's assertions fail by name).
+/// `fake`'s rosters, held on the worker while the test holds the gate (a minute at most, after
+/// which the batch goes on and the test's assertions fail by name), with the builds that came to
+/// the gate and the builds that left it.
 struct HeldRosters {
-    fake: Arc<Fake>,
+    fake: Arc<dyn Naval>,
     open: Mutex<bool>,
+    builds: Mutex<(u64, u64)>,
     changed: std::sync::Condvar,
+    built: std::sync::Condvar,
 }
 
 impl HeldRosters {
+    fn new(fake: Arc<dyn Naval>) -> Arc<Self> {
+        Arc::new(Self { fake, open: Mutex::new(true), builds: Mutex::new((0, 0)), changed: std::sync::Condvar::new(), built: std::sync::Condvar::new() })
+    }
+
     fn set(&self, open: bool) {
         *self.open.lock().unwrap() = open;
         self.changed.notify_all();
+    }
+
+    /// Waits until more than `seen` builds came to the gate (`left` false) or left it.
+    fn builds_past(&self, seen: u64, left: bool) {
+        let count = |builds: &(u64, u64)| if left { builds.1 } else { builds.0 };
+        let mut builds = self.builds.lock().unwrap();
+        while count(&builds) <= seen {
+            builds = self.built.wait(builds).unwrap();
+        }
+    }
+
+    fn builds(&self) -> (u64, u64) {
+        *self.builds.lock().unwrap()
     }
 }
 
@@ -514,6 +534,8 @@ impl Naval for HeldRosters {
     }
 
     fn rosters(&self, frame: &DecodedFrame, forces: &[u64]) -> io::Result<(Vec<(u64, Roster)>, Decided)> {
+        self.builds.lock().unwrap().0 += 1;
+        self.built.notify_all();
         let until = Instant::now() + Duration::from_secs(60);
         let mut open = self.open.lock().unwrap();
         while !*open {
@@ -521,7 +543,10 @@ impl Naval for HeldRosters {
             open = self.changed.wait_timeout(open, left).unwrap().0;
         }
         drop(open);
-        self.fake.rosters(frame, forces)
+        let rosters = self.fake.rosters(frame, forces);
+        self.builds.lock().unwrap().1 += 1;
+        self.built.notify_all();
+        rosters
     }
 
     fn decide_the_same(&self, frame: &DecodedFrame, decided: &Decided) -> bool {
@@ -565,7 +590,7 @@ fn settled_at(side: &mut MapSide, hour: i32) {
 /// taken before the worker is held.
 #[test]
 fn a_roster_out_on_the_worker_is_not_carried_and_the_hour_the_parts_stand_for_is_shown() {
-    let held = Arc::new(HeldRosters { fake: fake(), open: Mutex::new(true), changed: std::sync::Condvar::new() });
+    let held = HeldRosters::new(fake());
     let mut side = side_of("ships-roster-out", View::default(), Arc::clone(&held) as Arc<dyn Naval>, campaign);
     let before = 96;
     let applied = side.applied().expect("composed");
@@ -650,4 +675,149 @@ fn a_roster_whose_graphics_limit_compares_the_date_is_resolved_again_when_it_dec
     settled_at(&mut side, 76);
     assert!(naval.asked(202) > before, "the pool decides otherwise past hour 70: task force 202's roster resolved again");
     assert_eq!(drawn(&side)[1].3, vec![naval.asked(202)], "and drawn from that answer");
+}
+
+/// [`Fake`]'s rosters read from the rows as today's are: a task force with no ship in the rows of
+/// the frame's hour, as the function says of it and the hour, has no roster.
+struct FromRows(Arc<Fake>, fn(u64, i32) -> bool);
+
+impl Naval for FromRows {
+    fn drawn_at(&self, height: f32) -> bool {
+        self.0.drawn_at(height)
+    }
+
+    fn bounds(&self) -> &BTreeMap<u32, [f32; 4]> {
+        self.0.bounds()
+    }
+
+    fn map(&self) -> (MapSize, MapDefines) {
+        self.0.map()
+    }
+
+    fn region(&self, province: u32) -> Option<u32> {
+        self.0.region(province)
+    }
+
+    fn figure(&self, force: &Force, route: Result<UnitRoute<'_>, &'static str>, link: &dyn Fn(u32) -> Option<u32>, vision: &Vision, skip: &dyn Fn(u32) -> Option<bool>, ordinal: Option<u32>, speed: Option<i32>, day: i32, roster: &mut dyn FnMut() -> Roster) -> ForcePart {
+        self.0.figure(force, route, link, vision, skip, ordinal, speed, day, roster)
+    }
+
+    fn rosters(&self, frame: &DecodedFrame, forces: &[u64]) -> io::Result<(Vec<(u64, Roster)>, Decided)> {
+        let (mut rosters, decided) = self.0.rosters(frame, forces)?;
+        for (force, roster) in &mut rosters {
+            if (self.1)(*force, frame.hour) {
+                *roster = None;
+            }
+        }
+        Ok((rosters, decided))
+    }
+
+    fn decide_the_same(&self, frame: &DecodedFrame, decided: &Decided) -> bool {
+        self.0.decide_the_same(frame, decided)
+    }
+}
+
+/// A task force born in a step the map applied while the rosters' rows still stand before it (the
+/// rows' worker held by the test from 128 while the map takes the step to 132) is drawn with the
+/// ships of the hour that asked, once the rows reach it. On the base the worker answered its roster
+/// from the rows it held, where the task force has no ship, and nothing asked it again: the stepped
+/// frame drew its counter and no ship model.
+#[test]
+fn a_task_force_born_while_the_rosters_rows_stand_behind_is_drawn_with_the_ships_of_its_hour() {
+    let mut side = side_of("ships-born-behind", View::default(), Arc::new(FromRows(fake(), |force, hour| force == 204 && hour < 130)), campaign);
+    let before = 128;
+    settled_at(&mut side, before);
+    let rows = Rows::of(side.entry(), Recording { branch: 1 }).unwrap();
+    let pause = rows.hold_before_take();
+    assert!(pause.holding(Instant::now() + Duration::from_secs(60)), "the rows' worker was not held");
+    while side.applied() != Some(before + 4) || side.composing() {
+        side.frame(before + 4).unwrap();
+        std::thread::yield_now();
+    }
+    side.settle_all().unwrap();
+    assert!(layer(&side).parts().contains_key(&204), "task force 204 is read at {}", before + 4);
+    // The worker has seen the roster asked for 204 over the rows it holds.
+    let looked = layer(&side).rosters().looks();
+    while layer(&side).rosters().looks() <= looked {
+        std::thread::yield_now();
+    }
+    pause.release();
+    settled_at(&mut side, before + 4);
+    let born = drawn(&side).into_iter().find(|(id, ..)| *id == 204);
+    assert!(born.as_ref().is_some_and(|(.., hulls)| !hulls.is_empty()), "task force 204 is drawn with its ship: {born:?}");
+    composed_equal(&side);
+}
+
+/// Task force 202 with its ship until hour 150 and none from then on, as its rows say.
+fn leaves(force: u64, hour: i32) -> bool {
+    force == 202 && hour >= 150
+}
+
+/// Sought to `hour`, with frames at it until the map applied it and composed.
+fn sought(side: &mut MapSide, hour: i32) {
+    side.entry().playhead().seek(hour);
+    while side.applied() != Some(hour) || side.composing() {
+        side.frame(hour).unwrap();
+        std::thread::yield_now();
+    }
+    side.settle_all().unwrap();
+}
+
+/// The hull flags task force `force` is drawn with; none while it is not drawn.
+fn hulls(side: &MapSide, force: u64) -> Option<Vec<u64>> {
+    drawn(side).into_iter().find(|(id, ..)| *id == force).map(|(.., hulls)| hulls)
+}
+
+/// Sought back from 160 to 140 while the rosters' rows are held at the seek before (202 has its
+/// ship at 140 and none at 160), the worker looks at those rows with 202 asked; released, 202 is
+/// drawn with its ship of 140 and the head never moved. On the base the worker answered from the
+/// seek before's rows, which stand past 140, and 202 kept no roster for good.
+#[test]
+fn a_roster_asked_after_a_seek_back_is_answered_from_that_seeks_rows_never_the_one_before() {
+    let mut side = side_of("ships-seek-back", View::default(), Arc::new(FromRows(fake(), leaves)), campaign);
+    sought(&mut side, 160);
+    settled_at(&mut side, 160);
+    assert_eq!(hulls(&side, 202), Some(Vec::new()), "202 has no ship at 160");
+    let rows = Rows::of(side.entry(), Recording { branch: 1 }).unwrap();
+    let pause = rows.hold_before_take();
+    assert!(pause.holding(Instant::now() + Duration::from_secs(60)), "the rows' worker was not held");
+    sought(&mut side, 140);
+    let looked = layer(&side).rosters().looks();
+    while layer(&side).rosters().looks() <= looked {
+        std::thread::yield_now();
+    }
+    pause.release();
+    settled_at(&mut side, 140);
+    assert!(hulls(&side, 202).is_some_and(|hulls| !hulls.is_empty()), "202 is drawn with its ship at 140: {:?}", hulls(&side, 202));
+    composed_equal(&side);
+}
+
+/// A roster build over the rows of 160 (202 has no ship there) is held on the worker while the map
+/// seeks back to 140 with the rosters' rows held; let go, its answers are the seek before's and
+/// are dropped: 202 still waits, and once the rows of 140 come it is drawn with its ship. On the
+/// base the layer took the build's answer at 140, and 202 was drawn with no ship.
+#[test]
+fn a_roster_build_across_a_seek_back_answers_nothing() {
+    let held = HeldRosters::new(Arc::new(FromRows(fake(), leaves)));
+    let mut side = side_of("ships-build-across-seek", View::default(), Arc::clone(&held) as Arc<dyn Naval>, campaign);
+    held.set(false);
+    let (came, left) = held.builds();
+    sought(&mut side, 160);
+    held.builds_past(came, false);
+    let rows = Rows::of(side.entry(), Recording { branch: 1 }).unwrap();
+    let pause = rows.hold_before_take();
+    assert!(pause.holding(Instant::now() + Duration::from_secs(60)), "the rows' worker was not held");
+    sought(&mut side, 140);
+    held.set(true);
+    held.builds_past(left, true);
+    let looked = layer(&side).rosters().looks();
+    while layer(&side).rosters().looks() <= looked {
+        std::thread::yield_now();
+    }
+    side.settle_all().unwrap();
+    assert!(layer(&side).waiting() > 0 && hulls(&side, 202).is_none(), "202 still waits for its roster at 140: {:?}", hulls(&side, 202));
+    pause.release();
+    settled_at(&mut side, 140);
+    assert!(hulls(&side, 202).is_some_and(|hulls| !hulls.is_empty()), "202 is drawn with its ship at 140: {:?}", hulls(&side, 202));
+    composed_equal(&side);
 }

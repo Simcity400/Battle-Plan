@@ -109,7 +109,7 @@ fn map_counters_markers_and_selections_read_only_recorded_tables() {
                     Err("unreached synthetic naval topology".into()),
                 )
                 .unwrap();
-                prepare_cached(&inputs, &frame, &tables).unwrap();
+                prepare_cached(&inputs, &tables).unwrap();
                 // The sample rows may refuse a selection, but never for a table Map leaves out.
                 let scoped = |what: &str, result: std::io::Result<()>| {
                     if let Err(error) = result {

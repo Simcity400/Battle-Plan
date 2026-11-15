@@ -661,10 +661,9 @@ impl LeftToLayers {
         (!self.resource_icons && resource_icons != MadeBy::Today) || (!self.occupation_marks && occupation_icons != MadeBy::Today)
     }
 }
-/// The counters laid out on `view`'s retained memory.
+/// The counters laid out on `view`'s retained memory, over the rows their tables were made from.
 fn prepare_counters_with(
     inputs: &CounterInputs<'_>,
-    frame: &DecodedFrame,
     tables: &OverlayTables,
     view: &CounterView,
     lazy_version: u64,
@@ -674,7 +673,7 @@ fn prepare_counters_with(
         .counters
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    counters::prepare_retained(inputs, frame, &tables.counters, lazy_version, &mut retained)
+    counters::prepare_retained(inputs, &tables.counters, lazy_version, &mut retained)
 }
 
 /// A dump retains the same presented windows across its scene frames.
@@ -5175,8 +5174,9 @@ impl<'a> Hour<'a> {
         )
     }
 
-    /// The counters alone laid out again on `view`'s memory, reading `rows`: what the window does
-    /// when only the counter layers' products changed ([`PreparedOverlay::set_counters`]).
+    /// The counters alone laid out again on `view`'s memory, over the rows `tables` were made
+    /// from, any table they lack learned into `rows`: what the window does when only the counter
+    /// layers' products changed ([`PreparedOverlay::set_counters`]).
     #[allow(clippy::too_many_arguments, reason = "the counters' inputs and the rows they read")]
     pub(crate) fn prepare_counters(
         &self,
@@ -5194,7 +5194,7 @@ impl<'a> Hour<'a> {
             .at(native_shader_draw::gui_viewport(viewport, ui_scale))?;
         let display = counters::CounterDisplay::default();
         let inputs = self.counter_inputs(&windows, &display, camera, viewport, ui_scale, view);
-        rows.read("counters", self.frame, |frame| prepare_counters_with(&inputs, frame, tables, view, self.icons.lazy.version()))
+        rows.read("counters", self.frame, |_| prepare_counters_with(&inputs, tables, view, self.icons.lazy.version()))
     }
 
     fn counter_inputs<'b>(
@@ -5299,7 +5299,7 @@ impl<'a> Hour<'a> {
         let prepare_counters = || {
             let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
             let _span = viewer_foundation::profiling::span("p_counters");
-            rows.read("counters", frame, |frame| prepare_counters_with(&counter_inputs, frame, tables, view, lazy_version))
+            rows.read("counters", frame, |_| prepare_counters_with(&counter_inputs, tables, view, lazy_version))
         };
         let prepare_other = || {
             let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));

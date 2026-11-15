@@ -174,12 +174,16 @@ struct Asked {
     stop: bool,
     /// The hour the map applied, which a driving layer drives the rows to.
     head: Option<Hour>,
+    /// The playhead's seek ([`playhead::Playhead::epoch`]) when the map applied `head`: every roster
+    /// asked belongs to it, and rows of an older seek answer none.
+    seek: Option<u64>,
     rows: Option<Arc<Rows>>,
     /// A reader declared by the caller of [`Ships::set_source`], for the worker to take.
     reader: Option<RowReader>,
-    /// Task forces whose roster is asked, and every one resolved so far (asked again when a table
-    /// only the scripts read changes).
-    wanted: Vec<u64>,
+    /// Task forces whose roster is asked, each with the hour the map applied when it was asked (it
+    /// is answered from rows standing at that hour or later), and every one resolved so far (asked
+    /// again when a table only the scripts read changes).
+    wanted: Vec<(u64, Hour)>,
     known: Vec<u64>,
     /// The graphics pools the rosters known decided: asked again at a new hour when one decides
     /// otherwise.
@@ -195,6 +199,9 @@ struct Asked {
     refused: Option<String>,
     /// The worker holds a reader whose tables have not all arrived.
     loading: bool,
+    /// The frames the worker has looked at.
+    #[cfg(test)]
+    looks: u64,
 }
 
 struct Shared {
@@ -219,7 +226,10 @@ pub(crate) struct Rosters {
 impl Rosters {
     fn new(naval: Arc<dyn Naval>, drive: bool) -> io::Result<Self> {
         let shared = Arc::new(Shared {
-            asked: Mutex::new(Asked { source: None, open: false, stop: false, head: None, rows: None, reader: None, wanted: Vec::new(), known: Vec::new(), decided: Decided::new(), answers: Vec::new(), answered: None, tables: ROSTER_TABLES.to_vec(), builds: Vec::new(), error: None, refused: None, loading: false }),
+            asked: Mutex::new(Asked { source: None, open: false, stop: false, head: None, seek: None, rows: None, reader: None, wanted: Vec::new(), known: Vec::new(), decided: Decided::new(), answers: Vec::new(), answered: None, tables: ROSTER_TABLES.to_vec(), builds: Vec::new(), error: None, refused: None, loading: false,
+                #[cfg(test)]
+                looks: 0,
+            }),
             wake: Condvar::new(),
             answered: Condvar::new(),
         });
@@ -249,10 +259,20 @@ impl Rosters {
 
     fn applied(&self, hour: Hour) {
         let mut asked = self.shared.lock();
-        if asked.head == Some(hour) {
+        let seek = asked.source.as_ref().map(|(entry, _)| entry.playhead().epoch()).or_else(|| asked.rows.as_ref().map(|rows| rows.entry().playhead().epoch()));
+        if asked.head == Some(hour) && asked.seek == seek {
             return;
         }
         asked.head = Some(hour);
+        // A seek: the answers of the one before go (its compose asks every roster again).
+        if asked.seek.is_some_and(|before| Some(before) != seek) {
+            asked.answers.clear();
+        }
+        asked.seek = seek.or(asked.seek);
+        // Sought back, the rows at the new head answer what was asked before.
+        for (_, at) in &mut asked.wanted {
+            *at = (*at).min(hour);
+        }
         let rows = if self.drive { asked.rows.clone() } else { None };
         drop(asked);
         if let Some(rows) = rows {
@@ -264,7 +284,8 @@ impl Rosters {
     fn ask(&self, forces: impl IntoIterator<Item = u64>) {
         let mut asked = self.shared.lock();
         let before = asked.wanted.len();
-        asked.wanted.extend(forces);
+        let at = asked.head.unwrap_or(Hour::MIN);
+        asked.wanted.extend(forces.into_iter().map(|force| (force, at)));
         if asked.wanted.len() != before {
             drop(asked);
             self.shared.wake.notify_all();
@@ -307,6 +328,12 @@ impl Rosters {
     #[cfg(test)]
     pub(crate) fn pending(&self) -> bool {
         !self.shared.lock().wanted.is_empty()
+    }
+
+    /// The frames the worker has looked at: one more once it has seen every roster asked before.
+    #[cfg(test)]
+    pub(crate) fn looks(&self) -> u64 {
+        self.shared.lock().looks
     }
 
     /// Whether the worker's rows are loading: a table it reads has not arrived.
@@ -360,7 +387,7 @@ fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
             (reader, asked.reader, asked.loading) = (None, None, false);
             let forces = std::mem::take(&mut asked.wanted);
             let refused = !forces.is_empty();
-            asked.answers.extend(forces.into_iter().map(|force| (force, Arc::new(Some(Err(why.clone()))))));
+            asked.answers.extend(forces.into_iter().map(|(force, _)| (force, Arc::new(Some(Err(why.clone()))))));
             if let Some(head) = asked.head.filter(|&head| refused || asked.answered != Some(head)) {
                 asked.answered = Some(head);
                 shared.answered.notify_all();
@@ -396,6 +423,10 @@ fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
             let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
             continue;
         };
+        #[cfg(test)]
+        {
+            asked.looks += 1;
+        }
         let newer = last.as_ref().is_none_or(|last| !Arc::ptr_eq(last, &frame));
         let scripts_moved = newer && last.as_ref().is_some_and(|last| {
             (0..frame.tables.len()).any(|table| !ROSTER_TABLES.iter().any(|known| known.index() == table) && !replay_frame::frame::SharedView::ptr_eq(&frame.tables[table], &last.tables[table]))
@@ -410,11 +441,22 @@ fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
             limits_moved = !same || !missed.is_empty();
             asked = shared.lock();
         }
-        let mut forces: Vec<u64> = std::mem::take(&mut asked.wanted);
+        // Rows of a seek before the map's answer nothing: sought back, they may stand past its hour.
+        let Some((through, seek)) = reader.as_ref().and_then(|reader| reader.through_seek(Arc::as_ptr(&frame))) else { continue };
+        if asked.seek.is_some_and(|current| seek < current) {
+            let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            continue;
+        }
+        // A roster is answered from rows standing at the hour it was asked or later: rows from before
+        // it may lack the task force or the ships it took that hour, and nothing would ask it again.
+        let stands = through.max(frame.hour);
+        let (mut batch, later): (Vec<(u64, Hour)>, Vec<(u64, Hour)>) = std::mem::take(&mut asked.wanted).into_iter().partition(|&(_, at)| at <= stands);
+        asked.wanted = later;
         let whole = scripts_moved || limits_moved;
         if whole {
-            forces.extend(asked.known.iter().copied());
+            batch.extend(asked.known.iter().map(|&force| (force, stands)));
         }
+        let mut forces: Vec<u64> = batch.iter().map(|&(force, _)| force).collect();
         if forces.is_empty() {
             if newer {
                 asked.answered = Some(frame.hour);
@@ -439,8 +481,16 @@ fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
         });
         let ns = started.elapsed().as_nanos() as u64;
         let mut asked = shared.lock();
+        // Sought while it was built: its answers are the seek before's, and what it answered waits
+        // for the rows of the map's.
+        if asked.seek.is_some_and(|current| seek < current) {
+            let head = asked.head.unwrap_or(Hour::MIN);
+            asked.wanted.extend(batch.into_iter().map(|(force, at)| (force, at.min(head))));
+            last = None;
+            continue;
+        }
         if !missed.is_empty() {
-            asked.wanted.extend(forces);
+            asked.wanted.extend(batch);
             let absent = asked.source.as_ref().map_or_else(Vec::new, |(entry, _)| super::rebuilt::absent(entry, &missed));
             if !absent.is_empty() {
                 asked.refused = Some(super::rebuilt::refusal("the ships' rosters", &absent));
@@ -749,6 +799,11 @@ impl Ships {
 
     pub(crate) fn drawn(&self) -> bool {
         self.columns.is_some()
+    }
+
+    /// The hour the map applied, as its task forces' mirror stands.
+    pub(crate) fn head(&self) -> Option<Hour> {
+        self.head
     }
 
     pub(crate) fn refused(&self) -> Option<&str> {
