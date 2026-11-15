@@ -44,6 +44,20 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     }
 }
 
+/// A stalled spool returns no frame, so neither an hour nor the frame builder adds one while it
+/// lasts; free frames are still taken. A spool only slower than the game still grows.
+#[test]
+fn a_stalled_spool_adds_no_frame_and_its_free_frames_are_still_taken() {
+    assert_eq!(hour_frame(Some(3), false), HourFrame::Free(3));
+    assert_eq!(hour_frame(Some(3), true), HourFrame::Free(3));
+    assert_eq!(hour_frame(None, false), HourFrame::Grow);
+    assert_eq!(hour_frame(None, true), HourFrame::Drop);
+    assert!(builds_ahead(AHEAD - 1, false));
+    assert!(!builds_ahead(AHEAD, false));
+    assert!(!builds_ahead(AHEAD - 1, true));
+    assert!(!builds_ahead(0, true));
+}
+
 #[test]
 fn slots_keep_their_place_as_segments_are_added() {
     for index in 0..10_000 {

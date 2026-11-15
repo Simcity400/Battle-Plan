@@ -138,18 +138,21 @@ pub fn read_live(status: &Value) -> Live {
         .unwrap_or_default()
         .to_owned();
     let dropped = status["dropped_frames"].as_u64().unwrap_or(0);
+    let stalled = status["dropped_spool_stalled"].as_u64().unwrap_or(0);
     let problem = if status["capture_failed"] == true {
         Some(Problem {
             text: "Recording stopped early. Recovering the captured part.".into(),
             detail,
         })
     } else if dropped > 0 {
+        let hours = |n: u64| if n == 1 { "1 hour".to_owned() } else { format!("{n} hours") };
+        let reason = if stalled > 0 {
+            format!(" ({} dropped: spool stalled)", hours(stalled))
+        } else {
+            String::new()
+        };
         Some(Problem {
-            text: if dropped == 1 {
-                "1 hour couldn't be recorded".into()
-            } else {
-                format!("{dropped} hours couldn't be recorded")
-            },
+            text: format!("{} couldn't be recorded{reason}", hours(dropped)),
             detail,
         })
     } else {
@@ -239,6 +242,18 @@ mod tests {
             &json!({"campaign": CAMPAIGN, "hours": 3, "last_hour": 1, "dropped_frames": 1}),
         );
         assert_eq!(one.problem.unwrap().text, "1 hour couldn't be recorded");
+        let stalled = |dropped: u64, stalled: u64| {
+            read_live(&json!({
+                "campaign": CAMPAIGN, "hours": 3, "last_hour": 1,
+                "dropped_frames": dropped, "dropped_spool_stalled": stalled,
+            }))
+            .problem
+            .unwrap()
+            .text
+        };
+        assert_eq!(stalled(5, 3), "5 hours couldn't be recorded (3 hours dropped: spool stalled)");
+        assert_eq!(stalled(1, 1), "1 hour couldn't be recorded (1 hour dropped: spool stalled)");
+        assert_eq!(stalled(2, 0), "2 hours couldn't be recorded");
     }
 
     #[test]

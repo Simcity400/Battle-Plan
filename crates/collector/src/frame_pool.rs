@@ -1,6 +1,7 @@
 //! The capture frames and the two FIFOs they travel through. An hour that finds no frame
 //! free gets a new one instead of waiting; while the spool is behind, the frame builder
-//! thread keeps the next hour's frame and a spare built ahead, so that is rare. Frames beyond
+//! thread keeps the next hour's frame and a spare built ahead, so that is rare. While the
+//! spool is stalled no frame is added and an hour that finds none free is dropped. Frames beyond
 //! the steady count are freed as the spool catches up. A frame index names a slot that never moves, so a
 //! queue, a fence or a stage holds only the index.
 
@@ -25,6 +26,29 @@ pub(crate) const STEADY: usize = BUFFERS;
 /// The free frames kept ready while the spool is behind: the next hour's and a spare, so a frame
 /// built ahead has an hour's start on the hour that takes it.
 pub(crate) const AHEAD: usize = 2;
+
+/// What an hour does for its frame: take a free one, else grow one, unless the spool is
+/// stalled and takes none back, when the hour is dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HourFrame {
+    Free(usize),
+    Grow,
+    Drop,
+}
+
+pub(crate) fn hour_frame(free: Option<usize>, spool_stalled: bool) -> HourFrame {
+    match free {
+        Some(index) => HourFrame::Free(index),
+        None if spool_stalled => HourFrame::Drop,
+        None => HourFrame::Grow,
+    }
+}
+
+/// Whether the frame builder builds a frame ahead: while fewer than [`AHEAD`] are free, unless
+/// the spool is stalled.
+pub(crate) fn builds_ahead(free: usize, spool_stalled: bool) -> bool {
+    free < AHEAD && !spool_stalled
+}
 
 /// Segment `k` holds `STEADY << k` slots: more than an address space can hold frames for.
 const SEGMENTS: usize = 48;
@@ -124,6 +148,8 @@ pub(crate) struct FramePool {
     built_ahead: AtomicU64,
     ahead_taken: AtomicU64,
     freed: AtomicU64,
+    spool_stalled: AtomicBool,
+    dropped_stalled: AtomicU64,
     decode: Fifo,
     ready: Fifo,
 }
@@ -154,6 +180,8 @@ pub(crate) struct Gauge {
     pub built_ahead: u64,
     pub ahead_taken: u64,
     pub freed: u64,
+    /// Hours dropped because none was free while the spool was stalled.
+    pub dropped_stalled: u64,
 }
 
 impl FramePool {
@@ -170,6 +198,8 @@ impl FramePool {
             built_ahead: AtomicU64::new(0),
             ahead_taken: AtomicU64::new(0),
             freed: AtomicU64::new(0),
+            spool_stalled: AtomicBool::new(false),
+            dropped_stalled: AtomicU64::new(0),
             decode: Fifo::new(DECODE),
             ready: Fifo::new(READY),
         }
@@ -346,6 +376,24 @@ impl FramePool {
         self.live.fetch_add(1, Ordering::AcqRel);
     }
 
+    /// The spool's retry loop: set on its first failure to take an hour, cleared once it does.
+    pub(crate) fn set_spool_stalled(&self, stalled: bool) {
+        self.spool_stalled.store(stalled, Ordering::Release);
+    }
+
+    pub(crate) fn spool_stalled(&self) -> bool {
+        self.spool_stalled.load(Ordering::Acquire)
+    }
+
+    /// Records an hour dropped because no frame was free while the spool was stalled.
+    pub(crate) fn drop_stalled(&self) {
+        self.dropped_stalled.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn stalled_drops(&self) -> u64 {
+        self.dropped_stalled.load(Ordering::Relaxed)
+    }
+
     /// Records an hour's frame allocation and its wall.
     pub(crate) fn grew(&self, ns: u64) {
         self.grown.fetch_add(1, Ordering::Relaxed);
@@ -405,6 +453,7 @@ impl FramePool {
             built_ahead: self.built_ahead.load(Ordering::Relaxed),
             ahead_taken: self.ahead_taken.load(Ordering::Relaxed),
             freed: self.freed.load(Ordering::Relaxed),
+            dropped_stalled: self.stalled_drops(),
             ..Gauge::default()
         };
         for slot in self.slots() {

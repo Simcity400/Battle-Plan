@@ -4164,6 +4164,9 @@ fn print_status(path: &Path) {
             let directory = path.parent().unwrap_or(Path::new(""));
             eprintln!("Collector: {}", collector_error(directory, error));
         }
+        if let Some(stalled) = value["dropped_spool_stalled"].as_u64().filter(|&n| n > 0) {
+            eprintln!("Collector: {stalled} hours dropped: spool stalled");
+        }
         if value["hours"].as_u64().unwrap_or(0) == 0 {
             println!(
                 "{}; waiting for the first recorded game hour.",

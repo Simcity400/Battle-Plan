@@ -1468,7 +1468,8 @@ impl Shared {
     /// behind, so it builds frames into the free set until the next hour's and a spare are
     /// there: the hours take a frame instead of building one, as long as no burst outruns this
     /// thread. The spool's returns free what is left over once it catches up
-    /// ([`Self::recycle_frame`]). It does nothing else, so a take's wake starts a build at once.
+    /// ([`Self::recycle_frame`]). While the spool is stalled it builds nothing. It does nothing
+    /// else, so a take's wake starts a build at once.
     ///
     /// Ends once `stop` is set, or acquisition failed, building nothing more: a build under way
     /// finishes, and none starts. `stop` and the free count are read right before each build
@@ -1488,7 +1489,7 @@ impl Shared {
             if stop.load(Ordering::Acquire) || self.acquisition_failed() {
                 return Ok(());
             }
-            if self.frames.len() < crate::frame_pool::AHEAD {
+            if crate::frame_pool::builds_ahead(self.frames.len(), self.frames.spool_stalled()) {
                 self.build_frame_ahead()?;
                 continue;
             }
@@ -1499,26 +1500,35 @@ impl Shared {
     }
 
     /// The hour's frame: the newest free one, else a new one. It never waits. None once
-    /// acquisition failed, or when the new frame cannot be allocated: that is the collector's
-    /// allocation failure, which names this hour and stops recording.
+    /// acquisition failed; when none is free while the spool is stalled, a dropped hour; or when
+    /// the new frame cannot be allocated: that is the collector's allocation failure, which names
+    /// this hour and stops recording.
     /// Writes a new frame's allocation wall to `grow_ns`, zero when one was free.
     pub fn take_frame(&self, grow_ns: &mut u64) -> Option<usize> {
         *grow_ns = 0;
         if self.acquisition_failed() {
             return None;
         }
-        if let Some(index) = self.frames.pop() {
-            self.frames.taken(index);
-            self.frame_priority.claim();
-            self.frame_stage(index, FrameStage::Callback);
-            if self.frames.len() < crate::frame_pool::AHEAD {
-                self.wake_builder();
+        use crate::frame_pool::HourFrame;
+        match crate::frame_pool::hour_frame(self.frames.pop(), self.frames.spool_stalled()) {
+            HourFrame::Free(index) => {
+                self.frames.taken(index);
+                self.frame_priority.claim();
+                self.frame_stage(index, FrameStage::Callback);
+                if self.frames.len() < crate::frame_pool::AHEAD {
+                    self.wake_builder();
+                }
+                if !self.hold_clock(index) {
+                    self.return_frame(index, Return::Idle);
+                    return None;
+                }
+                return Some(index);
             }
-            if !self.hold_clock(index) {
-                self.return_frame(index, Return::Idle);
+            HourFrame::Drop => {
+                self.frames.drop_stalled();
                 return None;
             }
-            return Some(index);
+            HourFrame::Grow => {}
         }
         self.wake_builder();
         let started = qpc();
@@ -1540,6 +1550,15 @@ impl Shared {
         self.frame_stage(index, FrameStage::Callback);
         self.frame_priority.refresh();
         Some(index)
+    }
+
+    /// Whether the spool is stalled on an hour it cannot take: while it is, no frame is added.
+    /// Its end wakes the frame builder, which built nothing during it.
+    pub(crate) fn spool_stalled(&self, stalled: bool) {
+        self.frames.set_spool_stalled(stalled);
+        if !stalled {
+            self.wake_builder();
+        }
     }
 
     /// Ends the frame builder's wait so it builds frames ahead ([`Self::build_ahead_until`]).

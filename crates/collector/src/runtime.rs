@@ -4337,8 +4337,9 @@ fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
             "built_ahead": frames.built_ahead,
             "ahead_taken": frames.ahead_taken,
             "freed": frames.freed,
+            "dropped_spool_stalled": frames.dropped_stalled,
         },
-        "scope": "cumulative since attach: the game thread's waits outside the collector's own reading by cause, buffer_wait_* zero by construction (no frame or held store is ever waited on: an hour that finds the held division store still settling takes one of its own; while fewer than two frames are free, the frame builder thread builds frames ahead until the next hour's and a spare are, built_ahead, which hours take, ahead_taken; an hour that still finds no frame free builds one on the game thread, grown/grow_ns; frames past the steady count are freed once more than two are free, freed); frames now: live and all their bytes, free, ahead_ready (built ahead and not yet taken), in_flight (taken for an hour and not yet returned by the spool) and their bytes",
+        "scope": "cumulative since attach: the game thread's waits outside the collector's own reading by cause, buffer_wait_* zero by construction (no frame or held store is ever waited on: an hour that finds the held division store still settling takes one of its own; while fewer than two frames are free, the frame builder thread builds frames ahead until the next hour's and a spare are, built_ahead, which hours take, ahead_taken; an hour that still finds no frame free builds one on the game thread, grown/grow_ns, unless the spool is stalled on an hour it cannot take, when no frame is built or built ahead and the hour is dropped, dropped_spool_stalled; frames past the steady count are freed once more than two are free, freed); frames now: live and all their bytes, free, ahead_ready (built ahead and not yet taken), in_flight (taken for an hour and not yet returned by the spool) and their bytes",
     })
 }
 
@@ -4364,6 +4365,7 @@ struct SpoolStatus<P, D> {
     session: u64,
     pool_bytes: u64,
     dropped_frames: u64,
+    dropped_spool_stalled: u64,
     drain_complete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<&'static str>,
@@ -4392,6 +4394,7 @@ fn spool_status<'a>(
         session: session.id,
         pool_bytes: shared.pool_total(),
         dropped_frames: shared.dropped.load(Ordering::Relaxed),
+        dropped_spool_stalled: shared.frames.stalled_drops(),
         drain_complete,
         warning: warning.or(teardown.restoration_error),
         error: error.or(teardown.installation_error),
@@ -4565,7 +4568,12 @@ fn spool_loop(
             verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
             // Campaign directories can still fail to open. Keep the buffer and
             // preceding witnesses until those operations succeed. History is ready.
+            let mut stalled = false;
             while let Err(error) = processor.prepare(frame) {
+                if !stalled {
+                    stalled = true;
+                    shared.spool_stalled(true);
+                }
                 crate::allocation::observe(&error);
                 if crate::allocation::failed() {
                     return Err("collector allocation failed");
@@ -4587,6 +4595,7 @@ fn spool_loop(
                             "state":"campaign spool unavailable", "session":session.id,
                             "warning":last_warning, "drain_complete":false,
                             "dropped_frames":shared.dropped.load(Ordering::Relaxed),
+                            "dropped_spool_stalled":shared.frames.stalled_drops(),
                         }),
                     )
                     .map_err(|e| error_reason(e, "spool status allocation failed"))?;
@@ -4598,6 +4607,9 @@ fn spool_loop(
                     return Err("cannot open campaign spool; observations remain unwritten");
                 }
                 std::thread::sleep(Duration::from_millis(100));
+            }
+            if stalled {
+                shared.spool_stalled(false);
             }
             if startup_unknown != 0 {
                 processor.unknown_loss(std::mem::take(&mut startup_unknown));
@@ -6503,6 +6515,35 @@ mod tests {
         assert_eq!(caught_up["frames"]["live"], steady);
         assert_eq!(caught_up["frames"]["free"], steady);
         assert_eq!(caught_up["frames"]["ahead_ready"], built - 1);
+    }
+
+    /// A spool stalled on an hour it cannot take returns no frame, so the hours past the frames
+    /// there are dropped and named in the status instead of each growing a frame until the
+    /// machine runs out of commit. On the base every one of them grew a frame.
+    #[test]
+    fn a_stalled_spool_drops_hours_instead_of_growing_frames() {
+        let shared = Shared::new(0, 0, 1);
+        let frames =
+            |shared: &Shared| serde_json::to_value(acquisition_work(shared)).unwrap()["frames"].clone();
+        let steady = crate::frame_pool::STEADY;
+        shared.spool_stalled(true);
+        let taken: Vec<_> = (0..2 * steady + 1).map(|_| shared.take_frame(&mut 0)).collect();
+        assert!(taken[..steady].iter().all(Option::is_some), "the free frames are taken");
+        assert!(taken[steady..].iter().all(Option::is_none), "the rest are dropped");
+        assert!(!crate::allocation::failed());
+        assert!(!shared.acquisition_failed());
+        let stalled = frames(&shared);
+        assert_eq!(stalled["live"], steady as u64);
+        assert_eq!(stalled["in_flight"], steady as u64);
+        assert_eq!(stalled["grown"], 0);
+        assert_eq!(stalled["built_ahead"], 0);
+        assert_eq!(stalled["dropped_spool_stalled"], steady as u64 + 1);
+        // Once the spool takes hours again, an hour with none free grows one as before.
+        shared.spool_stalled(false);
+        assert!(shared.take_frame(&mut 0).is_some());
+        let resumed = frames(&shared);
+        assert_eq!(resumed["grown"], 1);
+        assert_eq!(resumed["dropped_spool_stalled"], steady as u64 + 1);
     }
 
     /// An hour building its own frame while the spool or the sizing thread holds the frame
