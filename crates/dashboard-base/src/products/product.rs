@@ -104,15 +104,20 @@ pub trait Product: 'static {
     /// named at each row's hour): it waits and runs on threads of its own, so however long it
     /// takes, no other reply waits behind it.
     const REPLAYS: bool = false;
-    type Params: DeserializeOwned + TS + 'static;
-    type Reply: Serialize + TS + ReplyWarnings + 'static;
+    type Params: DeserializeOwned + 'static;
+    type Reply: Serialize + ReplyWarnings + 'static;
 
     fn validate(_params: &Self::Params) -> Result<(), &'static str> {
         Ok(())
     }
 
     /// TypeScript declarations this product introduces, parameters and reply first.
-    fn types() -> Vec<String> {
+    #[cfg(feature = "export-types")]
+    fn types() -> Vec<String>
+    where
+        Self::Params: TS,
+        Self::Reply: TS,
+    {
         vec![Self::Params::decl(), Self::Reply::decl()]
     }
 

@@ -1,0 +1,207 @@
+/// Only reached operands are acquired. A skipped wing needs no fuel, ace,
+/// mission-cost or weather reads. `reached` certifies that native gate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
+pub struct AirInputs {
+    pub reached: bool,
+    pub mission_first: u32,
+    pub mission_selected: u32,
+    pub mask: u32,
+    pub veto: u8,
+    pub counter: i32,
+    pub limit: i32,
+    pub override_reference: u64,
+    pub override_resolved: bool,
+    pub planes: i32,
+    pub capacity_threshold: i64,
+    pub capacity_divisor: i32,
+    pub active_count: i32,
+    pub base_fuel: i64,
+    pub country_modifier: Modifier,
+    pub ace: u64,
+    pub ace_alive: u8,
+    pub ace_assigned_wing: u64,
+    pub ace_assigned_planes: Option<i32>,
+    pub ace_count: i64,
+    pub ace_cap: i64,
+    pub ace_modifier: Modifier,
+    pub ace_country_modifier: Modifier,
+    pub air_weight: i64,
+    pub mission_cost: i64,
+    pub period: u8,
+    pub region: Option<u32>,
+    /// Province count is sampled separately for each native slot average.
+    pub context_counts: [i32; 24],
+    pub context_thresholds: [i64; 24],
+}
+
+/// One ordered province occurrence at one slot, before native averaging.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Weather {
+    pub slot: u8,
+    pub selector: i32,
+    pub coefficients: [i64; 3],
+    pub cell: [i64; 3],
+    pub subtract: i64,
+    pub scale: i64,
+}
+
+pub use crate::modifiers::RequestedOperand as Modifier;
+
+/// Three capacity-gate outcomes; preserve each fixed5 factor.
+pub fn capacity_gate(planes: i32, divisor: i32, threshold: i64) -> bool {
+    let denominator = i64::from(divisor).wrapping_mul(100_000);
+    if denominator == 0 {
+        return threshold < 100_001;
+    }
+    let planes = i64::from(planes);
+    if planes.wrapping_mul(100_000) > -0x7fff_ffff_ffff_ffff {
+        threshold
+            <= planes
+                .wrapping_mul(10_000_000_000)
+                .wrapping_div(denominator)
+    } else {
+        threshold < 0x1_0000_0000
+    }
+}
+
+/// Ace-count scaling; the sentinel arm precedes wrapping multiplication.
+fn ace_scale(input: &AirInputs) -> i64 {
+    let Some(planes) = input.ace_assigned_planes.filter(|value| *value != 0) else {
+        return 100_000;
+    };
+    if (input.ace_count.wrapping_add(0x7fff_ffff_ffff_fffe) as u64) < 0xffff_ffff_ffff_fffd {
+        input
+            .ace_count
+            .wrapping_mul(100_000)
+            .wrapping_div(i64::from(planes).wrapping_mul(100_000))
+            .min(input.ace_cap)
+    } else {
+        0xffff_ffff_i64.min(input.ace_cap)
+    }
+}
+
+/// Current pool contribution with no context argument. Keep wrapping and
+/// truncation separate from widened reporting sums.
+pub fn wing_rate(input: &AirInputs, weather: &[Weather]) -> Result<i64, &'static str> {
+    if !input.reached {
+        return Ok(0);
+    }
+    let sums = if input.region.is_some() && input.period != 2 {
+        Some(context_sums(&input.context_counts, weather)?)
+    } else {
+        if !weather.is_empty() {
+            return Err("fuel demand unreached context has occurrences");
+        }
+        None
+    };
+    wing_rate_with_context(input, sums.as_ref())
+}
+
+/// Ordered weather contributions are accumulated once per captured region.
+/// Compact operands are then shared by independently decodable country packs.
+pub fn context_sums(counts: &[i32; 24], weather: &[Weather]) -> Result<[i64; 24], &'static str> {
+    const ONE: i64 = 100_000;
+    let mut sums = [0_i64; 24];
+    let mut samples = weather.iter();
+    for (slot, &count) in counts.iter().enumerate() {
+        for _ in 0..count.max(0) {
+            let sample = samples
+                .next()
+                .filter(|sample| usize::from(sample.slot) == slot)
+                .ok_or("fuel demand context occurrence missing or out of order")?;
+            // Weather coefficients are evaluated in order zero, two, one.
+            let weighted = sample.coefficients[0]
+                .wrapping_mul(sample.cell[0])
+                .wrapping_div(ONE)
+                .wrapping_add(
+                    sample.coefficients[2]
+                        .wrapping_mul(sample.cell[2])
+                        .wrapping_div(ONE),
+                )
+                .wrapping_add(
+                    sample.coefficients[1]
+                        .wrapping_mul(sample.cell[1])
+                        .wrapping_div(ONE),
+                );
+            sums[slot] = sums[slot].wrapping_add(
+                weighted
+                    .wrapping_sub(sample.subtract)
+                    .wrapping_mul(sample.scale)
+                    .wrapping_div(ONE)
+                    .clamp(0, ONE),
+            );
+        }
+    }
+    if samples.next().is_some() {
+        return Err("fuel demand context has extra occurrences");
+    }
+    Ok(sums)
+}
+
+/// The native slot sums retain wrapping before average, threshold and period
+/// selection. They are not rounded averages or an inferred usage factor.
+pub fn wing_rate_with_context(
+    input: &AirInputs,
+    sums: Option<&[i64; 24]>,
+) -> Result<i64, &'static str> {
+    const ONE: i64 = 100_000;
+    if !input.reached {
+        return Ok(0);
+    }
+    let mut factor = ONE;
+    if input.ace_alive != 0 {
+        let scaled = ace_scale(input)
+            .wrapping_mul(input.ace_modifier.effective)
+            .wrapping_div(ONE);
+        factor = factor.wrapping_add(
+            scaled
+                .wrapping_mul(ONE.wrapping_add(input.ace_country_modifier.effective))
+                .wrapping_div(ONE),
+        );
+    }
+    factor = factor.wrapping_add(input.country_modifier.effective).max(0);
+    let fuel = factor.wrapping_mul(input.base_fuel).wrapping_div(ONE);
+    let count = if input.mission_selected != 0 {
+        input.active_count
+    } else {
+        input.planes
+    };
+    let mut term = fuel
+        .wrapping_mul(input.air_weight)
+        .wrapping_div(ONE)
+        .wrapping_mul(i64::from(count).wrapping_mul(input.mission_cost))
+        .wrapping_div(ONE);
+    if input.region.is_some() && input.period != 2 {
+        let sums = sums.ok_or("fuel demand context accumulated operands unavailable")?;
+        let mut included = 0_i64;
+        for (slot, &sum) in sums.iter().enumerate() {
+            let count = input.context_counts[slot];
+            // Preserve the product and divisor as separate ordered operations.
+            let average = if count != 0
+                && (sum.wrapping_add(0x7fff_ffff_ffff_fffe) as u64) < 0xffff_ffff_ffff_fffd
+            {
+                sum.wrapping_mul(ONE)
+                    .wrapping_div(i64::from(count).wrapping_mul(ONE))
+            } else {
+                0xffff_ffff
+            };
+            included += i64::from(input.context_thresholds[slot] < average);
+        }
+        if input.period == 0 {
+            included = 24 - included;
+        }
+        let fraction = included
+            .wrapping_mul(10_000_000_000)
+            .wrapping_div(2_400_000);
+        term = fraction.wrapping_mul(term).wrapping_div(ONE);
+    } else if sums.is_some() {
+        return Err("fuel demand unreached context has accumulated operands");
+    }
+    Ok(term)
+}
+
+/// Twenty-four-hour projection of a current fixed5 required-use rate.
+pub fn daily_required(rate: i64) -> i64 {
+    rate.wrapping_mul(2_400_000).wrapping_div(100_000)
+}

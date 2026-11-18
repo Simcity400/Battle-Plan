@@ -5,12 +5,9 @@
 //! adds to a recording while one does.
 
 use super::{Revision, records::Records};
-use crate::{
-    columnar_file::{FileWriter, Settings},
-    columnar_frames::schema as tables,
-    format::FormatVersion,
-    identity::IdentityCodec,
-};
+#[cfg(any(test, feature = "recording"))]
+use crate::{columnar_file::{FileWriter, Settings}, columnar_frames::schema as tables, identity::IdentityCodec};
+use crate::format::FormatVersion;
 use replay_columnar::{
     container::{ContainerWriter, Root, SectionKey, Tags, schema},
     envelope::{self, Kind},
@@ -79,6 +76,7 @@ pub fn revise(
 /// Creates at `path` the recording of `campaign` that holds `records` alone, not saved: what a
 /// capture that lost every hour of the campaign leaves to say. Its content and capture mode are
 /// its first session's. A failure leaves no file.
+#[cfg(any(test, feature = "recording"))]
 pub fn create(path: &Path, campaign: &[u8], records: &Records, level: i32) -> io::Result<Revision> {
     let session = records
         .sessions

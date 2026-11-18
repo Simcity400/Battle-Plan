@@ -29,6 +29,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -62,16 +63,18 @@ pub(crate) const MODIFIERS: [(&str, u32, &str); 8] = [
 pub struct RegionalWeather;
 pub struct WeatherProvinces;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "lowercase")]
-#[ts(rename = "RegionalWeatherShow")]
+#[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherShow"))]
 pub enum Show {
     Conditions,
     Modifier,
     Temperature,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegionalWeatherParams {
     pub branch_id: String,
@@ -88,16 +91,18 @@ pub struct RegionalWeatherParams {
     pub regions: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
-#[ts(rename = "RegionalWeatherChoice")]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherChoice"))]
 pub struct Choice {
     pub id: String,
     pub name: String,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(rename = "RegionalWeatherColumn")]
+#[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherColumn"))]
 pub struct Column {
     pub first_hour: i32,
     pub last_hour: i32,
@@ -109,9 +114,10 @@ pub struct Column {
     pub recorded: u32,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(rename = "RegionalWeatherColumnMeasure")]
+#[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherColumnMeasure"))]
 pub struct ColumnMeasure {
     /// `<flag>`, `mod:<modifier>` or `temp`.
     pub id: String,
@@ -120,30 +126,32 @@ pub struct ColumnMeasure {
     /// Values: each column's lowest raw value, the exact sum of its days' and its highest, as
     /// decimal text; none without a value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub values: Option<Vec<Option<[String; 3]>>>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(rename = "RegionalWeatherColumnRegion")]
+#[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherColumnRegion"))]
 pub struct ColumnRegion {
     pub id: String,
     /// Conditions: the days the region's conditions were recorded, per column.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub observed: Option<Vec<u32>>,
     /// Conditions: those days with no condition set, per column.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub clear: Option<Vec<u32>>,
     /// A flag set on no sampled day, or a value on none, is left out.
     pub measures: Vec<ColumnMeasure>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-#[ts(rename = "RegionalWeatherColumns")]
+#[cfg_attr(any(test, feature = "export-types"), ts(rename = "RegionalWeatherColumns"))]
 pub struct Columns {
     /// Days per column, counted from the window's first day.
     pub days: u32,
@@ -151,7 +159,8 @@ pub struct Columns {
     pub regions: Vec<ColumnRegion>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RegionalWeatherReply {
     pub first_hour: i32,
@@ -168,14 +177,16 @@ pub struct RegionalWeatherReply {
 
 dashboard_base::reply_warnings!(RegionalWeatherReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegionalWeatherProvincesParams {
     pub branch_id: String,
     pub region: String,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RegionalWeatherProvince {
     pub id: String,
@@ -188,7 +199,8 @@ pub struct RegionalWeatherProvince {
     pub temperature: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RegionalWeatherProvincesReply {
     pub read_hour: Option<i32>,
@@ -581,6 +593,7 @@ impl Product for RegionalWeather {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             RegionalWeatherParams::decl(),
@@ -682,6 +695,7 @@ impl AtHour for WeatherProvinces {
         params.region.parse::<u32>().map(drop).map_err(|_| "Invalid weather region")
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![RegionalWeatherProvincesParams::decl(), RegionalWeatherProvincesReply::decl(), RegionalWeatherProvince::decl()]
     }

@@ -16,6 +16,7 @@ path = "src/bin/executable-tables-check.rs"
 [features]
 
 [dependencies]
+engine-reference-values.workspace = true
 job-priority.workspace = true
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info"] }
 memchr = "2.8"

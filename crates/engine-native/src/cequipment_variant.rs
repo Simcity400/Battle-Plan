@@ -21,7 +21,7 @@ use crate::{
 /// CEquipmentVariant vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029c_e250);
 /// CEquipmentVariant reference type.
-pub const REFERENCE_TYPE: u32 = 70;
+pub use engine_executable::native_values::equipment_variant::REFERENCE_TYPE;
 /// CEquipmentVariant u32 type word.
 pub const TYPE: usize = 0x08;
 /// CEquipmentVariant u32 id.
@@ -659,7 +659,7 @@ pub fn walk_definitions_carried<D: Default>(
 
 /// Number of native equipment statistic slots in the authenticated executable.
 /// Mods can supply any of these slots; none is selected by equipment family.
-pub const STAT_COUNT: usize = 78;
+pub use engine_executable::native_values::equipment_variant::STAT_COUNT;
 /// First native signed fixed5 statistic. Slot names come from executable metadata.
 pub const STATS: usize = 0x100;
 
@@ -677,12 +677,8 @@ pub struct Organisation {
     pub trait_count: i32,
     pub bonuses: Vec<OrganisationBonus>,
 }
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
-pub struct OrganisationBonus {
-    pub key: u32,
-    pub value_raw: i64,
-}
+pub use game_model::equipment::OrganisationBonus;
+
 pub const INDUSTRIAL_ORGANISATION: usize = 0x488;
 pub const ORGANISATION_BONUSES: usize = 0x498;
 pub const ORGANISATION_TRAIT_COUNT: usize = 0x4b0;

@@ -1,7 +1,7 @@
 //! Retained standing naval accident reports. Keys retain native occurrence order.
 use super::*;
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalAccidentReportRow {
     pub country: u32,
     pub ordinal: u32,

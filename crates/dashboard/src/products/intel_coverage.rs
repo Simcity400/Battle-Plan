@@ -18,6 +18,7 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::io;
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 const TABLES: [TableId; 3] = [TableId::IntelNetworkSummaries, IDENTITY[0], IDENTITY[1]];
@@ -33,7 +34,8 @@ pub const FIELDS: [(&str, &str); 5] = [
 
 pub struct IntelNetworkCoverage;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IntelCoverageParams {
     pub branch_id: String,
@@ -41,14 +43,16 @@ pub struct IntelCoverageParams {
 
 /// A directed pair with a network at the hour. Its values are the live cells of the row
 /// `<owner id>:<target id>`, columns as [`FIELDS`] names them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IntelNetwork {
     pub owner: Country,
     pub target: Country,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IntelCoverageReply {
     /// Every country present at the hour (a slot the identity names), by tag: a pair of them
@@ -91,6 +95,7 @@ impl AtHour for IntelNetworkCoverage {
     type Reply = IntelCoverageReply;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![IntelCoverageParams::decl(), Country::decl(), IntelNetwork::decl(), IntelCoverageReply::decl()]
     }

@@ -18,7 +18,7 @@ use super::*;
 /// A complete hourly table certifies zero for country/region pairs with no
 /// events. Lost and first/recovery partial intervals remain unavailable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirLossEventRow {
     pub id: u64,
     pub game_hour: i32,
@@ -39,10 +39,10 @@ typed_codec!(AirLossEventRow, 64,
   3 => (native_cause): U32, 4 => (family_base): U32,
   5 => (credited_enemy): Bool, 6 => (amount_raw): I64, 7 => (opponent): OptionalU32,
   8 => (daily_slot): U32 }, |row| {
-    if !engine_air_history::air_loss_sites::FAMILY_BASES.contains(&row.family_base)
-        || row.family_base.checked_add(row.native_cause).is_none_or(|index| index as usize >= engine_air_history::air_loss_sites::FIELD_COUNT)
+    if !engine_reference_values::native_values::air_loss::FAMILY_BASES.contains(&row.family_base)
+        || row.family_base.checked_add(row.native_cause).is_none_or(|index| index as usize >= engine_reference_values::native_values::air_history::FIELD_COUNT as usize)
         || row.amount_raw == 0
-        || row.daily_slot >= engine_air_history::cloop_history::DAILY_WINDOW_CAPACITY
+        || row.daily_slot >= engine_reference_values::native_values::air_history::DAILY_WINDOW_CAPACITY
     {
         return Err(invalid("invalid air loss family, cause, amount or daily slot"));
     }
@@ -52,7 +52,7 @@ typed_codec!(AirLossEventRow, 64,
 /// Exact hourly daily-update roster predicate.
 /// Every canonical country is present; false is distinct from a missing witness.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirDailyRosterRow {
     pub country: u32,
     pub eligible: bool,
@@ -65,7 +65,7 @@ typed_codec!(AirDailyRosterRow, 32,
 /// Stable source classes; executable caller addresses stay in engine.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum BuildingBombingDamageCause {
     #[default]
     Unknown = 0,
@@ -111,9 +111,9 @@ impl TryFrom<u8> for BuildingBombingDamageCause {
     }
 }
 
-impl From<engine_events::building_damage_sites::Cause> for BuildingBombingDamageCause {
-    fn from(cause: engine_events::building_damage_sites::Cause) -> Self {
-        use engine_events::building_damage_sites::Cause;
+impl From<game_model::building_damage::Cause> for BuildingBombingDamageCause {
+    fn from(cause: game_model::building_damage::Cause) -> Self {
+        use game_model::building_damage::Cause;
         match cause {
             Cause::Unknown => Self::Unknown,
             Cause::AirMission => Self::AirMission,
@@ -171,7 +171,7 @@ impl NativeValue for BuildingBombingDamageCause {
 /// zero events, an unavailable interval is unknown. Its first branch interval
 /// and every interval after a lost event are unavailable.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct BuildingBombingDamageRow {
     pub id: u64,
     pub game_hour: i32,

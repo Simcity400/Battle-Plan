@@ -13,10 +13,12 @@ use std::{
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct FocusArtwork;
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusArtworkParams {
     pub branch_id: String,
@@ -26,22 +28,24 @@ pub struct FocusArtworkParams {
     pub database: FocusDatabase,
     pub tokens: Vec<String>,
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub text_only: Option<bool>,
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub include_descriptions: Option<bool>,
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub icons_only: Option<bool>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DatedFocusArtwork {
     pub artwork: Artwork,
     pub reason: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusArtworkReply {
     pub branch_id: String,
@@ -268,6 +272,7 @@ impl Product for FocusArtwork {
     const INTERACTIVE: bool = true;
     type Params = FocusArtworkParams;
     type Reply = FocusArtworkReply;
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             FocusArtworkParams::decl(),

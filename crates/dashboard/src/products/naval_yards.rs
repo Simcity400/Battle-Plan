@@ -29,12 +29,14 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalYardsParams {
     pub branch_id: String,
@@ -46,7 +48,8 @@ pub struct NavalYardsParams {
 /// its class, stands in), its design and class, its hull at the reply's hour and its maximum (raw
 /// fixed5; the hull is also the live cell `(handle, hull)`), its task force's name and that task
 /// force's repair policy.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct YardShip {
     pub handle: String,
@@ -60,7 +63,8 @@ pub struct YardShip {
     pub policy: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RepairPort {
     pub province: u32,
@@ -73,7 +77,8 @@ pub struct RepairPort {
     pub queue: Vec<YardShip>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalRepairsReply {
     pub ports: Vec<RepairPort>,
@@ -86,7 +91,8 @@ pub struct NavalRepairsReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RefitLine {
     pub handle: String,
@@ -101,12 +107,13 @@ pub struct RefitLine {
     pub ships: Vec<YardShip>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalRefitsReply {
     pub lines: Vec<RefitLine>,
     pub ships: Option<u32>,
-    #[ts(type = "number | null")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
     pub dockyards: Option<i64>,
     /// The hour the daily line metadata (cost, target, dockyards) was read.
     pub cost_read: Option<i32>,
@@ -458,6 +465,7 @@ impl AtHour for NavalRepairs {
         validate(params)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![NavalYardsParams::decl(), YardShip::decl(), RepairPort::decl(), NavalRepairsReply::decl()]
     }
@@ -613,6 +621,7 @@ impl AtHour for NavalRefits {
         validate(params)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![NavalYardsParams::decl(), YardShip::decl(), RefitLine::decl(), NavalRefitsReply::decl()]
     }

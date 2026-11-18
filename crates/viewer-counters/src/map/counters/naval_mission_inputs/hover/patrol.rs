@@ -37,10 +37,10 @@ fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
 fn divide(value: i64, denominator: i64) -> Fact<i64> {
-    engine_native::fixed5::fraction(value, denominator).map_err(str::to_owned)
+    game_model::fixed5::fraction(value, denominator).map_err(str::to_owned)
 }
 fn printed(value: i64) -> i64 {
-    engine_native::fixed5::fraction(value, 10_000_000).unwrap_or(REFUSED)
+    game_model::fixed5::fraction(value, 10_000_000).unwrap_or(REFUSED)
 }
 fn saturate(density: i64, maximum: i64) -> Fact<i64> {
     let fraction = if density >= 1_000_000 {

@@ -25,6 +25,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 mod template_roster;
@@ -39,7 +40,8 @@ fn invalid(what: impl Into<String>) -> io::Error {
 
 pub struct ArmySize;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ArmyMeasure {
     Manpower,
@@ -48,14 +50,16 @@ pub enum ArmyMeasure {
     Battalions,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ArmyAttribution {
     Owner,
     Host,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArmySizeParams {
     pub branch_id: String,
@@ -69,7 +73,8 @@ pub struct ArmySizeParams {
     pub window: Option<usize>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyType {
     pub key: String,
@@ -91,7 +96,8 @@ impl Serialize for ArmyRun {
     }
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyMixRun {
     pub first_hour: i32,
@@ -99,11 +105,12 @@ pub struct ArmyMixRun {
     pub values: Vec<Option<f64>>,
     /// Decimal counts keep exact labels; values are chart geometry only.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub raw_values: Option<Vec<Option<String>>>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyIdentityRun {
     pub first_hour: i32,
@@ -112,30 +119,33 @@ pub struct ArmyIdentityRun {
     pub country_id: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmySpan {
     pub first_hour: i32,
     pub last_hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmySeries {
     pub tag: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub identities: Option<Vec<ArmyIdentityRun>>,
-    #[ts(type = "Array<ArmyRun>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<ArmyRun>"))]
     pub runs: Vec<ArmyRun>,
     pub segments: Vec<ArmySpan>,
     pub membership: Option<Vec<ArmySpan>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub mix: Option<Vec<ArmyMixRun>>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmySizeReply {
     pub branch_id: String,
@@ -193,6 +203,7 @@ impl Product for ArmySize {
     type Params = ArmySizeParams;
     type Reply = ArmySizeReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ArmyMeasure::decl(),
@@ -754,7 +765,8 @@ struct SeriesParams {
     last_hour: Option<f64>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyChartLine {
     pub tag: String,
@@ -764,7 +776,8 @@ pub struct ArmyChartLine {
     pub missing: Vec<dashboard_query::series::MissingSpan>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyChartReply {
     pub series: Vec<ArmyChartLine>,

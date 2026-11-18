@@ -3,16 +3,19 @@
 
 use crate::CountryMetadata;
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandOwners {
     pub countries: Vec<CountryMetadata>,
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusEntry {
     pub ordinal: u32,
@@ -22,7 +25,8 @@ pub struct FocusEntry {
     pub completed_by_hour: Option<i32>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusOrder {
     pub completed: Vec<FocusEntry>,
@@ -31,7 +35,8 @@ pub struct FocusOrder {
     pub paused: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusSegment {
     pub first_hour: i32,
@@ -39,7 +44,8 @@ pub struct FocusSegment {
     pub order: FocusOrder,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusHistory {
     pub segments: Vec<FocusSegment>,
@@ -49,7 +55,8 @@ pub struct FocusHistory {
 
 /// Focus progress: fixed5 days of work toward the current
 /// focus (the daily update adds the day's focus speed; idle days bank it).
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusProgress {
     pub first_hour: i32,

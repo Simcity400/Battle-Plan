@@ -29,7 +29,8 @@ use std::{
 };
 
 /// One read an answer depends on. `D` is the product's own derived read.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, replay_spool::Spooled)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Read<D> {
     /// The fields `fields` of the row keyed `key`, or its absence.
     Row { table: TableId, key: u128, fields: u64 },

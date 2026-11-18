@@ -26,12 +26,14 @@ use replay_data::rows::{ProductionLineRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct ProductionLinesAt;
 
 /// The order lines are listed in: the game's queue, most factories assigned, or most IC a day.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum LineOrder {
     #[default]
@@ -40,19 +42,21 @@ pub enum LineOrder {
     Output,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionLinesAtParams {
     pub branch_id: String,
     pub tag: String,
     /// The game's queue order when absent.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub order: Option<LineOrder>,
 }
 
 /// One output row of a line at the hour; its units made are in the line's `output` cell.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OutputPartNow {
     pub variant: String,
@@ -63,7 +67,8 @@ pub struct OutputPartNow {
 }
 
 /// A line's output rows at the hour.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OutputNow {
     pub parts: Vec<OutputPartNow>,
@@ -75,7 +80,8 @@ pub struct OutputNow {
 /// factories, `efficiency` (Q15, 100% is 3276800), `speed` and `cost` (fixed5 IC; units a week are
 /// `speed × 700000 ÷ cost`, truncated) and `output` (units made since `output.sinceHour`, the sum
 /// of its rows).
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LineNow {
     pub handle: String,
@@ -88,7 +94,8 @@ pub struct LineNow {
     pub output: Option<OutputNow>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionLinesAtReply {
     pub branch_id: String,
@@ -149,6 +156,7 @@ impl AtHour for ProductionLinesAt {
     type Reply = ProductionLinesAtReply;
     type Context = LinesContext;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ProductionLinesAtParams::decl(), ProductionLinesAtReply::decl(), LineOrder::decl(), OutputPartNow::decl(), OutputNow::decl(), LineNow::decl()]
     }

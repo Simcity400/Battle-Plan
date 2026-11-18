@@ -7,7 +7,7 @@ pub type SharedDivisionHistoryRow = Arc<DivisionHistoryRow>;
 /// Complete deployed-division career and award lists. A summary row exists
 /// even for an empty list; a refused summary carries its named reason.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionHistoryRow {
     pub division: u64,
     /// Summary, career or awarded-medal list, using the constants below.
@@ -238,7 +238,7 @@ mod tests {
     }
 }
 
-pub use engine_native::modifier_breakdown::{
+pub use game_model::modifier_breakdown::{
     SourceNode as DivisionPanelSourceNode, SourceValue as DivisionPanelSourceValue,
 };
 value_struct!(DivisionPanelSourceValue { key: u32, raw: i64 });
@@ -247,7 +247,7 @@ opaque_value!(Option<DivisionPanelSourceNode>);
 /// Country, unit commander and separate-HQ roots shared by deployed divisions.
 /// Each preorder occurrence has its own row, so a changed leaf has a sparse delta.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionPanelSourceRow {
     pub kind: u8,
     pub owner: u64,

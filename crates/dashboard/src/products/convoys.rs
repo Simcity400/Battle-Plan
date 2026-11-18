@@ -28,6 +28,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub const KEY: &str = "convoy-health";
@@ -110,7 +111,8 @@ pub fn run_convoys(recording: &Recording, run: u32) -> io::Result<RunConvoys> {
     Ok(RunConvoys { deals: owned(deals), exports: owned(exports), leases: owned(leases) })
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ConvoyView {
     Regions,
@@ -119,7 +121,8 @@ pub enum ConvoyView {
 
 pub struct ConvoyHealth;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConvoyHealthParams {
     pub branch_id: String,
@@ -134,7 +137,8 @@ pub struct ConvoyHealthParams {
 }
 
 /// A country named in a row over consecutive hours; none where no tag holds it then.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConvoyCountry {
     pub first_hour: i32,
@@ -142,7 +146,8 @@ pub struct ConvoyCountry {
     pub tag: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConvoyRegion {
     pub region: u32,
@@ -150,45 +155,48 @@ pub struct ConvoyRegion {
     pub name: Option<String>,
     pub missing: Option<String>,
     /// Fixed5 efficiency: first hour, last hour, value.
-    #[ts(type = "Array<[number, number, number]>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, number]>"))]
     pub efficiency: Vec<(i32, i32, i64)>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConvoyDeal {
     /// The exchange's native handle, hexadecimal.
     pub id: String,
     pub exporter: Vec<ConvoyCountry>,
     /// The resource's native index.
-    #[ts(type = "Array<[number, number, number]>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, number]>"))]
     pub resource: Vec<(i32, i32, i64)>,
     /// The fixed5 efficiency product, truncated toward zero as the game compares it.
-    #[ts(type = "Array<[number, number, number]>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, number]>"))]
     pub efficiency: Vec<(i32, i32, i64)>,
     /// Its two fixed5 factors.
-    #[ts(type = "Array<Array<[number, number, number]>>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<Array<[number, number, number]>>"))]
     pub factors: Vec<Vec<(i32, i32, i64)>>,
     /// Convoys assigned and required.
-    #[ts(type = "Array<Array<[number, number, number]>>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<Array<[number, number, number]>>"))]
     pub convoys: Vec<Vec<(i32, i32, i64)>>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConvoyLease {
     /// The client's native handle.
     pub handle: String,
     pub giver: Vec<ConvoyCountry>,
     /// 1 while its route draws as bad.
-    #[ts(type = "Array<[number, number, number]>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, number]>"))]
     pub bad: Vec<(i32, i32, i64)>,
     /// Convoys assigned and required.
-    #[ts(type = "Array<Array<[number, number, number]>>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<Array<[number, number, number]>>"))]
     pub convoys: Vec<Vec<(i32, i32, i64)>>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConvoyResource {
     pub id: u32,
@@ -196,7 +204,8 @@ pub struct ConvoyResource {
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConvoyHealthReply {
     pub branch_id: String,
@@ -527,6 +536,7 @@ impl Product for ConvoyHealth {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ConvoyHealthParams::decl(),

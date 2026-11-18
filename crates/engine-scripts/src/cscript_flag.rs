@@ -27,15 +27,7 @@ pub const VALUE: usize = 0x28;
 /// Expiry days, signed i16; positive values decrement daily and remove at zero.
 pub const REMAINING_DAYS: usize = 0x2a;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
-pub struct Row {
-    pub token: u32,
-    pub set_hour: i32,
-    pub value: i16,
-    /// Positive values count down daily; nonpositive native values stay exact.
-    pub remaining_days: i16,
-}
+pub use game_model::script_flag::Row;
 
 /// The three exact field spans `read_row` gathers, packed in its order.
 const FIELDS: [RecordField; 3] = [

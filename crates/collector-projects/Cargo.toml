@@ -27,7 +27,7 @@ engine-projects.workspace = true
 engine-raid-inputs.workspace = true
 engine-visibility.workspace = true
 replay-data.workspace = true
-replay-frame.workspace = true
+replay-frame = { workspace = true, features = ["capture"] }
 serde = { workspace = true, features = ["derive"] }
 collector-certificates.workspace = true
 collector-extended-support.workspace = true
@@ -58,8 +58,7 @@ collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-projects = { workspace = true, features = ["default", "naval_tree_changes", "raid_intel_changes", "test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
-replay-frame = { workspace = true, features = ["test-support"] }
+replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-crossbeam-utils = { workspace = true }

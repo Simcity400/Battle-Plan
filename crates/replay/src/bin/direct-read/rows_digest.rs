@@ -8,7 +8,7 @@ use replay::{cells::TableReader, columnar_frames::Recording};
 use replay_columnar::unit::BLOCK;
 use replay_data::{
     format::FormatVersion,
-    rows::{Field, RowCodec, RowsVisit, TableId, TableRows},
+    rows::{Field, TableId, TableRows},
     scope::CaptureMode,
 };
 use replay_frame::frame::{TableView, Unsayable, cells_view};
@@ -127,19 +127,12 @@ fn described(view: &TableView) -> io::Result<(Value, Option<(usize, String)>)> {
 
 /// The rows' count and a blake3 of them in their order, each row as [`digest_row`] hashes it.
 fn digest(rows: &TableRows) -> io::Result<(usize, String)> {
-    struct Digest;
-    impl RowsVisit for Digest {
-        type Output = io::Result<(usize, String)>;
-        fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output {
-            let mut hasher = blake3::Hasher::new();
-            let mut encoded = Vec::new();
-            for row in rows {
-                digest_row(&mut hasher, &mut encoded, row.key(), |visit| row.visit_wire(visit))?;
-            }
-            Ok((rows.len(), hasher.finalize().to_hex().to_string()))
-        }
+    let mut hasher = blake3::Hasher::new();
+    let mut encoded = Vec::new();
+    for row in rows.iter() {
+        digest_row(&mut hasher, &mut encoded, row.key(), |visit| row.visit_wire(visit))?;
     }
-    rows.visit(Digest)
+    Ok((rows.len(), hasher.finalize().to_hex().to_string()))
 }
 
 const EMPTY: u8 = 0;

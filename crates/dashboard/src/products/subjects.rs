@@ -32,6 +32,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Subjects' `start_hour`, `end_hour` and `cancel`, as the schema numbers them.
@@ -44,7 +45,8 @@ const STATE: usize = 4;
 pub struct Subjects;
 
 /// A subject level (autonomy state) the reply names.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SubjectLevel {
     /// The autonomy state's id, as recorded.
@@ -57,7 +59,8 @@ pub struct SubjectLevel {
 }
 
 /// Consecutive hours of a run with one level; `level` is null where it was not recorded.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LevelStep {
     pub first_hour: i32,
@@ -66,7 +69,8 @@ pub struct LevelStep {
 }
 
 /// One overlord-subject relation over consecutive recorded hours.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SubjectRun {
     pub overlord: String,
@@ -79,7 +83,8 @@ pub struct SubjectRun {
     pub steps: Vec<LevelStep>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SubjectReply {
     pub branch_id: String,
@@ -369,6 +374,7 @@ impl Product for Subjects {
     type Params = BranchParams;
     type Reply = SubjectReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![BranchParams::decl(), SubjectLevel::decl(), LevelStep::decl(), SubjectRun::decl(), HourSpan::decl(), SubjectReply::decl()]
     }

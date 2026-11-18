@@ -16,6 +16,7 @@ use replay_data::rows::{
 use replay_frame::frame::{DecodedFrame, Rowset};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io, sync::Arc};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub mod naming;
@@ -26,14 +27,16 @@ mod tests;
 use naming::{RecordedCharacter, line_group, line_name};
 
 /// One additive term of a displayed value; none when an input it needs was not recorded.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FormulaTerm {
     pub term: String,
     pub value_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FormulaBreakdown {
     /// The displayed value, fixed5.
@@ -43,7 +46,8 @@ pub struct FormulaBreakdown {
     pub clamp_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BreakdownLine {
     /// The child's position in the modifier tree (the tooltip's order); 0 for a part's line.
@@ -68,7 +72,8 @@ pub struct BreakdownLine {
     pub group_kind: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ModifierBreakdown {
     /// The modifier's script name.
@@ -84,7 +89,8 @@ pub struct ModifierBreakdown {
     pub remainder_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StabilityBreakdown {
     pub hour: i32,
@@ -100,14 +106,16 @@ pub struct StabilityBreakdown {
     pub modifiers: Vec<ModifierBreakdown>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StabilityBreakdownParams {
     pub branch_id: String,
     pub tag: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StabilityBreakdownReply {
     pub tag: String,
@@ -118,7 +126,8 @@ pub struct StabilityBreakdownReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StabilityPartNamesParams {
     pub branch_id: String,
@@ -128,7 +137,8 @@ pub struct StabilityPartNamesParams {
 }
 
 /// One part of a country's stability or war support, named.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StabilityPartName {
     /// The part as asked.
@@ -150,7 +160,8 @@ pub struct StabilityPartName {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StabilityPartNamesReply {
     pub tag: String,
@@ -350,6 +361,7 @@ impl AtHour for CountryStabilityBreakdown {
     type Reply = StabilityBreakdownReply;
     type Context = Naming;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             StabilityBreakdownParams::decl(),
@@ -496,6 +508,7 @@ impl AtHour for StabilityPartNames {
     type Reply = StabilityPartNamesReply;
     type Context = Naming;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![StabilityPartNamesParams::decl(), StabilityPartNamesReply::decl(), StabilityPartName::decl()]
     }

@@ -5,10 +5,12 @@
 use crate::catalogue::{self, Catalogue, View};
 use installed_content_core::occupation_laws::{Law, Laws};
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// A law the reply's states hold: its name and icon from the recorded content.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationLawInfo {
     pub token: String,

@@ -27,6 +27,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -41,7 +42,8 @@ const DETAIL_CHANNELS: [u8; PAIRS] = [1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 8, 12];
 
 pub struct AirStatisticsAt;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirStatisticsParams {
     pub branch_id: String,
@@ -50,7 +52,8 @@ pub struct AirStatisticsParams {
     pub channel: u8,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirStatisticsChannel {
     pub id: String,
@@ -61,7 +64,8 @@ pub struct AirStatisticsChannel {
 
 /// A region with statistics at the hour; its raw signed words are the live cells (`region`,
 /// `ours`) and (`region`, `enemy`).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirStatisticsRegion {
     pub region: String,
@@ -70,7 +74,8 @@ pub struct AirStatisticsRegion {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirStatisticsReply {
     /// The hour of the read the rows hold; none when not known.
@@ -226,6 +231,7 @@ impl AtHour for AirStatisticsAt {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![AirStatisticsParams::decl(), AirStatisticsReply::decl(), AirStatisticsChannel::decl(), AirStatisticsRegion::decl(), AirMissionTheatre::decl()]
     }
@@ -276,14 +282,16 @@ impl AtHour for AirStatisticsAt {
 
 pub struct AirStatisticsRegions;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirStatisticsRegionsParams {
     pub branch_id: String,
     pub tag: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirStatisticsRegionsReply {
     /// Every region the country held statistics in over the timeline, in region order.
@@ -309,6 +317,7 @@ impl Product for AirStatisticsRegions {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![AirStatisticsRegionsParams::decl(), AirStatisticsRegionsReply::decl()]
     }

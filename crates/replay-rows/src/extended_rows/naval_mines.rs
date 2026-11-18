@@ -5,7 +5,7 @@ use super::*;
 /// `amount` is zero. Kind one is a nonzero raw signed fixed5 amount at `region`.
 /// Only a witness proves omitted indices below its count have zero mines.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRegionalMineRow {
     pub country: u32,
     pub kind: u8,

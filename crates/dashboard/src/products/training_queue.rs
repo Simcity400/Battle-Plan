@@ -27,6 +27,7 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The queue tables, read together once a day.
@@ -51,7 +52,8 @@ const PRIORITY_BUTTONS: [&str; 3] = ["low_prio", "medium_prio", "high_prio"];
 
 pub struct TrainingQueue;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrainingQueueParams {
     pub branch_id: String,
@@ -59,7 +61,8 @@ pub struct TrainingQueueParams {
 }
 
 /// One country's manpower entry for a division in training.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingManpower {
     pub tag: Option<String>,
@@ -69,7 +72,8 @@ pub struct TrainingManpower {
 }
 
 /// One design held by a division in training.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingEquipment {
     pub variant: String,
@@ -82,7 +86,8 @@ pub struct TrainingEquipment {
 }
 
 /// One archetype a division in training needs, by its template.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingNeed {
     pub archetype: String,
@@ -94,7 +99,8 @@ pub struct TrainingNeed {
 }
 
 /// One division in training.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingDivision {
     pub line: String,
@@ -120,7 +126,8 @@ pub struct TrainingDivision {
 }
 
 /// One deployment order: a template ordered in an amount.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingOrder {
     pub order: String,
@@ -145,7 +152,8 @@ pub struct TrainingOrder {
     pub divisions: Vec<TrainingDivision>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TrainingQueueReply {
     pub tag: String,
@@ -263,6 +271,7 @@ impl AtHour for TrainingQueue {
     type Reply = TrainingQueueReply;
     type Context = Content;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             TrainingQueueParams::decl(),

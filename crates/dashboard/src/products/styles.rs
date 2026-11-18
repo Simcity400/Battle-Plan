@@ -18,7 +18,7 @@ use crate::{
 use dashboard_query::{Query, read};
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::localisation::Localisation;
-use recorder_derive::looks::Look;
+use replay_looks::Look;
 use replay::columnar_frames::Recording;
 use replay_data::rows::{Recorded, TableId, TagHolderRow};
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 const NO_COLOUR: &str = "no recorded map colour";
@@ -40,7 +41,8 @@ pub fn country_name(names: &CountryNames<'_>, slot: u32) -> Result<String, Strin
         .and_then(|name| plain_text(&name).map_err(|reason| format!("its name holds {reason}")))
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryStyleParams {
     pub branch_id: String,
@@ -48,7 +50,8 @@ pub struct CountryStyleParams {
     pub tags: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryStyle {
     pub tag: String,
@@ -58,7 +61,8 @@ pub struct CountryStyle {
     pub color: Option<[u8; 3]>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryStyleReply {
     pub branch_id: String,
@@ -69,7 +73,8 @@ pub struct CountryStyleReply {
 
 /// Every country's style ([`CountryStyle`]) and flag at every hour the timeline's country tables
 /// were complete, as runs, so an hour is looked up rather than asked for.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFactsReply {
     pub branch_id: String,
@@ -85,7 +90,8 @@ pub struct CountryFactsReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFactRuns {
     pub tag: String,
@@ -370,6 +376,7 @@ impl Product for CountryFacts {
     type Params = BranchParams;
     type Reply = CountryFactsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![CountryFactRuns::decl(), CountryFlagChoice::decl(), CountryFactsReply::decl()]
     }
@@ -394,6 +401,7 @@ impl Product for CountryStyles {
     type Params = CountryStyleParams;
     type Reply = CountryStyleReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![CountryStyleParams::decl(), CountryStyle::decl(), CountryStyleReply::decl()]
     }

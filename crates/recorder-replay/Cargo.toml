@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-replay.workspace = true
+replay = { workspace = true, features = ["recording"] }
 replay-columnar.workspace = true
 installed-content-country-names.workspace = true
 installed-content-localisation.workspace = true
@@ -40,6 +40,7 @@ installed-content-localisation = { workspace = true, features = ["test-support"]
 installed-content-province-area = { workspace = true, features = ["test-support"] }
 installed-content-regions = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

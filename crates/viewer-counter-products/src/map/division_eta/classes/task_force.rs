@@ -6,7 +6,7 @@
 //! no prospective one. Arrival does not enter the task-force speed getter.
 
 use super::fresh_search::{Inputs, available};
-use engine_native::cunit::eta_ratio;
+use game_model::movement::unit::eta_ratio;
 use installed_content_unit_path::unit_path::Fact;
 use replay_data::{
     rows::FreshTaskForceCounterEta, rows::TaskForceMapMotionRow, rows::TaskForceRow,

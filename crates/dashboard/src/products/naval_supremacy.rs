@@ -13,8 +13,10 @@
 
 use super::{
     LoadContext, Product, place_names,
-    sea_regions::{self, Choice, SeaContent},
+    sea_regions::{self, SeaContent},
 };
+#[cfg(any(test, feature = "export-types"))]
+use super::sea_regions::Choice;
 use crate::{Source, catalogue::Refusals};
 use dashboard_base::products::validate_tag;
 use dashboard_query::identity::Holder;
@@ -27,6 +29,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -48,7 +51,8 @@ const SHARE_REFUSAL: usize = 6;
 
 pub struct NavalSupremacy;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalSupremacyParams {
     pub branch_id: String,
@@ -60,7 +64,8 @@ pub struct NavalSupremacyParams {
 /// One region's values on a run of days: control (1 friendly, -1 enemy, 0 contested), the rule's
 /// friendly and enemy sums, the explanatory share and the viewer's own supremacy, raw fixed5;
 /// each none where its operands were refused.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SupremacyRun {
     pub first_day: u32,
@@ -72,7 +77,8 @@ pub struct SupremacyRun {
     pub own: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SupremacyRegion {
     pub id: String,
@@ -81,7 +87,8 @@ pub struct SupremacyRegion {
 }
 
 /// Days of the window not known, with why.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct UnknownDays {
     pub first_day: u32,
@@ -89,7 +96,8 @@ pub struct UnknownDays {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalSupremacyReply {
     pub first_hour: i32,
@@ -304,6 +312,7 @@ impl Product for NavalSupremacy {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![NavalSupremacyParams::decl(), SupremacyRun::decl(), SupremacyRegion::decl(), UnknownDays::decl(), Choice::decl(), NavalSupremacyReply::decl()]
     }

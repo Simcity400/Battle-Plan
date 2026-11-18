@@ -18,16 +18,19 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct LandBattleTerrains;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LandBattleTerrainParams {
     pub provinces: Vec<u32>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandTerrainName {
     pub province_id: u32,
@@ -35,7 +38,8 @@ pub struct LandTerrainName {
     pub name: Option<String>,
     pub missing: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandBattleTerrainReply {
     pub provinces: Vec<LandTerrainName>,
     pub warnings: Vec<String>,
@@ -164,6 +168,7 @@ impl Product for LandBattleTerrains {
     const INTERACTIVE: bool = true;
     type Params = LandBattleTerrainParams;
     type Reply = LandBattleTerrainReply;
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             LandBattleTerrainParams::decl(),

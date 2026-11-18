@@ -70,7 +70,7 @@ impl ProductContent {
         user: &std::path::Path,
         language: &str,
     ) -> io::Result<Self> {
-        loader::Loader::new(layers).load(user, language)
+        loader::load(layers, user, language)
     }
 
     pub fn from_inputs(reads: ContentReads, inputs: ProductInputs) -> Self {

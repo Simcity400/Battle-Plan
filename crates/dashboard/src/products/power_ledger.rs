@@ -36,9 +36,11 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub enum SpendCurrency {
     Political,
     Command,
@@ -54,7 +56,8 @@ impl SpendCurrency {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PowerSpendingParams {
     pub branch_id: String,
@@ -66,7 +69,8 @@ pub struct PowerSpendingParams {
 }
 
 /// An item paid in the span, as every reply names it: at its first payment's hour.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendItem {
     /// Unique in the recording: holder, the holder's item ordinal and its first read (ordinals
@@ -96,7 +100,8 @@ pub struct SpendItem {
 
 /// What the tooltips of the ideas and advisors paid for show: each idea's effects, its name and
 /// description, and the formats and texts the effects read.
-#[derive(Clone, Debug, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendIdeaTooltips {
     pub ideas: Vec<IdeaInfo>,
@@ -105,7 +110,8 @@ pub struct SpendIdeaTooltips {
     pub texts: Vec<LocalisedText>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendCategory {
     pub id: String,
@@ -115,7 +121,8 @@ pub struct SpendCategory {
 }
 
 /// The payments of one one-off item read in one hour.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendPayment {
     /// Its item's index in `items`.
@@ -138,7 +145,8 @@ pub struct SpendPayment {
 }
 
 /// The days of one recurring item counted in one hour (as its day ended).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendDay {
     pub item: u32,
@@ -159,7 +167,8 @@ pub struct SpendDay {
 }
 
 /// The daily gains of the days counted in one hour.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendGain {
     pub read: i32,
@@ -175,7 +184,8 @@ pub struct SpendGain {
 }
 
 /// Hours whose spending in the currency was, or was not, recorded whole.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendCoverage {
     pub first_hour: i32,
@@ -184,7 +194,8 @@ pub struct SpendCoverage {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerSpendingReply {
     pub branch_id: String,
@@ -219,6 +230,7 @@ impl Product for PowerSpending {
     type Params = PowerSpendingParams;
     type Reply = PowerSpendingReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             PowerSpendingParams::decl(),

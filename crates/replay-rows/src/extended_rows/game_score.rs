@@ -3,7 +3,7 @@ use super::*;
 /// Sites of the strategic-air subsystem's first list in stored order.
 /// Repeated bases remain repeated: each occurrence contributes to score.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GameScoreAirSite {
     pub base: u64,
     pub access: u8,
@@ -20,7 +20,7 @@ opaque_value!(Vec<GameScoreAirSite>);
 /// Every country-fleet occurrence in roster order. Score adds stored
 /// signed task-force counts with i32 wrapping; this is not a ship census.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GameScoreFleetCount {
     pub fleet: u64,
     pub task_forces: Option<i32>,
@@ -36,7 +36,7 @@ opaque_value!(Vec<GameScoreFleetCount>);
 /// first-site list may be empty. Each failed scalar/list read has its own
 /// named diagnostic; zero is known.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryGameScoreInputRow {
     pub country: u32,
     pub army_count: Option<i32>,
@@ -99,7 +99,7 @@ row_codec!(CountryGameScoreInputRow, 32, |row| row.country as u128, |key| { coun
 /// selector, widened while retaining its signed-byte range. Full wing
 /// handles are retained. Each failed operand is independently unknown.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirWingGameScoreStatsRow {
     pub id: u64,
     pub planes: Option<i32>,
@@ -127,7 +127,7 @@ row_codec!(AirWingGameScoreStatsRow, 64, |row| row.id as u128, |key| { id: key a
 /// independently; no defaults are inferred from vanilla content. Part
 /// multipliers precede the total multiplier.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GameScoreMultiplierRow {
     pub id: u32,
     pub total_raw: Option<i64>,

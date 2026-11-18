@@ -103,7 +103,7 @@ All Rust is in `crates/`; names group by prefix.
 - One request is one complete PR. Never leave residuals unless you are actually blocked, and then state what and why.
 - Titles are plain language led by the area, as in the log: `Columnar writer: PATCH keeps list runs behind a changed count`. The body says the problem in a sentence or two, then how you fixed it, and ends with the model and harness that did the work.
 - UI changes need before/after images, and motion or timing a short video. Upload them to the PR; never commit PR-only screenshots or assets.
-- Every PR is reviewed by gpt 6.1 sol xhigh in a loop until ready to merge. Verify each finding against the source: fix real ones, dismiss false ones with a written reason, push back on scope creep.
+- Review every PR with the Astra Loop (GPT-6.2 Astra, xhigh) before merging. Verify findings against the source: fix real ones, explain dismissals, push back on scope creep.
 - When babysitting, call `watch_pull_request` and end your turn. Don't poll or sleep. Stop when checks and reviews are green on the latest commit.
 
 ## Documentation

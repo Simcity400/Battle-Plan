@@ -16,7 +16,7 @@ pub use state::{DelayedEvent, PendingEvent, ScriptEventState, ScriptIdentity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum EventFeedSource {
     Declaration = 0,
     Join = 1,
@@ -103,7 +103,7 @@ impl Value for EventFeedSource {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum EventFeedCoverage {
     #[default]
     Unavailable = 0,
@@ -136,7 +136,7 @@ impl Value for EventFeedCoverage {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventFeedCountry {
     pub reference: u32,
     pub id: u32,
@@ -182,7 +182,7 @@ macro_rules! routes {
         /// call reached it. One operation's routes share a value range.
         #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(u8)]
-        #[derive(replay_spool::Spooled)]
+        #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
         pub enum EventFeedRoute {
             /// No observed operation was running.
             #[default]
@@ -398,7 +398,7 @@ routes! {
 /// happened and the operands the game passed them. A fact the collector did
 /// not observe is `None`, never a default.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventFeedCause {
     /// The operation the event happened in; for WarEnded, Release and
     /// StateTransfer, the call that performed it.
@@ -436,7 +436,7 @@ value_struct!(EventFeedCause {
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventFeedEvent {
     /// Attachment-wide identity seeded from retained replay history, not a pointer.
     pub sequence: u64,
@@ -566,7 +566,7 @@ impl Value for EventFeedEvent {
     serde::Serialize,
     serde::Deserialize,
 )]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventFeedEventIdentity {
     pub kind: u32,
     pub id: u32,
@@ -577,7 +577,7 @@ impl std::fmt::Display for EventFeedEventIdentity {
     }
 }
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventFeedScript {
     pub token_start: u32,
     pub token_len: u32,
@@ -600,7 +600,7 @@ pub struct EventFeedScript {
 /// Retained registry operations share the occurrence stream's ordering,
 /// world and delivery receipts. Baseline membership is never timed history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum EventFeedScriptChange {
     Decision(decisions::DecisionChange),
     PendingBaseline,
@@ -912,7 +912,7 @@ impl Value for EventFeedScript {
 /// An occurrence's bound scope. Unproved pointer-owned operands are named
 /// demands, independent of the values that were acquired successfully.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventFeedScope {
     pub country: u32,
     pub random: [u32; 2],
@@ -934,7 +934,7 @@ pub struct EventFeedScope {
 
 /// Exact bytes of a native string, held inline so a scope stays `Copy`.
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventFeedText {
     len: u16,
     bytes: [u8; Self::CAPACITY],
@@ -1139,7 +1139,7 @@ impl Value for EventFeedScope {
 
 /// Cumulative attachment accounting survives drains and world replacement.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventFeedCounts {
     pub acquired: u64,
     pub settled: u64,
@@ -1197,7 +1197,7 @@ fn refused_script_families(refusals: u8) -> impl Iterator<Item = &'static str> {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EventFeedHistoryRow {
     pub generation: u64,
     pub read_hour: i32,

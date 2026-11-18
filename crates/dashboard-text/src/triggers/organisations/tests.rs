@@ -14,9 +14,9 @@ const GUARDED: u64 = 11 << 32 | 79;
 /// The attached-policy value of an organisation with no policy attached.
 const UNSELECTED: u32 = 0x4c17;
 /// The frame's hour: three days and an hour past the day the fixture's flag was set.
-const NOW: i32 = engine_native::cdate::HOUR_EPOCH + 1003 * 24 + 1;
+const NOW: i32 = game_model::calendar::HOUR_EPOCH + 1003 * 24 + 1;
 /// The hour the fixture's flag was set: day 1000 (year 2, 28 September), hour 5.
-const SET: i32 = engine_native::cdate::HOUR_EPOCH + 1000 * 24 + 5;
+const SET: i32 = game_model::calendar::HOUR_EPOCH + 1000 * 24 + 5;
 
 /// The lexer tokens the fixture's names take.
 const TOKENS: [(u32, &str); 13] = [

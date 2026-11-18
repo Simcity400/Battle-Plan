@@ -47,7 +47,7 @@ fn cell(target: u32) -> Option<ReverseZeroVisibilityInputs> {
 
 fn subject(first: Option<u32>, second: Option<u32>) -> ZeroSubjectInputs {
     ZeroSubjectInputs {
-        relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
+        relation_type: Some(engine_executable::native_values::subject_relation::TYPE_VALUE),
         parties: Some([first, second]),
     }
 }
@@ -361,7 +361,7 @@ fn reverse_zero_reached_target_and_subject_refusals_remain_independent() {
         panic!()
     };
     packet.cells[1].as_mut().unwrap().subject = Some(ZeroSubjectInputs {
-        relation_type: Some(engine_native::csubject_relation::TYPE_VALUE + 1),
+        relation_type: Some(engine_executable::native_values::subject_relation::TYPE_VALUE + 1),
         parties: None,
     });
     assert_eq!(reverse_zero_shared(&frame, &links, 1), Ok(false));
@@ -1092,7 +1092,7 @@ fn forward_visibility_null_and_wrong_type_subjects_do_not_demand_cell_target() {
     for subject in [
         ZeroSubjectInputs::default(),
         ZeroSubjectInputs {
-            relation_type: Some(engine_native::csubject_relation::TYPE_VALUE.wrapping_add(1)),
+            relation_type: Some(engine_executable::native_values::subject_relation::TYPE_VALUE.wrapping_add(1)),
             parties: None,
         },
     ] {
@@ -1114,7 +1114,7 @@ fn forward_visibility_null_and_wrong_type_subjects_do_not_demand_cell_target() {
             target: None,
             war: Some([0, 0]),
             subject: Some(ZeroSubjectInputs {
-                relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
+                relation_type: Some(engine_executable::native_values::subject_relation::TYPE_VALUE),
                 parties: None,
             }),
             military_access: Some(0),
@@ -1132,7 +1132,7 @@ fn reverse_zero_null_and_wrong_type_subjects_do_not_demand_cell_target() {
     for subject in [
         ZeroSubjectInputs::default(),
         ZeroSubjectInputs {
-            relation_type: Some(engine_native::csubject_relation::TYPE_VALUE.wrapping_add(1)),
+            relation_type: Some(engine_executable::native_values::subject_relation::TYPE_VALUE.wrapping_add(1)),
             parties: None,
         },
     ] {

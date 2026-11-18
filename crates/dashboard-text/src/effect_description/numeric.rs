@@ -320,7 +320,7 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let hour = self.tables().hour();
-        let day = hour.wrapping_sub(hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH) % 24);
+        let day = hour.wrapping_sub(hour.wrapping_sub(game_model::calendar::HOUR_EPOCH) % 24);
         let days = crate::triggers::fixed_round(self.numeric_field(item, "days", scopes)?) as i32;
         let (year, month, date) = numeric_date_parts(day.wrapping_add(days.wrapping_mul(24)));
         let month = self.char_native_text(month.as_bytes(), &[], scopes, false)?;
@@ -452,11 +452,11 @@ impl Renderer<'_, '_, '_> {
 }
 
 pub(super) fn numeric_date_parts(hour: i32) -> (i32, &'static str, i32) {
-    let hours = hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH);
+    let hours = hour.wrapping_sub(game_model::calendar::HOUR_EPOCH);
     let mut day = hours / 24 % 365;
     let mut month = 0;
-    while month < 12 && day >= engine_native::cdate::MONTH_LENGTHS[month] {
-        day -= engine_native::cdate::MONTH_LENGTHS[month];
+    while month < 12 && day >= game_model::calendar::MONTH_LENGTHS[month] {
+        day -= game_model::calendar::MONTH_LENGTHS[month];
         month += 1;
     }
     let name = [

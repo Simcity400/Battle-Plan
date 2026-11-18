@@ -17,11 +17,13 @@ use replay_data::rows::{CountryFactoriesRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::io;
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct FactoryParts;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactoryPartsParams {
     pub branch_id: String,
@@ -29,17 +31,19 @@ pub struct FactoryPartsParams {
 }
 
 /// One recorded part of a group, in whole factories.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryPartValue {
     /// `military`, `naval` or `civilian`.
     pub group: String,
     pub part: String,
-    #[ts(type = "number")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub value: i64,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryPartsReply {
     pub hour: i32,
@@ -106,6 +110,7 @@ impl AtHour for FactoryParts {
     type Reply = FactoryPartsReply;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FactoryPartsParams::decl(), FactoryPartValue::decl(), FactoryPartsReply::decl()]
     }

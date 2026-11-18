@@ -19,11 +19,13 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct ConstructionSpending;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionSpendingParams {
     pub branch_id: String,
@@ -31,7 +33,8 @@ pub struct ConstructionSpendingParams {
 }
 
 /// A leaf's running total from `known_at` on.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpentStep {
     pub known_at: i32,
@@ -40,7 +43,8 @@ pub struct SpentStep {
 }
 
 /// A line's output the totals lack, from `known_at` until `until` (null: to the branch's end).
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendingUnknown {
     pub known_at: i32,
@@ -51,7 +55,8 @@ pub struct SpendingUnknown {
 
 /// A line worked on a leaf, from its first read until the hour after its row ended (null: still
 /// in the branch at its end).
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeafProject {
     pub project: String,
@@ -59,7 +64,8 @@ pub struct LeafProject {
     pub until: Option<i32>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpendingLeaf {
     pub repair: bool,
@@ -75,7 +81,8 @@ pub struct SpendingLeaf {
     pub projects: Vec<LeafProject>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionSpendingReply {
     pub branch_id: String,
@@ -213,6 +220,7 @@ impl Product for ConstructionSpending {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ConstructionSpendingParams::decl(),

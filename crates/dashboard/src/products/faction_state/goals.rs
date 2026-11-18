@@ -15,11 +15,13 @@ use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
 use std::{cell::OnceCell, collections::BTreeMap};
 use replay_data::rows::TableId;
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// A progress section the game activates while the goal's progress lies in its range, as
 /// fractions of that progress, named when the content localises its key.
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionProgressBand {
     pub name: Option<String>,
@@ -27,7 +29,8 @@ pub struct FactionProgressBand {
     pub max: Option<f64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionGoalDefinition {
     /// The goal's token as the content names it; none when the recording names none.

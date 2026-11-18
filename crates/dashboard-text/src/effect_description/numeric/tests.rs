@@ -270,7 +270,7 @@ fn truce_rounds_days_from_current_midnight_and_uses_date_text() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
-    fixture.frame.hour = engine_native::cdate::HOUR_EPOCH + 1936 * 8760 + 23;
+    fixture.frame.hour = game_model::calendar::HOUR_EPOCH + 1936 * 8760 + 23;
     fixture.catalogue.localisation = std::sync::Arc::new(
         fixture
             .catalogue

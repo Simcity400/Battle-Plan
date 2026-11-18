@@ -24,6 +24,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 use crate::products::{LoadContext, Product};
@@ -66,7 +67,8 @@ impl List {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ScriptCurrency {
     PoliticalPower,
@@ -74,7 +76,8 @@ pub enum ScriptCurrency {
 }
 
 /// One currency a decision execution was proven to charge.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptCost {
     pub currency: ScriptCurrency,
@@ -83,7 +86,8 @@ pub struct ScriptCost {
 }
 
 /// One fact of a card with the native operands its wording needs.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptEdge {
     pub row: EventFeedRow,
@@ -99,7 +103,8 @@ pub struct ScriptEdge {
 
 /// One card: its opener first when recorded, then the rows continuing it in stream order, each
 /// through the page's last hour.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptOccurrence {
     pub id: String,
@@ -111,23 +116,25 @@ pub struct ScriptOccurrence {
 
 /// A row of a card page: `log-page`'s row (no cells) with its card; null for a row the list does
 /// not show.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptPageRow {
     pub hour: i32,
     pub key: String,
     pub ordinal: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub own_ordinal: Option<String>,
     pub cells: Vec<logs::LogCell>,
     pub occurrence: Option<ScriptOccurrence>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptOccurrencePage {
     pub branch_id: String,
@@ -270,6 +277,7 @@ impl Product for EventChoices {
     type Params = FeedPageParams;
     type Reply = ScriptOccurrencePage;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ScriptCurrency::decl(), ScriptCost::decl(), ScriptEdge::decl(), ScriptOccurrence::decl(), ScriptPageRow::decl(), ScriptOccurrencePage::decl()]
     }
@@ -292,6 +300,7 @@ impl Product for Decisions {
     type Params = FeedPageParams;
     type Reply = ScriptOccurrencePage;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         EventChoices::types()
     }

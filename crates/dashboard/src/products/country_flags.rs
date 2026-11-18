@@ -23,11 +23,13 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct CountryFlags;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum CountryFlagSize {
     /// `gfx/flags`, 82x52.
@@ -63,7 +65,8 @@ impl CountryFlagSize {
 /// What a country's flag is drawn from: the file key each of the game's flag atlases resolves
 /// its candidates to in the recorded mod stack. The atlases are the normal (`gfx/flags/`),
 /// medium and small ones, in that order.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryFlagChoice {
     /// Each atlas's key; null where no candidate gives it a file it draws.
@@ -93,7 +96,8 @@ const MAX_FLAGS: usize = 32;
 /// Why an atlas draws nothing, when nothing more is known.
 const UNAVAILABLE: &str = "flag artwork unavailable in the recorded content";
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryFlagParams {
     /// The choices to draw, as `country-facts` gives them.
@@ -102,7 +106,8 @@ pub struct CountryFlagParams {
     pub size: CountryFlagSize,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagImage {
     /// The choice drawn: its index in the request's `flags`.
@@ -119,7 +124,8 @@ pub struct CountryFlagImage {
     pub png: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagUnavailable {
     /// The choice: its index in the request's `flags`.
@@ -127,7 +133,8 @@ pub struct CountryFlagUnavailable {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagReply {
     pub size: CountryFlagSize,
@@ -143,6 +150,7 @@ impl Product for CountryFlags {
     type Params = CountryFlagParams;
     type Reply = CountryFlagReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             CountryFlagSize::decl(),

@@ -331,7 +331,7 @@ impl RaidAssets {
     }
 
     pub fn load_with_products(
-        products: Option<&map_products::loader::Loader>,
+        products: Option<&map_content::loader::Loader>,
         layers: &ResolvedLayers,
         defines: &installed_content_core::defines::Defines,
         map: &MapData,
@@ -348,12 +348,12 @@ impl RaidAssets {
     }
 
     pub fn load_content_with_products(
-        products: Option<&map_products::loader::Loader>,
+        products: Option<&map_content::loader::Loader>,
         layers: &ResolvedLayers,
         defines: &installed_content_core::defines::Defines,
         map: &MapData,
     ) -> io::Result<Self> {
-        let product = map_products::loader::TriggerLoader::new(layers, products);
+        let product = map_content::loader::TriggerLoader::new(layers, products);
         let mut warnings = Vec::new();
         let catalog = installed_content_raids::raids::read(layers)?;
         if !catalog.refused.is_empty() {
@@ -457,7 +457,7 @@ impl RaidAssets {
                 }
             }
         }
-        let (state_provinces, impassable) = map_products::loader::state_content(states);
+        let (state_provinces, impassable) = map_content::loader::state_content(states);
         let neighbor_states =
             product.neighbor_states(paths.as_ref().map(|paths| paths.graph()), &state_provinces);
         if let Err(error) = &neighbor_states {
@@ -526,7 +526,7 @@ impl RaidAssets {
         let invasion_prepare_days = product.invasion_prepare_days(defines);
         let script_constants = product.constants();
         let defines = RaidDefines::read(defines)?;
-        let trigger_content = map_products::loader::assemble_trigger_content(
+        let trigger_content = map_content::loader::assemble_trigger_content(
             tag_aliases,
             leader_roles,
             buildings,

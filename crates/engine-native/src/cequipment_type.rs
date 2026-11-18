@@ -55,12 +55,7 @@ pub const MAX_MIL_FACTORIES: usize = 0x600;
 /// Optional maximum naval factories, laid out as [`MAX_MIL_FACTORIES`].
 /// Read on the type first, then its archetype.
 pub const MAX_NAV_FACTORIES: usize = 0x608;
-/// CEquipmentType plane-family mask.
-pub const PLANE_MASK: u64 = 0x0000_001f_0037_fc00;
-/// CEquipmentType tank-family mask.
-pub const TANK_MASK: u64 = 0x0000_0040_8000_003c;
-/// CEquipmentType ship-family/category-normalization mask.
-pub const SHIP_MASK: u64 = 0x0000_0080_0040_03c1;
+pub use engine_executable::native_values::equipment_type::{PLANE_MASK, SHIP_MASK, TANK_MASK};
 /// Equipment category normalization first selector bit; occupation effective_equipment_mask tests 0x40 before other cases.
 pub const NORMALIZE_FIRST_SELECTOR: u64 = 0x40;
 /// Equipment category bits removed for selector 0x40; occupation effective_equipment_mask clears 0x181.

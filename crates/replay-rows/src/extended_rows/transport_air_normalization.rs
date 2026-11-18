@@ -4,7 +4,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportAirModifiers {
     pub direct: [Option<i64>; 2],
     pub positive: [Option<u32>; 2],
@@ -14,14 +14,14 @@ value_struct!(TransportAirModifiers {
     direct: [Option<i64>; 2], positive: [Option<u32>; 2], effective: [Option<i64>; 16],
 });
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportAirCombatModifier {
     pub lane: u8,
     pub raw: Option<i64>,
 }
 value_struct!(TransportAirCombatModifier { lane: u8, raw: Option<i64> });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportAirAce {
     pub assigned_aircraft: Option<Option<i32>>,
     pub modifiers: Option<TransportAirModifiers>,
@@ -36,7 +36,7 @@ value_struct!(TransportAirAce {
     combat: Option<Vec<TransportAirCombatModifier>>,
 });
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportAirEnvironment {
     pub weather: [Option<i64>; 2],
     pub night_factor: Option<i64>,
@@ -48,7 +48,7 @@ value_struct!(TransportAirEnvironment {
     night: [Option<i64>; 2], target_region: Option<i32>,
 });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportAirNormalization {
     pub attack: Option<i64>,
     pub defence: Option<i64>,

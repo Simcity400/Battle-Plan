@@ -1327,7 +1327,7 @@ fn compare_efficiency(
         report,
         format!("{label}.efficiency"),
         actual.efficiency_raw,
-        engine_native::cequipment_production_line::efficiency_average(sum, count),
+        game_model::production::efficiency_average(sum, count),
     );
 }
 

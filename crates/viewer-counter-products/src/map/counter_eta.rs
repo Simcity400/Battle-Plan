@@ -18,11 +18,11 @@
 //! retained duration cache and route option are local presentation state the viewer does not
 //! read or capture.
 //!
-//! Both sites use [`engine_native::cunit::eta_hours`], narrowed to i32. The map
+//! Both sites use [`game_model::movement::unit::eta_hours`], narrowed to i32. The map
 //! counter's [`map_arrival`] formats every reached duration: signed days<1
 //! uses total hours, otherwise days and the hours remainder.
 
-use engine_native::cunit::eta_hours;
+use game_model::movement::unit::eta_hours;
 use viewer_foundation::tooltip_text::tooltip_keys;
 
 /// One counter's arrival, in the parts the game's sentence names.

@@ -1,6 +1,6 @@
 //! Recorded rows, their codecs and the values they hold. The table registry above
 //! (`replay_data::rows::TableId`) reaches each table's rows through its descriptor
-//! ([`rows::RowOps`]), built and compiled in the `replay-tables-*` crates.
+//! ([`rows::RowOps`]), compiled by each table's owning crate.
 
 #[doc(hidden)]
 pub mod checkpoint;

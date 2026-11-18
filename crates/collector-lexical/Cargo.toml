@@ -16,7 +16,7 @@ test-support = ["collector-extended-support/test-support"]
 engine-allocation.workspace = true
 engine-native.workspace = true
 replay-data.workspace = true
-replay-frame.workspace = true
+replay-frame = { workspace = true, features = ["capture"] }
 serde = { workspace = true, features = ["derive"] }
 collector-extended-support.workspace = true
 collector-memory.workspace = true
@@ -39,7 +39,6 @@ collector-raw = { workspace = true, features = ["test-support"] }
 [target.'cfg(all())'.dev-dependencies]
 collector-lexical = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
-replay-frame = { workspace = true, features = ["test-support"] }
+replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

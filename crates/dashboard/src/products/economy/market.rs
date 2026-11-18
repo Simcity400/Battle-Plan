@@ -42,10 +42,12 @@ use std::{
     collections::{BTreeSet, HashMap},
     io,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The sections of the market a reply holds.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum MarketSection {
     Offers,
@@ -53,7 +55,8 @@ pub enum MarketSection {
     Agreements,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MarketLendLeaseParams {
     pub branch_id: String,
@@ -62,12 +65,13 @@ pub struct MarketLendLeaseParams {
     pub tags: Vec<String>,
     /// The one section read; every section when absent.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub only: Option<MarketSection>,
 }
 
 /// One entry of an equipment pool: its variant (decimal, as `variants` names it) and amount.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MarketItem {
     pub variant: String,
@@ -75,7 +79,8 @@ pub struct MarketItem {
     pub amount_raw: String,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MarketLevel {
     pub variant: String,
@@ -84,7 +89,8 @@ pub struct MarketLevel {
     pub level: i32,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MarketGrant {
     pub cic_raw: String,
@@ -94,7 +100,8 @@ pub struct MarketGrant {
 }
 
 /// A country's listing on the market.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MarketOffer {
     /// The seller's raw country id.
@@ -110,7 +117,8 @@ pub struct MarketOffer {
 /// A request (kind 0) or accepted contract (kind 1). Its purchase progress, where a purchase
 /// contract with its handle and parties stands, is the live cells of row `key`: `assigned` and
 /// `convoys` (convoys assigned and needed), `collected` (CIC, fixed5) and `deliveries`.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MarketTerms {
     pub key: String,
@@ -131,7 +139,8 @@ pub struct MarketTerms {
 
 /// A lend-lease agreement. Its fuel sent and lost are the live cells `fuelSent` and `fuelLost` of
 /// row `key` (/32768).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaseTerms {
     pub key: String,
@@ -153,7 +162,8 @@ pub struct LeaseTerms {
     pub last_fuel_delivered_raw: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MarketLendLeaseReply {
     pub branch_id: String,
@@ -303,6 +313,7 @@ impl AtHour for MarketLendLease {
         params.tags.iter().try_for_each(|tag| validate_tag(tag))
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             MarketLendLeaseParams::decl(),

@@ -21,6 +21,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub const KEY: &str = "trade-flows";
@@ -30,7 +31,8 @@ const DEALS: usize = 4;
 
 pub struct TradeFlows;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TradeFlowParams {
     pub branch_id: String,
@@ -46,7 +48,8 @@ pub struct TradeFlowParams {
 }
 
 /// One seller's deals of one resource with one buyer, as runs of equal terms.
-#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TradeFlow {
     /// Indexes into the reply's countries: the sides' tags at the flow's first run.
@@ -63,17 +66,18 @@ pub struct TradeFlow {
     pub last_hours: Vec<i32>,
     /// Fixed-point daily amount delivered, exact.
     pub delivered_raw: Vec<String>,
-    #[ts(type = "Array<number>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number>"))]
     pub factories: Vec<i64>,
-    #[ts(type = "Array<number>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number>"))]
     pub convoys_assigned: Vec<i64>,
-    #[ts(type = "Array<number>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number>"))]
     pub convoys_required: Vec<i64>,
-    #[ts(type = "Array<number>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number>"))]
     pub deals: Vec<i64>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TradeCountryIdentity {
     pub tag: String,
@@ -81,16 +85,18 @@ pub struct TradeCountryIdentity {
 }
 
 /// Hours some deals were left out, and how many.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PartialSpan {
     pub first_hour: i32,
     pub last_hour: i32,
-    #[ts(type = "number")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub deals: i64,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TradeFlowsReply {
     pub branch_id: String,
@@ -341,6 +347,7 @@ impl Product for TradeFlows {
     type Params = TradeFlowParams;
     type Reply = TradeFlowsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![TradeFlowParams::decl(), TradeFlowsReply::decl(), TradeFlow::decl(), TradeCountryIdentity::decl(), CountryIdentityRun::decl(), PartialSpan::decl(), ResourceInfo::decl(), HourSpan::decl()]
     }

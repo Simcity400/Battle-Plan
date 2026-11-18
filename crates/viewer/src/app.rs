@@ -1,3 +1,4 @@
+pub(crate) use viewer_playback::presentation::political_lines;
 use crate::map_views::CounterView;
 use dashboard::protocol::CameraMode;
 use std::path::Path;
@@ -76,21 +77,7 @@ mod drop;
 mod embedded;
 pub(crate) mod faction_highlight;
 
-/// The political part's limitation lines: with the playhead's map open, the political, naval and
-/// mode fills layers' own while the political layer draws (its refusal is the map's own line
-/// otherwise); without it, `today`'s.
-pub(crate) fn political_lines(side: Option<&crate::playhead_host::MapSide>, today: &[String]) -> Vec<String> {
-    let Some(side) = side else { return today.to_vec() };
-    match side.parts().filter(|_| side.draws("political")) {
-        Some((_, layers)) => {
-            let political = layers.iter().filter_map(|layer| layer.any().downcast_ref::<crate::layers::political::Political>()).flat_map(|layer| layer.warnings());
-            let naval = layers.iter().filter_map(|layer| layer.any().downcast_ref::<crate::layers::naval::Naval>()).flat_map(|layer| layer.warnings());
-            let modes = layers.iter().filter_map(|layer| layer.any().downcast_ref::<crate::layers::mode_fills::ModeFills>()).flat_map(|layer| layer.lines());
-            political.chain(naval).chain(modes).collect()
-        }
-        None => Vec::new(),
-    }
-}
+
 
 /// The lines the playhead's map gives in place of today's hour's: its limitation lines (the tables'
 /// notes, the drawn layers' own with `raids`, the scripts reader's raid arrows, and each refused
@@ -134,8 +121,6 @@ mod fly_aircraft;
 pub(crate) mod picker;
 pub(crate) mod playback_cost;
 mod presentation;
-#[cfg(test)]
-pub(crate) use presentation::{exact_capture_wait, grid_activation};
 mod profile_playback;
 #[cfg(test)]
 pub(crate) mod readback;

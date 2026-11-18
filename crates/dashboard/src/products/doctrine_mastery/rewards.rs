@@ -16,11 +16,13 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io, sync::Arc};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct DoctrineRewards;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoctrineRewardsParams {
     pub branch_id: String,
@@ -32,7 +34,8 @@ pub struct DoctrineRewardsParams {
 
 /// A reward of the track's subdoctrine, in authored order; its description none where the game
 /// words nothing for it, its name and threshold none where the content gives none.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DescribedReward {
     pub id: String,
@@ -41,7 +44,8 @@ pub struct DescribedReward {
     pub description: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineRewardsReply {
     /// The track's subdoctrine's spelling at the hour; none where none is chosen.
@@ -100,6 +104,7 @@ impl AtHour for DoctrineRewards {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![DoctrineRewardsParams::decl(), DescribedReward::decl(), DoctrineRewardsReply::decl()]
     }

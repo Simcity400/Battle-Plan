@@ -33,9 +33,11 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum PoliticsHistoryMode {
     /// One country's balances over the whole branch.
@@ -47,19 +49,21 @@ pub enum PoliticsHistoryMode {
     Memberships,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PoliticsHistoryParams {
     pub branch_id: String,
     pub mode: PoliticsHistoryMode,
     /// The country, for [`PoliticsHistoryMode::Country`].
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub tag: Option<String>,
 }
 
 /// One holder's election schedule over the branch.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ElectionHistory {
     pub tags: Vec<HolderTag>,
@@ -76,7 +80,8 @@ pub struct ElectionHistory {
 }
 
 /// One holder's balances over the branch.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct HolderBalances {
     pub holder: String,
@@ -87,7 +92,8 @@ pub struct HolderBalances {
 }
 
 /// One balance a holder belonged to, with its authored presentation.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceHistory {
     pub token: String,
@@ -107,7 +113,8 @@ pub struct BalanceHistory {
     pub trending: Vec<PoliticsRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PoliticsHistoryReply {
     pub branch_id: String,
@@ -135,6 +142,7 @@ impl Product for PoliticsStateHistory {
     type Params = PoliticsHistoryParams;
     type Reply = PoliticsHistoryReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             PoliticsHistoryParams::decl(),

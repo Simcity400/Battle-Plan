@@ -26,6 +26,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub(crate) mod runs;
@@ -44,7 +45,8 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionSpendingParams {
     pub branch_id: String,
@@ -56,7 +58,8 @@ pub struct ProductionSpendingParams {
 }
 
 /// Why a spending amount is not known.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProductionSpendingUnknown {
     NotRecorded,
@@ -74,7 +77,8 @@ pub enum ProductionSpendingUnknown {
 }
 
 /// What a production tick's input was for.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProductionPurpose {
     New,
@@ -97,7 +101,8 @@ impl ProductionPurpose {
 /// Which arm an equipment type serves, from the engine's own classifiers of its effective category
 /// flags (`installed_content_core::equipment::Database::category`): the plane family is air, the ship
 /// family (convoys included) naval, everything else land.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum Domain {
     Land,
@@ -107,9 +112,9 @@ pub enum Domain {
 
 impl Domain {
     pub fn of(category: u64) -> Self {
-        if category & engine_native::cequipment_type::PLANE_MASK != 0 {
+        if category & engine_executable::native_values::equipment_type::PLANE_MASK != 0 {
             Self::Air
-        } else if category & engine_native::cequipment_type::SHIP_MASK != 0 {
+        } else if category & engine_executable::native_values::equipment_type::SHIP_MASK != 0 {
             Self::Naval
         } else {
             Self::Land
@@ -119,7 +124,8 @@ impl Domain {
 
 /// A variant's names as recorded at a read of the variant table; a new entry
 /// wherever a read changes them.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockVariantName {
     /// The read these names are from; they hold until the next entry.
@@ -138,7 +144,8 @@ pub struct StockVariantName {
 }
 
 /// A running total over hours: fixed5, or why it is not known.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionSpendingRun {
     pub first_hour: i32,
@@ -148,11 +155,12 @@ pub struct ProductionSpendingRun {
     pub reason: Option<ProductionSpendingUnknown>,
     /// The run starts another holder's or another stretch's totals: nothing is measured across it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub break_before: Option<bool>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionSpendingLeaf {
     pub variant: String,
@@ -169,7 +177,8 @@ pub struct ProductionSpendingLeaf {
     pub runs: Vec<ProductionSpendingRun>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionPresenceRun {
     pub first_hour: i32,
@@ -182,7 +191,8 @@ pub struct ProductionPresenceRun {
 
 /// One part of the dockyard repair rate: a repaired design's, or (`variant` null) what the game's
 /// repair selection does not place on a design.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RepairRatePart {
     pub variant: Option<String>,
@@ -197,7 +207,8 @@ pub struct RepairRatePart {
 
 /// Dockyard output used for repairs, as rates (fixed5 IC a day) over the branch: an amount over
 /// hours is the sum of rate times hours over `denominator`, so parts and their total add exactly.
-#[derive(Clone, Debug, Default, Serialize, TS)]
+#[derive(Clone, Debug, Default, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RepairRates {
     pub denominator: u32,
@@ -210,7 +221,8 @@ pub struct RepairRates {
 /// The hours of a day: the denominator of every repair amount.
 pub const REPAIR_DENOMINATOR: u32 = 24;
 
-#[derive(Clone, Debug, Default, Serialize, TS)]
+#[derive(Clone, Debug, Default, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionSpendingReply {
     pub branch_id: String,
@@ -910,6 +922,7 @@ impl Product for ProductionSpending {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ProductionSpendingParams::decl(),

@@ -5,7 +5,7 @@ use super::*;
 /// or writer certificate independently of the wing census. Progress operands
 /// are read only for incoming wings admitted by the native counter/limit gate.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirTransferInputRow {
     pub wing: u64,
     pub base: u64,
@@ -21,7 +21,7 @@ typed_codec!(AirTransferInputRow, 64, |row| row.wing as u128,
 /// slot. A complete table omits observed inactive flags; None is an independent
 /// unavailable certificate or read, never an observed false value.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirGroundCrewRow {
     pub supply: Recorded<Option<AirSupplySummary>>,
     pub country: u32,
@@ -33,7 +33,7 @@ typed_codec!(AirGroundCrewRow, 64, |row| (row.country as u128) << 32 | row.regio
  { 0 => (enabled): OptionalU32, 1 => (supply): Opaque }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirSupplySummary {
     pub severity: i32,
     pub needed: i64,
@@ -55,7 +55,7 @@ opaque_value!(Option<AirSupplySummary>);
 /// all-active vector, used by map arrows across regions. Gaps have no meaning;
 /// missing certification is unknown and does not invalidate regional ordinals.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirRegionalMissionRow {
     pub wing: u64,
     pub ordinal: u32,
@@ -74,7 +74,7 @@ typed_codec!(AirRegionalMissionRow, 64, |row| row.wing as u128,
 /// `country`: SliceReads holds the hour each owner's rows were last emitted,
 /// and every change is emitted at the hour it is observed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirCountryRelationRow {
     pub country: u32,
     pub kind: u8,
@@ -82,9 +82,9 @@ pub struct AirCountryRelationRow {
     pub other: u32,
 }
 impl AirCountryRelationRow {
-    pub const DONOR: u8 = engine_air_history::air_participant_vectors::DONOR;
-    pub const ALLY: u8 = engine_air_history::air_participant_vectors::ALLY;
-    pub const ENEMY: u8 = engine_air_history::air_participant_vectors::ENEMY;
+    pub const DONOR: u8 = game_model::air_participants::DONOR;
+    pub const ALLY: u8 = game_model::air_participants::ALLY;
+    pub const ENEMY: u8 = game_model::air_participants::ENEMY;
 }
 typed_codec!(AirCountryRelationRow, 66, |row| (row.country as u128) << 34 | (row.kind as u128) << 32 | row.ordinal as u128,
  |key| Self { country: (key >> 34) as u32, kind: ((key >> 32) & 3) as u8, ordinal: key as u32, ..Default::default() },
@@ -100,7 +100,7 @@ typed_codec!(AirCountryRelationRow, 66, |row| (row.country as u128) << 34 | (row
 /// task-force roster owner, None when the host does not resolve (the null
 /// controller) or when its task force is null, which `host_without_task_force` marks.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirReferenceWitnessRow {
     pub handle: u64,
     pub base_kind: Option<i32>,
@@ -152,7 +152,7 @@ pub const AIR_MISSION_REACHED_IDS: u32 = AIR_MISSION_REACHED_MEMBERSHIP | AIR_MI
 /// feature skips the raw value. Playback admits that absence only under the
 /// recorded definition's disabled gate.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirNormalizationEntry {
     pub present: bool,
     pub raw: Option<i64>,
@@ -160,7 +160,7 @@ pub struct AirNormalizationEntry {
 value_struct!(AirNormalizationEntry { present: bool, raw: Option<i64> });
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirMissionNormalization {
     pub night_stat: Option<i64>,
     pub modifiers: [Option<AirNormalizationEntry>; 2],
@@ -184,7 +184,7 @@ opaque_value!(Option<AirMissionNormalization>);
 /// pass; otherwise they retain an older value. That update also requires
 /// a zero base status where the map's calculation does not.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirMissionInputRow {
     pub wing: u64,
     pub coverage_raw: i64,
@@ -232,7 +232,7 @@ typed_codec!(AirMissionInputRow, 64, |row| row.wing as u128,
 /// present only for an effective country, the only country whose fuel is
 /// queried. A null or all-zero container has no row (the law treats both as zero).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirSortieBaseCountryRow {
     pub base: u64,
     pub country: u32,
@@ -253,7 +253,7 @@ typed_codec!(AirSortieBaseCountryRow, 96, |row| (row.base as u128) << 32 | row.c
 /// Scope4 retains certified console detection overrides; scope5 is their
 /// singleton availability witness (raw0 unavailable, raw1 complete).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirSortieModifierRow {
     pub scope: u8,
     /// Canonical country slot, or zero for weather.
@@ -283,7 +283,7 @@ typed_codec!(AirSortieModifierRow, 67, |row| (row.scope as u128) << 64 | (row.su
 /// the task force's location. A host base with a null task force or a stale
 /// (null or unresolved) ship has no row. Kind-2 hosts are skipped: their count is always 1.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirSortieSpecialBaseRow {
     pub base: u64,
     pub rocket_slots: Option<i32>,
@@ -300,7 +300,7 @@ typed_codec!(AirSortieSpecialBaseRow, 64, |row| row.base as u128,
 /// sortie modifier: flags (bit 4 clamps to [0, 1]) and the feature selector,
 /// gated by the DLC mask (SimulationFeatures) when `callback_kind` is 1. A singleton.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirSortieModifierMetadataRow {
     pub flags: u32,
     pub feature_selector: u32,
@@ -321,7 +321,7 @@ pub const AIR_MISSION_NAVAL_PATROL: u32 = 1 << 7;
 /// region, which the scenario compares. `ordinal` counts only these rows;
 /// no other table records the fleet or task-force order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirNavalPatrolCombatRow {
     /// Canonical country slot.
     pub country: u32,
@@ -342,7 +342,7 @@ opaque_value!(Option<[i64; 7]>);
 
 /// Sparse native ring slots; per-level markers certify omitted zero records and cursors.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirNavalPatrolHistoryRow {
     /// Canonical country slot.
     pub country: u32,
@@ -487,7 +487,7 @@ pub const AIR_MENU_EXTRA_CHANNELS: usize = AIR_MENU_CHANNELS - AIR_HISTORY_SCENA
 pub const AIR_HISTORY_SCENARIO_CHANNELS: [usize; 9] = [43, 3, 10, 17, 51, 58, 44, 24, 65];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirHistoryWindow {
     pub complete: bool,
     pub capacity: u32,
@@ -526,7 +526,7 @@ pub struct AirMenuWindow {
 pub const AIR_MISSION_TRAINING: u32 = 1 << 11;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AceDeath {
     pub killer_ace: u64,
     pub killer_country: u32,
@@ -537,7 +537,7 @@ value_struct!(AceDeath {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirHistoryEntry {
     pub side: u8,
     pub date: i32,
@@ -564,7 +564,7 @@ value_struct!(AirHistoryEntry {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirDamageEntry {
     pub side: u8,
     pub date: i32,
@@ -586,7 +586,7 @@ value_struct!(AirDamageEntry {
 
 /// WingEquipment: key wing:ordinal (96 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WingEquipmentRow {
     pub wing: u64,
     pub ordinal: u32,
@@ -598,7 +598,7 @@ typed_codec!(WingEquipmentRow, 96, |row| (row.wing as u128) << 32 | row.ordinal 
 
 /// AirBases: key id (64 bits), 6 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirBaseRow {
     pub id: u64,
     pub state: Option<u32>,
@@ -614,7 +614,7 @@ typed_codec!(AirBaseRow, 64, |row| row.id as u128, |key| Self { id: key as u64, 
 
 /// WingCumulative: key id (64 bits), 2 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WingCumulativeRow {
     pub id: u64,
     pub accidents: i32,
@@ -628,7 +628,7 @@ typed_codec!(WingCumulativeRow, 64, |row| row.id as u128, |key| Self { id: key a
 ///
 /// AirRegionHistory: key country:region (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirRegionHistoryRow {
     pub country: u32,
     pub region: u32,
@@ -639,7 +639,7 @@ typed_codec!(AirRegionHistoryRow, 64, |row| (row.country as u128) << 32 | row.re
 
 /// AirRegionDamage: key country:region (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirRegionDamageRow {
     pub country: u32,
     pub region: u32,
@@ -651,7 +651,7 @@ typed_codec!(AirRegionDamageRow, 64, |row| (row.country as u128) << 32 | row.reg
 /// One damage entry of a retained record: the cause dispatched by the record updater
 /// and its signed fixed5 amount, summed per cause by the damage-entry updater.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirCombatDamage {
     pub cause: u32,
     pub amount: i64,
@@ -667,7 +667,7 @@ value_struct!(AirCombatDamage {
 /// native order: `first_damage` (causes 0, 1, 2, 6 and 7) and `second_damage` (causes 3, 4, 5, 9
 /// and 10), plus the retained equipment pool in native order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirCombatRecord {
     pub wing_id: u32,
     pub date: i32,
@@ -698,7 +698,7 @@ value_struct!(AirCombatRecord {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirCombatEquipment {
     pub variant: u64,
     pub amount_raw: i64,
@@ -723,7 +723,7 @@ value_struct!(AirCombatEquipment {
 /// The record vectors are shared: a carried row is the same allocation hour to hour,
 /// encodes as the vector itself and compares by pointer first.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirRegionCombatRow {
     pub country: u32,
     pub region: u32,
@@ -735,7 +735,7 @@ typed_codec!(AirRegionCombatRow, 64, |row| (row.country as u128) << 32 | row.reg
  { 0 => (owner): U32, 1 => (own): Opaque, 2 => (foreign): Opaque }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirAcePortraitInputs {
     pub cached: Option<Vec<u8>>,
     pub culture: Option<Vec<u8>>,
@@ -744,7 +744,7 @@ pub struct AirAcePortraitInputs {
 }
 value_struct!(AirAcePortraitInputs { cached: Option<Vec<u8>>, culture: Option<Vec<u8>>, fallback: Option<Vec<u8>> });
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirAcePresentation {
     pub gender: u8,
     pub pool_index: i32,
@@ -761,7 +761,7 @@ opaque_value!(Option<AirAcePresentation>);
 
 /// AirAces: key id (64 bits); presentation is an independent appended field.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirAceRow {
     pub id: u64,
     pub country: u32,
@@ -784,7 +784,7 @@ typed_codec!(AirAceRow, 64, |row| row.id as u128, |key| Self { id: key as u64, c
 
 /// AirStatistics: key country:region (64 bits), 26 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirStatisticsRow {
     pub country: u32,
     pub region: u32,
@@ -797,7 +797,7 @@ typed_codec!(AirStatisticsRow, 64, |row| (row.country as u128) << 32 | row.regio
 
 /// AirTheatres: key id (64 bits), 3 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirTheatreRow {
     pub id: u64,
     pub owner: u32,
@@ -809,7 +809,7 @@ typed_codec!(AirTheatreRow, 64, |row| row.id as u128, |key| Self { id: key as u6
 
 /// AirTheatreGroups: key id (64 bits), 3 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirTheatreGroupRow {
     pub id: u64,
     pub theatre: u64,
@@ -821,7 +821,7 @@ typed_codec!(AirTheatreGroupRow, 64, |row| row.id as u128, |key| Self { id: key 
 
 /// AirTheatreMembers: key group:wing (128 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirTheatreMemberRow {
     pub wing: u64,
     pub group: u64,
@@ -836,7 +836,7 @@ typed_codec!(AirTheatreMemberRow, 128, |row| (row.group as u128) << 64 | row.win
 /// container index, which the engine fills at the country's resolved ordinal.
 /// Wings are flattened across the container's pools in pool order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirBaseRegistrationRow {
     /// Full native air base handle; join it to AirBases.
     pub base: u64,

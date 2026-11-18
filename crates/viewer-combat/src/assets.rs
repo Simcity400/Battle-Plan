@@ -615,11 +615,11 @@ impl CombatContent {
     }
 
     pub fn read_with_products(
-        products: Option<&map_products::loader::Loader>,
+        products: Option<&map_content::loader::Loader>,
         layers: &ResolvedLayers,
         defines: &Defines,
     ) -> io::Result<Self> {
-        let map_products::loader::CombatInputs {
+        let map_content::loader::CombatInputs {
             traits,
             sub_units,
             country_traits: country_leader_traits,
@@ -627,7 +627,7 @@ impl CombatContent {
             scripted,
         } = match products {
             Some(products) => products.combat(layers)?,
-            None => map_products::loader::CombatInputs::read(layers)?,
+            None => map_content::loader::CombatInputs::read(layers)?,
         };
         let tactics = super::tactics::Content::from_database(database)
             .with_inventories(traits.clone(), sub_units.as_ref(), scripted)
@@ -711,7 +711,7 @@ impl Assets {
     }
 
     pub fn load_with_products(
-        products: Option<&map_products::loader::Loader>,
+        products: Option<&map_content::loader::Loader>,
         shared: &Arc<ResolvedLayers>,
         regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
         defines: &Defines,

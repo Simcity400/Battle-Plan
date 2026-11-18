@@ -23,6 +23,7 @@ use replay_data::rows::{CountryFuelRow, FuelDayRow, FuelDemandTotalRow, Recorded
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{io, sync::Arc};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub mod awards;
@@ -62,7 +63,8 @@ pub(crate) fn reason(bytes: &[u8]) -> Option<String> {
 
 /// A fuel panel label: the game's template with `{NUM}` (and `{OIL}`) markers in place of its
 /// operands, or why it is not shown.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelLabel {
     pub key: String,
@@ -158,7 +160,8 @@ impl Content {
 }
 
 /// Why a read's day is not shown.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum DayLeftOut {
     /// It overlaps a day already kept, so no update is counted twice.
@@ -175,7 +178,8 @@ pub enum DayLeftOut {
 /// The applied updates of a day, summed: gain sources (fixed5); the own gain and its sum of
 /// hourly conversions (/32768); incoming, outgoing, flat cost and total other transfers (/32768);
 /// consumed (/32768); the consumers' receipts (fixed5).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelAwardTotals {
     pub gains_raw: [String; 4],
@@ -187,7 +191,8 @@ pub struct FuelAwardTotals {
 }
 
 /// The fuel updates booked in the day before a read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDay {
     /// Own fuel gain, fixed5.
@@ -203,7 +208,8 @@ pub struct FuelDay {
 }
 
 /// The country's fuel status as last read at the hour, and the day before that read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelReadAt {
     /// The hour the status was read; its values hold until the next read.
@@ -227,7 +233,8 @@ pub struct FuelReadAt {
 /// The current consumption the demand pack read gives, by consumer (army, air, navy), fixed5 a
 /// day: the game's own family sum (none with `reasons` saying why), and the sums of each known
 /// part's projection, as is and clamped at zero.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelConsumptionAt {
     pub native_daily_raw: [Option<String>; 3],
@@ -236,14 +243,16 @@ pub struct FuelConsumptionAt {
     pub reasons: [Option<String>; 3],
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryFuelParams {
     pub branch_id: String,
     pub tag: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFuelReply {
     pub tag: String,
@@ -412,6 +421,7 @@ impl AtHour for CountryFuel {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             CountryFuelParams::decl(),

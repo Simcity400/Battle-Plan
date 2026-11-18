@@ -10,10 +10,15 @@ license.workspace = true
 doctest = false
 
 [features]
+export-types = []
 # The source, catalogue and product fixtures, for the tests of crates above this one.
-test-support = ["dashboard-core/test-support", "dashboard-text/test-support", "installed-content-abilities/test-support", "installed-content-core/test-support", "installed-content-country-names/test-support", "installed-content-equipment-graphics/test-support", "installed-content-focus/test-support", "installed-content-gfx/test-support", "installed-content-image/test-support", "installed-content-localisation/test-support", "installed-content-province-area/test-support", "installed-content-regions/test-support", "installed-content-settings/test-support", "installed-content-states/test-support"]
+test-support = ["replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "installed-content-abilities/test-support", "installed-content-core/test-support", "installed-content-country-names/test-support", "installed-content-equipment-graphics/test-support", "installed-content-focus/test-support", "installed-content-gfx/test-support", "installed-content-image/test-support", "installed-content-localisation/test-support", "installed-content-province-area/test-support", "installed-content-regions/test-support", "installed-content-settings/test-support", "installed-content-states/test-support"]
 
 [dependencies]
+replay-columnar.workspace = true
+dashboard-follow = { path = "../dashboard-follow" }
+dashboard-declare.workspace = true
+dashboard-query.workspace = true
 product-codec.workspace = true
 engine-projects.workspace = true
 replay.workspace = true
@@ -53,6 +58,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 zstd = "0.13"
 
 [dev-dependencies]
+playhead = { path = "../playhead" }
 engine-heap.workspace = true
 installed-content-abilities = { workspace = true, features = ["test-support"] }
 installed-content-core = { workspace = true, features = ["test-support"] }
@@ -84,9 +90,11 @@ proc-macro2 = "1"
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-dashboard-base = { workspace = true, features = ["test-support"] }
+dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+playhead = { path = "../playhead", features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 shader-pipeline = { path = "../shader-pipeline", features = ["test-support"] }
@@ -99,7 +107,6 @@ unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-wgpu = { workspace = true }
-unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-core = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }

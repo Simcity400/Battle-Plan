@@ -15,6 +15,7 @@ use replay_data::rows::{CountryExperienceDailyRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::io;
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The game's experience units in a point.
@@ -26,7 +27,8 @@ const TABLES: [TableId; 2] = [TableId::CountryExperience, TableId::CountryExperi
 
 pub struct CountryExperience;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExperienceParams {
     pub branch_id: String,
@@ -34,7 +36,8 @@ pub struct ExperienceParams {
 }
 
 /// The three branches, each in the game's units as decimal text.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ExperienceValues {
     pub army_raw: String,
@@ -42,7 +45,8 @@ pub struct ExperienceValues {
     pub air_raw: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ExperienceReply {
     pub tag: String,
@@ -85,6 +89,7 @@ impl AtHour for CountryExperience {
     type Reply = ExperienceReply;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ExperienceParams::decl(), ExperienceReply::decl(), ExperienceValues::decl()]
     }

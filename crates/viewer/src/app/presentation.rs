@@ -1,3 +1,4 @@
+use viewer_playback::presentation::{exact_capture_wait, grid_activation, build_lead, next_latency};
 use super::{
     Laps, OverlayKey, Playhead, ShownHour, Viewer, feed_raids, latest_built_key, present_raids,
     skipped_hours, wait_for_hour,
@@ -1235,54 +1236,13 @@ fn keeps_ready(
             || fallback == Some(key))
 }
 
-pub(crate) fn exact_capture_wait(remaining: Option<u32>, profiling: bool) -> bool {
-    remaining.is_some_and(|remaining| !profiling || remaining == 0)
-}
 
-pub(crate) fn grid_activation(
-    switch: bool,
-    playing: bool,
-    dashboard_map: bool,
-    scripted: bool,
-    capture: bool,
-    exact_wait: bool,
-    wall_sweep: bool,
-    speed: f64,
-) -> Result<u32, &'static str> {
-    if !switch && !dashboard_map {
-        return Err("switch-off");
-    }
-    if !playing {
-        return Err("paused");
-    }
-    if scripted {
-        return Err("scripted-map-mode");
-    }
-    if exact_wait || (capture && !wall_sweep) {
-        return Err("capture");
-    }
-    hours::grid_stride(speed).ok_or("below-finest-stride")
-}
 
-/// Hours the clock passes while a target is built, from the measured build
-/// latency; nothing is assumed before the first hour is measured.
-pub(crate) fn build_lead(speed: f64, latency_ms: Option<f64>) -> u32 {
-    let hours = speed * latency_ms.unwrap_or(0.0) / 1000.0;
-    if hours.is_finite() && hours > 0.0 {
-        hours.ceil().min(f64::from(u32::MAX)) as u32
-    } else {
-        0
-    }
-}
 
-/// The build latency estimate after one more measured hour.
-pub(crate) fn next_latency(estimate: Option<f64>, wall_ms: f64) -> Option<f64> {
-    if !wall_ms.is_finite() || wall_ms <= 0.0 {
-        return estimate;
-    }
-    // A quarter weight follows a change in load within a few hours.
-    Some(estimate.map_or(wall_ms, |old| old + (wall_ms - old) * 0.25))
-}
+
+
+
+
 
 fn grid_feedback<T>(
     ready: &BTreeMap<(replay_data::BranchId, i32), T>,

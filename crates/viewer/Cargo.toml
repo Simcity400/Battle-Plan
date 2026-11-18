@@ -8,6 +8,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+viewer-playback.workspace = true
+map-content.workspace = true
 foldhash = "0.2"
 dashboard-base.workspace = true
 job-priority.workspace = true
@@ -59,6 +61,7 @@ raw-window-handle = "0.6"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+viewer-playback = { workspace = true, features = ["test-support"] }
 engine-native.workspace = true
 playhead = { path = "../playhead", features = ["test-support"] }
 installed-content-abilities = { workspace = true, features = ["test-support"] }
@@ -90,13 +93,14 @@ uuid = { workspace = true, features = ["v4"] }
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-dashboard-base = { workspace = true, features = ["test-support"] }
+dashboard = { workspace = true, features = ["export-types"] }
+dashboard-base = { workspace = true, features = ["export-types", "test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 installed-content-naval-combat-defines = { workspace = true, features = ["test-support"] }
 installed-content-naval-path = { workspace = true, features = ["test-support"] }
+map-content = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }
@@ -104,7 +108,6 @@ unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-tracing = { workspace = true }
-unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }

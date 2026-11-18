@@ -41,6 +41,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -57,34 +58,35 @@ const TOP: usize = 10;
 /// Game days of a tile of cells.
 pub const TILE_DAYS: i32 = 256;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirTimelineParams {
     pub branch_id: String,
     pub first_hour: i32,
     pub last_hour: i32,
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub mode: Option<AirMode>,
     /// A side's key, or a country's tag with `viewpointCountry`.
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint: Option<String>,
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint_country: Option<bool>,
     /// The side keys compared; all when none.
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sides: Option<Vec<String>>,
     /// The regions shown, ranked; the most active when none.
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub regions: Option<Vec<u32>>,
     /// The air theatres whose regions are shown; all when none.
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub theatres: Option<Vec<String>>,
     /// How many of the most active regions are shown, without `regions`.
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<usize>,
     /// The tile of `TILE_DAYS` game days (on the absolute grid of days) whose cells are asked, of
     /// the regions `regions` names, in their order; the whole view ranked when none.
-    #[ts(optional, type = "number")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional, type = "number"))]
     pub tile: Option<i64>,
 }
 
@@ -114,7 +116,8 @@ impl AirTimelineParams {
 }
 
 /// A side's part of a day's comparison: the country whose read it shows and its friendly score.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirDayPart {
     pub side: u32,
@@ -122,7 +125,8 @@ pub struct AirDayPart {
     pub friendly: String,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirDaySides {
     pub parts: Vec<AirDayPart>,
@@ -135,7 +139,8 @@ pub struct AirDaySides {
 }
 
 /// A region's comparison at a day's end, with its scores.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AirDayCell {
     /// Why it has none: identity-not-recorded, sides-not-recorded, side-not-present,
@@ -146,7 +151,8 @@ pub enum AirDayCell {
     View { side: Option<u32>, leader: Option<String>, friendly: String, enemy: String },
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirTimelineRow {
     pub region: u32,
@@ -157,7 +163,8 @@ pub struct AirTimelineRow {
     pub cells: Vec<(u32, Option<AirDayCell>)>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirTimelineReply {
     /// The first hour of the view's first day.
@@ -956,6 +963,7 @@ impl Product for AirSuperiorityTimeline {
     type Params = AirTimelineParams;
     type Reply = AirTimelineReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![AirTimelineParams::decl(), AirTimelineReply::decl(), AirTimelineRow::decl(), AirDayCell::decl(), AirDaySides::decl(), AirDayPart::decl()]
     }
@@ -972,7 +980,8 @@ impl Product for AirSuperiorityTimeline {
 /// The regions a view shows, in main's order, without their cells: the timeline's rows.
 pub struct AirSuperiorityRanking;
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirRankingReply {
     pub rows: Vec<AirTimelineRow>,
@@ -987,6 +996,7 @@ impl Product for AirSuperiorityRanking {
     type Params = AirTimelineParams;
     type Reply = AirRankingReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![AirRankingReply::decl()]
     }

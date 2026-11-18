@@ -10,10 +10,28 @@ license.workspace = true
 doctest = false
 
 [features]
+capture = ["replay-rows/capture"]
 # Shared synthetic row fixtures and decode observations for replay integration tests.
-test-support = ["replay-rows/test-support", "replay-rows-derived/test-support"]
+test-support = [
+    "capture",
+    "replay-rows-intelligence/test-support",
+    "replay-rows-politics/test-support",
+    "replay-rows-projects/test-support",
+    "replay-tables-a/test-support",
+    "replay-tables-b/test-support",
+    "replay-tables-c/test-support",
+    "replay-tables-d/test-support",
+    "replay-tables-e/test-support",
+    "replay-tables-economy/test-support",
+]
 
 [dependencies]
+replay-tables-economy.workspace = true
+replay-rows-economy.workspace = true
+game-model.workspace = true
+replay-rows-projects.workspace = true
+replay-rows-intelligence.workspace = true
+replay-rows-politics.workspace = true
 replay-rows.workspace = true
 replay-rows-derived.workspace = true
 replay-tables-a.workspace = true
@@ -24,20 +42,15 @@ replay-tables-e.workspace = true
 replay-spool.workspace = true
 serde = { workspace = true, features = ["derive"] }
 crc32fast = "1"
-engine-air-history.workspace = true
 engine-allocation.workspace = true
-engine-events.workspace = true
-engine-executable.workspace = true
-engine-fuel.workspace = true
-engine-native.workspace = true
-engine-naval-history.workspace = true
-engine-occupation.workspace = true
-engine-scripts.workspace = true
-engine-production.workspace = true
+engine-reference-values.workspace = true
 weather-period.workspace = true
 replay-identity.workspace = true
 
 [dev-dependencies]
+engine-native.workspace = true
+engine-occupation.workspace = true
+
 # The identity fixture its wire-form tests encode.
 replay-identity = { workspace = true, features = ["test-support"] }
 # Compression-size assertions for synthetic row encodings.
@@ -51,5 +64,5 @@ serde_json.workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
+replay-data = { workspace = true, features = ["capture", "test-support"] }
 test-unify = { workspace = true }

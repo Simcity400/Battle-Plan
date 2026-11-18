@@ -13,17 +13,20 @@ use crate::{
 use installed_content_core::buildings::{Buildings, FactoryFlags};
 use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct FactoryGroups;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactoryGroupsParams {
     pub branch_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryGroupBuilding {
     /// The content's building type.
@@ -32,7 +35,8 @@ pub struct FactoryGroupBuilding {
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryGroupNames {
     /// `military`, `naval` or `civilian`, as the factory widgets name the group.
@@ -43,7 +47,8 @@ pub struct FactoryGroupNames {
     pub buildings: Vec<FactoryGroupBuilding>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactoryGroupsReply {
     pub groups: Vec<FactoryGroupNames>,
@@ -113,6 +118,7 @@ impl Product for FactoryGroups {
     type Params = FactoryGroupsParams;
     type Reply = FactoryGroupsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FactoryGroupsParams::decl(), FactoryGroupBuilding::decl(), FactoryGroupNames::decl(), FactoryGroupsReply::decl()]
     }

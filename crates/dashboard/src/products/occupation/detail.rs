@@ -23,6 +23,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The live cells of an occupier's row: its column and OccupierTotals' field.
@@ -32,7 +33,8 @@ const COLLABORATION: [TableId; 4] = [TableId::StateResistance, TableId::States, 
 
 pub struct OccupationDetail;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccupationDetailParams {
     pub branch_id: String,
@@ -43,7 +45,8 @@ pub struct OccupationDetailParams {
 
 /// A country an occupier occupies: its identity, its tag at the hour, and its collaboration toward
 /// the occupier (fixed5 fraction), none where no row was recorded.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationCollaboration {
     pub slot: u32,
@@ -52,7 +55,8 @@ pub struct OccupationCollaboration {
 }
 
 /// An asked tag; its totals are the live cells of row `tag`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationDetailRow {
     pub tag: String,
@@ -62,7 +66,8 @@ pub struct OccupationDetailRow {
     pub collaboration: Vec<OccupationCollaboration>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationDetailReply {
     pub occupiers: Vec<OccupationDetailRow>,
@@ -103,6 +108,7 @@ impl AtHour for OccupationDetail {
     type Reply = OccupationDetailReply;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![OccupationDetailParams::decl(), OccupationDetailReply::decl(), OccupationDetailRow::decl(), OccupationCollaboration::decl()]
     }

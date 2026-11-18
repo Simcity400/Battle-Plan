@@ -23,6 +23,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The series a faction sum reads.
@@ -41,13 +42,15 @@ fn measure_of(kind: &str, measure: &str) -> Result<(&'static Series, &'static Me
 /// followed values added where they are painted.
 pub struct FactionRosters;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactionRostersParams {
     pub branch_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionRoster {
     /// The faction's recorded id.
@@ -58,7 +61,8 @@ pub struct FactionRoster {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionRostersReply {
     pub factions: Vec<FactionRoster>,
@@ -67,7 +71,8 @@ pub struct FactionRostersReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionLine {
     pub id: String,
@@ -77,7 +82,8 @@ pub struct FactionLine {
     pub missing: Vec<MissingSpan>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionLinesReply {
     pub branch_id: String,
@@ -163,6 +169,7 @@ impl AtHour for FactionRosters {
     type Reply = FactionRostersReply;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FactionRostersParams::decl(), FactionRoster::decl(), FactionRostersReply::decl()]
     }
@@ -186,7 +193,8 @@ impl AtHour for FactionRosters {
 
 pub struct FactionLines;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactionLinesParams {
     pub branch_id: String,
@@ -209,7 +217,8 @@ pub struct FactionLinesParams {
 }
 
 /// A member of a group summed as one line, and the hours it is a member; the whole view where none are named.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupMember {
     pub tag: String,
@@ -441,6 +450,7 @@ impl Product for FactionLines {
     type Params = FactionLinesParams;
     type Reply = FactionLinesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FactionLinesParams::decl(), GroupMember::decl(), FactionLine::decl(), FactionLinesReply::decl()]
     }

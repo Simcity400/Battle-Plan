@@ -6,24 +6,12 @@
 use crate::{
     Memory, attrition_modifier_breakdown::Request, ccountry, cequipment_production_line as line,
     cequipment_variant, cpdx_array::Array, cproduction_line, cproduction_status,
-    modifier_keys as keys, read,
+    read,
 };
 use engine_sites::Rva;
 
 /// Production-tooltip modifier keys in increasing order.
-pub const KEYS: [u32; 11] = [
-    keys::LINE_CHANGE_PRODUCTION_EFFICIENCY_FACTOR,
-    keys::OUT_OF_POWER_IMPACT_FACTOR,
-    keys::PRODUCTION_FACTORY_MAX_EFFICIENCY_FACTOR,
-    keys::PRODUCTION_FACTORY_EFFICIENCY_GAIN_FACTOR,
-    keys::PRODUCTION_FACTORY_START_EFFICIENCY_FACTOR,
-    keys::INDUSTRIAL_CAPACITY_FACTORY,
-    keys::INDUSTRIAL_CAPACITY_FACTORY_POWERED,
-    keys::INDUSTRIAL_CAPACITY_DOCKYARD,
-    keys::INDUSTRIAL_CAPACITY_DOCKYARD_POWERED,
-    keys::EQUIPMENT_CONVERSION_SPEED,
-    keys::REFIT_SPEED,
-];
+pub use engine_executable::native_values::production_modifiers::KEYS;
 /// Seven production categories mapped through the runtime token table, distinct from token IDs.
 pub const BONUS_COUNT: usize = 7;
 const BONUS_KEYS_RVA: Rva = Rva(0x0343_8320);

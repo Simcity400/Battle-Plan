@@ -37,6 +37,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The holder (canonical slot, raw id) of each of `tags` at `hour`, when one holds it.
@@ -65,7 +66,8 @@ fn aliases(frame: &DecodedFrame, ids: &[(&str, Option<(u32, u32)>)]) -> HashMap<
 
 pub struct DiplomaticRelations;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiplomaticRelationsParams {
     pub branch_id: String,
@@ -73,7 +75,8 @@ pub struct DiplomaticRelationsParams {
 }
 
 /// One chosen country whose opinions of the other chosen countries are its live cells.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OpinionOwner {
     pub tag: String,
@@ -86,7 +89,8 @@ pub struct OpinionOwner {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomaticRelationsReply {
     pub owners: Vec<OpinionOwner>,
@@ -153,6 +157,7 @@ impl AtHour for DiplomaticRelations {
     type Reply = DiplomaticRelationsReply;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![DiplomaticRelationsParams::decl(), OpinionOwner::decl(), DiplomaticRelationsReply::decl()]
     }
@@ -277,7 +282,8 @@ pub fn run_pacts(recording: &Recording, run: u32) -> io::Result<RunPacts> {
 
 pub struct DiplomaticPacts;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiplomaticPactsParams {
     pub branch_id: String,
@@ -285,7 +291,8 @@ pub struct DiplomaticPactsParams {
 }
 
 /// A relation kind a reply's agreements name.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomacyKind {
     /// The relation's id as the game spells it.
@@ -297,7 +304,8 @@ pub struct DiplomacyKind {
 }
 
 /// One relation of the chosen country's over consecutive hours its row was held with one start.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomacyPact {
     pub kind: String,
@@ -318,7 +326,8 @@ pub struct DiplomacyPact {
     pub ended_by: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomacyPactsReply {
     pub kinds: Vec<DiplomacyKind>,
@@ -458,6 +467,7 @@ impl Product for DiplomaticPacts {
     type Params = DiplomaticPactsParams;
     type Reply = DiplomacyPactsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![DiplomaticPactsParams::decl(), DiplomacyKind::decl(), DiplomacyPact::decl(), DiplomacyPactsReply::decl()]
     }

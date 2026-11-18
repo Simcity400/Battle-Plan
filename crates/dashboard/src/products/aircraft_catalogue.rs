@@ -26,10 +26,12 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Which names a page lists.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum AircraftScope {
     /// Names something makes an aircraft's.
@@ -38,7 +40,8 @@ pub enum AircraftScope {
     All,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AircraftCatalogueParams {
     pub scope: AircraftScope,
@@ -51,7 +54,8 @@ pub struct AircraftCatalogueParams {
     pub count: u32,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum AircraftKind {
     Entity,
@@ -61,7 +65,8 @@ pub enum AircraftKind {
     Unregistered,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AircraftReference {
     Pool {
@@ -84,7 +89,8 @@ pub enum AircraftReference {
     },
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum AircraftRefusalKind {
     Unregistered,
@@ -92,14 +98,16 @@ pub enum AircraftRefusalKind {
     NoGeometry,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AircraftRefusal {
     pub kind: AircraftRefusalKind,
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AircraftEntry {
     /// The entity or mesh name the map flies, exactly as registered.
@@ -114,7 +122,8 @@ pub struct AircraftEntry {
     pub refusal: Option<AircraftRefusal>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AircraftRefusalCount {
     pub kind: AircraftRefusalKind,
@@ -122,7 +131,8 @@ pub struct AircraftRefusalCount {
     pub count: u32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AircraftCatalogueReply {
     /// How many of the scope's entries match the query.
@@ -156,6 +166,7 @@ impl Product for AircraftCatalogue {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             Self::Params::decl(),

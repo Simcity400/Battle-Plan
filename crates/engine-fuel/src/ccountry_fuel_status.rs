@@ -57,9 +57,9 @@ pub const REMAINING_HOURS: usize = 0xcc;
 /// Owning CCountry pointer checked against the caller's country.
 pub const COUNTRY: usize = 0xe0;
 /// Fuel quantity denominator.
-pub const QUANTITY_SCALE: i64 = 32_768;
+pub use engine_executable::native_values::fuel_status::QUANTITY_SCALE;
 /// Fuel gain and cost modifier denominator.
-pub const MODIFIER_SCALE: i64 = 100_000;
+pub use engine_executable::native_values::fuel_status::MODIFIER_SCALE;
 
 /// One country's fuel status. The `ring_` fields are exact sums of the raw
 /// values of the 24 history ring entries, which the game writes one per

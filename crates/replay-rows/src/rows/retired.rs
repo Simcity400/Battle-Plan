@@ -11,7 +11,7 @@ use crate::rows::compatibility::RETIRED_INPUTS_FORMAT;
 /// consumer receives it. Use it only as a whole Opaque row field: inside a
 /// nested value it would consume the rest of its parent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Retired;
 
 impl Value for Retired {
@@ -42,7 +42,7 @@ opaque_value!(Retired);
 /// was. It holds nothing and current writers store nothing; a recording older
 /// than [`RETIRED_INPUTS_FORMAT`] holds the part's bytes, which decode through
 /// `T` and are dropped, so the rest of the nested value stays readable.
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RetiredNested<T>(pub std::marker::PhantomData<fn() -> T>);
 
 impl<T> Default for RetiredNested<T> {
@@ -114,7 +114,7 @@ impl<T: Value + Default> Value for RetiredNested<T> {
 /// bytes, which decode through `T` and are kept, for the consumer that falls
 /// back to them where the value's current field is not recorded.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RetiredKept<T>(pub Option<T>);
 
 impl<T> Default for RetiredKept<T> {
@@ -180,7 +180,7 @@ impl<T: Value + Default> Value for RetiredKept<T> {
 /// value is decoded and followed through its deltas, so the table's other
 /// fields stay readable, but no consumer receives it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RetiredI64(pub i64);
 
 #[cfg(any(test, feature = "test-support"))]
@@ -215,7 +215,8 @@ impl NativeValue for RetiredI64 {
 macro_rules! retired_fixed {
     ($(#[$doc:meta])* $name:ident($ty:ty), $kind:ident) => {
         $(#[$doc])*
-        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, replay_spool::Spooled)]
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
         pub struct $name(pub $ty);
 
         #[cfg(any(test, feature = "test-support"))]
@@ -280,7 +281,7 @@ retired_fixed!(
 /// never changes after the row is inserted; an older recording's list is
 /// decoded and followed through its deltas for no consumer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RetiredU32List(pub Vec<u32>);
 
 #[cfg(any(test, feature = "test-support"))]

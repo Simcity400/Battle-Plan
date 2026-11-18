@@ -35,11 +35,13 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct FactionState;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "view", rename_all = "camelCase")]
 pub enum FactionStateParams {
     Rules {
@@ -63,7 +65,8 @@ impl FactionStateParams {
 }
 
 /// A selection held over consecutive hours: its token and name, or why it has no name.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionSelectionRun {
     pub first_hour: i32,
@@ -74,14 +77,16 @@ pub struct FactionSelectionRun {
     pub starts_segment: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionSelectionLane {
     pub slot: u32,
     pub runs: Vec<FactionSelectionRun>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionMinimumLane {
     /// The upgrade group's lexer token: `groups` names it.
@@ -90,7 +95,8 @@ pub struct FactionMinimumLane {
 }
 
 /// A member's selection in one upgrade group, over the hours its account was an explicit member.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionMemberUpgradeLane {
     /// Unique among the reply's lanes: the account, its holder and the group.
@@ -103,7 +109,8 @@ pub struct FactionMemberUpgradeLane {
     pub runs: Vec<FactionSelectionRun>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionUpgradeGroup {
     pub group: u32,
@@ -111,7 +118,8 @@ pub struct FactionUpgradeGroup {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionRulesReply {
     pub rules: Vec<FactionSelectionLane>,
@@ -125,7 +133,8 @@ pub struct FactionRulesReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionManpowerRun {
     pub first_hour: i32,
@@ -135,7 +144,8 @@ pub struct FactionManpowerRun {
 }
 
 /// One recorded occurrence of a country in the faction's manpower list.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionManpowerMember {
     pub key: String,
@@ -146,7 +156,8 @@ pub struct FactionManpowerMember {
     pub runs: Vec<FactionManpowerRun>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionManpowerReply {
     pub members: Vec<FactionManpowerMember>,
@@ -154,7 +165,8 @@ pub struct FactionManpowerReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
 pub enum FactionStateReply {
     Rules(FactionRulesReply),
@@ -182,6 +194,7 @@ impl Product for FactionState {
         super::faction_id(faction).map(|_| ())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             FactionStateParams::decl(),

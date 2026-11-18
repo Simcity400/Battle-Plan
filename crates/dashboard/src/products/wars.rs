@@ -39,7 +39,7 @@ use dashboard_query::{
 use installed_content_country_names::country_names::{CountryNames, Operands};
 use inputs::{Hour, Resolve, State, holds};
 use native::{Blob, Pair};
-use recorder_derive::looks::Look;
+use replay_looks::Look;
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -47,13 +47,15 @@ use std::{
     io,
     sync::{Arc, PoisonError, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 use walk::{Seen, Viewed, Walk};
 
 pub struct Wars;
 pub struct WarLosses;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WarsParams {
     pub branch_id: String,
@@ -61,7 +63,8 @@ pub struct WarsParams {
     pub viewpoint_tag: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarName {
     /// Exact plain text, or "Not recorded" with a reason.
@@ -71,7 +74,8 @@ pub struct WarName {
     pub key: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum WarSide {
     Attacker,
@@ -80,7 +84,8 @@ pub enum WarSide {
     Opponent,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarParticipantRun {
     pub tag: String,
@@ -91,14 +96,16 @@ pub struct WarParticipantRun {
     pub left_by: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarCapitulation {
     pub tag: String,
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarObservation {
     pub first_hour: i32,
@@ -114,7 +121,8 @@ pub struct WarObservation {
     pub name: WarName,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarTimeline {
     /// Timeline-local app identity; never a native war id.
@@ -128,13 +136,13 @@ pub struct WarTimeline {
     pub capitulations: Vec<WarCapitulation>,
     /// The relation lifetimes the war held and when, for its casualties.
     #[serde(skip)]
-    #[ts(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
     pub(crate) relations: Vec<WarRelationMembership>,
     #[serde(skip)]
-    #[ts(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
     open_participants: HashMap<(String, WarSide), usize>,
     #[serde(skip)]
-    #[ts(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
     open_relations: HashMap<(WarRelationKey, bool), usize>,
 }
 
@@ -169,7 +177,8 @@ pub(crate) struct WarRelationMembership {
     pub last_hour: i32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarsReply {
     pub branch_id: String,
@@ -186,7 +195,8 @@ pub struct WarsReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WarLossesParams {
     pub branch_id: String,
@@ -196,11 +206,13 @@ pub struct WarLossesParams {
 
 /// [first hour, last hour, viewpoint side's known and unknown-attacker casualties, the opposing
 /// side's]: what the war's relations had counted by then.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct WarCasualtyRun(pub i32, pub i32, pub String, pub String, pub String, pub String);
 
 /// One war's casualties at the hour, or why they are not known.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarCasualties {
     /// The war's id in the `wars` reply.
@@ -209,7 +221,8 @@ pub struct WarCasualties {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarLossesReply {
     pub branch_id: String,
@@ -584,6 +597,7 @@ impl Product for Wars {
     type Params = WarsParams;
     type Reply = WarsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             WarsParams::decl(),
@@ -653,6 +667,7 @@ impl Product for WarLosses {
     type Params = WarLossesParams;
     type Reply = WarLossesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![WarLossesParams::decl(), WarCasualtyRun::decl(), WarCasualties::decl(), WarLossesReply::decl()]
     }

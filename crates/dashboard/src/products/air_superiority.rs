@@ -29,6 +29,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub use replay_derive::air_superiority::{assignment, compose};
@@ -47,7 +48,8 @@ pub const SCALE: i32 = 100_000;
 pub const BAD_BELOW: i32 = 40_000;
 pub const GOOD_ABOVE: i32 = 60_000;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "lowercase")]
 pub enum AirMode {
     #[default]
@@ -55,25 +57,26 @@ pub enum AirMode {
     Viewpoint,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirSuperiorityParams {
     pub branch_id: String,
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub mode: Option<AirMode>,
     /// A side's key, or a country's tag with `viewpointCountry`.
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint: Option<String>,
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint_country: Option<bool>,
     /// The side keys compared; all when none.
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub sides: Option<Vec<String>>,
     /// The regions shown; all active when none.
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub regions: Option<Vec<u32>>,
     /// The air theatres whose regions are shown; all when none.
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub theatres: Option<Vec<String>>,
 }
 
@@ -96,7 +99,8 @@ impl AirSuperiorityParams {
 }
 
 /// Where a side's colour is read: a country at an hour.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAnchor {
     pub tag: String,
@@ -104,7 +108,8 @@ pub struct AirAnchor {
 }
 
 /// A side of the hour's assignment. Faction names come from the groups the page reads by id.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirSide {
     pub key: String,
@@ -123,7 +128,8 @@ pub struct AirSide {
 
 /// A side's part of a region's comparison: the country whose read it shows; its friendly score is
 /// the live cell (`live`, `friendly`).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirPart {
     pub side: u32,
@@ -132,7 +138,8 @@ pub struct AirPart {
 }
 
 /// A region's comparison at the hour, without its numbers.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AirCell {
     /// Why it has none: identity-not-recorded, sides-not-recorded, side-not-present,
@@ -145,7 +152,8 @@ pub enum AirCell {
     View { side: Option<u32>, leader: Option<String>, live: Option<String> },
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirSidesCell {
     pub parts: Vec<AirPart>,
@@ -160,7 +168,8 @@ pub struct AirSidesCell {
 }
 
 /// What a region's assigned wings are: a live cell (`region`, `wings`), none, or not known.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum AirWings {
     Live,
@@ -168,7 +177,8 @@ pub enum AirWings {
     Unknown,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirRegion {
     pub id: u32,
@@ -181,7 +191,8 @@ pub struct AirRegion {
     pub wings: AirWings,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirSuperiorityReply {
     /// Why no comparison is shown at the hour.
@@ -199,14 +210,16 @@ pub struct AirSuperiorityReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirChoice {
     pub id: String,
     pub name: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirChoicesReply {
     /// Every strategic region of the recorded stack, by id.
@@ -578,6 +591,7 @@ impl AtHour for AirSuperiorityAt {
         params.validate()
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             AirSuperiorityParams::decl(),
@@ -650,6 +664,7 @@ impl Product for AirSuperiorityChoices {
     type Params = BranchParams;
     type Reply = AirChoicesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![AirChoice::decl(), AirChoicesReply::decl()]
     }

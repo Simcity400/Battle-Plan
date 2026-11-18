@@ -2,7 +2,7 @@
 //! remains in PoliticsContent, also shared with ideas and ruling parties.
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum RecordedPortrait {
     /// The recorded holder selected a content portrait of this kind/identity.
     Entry { kind: u32, identity: Vec<u8> },

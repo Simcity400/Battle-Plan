@@ -30,6 +30,7 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 mod facility;
@@ -45,14 +46,16 @@ const COMPLETION_MARKER: u32 = super::fold::COMPLETION_MARKER;
 pub struct SpecialProjectDetailsAt;
 pub struct SpecialProjectEffectsAt;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecialProjectDetailsParams {
     pub branch_id: String,
     pub tag: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecialProjectEffectsParams {
     pub branch_id: String,
@@ -62,14 +65,16 @@ pub struct SpecialProjectEffectsParams {
     pub project: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectLabel {
     pub token: String,
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScientistSkill {
     pub specialization: ProjectLabel,
@@ -77,7 +82,8 @@ pub struct ScientistSkill {
     pub experience_raw: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScientistDetails {
     pub character: u32,
@@ -93,7 +99,8 @@ pub struct ScientistDetails {
     pub traits: Option<Vec<ProjectLabel>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScientistAssignment {
     pub ordinal: u32,
@@ -104,7 +111,8 @@ pub struct ScientistAssignment {
     pub timed: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProgramDetails {
     pub id: u32,
@@ -114,13 +122,15 @@ pub struct ProgramDetails {
     pub facility: Option<FacilityDetails>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRewardOption {
     pub label: ProjectLabel,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PendingProjectReward {
     pub label: ProjectLabel,
@@ -129,14 +139,16 @@ pub struct PendingProjectReward {
     pub unavailable: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectVariableValue {
     pub name: String,
     pub value_raw: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectChoice {
     pub ordinal: u32,
@@ -151,7 +163,8 @@ pub struct ProjectChoice {
     pub state: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecializationProgress {
     pub specialization: ProjectLabel,
@@ -159,7 +172,8 @@ pub struct SpecializationProgress {
     pub read_hour: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRuntimeDetails {
     pub owner: u32,
@@ -173,7 +187,8 @@ pub struct ProjectRuntimeDetails {
     pub choices: Option<Vec<ProjectChoice>>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectDetails {
     pub hour: i32,
@@ -191,14 +206,16 @@ pub struct SpecialProjectDetails {
 
 dashboard_base::reply_warnings!(SpecialProjectDetails);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEffects {
     pub text: String,
     pub refusals: BTreeMap<String, usize>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectEffects {
     pub hour: i32,
@@ -444,6 +461,7 @@ impl AtHour for SpecialProjectDetailsAt {
         dashboard_base::products::validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             SpecialProjectDetailsParams::decl(),
@@ -873,6 +891,7 @@ impl AtHour for SpecialProjectEffectsAt {
         dashboard_base::products::validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![SpecialProjectEffectsParams::decl(), SpecialProjectEffects::decl(), ProjectEffects::decl()]
     }

@@ -91,7 +91,7 @@ fn selection_travel(
                 result.route = Ok(preview.route);
                 result.hours = preview
                     .duration
-                    .map(|duration| engine_native::cunit::eta_hours(duration) as i32);
+                    .map(|duration| game_model::movement::unit::eta_hours(duration) as i32);
             }
             Err(reason) => {
                 result.route = Err(reason.clone());
@@ -132,7 +132,7 @@ fn fallback_hours(
         occupied += 1;
         match query(unit)
             .and_then(|preview| preview.duration)
-            .map(|duration| engine_native::cunit::eta_hours(duration) as i32)
+            .map(|duration| game_model::movement::unit::eta_hours(duration) as i32)
         {
             // Admission is already certain; no positive i32 contributor can
             // improve one. Earlier duration failures also cannot improve it.

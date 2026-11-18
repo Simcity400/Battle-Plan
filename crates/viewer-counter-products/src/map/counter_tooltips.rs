@@ -791,7 +791,7 @@ fn next_hours(members: &[(u64, u32, u32, &Timing)]) -> Result<Option<i32>, Strin
             .next
             .ok_or_else(|| format!("unit {id} has no next-province arrival estimate"))?;
         // The next-province duration rounds each first edge up to whole hours.
-        let hours = engine_native::cunit::eta_hours(remaining) as i32;
+        let hours = game_model::movement::unit::eta_hours(remaining) as i32;
         minimum = Some(minimum.map_or(hours, |previous: i32| previous.min(hours)));
     }
     Ok(minimum.filter(|&hours| hours > 0))

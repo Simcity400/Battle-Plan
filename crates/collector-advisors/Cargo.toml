@@ -25,7 +25,7 @@ engine-characters.workspace = true
 engine-mutations.workspace = true
 engine-native.workspace = true
 replay-data.workspace = true
-replay-frame.workspace = true
+replay-frame = { workspace = true, features = ["capture"] }
 serde = { workspace = true, features = ["derive"] }
 collector-certificates.workspace = true
 collector-extended-support.workspace = true
@@ -53,8 +53,7 @@ collector-hooks = { workspace = true, features = ["test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
-replay-frame = { workspace = true, features = ["test-support"] }
+replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-crossbeam-utils = { workspace = true }

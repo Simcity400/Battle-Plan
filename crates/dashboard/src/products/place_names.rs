@@ -32,6 +32,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -324,7 +325,8 @@ impl<'f> Places<'f> {
 
 pub struct PlaceNames;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlaceNamesParams {
     pub branch_id: String,
@@ -336,21 +338,24 @@ pub struct PlaceNamesParams {
     pub states: Vec<StateNameRequest>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlaceNameRequest {
     pub province_id: u32,
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StateNameRequest {
     pub state_id: u32,
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PlaceName {
     pub province_id: u32,
@@ -359,7 +364,8 @@ pub struct PlaceName {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PlaceStateName {
     pub state_id: u32,
@@ -368,7 +374,8 @@ pub struct PlaceStateName {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PlaceNamesReply {
     pub places: Vec<PlaceName>,
@@ -415,6 +422,7 @@ impl Product for PlaceNames {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![PlaceNamesParams::decl(), PlaceNameRequest::decl(), StateNameRequest::decl(), PlaceName::decl(), PlaceStateName::decl(), PlaceNamesReply::decl()]
     }

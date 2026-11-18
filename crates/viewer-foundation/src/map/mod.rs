@@ -37,6 +37,7 @@ pub mod province_schedule;
 pub mod redraws;
 pub mod request_order;
 pub mod sprites;
+pub mod stack_anchors;
 pub mod tables;
 pub mod templates;
 pub mod terrain_content;

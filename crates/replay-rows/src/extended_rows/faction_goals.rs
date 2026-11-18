@@ -4,7 +4,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionGoalStatusRow {
     pub faction: u64,
     pub manifest: Option<u32>,
@@ -19,7 +19,7 @@ typed_codec!(FactionGoalStatusRow, 64, |row| row.faction as u128,
 /// Kind 0 runtime goal, 1 completed history, 2 cancelled history, 3 extra slot,
 /// 4 term date. These are recording list kinds, not authored goal terms.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionGoalEntryRow {
     pub faction: u64,
     pub kind: u8,

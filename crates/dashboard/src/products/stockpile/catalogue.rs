@@ -26,19 +26,22 @@ use std::{
     io,
     sync::{Arc, PoisonError, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// A holder whose history a request reads, only within `within` where it names hours.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileHolder {
     pub tag: String,
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub within: Option<Vec<HourSpan>>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileCatalogueParams {
     pub branch_id: String,
@@ -49,7 +52,8 @@ pub struct StockpileCatalogueParams {
 }
 
 /// What a chart line draws: a group's stock, its surplus as a percentage of its need, or its need.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum StockpileMeasure {
     Stock,
@@ -57,7 +61,8 @@ pub enum StockpileMeasure {
     Need,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileLine {
     /// The group's key: `[kind, key]` as JSON, a design's key its handle.
@@ -65,7 +70,8 @@ pub struct StockpileLine {
     pub measure: StockpileMeasure,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileChartParams {
     pub branch_id: String,
@@ -102,7 +108,8 @@ fn validate(branch_id: &str, holders: &[StockpileHolder]) -> Result<(), &'static
 
 /// A group's largest stock or need at any hour within the holders' hours, and whether its stock and
 /// its share of need draw anything there.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileChoicePeak {
     pub raw: String,
@@ -111,7 +118,8 @@ pub struct StockpileChoicePeak {
 }
 
 /// A design the holders held or produced.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileCatalogueVariant {
     /// Its native handle, as a decimal string.
@@ -126,7 +134,8 @@ pub struct StockpileCatalogueVariant {
 }
 
 /// A logistics type the holders' record listed, and whether it ever held anything but zero.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileCatalogueLogistics {
     /// The archetype key, or the unresolved mark and the recorded token's spelling.
@@ -134,7 +143,8 @@ pub struct StockpileCatalogueLogistics {
     pub nonzero: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileCatalogueReply {
     pub branch_id: String,
@@ -161,7 +171,8 @@ pub struct StockpileCatalogueReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileChartLine {
     pub group: String,
@@ -169,7 +180,8 @@ pub struct StockpileChartLine {
     pub summary: ChartSummary,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileChartReply {
     pub branch_id: String,
@@ -887,6 +899,7 @@ impl Product for EquipmentStockpileCatalogue {
     type Params = StockpileCatalogueParams;
     type Reply = StockpileCatalogueReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             StockpileHolder::decl(),
@@ -919,6 +932,7 @@ impl Product for EquipmentStockpileChart {
     type Params = StockpileChartParams;
     type Reply = StockpileChartReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![StockpileMeasure::decl(), StockpileLine::decl(), StockpileChartParams::decl(), StockpileChartLine::decl(), StockpileChartReply::decl()]
     }

@@ -136,10 +136,10 @@ impl ProvinceGraph {
         for list in neighbours.values_mut() {
             list.sort_unstable();
         }
-        let mut ids = engine_native::allocation::collect_vec(neighbours.keys().copied())?;
+        let mut ids = engine_allocation::collect_vec(neighbours.keys().copied())?;
         ids.sort_unstable();
-        let mut rows = engine_native::allocation::vec(ids.len() + 1)?;
-        let mut flat = engine_native::allocation::vec(neighbours.values().map(Vec::len).sum())?;
+        let mut rows = engine_allocation::vec(ids.len() + 1)?;
+        let mut flat = engine_allocation::vec(neighbours.values().map(Vec::len).sum())?;
         rows.push(0);
         for id in &ids {
             flat.extend(neighbours[id].iter().map(|next| {

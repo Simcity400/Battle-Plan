@@ -16,7 +16,7 @@ use crate::{
 /// COrdersGroup vtable.
 pub const VTABLE_RVA: Rva = Rva(0x029c_edc0);
 /// COrdersGroup reference type.
-pub const REFERENCE_TYPE: u32 = 53;
+pub use engine_executable::native_values::orders_group::REFERENCE_TYPE;
 /// COrdersGroup packed type/id u64 handle.
 pub const HANDLE: usize = 0x08;
 /// Army-group discriminator byte, initialized to zero or one and always serialized.

@@ -276,7 +276,7 @@ fn plane_definition(
         }
     }
     Ok(chain.into_iter().rev().any(|index| {
-        equipment.category(&equipment.equipment[index]) & engine_native::cequipment_type::PLANE_MASK
+        equipment.category(&equipment.equipment[index]) & engine_executable::native_values::equipment_type::PLANE_MASK
             != 0
     }))
 }

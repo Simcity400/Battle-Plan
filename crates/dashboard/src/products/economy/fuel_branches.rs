@@ -12,6 +12,7 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::io;
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The game's labels of its three fuel consumers, in consumer order.
@@ -22,7 +23,8 @@ pub const SCALE: u32 = 100_000;
 
 pub struct FuelBranches;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelBranchesParams {
     pub branch_id: String,
@@ -30,7 +32,8 @@ pub struct FuelBranchesParams {
 }
 
 /// One consumer at the hour: fixed5 amounts and the game's priority.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelConsumerRow {
     /// Its native consumer index: the series part.
@@ -40,7 +43,8 @@ pub struct FuelConsumerRow {
     pub priority: i32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelBranchesReply {
     pub tag: String,
@@ -141,6 +145,7 @@ impl AtHour for FuelBranches {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FuelBranchesParams::decl(), FuelBranchesReply::decl(), FuelConsumerRow::decl()]
     }

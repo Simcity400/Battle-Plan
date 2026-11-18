@@ -17,16 +17,19 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct LandOwnersProduct;
 
 /// Land ownership is recording-wide; there are no parameters.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(deny_unknown_fields)]
 pub struct LandOwnersParams {}
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandOwners {
     pub countries: Vec<CountryMetadata>,
@@ -83,6 +86,7 @@ impl Product for LandOwnersProduct {
     type Params = LandOwnersParams;
     type Reply = LandOwners;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LandOwnersParams::decl(), LandOwners::decl()]
     }

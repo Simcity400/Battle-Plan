@@ -19,6 +19,7 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, DecodedSource};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, sync::Arc};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub mod rewards;
@@ -27,7 +28,8 @@ mod tests;
 
 pub struct DoctrineMastery;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoctrineMasteryParams {
     pub branch_id: String,
@@ -36,7 +38,8 @@ pub struct DoctrineMasteryParams {
 
 /// A grand doctrine or subdoctrine: its token's spelling, and its name and sprite where the
 /// content has them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MasteryChoice {
     pub id: String,
@@ -46,7 +49,8 @@ pub struct MasteryChoice {
 
 /// A reward of a track's subdoctrine, in authored order: the mastery it adds to the track's
 /// requirement (fixed5 decimal), none where the content gives none.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MasteryReward {
     pub id: String,
@@ -57,7 +61,8 @@ pub struct MasteryReward {
 /// A track as recorded: its subdoctrine (none chosen when absent), the rewards that subdoctrine
 /// authors and how many are unlocked. Its numbers move daily: they are the live cells of row
 /// `"<folder ordinal>|<track ordinal>"`, columns [`TRACK_CELLS`], raw fixed5.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MasteryTrack {
     pub ordinal: u32,
@@ -70,7 +75,8 @@ pub struct MasteryTrack {
 /// A track's live cells: the cell's column id and the `DoctrineTracks` field it reads.
 pub const TRACK_CELLS: [(&str, &str); 4] = [("mastery", "mastery"), ("bank", "mastery_bank"), ("daily", "daily_mastery"), ("effective", "effective_daily_mastery")];
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MasteryFolder {
     pub ordinal: u32,
@@ -84,7 +90,8 @@ pub struct MasteryFolder {
     pub tracks: Vec<MasteryTrack>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineMasteryReply {
     pub folders: Vec<MasteryFolder>,
@@ -312,6 +319,7 @@ impl AtHour for DoctrineMastery {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![DoctrineMasteryParams::decl(), MasteryChoice::decl(), MasteryReward::decl(), MasteryTrack::decl(), MasteryFolder::decl(), DoctrineMasteryReply::decl()]
     }

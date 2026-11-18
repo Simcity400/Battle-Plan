@@ -583,7 +583,7 @@ pub fn link_slot_in(
 /// never copied for them. A link whose country has no tag, or a tag that is not
 /// UTF-8, names no country.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LinkTags {
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
     tags: HashMap<u32, String>,
@@ -593,7 +593,7 @@ pub struct LinkTags {
 
 /// The country tables last read, and each country's slot and tag then.
 #[derive(Clone)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 struct ReadFrom {
     countries: Option<ViewIdentity>,
     links: Option<ViewIdentity>,
@@ -819,11 +819,11 @@ impl LinkTags {
 /// Each country's id, slot and tag in table order: all that country identity
 /// reads from Countries, whose balances change it every hour.
 #[derive(Clone, Debug, Default)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryKeys(
     Vec<(u32, u32, Vec<u8>)>,
     #[cfg(any(test, feature = "test-support"))]
-    #[spool(skip)]
+    #[cfg_attr(any(test, feature = "test-support"), spool(skip))]
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
 );
 

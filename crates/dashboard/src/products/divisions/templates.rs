@@ -17,6 +17,7 @@ use replay_data::rows::{DivisionEquipmentTemplateRow, Recorded, TableId, Templat
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 const TABLES: [TableId; 7] = [
@@ -31,7 +32,8 @@ const TABLES: [TableId; 7] = [
 
 pub struct DivisionTemplates;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionTemplatesParams {
     pub branch_id: String,
@@ -40,7 +42,8 @@ pub struct DivisionTemplatesParams {
 }
 
 /// One kind of sub-unit in a template grid, with how many cells hold it.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateUnit {
     /// The sub-unit's content key, shown on hover only.
@@ -55,14 +58,16 @@ pub struct TemplateUnit {
 }
 
 /// A designer that opens a template: the ordinary one or the army headquarters'.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum DesignerKind {
     Ordinary,
     Headquarters,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateEntry {
     /// The template's full native handle.
@@ -96,7 +101,8 @@ pub struct TemplateEntry {
     pub settings_missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionTemplatesReply {
     pub tag: String,
@@ -158,6 +164,7 @@ impl AtHour for DivisionTemplates {
     type Reply = DivisionTemplatesReply;
     type Context = Content;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![DivisionTemplatesParams::decl(), DivisionTemplatesReply::decl(), TemplateEntry::decl(), TemplateUnit::decl(), DesignerKind::decl()]
     }

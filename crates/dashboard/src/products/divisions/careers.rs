@@ -25,6 +25,7 @@ use replay_data::rows::{DivisionHistoryRow, DivisionStatusRow, SharedDivisionHis
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// What every career reply reads.
@@ -43,7 +44,8 @@ const TABLES: [TableId; 9] = [
 pub struct DivisionCareers;
 pub struct DivisionRecord;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionCareersParams {
     pub branch_id: String,
@@ -52,7 +54,8 @@ pub struct DivisionCareersParams {
 }
 
 /// A medal the ranking names, by its content key.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerMedal {
     pub key: String,
@@ -60,7 +63,8 @@ pub struct CareerMedal {
 }
 
 /// A template the ranking names.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerTemplate {
     pub template: String,
@@ -69,7 +73,8 @@ pub struct CareerTemplate {
 }
 
 /// How many award entries a division holds of one medal.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerAward {
     /// Index into the reply's medals.
@@ -78,7 +83,8 @@ pub struct CareerAward {
 }
 
 /// What every division's career shows in the ranking.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerFacts {
     /// The recorded medal total; none when the history was not read.
@@ -94,7 +100,8 @@ pub struct CareerFacts {
     pub kills: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerRow {
     pub division: String,
@@ -105,7 +112,8 @@ pub struct CareerRow {
     pub facts: CareerFacts,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionCareersReply {
     pub divisions: Vec<CareerRow>,
@@ -118,7 +126,8 @@ pub struct DivisionCareersReply {
 
 dashboard_base::reply_warnings!(DivisionCareersReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionRecordParams {
     pub branch_id: String,
@@ -127,7 +136,8 @@ pub struct DivisionRecordParams {
 }
 
 /// One recorded career entry or award.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RecordEntry {
     pub award: bool,
@@ -141,7 +151,8 @@ pub struct RecordEntry {
     pub medal: Option<usize>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionRecordReply {
     pub division: String,
@@ -171,6 +182,7 @@ impl AtHour for DivisionCareers {
     type Reply = DivisionCareersReply;
     type Context = Content;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             DivisionCareersParams::decl(),
@@ -224,6 +236,7 @@ impl AtHour for DivisionRecord {
     type Reply = DivisionRecordReply;
     type Context = Content;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![DivisionRecordParams::decl(), DivisionRecordReply::decl(), RecordEntry::decl()]
     }

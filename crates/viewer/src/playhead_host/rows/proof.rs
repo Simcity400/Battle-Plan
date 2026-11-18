@@ -6,7 +6,7 @@
 use super::{Cadence, Recording, RowReader, Rows};
 use crate::{document::Document, playhead_host::Entry};
 use replay::campaign::SeekResult;
-use replay_data::rows::{Field, List, Opaque, RowCodec, RowsPairVisit, TableId, TableRows};
+use replay_data::rows::{Field, List, Opaque, RowRef, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView, discovering, undeclared_reads, view_reads};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io, io::Write, sync::Arc, time::Duration};
@@ -350,47 +350,43 @@ fn status(view: &TableView) -> String {
 
 /// Rows present in one only or differing in a field, and the first such.
 fn rows_differing(got: &TableRows, wanted: &TableRows) -> (u64, Option<String>) {
-    struct Pairs;
-    impl RowsPairVisit for Pairs {
-        type Output = (u64, Option<String>);
-        fn rows<R: RowCodec>(self, got: &[R], wanted: &[R]) -> Self::Output {
-            let fields = |row: &R| {
-                let mut out = Vec::new();
-                let _ = row.visit_wire(&mut |field, value| {
-                    out.push(format!("{field}={}", describe(value)));
-                    Ok(())
-                });
-                out
-            };
-            let (mut at, mut from, mut differing, mut first) = (0, 0, 0_u64, None);
-            while at < got.len() || from < wanted.len() {
-                let (key_got, key_wanted) = (got.get(at).map(RowCodec::key), wanted.get(from).map(RowCodec::key));
-                let note = match (key_got, key_wanted) {
-                    (Some(a), Some(b)) if a == b => {
-                        let (left, right) = (fields(&got[at]), fields(&wanted[from]));
-                        at += 1;
-                        from += 1;
-                        left.iter().zip(&right).find(|(left, right)| left != right).map(|(left, right)| format!("key {a}: at the head {left}, today {right}"))
-                    }
-                    (Some(a), b) if b.is_none_or(|b| a < b) => {
-                        at += 1;
-                        Some(format!("key {a} only at the head"))
-                    }
-                    (_, Some(b)) => {
-                        from += 1;
-                        Some(format!("key {b} only today"))
-                    }
-                    _ => None,
-                };
-                if let Some(note) = note {
-                    differing += 1;
-                    first.get_or_insert(note);
-                }
+    if got.table() != wanted.table() {
+        return (1, Some("the two hold rows of different tables".into()));
+    }
+    let fields = |row: RowRef<'_>| {
+        let mut out = Vec::new();
+        let _ = row.visit_wire(&mut |field, value| {
+            out.push(format!("{field}={}", describe(value)));
+            Ok(())
+        });
+        out
+    };
+    let (mut got, mut wanted) = (got.iter().peekable(), wanted.iter().peekable());
+    let (mut differing, mut first) = (0_u64, None);
+    while got.peek().is_some() || wanted.peek().is_some() {
+        let (key_got, key_wanted) = (got.peek().map(RowRef::key), wanted.peek().map(RowRef::key));
+        let note = match (key_got, key_wanted) {
+            (Some(a), Some(b)) if a == b => {
+                let (left, right) = (fields(got.next().unwrap()), fields(wanted.next().unwrap()));
+                left.iter().zip(&right).find(|(left, right)| left != right)
+                    .map(|(left, right)| format!("key {a}: at the head {left}, today {right}"))
             }
-            (differing, first)
+            (Some(a), b) if b.is_none_or(|b| a < b) => {
+                got.next();
+                Some(format!("key {a} only at the head"))
+            }
+            (_, Some(b)) => {
+                wanted.next();
+                Some(format!("key {b} only today"))
+            }
+            _ => None,
+        };
+        if let Some(note) = note {
+            differing += 1;
+            first.get_or_insert(note);
         }
     }
-    got.visit_pair(wanted, Pairs).unwrap_or_else(|_| (1, Some("the two hold rows of different tables".into())))
+    (differing, first)
 }
 
 /// A wire field as text, for the first difference a comparison names.
@@ -429,3 +425,6 @@ pub(super) fn first_difference(wanted: &str, got: &str) -> String {
     };
     format!("at byte {at} of {} / {}: today {} / at the head {}", wanted.len(), got.len(), around(wanted), around(got))
 }
+
+#[cfg(test)]
+mod tests;

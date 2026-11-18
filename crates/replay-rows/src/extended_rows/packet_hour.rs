@@ -17,7 +17,7 @@ pub const STAMPED_PACKET_FORMAT: u16 = crate::rows::compatibility::POLITICAL_FOR
 
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum PacketHour {
     /// Read with its hourly host row; costs no bytes.
     #[default]

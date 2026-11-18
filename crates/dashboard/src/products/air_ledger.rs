@@ -29,6 +29,7 @@ use std::{
     io,
     sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -41,7 +42,8 @@ pub struct MilitaryAirLedger;
 pub const AIR_LOSSES: &str = "air-losses";
 pub const BOMBING: &str = "bombing-damage";
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum MilitaryAirFamily {
     AirLosses,
@@ -57,7 +59,8 @@ impl MilitaryAirFamily {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum MilitaryAirMetric {
     Dealt,
@@ -66,14 +69,16 @@ pub enum MilitaryAirMetric {
 }
 
 /// A top N the holders of a window are ranked by, each by its total since the first hour counted.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MilitaryAirTop {
     pub count: usize,
     pub metric: MilitaryAirMetric,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MilitaryAirParams {
     pub branch_id: String,
@@ -90,7 +95,8 @@ pub struct MilitaryAirParams {
     pub top: Option<MilitaryAirTop>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirCountry {
     pub tag: String,
@@ -104,7 +110,8 @@ pub struct MilitaryAirCountry {
 /// A total from the first hour counted through the hour before the window: a holder's (by its
 /// identity) or the unattributed, on one side, of one cause and, of air losses, whether the
 /// opponents were recorded; summed over the regions, buildings and states asked.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirOpening {
     pub identity: Option<String>,
@@ -117,7 +124,8 @@ pub struct MilitaryAirOpening {
 /// One running total a reply shows: a holder's, or the unattributed, on one side. Air losses keep
 /// each cause and whether its opponents were recorded; bombing keeps each cause, building and
 /// state, so a holder's breakdown opens from the reply it is in.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirPart {
     pub tag: Option<String>,
@@ -131,11 +139,12 @@ pub struct MilitaryAirPart {
     pub state: Option<u32>,
     /// Each point is `[hour, readHour, totalRaw]`: the event's game hour, the hour its drain was
     /// read and the exact total through it since the window's first hour, in read order.
-    #[ts(type = "Array<[number, number, string]>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<[number, number, string]>"))]
     pub points: Vec<(i32, i32, String)>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirName {
     pub id: String,
@@ -144,14 +153,16 @@ pub struct MilitaryAirName {
 }
 
 /// How many events of a window one reason left out or left unnamed.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirNote {
     pub reason: String,
     pub events: usize,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirReply {
     pub family: MilitaryAirFamily,
@@ -1122,6 +1133,7 @@ impl Product for MilitaryAirLedger {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             MilitaryAirParams::decl(),

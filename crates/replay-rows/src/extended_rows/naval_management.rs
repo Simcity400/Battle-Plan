@@ -2,7 +2,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRepairCountryRow {
     pub country: u32,
     pub max_factories_for_repair: i32,
@@ -13,7 +13,7 @@ typed_codec!(NavalRepairCountryRow, 32, |row| row.country as u128, |key| Self { 
  { 0 => (max_factories_for_repair): I32, 1 => (max_allowed_dockyards_to_repair): I32, 2 => (num_used_dockyards): I32 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRepairFleetRow {
     pub fleet: u64,
     pub automated_homebase: u8,
@@ -22,7 +22,7 @@ typed_codec!(NavalRepairFleetRow, 64, |row| row.fleet as u128, |key| Self { flee
  { 0 => (automated_homebase): U8 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRepairTaskForceRow {
     pub task_force: u64,
     pub repair_mode: i32,
@@ -41,7 +41,7 @@ typed_codec!(NavalRepairTaskForceRow, 64, |row| row.task_force as u128, |key| Se
  { 0 => (repair_mode): I32, 1 => (repair_split): U8, 2 => (repair_target): U32, 3 => (auto_reinforcement): U8, 4 => (refit_variant): U64, 5 => (refit_after_repair): U64, 6 => (composition_token): U32, 7 => (merge_after_repair): U64 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalTaskForceCompositionRow {
     pub task_force: u64,
     pub kind: u8,
@@ -55,7 +55,7 @@ typed_codec!(NavalTaskForceCompositionRow, 104, |row| (row.task_force as u128) <
  { 0 => (sub_unit): I32, 1 => (role): I32, 2 => (definition): I32, 3 => (amount): I32 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRepairBaseRow {
     pub province: u32,
     pub priority: i32,
@@ -65,7 +65,7 @@ typed_codec!(NavalRepairBaseRow, 32, |row| row.province as u128, |key| Self { pr
  { 0 => (priority): I32, 1 => (allocated_dockyards): I32 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRepairQueueRow {
     pub province: u32,
     pub ordinal: u32,
@@ -75,7 +75,7 @@ typed_codec!(NavalRepairQueueRow, 64, |row| (row.province as u128) << 32 | row.o
  { 0 => (ship): U64 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRefitShipRow {
     pub ship: u64,
     /// Stored full work-order identity; only the native empty sentinel becomes zero.
@@ -86,7 +86,7 @@ typed_codec!(NavalRefitShipRow, 64, |row| row.ship as u128, |key| Self { ship: k
  { 0 => (line): U64 }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRefitProgressRow {
     pub line: u64,
     pub progress_raw: i64,
@@ -209,7 +209,7 @@ mod tests {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRepairChildRow {
     pub task_force: u64,
     pub ordinal: u32,

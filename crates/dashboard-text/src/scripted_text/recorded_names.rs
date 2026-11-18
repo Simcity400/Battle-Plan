@@ -9,7 +9,7 @@ pub(crate) struct RecordedNames<'a>(pub(super) CountryNames<'a>);
 
 /// A recorded query of the hour's country names.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Query {
     Operands(u32),
     Name(u32),

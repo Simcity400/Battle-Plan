@@ -20,10 +20,12 @@ use std::{
     collections::{BTreeMap, HashMap},
     io,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Consecutive hours holding one value, as an exact decimal string.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PoliticsRun {
     pub first_hour: i32,
@@ -32,7 +34,8 @@ pub struct PoliticsRun {
 }
 
 /// A holder's tag from `hour` until its next entry.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct HolderTag {
     pub hour: i32,

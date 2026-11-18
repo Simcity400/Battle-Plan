@@ -19,6 +19,7 @@ pub use tables::{HourFrame, Rowset, RowsetIter, Tables};
 mod decoder;
 mod hour_input;
 pub use hour_input::{ChangeDiscontinuity, HourChanges, HourInput, TableChanges};
+#[cfg(any(test, feature = "capture", feature = "test-support"))]
 mod encoder;
 pub mod endpoint_step;
 pub mod kept;
@@ -26,6 +27,7 @@ mod log;
 pub use log::{FrameLog, LoggedFrames};
 mod provenance;
 mod source;
+#[cfg(any(test, feature = "test-support"))]
 mod spooled;
 pub use source::{
     CommandAllocation, CommandAllocations, DecodedSource, Division, DivisionName, DivisionNames,
@@ -51,8 +53,9 @@ pub use self::decoder::{
 pub use self::wire::{decode_recorded_update, decode_update};
 pub use self::{
     decoder::{FrameAdvance, FrameDecoder, Spare, Spares},
-    encoder::{FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment},
 };
+#[cfg(any(test, feature = "capture", feature = "test-support"))]
+pub use encoder::{FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment};
 use engine_allocation as allocation;
 
 #[cfg(test)]
@@ -69,7 +72,7 @@ pub use replay_data::rows::TABLE_COUNT;
 pub const TRUNCATED_KEYFRAME_REASON: &str = "truncated at keyframe: ";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Metrics {
     pub total_ns: u64,
     pub table_ns: [u64; TABLE_COUNT],
@@ -320,7 +323,7 @@ impl PartialEq for SharedView {
 impl Eq for SharedView {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RowChange {
     pub key: u128,
     pub fields: u64,
@@ -701,7 +704,7 @@ impl PartialEq<SharedView> for TableView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DecodedFrame {
     pub branch: BranchId,
     pub hour: Hour,
@@ -846,7 +849,7 @@ impl From<DecodedFrame> for FrameInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum TableUpdate {
     Snapshot(TableRows),
     Delta {
@@ -879,7 +882,7 @@ pub enum TableUpdate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Frame {
     pub branch: BranchId,
     pub hour: Hour,
@@ -952,14 +955,23 @@ impl DecodedFrame {
     }
 
     pub fn complete<T: TableSchema>(&self) -> io::Result<&[T::Row]> {
-        let table = T::ID;
+        match self.complete_table(T::ID)?.rows::<T>() {
+            Some(rows) => Ok(rows),
+            None => Err(self.wrong_table(T::ID)?),
+        }
+    }
+
+    #[cold]
+    fn wrong_table(&self, table: TableId) -> io::Result<io::Error> {
+        Ok(crate::codec::invalid(crate::codec::try_format(format_args!(
+            "hour {} {table:?} contains another table's rows", self.hour,
+        ))?))
+    }
+
+    #[inline(never)]
+    fn complete_table(&self, table: TableId) -> io::Result<&TableRows> {
         match &*self.tables[table.index()] {
-            TableView::Complete(rows) => match rows.rows::<T>() {
-                Some(rows) => Ok(rows),
-                None => Err(crate::codec::invalid(crate::codec::try_format(
-                    format_args!("hour {} {table:?} contains another table's rows", self.hour),
-                )?)),
-            },
+            TableView::Complete(rows) => Ok(rows),
             TableView::Truncated { missing, .. } => Err(crate::codec::invalid(
                 crate::codec::try_format(format_args!(
                     "hour {} {table:?} is truncated ({missing} missing rows)",

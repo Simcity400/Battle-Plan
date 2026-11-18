@@ -120,7 +120,7 @@ struct Cached {
     receiver: usize,
     certificate: (u64, u64),
     total: Option<i64>,
-    nodes: Vec<engine_native::modifier_breakdown::Node>,
+    nodes: Vec<game_model::modifier_breakdown::Node>,
     failure: Vec<u8>,
     _charge: Charge,
 }
@@ -129,13 +129,13 @@ impl Cached {
         receiver: usize,
         certificate: (u64, u64),
         total: Option<i64>,
-        nodes: Vec<engine_native::modifier_breakdown::Node>,
+        nodes: Vec<game_model::modifier_breakdown::Node>,
         failure: Vec<u8>,
         bytes: &SharedBytes,
     ) -> Arc<Self> {
         let payload = size_of::<Self>()
             + 2 * size_of::<usize>()
-            + nodes.capacity() * size_of::<engine_native::modifier_breakdown::Node>()
+            + nodes.capacity() * size_of::<game_model::modifier_breakdown::Node>()
             + nodes.iter().map(|node| node.name.capacity()).sum::<usize>()
             + failure.capacity();
         Arc::new(Self {
@@ -252,12 +252,12 @@ fn source_receivers(receivers: [usize; 9]) -> [usize; 4] {
     [receivers[1], receivers[5], receivers[4], receivers[2]]
 }
 fn clone_nodes(
-    nodes: &[engine_native::modifier_breakdown::Node],
-) -> Result<Vec<engine_native::modifier_breakdown::Node>, &'static str> {
+    nodes: &[game_model::modifier_breakdown::Node],
+) -> Result<Vec<game_model::modifier_breakdown::Node>, &'static str> {
     let mut copy =
         allocation::vec(nodes.len()).map_err(|_| "occupation source allocation failed")?;
     for node in nodes {
-        copy.push(engine_native::modifier_breakdown::Node {
+        copy.push(game_model::modifier_breakdown::Node {
             children: node.children,
             value: node.value,
             name: allocation::copy_vec(&node.name)
@@ -1682,7 +1682,7 @@ mod tests {
             91,
             (3, 7),
             Some(123),
-            vec![engine_native::modifier_breakdown::Node {
+            vec![game_model::modifier_breakdown::Node {
                 children: 0,
                 value: 123,
                 name: b"shared country source".to_vec(),

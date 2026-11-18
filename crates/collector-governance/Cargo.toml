@@ -19,6 +19,7 @@ party_changes = []
 party_leader_changes = ["character_changes"]
 
 [dependencies]
+game-model.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-decisions.workspace = true
@@ -30,7 +31,7 @@ engine-research.workspace = true
 engine-stability.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
-replay-frame.workspace = true
+replay-frame = { workspace = true, features = ["capture"] }
 serde = { workspace = true, features = ["derive"] }
 collector-certificates.workspace = true
 collector-extended-support.workspace = true
@@ -62,9 +63,8 @@ collector-timing = { workspace = true, features = ["test-support"] }
 collector-governance = { workspace = true, features = ["advisor_changes", "character_changes", "default", "party_changes", "party_leader_changes", "test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
-replay-frame = { workspace = true, features = ["test-support"] }
+replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-crossbeam-utils = { workspace = true }

@@ -15,3 +15,9 @@ pub mod politics_content;
 pub mod read_ahead;
 pub mod resources;
 
+
+mod registry;
+pub use registry::*;
+pub mod at_hour;
+
+pub mod log_page;

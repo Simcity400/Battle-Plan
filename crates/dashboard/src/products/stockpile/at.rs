@@ -29,9 +29,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileAtParams {
     pub branch_id: String,
@@ -41,7 +43,8 @@ pub struct StockpileAtParams {
 /// Whether the game's surplus or shortage is known at the hour: the record held the country's rows
 /// (`player`), was read complete without them (`ai`: the game computes none for an AI-controlled
 /// country), or was not read within a day (`unknown`).
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum StockBalance {
     Player,
@@ -50,7 +53,8 @@ pub enum StockBalance {
 }
 
 /// A design the holder holds or makes at the hour.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockAtVariant {
     pub id: String,
@@ -70,14 +74,16 @@ pub struct StockAtVariant {
 }
 
 /// A logistics archetype the holder's record lists at the hour (its `t<key>` cells).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockAtLogistics {
     /// The archetype key, or the unresolved mark and the recorded token's spelling.
     pub key: String,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileAtReply {
     pub tag: String,
@@ -261,6 +267,7 @@ impl AtHour for EquipmentStockpileAt {
     type Reply = StockpileAtReply;
     type Context = AtContext;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![StockpileAtParams::decl(), super::Domain::decl(), StockType::decl(), StockBalance::decl(), StockAtVariant::decl(), StockAtLogistics::decl(), StockpileAtReply::decl()]
     }

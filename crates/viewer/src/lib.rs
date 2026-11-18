@@ -11,7 +11,6 @@ use viewer_foundation::map::perspective::Country;
 use viewer_foundation::map::perspective::Resolution;
 use viewer_foundation::map::ui_scale::extent;
 use viewer_foundation::map::ui_scale::valid;
-// Removed when the in-flight playback import is updated.
 use viewer_foundation::profile_writer::profile_flush;
 mod app;
 use viewer_combat as combat;
@@ -23,35 +22,47 @@ mod corpus;
 #[cfg(test)]
 mod counter_integration_tests;
 mod dashboard_maps;
-mod document;
+use viewer_playback::document;
 mod dump_head;
 #[cfg(test)]
 mod raid_integration_tests;
 use viewer_foundation::errors::invalid;
 mod embedded;
-mod engaged_index;
+use viewer_playback::engaged_index;
 pub mod host;
-mod hours;
-mod lane_rows;
-mod layers;
+use viewer_playback::hours;
+use viewer_playback::lane_rows;
+use viewer_playback::layers;
 mod map;
-mod map_assets;
-mod map_binding;
-mod map_icons;
-mod map_source;
-mod map_views;
-mod perf_log;
-mod playback;
+use viewer_playback::map_assets;
+use viewer_playback::map_views;
+use viewer_playback::perf_log;
+use viewer_playback::playback;
 mod playback_cost;
-mod playhead_host;
-mod raid_lane;
-mod render;
+mod playhead_host {
+    pub use viewer_playback::playhead_host::*;
+    pub mod rows {
+        pub use viewer_playback::playhead_host::rows::*;
+        pub mod combat;
+        pub mod proof;
+        pub mod roster;
+        pub mod window;
+        #[cfg(test)]
+        pub mod tests {
+            pub use viewer_playback::playhead_host::rows::tests::*;
+            mod combat;
+            mod hover;
+        }
+    }
+}
+use viewer_playback::raid_lane;
+use viewer_playback::render;
 mod renderer_host;
 mod suite_input;
 #[cfg(test)]
 mod unit_scale_tests;
-mod visual_fallback;
-mod worker_pool;
+use viewer_playback::visual_fallback;
+use viewer_playback::worker_pool;
 
 use dashboard::Config;
 

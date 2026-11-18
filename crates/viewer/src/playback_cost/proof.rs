@@ -117,13 +117,7 @@ mod p8c;
 
 mod mode_fills;
 
-#[derive(Debug, Default)]
-pub(crate) struct Compared {
-    pub(crate) entries: u64,
-    pub(crate) differing: u64,
-    pub(crate) first: Option<String>,
-    pub(crate) notes: Value,
-}
+pub(crate) use viewer_playback::comparison::Compared;
 
 struct Options {
     recording: PathBuf,

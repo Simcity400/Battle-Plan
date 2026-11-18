@@ -24,8 +24,7 @@ installed-content-localisation = { workspace = true, features = ["test-support"]
 installed-content-province-area = { workspace = true, features = ["test-support"] }
 installed-content-regions = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

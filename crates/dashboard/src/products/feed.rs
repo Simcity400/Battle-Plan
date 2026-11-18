@@ -35,12 +35,14 @@ use serde::{Deserialize, Serialize};
 use std::{io, sync::{Arc, atomic::AtomicBool}};
 use text::{Notices, Presenter, kept_naming};
 pub(crate) use text::warm_naming;
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The declared log the feed reads.
 pub(crate) const LOG: &str = "feed-events";
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum EventFeedCategory {
     WarsPeace,
@@ -49,7 +51,8 @@ pub enum EventFeedCategory {
     Milestones,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum EventFeedKind {
     WarStarted,
@@ -154,7 +157,8 @@ impl EventFeedKind {
 }
 
 /// One row of the feed.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedRow {
     pub id: String,
@@ -170,23 +174,24 @@ pub struct EventFeedRow {
     /// Native action roles, actor then target. Null keeps a role that names no country or that
     /// no link and holder witnessed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub participants: Option<[Option<String>; 2]>,
     pub item: Option<EventFeedItem>,
     pub amount: Option<u32>,
     /// A native event's recorded cause; absent when the recording holds none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub cause: Option<EventFeedCause>,
     /// A nuclear strike's target and outcome; absent for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub strike: Option<EventFeedStrike>,
 }
 
 /// A nuclear strike's target and what the impact did before its authored `on_nuke_drop` effects;
 /// a part with a refusal has no total, and the refusal is named.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedStrike {
     pub province: u32,
@@ -203,7 +208,8 @@ pub struct EventFeedStrike {
 
 /// What caused a native event, in words, from the operations the collector observed running when
 /// it happened. Each absent fact was not observed.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedCause {
     /// The native operation the event happened in.
@@ -222,7 +228,8 @@ pub struct EventFeedCause {
     pub notes: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedItem {
     pub token: Option<String>,
@@ -232,29 +239,31 @@ pub struct EventFeedItem {
     /// A scripted event's authored options in the game's order; absent for other kinds and when
     /// the event's content does not resolve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub options: Option<Vec<EventFeedOption>>,
     /// Why `name` is null, where a script item's is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub name_missing: Option<String>,
     /// Why the name, description or options hold U+FFFC where scripted text could not be
     /// expanded: the UI shows each as a "not recorded" token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub gaps: Option<String>,
 }
 
 /// One authored event option: its native ordinal and in-game name, null when the name does not
 /// resolve.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedOption {
     pub ordinal: u32,
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedUnavailable {
     pub kind: String,
@@ -264,7 +273,8 @@ pub struct EventFeedUnavailable {
 }
 
 /// A page of a declared log of the feed: `log-page`'s parameters with the log fixed.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FeedPageParams {
     pub branch_id: String,
@@ -284,23 +294,25 @@ pub struct FeedPageParams {
 
 /// A row of a feed page: `log-page`'s row (no cells) with the feed's row; null for a row the feed
 /// does not show (an incomplete read's).
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedPageRow {
     pub hour: i32,
     pub key: String,
     pub ordinal: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub own_ordinal: Option<String>,
     pub cells: Vec<logs::LogCell>,
     pub row: Option<EventFeedRow>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedPage {
     pub branch_id: String,
@@ -523,6 +535,7 @@ impl Product for EventFeed {
     type Params = FeedPageParams;
     type Reply = EventFeedPage;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             FeedPageParams::decl(),

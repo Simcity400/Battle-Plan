@@ -2,7 +2,7 @@
 use super::*;
 use crate::value::value_struct;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatModifierValue {
     pub id: u32,
     pub value_a: i64,
@@ -15,7 +15,7 @@ value_struct!(CombatModifierValue {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatCommanderTrait {
     pub token_id: i32,
     pub definition_ordinal: i32,
@@ -26,7 +26,7 @@ pub struct LandCombatCommanderTrait {
 value_struct!(LandCombatCommanderTrait { token_id: i32, definition_ordinal: i32, kind: u32, relevant: u8, token: Vec<u8> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatCommanderLearningTrait {
     pub token_id: i32,
     pub definition_ordinal: i32,
@@ -37,7 +37,7 @@ pub struct LandCombatCommanderLearningTrait {
 value_struct!(LandCombatCommanderLearningTrait { token_id: i32, definition_ordinal: i32, required_experience: i32, experience: i64, token: Vec<u8> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatCommanderPortraitModifier {
     pub source: u8,
     pub id: u32,
@@ -56,7 +56,7 @@ value_struct!(LandCombatCommanderPortraitModifier {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatCommanderPortraitTooltip {
     pub source: u8,
     pub bucket: u32,
@@ -66,7 +66,7 @@ pub struct LandCombatCommanderPortraitTooltip {
 value_struct!(LandCombatCommanderPortraitTooltip { source: u8, bucket: u32, key: u32, text: Vec<u8> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatCommanderSkillDefinition {
     pub present: u8,
     pub valid: u8,
@@ -83,7 +83,7 @@ value_struct!(CombatCommanderSkillDefinition {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatCommanderPortraitEntry {
     pub role: u32,
     pub size: u32,
@@ -94,7 +94,7 @@ pub struct CombatCommanderPortraitEntry {
 value_struct!(CombatCommanderPortraitEntry { role: u32, size: u32, is_set: u8, kind: u32, text: Vec<u8> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatCommanderPresentation {
     pub character: u64,
     pub character_state: u8,
@@ -110,7 +110,7 @@ pub struct CombatCommanderPresentation {
 value_struct!(CombatCommanderPresentation { character: u64, character_state: u8, character_country: u32, character_gender: u32, character_role_leader: u64, character_fallback_leader: u64, character_role_source: u8, fallback_text: [Vec<u8>;3], portraits: Vec<CombatCommanderPortraitEntry>, role_traits: Vec<LandCombatCommanderTrait> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCommanderInputs {
     pub commander: u64,
     pub country: u32,
@@ -136,7 +136,7 @@ pub struct NavalCommanderInputs {
 value_struct!(NavalCommanderInputs { commander: u64, country: u32, category: i32, experience: i64, skills: [i32; 5], skill_definitions: [CombatCommanderSkillDefinition;5], next_skill: CombatCommanderSkillDefinition, name: Vec<u8>, description: Vec<u8>, presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>, learning_traits: Vec<LandCombatCommanderLearningTrait>, learning_threshold: i64, modifiers: Vec<LandCombatCommanderPortraitModifier>, modifier_feature_flags: u32, modifier_callback_kind: u8, tooltips: Vec<LandCombatCommanderPortraitTooltip> } appended NavalCommanderInputs { timed_traits: Recorded<Vec<LandCombatCommanderTimedTrait>> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatSideDetails {
     pub committed: Vec<u64>,
     pub reserves: Vec<u64>,
@@ -378,7 +378,7 @@ side_value!(
 
 /// A timed trait of the side's commander.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatCommanderTimedTrait {
     pub token_id: i32,
     pub definition_ordinal: i32,
@@ -396,7 +396,7 @@ value_struct!(LandCombatCommanderTimedTrait {
 /// than the live `LEADER_TRAITS_XP_SHOW`, decided at capture, as the portrait decides it, from the
 /// exact progress. Entries at or below it are not shown and not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatLearningProgress {
     /// The trait definition's token id and ordinal, and its raw token, which the portrait localises
     /// for the commander's country.
@@ -426,7 +426,7 @@ value_struct!(LandCombatLearningProgress {
 /// optional reads: one that fails leaves only its part unknown
 /// ([`Self::UNREAD_PROGRESS`], `None`) and the row stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatSideInputs {
     /// The side's anti-air cache as stored: combat-statistics refresh writes it and CAS application
     /// reads it. The opposing side's CAS hover derives anti-air effectiveness from it, whose 1.5
@@ -501,7 +501,7 @@ value_struct!(LandCombatSideInputs {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatTacticCountryWeight {
     pub country: u32,
     pub tactic_id: i32,
@@ -528,7 +528,7 @@ value_struct!(LandCombatTacticCountryWeight {
 /// CountryTacticUnlocks. A side whose country set emptied has no country
 /// preference or weight.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatTacticInputs {
     /// Country, general and field-marshal preferred tactic ids per side.
     pub preferred_tactic_ids: [[i32; 3]; 2],
@@ -542,7 +542,7 @@ value_struct!(LandCombatTacticInputs {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandDivisionModifier {
     pub raw: i64,
     pub present: u8,
@@ -553,7 +553,7 @@ value_struct!(LandDivisionModifier {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandDivisionWidthTerm {
     pub subunit: u32,
     pub count: i32,
@@ -568,7 +568,7 @@ value_struct!(LandDivisionWidthTerm {
 /// Exile-frame operands for a committed division whose template is exiled:
 /// origin type exactly 2.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatExileInputs {
     pub origin_type: i32,
     /// The positive template origin country, otherwise its fallback country.
@@ -582,7 +582,7 @@ pub struct LandCombatExileInputs {
 value_struct!(LandCombatExileInputs { origin_type: i32, country: i32, country_fallback: i32, location_cores: Vec<u32>, occupiers: Vec<u32> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandDivisionContext {
     pub template: u64,
     pub leader_modifier_kind: u8,
@@ -603,7 +603,7 @@ value_struct!(LandDivisionContext {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatSummaryModifier {
     pub raw: i64,
     pub present: u8,
@@ -614,7 +614,7 @@ value_struct!(NavalCombatSummaryModifier {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatSummaryInputs {
     pub recent_join_penalty: i64,
     pub escort_bonus: i64,
@@ -631,7 +631,7 @@ pub struct NavalCombatSummaryInputs {
 value_struct!(NavalCombatSummaryInputs { recent_join_penalty: i64, escort_bonus: i64, countries: Vec<u32>, secondary_countries: Vec<u32>, modifiers: [[NavalCombatSummaryModifier; 5]; 5], modifier_metadata: [[u32; 2]; 5], feature_flags: u32, eligibility_callback: u8 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatAirEfficiencyModifier {
     pub raw: i64,
     pub present: u8,
@@ -642,7 +642,7 @@ value_struct!(NavalCombatAirEfficiencyModifier {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatAirEfficiency {
     pub source: u8,
     pub pool_type_flags: u64,
@@ -671,7 +671,7 @@ value_struct!(NavalCombatAirEfficiency {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatAirWingKill {
     pub wing: u64,
     pub index: u32,
@@ -686,7 +686,7 @@ value_struct!(NavalCombatAirWingKill {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatPlane {
     /// Sub-unit definition indices for wing references, aligned by occurrence.
     /// MAX means the historical wing no longer resolves. They supply the
@@ -718,7 +718,7 @@ pub struct NavalCombatPlane {
 value_struct!(NavalCombatPlane { wing_types: Vec<u32>, source: u8, group_index: u32, index: u32, carrier_slot: i32, carrier_member_present: u8, carrier_state: u32, air_base: u64, wings: [Vec<u64>;2], initial_planes: i32, current_planes: i32, casualties: i32, time_duration: i32, country: u32, date: i32, flags: [u8; 2], variant: u64, naval_hits: Vec<NavalCombatHit>, air_hits: [Vec<NavalCombatAirHit>;2], kills: Vec<NavalCombatAirWingKill>, efficiency: NavalCombatAirEfficiency });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatSideDetails {
     pub damage_history: [[i64; 6]; 6],
     pub original_health: i64,
@@ -743,7 +743,7 @@ value_struct!(NavalCombatSideDetails { damage_history: [[i64; 6]; 6], original_h
 
 /// One source-token total in the native damage-by-source map's iteration order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalDamageSource {
     pub token: u32,
     pub damage: i64,
@@ -754,7 +754,7 @@ value_struct!(NavalDamageSource {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatDamage {
     pub source: u64,
     pub country: u32,
@@ -767,7 +767,7 @@ value_struct!(NavalCombatDamage {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatAirHit {
     pub variant: u64,
     pub count: i32,
@@ -780,7 +780,7 @@ value_struct!(NavalCombatAirHit {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatHit {
     pub target_slot: u32,
     pub target_name: Vec<u8>,
@@ -792,7 +792,7 @@ pub struct NavalCombatHit {
 value_struct!(NavalCombatHit { target_slot: u32, target_name: Vec<u8>, convoy: u8, damage: i64, denominator: i64, last_hit: u8 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatLastTarget {
     pub present: u8,
     pub is_convoy: u8,
@@ -805,7 +805,7 @@ value_struct!(NavalCombatLastTarget {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalShipModifierTerm {
     pub key: u32,
     pub raw: i64,
@@ -820,7 +820,7 @@ value_struct!(NavalShipModifierTerm {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalShipModifierSource {
     pub scope: u8,
     pub index: u32,
@@ -834,7 +834,7 @@ pub struct NavalShipModifierSource {
 value_struct!(NavalShipModifierSource { scope: u8, index: u32, selector: u32, reference: u64, weights: [i64; 2], movement: i64, dynamic_keys: [u32; 2], terms: Vec<NavalShipModifierTerm> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalShipWeaponContext {
     pub task_force: u64,
     pub country: u32,
@@ -856,7 +856,7 @@ pub struct NavalShipWeaponContext {
 value_struct!(NavalShipWeaponContext { task_force: u64, country: u32, commander: u64, ship_class: u32, subunit: u32, weapon_bases: [i64; 5], weather_factor: i64, fuel: [i64; 2], night: i64, formation_flags: u64, detection_base: i64, air_base: u64, air_base_maximum: i32, air_detection_base: i64, terrain_name: Vec<u8>, sources: Vec<NavalShipModifierSource> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalResultShip {
     pub member: u64,
     pub owner: u32,
@@ -879,7 +879,7 @@ pub struct NavalResultShip {
 value_struct!(NavalResultShip { member: u64, owner: u32, subunit_index: i32, formation_type: i32, build_cost_ic: i64, strength_ratio: i64, pride: u8, is_convoy: u8, name: Vec<u8>, type_name: Vec<u8>, sprite: Vec<u8>, sunk_by: Vec<u8>, variant: u64, convoy_client: u64, convoy_index: i32, naval_hits: Vec<NavalCombatHit>, air_hits: [Vec<NavalCombatAirHit>;2] });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalResultPlane {
     pub variant: u64,
     pub variant_summary_inputs: [i64; 2],
@@ -894,7 +894,7 @@ pub struct NavalResultPlane {
 value_struct!(NavalResultPlane { variant: u64, variant_summary_inputs: [i64; 2], initial_planes: i32, current_planes: i32, lost_planes: i32, country: u32, name: Vec<u8>, naval_hits: Vec<NavalCombatHit>, air_hits: [Vec<NavalCombatAirHit>;2] });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalResultSideDetails {
     pub leader: u64,
     pub hq_leader: u64,
@@ -909,7 +909,7 @@ value_struct!(NavalResultSideDetails { leader: u64, hq_leader: u64, hq_influence
 
 /// Stored border-war simulation operands, sampled only for border-war combats.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandBorderWarSide {
     pub country: i32,
     pub state: i32,
@@ -920,7 +920,7 @@ pub struct LandBorderWarSide {
 }
 value_struct!(LandBorderWarSide { country: i32, state: i32, win_event: Vec<u8>, lose_event: Vec<u8> });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandBorderWarInputs {
     /// Exact transfer-state byte; any nonzero transfers the state.
     pub transfer_state: u8,
@@ -936,7 +936,7 @@ value_struct!(LandBorderWarInputs {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatDetailsRow {
     pub combat: u64,
     pub province: u32,
@@ -985,7 +985,7 @@ impl LandCombatDetailsRow {
 /// DivisionMovement rows of the same hour record for the division, read from the same native
 /// words at the same moment.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatMemberValues {
     /// DivisionStatus' naming operands. The viewer renders the name from content.
     pub naming: NameOperands,
@@ -1089,7 +1089,7 @@ impl LandCombatMemberValues {
 /// ([`Self::values`]); a member stores its own copy only where those rows do not hold them, as
 /// for a division no roster lists.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatDivisionRow {
     pub combat: u64,
     pub side: u8,
@@ -1211,7 +1211,7 @@ typed_codec!(LandCombatDivisionRow, 97, |row| (row.combat as u128) << 33 | (row.
 /// (`cland_combat::read_modifiers_context`) was read, published with that
 /// read alone. Its members' entries are on LandCombatDivisionModifiers rows.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatModifierRow {
     pub combat: u64,
     pub side: u8,
@@ -1234,7 +1234,7 @@ typed_codec!(LandCombatModifierRow, 65, |row| (row.combat as u128) << 1 | row.si
 /// entry list included. One row a member, so an hour that changes one
 /// division's entries stores only that row.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatDivisionModifierRow {
     pub combat: u64,
     pub side: u8,
@@ -1262,7 +1262,7 @@ typed_codec!(LandCombatDivisionModifierRow, 97, |row| (row.combat as u128) << 33
 /// sets keep raw references in native order; the viewer applies the visibility and side
 /// rules for any viewing country.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatSideRow {
     pub combat: u64,
     /// The marker's frame and the window's indicator icon.
@@ -1279,7 +1279,7 @@ typed_codec!(LandCombatSideRow, 64, |row| row.combat as u128,
 { 0 => (indicator): U8, 1 => (flags): Opaque, 2 => (attacker_primary): U32List, 3 => (attacker_secondary): U32List, 4 => (defender_primary): U32List, 5 => (defender_secondary): U32List }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatDetailsRow {
     pub combat: u64,
     pub province: u32,
@@ -1302,7 +1302,7 @@ typed_codec!(NavalCombatDetailsRow, 64, |row| row.combat as u128,
 /// referenced by naval combat. Repeated handles are meaningful. Every
 /// resolved referenced base has a row, including one with an empty wing list.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatAirBaseWingHandlesRow {
     pub base: u64,
     pub wings: Vec<u64>,
@@ -1312,7 +1312,7 @@ typed_codec!(NavalCombatAirBaseWingHandlesRow, 64, |row| row.base as u128,
  { 0 => (wings): U64List }, |_row| Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatShipRow {
     pub combat: u64,
     pub side: u8,
@@ -1364,7 +1364,7 @@ typed_codec!(NavalCombatShipRow, 97, |row| (row.combat as u128) << 33 | (row.sid
  { 0 => (ship): U64, 1 => (owner): U32, 2 => (state): U32, 3 => (member_source): U8, 4 => (group_index): U32, 5 => (member_index): U32, 6 => (convoy): U64, 7 => (subunit_index): I32, 8 => (formation_type): I32, 9 => (build_cost_ic): I64, 10 => (cached_strength_ratio): I64, 11 => (pride): U8, 12 => (is_convoy): U8, 13 => (name): Bytes, 14 => (type_name): Bytes, 15 => (sprite): Bytes, 16 => (sunk_by): Bytes, 17 => (variant): U64, 18 => (arrival_hours): I32, 19 => (received_criticals): I32, 20 => (evacuation_state): I32, 21 => (detection_state): I32, 22 => (escape_progress): I64, 23 => (escape_speed_base): I64, 24 => (last_target): Opaque, 25 => (received_damage): Opaque, 26 => (live_ship): U8, 27 => (live_convoy): U8, 28 => (strength): I64, 29 => (organisation): I64, 30 => (base_organisation): I64, 31 => (maximum_hit_points): I64, 32 => (formation_flags): U64, 33 => (weapon_context): Opaque, 34 => (damage_entries): Opaque, 35 => (air_hits): Opaque, 36 => (naval_hits): Opaque }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatResultDetailsRow {
     pub result: u64,
     pub sides: [NavalResultSideDetails; 2],

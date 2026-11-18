@@ -7,12 +7,14 @@ use crate::Source;
 use dashboard_query::{identity::Holder, series::MissingSpan};
 use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct CountryIdentities;
 
 /// A stretch of hours one country held a tag.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryIdentityRun {
     pub first_hour: i32,
@@ -21,7 +23,8 @@ pub struct CountryIdentityRun {
     pub country_id: u32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdentitySpan {
     pub first_hour: i32,
@@ -29,7 +32,8 @@ pub struct IdentitySpan {
 }
 
 /// One tag's holders, and the hours its countries were there but no link resolved them.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TagIdentities {
     pub tag: String,
@@ -37,7 +41,8 @@ pub struct TagIdentities {
     pub unresolved: Vec<IdentitySpan>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryIdentitiesReply {
     pub branch_id: String,
@@ -56,6 +61,7 @@ impl Product for CountryIdentities {
     type Params = BranchParams;
     type Reply = CountryIdentitiesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![CountryIdentityRun::decl(), IdentitySpan::decl(), TagIdentities::decl(), MissingSpan::decl(), CountryIdentitiesReply::decl()]
     }

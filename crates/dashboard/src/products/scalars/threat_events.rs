@@ -23,18 +23,21 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct ThreatEvents;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThreatEventsParams {
     pub branch_id: String,
 }
 
 /// What a source adds once its ramp ends, from a read on.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ThreatAdded {
     pub hour: i32,
@@ -42,7 +45,8 @@ pub struct ThreatAdded {
     pub added_raw: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ThreatEvent {
     /// The hour the game created it.
@@ -58,7 +62,8 @@ pub struct ThreatEvent {
     pub open: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ThreatEventsReply {
     pub branch_id: String,
@@ -214,6 +219,7 @@ impl Product for ThreatEvents {
     type Params = ThreatEventsParams;
     type Reply = ThreatEventsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ThreatEventsParams::decl(), ThreatAdded::decl(), ThreatEvent::decl(), ThreatEventsReply::decl()]
     }

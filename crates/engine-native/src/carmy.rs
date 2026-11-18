@@ -987,12 +987,6 @@ fn presentation_batched<T: crate::memory::Raw, const N: usize>(
         .ok_or("division presentation field unreadable")
 }
 
-const MOVEMENT_ONE: i64 = 100_000;
-
-fn movement_product(a: i64, b: i64) -> i64 {
-    a.wrapping_mul(b) / MOVEMENT_ONE
-}
-
 fn movement_pointer(
     memory: &impl Memory,
     object: usize,
@@ -1107,178 +1101,6 @@ pub fn movement_attacking(
         controller as u32,
         presentation_field(memory, army, cunit::LOGICAL_OWNER)?,
     )
-}
-
-/// Owned native CArmy speed operands. No game address is needed to evaluate
-/// them; the common normal inputs are acquired once for the current army.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// Transient inline acquisition value; boxing would allocate on the callback.
-// The retained ETA packet stores common inputs once per division.
-#[allow(clippy::large_enum_variant)]
-pub enum MovementSpeedInputs {
-    Fixed(i64),
-    Scaled {
-        speed: i64,
-        scale: i64,
-    },
-    Normal {
-        common: NormalSpeedOperands,
-        edge: NormalEdgeOperands,
-    },
-}
-impl Default for MovementSpeedInputs {
-    fn default() -> Self {
-        Self::Fixed(0)
-    }
-}
-impl From<i64> for MovementSpeedInputs {
-    fn from(value: i64) -> Self {
-        Self::Fixed(value)
-    }
-}
-impl MovementSpeedInputs {
-    pub fn evaluate(self) -> i64 {
-        match self {
-            Self::Fixed(value) => value,
-            Self::Scaled { speed, scale } => movement_product(speed, scale),
-            Self::Normal { common, edge } => common.prepare().evaluate(edge),
-        }
-    }
-    /// Normal-range operands prove a positive scaled minimum without deriving
-    /// the speed. Values outside the proof retain exact native evaluation for
-    /// the lazy zero-speed route guard, including all wrapping edge cases.
-    pub fn is_zero(self) -> bool {
-        if let Self::Normal { common, edge } = self
-            && common.bounded
-            && edge.bounded()
-        {
-            return false;
-        }
-        self.evaluate() == 0
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct NormalSpeedOperands {
-    modifier: NormalModifierOperands,
-    base_speed: i64,
-    organisation: Option<(i64, i64)>,
-    fuel: Option<(i64, i64)>,
-    outer_scale: i64,
-    bounded: bool,
-}
-impl NormalSpeedOperands {
-    /// Once-per-division worker preparation. All optional-read guards and
-    /// fallible native divisions were resolved during dependency acquisition.
-    pub fn prepare(self) -> PreparedNormalSpeed {
-        PreparedNormalSpeed {
-            modifier: self.modifier.evaluate(),
-            base_speed: self.base_speed,
-            organisation: self.organisation.map(|(ratio, penalty)| {
-                MOVEMENT_ONE
-                    .wrapping_add(movement_product(MOVEMENT_ONE.wrapping_sub(ratio), penalty))
-            }),
-            fuel: self.fuel.map(|(ratio, minimum)| {
-                movement_product(MOVEMENT_ONE.wrapping_sub(minimum), ratio).wrapping_add(minimum)
-            }),
-            outer_scale: self.outer_scale,
-        }
-    }
-}
-/// Public because a replayer recomposes it from the recorded per-division
-/// terms and evaluates the same edges without any game address.
-#[derive(Clone, Copy)]
-pub struct PreparedNormalSpeed {
-    pub modifier: i64,
-    pub base_speed: i64,
-    pub organisation: Option<i64>,
-    pub fuel: Option<i64>,
-    pub outer_scale: i64,
-}
-impl PreparedNormalSpeed {
-    pub fn evaluate(self, edge: NormalEdgeOperands) -> i64 {
-        let mut speed =
-            movement_product(self.base_speed, self.modifier.wrapping_add(edge.evaluate()));
-        if let Some(factor) = self.organisation {
-            speed = movement_product(factor, speed);
-        }
-        if let Some(factor) = self.fuel {
-            speed = movement_product(factor, speed);
-        }
-        movement_product(speed.max(MOVEMENT_ONE), self.outer_scale)
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct NormalModifierOperands {
-    additive: i64,
-    weather: [(i64, i64); 4],
-    supply: (i64, i64),
-    air: MovementAirOperands,
-}
-impl NormalModifierOperands {
-    fn evaluate(self) -> i64 {
-        let mut value = self.additive;
-        for (acclimatization, modifier) in self.weather {
-            value = value.wrapping_add(movement_product(acclimatization, modifier));
-        }
-        value
-            .wrapping_add(movement_product(self.supply.0, self.supply.1))
-            .wrapping_add(self.air.evaluate())
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct MovementAirOperands {
-    fraction: i64,
-    impact: i64,
-    scale: i64,
-    defense: i64,
-}
-impl MovementAirOperands {
-    fn evaluate(self) -> i64 {
-        movement_product(movement_product(self.impact, self.fraction), self.scale)
-            .wrapping_add(self.defense)
-            .min(0)
-    }
-}
-
-/// Public for the same reason as `PreparedNormalSpeed`: the recorded per-leg
-/// operands are recomposed at replay time. `river` is (combined, adjustment,
-/// crossing term) in the movement calculation's assembly order.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct NormalEdgeOperands {
-    pub additive: i64,
-    pub river: Option<(i64, i64, i64)>,
-}
-impl NormalEdgeOperands {
-    fn evaluate(self) -> i64 {
-        let mut value = self.additive;
-        if let Some((combined, mut adjustment, river)) = self.river {
-            if adjustment < 0 {
-                adjustment = movement_product(combined, adjustment);
-            }
-            value = value
-                .wrapping_add(adjustment)
-                .wrapping_add(movement_product(
-                    MOVEMENT_ONE.wrapping_add(combined).max(0),
-                    river,
-                ));
-        }
-        value
-    }
-    fn bounded(self) -> bool {
-        movement_bounded(self.additive, 100_000_000)
-            && self.river.is_none_or(|(a, b, c)| {
-                [a, b, c]
-                    .into_iter()
-                    .all(|value| movement_bounded(value, 1_000_000))
-            })
-    }
-}
-
-fn movement_bounded(value: i64, bound: i64) -> bool {
-    (-bound..=bound).contains(&value)
 }
 
 pub(crate) fn movement_priority_unit(
@@ -4259,3 +4081,7 @@ mod bench;
 
 #[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
 mod status_bench;
+
+pub use game_model::movement::army::{MovementSpeedInputs, NormalEdgeOperands, NormalSpeedOperands, PreparedNormalSpeed};
+
+use game_model::movement::army::MOVEMENT_ONE;

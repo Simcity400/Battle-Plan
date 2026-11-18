@@ -8,11 +8,13 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct CampaignClock;
 
-#[derive(Clone, Debug, Deserialize, TS)]
+#[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CampaignClockParams {
     pub branch_id: String,
@@ -20,7 +22,8 @@ pub struct CampaignClockParams {
     pub last_hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CampaignClockReply {
     pub available: bool,
@@ -49,6 +52,7 @@ impl Product for CampaignClock {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![CampaignClockParams::decl(), CampaignClockReply::decl()]
     }

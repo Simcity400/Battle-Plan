@@ -95,6 +95,14 @@ def check(normal, all_targets):
                 failures.append(" -> ".join(path) + f": only {windows} may depend on {viewer}")
     if viewer in normal.get("dashboard", set()):
         failures.append(f"dashboard -> {viewer}: depend on it through {windows}")
+    readers = {name for name in normal if name.startswith("engine-")} - {
+        "engine-allocation", "engine-reference-values", "engine-heap", "engine-sites", "engine-tga"
+    }
+    for name in sorted(normal):
+        if name in {"game-model", "replay-data"} or name.startswith(("replay-rows", "replay-tables-")):
+            path = path_to(normal, name, readers)
+            if path:
+                failures.append(" -> ".join(path) + ": row contracts must not compile native readers")
     return failures
 
 

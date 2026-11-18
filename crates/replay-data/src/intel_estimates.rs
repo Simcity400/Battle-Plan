@@ -53,10 +53,10 @@ fn square_root(value: i64) -> Result<i64, &'static str> {
     }
 }
 fn month(clock: &ClockRow) -> i32 {
-    let elapsed = clock.hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH);
+    let elapsed = clock.hour.wrapping_sub(game_model::calendar::HOUR_EPOCH);
     let mut day = (elapsed / 24) % 365;
     let mut month = 0;
-    for length in engine_native::cdate::MONTH_LENGTHS {
+    for length in game_model::calendar::MONTH_LENGTHS {
         day -= length;
         if day < 0 {
             break;
@@ -186,7 +186,7 @@ mod tests {
             lowest_spread: 100_000,
         };
         let clock = ClockRow {
-            hour: engine_native::cdate::HOUR_EPOCH + 1936 * 8760,
+            hour: game_model::calendar::HOUR_EPOCH + 1936 * 8760,
             seed: 123,
             ..Default::default()
         };

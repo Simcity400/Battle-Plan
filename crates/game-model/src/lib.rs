@@ -1,0 +1,22 @@
+//! Values and arithmetic shared by native acquisition and recorded playback.
+
+pub mod acclimatization;
+pub mod air_participants;
+pub mod air_power;
+pub mod building_damage;
+pub mod calendar;
+pub mod equipment;
+pub mod equipment_destruction;
+pub mod fixed5;
+pub mod fuel_demand;
+pub mod industrial_organisations;
+pub mod modifier_breakdown;
+pub mod modifiers;
+pub mod movement;
+pub mod naval_modifier_trees;
+pub mod occupation_effect;
+pub mod occupation_map;
+pub mod production;
+pub mod script_flag;
+pub mod strategic_action;
+pub mod war_participation;

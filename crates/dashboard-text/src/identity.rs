@@ -351,7 +351,7 @@ fn linked(links: &Rowset<'_, CountryLinkRow>, raw: u32, table: TableId) -> Resul
 /// keep it: its canonical slot and its appearance ([`Look`]), `None` when
 /// the hour lacks its CountryAppearance row.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NamingCountry {
     pub slot: u32,
     pub look: Option<Look>,
@@ -360,7 +360,7 @@ pub struct NamingCountry {
 /// A country's naming operands: dynamic-gated appearance, the independent
 /// original-or-own getter, and whether it has a civil war.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Look {
     pub name_tag: String,
     pub original_or_own_tag: Result<String, String>,

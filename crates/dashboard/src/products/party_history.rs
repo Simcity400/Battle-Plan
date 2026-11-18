@@ -30,6 +30,7 @@ use std::{
     io,
     sync::{Arc, PoisonError, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Decimal places of recorded popularity (a percentage).
@@ -37,7 +38,8 @@ pub const POPULARITY_DECIMALS: u8 = 5;
 
 /// A party, by its ideology group token, and the parts of the `party-popularity` series it was
 /// read under: its index in its country's parties.
-#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PartySeries {
     pub token: String,
@@ -45,7 +47,8 @@ pub struct PartySeries {
 }
 
 /// A party ruling over consecutive read hours.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RulingRun {
     pub token: String,
@@ -57,7 +60,8 @@ pub struct RulingRun {
 }
 
 /// The ruling party's first country leader over consecutive read hours.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderRun {
     /// The leader's ideology token; empty when the ruling party had no leader.
@@ -70,7 +74,8 @@ pub struct LeaderRun {
 }
 
 /// The ruling party's naming over consecutive read hours.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PartyNameRun {
     /// Index in `party_names`.
@@ -80,7 +85,8 @@ pub struct PartyNameRun {
 }
 
 /// An ideology group as content names and colours it.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeologyInfo {
     pub token: String,
@@ -90,7 +96,8 @@ pub struct IdeologyInfo {
 }
 
 /// A sub-ideology a recorded leader holds, as content names it.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeologyTypeInfo {
     pub token: String,
@@ -98,7 +105,8 @@ pub struct IdeologyTypeInfo {
 }
 
 /// One recorded leader's name and portrait.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderArtwork {
     pub character: IdeaCharacter,
@@ -110,7 +118,8 @@ pub struct LeaderArtwork {
     pub portrait_missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PartyHistoryReply {
     pub branch_id: String,
@@ -629,6 +638,7 @@ impl Product for PartyHistory {
     type Params = CountryParams;
     type Reply = PartyHistoryReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             CountryParams::decl(),

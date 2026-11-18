@@ -5,9 +5,11 @@ use engine_projects::program_details as kinds;
 use replay_data::rows::{ProjectFacilityOperand, ProjectProgramRow, Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FacilitySource {
     pub kind: String,
@@ -19,7 +21,8 @@ pub struct FacilitySource {
     pub value_raw: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FacilityDetails {
     pub speed_raw: Option<String>,

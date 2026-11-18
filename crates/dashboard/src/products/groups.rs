@@ -25,10 +25,12 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// A country's unbroken membership of a group.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MembershipRun {
     pub tag: String,
@@ -37,7 +39,8 @@ pub struct MembershipRun {
 }
 
 /// A faction's display name at consecutive recorded hours.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionNameRun {
     pub first_hour: i32,
@@ -46,7 +49,8 @@ pub struct FactionNameRun {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionGroup {
     /// The recorded faction id, as a decimal string.
@@ -71,7 +75,8 @@ pub struct FactionGroup {
 }
 
 /// Two countries at war with each other over consecutive recorded hours.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarPairRun {
     pub first: String,
@@ -81,7 +86,8 @@ pub struct WarPairRun {
 }
 
 /// Hours of the timeline whose memberships were not observed, per group history.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct UnobservedHours {
     pub humans: Vec<HourSpan>,
@@ -92,7 +98,8 @@ pub struct UnobservedHours {
 /// The start of a war between two countries as the engine dates it (the war relation's start
 /// hour). `attacking` is the instigating side's country (`first_was_instigator`); it may be an
 /// ally that joined rather than the country that declared, which the relation does not record.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarStart {
     pub hour: i32,
@@ -101,7 +108,8 @@ pub struct WarStart {
 }
 
 /// A capitulation as the engine dates it (Capitulation's capitulated hour).
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Capitulation {
     pub hour: i32,
@@ -111,7 +119,8 @@ pub struct Capitulation {
 /// A recorded country id naming another tag from one recorded hour to the next (a tag switch,
 /// or an id the game gives another country): runs kept by tag end and start there without the
 /// country joining or leaving anything.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityChange {
     pub hour: i32,
@@ -120,14 +129,16 @@ pub struct IdentityChange {
 }
 
 /// The holders of one tag ([`dashboard_query::identity`]).
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryIdentityHistory {
     pub tag: String,
     pub identities: Vec<CountryIdentityRun>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryGroupReply {
     pub branch_id: String,
@@ -627,6 +638,7 @@ impl Product for CountryGroups {
     type Params = BranchParams;
     type Reply = CountryGroupReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             MembershipRun::decl(),

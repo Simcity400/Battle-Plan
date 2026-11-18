@@ -42,6 +42,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub use coverage::{Coverage, CoverageSpan, DestructionCoverageSpan, UnknownReason, UnknownSpan};
@@ -52,7 +53,8 @@ pub const AMOUNT_SCALE: i64 = 100_000;
 pub const SERIES: &str = "equipment-losses";
 const TOTAL: usize = 0;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum LandSource {
     #[default]
@@ -61,14 +63,16 @@ pub enum LandSource {
 }
 
 /// A country identity (canonical slot and raw id) the reply is about.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LossCountry {
     pub slot: u32,
     pub country_id: u32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LossesParams {
     pub branch_id: String,
@@ -77,7 +81,7 @@ pub struct LossesParams {
     pub land_source: LandSource,
     /// The identity; the tag's holder at `to` when none.
     #[serde(default)]
-    #[ts(optional, as = "Option<_>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional, as = "Option<_>"))]
     pub country: Option<LossCountry>,
     pub from: i32,
     pub to: i32,
@@ -88,7 +92,8 @@ pub struct LossesParams {
 }
 
 /// Where a cause's amounts come from.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", tag = "kind", content = "reason")]
 pub enum LossSource {
     /// A Combat Log reason (0 to 3) of land equipment.
@@ -99,7 +104,7 @@ pub enum LossSource {
     SunkConvoys,
     LendLeaseSunk,
     LendLeaseSent,
-    Destruction(#[ts(type = "EquipmentDestructionCause")] Cause),
+    Destruction(#[cfg_attr(any(test, feature = "export-types"), ts(type = "EquipmentDestructionCause"))] Cause),
 }
 
 /// A destruction cause as replies name it: the recording's own name of it.
@@ -123,6 +128,7 @@ impl<'de> Deserialize<'de> for Cause {
     }
 }
 
+#[cfg(any(test, feature = "export-types"))]
 fn destruction_cause_typescript() -> String {
     let names: Vec<String> = EquipmentDestructionCause::ALL.into_iter().map(|cause| format!("\"{}\"", cause.as_str())).collect();
     format!("type EquipmentDestructionCause = {};", names.join(" | "))
@@ -171,7 +177,8 @@ impl LossSource {
 }
 
 /// A cause's writer domain; mixed or unrecognised callers are Other.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum LossDomain {
     Land,
@@ -182,7 +189,8 @@ pub enum LossDomain {
 
 /// A cause's localisation: the key, its text without colour codes (may hold the game's `$NAME$`
 /// placeholders), and the text when it needs no substitution.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossName {
     pub key: Option<String>,
@@ -190,7 +198,8 @@ pub struct LossName {
     pub text: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossCause {
     pub source: LossSource,
@@ -207,7 +216,8 @@ pub struct LossCause {
     pub leaves: Vec<LossLeaf>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossLeaf {
     /// Index into [`LossesReply::designs`]; null when the record names none.
@@ -219,7 +229,8 @@ pub struct LossLeaf {
     pub lower_bound_from: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossPoint {
     pub hour: i32,
@@ -227,7 +238,8 @@ pub struct LossPoint {
     pub total_raw: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossDesignName {
     pub first_hour: i32,
@@ -235,7 +247,8 @@ pub struct LossDesignName {
     pub known: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossDesign {
     pub variant: u32,
@@ -248,7 +261,8 @@ pub struct LossDesign {
 /// A sunk ship as the `ship-losses` log listed it: the read that listed it so often first, its
 /// sinking hour and design. The most `count` of a signature over the reads up to an hour is how
 /// many such ships the country lost.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ShipListing {
     pub signature: String,
@@ -258,7 +272,8 @@ pub struct ShipListing {
     pub count: u32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossesReply {
     pub branch_id: String,
@@ -628,6 +643,7 @@ impl Product for EquipmentLosses {
     type Params = LossesParams;
     type Reply = LossesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             LandSource::decl(),
@@ -670,18 +686,20 @@ impl Product for EquipmentLosses {
 
 /// `equipment-loss-head`'s parameters: the tag, and the identity the widget shows when it chose
 /// one.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LossHeadParams {
     pub branch_id: String,
     pub tag: String,
     #[serde(default)]
-    #[ts(optional, as = "Option<_>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional, as = "Option<_>"))]
     pub country: Option<LossCountry>,
 }
 
 /// The leaves the identity holds at the hour; each one's total is the live cell `(key, "total")`.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossHeadReply {
     pub leaves: Vec<String>,

@@ -1123,13 +1123,13 @@ impl Store {
         kind: u8,
         owner: u64,
         ordinal: u32,
-        values: Vec<engine_native::modifier_breakdown::SourceValue>,
+        values: Vec<game_model::modifier_breakdown::SourceValue>,
     ) -> Result<(), &'static str> {
         self.rows.insert(Arc::new(DivisionPanelSourceRow {
             kind,
             owner,
             ordinal,
-            node: Some(engine_native::modifier_breakdown::SourceNode {
+            node: Some(game_model::modifier_breakdown::SourceNode {
                 children: 0,
                 name: Vec::new(),
                 values,
@@ -1139,7 +1139,7 @@ impl Store {
     }
     /// A re-read equal to its certified row inserts nothing, so it needs no row allocation.
     fn terrain_operand(&mut self, owner: u64, ordinal: u32, raw: i64) -> Result<(), &'static str> {
-        let value = engine_native::modifier_breakdown::SourceValue { key: 0, raw };
+        let value = game_model::modifier_breakdown::SourceValue { key: 0, raw };
         if self.rows.get(key(3, owner, ordinal)).is_some_and(|row| {
             row.reason.is_empty()
                 && row.node.as_ref().is_some_and(|node| {
@@ -1386,7 +1386,7 @@ impl Store {
                             5,
                             seed.division,
                             ordinal,
-                            vec![engine_native::modifier_breakdown::SourceValue {
+                            vec![game_model::modifier_breakdown::SourceValue {
                                 key: 0,
                                 raw: *handle as i64,
                             }],
@@ -1508,7 +1508,7 @@ impl Store {
                 }?;
                 engine_allocation::reserve(&mut values, 1)
                     .map_err(|_| "state attrition allocation failed")?;
-                values.push(engine_native::modifier_breakdown::SourceValue { key, raw });
+                values.push(game_model::modifier_breakdown::SourceValue { key, raw });
             }
             self.operand(4, owner, 0, values)
         })();

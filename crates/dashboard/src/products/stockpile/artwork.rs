@@ -31,6 +31,7 @@ use std::{
     io,
     sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Every table a reply reads whole.
@@ -50,7 +51,8 @@ const TABLES: [TableId; 13] = [
     TableId::SimulationFeatures,
 ];
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileArtworkParams {
     pub branch_id: String,
@@ -60,7 +62,8 @@ pub struct StockpileArtworkParams {
     pub variants: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileArt {
     /// `type:<archetype>` or `variant:<handle>`.
@@ -72,7 +75,8 @@ pub struct StockpileArt {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileArtworkReply {
     pub tag: String,
@@ -271,6 +275,7 @@ impl AtHour for StockpileArtwork {
     type Reply = StockpileArtworkReply;
     type Context = ArtContext;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![StockpileArtworkParams::decl(), StockpileArt::decl(), StockpileArtworkReply::decl()]
     }

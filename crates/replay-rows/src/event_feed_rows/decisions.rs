@@ -21,7 +21,7 @@ pub const CLEAR_ALL_CANDIDATES: u8 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Operation {
     Baseline = 0,
     Ready = 1,
@@ -42,7 +42,7 @@ pub enum Operation {
     Refused = 14,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DecisionChange {
     pub operation: Operation,
     pub container: u8,

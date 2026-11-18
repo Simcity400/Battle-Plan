@@ -12,7 +12,7 @@ use std::io;
 /// An outcome a strike row can lack, named by its refusals.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum NuclearStrikePart {
     #[default]
     WarSupport = 0,
@@ -49,7 +49,7 @@ impl Value for NuclearStrikePart {
 /// One war-support adjustment call: the country's raw signed fixed5 war support before and after
 /// its clamp.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearWarSupport {
     pub country: u32,
     pub before_raw: i64,
@@ -66,7 +66,7 @@ value_struct!(NuclearWarSupport {
 /// `province` is set for a province building, and `amount_raw` is pre-minus-post health
 /// (a full level is 10,000,000). Buildings it left unchanged are not listed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearBuildingDamage {
     pub state: u32,
     pub province: Option<u32>,
@@ -86,7 +86,7 @@ value_struct!(NuclearBuildingDamage {
 /// before and after. A unit reached in several provinces of a state's strike appears once
 /// per call.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearUnitDamage {
     pub handle: u64,
     /// The native class word: 0 a division, 13 a railway gun.
@@ -116,7 +116,7 @@ value_struct!(NuclearUnitDamage {
 /// the division pools changed by active damage or, for `wing`, the air wing pools changed
 /// by aircraft removal. A negative amount is a native gain.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearEquipmentLoss {
     pub country: u32,
     pub wing: bool,
@@ -133,7 +133,7 @@ value_struct!(NuclearEquipmentLoss {
 /// One air wing's crews removed with its planes: the wing's acquired manpower before and after.
 /// Part of the equipment outcome, whose writer call it is.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearWingLoss {
     pub country: u32,
     pub manpower_before: i64,
@@ -147,7 +147,7 @@ value_struct!(NuclearWingLoss {
 
 /// A part of the outcome that was not observed, with how many times.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearStrikeRefusal {
     pub part: NuclearStrikePart,
     pub reason: Vec<u8>,
@@ -163,7 +163,7 @@ value_struct!(NuclearStrikeRefusal {
 /// hour without strikes; an unavailable one is unknown. A part named in `refusals` is
 /// incomplete; any other part lists everything the impact did to it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NuclearStrikeRow {
     pub id: u64,
     pub hour: i32,

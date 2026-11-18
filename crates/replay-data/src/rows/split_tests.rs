@@ -379,7 +379,7 @@ mod extended_rows_air_ledger_tests {
                 ..row.clone()
             },
             AirLossEventRow {
-                daily_slot: engine_air_history::cloop_history::DAILY_WINDOW_CAPACITY,
+                daily_slot: engine_reference_values::native_values::air_history::DAILY_WINDOW_CAPACITY,
                 ..row.clone()
             },
         ] {

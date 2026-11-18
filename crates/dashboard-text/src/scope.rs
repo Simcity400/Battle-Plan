@@ -26,7 +26,7 @@ pub use original_tags::OriginalTagLists;
 
 /// A resolved scope target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Target {
     /// A country by its canonical slot.
     Country(u32),
@@ -76,7 +76,7 @@ impl std::fmt::Display for Unresolved {
 /// The scopes a script or text is evaluated in. `None` is a scope the
 /// caller's context does not set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Context {
     pub root: Option<Target>,
     pub this: Option<Target>,
@@ -261,7 +261,7 @@ pub(crate) fn valid_saved_target(r: &replay_data::rows::GlobalSavedEventTargetRo
 
 /// A recorded query of the hour's scopes ([`crate::triggers::inputs`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Query {
     SavedTarget(Vec<u8>),
     SavedSelection(Vec<u8>, crate::triggers::saved_event_targets::Reader),
@@ -363,7 +363,7 @@ impl Query {
 /// A parsed scope as a query argument, compared and hashed by its full
 /// `Debug` form.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ScopeKey(Scope);
 
 impl std::hash::Hash for ScopeKey {

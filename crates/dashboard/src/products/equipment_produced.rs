@@ -36,6 +36,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 mod measure;
@@ -55,7 +56,8 @@ fn invalid(what: impl Into<String>) -> io::Error {
 }
 
 /// What the values count.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProducedCount {
     /// Units delivered: whole numbers.
@@ -66,7 +68,8 @@ pub enum ProducedCount {
 }
 
 /// Which window a value counts.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProducedMeasure {
     /// Since the observation began.
@@ -80,7 +83,8 @@ pub enum ProducedMeasure {
 }
 
 /// Why a value is not known.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProducedUnknown {
     /// The producer's totals row is not shown: the writer did not run, or the table was not read.
@@ -104,7 +108,8 @@ pub enum ProducedUnknown {
 }
 
 /// Why one run of a series holds no value.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedGap {
     pub run: u32,
@@ -112,13 +117,14 @@ pub struct ProducedGap {
 }
 
 /// Values over hours: run `i` holds `values[i]` from `firstHours[i]` through `lastHours[i]`.
-#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedSeries {
     pub first_hours: Vec<i32>,
     pub last_hours: Vec<i32>,
     /// Raw values (fixed5 for IC); null is not known, never a partial sum.
-    #[ts(type = "Array<number | null>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number | null>"))]
     pub values: Vec<Option<i64>>,
     /// Why each run without a value is not known.
     pub unknown: Vec<ProducedGap>,
@@ -164,7 +170,8 @@ impl ProducedSeries {
 
 /// An equipment type as replies name it: its key (the content's archetype, `:` and the recorded
 /// spelling where content does not resolve it, or [`UNRECORDED_TYPE`]), localised name and arm.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedType {
     pub key: String,
@@ -175,7 +182,8 @@ pub struct ProducedType {
 /// The type of designs whose type was not recorded: they could be of any type.
 pub const UNRECORDED_TYPE: &str = ":unrecorded";
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EquipmentProducedParams {
     pub branch_id: String,
@@ -183,11 +191,11 @@ pub struct EquipmentProducedParams {
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
     /// The hour a top N is ranked at: the view's last hour, or the cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub rank_hour: Option<i32>,
     pub count: ProducedCount,
     pub measure: ProducedMeasure,
@@ -201,7 +209,8 @@ pub struct EquipmentProducedParams {
 }
 
 /// One country's values over the window.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedLine {
     pub tag: String,
@@ -209,7 +218,8 @@ pub struct ProducedLine {
     pub series: ProducedSeries,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentProducedReply {
     pub branch_id: String,
@@ -234,14 +244,16 @@ pub struct EquipmentProducedReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProducedTypesParams {
     pub branch_id: String,
     pub refits: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedTypesReply {
     pub branch_id: String,
@@ -254,7 +266,8 @@ pub struct ProducedTypesReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProducedCountryParams {
     pub branch_id: String,
@@ -265,7 +278,8 @@ pub struct ProducedCountryParams {
 }
 
 /// One design a country produced, over the branch.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedModel {
     pub variant: String,
@@ -279,7 +293,8 @@ pub struct ProducedModel {
     pub series: ProducedSeries,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedCountryReply {
     pub branch_id: String,
@@ -296,7 +311,8 @@ pub struct ProducedCountryReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProducedAtParams {
     pub branch_id: String,
@@ -307,16 +323,18 @@ pub struct ProducedAtParams {
 }
 
 /// A value at one hour (fixed5 for IC), or why it is not known.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedAmount {
-    #[ts(type = "number | null")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
     pub value: Option<i64>,
     pub reason: Option<ProducedUnknown>,
 }
 
 /// One design a country delivered something of, or does not know, at one hour.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedModelAt {
     pub variant: String,
@@ -331,7 +349,8 @@ pub struct ProducedModelAt {
     pub ic: ProducedAmount,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedAtReply {
     pub branch_id: String,
@@ -1156,6 +1175,7 @@ impl Product for EquipmentProduced {
         }
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             EquipmentProducedParams::decl(),
@@ -1187,6 +1207,7 @@ impl Product for EquipmentProducedTypes {
         params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ProducedTypesParams::decl(), ProducedTypesReply::decl(), ProducedType::decl(), Domain::decl()]
     }
@@ -1209,6 +1230,7 @@ impl Product for EquipmentProducedCountry {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ProducedCountryParams::decl(), ProducedCountryReply::decl(), ProducedModel::decl(), StockVariantName::decl()]
     }
@@ -1232,6 +1254,7 @@ impl Product for EquipmentProducedAt {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ProducedAtParams::decl(), ProducedAtReply::decl(), ProducedAmount::decl(), ProducedModelAt::decl()]
     }

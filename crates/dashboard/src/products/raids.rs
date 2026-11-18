@@ -23,6 +23,7 @@ use std::{
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Raids' columns, as the schema numbers them, ascending as a history holds them.
@@ -175,7 +176,8 @@ fn prepare(runs: &mut Vec<RaidPreparationRun>, first: i32, last: i32, value: i32
     runs.push(RaidPreparationRun(first, last, value, 0));
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidTypeInfo {
     pub token: String,
@@ -183,7 +185,8 @@ pub struct RaidTypeInfo {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidArtwork {
     pub key: String,
@@ -192,7 +195,8 @@ pub struct RaidArtwork {
 }
 
 /// A stretch of a raid's phase and outcome, every hour of it read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidPhaseRun {
     pub first_hour: i32,
@@ -205,10 +209,12 @@ pub struct RaidPhaseRun {
 
 /// (First read, last read, preparation hours at the first read, change per hour), every hour of
 /// it read while the raid was preparing: a missing read ends it, so it never spans a gap.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
-pub struct RaidPreparationRun(pub i32, pub i32, pub i32, #[ts(type = "number")] pub i64);
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+pub struct RaidPreparationRun(pub i32, pub i32, pub i32, #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))] pub i64);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidEpisode {
     /// The raid's row key, as a decimal string.
@@ -634,7 +640,8 @@ fn validate(branch_id: &str, tags: &[String]) -> Result<(), &'static str> {
 
 pub struct RaidLog;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RaidLogParams {
     pub branch_id: String,
@@ -651,7 +658,8 @@ pub struct RaidLogParams {
     pub catalogue: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RaidLogReply {
     /// False only when the content proves no raid type exists; true once a raid was recorded; none
@@ -690,6 +698,7 @@ impl Product for RaidLog {
     type Params = RaidLogParams;
     type Reply = RaidLogReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![RaidLogParams::decl(), RaidTypeInfo::decl(), RaidArtwork::decl(), RaidPhaseRun::decl(), RaidPreparationRun::decl(), RaidEpisode::decl(), RaidLogReply::decl()]
     }

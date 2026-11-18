@@ -30,6 +30,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// One recorded annexation, its countries as tagged at its hour.
@@ -43,13 +44,15 @@ pub struct Annexation {
     pub civil_war: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CivilWarsParams {
     pub branch_id: String,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum SideExitKind {
     /// Annexed by another side through a civil war's resolution.
@@ -61,7 +64,8 @@ pub enum SideExitKind {
 }
 
 /// How a side left, as an annexation recorded it.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SideExit {
     pub kind: SideExitKind,
@@ -71,7 +75,8 @@ pub struct SideExit {
     pub by: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CivilWarSide {
     /// The holder's tags from each hour it held them.
@@ -87,7 +92,8 @@ pub struct CivilWarSide {
 
 /// A proven outcome: the side left after every other was annexed by a side, dated by the last
 /// such annexation.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CivilWarOutcome {
     pub winner: u32,
@@ -95,7 +101,8 @@ pub struct CivilWarOutcome {
     pub read_hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CivilWar {
     pub id: String,
@@ -108,7 +115,8 @@ pub struct CivilWar {
     pub outcome: Option<CivilWarOutcome>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CivilWarsReply {
     pub branch_id: String,
@@ -130,6 +138,7 @@ impl Product for CivilWars {
     type Params = CivilWarsParams;
     type Reply = CivilWarsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![CivilWarsParams::decl(), CivilWarsReply::decl(), SideExitKind::decl(), SideExit::decl(), CivilWarSide::decl(), CivilWarOutcome::decl(), CivilWar::decl()]
     }

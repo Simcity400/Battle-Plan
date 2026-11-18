@@ -3,7 +3,7 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct UnitCombatReference {
     /// Complete registry handle. Reference-type words are runtime minted;
     /// they never select the class or lose their high word during transport.
@@ -53,7 +53,7 @@ impl Value for UnitCombatReference {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct UnitCombatReferences {
     /// The authenticated acquisition request's callback hour, not a UI clock.
     pub sample_hour: PacketHour,

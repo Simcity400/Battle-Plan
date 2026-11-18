@@ -31,11 +31,13 @@ use std::{
     io,
     sync::{Arc, PoisonError, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// An idea held over consecutive read hours. An advisor idea carries the seat and character the
 /// recording gave it for this span; a change of either starts a new span.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaSpan {
     pub token: String,
@@ -46,7 +48,8 @@ pub struct IdeaSpan {
 }
 
 /// One recorded character: the holder of an advisor idea.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaCharacter {
     /// The recorded character id.
@@ -59,7 +62,8 @@ pub struct IdeaCharacter {
 }
 
 /// One modifier as the game stores it, before formatting: one line per modifier, its last value.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EffectLine {
     /// The modifier's case-folded key; formats are keyed the same way.
@@ -71,7 +75,8 @@ pub struct EffectLine {
 }
 
 /// Effects against one country, or to one equipment type.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EffectGroup {
     pub target: Option<String>,
@@ -82,7 +87,8 @@ pub struct EffectGroup {
     pub tooltips: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TraitEffects {
     pub token: String,
@@ -99,7 +105,8 @@ pub struct TraitEffects {
 }
 
 /// What content and the recording say about one idea the country held.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaInfo {
     pub token: String,
@@ -126,7 +133,8 @@ pub struct IdeaInfo {
 }
 
 /// One slot of a category, as the category lists it.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SlotInfo {
     pub token: String,
@@ -139,7 +147,8 @@ pub struct SlotInfo {
     pub laws: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CategoryInfo {
     pub token: String,
@@ -152,7 +161,8 @@ pub struct CategoryInfo {
 }
 
 /// The artwork of one character who held an advisor idea.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct HolderArtwork {
     pub token: String,
@@ -164,7 +174,8 @@ pub struct HolderArtwork {
     pub artwork: Artwork,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IdeaHistoryReply {
     pub branch_id: String,
@@ -932,6 +943,7 @@ impl Product for IdeaHistory {
     type Params = CountryParams;
     type Reply = IdeaHistoryReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             CountryParams::decl(),

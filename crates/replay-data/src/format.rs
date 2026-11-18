@@ -33,7 +33,7 @@ pub fn is_layout_refusal(error: &io::Error) -> bool {
 
 /// A recording version inside the proven compatibility horizon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FormatVersion(u16);
 
 /// The format this build writes, for state built before a recording is known.

@@ -133,6 +133,7 @@ impl Product for SpriteArtwork {
         Ok(())
     }
 
+    #[cfg(feature = "export-types")]
     fn types() -> Vec<String> {
         vec![
             SpriteArtworkParams::decl(),

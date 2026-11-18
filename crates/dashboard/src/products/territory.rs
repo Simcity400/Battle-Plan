@@ -22,6 +22,7 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The declared territory series' measure names, in its columns' order.
@@ -81,7 +82,8 @@ fn branch(text: &str) -> Result<(), &'static str> {
 
 pub struct TerritoryShare;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerritoryShareParams {
     pub branch_id: String,
@@ -90,7 +92,8 @@ pub struct TerritoryShareParams {
 }
 
 /// A country holding some of the measure at the hour; how much is the live cell (slot, `value`).
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TerritoryShareEntry {
     pub tag: String,
@@ -101,7 +104,8 @@ pub struct TerritoryShareEntry {
 /// The amounts move with the head, so they are live cells: each entry's (slot, `value`), the world's (`world`,
 /// `total`) and, where `unnamed`, the part slots no tag holds (`world`, `unnamed`); the panel carries who and in
 /// what order, and is pushed when that changes.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TerritoryShareReply {
     pub measure: String,
@@ -163,6 +167,7 @@ impl AtHour for TerritoryShare {
     type Reply = TerritoryShareReply;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![TerritoryShareParams::decl(), TerritoryShareEntry::decl(), TerritoryShareReply::decl()]
     }
@@ -206,7 +211,8 @@ pub const RULES: [&str; 2] = ["controlled", "owned"];
 const RULE_COLUMNS: usize = 5;
 const STATES: usize = 3;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerritoryBreakdownParams {
     pub branch_id: String,
@@ -216,7 +222,8 @@ pub struct TerritoryBreakdownParams {
     pub rule: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TerritoryRegion {
     pub id: u32,
@@ -229,7 +236,8 @@ pub struct TerritoryRegion {
 /// holding it, none where no tag does) or no country at all (`slot` none); a region is none where
 /// no single strategic region claims the provinces. How much it holds is the live cell (`key`,
 /// `value`), and of states over (`key`, `denominator`): an exact fraction of whole states.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TerritoryRegionRow {
     pub key: String,
@@ -241,7 +249,8 @@ pub struct TerritoryRegionRow {
 /// Territory by holder and strategic region at an hour, by one measure and rule: which rows there
 /// are and their names, never their amounts, which are live cells; a panel is pushed when the rows
 /// change.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TerritoryBreakdownReply {
     pub measure: String,
@@ -362,6 +371,7 @@ impl AtHour for TerritoryBreakdown {
     type Reply = TerritoryBreakdownReply;
     type Context = Arc<BreakdownContent>;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![TerritoryBreakdownParams::decl(), TerritoryRegion::decl(), TerritoryRegionRow::decl(), TerritoryBreakdownReply::decl()]
     }

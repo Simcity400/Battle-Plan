@@ -20,7 +20,7 @@ use dashboard_query::{
     read,
     series::{Line, Part},
 };
-use engine_native::cdate::{HOUR_EPOCH, MONTH_LENGTHS};
+use game_model::calendar::{HOUR_EPOCH, MONTH_LENGTHS};
 use replay::columnar_frames::Recording;
 use replay_columnar::summary;
 use replay_data::rows::{NavalLossTotalRow as Row, TableId};
@@ -30,6 +30,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 const TOTAL: usize = 0;
@@ -43,14 +44,16 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum NavalAttribution {
     Lost,
     SunkBy,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum NavalKind {
     Ships,
@@ -58,14 +61,16 @@ pub enum NavalKind {
     Both,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum NavalPeriod {
     Running,
     Month,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalLossesParams {
     pub branch_id: String,
@@ -76,7 +81,7 @@ pub struct NavalLossesParams {
     pub period: NavalPeriod,
     /// None is the window manifest; a window's runs name it by its index.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub window: Option<usize>,
 }
 
@@ -340,6 +345,7 @@ impl Product for NavalLosses {
     type Params = NavalLossesParams;
     type Reply = ForceSizeReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![NavalLossesParams::decl(), ForceSizeReply::decl(), NavalAttribution::decl(), NavalKind::decl(), NavalPeriod::decl()]
     }

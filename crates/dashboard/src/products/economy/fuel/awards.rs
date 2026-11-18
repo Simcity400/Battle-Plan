@@ -10,6 +10,7 @@ use dashboard_query::Query;
 use replay_data::rows::{CountryFuelRow, FuelAwardDay, FuelAwardDayRecipient, Recorded, TableId};
 use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The applied day a read at `hour` holds, or why it is refused: recorded, complete, of this
@@ -54,7 +55,8 @@ pub(crate) fn read_at(query: &Query<'_>, tag: &str, hour: i32) -> io::Result<(u3
     Ok((id, hour, row))
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelAwardsParams {
     pub branch_id: String,
@@ -63,7 +65,8 @@ pub struct FuelAwardsParams {
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelAwardPart {
     pub key: String,
@@ -80,7 +83,8 @@ pub struct FuelAwardPart {
     pub name_reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelAwardsReply {
     pub tag: String,
@@ -144,6 +148,7 @@ impl Product for CountryFuelAwards {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FuelAwardsParams::decl(), FuelAwardsReply::decl(), FuelAwardPart::decl()]
     }
@@ -171,7 +176,8 @@ impl Product for CountryFuelAwards {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelAwardHistoryParams {
     pub branch_id: String,
@@ -185,7 +191,8 @@ pub struct FuelAwardHistoryParams {
 
 /// One read's receipt of the recipient over the hours the read holds; none with `reason` where
 /// the read's day is not known, or the read does not name it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelAwardRun {
     pub first_hour: i32,
@@ -195,7 +202,8 @@ pub struct FuelAwardRun {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelAwardHistoryReply {
     pub tag: String,
@@ -254,6 +262,7 @@ impl Product for CountryFuelAwardHistory {
         if params.recipient_key.is_empty() { Err("Invalid fuel recipient") } else { Ok(()) }
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FuelAwardHistoryParams::decl(), FuelAwardHistoryReply::decl(), FuelAwardRun::decl()]
     }

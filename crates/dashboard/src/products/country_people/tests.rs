@@ -139,7 +139,7 @@ fn manpower_rules_keep_native_order_scaling_wrapping_and_the_election_cache() {
     assert_eq!(mobilisation_change(250_001, 2500, 1000, 0), -1);
     assert_eq!(applied_fraction(250_099), 2500);
     assert_eq!(state_recruitment(250_000, [50_000, 7000, 1000, 50_000], false, 1000, DEFINES), 787);
-    use engine_native::cdate::HOUR_EPOCH;
+    use game_model::calendar::HOUR_EPOCH;
     let january_31 = HOUR_EPOCH + 1936 * 365 * 24 + 30 * 24 + 7;
     assert_eq!(election_date(january_31, 1), HOUR_EPOCH + 1936 * 365 * 24 + 61 * 24 + 7);
     for last in [engine_native::cgame_date::NULL_RAW_HOUR, engine_native::cpolitical_status::RESET_LAST_ELECTION] {

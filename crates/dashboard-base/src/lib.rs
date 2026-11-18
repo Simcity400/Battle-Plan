@@ -17,6 +17,7 @@ pub mod content;
 pub mod facts;
 pub mod presentation;
 pub mod products;
+pub mod queries;
 pub mod ranking;
 pub mod read_runs;
 pub mod research_dto;

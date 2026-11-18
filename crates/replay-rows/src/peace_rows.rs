@@ -6,7 +6,7 @@ use crate::value::value_struct;
 pub const PEACE_DRAIN_BUSY: &str = "peace finalizer log busy at drain";
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct SettledPeaceAction {
     pub country: u32,
     pub turn: u32,
@@ -40,7 +40,7 @@ value_struct!(SettledPeaceAction {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct SettledPeaceTransfer {
     pub state: i32,
     pub taker: u32,
@@ -54,7 +54,7 @@ value_struct!(SettledPeaceTransfer {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct SettledPeaceSubject {
     pub overlord: u32,
     pub subject: u32,
@@ -65,7 +65,7 @@ value_struct!(SettledPeaceSubject {
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PeaceSettlementRow {
     /// Observation sequence, also identifying failed identity reads.
     pub sequence: u64,

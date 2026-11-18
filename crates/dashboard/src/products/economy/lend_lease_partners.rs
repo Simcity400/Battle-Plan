@@ -19,12 +19,14 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct LendLeasePartners;
 
 /// Which of the game's two lend-lease measures a reply reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum LendLeaseMeasure {
     Industry,
@@ -41,7 +43,8 @@ impl LendLeaseMeasure {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LendLeasePartnersParams {
     pub branch_id: String,
@@ -49,15 +52,16 @@ pub struct LendLeasePartnersParams {
     pub measure: LendLeaseMeasure,
     /// The hours read; the whole timeline when absent.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub from: Option<i32>,
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub to: Option<i32>,
 }
 
 /// A partner slot's tag over consecutive hours; none where no tag holds it then.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LendLeaseTag {
     pub first_hour: i32,
@@ -67,16 +71,18 @@ pub struct LendLeaseTag {
 
 /// One partner's two histories of the measure (sent, received) as runs of exact fixed-point sums:
 /// first hour, last hour, value.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LendLeasePartner {
     pub slot: u32,
     pub tags: Vec<LendLeaseTag>,
-    #[ts(type = "Array<Array<[number, number, string]>>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<Array<[number, number, string]>>"))]
     pub values: Vec<Vec<(i32, i32, String)>>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LendLeasePartnersReply {
     pub holder: String,
@@ -86,7 +92,7 @@ pub struct LendLeasePartnersReply {
     /// Hours the histories were read while the tag had a holder: outside them nothing is known.
     pub known: Vec<HourSpan>,
     /// The holder's own two totals of the measure over its partners, from its first partner on.
-    #[ts(type = "Array<Array<[number, number, string]>>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<Array<[number, number, string]>>"))]
     pub totals: Vec<Vec<(i32, i32, String)>>,
     pub partners: Vec<LendLeasePartner>,
     pub warnings: Vec<String>,
@@ -179,6 +185,7 @@ impl Product for LendLeasePartners {
         validate_tag(&params.holder)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LendLeasePartnersParams::decl(), LendLeasePartnersReply::decl(), LendLeaseMeasure::decl(), LendLeasePartner::decl(), LendLeaseTag::decl(), HourSpan::decl()]
     }

@@ -11,7 +11,7 @@
 //! (`camouflage`), decided at capture with the live define, as a Map
 //! recording's DivisionModelInputs does. Recordings before
 //! it hold every entry and the maximum, and the same port
-//! ([`engine_native::acclimatization_data::camouflage`]) decides here with the
+//! ([`game_model::acclimatization::camouflage`]) decides here with the
 //! content's define.
 //!
 //! A condition is literal `snow` (the executable keyword, effective snow
@@ -140,7 +140,7 @@ impl Content {
                 let maximum = status
                     .acclimatization_maximum
                     .ok_or_else(|| invalid("division acclimatization is unavailable this hour"))?;
-                Ok(engine_native::acclimatization_data::camouflage(
+                Ok(game_model::acclimatization::camouflage(
                     status
                         .acclimatization
                         .iter()
@@ -594,7 +594,7 @@ mod tests {
                     for (categories, province) in [((1, 2), 1), ((2, 1), 2), ((2, 2), 3)] {
                         let entries = [(categories.0, first), (categories.1, second)];
                         let old = status(&entries, maximum);
-                        let current = recorded(engine_native::acclimatization_data::camouflage(
+                        let current = recorded(game_model::acclimatization::camouflage(
                             entries,
                             maximum,
                             content.show_at,

@@ -32,7 +32,7 @@ pub fn display_name(
 
 /// A template's display name before localisation: its text, or a key and its tag.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum TemplateNaming {
     Text(String),
     Localised { tag: String, key: String },

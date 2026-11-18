@@ -3,7 +3,7 @@ use super::*;
 opaque_value!([u8; 4]);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogGroupRow {
     pub country: u32,
     pub group: u64,
@@ -13,7 +13,7 @@ typed_codec!(CombatLogGroupRow, 96, |row| (row.country as u128) << 64 | row.grou
  { 0 => (ordinal): U32 }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogMonthRow {
     pub country: u32,
     pub group: u32,
@@ -27,7 +27,7 @@ typed_codec!(CombatLogMonthRow, 104, |row| (row.country as u128) << 72 | (row.gr
  { 0 => (reason): I32, 1 => (date): I32, 2 => (allow_zero): Bool }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogManpowerRow {
     pub country: u32,
     pub group: u32,
@@ -42,7 +42,7 @@ typed_codec!(CombatLogManpowerRow, 96, |row| (row.country as u128) << 64 | (row.
  { 0 => (reason): I32, 1 => (date): I32, 2 => (losses_0): I32, 3 => (losses_1): I32, 4 => (losses_2): I32 }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogTemplateRow {
     pub country: u32,
     pub group: u32,
@@ -56,7 +56,7 @@ typed_codec!(CombatLogTemplateRow, 96, |row| (row.country as u128) << 64 | (row.
  { 0 => (template): U64, 1 => (date): I32, 2 => (wins): I32, 3 => (total): I32 }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogReferenceRow {
     pub country: u32,
     pub group: u32,
@@ -68,7 +68,7 @@ typed_codec!(CombatLogReferenceRow, 96, |row| (row.country as u128) << 64 | (row
  { 0 => (battle): I32, 1 => (attacker): Bool }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogBattleRow {
     pub id: u32,
     pub reference_count: i32,
@@ -80,7 +80,7 @@ typed_codec!(CombatLogBattleRow, 32, |row| row.id as u128, |key| Self { id: key 
  { 0 => (reference_count): I32, 1 => (date): I32, 2 => (province): U32, 3 => (flags): Opaque }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogEnemyEquipmentRow {
     pub country: u32,
     pub group: u32,
@@ -93,7 +93,7 @@ typed_codec!(CombatLogEnemyEquipmentRow, 128, |row| (row.country as u128) << 96 
  { 0 => (variant): U64, 1 => (amount_raw): I64 }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogBattleSideRow {
     pub battle: u32,
     pub side: u8,
@@ -106,7 +106,7 @@ typed_codec!(CombatLogBattleSideRow, 40, |row| (row.battle as u128) << 8 | row.s
  { 0 => (manpower): I32, 1 => (air_factor_raw): I64, 2 => (leader): U64, 3 => (pool_flags): U8 }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogBattleEquipmentRow {
     pub battle: u32,
     pub side: u8,
@@ -119,7 +119,7 @@ typed_codec!(CombatLogBattleEquipmentRow, 80, |row| (row.battle as u128) << 48 |
  { 0 => (variant): U64, 1 => (amount_raw): I64 }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogBattleModifierRow {
     pub battle: u32,
     pub side: u8,
@@ -131,7 +131,7 @@ typed_codec!(CombatLogBattleModifierRow, 72, |row| (row.battle as u128) << 40 | 
  { 0 => (modifier): I32, 1 => (hours): I32 }, |_row| Ok(()));
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogBattleCountryRow {
     pub battle: u32,
     pub side: u8,
@@ -147,7 +147,7 @@ typed_codec!(CombatLogBattleCountryRow, 72, |row| (row.battle as u128) << 40 | (
 /// `logical_order` and `fact` to reconstruct that view, including duplicates.
 /// Aggregate manpower/equipment reuse LandCombatProgress's same-census read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogObserverRow {
     pub combat: u64,
     pub attacker: bool,
@@ -301,7 +301,7 @@ impl CombatLogObserverRow {
 }
 
 /// Native full equipment-reference type used by the existing own-loss keys.
-pub const COMBAT_LOG_VARIANT_TYPE: u32 = engine_native::cequipment_variant::REFERENCE_TYPE;
+pub const COMBAT_LOG_VARIANT_TYPE: u32 = engine_reference_values::native_values::equipment_variant::REFERENCE_TYPE;
 
 /// Stored active-observer operand kinds. Item and payload meanings follow the
 /// native collection: side, pool, equipment, modifier, country, observer state,

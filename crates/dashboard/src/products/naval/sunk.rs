@@ -20,6 +20,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 const ICON_EDGE: u32 = 48;
@@ -28,7 +29,8 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ShipClassInfo {
     pub token: u32,
@@ -39,7 +41,8 @@ pub struct ShipClassInfo {
     pub icon: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ShipSinkingCause {
     Hostile,
@@ -48,7 +51,8 @@ pub enum ShipSinkingCause {
     Cause,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ShipsSunkRow {
     pub sink_hour: i32,
@@ -68,7 +72,8 @@ pub struct ShipsSunkRow {
     pub assisted_kill: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ShipsSunkReply {
     pub branch_id: String,
@@ -90,7 +95,8 @@ pub struct ShipsSunkReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ShipsSunkManifestReply {
     pub branch_id: String,
@@ -106,7 +112,8 @@ pub struct ShipsSunkManifestReply {
 
 dashboard_base::reply_warnings!(ShipsSunkReply, ShipsSunkManifestReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ShipsSunkParams {
     pub branch_id: String,
@@ -403,6 +410,7 @@ impl Product for ShipsSunk {
     type Params = ShipsSunkParams;
     type Reply = ShipsSunkReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ShipsSunkParams::decl(), ShipsSunkReply::decl(), ShipClassInfo::decl(), ShipSinkingCause::decl(), ShipsSunkRow::decl()]
     }
@@ -498,6 +506,7 @@ impl Product for ShipsSunkManifest {
     type Params = dashboard_base::products::BranchParams;
     type Reply = ShipsSunkManifestReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ShipsSunkManifestReply::decl()]
     }

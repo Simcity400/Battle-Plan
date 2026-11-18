@@ -11,6 +11,7 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct SeaContent {
@@ -26,8 +27,9 @@ struct Cached {
 }
 
 /// A sea region as a setting offers it: its id and name.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
-#[ts(rename = "SeaRegionChoice")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[cfg_attr(any(test, feature = "export-types"), ts(rename = "SeaRegionChoice"))]
 pub struct Choice {
     pub id: String,
     pub name: String,

@@ -1,5 +1,5 @@
 use super::{BATCH, Memory, RecordField, RecordLayout, field};
-pub use engine_native::air_power_menu::{Contribution, Menu};
+pub use game_model::air_power::{Contribution, Menu};
 use engine_native::{
     allocation, memory::gather_records, msvc_tree_node as node, read as native_read,
 };

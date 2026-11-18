@@ -9,9 +9,11 @@ use dashboard_base::span::HourSpan;
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StabilityReadsParams {
     pub branch_id: String,
@@ -20,7 +22,8 @@ pub struct StabilityReadsParams {
 }
 
 /// The hours the stability inputs were read in a span: an hour between reads shows the read before it.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StabilityReadsReply {
     pub reads: Vec<HourSpan>,
@@ -53,6 +56,7 @@ impl Product for StabilityReads {
     type Params = StabilityReadsParams;
     type Reply = StabilityReadsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![StabilityReadsParams::decl(), StabilityReadsReply::decl()]
     }

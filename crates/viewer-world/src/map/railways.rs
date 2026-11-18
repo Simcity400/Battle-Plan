@@ -158,7 +158,7 @@ pub struct RailMesh {
 
 impl RailMesh {
     fn with_capacity(vertices: usize, runs: usize, bridges: usize) -> io::Result<Self> {
-        use engine_native::allocation;
+        use engine_allocation as allocation;
         Ok(Self {
             native_vertices: allocation::vec(vertices)?,
             native_runs: allocation::vec(runs)?,
@@ -788,7 +788,7 @@ impl RailGeometry {
         heights: &HeightField<'_>,
     ) -> io::Result<()> {
         let first = mesh.native_vertices.len() as u32;
-        let ns: Vec<_> = engine_native::allocation::collect_vec(neighbors.iter())?;
+        let ns: Vec<_> = engine_allocation::collect_vec(neighbors.iter())?;
         for (i, &(&a, &level)) in ns.iter().enumerate() {
             let start = crossing(a).map(|mut c| {
                 if a > province {
@@ -829,7 +829,7 @@ impl RailGeometry {
         }
         let end = mesh.native_vertices.len() as u32;
         if first != end {
-            engine_native::allocation::reserve(&mut mesh.native_runs, 1)?;
+            engine_allocation::reserve(&mut mesh.native_runs, 1)?;
             mesh.native_runs.push(first..end);
         }
         Ok(())
@@ -932,7 +932,7 @@ impl RailGeometry {
         base: Option<&RailBase>,
         network: &Arc<RailNetwork>,
     ) -> io::Result<(RailMesh, RailBase)> {
-        use engine_native::allocation;
+        use engine_allocation as allocation;
         let heights = &self.heights();
         let base = base.filter(|base| Arc::ptr_eq(&base.owner, &self.identity));
         let graph = &network.graph;
@@ -1212,8 +1212,8 @@ impl RailGeometry {
             bounds: [f32::MAX, f32::MAX, f32::MIN, f32::MIN],
             ..Default::default()
         };
-        engine_native::allocation::reserve(&mut mesh.bridges, crossings.len())?;
-        engine_native::allocation::reserve(&mut mesh.native_runs, graph.len())?;
+        engine_allocation::reserve(&mut mesh.bridges, crossings.len())?;
+        engine_allocation::reserve(&mut mesh.native_runs, graph.len())?;
         for (&key, c) in &crossings {
             if (graph.get(&key.0).is_some_and(|n| n.contains_key(&key.1))
                 || graph.get(&key.1).is_some_and(|n| n.contains_key(&key.0)))
@@ -1399,7 +1399,7 @@ impl Curve {
         let curved = self.curve_length * inv;
         let ts = self.samples();
         let mut vertices =
-            engine_native::allocation::vec(engine_native::allocation::mul(ts.len(), 2)?)?;
+            engine_allocation::vec(engine_allocation::mul(ts.len(), 2)?)?;
         let repeats = self.length.round().max(1.0);
         let levels = defines.levels as i32;
         let band = (level.clamp(1, levels) - 1) as f32 / levels as f32;
@@ -1444,7 +1444,7 @@ impl Curve {
                 v.uv[1],
             ]
         };
-        engine_native::allocation::reserve(&mut mesh.native_vertices, vertices.len() + 4)?;
+        engine_allocation::reserve(&mut mesh.native_vertices, vertices.len() + 4)?;
         mesh.native_vertices.extend([pack(&vertices[0]); 2]);
         mesh.native_vertices.extend(vertices.iter().map(pack));
         mesh.native_vertices

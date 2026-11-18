@@ -28,6 +28,7 @@ use std::{
     io,
     sync::{Arc, Mutex, PoisonError},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// `ConstructionProjects`' columns, as the schema numbers them.
@@ -92,7 +93,8 @@ const LINE_PICTURE: &str = "picture";
 const LINE_REPAIR: &str = "repair";
 
 /// A building line or a railway line.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectKind {
     Building,
@@ -100,7 +102,8 @@ pub enum ProjectKind {
 }
 
 /// Why a stretch of a line's output is not counted.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum SpendingGap {
     /// The output table was not read, or does not list the line.
@@ -126,7 +129,8 @@ pub fn gap_of(reason: u8) -> Option<SpendingGap> {
 }
 
 /// A building type the replies name, by its recorded lexer id, with its name and icon from content.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionType {
     pub id: u32,
@@ -137,7 +141,8 @@ pub struct ConstructionType {
     pub icon: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionStateName {
     pub id: u32,

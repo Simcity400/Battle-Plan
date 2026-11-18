@@ -925,7 +925,7 @@ fn date_election_and_support_formats_preserve_game_text() {
         ),
     );
     let mut f = frame();
-    f.hour = engine_native::cdate::HOUR_EPOCH + 1936 * 8760 + 31 * 24 + 23;
+    f.hour = game_model::calendar::HOUR_EPOCH + 1936 * 8760 + 31 * 24 + 23;
     let last_election = f.hour - 23;
     set::<tables::Politics>(
         &mut f,

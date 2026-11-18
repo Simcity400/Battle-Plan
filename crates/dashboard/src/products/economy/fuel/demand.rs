@@ -20,6 +20,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The raw country id of `tag`'s holder at `hour`; refused by name where none holds it.
@@ -425,7 +426,8 @@ pub fn occurrence<'a>(pack: &'a Pack, key: &Key) -> Option<Occurrence<'a>> {
     (&row.key == key).then_some(row)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandLocation {
     pub list: u8,
@@ -438,7 +440,8 @@ pub struct FuelDemandLocation {
 }
 
 /// One consumer: what it is, where it sits and its daily projection, fixed5 (none with `reason`).
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandPart {
     pub key: String,
@@ -458,7 +461,8 @@ pub struct FuelDemandPart {
     pub name_reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandCommand {
     pub reference: String,
@@ -471,7 +475,8 @@ pub struct FuelDemandCommand {
     pub name_reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandFleetName {
     pub reference: String,
@@ -479,7 +484,8 @@ pub struct FuelDemandFleetName {
     pub name_reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandAirSite {
     pub list: u8,
@@ -493,7 +499,8 @@ pub struct FuelDemandAirSite {
     pub wings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelDemandParams {
     pub branch_id: String,
@@ -502,7 +509,8 @@ pub struct FuelDemandParams {
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandReply {
     pub tag: String,
@@ -677,6 +685,7 @@ impl Product for CountryFuelDemand {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             FuelDemandParams::decl(),
@@ -716,7 +725,8 @@ impl Product for CountryFuelDemand {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelDemandHistoryParams {
     pub branch_id: String,
@@ -730,7 +740,8 @@ pub struct FuelDemandHistoryParams {
 
 /// A consumer's projection over the hours one read holds; none with `reason` where the read's pack
 /// is not known or does not hold the consumer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandRun {
     pub first_hour: i32,
@@ -740,14 +751,16 @@ pub struct FuelDemandRun {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandHistoryPart {
     pub key: String,
     pub runs: Vec<FuelDemandRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandHistoryReply {
     pub tag: String,
@@ -813,6 +826,7 @@ impl Product for CountryFuelDemandHistory {
         if params.keys.is_empty() { Err("Choose a fuel consumer") } else { Ok(()) }
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FuelDemandHistoryParams::decl(), FuelDemandHistoryReply::decl(), FuelDemandHistoryPart::decl(), FuelDemandRun::decl()]
     }

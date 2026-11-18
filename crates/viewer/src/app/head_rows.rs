@@ -9,7 +9,6 @@
 
 use crate::{
     document::Document,
-    map_views::CounterView,
     playhead_host::{
         Entry, MapSide,
         rows::{AtHead, Cadence, Need, Recording},
@@ -18,7 +17,6 @@ use crate::{
 use replay_data::{Hour, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use std::sync::Arc;
-use viewer_foundation::map::mode_visibility::PriorityTable;
 
 pub(crate) mod tables;
 #[cfg(test)]
@@ -207,42 +205,7 @@ pub(crate) fn head<'a>(side: Option<&'a MapSide>, document: &Document) -> Head<'
     side.map(|side| (side.entry(), Recording { branch: side.branch().unwrap_or_else(|| document.playback.branch()) }))
 }
 
-/// What the overlay's camera-bound inputs read for: each such set has a reader of its own, so a
-/// map mode declares only what it draws and holds nothing once left.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct OverlayInputs {
-    priorities: PriorityTable,
-    resources: bool,
-    occupation: bool,
-    air: bool,
-    /// The whole overlay, its tables and layout, is made from these rows: the open map's.
-    tables: bool,
-}
-
-impl OverlayInputs {
-    /// None when no input that reads rows is drawn.
-    pub(crate) fn of(view: &CounterView) -> Option<Self> {
-        let priorities = view.visibility.priorities;
-        Self { priorities, resources: view.visibility.resource_icons, occupation: view.occupation.is_some(), air: !view.air_selected.is_empty(), tables: false }.drawn()
-    }
-
-    /// The open map's overlay: its tables and layout as well as its camera-bound inputs, so it is
-    /// always read.
-    pub(crate) fn whole(view: &CounterView) -> Self {
-        let priorities = view.visibility.priorities;
-        Self { priorities, resources: view.visibility.resource_icons, occupation: view.occupation.is_some(), air: !view.air_selected.is_empty(), tables: true }
-    }
-
-    /// These inputs less the resource icons or the occupation icons, which the map's layers draw.
-    pub(crate) fn without(self, resources: bool, occupation: bool) -> Option<Self> {
-        Self { resources: self.resources && !resources, occupation: self.occupation && !occupation, ..self }.drawn()
-    }
-
-    fn drawn(self) -> Option<Self> {
-        let mode = matches!(self.priorities, PriorityTable::StrategicAir | PriorityTable::Resistance | PriorityTable::StrategicNavy);
-        (self.tables || mode || self.resources || self.occupation || self.air).then_some(self)
-    }
-}
+pub(crate) use crate::map_views::OverlayInputs;
 
 #[derive(Debug)]
 pub(crate) struct HeadRows {

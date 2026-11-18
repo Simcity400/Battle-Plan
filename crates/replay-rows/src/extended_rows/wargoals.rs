@@ -9,7 +9,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryWargoalRow {
     pub country: u32,
     pub ordinal: u32,
@@ -25,7 +25,7 @@ typed_codec!(CountryWargoalRow, 64, |r| (r.country as u128) << 32 | r.ordinal as
  { 0 => (handle): U64, 1 => (actor): U32, 2 => (recipient): U32, 3 => (goal_type): U32, 4 => (expires): I32, 5 => (name_token): U32 }, |_r| Ok(()));
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WargoalJustificationRow {
     pub country: u32,
     pub ordinal: u32,
@@ -50,7 +50,7 @@ typed_codec!(WargoalJustificationRow, 64, |r| (r.country as u128) << 32 | r.ordi
 /// `ordinal` is its native target position. State IDs and country references
 /// occupy the low 32 bits; unused handles retain their complete 64 bits.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WargoalTargetRow {
     pub country: u32,
     pub kind: u8,

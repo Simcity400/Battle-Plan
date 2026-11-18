@@ -6,42 +6,15 @@ use crate::checkpoint::endpoint::{self, Edit};
 use std::{fmt, ops::Range};
 
 /// What a recorded table's row type implements, so a descriptor can be built for it.
-#[cfg(not(any(test, feature = "test-support")))]
 pub trait TableRow:
-    RowCodec + crate::checkpoint::rows::Row + Fields + fmt::Debug + replay_spool::Spooled + 'static
+    RowCodec + crate::checkpoint::rows::Row + Fields + fmt::Debug + 'static
 {
 }
-#[cfg(not(any(test, feature = "test-support")))]
 impl<
-    R: RowCodec + crate::checkpoint::rows::Row + Fields + fmt::Debug + replay_spool::Spooled + 'static,
+    R: RowCodec + crate::checkpoint::rows::Row + Fields + fmt::Debug + 'static,
 > TableRow for R
 {
 }
-/// What a recorded table's row type implements, so a descriptor can be built for it.
-#[cfg(any(test, feature = "test-support"))]
-pub trait TableRow:
-    RowCodec
-    + crate::checkpoint::rows::Row
-    + crate::checkpoint::endpoint::sparse::SparseReference
-    + Fields
-    + fmt::Debug
-    + replay_spool::Spooled
-    + 'static
-{
-}
-#[cfg(any(test, feature = "test-support"))]
-impl<
-    R: RowCodec
-        + crate::checkpoint::rows::Row
-        + crate::checkpoint::endpoint::sparse::SparseReference
-        + Fields
-        + fmt::Debug
-        + replay_spool::Spooled
-        + 'static,
-> TableRow for R
-{
-}
-
 /// A table's rows' operations, each over the whole table: one indirect call per table and
 /// operation, the loop over rows and fields inside.
 pub struct RowOps<R: 'static> {
@@ -59,6 +32,7 @@ pub struct RowOps<R: 'static> {
         &mut dyn FnMut(usize, usize) -> io::Result<Field<'a>>,
     ) -> io::Result<()>,
     pub range_fits: fn(&[R], &[R], &[Range<u128>]) -> bool,
+    #[cfg(any(test, feature = "capture", feature = "test-support"))]
     pub range_encode: fn(
         &[R],
         &[R],
@@ -81,7 +55,9 @@ pub struct RowOps<R: 'static> {
     pub encode_row_recorded_fields: fn(&[R], usize, &mut Vec<u8>) -> io::Result<u64>,
     pub encode_changes:
         fn(&[R], &[R], &mut Vec<u8>, &mut Vec<u8>, Option<&mut ChangedRows>) -> io::Result<bool>,
+    #[cfg(any(test, feature = "capture", feature = "test-support"))]
     pub encode_replacements: fn(&[R], &[R], &[usize], &mut Vec<u8>) -> io::Result<bool>,
+    #[cfg(any(test, feature = "capture", feature = "test-support"))]
     pub install_replacements: fn(&mut [R], &mut [R], &[usize]),
     pub apply_delta: fn(Vec<R>, &[DeltaRow], &[u128]) -> io::Result<Vec<R>>,
     pub apply_delta_validated: fn(Vec<R>, &[DeltaRow], &[u128]) -> io::Result<Vec<R>>,
@@ -100,14 +76,6 @@ pub struct RowOps<R: 'static> {
     pub row_eq: fn(&R, &R) -> bool,
     pub debug: fn(&Vec<R>, &mut fmt::Formatter<'_>) -> fmt::Result,
     pub row_debug: fn(&R, &mut fmt::Formatter<'_>) -> fmt::Result,
-    pub spool: fn(&Vec<R>, &mut replay_spool::Writer<'_>) -> io::Result<()>,
-    pub unspool: fn(&mut replay_spool::Reader<'_>) -> io::Result<Vec<R>>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub one_default: fn() -> Vec<R>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub sparse_masks: fn(&[R]),
-    #[cfg(any(test, feature = "test-support"))]
-    pub field_round_trip: fn(&[R], u64) -> io::Result<bool>,
 }
 
 impl<R: TableRow> RowOps<R> {
@@ -119,6 +87,7 @@ impl<R: TableRow> RowOps<R> {
             from_wire_fields: rows_from_wire_fields_typed::<R>,
             patch: patch_typed::<R>,
             range_fits: crate::sliced::ranges::fits::<R>,
+            #[cfg(any(test, feature = "capture", feature = "test-support"))]
             range_encode: crate::sliced::ranges::encode::<R>,
             range_apply: crate::sliced::ranges::apply::<R>,
             heap_bytes: heap_bytes::<R>,
@@ -133,7 +102,9 @@ impl<R: TableRow> RowOps<R> {
             encode_row_fields: encode_row_fields::<R>,
             encode_row_recorded_fields: encode_row_recorded_fields::<R>,
             encode_changes: encode_changes_typed::<R>,
+            #[cfg(any(test, feature = "capture", feature = "test-support"))]
             encode_replacements: encode_replacements_typed::<R>,
+            #[cfg(any(test, feature = "capture", feature = "test-support"))]
             install_replacements: install_replacements::<R>,
             apply_delta: apply_typed::<R>,
             apply_delta_validated: apply_typed_validated::<R>,
@@ -152,16 +123,31 @@ impl<R: TableRow> RowOps<R> {
             row_eq: row_eq::<R>,
             debug: debug::<R>,
             row_debug: row_debug::<R>,
-            spool: spool::<R>,
-            unspool: unspool::<R>,
-            #[cfg(any(test, feature = "test-support"))]
-            one_default: one_default::<R>,
-            #[cfg(any(test, feature = "test-support"))]
-            sparse_masks: sparse_masks::<R>,
-            #[cfg(any(test, feature = "test-support"))]
-            field_round_trip: field_round_trip::<R>,
         }
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct FixtureOps<R> {
+    pub spool: fn(&Vec<R>, &mut replay_spool::Writer<'_>) -> io::Result<()>,
+    pub unspool: fn(&mut replay_spool::Reader<'_>) -> io::Result<Vec<R>>,
+    pub one_default: fn() -> Vec<R>,
+    pub sparse_masks: fn(&[R]),
+    pub field_round_trip: fn(&[R], u64) -> io::Result<bool>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl<R> FixtureOps<R>
+where
+    R: TableRow + replay_spool::Spooled + endpoint::sparse::SparseReference,
+{
+    pub const OPS: Self = Self {
+        spool: spool::<R>,
+        unspool: unspool::<R>,
+        one_default: one_default::<R>,
+        sparse_masks: sparse_masks::<R>,
+        field_round_trip: field_round_trip::<R>,
+    };
 }
 
 /// `Table => Row` pairs, each a [`RowOps`] static named as its table; the rows' types are in scope.
@@ -170,6 +156,13 @@ macro_rules! row_ops {
     ($($table:ident => $row:ident),+ $(,)?) => {
         $(#[allow(non_upper_case_globals, reason = "a descriptor is named as the table it serves")]
         pub static $table: $crate::rows::RowOps<$row> = $crate::rows::RowOps::new();)+
+        #[cfg(feature = "test-support")]
+        pub mod fixtures {
+            use super::*;
+            $(#[allow(non_upper_case_globals, reason = "a fixture descriptor shares its table name")]
+            pub static $table: $crate::rows::ops::FixtureOps<$row> =
+                $crate::rows::ops::FixtureOps::OPS;)+
+        }
     };
 }
 
@@ -230,6 +223,7 @@ fn encode_row_recorded_fields<R: RowCodec>(
         .encode_recorded_fields(output)
 }
 
+#[cfg(any(test, feature = "capture", feature = "test-support"))]
 fn install_replacements<R>(previous: &mut [R], rows: &mut [R], indices: &[usize]) {
     for (&index, row) in indices.iter().zip(rows.iter_mut()) {
         std::mem::swap(&mut previous[index], row);
@@ -256,6 +250,7 @@ fn row_debug<R: fmt::Debug>(row: &R, out: &mut fmt::Formatter<'_>) -> fmt::Resul
     fmt::Debug::fmt(row, out)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn spool<R: replay_spool::Spooled>(
     rows: &Vec<R>,
     out: &mut replay_spool::Writer<'_>,
@@ -263,6 +258,7 @@ fn spool<R: replay_spool::Spooled>(
     replay_spool::Spooled::spool(rows, out)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn unspool<R: replay_spool::Spooled>(input: &mut replay_spool::Reader<'_>) -> io::Result<Vec<R>> {
     <Vec<R> as replay_spool::Spooled>::unspool(input)
 }

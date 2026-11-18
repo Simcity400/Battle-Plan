@@ -118,6 +118,7 @@ pub struct EquipmentModel<'a> {
 }
 
 // Loaded once a run, and handed through a preparation's spool as it is.
+#[cfg(any(test, feature = "test-support"))]
 impl replay_spool::Spooled for Content {
     const RESIDENT: bool = true;
 
@@ -641,7 +642,8 @@ pub struct Sources<'a> {
 }
 
 /// The hour's country links and local sub-unit overrides, as [`Sources`] reads them.
-#[derive(PartialEq, replay_spool::Spooled)]
+#[derive(PartialEq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct SourceIndex {
     links: BTreeMap<u32, u32>,
     /// (canonical country, token) -> the override's (archetype token, amount).

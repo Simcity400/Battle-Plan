@@ -10,7 +10,8 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = []
+capture = ["replay-data/capture"]
+test-support = ["capture", "replay-data/test-support"]
 
 [dependencies]
 job-priority.workspace = true
@@ -31,7 +32,7 @@ replay-data = { workspace = true, features = ["test-support"] }
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-replay-frame = { workspace = true, features = ["test-support"] }
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
+replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

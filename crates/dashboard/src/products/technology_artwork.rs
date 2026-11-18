@@ -3,21 +3,24 @@ use super::{LoadContext, Product, artwork};
 use crate::{Artwork, Source, metadata::check_cancel};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct TechnologyArtwork;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TechnologyArtworkParams {
     pub tokens: Vec<String>,
     /// Repeated definitions have separate recorded indices; null means an unindexed use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub recorded: Option<BTreeMap<String, Vec<Option<u32>>>>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TechnologyArtworkReply {
     pub items: Vec<Artwork>,
@@ -36,6 +39,7 @@ impl Product for TechnologyArtwork {
     type Params = TechnologyArtworkParams;
     type Reply = TechnologyArtworkReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             TechnologyArtworkParams::decl(),

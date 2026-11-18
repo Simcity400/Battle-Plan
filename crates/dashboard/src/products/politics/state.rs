@@ -25,23 +25,27 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::Arc};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum PoliticsView {
     Exiles,
     Balances,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PoliticsStateParams {
     pub branch_id: String,
     pub view: PoliticsView,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceSide {
     pub token: String,
@@ -49,7 +53,8 @@ pub struct BalanceSide {
 }
 
 /// An authored range, its inclusive fixed5 bounds as decimal strings.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceRange {
     pub token: String,
@@ -61,7 +66,8 @@ pub struct BalanceRange {
 
 /// A record member's recorded contribution: the effective daily and weekly values (fixed5
 /// decimal strings), null where the record holds none.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceMember {
     pub tag: Option<String>,
@@ -71,7 +77,8 @@ pub struct BalanceMember {
 
 /// One static-modifier source of a record's drift, in roster order, with its effective daily
 /// and weekly values (fixed5 decimal strings).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceSource {
     pub token: String,
@@ -82,7 +89,8 @@ pub struct BalanceSource {
 
 /// One stored balance record at the hour, in stored order. Its stored fixed5 value, from -100000
 /// to 100000, is the live cell (`ordinal`, `value`).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BalanceRecord {
     pub ordinal: u32,
@@ -101,7 +109,8 @@ pub struct BalanceRecord {
 }
 
 /// The record the game shows for a country: the first record listing it.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CurrentBalance {
     pub tag: String,
@@ -109,7 +118,8 @@ pub struct CurrentBalance {
 }
 
 /// What a view cannot show, named and counted.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PoliticsUnavailable {
     pub label: String,
@@ -119,7 +129,8 @@ pub struct PoliticsUnavailable {
 
 /// A government in exile at the hour: `id` (its raw country id) is the row of its live cells
 /// `legitimacy`, `manpower`, `cap`, `leaders`, `deployedAir` and `readHour`.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StateExile {
     pub id: String,
@@ -127,7 +138,8 @@ pub struct StateExile {
     pub host: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PoliticsStateReply {
     pub branch_id: String,
@@ -180,6 +192,7 @@ impl AtHour for PoliticsState {
     type Reply = PoliticsStateReply;
     type Context = PoliticsContext;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             PoliticsStateParams::decl(),

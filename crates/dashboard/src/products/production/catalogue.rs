@@ -27,6 +27,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct ProductionLicences;
@@ -42,14 +43,16 @@ fn validate_branch(branch: &str) -> Result<(), &'static str> {
 
 /// A licence's party at the hour: its canonical slot and the tag its country holds, each none
 /// where its links or its country are not recorded.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LicenceParty {
     pub slot: Option<u32>,
     pub tag: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LicenceDesign {
     pub variant: String,
@@ -58,7 +61,8 @@ pub struct LicenceDesign {
 }
 
 /// One licence standing at the hour.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LicenceNow {
     /// Unique at the hour: the licensee's reference and the licence's place in its roster.
@@ -73,13 +77,15 @@ pub struct LicenceNow {
     pub designs: Vec<LicenceDesign>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionLicencesParams {
     pub branch_id: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionLicencesReply {
     pub branch_id: String,
@@ -89,7 +95,8 @@ pub struct ProductionLicencesReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IndustrialOrganisationsParams {
     pub branch_id: String,
@@ -98,7 +105,8 @@ pub struct IndustrialOrganisationsParams {
 
 /// One organisation of the country at the hour; its state null where its details were not read.
 /// Its funds (fixed5) and unspent points move daily: they are live cells `(id, funds|points)`.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OrganisationNow {
     pub id: String,
@@ -121,7 +129,8 @@ pub struct OrganisationNow {
     pub cooldown_hour: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IndustrialOrganisationsReply {
     pub branch_id: String,
@@ -135,7 +144,8 @@ pub struct IndustrialOrganisationsReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EquipmentDesignsParams {
     pub branch_id: String,
@@ -143,7 +153,8 @@ pub struct EquipmentDesignsParams {
 }
 
 /// One saved design of the country over the branch.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DesignHistory {
     pub id: String,
@@ -155,7 +166,8 @@ pub struct DesignHistory {
     pub name: VariantName,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentDesignsReply {
     pub branch_id: String,
@@ -187,6 +199,7 @@ impl AtHour for ProductionLicences {
     type Reply = ProductionLicencesReply;
     type Context = names::Context;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ProductionLicencesParams::decl(), ProductionLicencesReply::decl(), LicenceParty::decl(), LicenceDesign::decl(), LicenceNow::decl()]
     }
@@ -264,6 +277,7 @@ impl AtHour for IndustrialOrganisations {
     type Reply = IndustrialOrganisationsReply;
     type Context = names::Context;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![IndustrialOrganisationsParams::decl(), IndustrialOrganisationsReply::decl(), OrganisationNow::decl()]
     }
@@ -385,6 +399,7 @@ impl Product for EquipmentDesigns {
     type Params = EquipmentDesignsParams;
     type Reply = EquipmentDesignsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![EquipmentDesignsParams::decl(), EquipmentDesignsReply::decl(), DesignHistory::decl()]
     }

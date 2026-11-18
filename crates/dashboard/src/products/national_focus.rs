@@ -5,11 +5,13 @@ use super::{CountryParams, LoadContext, Product, artwork, focus};
 use crate::{Artwork, FocusDatabase, FocusHistory, Source};
 use serde::Serialize;
 use std::{collections::BTreeSet, io, sync::atomic::AtomicBool};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct NationalFocus;
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusReply {
     pub history: FocusHistory,
@@ -20,7 +22,7 @@ pub struct FocusReply {
     /// The national focuses' country-independent text only; scoped titles
     /// still require dated reads.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub static_text: Option<Vec<Artwork>>,
     /// The continuous focuses' country-independent text and authored
     /// durations, looked up in the continuous database.
@@ -40,6 +42,7 @@ impl Product for NationalFocus {
     type Params = CountryParams;
     type Reply = FocusReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![CountryParams::decl(), FocusReply::decl(), focus::FocusMissing::decl()]
     }

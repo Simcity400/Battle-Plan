@@ -20,11 +20,13 @@ use replay_data::{
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct WarContributions;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WarContributionsParams {
     pub branch_id: String,
@@ -32,7 +34,8 @@ pub struct WarContributionsParams {
     pub viewpoint_tag: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WarContributionsReply {
     pub branch_id: String,
@@ -96,6 +99,7 @@ impl AtHour for WarContributions {
         params.viewpoint_tag.as_deref().map_or(Ok(()), validate_tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             WarContributionsParams::decl(),

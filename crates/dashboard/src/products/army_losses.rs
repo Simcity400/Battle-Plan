@@ -36,6 +36,7 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The Combat Log's equipment ledgers: losses in combat (0), the three attrition modes (1 to 3),
@@ -63,7 +64,8 @@ const NO_READ_YET: &str = "Combat Log equipment months of a country not read yet
 const AFTER_READ: &str = "Combat Log equipment months written after their country's latest read are unknown";
 const UNWITNESSED: &str = "Combat Log equipment months whose rows the recording did not keep are unknown";
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArmyLossesParams {
     pub branch_id: String,
@@ -74,7 +76,8 @@ pub struct ArmyLossesParams {
 
 /// What a reply holds of the retained months: the one measure the chart draws, or every part of
 /// one month for its drill. The armies are in every reply.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum LossView {
     /// Every retained month's manpower.
@@ -106,7 +109,8 @@ impl LossView {
 }
 
 /// An army whose Combat Log the country keeps.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossArmy {
     /// The army's full reference, which identifies it in the reply.
@@ -121,7 +125,8 @@ pub struct LossArmy {
 
 /// One retained month of one army's manpower; its ground, air and navy channels are the live
 /// cells `(key, "ground" | "air" | "navy")`.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossManpower {
     pub army: String,
@@ -134,7 +139,8 @@ pub struct LossManpower {
 
 /// One design in one retained ledger month; its signed fixed5 amount is the live cell
 /// `(key, "amount")`.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossEquipment {
     pub army: String,
@@ -147,7 +153,8 @@ pub struct LossEquipment {
 }
 
 /// A design the reply's equipment names, once however many rows name it.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyLossDesign {
     pub variant: String,
@@ -158,7 +165,8 @@ pub struct ArmyLossDesign {
 
 /// One retained ledger month: in `empty_months` one its latest read covered without amounts; in
 /// `unknown_months` one whose amounts are unknown, with why.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LossMonth {
     pub army: String,
@@ -169,7 +177,8 @@ pub struct LossMonth {
 }
 
 /// Why each part could not be read at this hour; none when it was.
-#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyLossesAvailability {
     pub armies: Option<String>,
@@ -179,7 +188,8 @@ pub struct ArmyLossesAvailability {
     pub enemy_equipment: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyLossesReply {
     pub tag: String,
@@ -357,6 +367,7 @@ impl AtHour for ArmyLosses {
         super::CountryParams { branch_id: params.branch_id.clone(), tag: params.tag.clone() }.validate()
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ArmyLossesParams::decl(),

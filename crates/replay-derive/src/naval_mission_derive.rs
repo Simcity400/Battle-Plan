@@ -9,7 +9,7 @@
 //! tables; defines come from the recorded content stack through [`Defines::read`].
 
 use crate::rows::ModifierDefinitionRow;
-pub use engine_native::fixed5::power;
+pub use game_model::fixed5::power;
 use engine_native::modifier_definition::Operands;
 
 const SCALE: i64 = 100_000;

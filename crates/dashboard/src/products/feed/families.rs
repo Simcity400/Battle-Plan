@@ -29,9 +29,11 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EventFeedSpanParams {
     pub branch_id: String,
@@ -45,12 +47,13 @@ pub struct EventFeedSpanParams {
     /// Only the kinds' codes, which a page's facets need before anything is read: no rows and
     /// no coverage notes, so the pages are never asked after a walk of the span's reads.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub kinds_only: Option<bool>,
 }
 
 /// A kind the feed's log holds, by the code its rows' `kind` facet counts.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FeedKindCode {
     pub kind: EventFeedKind,
@@ -58,7 +61,8 @@ pub struct FeedKindCode {
     pub category: EventFeedCategory,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedSpanReply {
     pub branch_id: String,
@@ -388,6 +392,7 @@ impl Product for EventFeedSpan {
     type Params = EventFeedSpanParams;
     type Reply = EventFeedSpanReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![EventFeedSpanParams::decl(), FeedKindCode::decl(), EventFeedSpanReply::decl()]
     }

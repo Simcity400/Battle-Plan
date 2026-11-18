@@ -18,11 +18,13 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io, sync::Arc};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct FactionGoalRewards;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactionGoalRewardsParams {
     pub branch_id: String,
@@ -32,7 +34,8 @@ pub struct FactionGoalRewardsParams {
     pub goal: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionGoalRewardsReply {
     pub goal: String,
@@ -76,6 +79,7 @@ impl AtHour for FactionGoalRewards {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FactionGoalRewardsParams::decl(), FactionGoalRewardsReply::decl()]
     }

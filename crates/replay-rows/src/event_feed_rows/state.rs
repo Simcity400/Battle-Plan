@@ -63,7 +63,7 @@ impl Version {
 /// What a reduction reads of a pack besides its changes, with what is shown of its coverage: its
 /// world, read hour and coverage, and the sequences of its first and last occurrences.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PackHeader {
     pub generation: u64,
     pub read_hour: i32,

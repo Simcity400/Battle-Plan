@@ -15,6 +15,7 @@ installed-content-core.workspace = true
 replay.workspace = true
 
 [dev-dependencies]
+replay-data.workspace = true
 replay-frame.workspace = true
 zstd = "0.13"
 
@@ -23,13 +24,13 @@ zstd = "0.13"
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+installed-content-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 installed-content-country-names = { workspace = true, features = ["test-support"] }
 installed-content-localisation = { workspace = true, features = ["test-support"] }
 installed-content-province-area = { workspace = true, features = ["test-support"] }
 installed-content-regions = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

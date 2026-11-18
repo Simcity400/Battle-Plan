@@ -421,7 +421,7 @@ macro_rules! leave {
 }
 
 /// Models of differences (0), raw values (2) and second differences (3).
-#[inline(always)]
+#[inline(never)]
 fn plain<const MODEL: u8, C: Cells, const BITS: bool, const BORN: bool>(
     cells: &mut C,
     tracks: &mut Tracks,
@@ -528,7 +528,7 @@ fn plain<const MODEL: u8, C: Cells, const BITS: bool, const BORN: bool>(
 }
 
 /// The model of runs: each entry an event's hours and code and how many more times both repeat.
-#[inline(always)]
+#[inline(never)]
 fn runs<C: Cells, const BITS: bool, const BORN: bool>(
     cells: &mut C,
     tracks: &mut Tracks,

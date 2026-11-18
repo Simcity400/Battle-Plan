@@ -29,6 +29,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 fn field(table: TableId, name: &str) -> io::Result<usize> {
@@ -39,7 +40,8 @@ fn reference(text: &str) -> Result<u64, &'static str> {
     text.parse::<u64>().map_err(|_| "Invalid leader reference")
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LeaderCareerParams {
     pub branch_id: String,
@@ -47,7 +49,8 @@ pub struct LeaderCareerParams {
 }
 
 /// A stretch of hours over which the leader's row held these values.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerRun {
     pub first_hour: i32,
@@ -59,7 +62,8 @@ pub struct CareerRun {
 
 /// A combat the leader commanded: when it started, when that was first read, whether its start
 /// is unknown, and its result where one was read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CareerBattle {
     pub start: i32,
@@ -71,7 +75,8 @@ pub struct CareerBattle {
     pub result_read: Option<i32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum CommandKind {
     Army,
@@ -79,7 +84,8 @@ pub enum CommandKind {
     Fleet,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderCommand {
     pub first_hour: i32,
@@ -90,7 +96,8 @@ pub struct LeaderCommand {
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderCareerReply {
     pub reference: String,
@@ -288,6 +295,7 @@ impl Product for LeaderCareer {
     type Params = LeaderCareerParams;
     type Reply = LeaderCareerReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LeaderCareerParams::decl(), CareerRun::decl(), CareerBattle::decl(), CommandKind::decl(), LeaderCommand::decl(), LeaderCareerReply::decl()]
     }
@@ -400,7 +408,8 @@ impl Product for LeaderCareer {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LeaderHourParams {
     pub branch_id: String,
@@ -408,7 +417,8 @@ pub struct LeaderHourParams {
 }
 
 /// A trait in training: its live cell's row is `key`, column `experience`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderTraining {
     pub key: String,
@@ -417,7 +427,8 @@ pub struct LeaderTraining {
     pub required_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderFactor {
     pub token: Option<String>,
@@ -427,7 +438,8 @@ pub struct LeaderFactor {
 
 /// The leader's experience and training. The experience numbers are live cells: (reference,
 /// `experience`) for the commander, (training key, `experience`) for each trait in training.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderProgress {
     pub next_required_raw: Option<String>,
@@ -436,7 +448,8 @@ pub struct LeaderProgress {
     pub factors: Option<Vec<LeaderFactor>>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderHourReply {
     pub reference: String,
@@ -449,11 +462,11 @@ pub struct LeaderHourReply {
     pub traits: Option<Vec<u32>>,
     pub trait_dates: Vec<Option<(i32, u8)>>,
     pub trait_catalogue: Vec<LeaderTrait>,
-    #[ts(type = "number")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub fought: u64,
-    #[ts(type = "number")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub won: u64,
-    #[ts(type = "number")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub lost: u64,
     pub battles_partial_from: Option<i32>,
     pub progress: Option<LeaderProgress>,
@@ -472,6 +485,7 @@ impl AtHour for LeaderHour {
     type Reply = LeaderHourReply;
     type Context = LeadersContext;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LeaderHourParams::decl(), LeaderTraining::decl(), LeaderFactor::decl(), LeaderProgress::decl(), LeaderHourReply::decl()]
     }
@@ -601,7 +615,8 @@ impl AtHour for LeaderHour {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LeaderChoicesParams {
     pub branch_id: String,
@@ -609,7 +624,8 @@ pub struct LeaderChoicesParams {
 }
 
 /// A leader as the picker lists it, at the last hour it served: [reference, name, owner, hour].
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LeaderChoicesReply {
     pub choices: Vec<(String, Option<String>, Option<String>, i32)>,
@@ -625,6 +641,7 @@ impl Product for LeaderChoices {
     type Params = LeaderChoicesParams;
     type Reply = LeaderChoicesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LeaderChoicesParams::decl(), LeaderChoicesReply::decl()]
     }

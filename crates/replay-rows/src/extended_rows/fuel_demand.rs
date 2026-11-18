@@ -1,5 +1,5 @@
 use super::*;
-use engine_fuel::{fuel_demand::AirInputs, fuel_demand::Modifier};
+use game_model::fuel_demand::{AirInputs, Modifier};
 
 value_struct!(Modifier { raw: Option<i64>, present: bool, effective: i64 });
 value_struct!(AirInputs { reached: bool, mission_first: u32, mission_selected: u32,
@@ -12,7 +12,7 @@ value_struct!(AirInputs { reached: bool, mission_first: u32, mission_selected: u
     context_counts: [i32; 24], context_thresholds: [i64; 24] });
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandUnit {
     pub reference: u64,
     pub parent: u64,
@@ -32,7 +32,7 @@ value_struct!(FuelDemandUnit { reference: u64, parent: u64, ordinal: u32,
     name: Option<Vec<u8>>, name_reason: Vec<u8>, group: Option<u64>, group_reason: Vec<u8> });
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandGroup {
     pub reference: u64,
     pub country: u32,
@@ -47,7 +47,7 @@ value_struct!(FuelDemandGroup { reference: u64, country: u32, parent: u64,
     army_group: u8, name: Option<Vec<u8>>, name_reason: Vec<u8>, members: Vec<u64>, children: Vec<u64> });
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandFleet {
     pub reference: u64,
     pub name: Option<Vec<u8>>,
@@ -56,7 +56,7 @@ pub struct FuelDemandFleet {
 value_struct!(FuelDemandFleet { reference: u64, name: Option<Vec<u8>>, name_reason: Vec<u8> });
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandWing {
     pub reference: u64,
     pub owner: Option<u32>,
@@ -77,7 +77,7 @@ value_struct!(FuelDemandWing { reference: u64, owner: Option<u32>, country_overr
     context: Option<u32>, reason: Vec<u8> });
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandSite {
     pub list: u8,
     pub ordinal: u32,
@@ -92,7 +92,7 @@ value_struct!(FuelDemandSite { list: u8, ordinal: u32, base: u64, container_owne
     capacity_raw: Option<i64>, demilitarized: Option<u8>, wings: Vec<FuelDemandWing>, reason: Vec<u8> });
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandContext {
     pub region: u32,
     pub sums: [i64; 24],
@@ -107,7 +107,7 @@ value_struct!(FuelDemandContext {
 /// pack's hour is its host row's read hour and costs one tag byte that no
 /// read changes ([`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum FuelDemandHour {
     /// Read at its host CountryFuel row's read hour.
     #[default]
@@ -189,7 +189,7 @@ impl Value for FuelDemandHour {
 /// FuelDemandParts rows, which [`assemble_demand_parts`] puts back. Older
 /// recordings hold the lists here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandRead {
     pub hour: FuelDemandHour,
     pub country_instance: Option<u32>,
@@ -213,7 +213,7 @@ opaque_value!(FuelDemandRead);
 
 /// One part of a country's demand pack: an element of one of its lists.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum FuelDemandPart {
     Division(FuelDemandUnit),
     Group(FuelDemandGroup),
@@ -326,7 +326,7 @@ opaque_value!(FuelDemandPart);
 /// whole and the table is unavailable, as it is with an unavailable
 /// CountryFuel ([`crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandPartRow {
     pub country: u32,
     pub kind: u8,
@@ -496,7 +496,7 @@ impl FuelDemandRead {
             }
             None => None,
         };
-        engine_fuel::fuel_demand::wing_rate_with_context(inputs, sums)
+        game_model::fuel_demand::wing_rate_with_context(inputs, sums)
     }
 
     /// Native cached army/naval sums and recomputed air sum. A family's failure

@@ -266,12 +266,12 @@ impl Fixture for AirLossEventRow {
             country: u32::sample(tick),
             region: u32::sample(tick + 1),
             native_cause: (tick % 7) as u32,
-            family_base: engine_air_history::air_loss_sites::FAMILY_BASES
-                [tick % engine_air_history::air_loss_sites::FAMILY_BASES.len()],
+            family_base: engine_reference_values::native_values::air_loss::FAMILY_BASES
+                [tick % engine_reference_values::native_values::air_loss::FAMILY_BASES.len()],
             credited_enemy: bool::sample(tick),
             amount_raw: tick as i64 + 1,
             opponent: Some(u32::sample(tick)),
-            daily_slot: (tick % engine_air_history::cloop_history::DAILY_WINDOW_CAPACITY as usize)
+            daily_slot: (tick % engine_reference_values::native_values::air_history::DAILY_WINDOW_CAPACITY as usize)
                 as u32,
         }
     }
@@ -975,7 +975,7 @@ impl Fixture for CountryProductionModifiersRow {
             factory_speed: [tick as i64; 4],
             retention: [tick as i64; 4],
             conversion_raw: tick as i64,
-            trees: engine_production::production_modifiers::KEYS
+            trees: engine_reference_values::native_values::production_modifiers::KEYS
                 .into_iter()
                 .map(|key| ProductionModifierTree {
                     key,
@@ -2087,7 +2087,7 @@ impl Fixture for IndustrialOrganisationDetailsRow {
                     value_raw: i64::sample(tick),
                 }],
             },
-            flags: vec![engine_scripts::cscript_flag::Row {
+            flags: vec![game_model::script_flag::Row {
                 token: u32::sample(tick),
                 set_hour: i32::sample(tick),
                 value: i16::sample(tick),
@@ -2176,7 +2176,7 @@ impl Sample for OrderChildFront {
     fn sample(tick: usize) -> Self {
         Self {
             group: (u64::from(u32::sample(tick)) << 32)
-                | u64::from(engine_native::corders_group::REFERENCE_TYPE),
+                | u64::from(engine_reference_values::native_values::orders_group::REFERENCE_TYPE),
             segment_start: i32::sample(tick),
             segment_end: i32::sample(tick + 1),
         }
@@ -7717,7 +7717,7 @@ fn country_air_modifiers_preserve_absence_signed_words_and_an_independent_delta(
 
 #[test]
 fn country_air_combat_columns_delta_separately_and_reuse_existing_home_terms() {
-    use engine_executable::modifier_keys as keys;
+    use engine_reference_values::modifier_keys as keys;
     let mut row = CountryCounterInputRow {
         country: 7,
         ..Default::default()

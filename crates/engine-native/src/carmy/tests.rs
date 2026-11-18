@@ -232,100 +232,6 @@ fn seeded_icons_keep_failed_fields_and_source_keys_without_retry() {
     }
 }
 
-#[test]
-fn owned_normal_speed_preserves_native_products_and_safe_zero_guard() {
-    use super::*;
-    let mut common = NormalSpeedOperands {
-        modifier: NormalModifierOperands {
-            additive: 80_000,
-            weather: [(50_000, -10_000), (0, 0), (0, 0), (0, 0)],
-            supply: (-20_000, 50_000),
-            air: MovementAirOperands {
-                fraction: 50_000,
-                impact: 100_000,
-                scale: -20_000,
-                defense: 1_000,
-            },
-        },
-        base_speed: 1_000_000,
-        organisation: Some((50_000, -40_000)),
-        fuel: Some((50_000, 20_000)),
-        outer_scale: 50_000,
-        // Inside the positive-scale proof the zero guard is answered without
-        // evaluating; the flag is the producer's, not derived here.
-        bounded: true,
-    };
-    let edge = NormalEdgeOperands {
-        additive: 10_000,
-        river: Some((50_000, -10_000, -20_000)),
-    };
-    let inputs = MovementSpeedInputs::Normal { common, edge };
-    // Native modifiers: common 56000, edge -25000; speed 310000,
-    // organisation 248000, fuel 148800, outer scale 74400.
-    assert_eq!(inputs.evaluate(), 74_400);
-    assert!(edge.bounded());
-    assert!(!inputs.is_zero());
-    for scale in [0, i64::MIN] {
-        common.outer_scale = scale;
-        // Outside the proof the guard falls back to exact native evaluation.
-        common.bounded = false;
-        let inputs = MovementSpeedInputs::Normal { common, edge };
-        assert_eq!(inputs.evaluate(), 0);
-        assert_eq!(inputs.is_zero(), inputs.evaluate() == 0);
-    }
-}
-
-#[test]
-fn owned_normal_nonzero_proof_covers_extreme_allowed_operands() {
-    use super::*;
-    for sign in [-1, 1] {
-        for base_speed in [-1_000_000, 0, 1_000_000] {
-            for scale in [1, 100_000] {
-                for organisation in [
-                    None,
-                    Some((0, -100_000)),
-                    Some((100_000, 0)),
-                    Some((50_000, -40_000)),
-                ] {
-                    for fuel in [None, Some((100_000, 100_000)), Some((50_000, 20_000))] {
-                        let mut common = NormalSpeedOperands {
-                            modifier: NormalModifierOperands {
-                                additive: sign * 100_000_000,
-                                weather: [(sign * 100_000, 1_000_000); 4],
-                                supply: (sign * 1_000_000, 1_000_000),
-                                air: MovementAirOperands {
-                                    fraction: sign * 100_000,
-                                    impact: 1_000_000,
-                                    scale: 1_000_000,
-                                    defense: sign * 1_000_000,
-                                },
-                            },
-                            base_speed,
-                            organisation,
-                            fuel,
-                            outer_scale: scale,
-                            bounded: true,
-                        };
-                        let edge = NormalEdgeOperands {
-                            additive: sign * 100_000_000,
-                            river: Some((sign * 1_000_000, -1_000_000, sign * 1_000_000)),
-                        };
-                        assert!(edge.bounded());
-                        let inputs = MovementSpeedInputs::Normal { common, edge };
-                        assert!(!inputs.is_zero());
-                        // The shortcut is sound only if exact evaluation agrees.
-                        assert!(inputs.evaluate() > 0);
-                        common.modifier.additive = i64::MAX;
-                        common.bounded = false;
-                        let inputs = MovementSpeedInputs::Normal { common, edge };
-                        assert_eq!(inputs.is_zero(), inputs.evaluate() == 0);
-                    }
-                }
-            }
-        }
-    }
-}
-
 use super::{Row, walk, walk_with};
 use crate::{
     carmy, carmy_group, ccountry, corders_group, cprovince, creferenced_division_template, cunit,
@@ -1440,13 +1346,6 @@ fn adjacency_reload_refreshes_crossings_absence_and_reallocated_arrays() {
     assert!(statics.begin(&unreadable, 0, GS));
     assert!(statics.edge(&unreadable, 0, 1, 2).is_err());
     assert!(unreadable.reads.borrow().contains(&(0x1e100 + id)));
-}
-
-#[test]
-fn native_speed_products_do_not_cancel_scale_or_use_wider_multiplication() {
-    assert_eq!(super::movement_product(100_001, -50_001), -50_001);
-    assert_eq!(super::movement_product(i64::MAX, 100_000), -1);
-    assert_eq!(super::movement_product(i64::MIN, -1), i64::MIN / 100_000);
 }
 
 fn presentation_source() -> [crate::cequipment_variant_pool::DivisionSource; 1] {

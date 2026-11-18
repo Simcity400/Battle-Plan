@@ -33,6 +33,7 @@ mod changes;
 pub mod collect;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
+#[cfg(any(test, feature = "recording"))]
 pub mod live;
 pub mod read;
 pub mod records;

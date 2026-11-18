@@ -20,10 +20,12 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct Wargoals;
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WargoalsParams {
     pub branch_id: String,
@@ -35,7 +37,8 @@ struct WargoalsAsk {
     hour: i32,
     tag: String,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalEntry {
     pub handle: String,
@@ -48,7 +51,8 @@ pub struct WargoalEntry {
     pub liberate: Vec<String>,
     pub puppets: Vec<String>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalJustification {
     /// Its row key: the row of its live cell `points`, the stored fixed5 progress.
@@ -65,14 +69,16 @@ pub struct WargoalJustification {
     pub completion: i32,
     pub paused: Option<bool>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalStateName {
     pub id: u32,
     pub name: String,
     pub known: bool,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalPair {
     pub actor: String,
@@ -80,13 +86,15 @@ pub struct WargoalPair {
     /// What the recorded wars and factions prove about the pair; none when neither applies.
     pub standing: Option<WargoalStanding>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum WargoalStanding {
     AtWar,
     SameFaction,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalsReply {
     pub branch_id: String,
@@ -139,6 +147,7 @@ impl AtHour for Wargoals {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             WargoalsParams::decl(),

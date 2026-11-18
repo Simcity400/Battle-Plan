@@ -32,6 +32,7 @@ use replay_columnar::summary::Source as Column;
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Fixed-point decimals of IC and units values.
@@ -49,7 +50,8 @@ pub fn weekly_units_raw(speed_raw: i64, cost_raw: i64) -> Option<i64> {
 }
 
 /// The kind of line, by its native class.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum LineKind {
     Military,
@@ -72,7 +74,8 @@ impl LineKind {
 }
 
 /// One (variant, organisation) part of a line's output.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OutputPart {
     pub variant: String,
@@ -85,7 +88,8 @@ pub struct OutputPart {
 }
 
 /// A line's output rows over hours they held still.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OutputRun {
     pub first_hour: i32,
@@ -99,13 +103,14 @@ pub struct OutputRun {
 }
 
 /// A produced variant's names and icon as the game's production row shows them, read at `hour`.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct VariantName {
     pub id: String,
     /// The hour its names were read; absent in a reply at an hour, whose hour it is.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub hour: Option<i32>,
     /// False where the variant had no definition row at that hour; the other fields are then empty.
     pub known: bool,
@@ -121,13 +126,14 @@ pub struct VariantName {
 }
 
 /// A military-industrial organisation as the game names and pictures it, read at `hour`.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OrganisationName {
     pub id: String,
     /// The hour its names were read; absent in a reply at an hour, whose hour it is.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub hour: Option<i32>,
     /// The script key; empty where its row was not read.
     pub token: String,
@@ -138,7 +144,8 @@ pub struct OrganisationName {
 }
 
 /// One picture, shared by every variant or organisation showing it.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentIcon {
     pub key: String,

@@ -9,7 +9,7 @@ use replay_data::rows::{CountryLinkRow, RowCodec, SunkShipsRow};
 const TEXTS: &[&[u8]] = &[b"not read"];
 
 /// The first hour: three game years after the calendar's epoch, so months are counted.
-const BASE: i32 = engine_native::cdate::HOUR_EPOCH + 3 * 365 * 24;
+const BASE: i32 = game_model::calendar::HOUR_EPOCH + 3 * 365 * 24;
 const MONTH: i32 = 36;
 
 fn writers() -> Writers {

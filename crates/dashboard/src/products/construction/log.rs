@@ -29,12 +29,14 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct ConstructionLogManifest;
 pub struct ConstructionLog;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionLogParams {
     pub branch_id: String,
@@ -43,7 +45,8 @@ pub struct ConstructionLogParams {
 }
 
 /// How a line left the queue.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum EndKind {
     /// Native completion was observed.
@@ -55,7 +58,8 @@ pub enum EndKind {
 }
 
 /// Why a line's ending is not known.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum UnknownEnd {
     NotRecorded,
@@ -64,7 +68,8 @@ pub enum UnknownEnd {
     CompletionNotRecorded,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEnd {
     pub kind: EndKind,
@@ -76,7 +81,8 @@ pub struct ProjectEnd {
 }
 
 /// Levels (railway: segments) a count rose by.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LevelsBuilt {
     /// The hour the building rose; null when only the read shows it.
@@ -91,7 +97,8 @@ pub struct LevelsBuilt {
 }
 
 /// One read's factories and levels left, held until the next read that differs or a gap.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRun {
     pub first_hour: i32,
@@ -102,7 +109,8 @@ pub struct ProjectRun {
 }
 
 /// Hours a line's output held alike.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionOutputRun {
     pub from: i32,
@@ -116,7 +124,8 @@ pub struct ConstructionOutputRun {
 }
 
 /// What an output-alone line was named as before a queue read listed it.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OutputOrigin {
     pub tag: String,
@@ -126,14 +135,16 @@ pub struct OutputOrigin {
     pub province: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectSource {
     Census,
     OutputAlone,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionProject {
     /// The line's native handle, as a decimal string.
@@ -177,7 +188,8 @@ pub struct ConstructionProject {
     pub outputs: Vec<ConstructionOutputRun>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionLogManifestReply {
     /// Units per factory output point of `cost_raw`.
@@ -194,7 +206,8 @@ pub struct ConstructionLogManifestReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ConstructionLogReply {
     pub window: usize,
@@ -222,6 +235,7 @@ impl Product for ConstructionLogManifest {
         params.validate()
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![BranchParams::decl(), BattleWindow::decl(), ConstructionType::decl(), ConstructionLogManifestReply::decl()]
     }
@@ -263,6 +277,7 @@ impl Product for ConstructionLog {
         params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ConstructionLogParams::decl(),

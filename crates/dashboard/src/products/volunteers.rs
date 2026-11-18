@@ -17,6 +17,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -25,14 +26,16 @@ fn invalid(what: impl Into<String>) -> io::Error {
 
 pub struct VolunteersExpeditionaries;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum MilitaryAidKind {
     Land,
     Expeditionary,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VolunteersExpeditionariesParams {
     pub branch_id: String,
@@ -41,7 +44,8 @@ pub struct VolunteersExpeditionariesParams {
     pub tags: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAidRun {
     pub first_hour: i32,
@@ -51,7 +55,8 @@ pub struct MilitaryAidRun {
     pub starts_segment: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAidLink {
     pub key: String,
@@ -64,7 +69,8 @@ pub struct MilitaryAidLink {
     pub runs: Vec<MilitaryAidRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct VolunteersExpeditionariesReply {
     pub links: Vec<MilitaryAidLink>,
@@ -84,6 +90,7 @@ impl Product for VolunteersExpeditionaries {
     type Params = VolunteersExpeditionariesParams;
     type Reply = VolunteersExpeditionariesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             VolunteersExpeditionariesParams::decl(),

@@ -4,7 +4,7 @@ use super::*;
 /// Ordinal zero carries the embedded store seed, followed by its literal keys
 /// in native hash order. A complete owner always has the seed occurrence.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionVariableRow {
     pub faction: u64,
     pub ordinal: u32,
@@ -21,7 +21,7 @@ typed_codec!(FactionVariableRow, 96, |row| (row.faction as u128) << 32 | row.ord
     Ok(())
 });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionRuleRow {
     pub faction: u64,
     pub ordinal: u32,
@@ -31,7 +31,7 @@ typed_codec!(FactionRuleRow, 96, |row| (row.faction as u128) << 32 | row.ordinal
 |key| Self { faction: (key >> 32) as u64, ordinal: key as u32, ..Default::default() },
 { 0 => (token): U32 }, |_row| Ok(()));
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionProgramRow {
     pub faction: u64,
     pub ordinal: u32,
@@ -41,7 +41,7 @@ typed_codec!(FactionProgramRow, 96, |row| (row.faction as u128) << 32 | row.ordi
 |key| Self { faction: (key >> 32) as u64, ordinal: key as u32, ..Default::default() },
 { 0 => (reference): U64 }, |_row| Ok(()));
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionManpowerRow {
     pub faction: u64,
     pub ordinal: u32,
@@ -89,7 +89,7 @@ mod tests {
 
 /// The two independently scripted access bytes, retained without boolean coercion.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionUnlockRow {
     pub faction: u64,
     pub research: u8,
@@ -102,7 +102,7 @@ typed_codec!(FactionUnlockRow, 64, |row| row.faction as u128,
 /// Autonomous faction-system account, keyed by native array index rather than
 /// current membership. Departed members retain independent goals and upgrades.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionAccountRow {
     pub contribution_subject_gain: Option<i64>,
     pub population_growth: Option<i64>,
@@ -262,7 +262,7 @@ impl FactionAccountRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionResearchRow {
     pub faction: u64,
     /// Zero is the sharing header; remaining occurrences are independent bonus terms.
@@ -276,7 +276,7 @@ typed_codec!(FactionResearchRow,96,|row|(row.faction as u128)<<32|row.ordinal as
 {0=>(scientist_base_raw):I64,1=>(countries):U32List,2=>(bonus_raw):I64},|_row|Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionMinimumUpgradeRow {
     pub faction: u64,
     pub ordinal: u32,
@@ -287,7 +287,7 @@ typed_codec!(FactionMinimumUpgradeRow,96,|row|(row.faction as u128)<<32|row.ordi
 |key|Self{faction:(key>>32) as u64,ordinal:key as u32,..Default::default()},
 {0=>(group):U32,1=>(token):U32},|_row|Ok(()));
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionDoctrineRow {
     pub faction: u64,
     pub ordinal: u32,
@@ -298,7 +298,7 @@ typed_codec!(FactionDoctrineRow,96,|row|(row.faction as u128)<<32|row.ordinal as
 {0=>(token):U32},|_row|Ok(()));
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionProjectionRow {
     pub faction: u64,
     pub projection_raw: i64,
@@ -342,7 +342,7 @@ impl FactionProjectionRow {
 }
 /// Owner zero is explicitly the faction-system pool, not a faction handle.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionResourceRow {
     pub faction: u64,
     pub ordinal: u32,
@@ -576,7 +576,7 @@ mod statistic_tests {
 
 /// Header/name/modifier occurrences for demanded advisor and spymaster slots.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionAdvisorModifierRow {
     pub faction: u64,
     pub slot: u32,

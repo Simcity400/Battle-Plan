@@ -25,6 +25,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -218,7 +219,8 @@ pub struct DivisionLog;
 
 /// A page of division events: `log-page`'s params with the log fixed. The `kind` facet is
 /// required: a page names which of created (0), lost (1) and transferred (2) it shows.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionLogParams {
     pub branch_id: String,
@@ -267,6 +269,7 @@ impl Product for DivisionLog {
     type Params = DivisionLogParams;
     type Reply = LogPageReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![DivisionLogParams::decl()]
     }
@@ -373,7 +376,8 @@ fn named(art: &Content, (query, names, source): (&Query<'_>, &Names, &Source), h
 }
 
 /// A template the log names, by its handle's id, and its name.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogTemplate {
     pub id: String,
@@ -381,7 +385,8 @@ pub struct DivisionLogTemplate {
 }
 
 /// Hours of a held stretch at which divisions (or their removals) were not read.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogGap {
     pub first_hour: i32,
@@ -389,7 +394,8 @@ pub struct DivisionLogGap {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogManifestReply {
     /// Whether the branch read its divisions at any hour.
@@ -484,6 +490,7 @@ impl Product for DivisionLogManifest {
     type Params = super::BranchParams;
     type Reply = DivisionLogManifestReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![DivisionLogTemplate::decl(), DivisionLogGap::decl(), DivisionLogManifestReply::decl()]
     }

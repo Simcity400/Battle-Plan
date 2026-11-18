@@ -27,6 +27,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 const TABLES: [TableId; 5] = [
@@ -44,7 +45,8 @@ const fn entry_key(holder: u32, ordinal: u32) -> u128 {
 
 pub struct OccupationReserve;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccupationReserveParams {
     pub branch_id: String,
@@ -52,14 +54,16 @@ pub struct OccupationReserveParams {
 
 /// One entry of a holder's reserve list: its amount is the live cell `amount` of the row
 /// `<holder id>:<ordinal>`; a negative one stays signed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveEntry {
     pub ordinal: u32,
     pub source: Country,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveHolder {
     pub country: Country,
@@ -69,7 +73,8 @@ pub struct ReserveHolder {
     pub entries: Vec<ReserveEntry>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationReserveReply {
     /// By country id: the race ranks them by their entries' live amounts.
@@ -124,6 +129,7 @@ impl AtHour for OccupationReserve {
     type Reply = OccupationReserveReply;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![OccupationReserveParams::decl(), Country::decl(), ReserveEntry::decl(), ReserveHolder::decl(), OccupationReserveReply::decl()]
     }
@@ -166,7 +172,8 @@ impl AtHour for OccupationReserve {
 
 pub struct ReserveHistory;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReserveHistoryParams {
     pub branch_id: String,
@@ -175,7 +182,8 @@ pub struct ReserveHistoryParams {
 }
 
 /// One entry's amount from a source country (its raw id).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveAmount {
     pub source: u32,
@@ -183,7 +191,8 @@ pub struct ReserveAmount {
 }
 
 /// Consecutive recorded hours over which the holder's reserve held still.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveSegment {
     pub first_hour: i32,
@@ -196,7 +205,8 @@ pub struct ReserveSegment {
 }
 
 /// The tags a source's raw id held over the hours the history names it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SourceTag {
     pub tag: Option<String>,
@@ -204,14 +214,16 @@ pub struct SourceTag {
     pub last_hour: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveSource {
     pub id: u32,
     pub tags: Vec<SourceTag>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveHistoryReply {
     /// In hour order; hours the timeline does not hold are not in it.
@@ -291,6 +303,7 @@ impl Product for ReserveHistory {
     type Params = ReserveHistoryParams;
     type Reply = ReserveHistoryReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ReserveHistoryParams::decl(), ReserveAmount::decl(), ReserveSegment::decl(), SourceTag::decl(), ReserveSource::decl(), ReserveHistoryReply::decl()]
     }

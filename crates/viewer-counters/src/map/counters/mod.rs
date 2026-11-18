@@ -32,7 +32,8 @@
 //! columns ([`crate::map::counter_groups`]); source and pool history belongs to each view.
 
 #[cfg(test)]
-use map_products::loader::default_anchor;
+use viewer_foundation::map::stack_anchors::default_anchor;
+use viewer_foundation::map::stack_anchors::{StackAnchors, seed_default_anchors};
 use std::cell::RefCell;
 use std::{
     borrow::Cow,
@@ -1355,7 +1356,7 @@ impl CounterContent {
     }
 
     pub fn load_with_products(
-        products: Option<&map_products::loader::Loader>,
+        products: Option<&map_content::loader::Loader>,
         layers: &ResolvedLayers,
         artwork: &ResolvedLayers,
         map: &MapData,
@@ -1364,7 +1365,7 @@ impl CounterContent {
     ) -> io::Result<Self> {
         let stacks = match products {
             Some(products) => products.anchors(layers)?,
-            None => map_products::loader::StackAnchors::read(layers)?,
+            None => StackAnchors::read(layers)?,
         };
         let anchors = stacks.positions;
         let stack_scales = stacks.scales;
@@ -1585,7 +1586,7 @@ impl CounterContent {
     ) {
         let mut default_anchors = Arc::unwrap_or_clone(std::mem::take(&mut self.default_anchors));
         let (seeded, missing) =
-            map_products::loader::seed_default_anchors(provinces, &self.anchors, centroid, heights);
+            seed_default_anchors(provinces, &self.anchors, centroid, heights);
         default_anchors.extend(seeded);
         self.missing_standstill.extend(missing);
         self.default_anchors = Arc::new(default_anchors);

@@ -15,8 +15,7 @@ use engine_sites::Rva;
 pub const VTABLE_RVA: Rva = Rva(0x029d_d388);
 /// Inherited relation type word.
 pub const TYPE_ID: usize = 0x08;
-/// Expected subject-relation type word.
-pub const TYPE_VALUE: u32 = 0x30d1;
+pub use engine_executable::native_values::subject_relation::TYPE_VALUE;
 /// Overlord country-link reference, u32.
 pub const OVERLORD: usize = 0x10;
 /// Subject country-link reference, u32; the endpoint pair fixes direction.

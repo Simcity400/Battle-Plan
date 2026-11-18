@@ -1,5 +1,5 @@
 //! Opt-in content-stack integration check; never launches or attaches to the game.
-use crate::map_icons::MapIcons;
+use viewer_playback::map_icons::MapIcons;
 use eframe::wgpu;
 use installed_content_core::ResolvedLayers;
 use serde::Deserialize;
@@ -144,7 +144,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
     let regions = installed_content_regions::regions::read(layers)?.regions;
     // No settings.txt here: the constructor's 1280 x 720 frame, which decides
     // only which resources the map-icon windows load.
-    let crate::map_icons::LoadedIcons {
+    let viewer_playback::map_icons::LoadedIcons {
         combat,
         raids,
         images,

@@ -23,12 +23,14 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 const FIXED5: f64 = 1e-5;
 const DAILY: &str = "Daily figures";
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PowerDayParams {
     pub branch_id: String,
@@ -37,7 +39,8 @@ pub struct PowerDayParams {
 }
 
 /// One item the open day paid: its amount is the live cell (`item`, `spent`).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerDayPart {
     /// The item as `power-spending` names it.
@@ -50,7 +53,8 @@ pub struct PowerDayPart {
 }
 
 /// What one allocation holds: its amount is the live cell (`id`, `amount`).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerDayHold {
     pub id: String,
@@ -60,7 +64,8 @@ pub struct PowerDayHold {
     pub unknown: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PowerDayReply {
     pub currency: SpendCurrency,
@@ -110,6 +115,7 @@ impl AtHour for PowerDay {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![PowerDayParams::decl(), PowerDayReply::decl(), PowerDayPart::decl(), PowerDayHold::decl()]
     }

@@ -30,11 +30,13 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct FactionDetails;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactionDetailParams {
     pub branch_id: String,
@@ -44,7 +46,8 @@ pub struct FactionDetailParams {
 
 /// A goal the faction holds at the hour; its progress is the live cell `goal:<ordinal>` ·
 /// `progress` (the game's fixed-point cache, a thousandth of a percent).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionHeldGoal {
     pub ordinal: u32,
@@ -57,7 +60,8 @@ pub struct FactionHeldGoal {
 }
 
 /// A pooled resource; its amount is the live cell `resource:<ordinal>` · `amount`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionResourceDetail {
     pub ordinal: u32,
@@ -70,7 +74,8 @@ pub struct FactionResourceDetail {
 
 /// A manpower contribution, each recorded occurrence its own (a country listed twice keeps
 /// both); its amount is the live cell `manpower:<ordinal>` · `value`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionManpowerDetail {
     pub ordinal: u32,
@@ -79,7 +84,8 @@ pub struct FactionManpowerDetail {
 }
 
 /// A doctrine folder the faction shares.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionDoctrineDetail {
     pub ordinal: u32,
@@ -89,7 +95,8 @@ pub struct FactionDoctrineDetail {
 }
 
 /// Artwork the reply could not draw, counted by reason.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionRefusalDetail {
     pub fact: String,
@@ -97,7 +104,8 @@ pub struct FactionRefusalDetail {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FactionDetailReply {
     pub branch_id: String,
@@ -176,6 +184,7 @@ impl AtHour for FactionDetails {
         super::faction_id(&params.faction).map(|_| ())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             FactionDetailParams::decl(),

@@ -24,7 +24,7 @@ use std::io;
 /// whether it was written at that tick or after further engine work.
 /// `debug_current_ref_id` keeps its printed unsigned width; the rest keep signed i32.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ClockRow {
     pub hour: i32,
     pub play_time: u64,
@@ -50,13 +50,13 @@ pub struct ClockRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CampaignRow {
     pub id: Vec<u8>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryRow {
     /// Raw country link id, which need not equal its canonical array slot.
     pub id: u32,
@@ -85,7 +85,7 @@ thread_local! {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryLinkRow {
     /// Raw country reference used by provinces and other engine tables.
     pub id: u32,
@@ -94,14 +94,14 @@ pub struct CountryLinkRow {
 
 /// A daily rise of a construction line's building: `count` levels at `hour`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ConstructionRise {
     pub hour: i32,
     pub count: u32,
 }
 crate::value::value_struct!(ConstructionRise { hour: i32, count: u32 });
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ProvinceRow {
     pub id: u32,
     pub state: u32,
@@ -158,7 +158,7 @@ impl ProvinceRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct StateRow {
     pub infrastructure: Recorded<Option<StateInfrastructure>>,
     pub id: u32,
@@ -204,7 +204,7 @@ pub struct StateRow {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct StateInfrastructure {
     pub building_type: u32,
     pub level: i32,
@@ -213,7 +213,7 @@ pub struct StateInfrastructure {
 crate::value::value_struct!(StateInfrastructure { building_type: u32, level: i32, maximum: i32 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionRow {
     /// Full native handle: type in the low 32 bits, id in the high 32 bits.
     pub id: u64,
@@ -262,7 +262,7 @@ impl DivisionRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WarRelationRow {
     /// Ordered country identities form the row key; this is not a full war id.
     pub first_country: u32,
@@ -280,7 +280,7 @@ pub struct WarRelationRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionRow {
     pub id: u64,
     /// Literal engine name bytes; an empty name is valid.
@@ -304,7 +304,7 @@ pub struct FactionRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionMemberRow {
     /// Raw country identity; a country has at most one faction membership.
     pub country: u32,
@@ -314,7 +314,7 @@ pub struct FactionMemberRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PlayerRow {
     /// Native roster position; formats before 137 did not record it.
     pub ordinal: Recorded<u32>,
@@ -328,7 +328,7 @@ pub struct PlayerRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct HumanControllerRow {
     /// Raw country link id, independently authenticated from the player roster.
     pub country: u32,
@@ -337,7 +337,7 @@ pub struct HumanControllerRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandCombatRow {
     pub id: u64,
     pub province: u32,
@@ -354,7 +354,7 @@ pub struct LandCombatRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FleetRow {
     pub id: u64,
     pub owner: u32,
@@ -366,7 +366,7 @@ pub struct FleetRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TaskForceRow {
     pub id: u64,
     pub fleet: u64,
@@ -383,7 +383,7 @@ pub struct TaskForceRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ShipRow {
     /// Exact retained display cache; None is an independent acquisition refusal.
     pub name: Recorded<Option<Vec<u8>>>,
@@ -407,7 +407,7 @@ pub struct ShipRow {
 
 /// Ship name-member serialization operands, not a generated display name.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ShipNamingOperands {
     pub kind: i32,
     pub order: i32,
@@ -439,7 +439,7 @@ impl ShipRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatRow {
     pub id: u64,
     pub province: u32,
@@ -453,7 +453,7 @@ pub struct NavalCombatRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalCombatParticipantRow {
     /// All 64 handle bits, the side bit, and all 32 slot bits form the 97-bit key.
     pub combat: u64,
@@ -467,7 +467,7 @@ pub struct NavalCombatParticipantRow {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirWingRow {
     pub id: u64,
     pub owner: u32,
@@ -583,7 +583,7 @@ impl AirWingRow {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirWingRaidReference {
     pub raw: u64,
     pub resolves: bool,
@@ -601,7 +601,7 @@ pub struct AirWingFuelInputs {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ArmyOrderRow {
     /// All 64 owner handle bits and all 32 instance bits form the 96-bit row key.
     pub owner_group: u64,
@@ -739,7 +739,7 @@ pub mod checkpoint;
 /// Current producers default to a recorded native default; old decoders set
 /// NotRecorded explicitly. No absence tag is written to disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum Recorded<T> {
     NotRecorded,
     Value(T),
@@ -770,7 +770,7 @@ impl<T> Recorded<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DeltaRow {
     /// Layout of values; retained for nested fields and old insert masks.
     pub format: u16,
@@ -2162,7 +2162,7 @@ row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {
 /// into that table a cell its own row cannot say is not recorded.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryExperienceUnsayableRow {
     pub country: u32,
     pub army_raw: Recorded<i64>,

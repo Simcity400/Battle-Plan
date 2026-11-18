@@ -37,7 +37,7 @@ pub const WRITER_RVA: Rva = Rva(0x00cb_96a0);
 /// Field count used by air-history construction.
 pub const FIELD_COUNT: usize = cloop_history::air_stats::FIELD_COUNT as usize;
 /// Own/enemy family bases; unknown families select zero.
-pub const FAMILY_BASES: [u32; 13] = [0, 3, 10, 17, 24, 30, 40, 44, 51, 58, 65, 71, 81];
+pub use engine_executable::native_values::air_loss::FAMILY_BASES;
 
 pub struct Site {
     pub name: &'static str,

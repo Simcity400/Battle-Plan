@@ -21,24 +21,28 @@ use installed_content_localisation::localisation::Localisation;
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct GameScore;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GameScoreParams {
     pub branch_id: String,
 }
 
 /// Why one part is not recorded; none where it is, and its value is the live cell (tag, part).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct GameScoreCell {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct GameScoreRow {
     pub tag: String,
@@ -52,7 +56,8 @@ pub struct GameScoreRow {
 }
 
 /// A score multiplier the game read, fixed5, or why it was not read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct GameScoreMultiplier {
     pub part: String,
@@ -62,7 +67,8 @@ pub struct GameScoreMultiplier {
 
 /// No field of the frame's hour: a panel's data is pushed only when it differs, and the push carries the hour it is
 /// of (a request's is the hour it asked).
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct GameScoreReply {
     /// Every country scored at the hour that a tag holds, in tag order.
@@ -171,6 +177,7 @@ impl AtHour for GameScore {
     /// The column hints and why any is missing, made once per request or follow.
     type Context = (BTreeMap<String, String>, Vec<String>);
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![GameScoreParams::decl(), GameScoreCell::decl(), GameScoreRow::decl(), GameScoreMultiplier::decl(), GameScoreReply::decl()]
     }

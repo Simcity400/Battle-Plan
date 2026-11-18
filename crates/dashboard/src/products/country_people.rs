@@ -16,16 +16,19 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PeopleParams {
     pub branch_id: String,
     pub tag: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeopleFact {
     pub label: String,
@@ -33,7 +36,8 @@ pub struct PeopleFact {
     pub unit: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeopleState {
     pub state: u32,
@@ -44,7 +48,8 @@ pub struct PeopleState {
     pub recruitable: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeopleExile {
     pub tag: String,
@@ -57,7 +62,8 @@ pub struct PeopleExile {
     pub read_hour: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeopleReply {
     pub branch_id: String,
@@ -145,7 +151,7 @@ pub fn state_recruitment(applied: i64, values: [i64; 4], core: bool, noncore: i6
 /// overflow into the following month. Dates and month arithmetic keep signed native wrapping,
 /// including years before the epoch.
 pub fn election_date(last: i32, interval: i32) -> i32 {
-    use engine_native::cdate::{HOUR_EPOCH, MONTH_LENGTHS};
+    use game_model::calendar::{HOUR_EPOCH, MONTH_LENGTHS};
     fn parts(hour: i32) -> (i32, i32, i32) {
         let days = hour.wrapping_sub(HOUR_EPOCH) / 24;
         let ordinal = days % 365;
@@ -609,6 +615,7 @@ impl AtHour for CountryPeople {
     type Reply = PeopleReply;
     type Context = PeopleContext;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![PeopleParams::decl(), PeopleReply::decl(), PeopleFact::decl(), PeopleState::decl(), PeopleExile::decl()]
     }

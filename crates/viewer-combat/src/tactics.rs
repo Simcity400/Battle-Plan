@@ -238,7 +238,7 @@ impl Content {
         sub_units: Result<&SubUnits, &String>,
         mut scripted: ScriptedTriggers,
     ) -> Self {
-        scripted = map_products::loader::resolved_scripted(&self.phases, scripted);
+        scripted = map_content::loader::resolved_scripted(&self.phases, scripted);
         self.warnings.extend(
             scripted
                 .logged

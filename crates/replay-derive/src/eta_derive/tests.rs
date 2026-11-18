@@ -285,7 +285,7 @@ fn an_estimate_is_the_remaining_route_distance_over_the_base_speed() {
     let long = movement(vec![2]);
     assert_eq!(
         estimate_with(&long, 1, |_, _| Some(11_600_000))
-            .map(|(next, _)| engine_native::cunit::eta_hours(next)),
+            .map(|(next, _)| game_model::movement::unit::eta_hours(next)),
         Ok(29)
     );
 }

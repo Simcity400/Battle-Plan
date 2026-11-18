@@ -1,6 +1,130 @@
 //! Engine-native typed tables and lossless field-mask codecs.
 pub use crate::checkpoint::endpoint::EndpointRows;
 pub use replay_rows::rows::*;
+pub use replay_rows_economy::*;
+pub use replay_rows_projects::{
+    AceRangeInputRow,
+    NukeRow,
+    ProjectBreakthroughRow,
+    ProjectHistoryRow,
+    ProjectProgramRow,
+    ProjectRow,
+    RaidAirScoreRow,
+    RaidAirSiteRow,
+    RaidCooldownRow,
+    RaidCountryInputRow,
+    RaidCountryRow,
+    RaidEquipmentRow,
+    RaidFacilityRow,
+    RaidIntelInputRow,
+    RaidPathDistanceRow,
+    RaidPlayerAllowedTypeRow,
+    RaidRow,
+    RaidSpeedInputRow,
+    RaidTargetRow,
+    RaidTargetStatusRow,
+    RaidTooltipOperandRow,
+};
+pub use replay_rows_intelligence::{
+    ActiveAbilityRow,
+    AdvisorRoleRow,
+    AdvisorTokenRow,
+    AgencyOperationBuffersRow,
+    AgencyUpgradeLevelRow,
+    AvailableAdvisorRow,
+    CapturedOperativeReferenceRow,
+    CharacterOperativeRow,
+    CharacterRoleTraitRow,
+    CharacterRow,
+    CountryCharacterRow,
+    CountryIntelRow,
+    CountryLeaderRoleRow,
+    CryptologyRow,
+    FactionAdvisorRow,
+    HiredAdvisorRow,
+    IntelContributionRow,
+    IntelNetworkAuxiliaryRow,
+    IntelNetworkRow,
+    IntelNetworkSummaryRow,
+    IntelSourceRow,
+    IntelligenceAgencyRow,
+    OperationAssignmentRow,
+    OperationCompletionRow,
+    OperationRow,
+    OperationTokensRow,
+    OperativeMembershipRow,
+    OperativeMissionRow,
+    PropagandaEffortRow,
+    ScientistDailyRow,
+    ScientistRow,
+    ScientistSkillRow,
+    StrategicOperativeRow,
+    UnitIntelRow,
+    UnitLeaderRow,
+    UnitLeaderTraitExperienceRow,
+    UnitLeaderTraitRow,
+};
+pub use replay_rows_politics::{
+    ActiveIdeaRow,
+    AutonomyRow,
+    BorderConflictRow,
+    CapitulationRow,
+    CompletedFocusRow,
+    CountryCivilWarRow,
+    CountryCollaborationRow,
+    CountryCommandPowerRow,
+    CountryExperienceGainRow,
+    CountryExperienceRow,
+    CountryOccupationReserveManpowerRow,
+    CountryStabilityInputRow,
+    CountryStabilityLineRow,
+    CountryWarRow,
+    DecisionCountsRow,
+    DecisionRandomItemRow,
+    DecisionRow,
+    DynamicModifierRow,
+    FocusRow,
+    GlobalSavedEventTargetRow,
+    IncomingDiplomaticActionRow,
+    LexicalTokenRow,
+    ModifierDefinitionRow,
+    OccupationSettingsRow,
+    OwnedWargoalRow,
+    PartyLeaderRow,
+    PeaceConferenceRow,
+    PoliticalPartyRow,
+    PoliticsRow,
+    PowerBalanceMemberRow,
+    PowerBalanceOverrideRow,
+    PowerBalanceRangeRow,
+    PowerBalanceRow,
+    RelationLinkRow,
+    RelationOpinionRow,
+    RelationTupleRow,
+    ResearchAppliedBonusRow,
+    ResearchInputRow,
+    ResearchModifierRow,
+    ResearchSlotRow,
+    ResearchTechnologyRow,
+    ScriptFlagRow,
+    ScriptVariablesRow,
+    SliceReadRow,
+    StateAssignedManpowerRow,
+    StateCoreRow,
+    StateDynamicModifierRow,
+    StateFlagRow,
+    StateGarrisonRow,
+    StateOccupationLawRow,
+    StateResistanceRow,
+    SubjectRow,
+    TechSharingGroupRow,
+    TechSharingMemberRow,
+    TechnologyDefinitionRow,
+    ThreatCountryAggregateRow,
+    ThreatSourceRow,
+    TimedIdeaRow,
+    WorldTensionRow,
+};
 pub use replay_rows_derived::*;
 use crate::codec::{Decoder, invalid_static as invalid, put_varint};
 use crate::display::Step;
@@ -107,7 +231,8 @@ macro_rules! define_tables {
         }
     };
     ($($table:ident = $id:literal => $variant:ident($row:ident)),+ $(,)?) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, replay_spool::Spooled)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
         #[repr(u16)]
         pub enum TableId { $($table = $id),+ }
         pub enum TableRows { $($table(Vec<$row>)),+ }
@@ -208,17 +333,18 @@ macro_rules! define_tables {
                     .finish()),+ }
             }
         }
+        #[cfg(any(test, feature = "test-support"))]
         impl replay_spool::Spooled for TableRows {
             fn spool(&self, out: &mut replay_spool::Writer<'_>) -> io::Result<()> {
                 match self { $(Self::$table(rows) => {
                     replay_spool::Writer::tag(out, TableId::$table.index())?;
-                    (crate::ops::$table.spool)(rows, out)
+                    (crate::ops::fixtures::$table.spool)(rows, out)
                 }),+ }
             }
             fn unspool(input: &mut replay_spool::Reader<'_>) -> io::Result<Self> {
                 let tag = replay_spool::Reader::tag(input)?;
                 match TableId::ALL.get(tag) {
-                    $(Some(TableId::$table) => Ok(Self::$table((crate::ops::$table.unspool)(input)?)),)+
+                    $(Some(TableId::$table) => Ok(Self::$table((crate::ops::fixtures::$table.unspool)(input)?)),)+
                     None => Err(replay_spool::invalid("A spooled variant it does not know")),
                 }
             }
@@ -246,6 +372,7 @@ macro_rules! define_tables {
                     _ => false,
                 }),+ }
             }
+            #[cfg(any(test, feature = "capture", feature = "test-support"))]
             pub(crate) fn encode_range_update(&self, previous: &TableRows, ranges: &[std::ops::Range<u128>], output: &mut Vec<u8>, deleted: &mut Vec<u8>, changed: Option<&mut ChangedRows>) -> io::Result<bool> {
                 match self { $(Self::$table(fresh) => match previous {
                     Self::$table(old) => (crate::ops::$table.range_encode)(old, fresh, ranges, output, deleted, changed),
@@ -301,7 +428,7 @@ macro_rules! define_tables {
             /// singleton from the registry rather than by name.
             #[cfg(any(test, feature = "test-support"))]
             pub fn one_default(table: TableId) -> Self {
-                match table { $(TableId::$table => Self::$table((crate::ops::$table.one_default)())),+ }
+                match table { $(TableId::$table => Self::$table((crate::ops::fixtures::$table.one_default)())),+ }
             }
             pub const fn table(&self) -> TableId {
                 match self { $(Self::$table(_) => TableId::$table),+ }
@@ -359,6 +486,7 @@ macro_rules! define_tables {
                     _ => Err(invalid("table rows have different types")),
                 }),+ }
             }
+            #[cfg(any(test, feature = "capture", feature = "test-support"))]
             pub fn encode_replacements(&self, previous: &Self, indices: &[usize], output: &mut Vec<u8>) -> io::Result<bool> {
                 match self { $(Self::$table(rows) => match previous {
                     Self::$table(previous) => (crate::ops::$table.encode_replacements)(rows, previous, indices, output),
@@ -368,6 +496,7 @@ macro_rules! define_tables {
             /// Indices, types and unchanged keys were checked while encoding,
             /// before any table in the frame could change its baseline.
             /// Returns the replaced rows, in the replacement's storage.
+            #[cfg(any(test, feature = "capture", feature = "test-support"))]
             pub fn install_replacements(&mut self, mut replacement: Self, indices: &[usize]) -> Self {
                 match self { $(Self::$table(previous) => match &mut replacement {
                     Self::$table(rows) => (crate::ops::$table.install_replacements)(previous, rows, indices),
@@ -414,14 +543,16 @@ macro_rules! define_tables {
             }
             /// The rows [`Self::changes_since`] found `changes` from: each of
             /// its rows set at its key and each of its deleted keys removed.
-            pub fn apply_changes(self, changes: RowChanges) -> io::Result<Self> {
-                let RowChanges { rows: changed, deleted } = changes;
-                match self { $(Self::$table(rows) => {
-                    let Self::$table(changed) = changed else {
+            pub fn apply_changes(mut self, changes: RowChanges) -> io::Result<Self> {
+                let RowChanges { rows: mut changed, deleted } = changes;
+                // Whole enums share unwind cleanup instead of expanding each variant pairing.
+                match &mut self { $(Self::$table(rows) => {
+                    let Self::$table(changed) = &mut changed else {
                         return Err(invalid("row changes of another table"));
                     };
-                    Ok(Self::$table((crate::ops::$table.apply_changes)(rows, changed, &deleted)?))
+                    *rows = (crate::ops::$table.apply_changes)(std::mem::take(rows), std::mem::take(changed), &deleted)?;
                 }),+ }
+                Ok(self)
             }
             /// Each row keyed as `patches` names, in key order, with the fields its mask names
             /// set as `wire(patch, field)` hands them ([`RowCodec::patch_from_wire`]); a row
@@ -443,22 +574,23 @@ macro_rules! define_tables {
             ) -> io::Result<()> {
                 match self { $(Self::$table(rows) => (crate::ops::$table.endpoint_encode)(rows, edits, out)),+ }
             }
-            pub fn apply_endpoint_rows(self, edits: EndpointRows, deleted: &[u128]) -> io::Result<Self> {
-                let EndpointRows { rows: edited, edits } = edits;
-                match self { $(Self::$table(before) => {
-                    let Self::$table(rows) = edited else {
+            pub fn apply_endpoint_rows(mut self, edits: EndpointRows, deleted: &[u128]) -> io::Result<Self> {
+                let EndpointRows { rows: mut edited, edits } = edits;
+                match &mut self { $(Self::$table(before) => {
+                    let Self::$table(rows) = &mut edited else {
                         return Err(invalid("endpoint row table mismatch"));
                     };
-                    (crate::ops::$table.endpoint_apply)(before, rows, edits, deleted).map(Self::$table)
+                    *before = (crate::ops::$table.endpoint_apply)(std::mem::take(before), std::mem::take(rows), edits, deleted)?;
                 }),+ }
+                Ok(self)
             }
             #[cfg(test)]
             pub(crate) fn check_endpoint_sparse_masks(&self) {
-                match self { $(Self::$table(rows) => (crate::ops::$table.sparse_masks)(rows)),+ }
+                match self { $(Self::$table(rows) => (crate::ops::fixtures::$table.sparse_masks)(rows)),+ }
             }
             #[cfg(test)]
             pub(crate) fn endpoint_field_round_trip(&self, mask: u64) -> io::Result<bool> {
-                match self { $(Self::$table(rows) => (crate::ops::$table.field_round_trip)(rows, mask)),+ }
+                match self { $(Self::$table(rows) => (crate::ops::fixtures::$table.field_round_trip)(rows, mask)),+ }
             }
         }
         impl RowRef<'_> {
@@ -1403,7 +1535,7 @@ pub enum Token {
 /// The rows a later version of a table changed or added since an earlier
 /// one, and the keys it dropped ([`TableRows::changes_since`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RowChanges {
     rows: TableRows,
     deleted: Vec<u128>,

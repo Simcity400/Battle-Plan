@@ -840,7 +840,7 @@ mod tests {
             packets(Recorded::Value(Some(ReverseZeroVisibilityInputs {
                 target: Some(0),
                 subject: Some(ZeroSubjectInputs {
-                    relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
+                    relation_type: Some(engine_executable::native_values::subject_relation::TYPE_VALUE),
                     parties: Some([Some(11), Some(0)]),
                 }),
                 ..Default::default()

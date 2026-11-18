@@ -21,6 +21,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -37,23 +38,26 @@ fn branch(text: &str) -> io::Result<u64> {
 const NOT_RECORDED: &str = "Not in this recording";
 const ROSTER_UNREAD: &str = "Combat census not read";
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LandBattlesParams {
     pub branch_id: String,
     pub window: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlePeak {
-    #[ts(type = "number")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number"))]
     pub value: u64,
     pub hour: i32,
 }
 
 /// Hours a battle's census read the same sizes and countries, its counter stepping by one an hour.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleRun {
     pub first_hour: i32,
@@ -67,7 +71,8 @@ pub struct LandBattleRun {
 }
 
 /// Manpower lost as recorded, or why it is unknown.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
 pub enum LandManpower {
     Known(i32),
@@ -75,14 +80,16 @@ pub enum LandManpower {
 }
 
 /// One side's counters: manpower and the exact signed fixed5 sum of every design's equipment loss.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
 pub enum LandLossTotal {
     Known { manpower: LandManpower, equipment: String },
     Unknown { manpower: LandManpower, unknown: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
 pub enum LandLossTotals {
     Read([LandLossTotal; 2]),
@@ -90,14 +97,16 @@ pub enum LandLossTotals {
 }
 
 /// A read of the battle's loss counters; `terminal` only for the game's final flush.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandBattleLossRead {
     pub hour: i32,
     pub terminal: bool,
     pub sides: LandLossTotals,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandBattleResultRead {
     pub hour: i32,
     pub duration: i32,
@@ -107,7 +116,8 @@ pub struct LandBattleResultRead {
     pub countries_unknown: [bool; 2],
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleHistory {
     pub id: String,
@@ -125,7 +135,8 @@ pub struct LandBattleHistory {
     pub result: Option<LandBattleResultRead>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlesManifestReply {
     /// The replay's blocks, cut to the hours the timeline holds.
@@ -135,7 +146,8 @@ pub struct LandBattlesManifestReply {
     pub content_warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlesReply {
     pub window: usize,
@@ -151,7 +163,8 @@ pub struct LandBattlesReply {
 }
 
 /// Countries chosen by tag, or by membership runs (a tag over hours); every country when neither.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BattleCountryFilter {
     pub tags: Option<Vec<String>>,
@@ -179,7 +192,8 @@ impl BattleCountryFilter {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LandBattlesRankingParams {
     pub branch_id: String,
@@ -190,7 +204,8 @@ pub struct LandBattlesRankingParams {
     pub countries: BattleCountryFilter,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattlesRankingReply {
     pub rows: Vec<LandBattleHistory>,
@@ -202,7 +217,8 @@ pub struct LandBattlesRankingReply {
     pub content_warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LandBattleCourseParams {
     pub branch_id: String,
@@ -211,7 +227,8 @@ pub struct LandBattleCourseParams {
 }
 
 /// An equipment design as a loss read names it; same-named designs stay apart by handle.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandEquipmentDesign {
     pub name: Option<String>,
     pub variant: String,
@@ -219,7 +236,8 @@ pub struct LandEquipmentDesign {
 
 /// One side's counters by design: every design (the side's first read, or its designs changed),
 /// or the positions whose amounts changed since its previous read.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
 pub enum LandLossSide {
     Variants { manpower: LandManpower, variants: Vec<(usize, String)> },
@@ -227,14 +245,16 @@ pub enum LandLossSide {
     Unknown { manpower: LandManpower, unknown: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(untagged)]
 pub enum LandLossSides {
     Read([LandLossSide; 2]),
     Unread(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandBattleCourseRead {
     pub hour: i32,
     pub terminal: bool,
@@ -242,7 +262,8 @@ pub struct LandBattleCourseRead {
 }
 
 /// A battle's whole observed course.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleCourse {
     pub id: String,
@@ -256,7 +277,8 @@ pub struct LandBattleCourse {
     pub result: Option<LandBattleResultRead>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LandBattleCourseReply {
     pub battle: LandBattleCourse,
@@ -943,6 +965,7 @@ impl Product for LandBattlesManifest {
     type Params = super::BranchParams;
     type Reply = LandBattlesManifestReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LandBattlesManifestReply::decl()]
     }
@@ -969,6 +992,7 @@ impl Product for LandBattles {
     type Params = LandBattlesParams;
     type Reply = LandBattlesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         let mut out = dashboard_base::products::battles::types();
         out.extend([
@@ -1127,6 +1151,7 @@ impl Product for LandBattlesRanking {
     type Params = LandBattlesRankingParams;
     type Reply = LandBattlesRankingReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![BattleCountryFilter::decl(), LandBattlesRankingParams::decl(), LandBattlesRankingReply::decl()]
     }
@@ -1258,6 +1283,7 @@ impl Product for LandBattleCourses {
     type Params = LandBattleCourseParams;
     type Reply = LandBattleCourseReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LandBattleCourseParams::decl(), LandEquipmentDesign::decl(), LandLossSide::decl(), LandLossSides::decl(), LandBattleCourseRead::decl(), LandBattleCourse::decl(), LandBattleCourseReply::decl()]
     }

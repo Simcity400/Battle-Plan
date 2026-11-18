@@ -25,6 +25,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct ResourceBalance;
@@ -36,23 +37,25 @@ pub struct ResourceContext {
     deals: crate::answer::ConvoyIndex,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceBalanceParams {
     pub branch_id: String,
     pub tag: String,
     /// The order `shown` lists the resources in; the game's when absent.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub order: Option<ResourceOrder>,
     /// Leave out of `shown` the resources with nothing in either bar.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub hide_empty: Option<bool>,
 }
 
 /// How the balance bars are ordered.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ResourceOrder {
     #[default]
@@ -78,7 +81,8 @@ pub const POOL_CELLS: [(&str, &str); 8] = [
     ("production", "production_demand"),
 ];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum TradeDirection {
     Import,
@@ -87,7 +91,8 @@ pub enum TradeDirection {
 
 /// One trade deal naming the country at the hour. Its daily amount delivered is the live cell
 /// (`deal`, `delivered`), raw fixed-point; the deals come largest first at the hour.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceDeal {
     /// The deal's native handle, as a decimal string.
@@ -102,7 +107,8 @@ pub struct ResourceDeal {
     pub convoys_required: i32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceBalanceReply {
     pub tag: String,
@@ -303,6 +309,7 @@ impl AtHour for ResourceBalance {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ResourceBalanceParams::decl(),
@@ -370,21 +377,23 @@ impl AtHour for ResourceBalance {
 /// Each resource's longest balance bar over a span: the bars' whole-campaign scale.
 pub struct ResourceSizes;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceSizesParams {
     pub branch_id: String,
     pub tag: String,
     /// The span; the whole timeline when absent.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub from: Option<i32>,
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub to: Option<i32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSize {
     /// The resource's native index.
@@ -393,7 +402,8 @@ pub struct ResourceSize {
     pub longest_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSizesReply {
     pub tag: String,
@@ -414,6 +424,7 @@ impl Product for ResourceSizes {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ResourceSizesParams::decl(), ResourceSizesReply::decl(), ResourceSize::decl(), MissingSpan::decl()]
     }

@@ -8,7 +8,7 @@ use super::*;
 type Fact<T> = Result<T, String>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WarCell {
     pub target_slot: u32,
     pub active: bool,
@@ -19,7 +19,7 @@ value_struct!(WarCell {
 });
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DirectedWars {
     pub sample_hour: PacketHour,
     pub receiver_raw_id: i32,

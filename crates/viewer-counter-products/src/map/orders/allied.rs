@@ -329,8 +329,8 @@ fn zero_subject(row: &CountryCounterInputRow) -> Result<bool, String> {
         .ok_or("CountryCounterInputs.zero_subject capture refused")?;
     match (subject.relation_type, subject.parties) {
         (None, None) => Ok(false),
-        (Some(kind), None) if kind != engine_native::csubject_relation::TYPE_VALUE => Ok(false),
-        (Some(kind), Some(parties)) if kind == engine_native::csubject_relation::TYPE_VALUE => {
+        (Some(kind), None) if kind != engine_executable::native_values::subject_relation::TYPE_VALUE => Ok(false),
+        (Some(kind), Some(parties)) if kind == engine_executable::native_values::subject_relation::TYPE_VALUE => {
             // Status0 target is raw zero: both native match predicates skip
             // canonical comparison and test exact zero on their own party.
             if parties.contains(&Some(0)) {

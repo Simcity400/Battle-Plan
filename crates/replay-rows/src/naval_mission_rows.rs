@@ -23,7 +23,7 @@ use super::*;
 /// `range_fleet` (zero when unset), `range_begin` and `range_end` are the
 /// mission's region range; `convoys` is its stored convoy count.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalMissionTaskForceRow {
     pub task_force: u64,
     /// Raw mission owner, also needed when TaskForceMissions has no region row.
@@ -81,7 +81,7 @@ pub struct NavalMissionTaskForceRow {
 impl NavalMissionTaskForceRow {
     /// Raw accumulator entries for a native mission modifier key.
     pub fn value(&self, key: u32) -> (Option<i64>, Option<i64>) {
-        use engine_executable::modifier_keys as keys;
+        use engine_reference_values::modifier_keys as keys;
         match key {
             keys::NAVAL_COORDINATION => (self.local_coordination, self.weather_coordination),
             keys::NAVAL_DETECTION => (self.local_detection, self.weather_detection),
@@ -119,7 +119,7 @@ opaque_value!(Option<[Option<bool>; 2]>);
 /// every nonempty ledger, including an escort animating out. The presence
 /// key is the region's runtime slot, equal to its id by construction.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalMissionLedgerRow {
     pub owner: u32,
     pub region: u32,
@@ -142,7 +142,7 @@ typed_codec!(NavalMissionLedgerRow, 64, |row| (row.owner as u128) << 32 | row.re
 ///
 /// SliceReads witnesses the held owner slice's read hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalMissionCountryRow {
     pub country: u32,
     pub coordination: Option<i64>,
@@ -165,7 +165,7 @@ pub struct NavalMissionCountryRow {
 impl NavalMissionCountryRow {
     /// Raw accumulator entries for a native mission modifier key.
     pub fn value(&self, key: u32) -> Result<Option<i64>, &'static str> {
-        use engine_executable::modifier_keys as keys;
+        use engine_reference_values::modifier_keys as keys;
         match key {
             keys::NAVAL_COORDINATION => Ok(self.coordination),
             keys::NAVAL_DETECTION => recorded(&self.detection, "naval mission detection not recorded"),
@@ -210,7 +210,7 @@ typed_codec!(NavalMissionCountryRow, 32, |row| row.country as u128, |key| Self {
 ///
 /// SliceReads witnesses the held owner slice's read hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalMissionCommanderRow {
     pub country: u32,
     pub reference: u64,
@@ -232,7 +232,7 @@ impl NavalMissionCommanderRow {
 impl NavalMissionCommanderRow {
     /// Raw accumulator entries for a native mission modifier key.
     pub fn value(&self, key: u32) -> Result<Option<i64>, &'static str> {
-        use engine_executable::modifier_keys as keys;
+        use engine_reference_values::modifier_keys as keys;
         match key {
             keys::NAVAL_COORDINATION => Ok(self.coordination),
             keys::NAVAL_DETECTION => recorded(&self.detection, "naval mission detection not recorded"),

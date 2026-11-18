@@ -2,9 +2,9 @@
 use super::*;
 
 /// The frame's hour: three days and an hour past the day the flags were set.
-const NOW: i32 = engine_native::cdate::HOUR_EPOCH + 1003 * 24 + 1;
+const NOW: i32 = game_model::calendar::HOUR_EPOCH + 1003 * 24 + 1;
 /// The hour the flags were set: day 1000 (year 2, 28 September), hour 5.
-const SET: i32 = engine_native::cdate::HOUR_EPOCH + 1000 * 24 + 5;
+const SET: i32 = game_model::calendar::HOUR_EPOCH + 1000 * 24 + 5;
 
 /// Flag `x`, set at [`SET`], at hour [`NOW`]: of value 2 in the global store, on D01 (slot 1),
 /// state 7 and character 9; of value 0 on D02 (slot 2), state 8 and character 10.

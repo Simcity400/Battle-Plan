@@ -43,7 +43,7 @@ use super::*;
 /// diagnostic witnessed it, so it costs other rows nothing; older recordings
 /// hold it in every row, whose payload is never empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Witnessed<T>(pub Option<T>);
 
 impl<T> Witnessed<T> {
@@ -96,7 +96,7 @@ impl<T: Value> Value for Witnessed<T> {
 /// live stat block, once a day per division and on ability refreshes; every value is an exact
 /// fixed5 word.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionAttackStats {
     /// The terrain `unit adjuster` array, each entry's attack, in array order and as many as its
     /// live count. Terrain attack reads entry `index - 1` for the terrain whose database index is
@@ -121,7 +121,7 @@ opaque_value!(Option<DivisionAttackStats>);
 /// scales (`MOVEMENT_FUEL_RATE`) and the anti-air word its air term reads (`MOVEMENT_AIR_DEFENSE`),
 /// each raw fixed5.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionMovementStats {
     pub terrain: Vec<i64>,
     pub scalars: Option<[i64; 3]>,
@@ -147,7 +147,7 @@ impl DivisionMovementStats {
 /// A direct commander's movement operands, read with [`CommanderAttackStats`]: each terrain
 /// adjuster's movement, parallel to [`CommanderAttackStats::terrain`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CommanderMovementStats {
     pub terrain: Vec<i64>,
 }
@@ -158,7 +158,7 @@ opaque_value!(Option<Option<CommanderMovementStats>>);
 /// Unit-leader and army-leader trait-adjuster refreshes rebuild every value from the leader's
 /// traits, the field marshal's and the country's effects.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CommanderAttackStats {
     /// The commander's full `unit leader` reference.
     pub leader: u64,
@@ -180,7 +180,7 @@ opaque_value!(Option<Option<CommanderAttackStats>>);
 /// an absent key. The effective-value getter applies the key's ModifierDefinitions row to a present
 /// one ([`crate::naval_mission_derive::effective`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryAttackModifiers {
     /// `land_night_attack` (0x103), read for the division's owner.
     pub land_night_attack: Option<i64>,
@@ -197,7 +197,7 @@ opaque_value!(Option<CountryAttackModifiers>);
 /// scales its supply penalty by, and the attrition and winter and heat attrition factors
 /// the attrition hover multiplies by. Country modifier recalculation rewrites them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryMovementModifiers {
     pub army_speed_factor: Option<i64>,
     pub army_armor_speed_factor: Option<i64>,
@@ -220,7 +220,7 @@ opaque_value!(Option<CountryMovementModifiers>);
 /// raw entries, `None` for an absent key. Weather refresh rebuilds it from the region's weather
 /// flags, the six static weather modifiers and the region's own weather states.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RegionCombatWeather {
     /// `army_attack_factor` (0xAD).
     pub army_attack_factor: Option<i64>,
@@ -245,7 +245,7 @@ opaque_value!(Option<RegionCombatWeather>);
 /// database, the combined terrain attack (the stat block's entry plus the terrain's own
 /// adjuster).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionAttackInputs {
     pub sample_hour: PacketHour,
     /// `Some(0)`: a null division template. Nonzero is a type-52 template handle.
@@ -260,7 +260,7 @@ pub struct DivisionAttackInputs {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AttackStats {
     /// The river crossing pair.
     pub river: [Option<i64>; 2],
@@ -273,14 +273,14 @@ pub struct AttackStats {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AttackTerrain {
     pub terrain: i32,
     pub attack: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OrdersGroupAttackInputs {
     pub sample_hour: PacketHour,
     /// `None`: refusal. `Some(None)`: a null direct commander.
@@ -288,7 +288,7 @@ pub struct OrdersGroupAttackInputs {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CommanderAttackInputs {
     pub leader: u64,
     /// The fort, river, snow and night adjusters' attack values.
@@ -301,7 +301,7 @@ pub struct CommanderAttackInputs {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WeatherRegionAttackInputs {
     pub sample_hour: PacketHour,
     /// Effective `army_attack_factor` and `breakthrough_factor`.
@@ -310,7 +310,7 @@ pub struct WeatherRegionAttackInputs {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryAttackInputs {
     pub sample_hour: PacketHour,
     /// Effective `land_night_attack` and `land_bunker_effectiveness_factor`.
@@ -319,7 +319,7 @@ pub struct CountryAttackInputs {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ProvinceAttackInputs {
     pub sample_hour: PacketHour,
     /// The healthy land fort level, the wrapping `i32` sum.

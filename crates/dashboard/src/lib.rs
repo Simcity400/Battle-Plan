@@ -34,6 +34,7 @@ pub use source::{Source, SourceKey};
 /// parameters and reply. One deterministic file, exported explicitly.
 #[cfg(any(test, feature = "export-types"))]
 pub fn typescript_contract() -> String {
+    #[cfg(any(test, feature = "export-types"))]
     use ts_rs::TS;
     let mut declarations = vec![
         QueryError::decl(),
@@ -101,7 +102,7 @@ pub fn typescript_contract() -> String {
         products::army::ArmyChartReply::decl(),
     ];
     for product in products::PRODUCTS {
-        declarations.extend((product.types)());
+        declarations.extend(product.types.expect("every exported product registers its types")());
     }
     // Products may share a type (CountryParams, LandOwners); declare each name
     // once. Two different types under one name would silently drop one, so

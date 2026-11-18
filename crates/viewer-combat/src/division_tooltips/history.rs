@@ -324,10 +324,10 @@ pub(super) fn text(
                         let ordinal = entry.medal_definition.unwrap_or(-1);
                         let count = awarded.entry(ordinal).or_default();
                         let divisor =
-                            engine_native::fixed5::power(200_000, count.wrapping_mul(100_000));
+                            game_model::fixed5::power(200_000, count.wrapping_mul(100_000));
                         *count = count.wrapping_add(1);
                         let scale = divisor
-                            .and_then(|divisor| engine_native::fixed5::fraction(100_000, divisor))
+                            .and_then(|divisor| game_model::fixed5::fraction(100_000, divisor))
                             .map(|fraction| mul(fraction, entry.multiplier));
                         match scale
                             .map_err(str::to_owned)

@@ -10,10 +10,9 @@
 //! key, and its commit replaces those rows in the baseline in place.
 
 use super::SlicedRow;
-use crate::{
-    codec::{invalid_static as invalid, put_varint},
-    rows::{ChangedRows, TableId, TableRows, count_header},
-};
+use crate::{codec::invalid_static as invalid, rows::{TableId, TableRows}};
+#[cfg(any(test, feature = "capture", feature = "test-support"))]
+use crate::{codec::put_varint, rows::{ChangedRows, count_header}};
 use engine_allocation as allocation;
 use std::{io, ops::Range};
 
@@ -268,6 +267,7 @@ impl SliceUpdate {
     /// encoder's full comparison of the two complete tables writes it: the
     /// changed rows in key order, then the deleted keys. Only the listed
     /// owners' rows can differ. Returns whether anything changed.
+    #[cfg(any(test, feature = "capture", feature = "test-support"))]
     pub fn encode_changes(
         &self,
         previous: &TableRows,
@@ -280,6 +280,7 @@ impl SliceUpdate {
     /// [`Self::encode_changes`], recording in `changed` each row of an owner or key update it
     /// writes (its index in the update's rows beside its baseline row's) and each key it
     /// deletes; an owner update writes nothing when no row changed.
+    #[cfg(any(test, feature = "capture", feature = "test-support"))]
     pub fn encode_changes_recorded(
         &self,
         previous: &TableRows,
@@ -290,6 +291,7 @@ impl SliceUpdate {
         self.encode_changes_with(previous, output, deleted, Some(changed))
     }
 
+    #[cfg(any(test, feature = "capture", feature = "test-support"))]
     fn encode_changes_with(
         &self,
         previous: &TableRows,
@@ -505,6 +507,7 @@ fn key_fits<R: crate::rows::RowCodec>(fresh: &[R], keys: &[u128]) -> bool {
             .iter()
             .all(|row| keys.binary_search(&row.key()).is_ok())
 }
+#[cfg(any(test, feature = "capture", feature = "test-support"))]
 fn encode_keys<R: crate::rows::RowCodec>(
     old: &[R],
     fresh: &[R],

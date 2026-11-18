@@ -4,7 +4,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportNavalRegion {
     pub position: [i32; 2],
     pub edges: Vec<TransportNavalEdge>,
@@ -12,7 +12,7 @@ pub struct TransportNavalRegion {
 value_struct!(TransportNavalRegion { position: [i32; 2], edges: Vec<TransportNavalEdge> });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportNavalEdge {
     pub to: u32,
     pub flags: u8,
@@ -23,7 +23,7 @@ pub struct TransportNavalEdge {
 value_struct!(TransportNavalEdge { to: u32, flags: u8, unrestricted: u8, rules: Vec<Option<u32>> });
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportMissionReceiver {
     pub task_force: u64,
     /// Original embedded mission's country, independent of task logical owner.
@@ -57,7 +57,7 @@ value_struct!(TransportMissionReceiver {
 });
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportTaskForceStats {
     pub detection_138: Option<i64>,
     pub visibility_148: Option<i64>,
@@ -70,7 +70,7 @@ value_struct!(TransportTaskForceStats {
 });
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportReceiverRisk {
     /// Raw common modifier results before each caller's unity addition.
     pub coordination: Option<i64>,

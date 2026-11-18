@@ -37,6 +37,7 @@ use std::{
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub mod details;
@@ -63,14 +64,16 @@ const SCIENTIST_COLUMNS: [usize; 1] = [3];
 
 pub struct SpecialProjects;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecialProjectsParams {
     pub branch_id: String,
     pub tag: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDate {
     pub hour: i32,
@@ -78,7 +81,8 @@ pub struct ProjectDate {
     pub exact: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectPerson {
     /// None where the recorded reference cannot say whether a scientist is assigned.
@@ -89,7 +93,8 @@ pub struct ProjectPerson {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectPresentation {
     pub name: String,
@@ -103,7 +108,8 @@ pub struct ProjectPresentation {
     pub scientist_as_of: Option<i32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProjectState {
     Running,
@@ -113,7 +119,8 @@ pub enum ProjectState {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectRun {
     pub first_hour: i32,
@@ -129,7 +136,8 @@ pub struct SpecialProjectRun {
     pub iterations: Option<i32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEpisode {
     pub id: String,
@@ -137,7 +145,8 @@ pub struct ProjectEpisode {
     pub runs: Vec<SpecialProjectRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectsReply {
     pub branch_id: String,
@@ -846,6 +855,7 @@ impl Product for SpecialProjects {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             SpecialProjectsParams::decl(),

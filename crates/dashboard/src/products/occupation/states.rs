@@ -29,6 +29,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// What a reply reads besides the trigger world: the occupation tables and the identity.
@@ -64,7 +65,8 @@ const GROUP_LAW_MISSING: &str = "The law set for this occupied country is not re
 
 pub struct OccupiedStates;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OccupiedStatesParams {
     pub branch_id: String,
@@ -75,7 +77,8 @@ pub struct OccupiedStatesParams {
 /// with a garrison row, `garrison` (the required template amount, fixed5; not the
 /// strength) and `requiredManpower`; `assignedManpower` where the state has assignment rows; and
 /// `garrisonStrength` (a signed fixed5 fraction, 100000 full) where it is known.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupiedState {
     pub state: u32,
@@ -98,7 +101,8 @@ pub struct OccupiedState {
     pub law_missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupiedStatesReply {
     /// Ascending by state.
@@ -542,6 +546,7 @@ impl AtHour for OccupiedStates {
     type Reply = OccupiedStatesReply;
     type Context = Content;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![OccupiedStatesParams::decl(), OccupiedStatesReply::decl(), OccupiedState::decl(), OccupationLawInfo::decl()]
     }

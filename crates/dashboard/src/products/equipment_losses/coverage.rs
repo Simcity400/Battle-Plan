@@ -11,10 +11,12 @@ use replay::{
 use replay_data::rows::{EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentLossCoverageRow as Row, TableId};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Why a cause's amounts are unknown over a span of hours.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum UnknownReason {
     /// The cause's record was not read completely at these hours.
@@ -27,7 +29,8 @@ pub enum UnknownReason {
     DestructionDomain,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct UnknownSpan {
     pub first_hour: i32,
@@ -37,7 +40,8 @@ pub struct UnknownSpan {
 }
 
 /// Combat Log land coverage at an hour.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum Coverage {
     Logged,
@@ -47,7 +51,8 @@ pub enum Coverage {
     PruneUnobserved,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageSpan {
     pub first_hour: i32,
@@ -56,7 +61,8 @@ pub struct CoverageSpan {
 }
 
 /// The drain at a span of hours: null for a complete drain, else the writer's reason.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DestructionCoverageSpan {
     pub first_hour: i32,

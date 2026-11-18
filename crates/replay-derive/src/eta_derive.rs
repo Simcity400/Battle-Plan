@@ -17,8 +17,8 @@
 //! ([`EdgeTerm`]).
 
 use crate::rows::{DivisionMovementRow, RailwayGunCounterInputRow, RailwayGunEtaOperands};
-use engine_native::{carmy::NormalEdgeOperands, carmy::PreparedNormalSpeed};
-use engine_native::{cunit::EtaInputs, cunit::EtaLeg, cunit::EtaSpeed, cunit::eta_remaining};
+use game_model::movement::army::{NormalEdgeOperands, PreparedNormalSpeed};
+use game_model::movement::unit::{EtaInputs, EtaLeg, EtaSpeed, eta_remaining};
 
 const MOVEMENT_ONE: i64 = 100_000;
 
@@ -660,7 +660,7 @@ pub fn edge_speed_with(
 /// `location` (`Divisions.province`), each edge and the first-edge progress
 /// at its [`edge_speed`]. Each edge distance follows the native rule
 /// for class 0 over matching content ([`edge_distance`]); self edges emit no leg.
-/// The caller rounds hours as the game does ([`engine_native::cunit::eta_hours`]).
+/// The caller rounds hours as the game does ([`game_model::movement::unit::eta_hours`]).
 pub fn estimate(
     movement: &DivisionMovementRow,
     location: u32,

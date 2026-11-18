@@ -27,6 +27,7 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// What the country's overview reads: its rows of the derived tables, and what names them.
@@ -57,7 +58,8 @@ const DRILL: [TableId; 8] = [
 
 pub struct DivisionEquipment;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionEquipmentParams {
     pub branch_id: String,
@@ -70,7 +72,8 @@ pub struct DivisionEquipmentParams {
 }
 
 /// Holdings of one design, never a design-specific requirement.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentVariant {
     pub variant: String,
@@ -78,7 +81,8 @@ pub struct EquipmentVariant {
     pub held_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentType {
     /// None is the unclassified bucket, not a content key.
@@ -99,7 +103,8 @@ pub struct EquipmentType {
     pub variants: Vec<EquipmentVariant>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentTemplate {
     pub template: String,
@@ -120,7 +125,8 @@ pub struct EquipmentTemplate {
     pub unknown_divisions: Option<u32>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentDivision {
     pub division: String,
@@ -139,7 +145,8 @@ pub struct EquipmentDivision {
     pub converting_from: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionPoolType {
     pub archetype: Option<String>,
@@ -151,7 +158,8 @@ pub struct DivisionPoolType {
     pub variants: Vec<EquipmentVariant>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionPool {
     pub division: String,
@@ -167,7 +175,8 @@ pub struct DivisionPool {
     pub pool_known: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionEquipmentReply {
     pub tag: String,
@@ -208,6 +217,7 @@ impl AtHour for DivisionEquipment {
     type Reply = DivisionEquipmentReply;
     type Context = EquipmentContext;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             DivisionEquipmentParams::decl(),

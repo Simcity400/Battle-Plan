@@ -15,6 +15,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct Doctrines;
@@ -70,20 +71,23 @@ fn reward_benefits(
     benefits
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoctrineParams {
     pub branch_id: String,
     pub tag: String,
     pub hour: i32,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineFact {
     pub name: String,
     pub value: String,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineReward {
     pub name: String,
@@ -91,7 +95,8 @@ pub struct DoctrineReward {
     pub unlocked: Option<bool>,
     pub description: String,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineTrack {
     pub ordinal: u32,
@@ -108,7 +113,8 @@ pub struct DoctrineTrack {
     pub reward_benefits: Vec<DoctrineReward>,
     pub commanders: Vec<DoctrineFact>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineFolder {
     pub ordinal: u32,
@@ -120,14 +126,16 @@ pub struct DoctrineFolder {
     pub completed: Vec<String>,
     pub tracks: Vec<DoctrineTrack>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineInventory {
     pub kind: String,
     pub ordinal: u32,
     pub fields: Vec<DoctrineFact>,
 }
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DoctrineReply {
     pub branch_id: String,
@@ -169,6 +177,7 @@ impl Product for Doctrines {
             .map(|_| ())
             .map_err(|_| "Invalid doctrine branch")
     }
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             DoctrineParams::decl(),

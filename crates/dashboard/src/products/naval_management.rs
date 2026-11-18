@@ -23,12 +23,14 @@ use replay_data::rows::{NavalRefitProgressRow, ProductionLineRow, TableId, table
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io, sync::Arc};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalManagementParams {
     pub branch_id: String,
@@ -37,7 +39,8 @@ pub struct NavalManagementParams {
 
 /// A number a line shows that moves every hour: its value at the reply's hour (raw fixed5) and,
 /// for a hull, the maximum it is out of, painted from the live cell `(row, column)`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalManagementAmount {
     pub row: String,
@@ -48,14 +51,16 @@ pub struct NavalManagementAmount {
 }
 
 /// A line of a section: its text, and the moving amount it ends with, if any.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalManagementLine {
     pub text: String,
     pub amount: Option<NavalManagementAmount>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalManagementSection {
     pub key: String,
@@ -63,7 +68,8 @@ pub struct NavalManagementSection {
     pub lines: Vec<NavalManagementLine>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalManagementReply {
     pub sections: Vec<NavalManagementSection>,
@@ -163,6 +169,7 @@ impl AtHour for NavalManagement {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             NavalManagementParams::decl(),

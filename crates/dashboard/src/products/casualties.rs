@@ -29,6 +29,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -234,7 +235,8 @@ fn push_run<T>(runs: &mut Vec<T>, run: T, joins: impl Fn(&mut T, &T) -> bool) {
 
 pub struct CasualtyPairs;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CasualtyPairsParams {
     pub branch_id: String,
@@ -245,7 +247,8 @@ pub struct CasualtyPairsParams {
     pub window: Option<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyPairRun {
     pub first_hour: i32,
@@ -259,7 +262,8 @@ pub struct CasualtyPairRun {
     pub incomplete: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyPairSeries {
     pub identity: String,
@@ -268,7 +272,8 @@ pub struct CasualtyPairSeries {
     pub runs: Vec<CasualtyPairRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyPairsReply {
     pub branch_id: String,
@@ -513,6 +518,7 @@ impl Product for CasualtyPairs {
     type Params = CasualtyPairsParams;
     type Reply = CasualtyPairsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![CasualtyPairsParams::decl(), CasualtyPairRun::decl(), CasualtyPairSeries::decl(), HourSpan::decl(), CasualtyPairsReply::decl()]
     }
@@ -583,7 +589,8 @@ impl Product for CasualtyPairs {
 
 pub struct CasualtyBreakdown;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CasualtyBreakdownParams {
     pub branch_id: String,
@@ -591,7 +598,8 @@ pub struct CasualtyBreakdownParams {
     pub window: Option<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyBreakdownRun {
     pub first_hour: i32,
@@ -610,7 +618,8 @@ pub struct CasualtyBreakdownRun {
     pub incomplete: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyBreakdownSeries {
     pub id: String,
@@ -620,7 +629,8 @@ pub struct CasualtyBreakdownSeries {
     pub runs: Vec<CasualtyBreakdownRun>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyBreakdownCountryRun {
     pub first_hour: i32,
@@ -630,7 +640,8 @@ pub struct CasualtyBreakdownCountryRun {
 }
 
 /// A war's name over hours, as the wars family names it.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyWarName {
     pub text: String,
@@ -639,7 +650,8 @@ pub struct CasualtyWarName {
     pub key: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyWarNameRun {
     pub first_hour: i32,
@@ -647,7 +659,8 @@ pub struct CasualtyWarNameRun {
     pub name: CasualtyWarName,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyBreakdownWar {
     pub id: String,
@@ -658,7 +671,8 @@ pub struct CasualtyBreakdownWar {
     pub names: Vec<CasualtyWarNameRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyBreakdownReply {
     pub branch_id: String,
@@ -816,6 +830,7 @@ impl Product for CasualtyBreakdown {
     type Params = CasualtyBreakdownParams;
     type Reply = CasualtyBreakdownReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             CasualtyBreakdownParams::decl(),
@@ -898,7 +913,8 @@ impl Product for CasualtyBreakdown {
 
 pub struct CasualtyLabels;
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyLabelsReply {
     /// The game's name for losses no attacker dealt, in the recording's language.
@@ -912,6 +928,7 @@ impl Product for CasualtyLabels {
     type Params = BranchParams;
     type Reply = CasualtyLabelsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![CasualtyLabelsReply::decl()]
     }

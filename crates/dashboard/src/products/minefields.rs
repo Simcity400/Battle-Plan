@@ -35,6 +35,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -44,7 +45,8 @@ mod tests;
 const SCALE: i32 = 100_000;
 
 /// One owner of mines in a region: its amount (raw fixed5) is the live cell (region, tag).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MineOwner {
     pub tag: String,
@@ -52,7 +54,8 @@ pub struct MineOwner {
 
 /// A region holding mines: its owners largest first at the hour, and how many owners' amounts
 /// there are not known (vectors that do not reach it, owners no tag names, rows the hour lost).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MinedRegion {
     pub region: u32,
@@ -61,7 +64,8 @@ pub struct MinedRegion {
 }
 
 /// A sea region with no mine known in it where some owners' amounts are not known.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct UnknownRegion {
     pub region: u32,
@@ -134,7 +138,8 @@ fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>
 
 pub struct Minefields;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MinefieldsParams {
     pub branch_id: String,
@@ -143,7 +148,8 @@ pub struct MinefieldsParams {
     pub tags: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MinefieldsReply {
     pub regions: Vec<MinedRegion>,
@@ -194,6 +200,7 @@ impl AtHour for Minefields {
         params.tags.iter().flatten().try_for_each(|tag| validate_tag(tag))
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![MinefieldsParams::decl(), MineOwner::decl(), MinedRegion::decl(), UnknownRegion::decl(), Choice::decl(), MinefieldsReply::decl()]
     }
@@ -246,14 +253,16 @@ impl AtHour for Minefields {
 /// amount, none where not known.
 pub type MineRuns = Vec<(i32, i32, Option<String>)>;
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MineLine {
     pub tag: String,
     pub runs: MineRuns,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MinefieldHistoryReply {
     pub region: u32,
@@ -264,7 +273,8 @@ pub struct MinefieldHistoryReply {
 
 dashboard_base::reply_warnings!(MinefieldHistoryReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MinefieldHistoryParams {
     pub branch_id: String,
@@ -319,6 +329,7 @@ impl Product for MinefieldHistory {
         params.tags.iter().try_for_each(|tag| validate_tag(tag))
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![MinefieldHistoryParams::decl(), MineLine::decl(), MinefieldHistoryReply::decl()]
     }
@@ -353,7 +364,8 @@ impl Product for MinefieldHistory {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MineReport {
     pub kind: u8,
@@ -366,7 +378,8 @@ pub struct MineReport {
     pub sunk: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MinefieldReportsReply {
     pub region: u32,
@@ -378,7 +391,8 @@ pub struct MinefieldReportsReply {
 
 dashboard_base::reply_warnings!(MinefieldReportsReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MinefieldReportsParams {
     pub branch_id: String,
@@ -441,6 +455,7 @@ impl AtHour for MinefieldReports {
         params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![MinefieldReportsParams::decl(), MineReport::decl(), MinefieldReportsReply::decl()]
     }

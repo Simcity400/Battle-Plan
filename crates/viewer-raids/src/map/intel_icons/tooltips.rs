@@ -344,10 +344,10 @@ fn operation_date(hour: i32, localisation: &Localisation) -> Result<String, Stri
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    let elapsed = hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH);
+    let elapsed = hour.wrapping_sub(game_model::calendar::HOUR_EPOCH);
     let year = elapsed / (365 * 24);
     let mut day = elapsed / 24 % 365;
-    for (index, length) in engine_native::cdate::MONTH_LENGTHS.into_iter().enumerate() {
+    for (index, length) in game_model::calendar::MONTH_LENGTHS.into_iter().enumerate() {
         if day < length {
             let month = localise(localisation, MONTHS[index], &[])?;
             return Ok(format!("{} {month} {year}", day + 1));

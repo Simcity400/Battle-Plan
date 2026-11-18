@@ -48,6 +48,7 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Decimal places of recorded equipment amounts and line cost and speed: fixed5.
@@ -77,7 +78,8 @@ pub fn daily_units_raw(speed_raw: i64, cost_raw: i64) -> Option<i64> {
 pub use super::production_spending::Domain;
 
 /// An equipment type (archetype) as the content names it.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StockType {
     pub key: String,

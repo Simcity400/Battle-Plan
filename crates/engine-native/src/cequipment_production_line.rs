@@ -57,13 +57,13 @@ pub const MAX_FACTORY_DEFINE_RVAS: [Rva; 6] = [
 pub const EFFICIENCY_BATCH: usize = 256;
 
 /// Military production, distinguished by the exact native primary vtable.
-pub const KIND_MILITARY: u8 = 0;
+pub use engine_executable::native_values::production_line::KIND_MILITARY;
 /// Naval new-build production, distinguished by the exact native primary vtable.
-pub const KIND_NAVAL: u8 = 1;
+pub use engine_executable::native_values::production_line::KIND_NAVAL;
 /// Ship refit production, distinguished by the exact native primary vtable.
-pub const KIND_SHIP_REFIT: u8 = 2;
+pub use engine_executable::native_values::production_line::KIND_SHIP_REFIT;
 /// Railway-gun production, distinguished by the exact native primary vtable.
-pub const KIND_RAILWAY_GUN: u8 = 3;
+pub use engine_executable::native_values::production_line::KIND_RAILWAY_GUN;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -91,16 +91,7 @@ pub struct Row {
     pub efficiency_raw: i64,
 }
 
-/// Average of `count` entries with wrapping u64 `sum`. Nonpositive counts
-/// return zero. Otherwise both operands are shifted left by 15 bits and
-/// divided as signed i64 values, truncating toward zero. The caller uses the
-/// minimum of active and maximum factories.
-pub fn efficiency_average(sum: u64, count: i32) -> i64 {
-    if count <= 0 {
-        return 0;
-    }
-    ((sum << 15) as i64) / (i64::from(count) << 15)
-}
+pub use game_model::production::efficiency_average;
 
 /// The six maximum-factory defines, read together once per walk, when the
 /// first line needs one. Defines are reloadable, so no walk reuses another's.

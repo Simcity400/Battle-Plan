@@ -87,7 +87,7 @@ fn selected_current_subject_pointer_overrides_historical_subject_dates() {
                     sample_hour: replay_data::rows::PacketHour::Stamped(hour),
                     target_raw: Some(40),
                     subject: Some(ZeroSubjectInputs {
-                        relation_type: Some(engine_native::csubject_relation::TYPE_VALUE),
+                        relation_type: Some(engine_executable::native_values::subject_relation::TYPE_VALUE),
                         parties: Some([Some(30), Some(40)]),
                     }),
                     ..Default::default()

@@ -301,7 +301,7 @@ fn date(field: &Item, trigger: &str) -> Result<i32, Failure> {
     let (Some(year), Some(month), Some(day)) = (number(year), number(month), number(day)) else {
         return Err(unported());
     };
-    let lengths = engine_native::cdate::MONTH_LENGTHS;
+    let lengths = game_model::calendar::MONTH_LENGTHS;
     let Some(&length) = usize::try_from(month - 1)
         .ok()
         .and_then(|at| lengths.get(at))
@@ -316,11 +316,11 @@ fn date(field: &Item, trigger: &str) -> Result<i32, Failure> {
         .map(|&days| i64::from(days))
         .sum();
     let hour =
-        i64::from(engine_native::cdate::HOUR_EPOCH) + year * 365 * 24 + (before + day - 1) * 24;
+        i64::from(game_model::calendar::HOUR_EPOCH) + year * 365 * 24 + (before + day - 1) * 24;
     i32::try_from(hour).map_err(|_| unported())
 }
 
 /// The start of an hour's day in the game's signed calendar arithmetic.
 fn day_start(hour: i32) -> i32 {
-    hour.wrapping_sub(hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH) % 24)
+    hour.wrapping_sub(hour.wrapping_sub(game_model::calendar::HOUR_EPOCH) % 24)
 }

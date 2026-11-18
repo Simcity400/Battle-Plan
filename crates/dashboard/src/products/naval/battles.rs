@@ -26,6 +26,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// NavalBattles' columns: first hour, peak ships and hour, then the sunk and convoys-sunk floors
@@ -39,21 +40,24 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalBattlesParams {
     pub branch_id: String,
     pub window: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalBattlesManifestParams {
     pub branch_id: String,
 }
 
 /// Countries chosen by tag, or by membership runs; every country when neither.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleCountryFilter {
     pub tags: Option<Vec<String>>,
@@ -76,7 +80,8 @@ impl NavalBattleCountryFilter {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalBattlesRankingParams {
     pub branch_id: String,
@@ -87,7 +92,8 @@ pub struct NavalBattlesRankingParams {
     pub countries: NavalBattleCountryFilter,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleRun {
     pub first_hour: i32,
@@ -98,7 +104,8 @@ pub struct NavalBattleRun {
     pub measures: Vec<BattleValue>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleHistory {
     pub id: String,
@@ -106,7 +113,8 @@ pub struct NavalBattleHistory {
     pub runs: Vec<NavalBattleRun>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattlesReply {
     pub window: usize,
@@ -118,7 +126,8 @@ pub struct NavalBattlesReply {
     pub content_warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattlesManifestReply {
     pub windows: Vec<BattleWindow>,
@@ -127,7 +136,8 @@ pub struct NavalBattlesManifestReply {
     pub content_warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattlesRankingReply {
     pub rows: Vec<NavalBattleHistory>,
@@ -473,6 +483,7 @@ impl Product for NavalBattlesManifest {
     type Params = NavalBattlesManifestParams;
     type Reply = NavalBattlesManifestReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         let mut types = vec![NavalBattlesManifestParams::decl(), NavalBattlesManifestReply::decl()];
         types.extend(dashboard_base::products::battles::types());
@@ -509,6 +520,7 @@ impl Product for NavalBattles {
     type Params = NavalBattlesParams;
     type Reply = NavalBattlesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![NavalBattlesParams::decl(), NavalBattlesReply::decl(), NavalBattleHistory::decl(), NavalBattleRun::decl()]
     }
@@ -559,6 +571,7 @@ impl Product for NavalBattlesRanking {
     type Params = NavalBattlesRankingParams;
     type Reply = NavalBattlesRankingReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![NavalBattlesRankingParams::decl(), NavalBattlesRankingReply::decl(), NavalBattleCountryFilter::decl()]
     }
@@ -630,27 +643,31 @@ impl Product for NavalBattlesRanking {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalBattleDetailRequest {
     pub id: String,
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalBattleDetailsParams {
     pub branch_id: String,
     pub battles: Vec<NavalBattleDetailRequest>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct NavalBattleFleetNames {
     pub names: Vec<String>,
     pub unknown: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleNamedShip {
     pub sink_hour: i32,
@@ -659,7 +676,8 @@ pub struct NavalBattleNamedShip {
     pub class_name: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleDetail {
     pub id: String,
@@ -672,7 +690,8 @@ pub struct NavalBattleDetail {
     pub unavailable: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct NavalBattleDetailsReply {
     pub rows: Vec<NavalBattleDetail>,
     pub warnings: Vec<String>,
@@ -748,6 +767,7 @@ impl Product for NavalBattleDetails {
     type Params = NavalBattleDetailsParams;
     type Reply = NavalBattleDetailsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![NavalBattleDetailsParams::decl(), NavalBattleDetailsReply::decl(), NavalBattleDetailRequest::decl(), NavalBattleFleetNames::decl(), NavalBattleNamedShip::decl(), NavalBattleDetail::decl()]
     }

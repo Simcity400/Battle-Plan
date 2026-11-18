@@ -16,6 +16,8 @@ test-support = []
 memory-labels = ["engine-allocation/memory-labels"]
 
 [dependencies]
+game-model.workspace = true
+replay-looks.workspace = true
 engine-allocation.workspace = true
 engine-dlc.workspace = true
 engine-executable.workspace = true
@@ -42,9 +44,8 @@ installed-content-localisation = { workspace = true, features = ["test-support"]
 installed-content-province-area = { workspace = true, features = ["test-support"] }
 installed-content-regions = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
-replay-frame = { workspace = true, features = ["test-support"] }
+replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }

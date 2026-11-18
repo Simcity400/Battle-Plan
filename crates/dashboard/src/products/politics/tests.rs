@@ -13,7 +13,7 @@ const GER: u32 = 9001;
 const ENG: u32 = 9002;
 
 fn last_election() -> i32 {
-    engine_native::cdate::HOUR_EPOCH + 1936 * 365 * 24
+    game_model::calendar::HOUR_EPOCH + 1936 * 365 * 24
 }
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {

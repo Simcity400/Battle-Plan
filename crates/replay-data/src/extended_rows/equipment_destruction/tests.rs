@@ -92,7 +92,7 @@ fn scripted_stockpile_has_its_own_key_and_is_not_a_division_loss() {
         ..Default::default()
     };
     let stockpile = EquipmentDestructionRow {
-        cause: engine_events::equipment_destruction::Cause::ScriptedStockpileFraction.into(),
+        cause: game_model::equipment_destruction::Cause::ScriptedStockpileFraction.into(),
         ..division.clone()
     };
     assert_ne!(division.key(), stockpile.key());
@@ -136,7 +136,7 @@ fn stable_causes_roundtrip_and_unknown_is_explicit() {
         );
     }
     assert_eq!(
-        EquipmentDestructionCause::from(engine_events::equipment_destruction::Cause::Unknown),
+        EquipmentDestructionCause::from(game_model::equipment_destruction::Cause::Unknown),
         EquipmentDestructionCause::Unknown
     );
     for value in [27, 255] {

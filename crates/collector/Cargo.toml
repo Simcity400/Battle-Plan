@@ -223,9 +223,10 @@ census_changes = ["advisor_changes", "roster_changes", "collector-observers/cens
 unit_leader_trait_changes = ["naval_tree_changes", "collector-observers/unit_leader_trait_changes"]
 
 [dependencies]
+game-model.workspace = true
 engine-sites.workspace = true
 collector-naval-management.workspace = true
-replay.workspace = true
+replay = { workspace = true, features = ["journal"] }
 engine-air-history.workspace = true
 engine-allocation.workspace = true
 engine-characters.workspace = true
@@ -255,7 +256,7 @@ engine-visibility.workspace = true
 replay-columnar.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
-replay-frame.workspace = true
+replay-frame = { workspace = true, features = ["capture"] }
 collector-politics.workspace = true
 collector-construction.workspace = true
 collector-railway-guns.workspace = true
@@ -406,8 +407,7 @@ installed-content-localisation = { workspace = true, features = ["test-support"]
 installed-content-province-area = { workspace = true, features = ["test-support"] }
 installed-content-regions = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
+replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

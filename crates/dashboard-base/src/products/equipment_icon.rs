@@ -612,7 +612,7 @@ impl IconContent {
 }
 
 /// One hour's country operands the rule reads.
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct IconHour {
     links: BTreeMap<u32, u32>,
     countries: BTreeMap<u32, ModelCountry>,

@@ -26,6 +26,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The line row the formula reads.
@@ -69,7 +70,8 @@ impl RawModifierRun {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionModifierPart {
     pub id: String,
@@ -77,7 +79,8 @@ pub struct ProductionModifierPart {
     pub raw: String,
     pub unknown: Option<String>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionModifierGroup {
     pub id: String,
@@ -89,7 +92,8 @@ pub struct ProductionModifierGroup {
     pub parts: Vec<ProductionModifierPart>,
     pub note: String,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionModifierRun {
     pub first_hour: i32,
@@ -794,7 +798,8 @@ fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
 pub struct ProductionLineBreakdown;
 
 /// A request for one line's factor breakdown over the window holding `hour`.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionBreakdownParams {
     pub branch_id: String,
@@ -806,14 +811,16 @@ pub struct ProductionBreakdownParams {
     pub hour: i32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionModifierChoice {
     pub id: String,
     pub label: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionLineBreakdownReply {
     pub branch_id: String,
@@ -865,6 +872,7 @@ impl Product for ProductionLineBreakdown {
     type Params = ProductionBreakdownParams;
     type Reply = ProductionLineBreakdownReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ProductionBreakdownParams::decl(),

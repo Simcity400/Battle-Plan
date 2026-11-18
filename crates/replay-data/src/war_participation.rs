@@ -2,7 +2,7 @@
 //! same-side delivery histories. Callers preserve native side occurrence order
 //! and remove the selected country's aliases from the history operands.
 use crate::fixed_point::{fixed5_to_q15, q15_to_fixed5};
-pub use engine_native::cwar_relation::participation::{DeliveryHistory, Scores};
+pub use game_model::war_participation::{DeliveryHistory, Scores};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Factors {

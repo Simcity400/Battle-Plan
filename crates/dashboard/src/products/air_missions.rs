@@ -33,6 +33,7 @@ use std::{
     io,
     sync::Arc,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -66,14 +67,16 @@ const MISSION_KEYS: [&str; MISSIONS] = [
 pub struct AirMissionsAt;
 pub struct AirMissionWingsAt;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirMissionsParams {
     pub branch_id: String,
     pub tag: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirMissionWingsParams {
     pub branch_id: String,
@@ -83,7 +86,8 @@ pub struct AirMissionWingsParams {
 
 /// A mission column: its bit, its name in the game's language and the mission strip frame the
 /// game draws for it.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionChoice {
     pub id: String,
@@ -93,7 +97,8 @@ pub struct AirMissionChoice {
 
 /// A region the owner has wings registered in; its live cells are (`region`, `wings`) and
 /// (`region`, `m<bit>`) for each mission it records.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionRegion {
     pub region: String,
@@ -105,7 +110,8 @@ pub struct AirMissionRegion {
 }
 
 /// One of the owner's air theatres and the mission regions of its member wings.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionTheatre {
     pub id: String,
@@ -113,7 +119,8 @@ pub struct AirMissionTheatre {
     pub regions: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionsReply {
     /// The hour of the registrations' read the rows hold; none when not known.
@@ -131,13 +138,14 @@ pub struct AirMissionsReply {
 }
 
 /// A wing in the region; its planes are the live cell (`id`, `planes`).
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionWing {
     pub id: String,
     pub name: Option<String>,
     #[serde(rename = "type")]
-    #[ts(rename = "type")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(rename = "type"))]
     pub aircraft_type: Option<String>,
     pub missions: Vec<String>,
     /// Raw fixed5 decimal text: 100,000 is one.
@@ -146,7 +154,8 @@ pub struct AirMissionWing {
     pub refusals: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirMissionWingsReply {
     pub read_hour: Option<i32>,
@@ -437,6 +446,7 @@ impl AtHour for AirMissionsAt {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![AirMissionsParams::decl(), AirMissionsReply::decl(), AirMissionChoice::decl(), AirMissionRegion::decl(), AirMissionTheatre::decl()]
     }
@@ -540,6 +550,7 @@ impl AtHour for AirMissionWingsAt {
         validate_tag(&params.tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![AirMissionWingsParams::decl(), AirMissionWingsReply::decl(), AirMissionWing::decl()]
     }

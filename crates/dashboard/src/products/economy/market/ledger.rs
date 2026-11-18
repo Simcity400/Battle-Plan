@@ -22,6 +22,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub const LOG: &str = "market-events";
@@ -144,7 +145,8 @@ pub struct MarketLedger;
 
 /// A page of market occurrences: `log-page`'s params with the log fixed. The `kind` facet is
 /// required; a country's page filters `country|receiver` by tags.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MarketLedgerParams {
     pub branch_id: String,
@@ -162,6 +164,7 @@ impl Product for MarketLedger {
     type Params = MarketLedgerParams;
     type Reply = LogPageReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![MarketLedgerParams::decl()]
     }

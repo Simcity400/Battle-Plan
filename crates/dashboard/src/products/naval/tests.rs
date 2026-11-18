@@ -4,7 +4,7 @@ use super::{
     sunk::{ShipSinkingCause, cause, known_at, pruned},
 };
 use crate::products::groups::MembershipRun;
-use engine_native::cdate::HOUR_EPOCH;
+use game_model::calendar::HOUR_EPOCH;
 use replay::lanes::Cell;
 use replay_data::rows::{NavalLossTotalRow as Row, NavalResultObservationRow as Observation, NavalResultRow, Recorded, SunkShipEntry};
 use std::collections::HashMap;

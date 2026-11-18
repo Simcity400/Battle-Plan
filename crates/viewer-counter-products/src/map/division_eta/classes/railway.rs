@@ -10,7 +10,7 @@
 //! [`NOT_RECORDED`].
 
 use super::fresh_search::Inputs;
-use engine_native::{carmy::MovementSpeedInputs, cunit::eta_ratio};
+use game_model::movement::{army::MovementSpeedInputs, unit::eta_ratio};
 use installed_content_unit_path::{unit_path::CounterRequest, unit_path::Fact, unit_path::MoveWorld};
 use replay_data::{rows::FreshRailwayCounterEta, rows::RailwayGunCounterInputRow, rows::tables};
 use viewer_foundation::map::movement_reads::Moves;

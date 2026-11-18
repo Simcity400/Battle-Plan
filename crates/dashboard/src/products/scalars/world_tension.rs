@@ -31,18 +31,21 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::io;
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct WorldTension;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorldTensionParams {
     pub branch_id: String,
 }
 
 /// A country slot's contribution: its value, in contribution units, is the live cell (slot, `value`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TensionContribution {
     pub slot: u32,
@@ -53,7 +56,8 @@ pub struct TensionContribution {
 }
 
 /// A threat source the game lists.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TensionSource {
     pub ordinal: u32,
@@ -70,7 +74,8 @@ pub struct TensionSource {
     pub date: i32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WorldTensionReply {
     /// Tension units a percentage point.
@@ -159,6 +164,7 @@ impl AtHour for WorldTension {
     type Reply = WorldTensionReply;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![WorldTensionParams::decl(), TensionContribution::decl(), TensionSource::decl(), WorldTensionReply::decl()]
     }

@@ -25,6 +25,7 @@ use std::{
     io,
     sync::{Arc, Mutex, PoisonError},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -44,13 +45,15 @@ const TABLES: &[TableId] = &[
 pub struct AirAcesAt;
 pub struct AirAcePortraits;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirAcesParams {
     pub branch_id: String,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAceDeath {
     /// The last read that saw it alive; null when it was first seen dead.
@@ -63,7 +66,8 @@ pub struct AirAceDeath {
     pub killer_tag: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAceAircraft {
     pub id: String,
@@ -72,7 +76,8 @@ pub struct AirAceAircraft {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAce {
     pub id: String,
@@ -90,7 +95,8 @@ pub struct AirAce {
     pub death: Option<AirAceDeath>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAcesReply {
     /// The hour of the read the roster holds; none when not known.
@@ -103,14 +109,16 @@ pub struct AirAcesReply {
 
 dashboard_base::reply_warnings!(AirAcesReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirAcePortraitParams {
     pub branch_id: String,
     pub ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirAcePortrait {
     pub id: String,
@@ -118,7 +126,8 @@ pub struct AirAcePortrait {
     pub missing: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct AirAcePortraitReply {
     pub portraits: Vec<AirAcePortrait>,
     pub warnings: Vec<String>,
@@ -474,6 +483,7 @@ impl AtHour for AirAcesAt {
         params.branch_id.parse::<u64>().map(drop).map_err(|_| "Invalid branch")
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![AirAcesParams::decl(), AirAcesReply::decl(), AirAce::decl(), AirAceAircraft::decl(), AirAceDeath::decl()]
     }
@@ -614,6 +624,7 @@ impl AtHour for AirAcePortraits {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![AirAcePortraitParams::decl(), AirAcePortraitReply::decl(), AirAcePortrait::decl()]
     }

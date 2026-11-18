@@ -3,7 +3,7 @@ use super::*;
 /// Stable recording values, independent of the supported executable's addresses.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum EquipmentDestructionCause {
     #[default]
     Unknown = 0,
@@ -193,9 +193,9 @@ impl NativeValue for EquipmentDestructionCause {
     }
 }
 
-impl From<engine_events::equipment_destruction::Cause> for EquipmentDestructionCause {
-    fn from(cause: engine_events::equipment_destruction::Cause) -> Self {
-        use engine_events::equipment_destruction::Cause;
+impl From<game_model::equipment_destruction::Cause> for EquipmentDestructionCause {
+    fn from(cause: game_model::equipment_destruction::Cause) -> Self {
+        use game_model::equipment_destruction::Cause;
         match cause {
             Cause::Unknown => Self::Unknown,
             Cause::LandCombat => Self::LandCombat,
@@ -231,7 +231,7 @@ impl From<engine_events::equipment_destruction::Cause> for EquipmentDestructionC
 /// Coverage of the supplemental deletion, transfer and live-pool writer group.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum EquipmentDestructionCoverage {
     #[default]
     Complete = 0,
@@ -259,59 +259,11 @@ impl NativeValue for EquipmentDestructionCoverage {
     }
 }
 
-/// Signed net equipment removal since the preceding consecutive hourly drain,
-/// dated by this frame's drain read; negative amounts are native gains (corrections).
-/// Historical positive amounts retain their identity and amount when the appended
-/// coverage/reason columns are NotRecorded; that absence never certifies coverage.
-/// Nonzero (country,cause,design) rows use Complete coverage and an empty
-/// unavailable_reason. If the optional hook
-/// group failed, one reserved key-zero marker has all identity/amount fields
-/// zero, SupplementalUnavailable coverage and its nonempty reason.
-/// Consumers must read the marker even when there are no amount rows: net
-/// removals are incomplete because deletion, paradrop, merge, exile, volunteer-return,
-/// capitulation-escape and scripted division/stockpile causes are unavailable.
-/// `cause` is a stable value; engine_events::equipment_destruction owns the executable
-/// caller map and evidence. An unrecognized caller records Unknown, counted in
-/// collector status, without guessing a known cause or discarding its removals.
-/// This table is not the Combat Log and does not cover unhooked convoy-pool or
-/// lend-lease losses, scrapping, or equipment captured/transferred between pools.
-/// A complete empty hour means zero net removal through the hooked writers, not
-/// complete loss coverage for any equipment domain.
-/// Variant identity is the same full handle as VariantDefinitions.id.
-/// ScriptedStockpileFraction has no fixed domain and is not a land cause.
-/// Resolve its variant's equipment_token through recorded LexicalTokens and
-/// installed_content_core::equipment::Database from the recorded content stack, then classify
-/// that equipment type's effective category with
-/// engine_native::cequipment_type::{PLANE_MASK, SHIP_MASK}: air first, naval next,
-/// otherwise land. Convoy (bit 0) is naval; train and railway gun are land.
-/// Unresolved tokens/content leave the domain unknown.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
-pub struct EquipmentDestructionRow {
-    pub country: u32,
-    pub cause: EquipmentDestructionCause,
-    pub variant: u64,
-    pub amount_raw: i64,
-    pub coverage: Recorded<EquipmentDestructionCoverage>,
-    pub unavailable_reason: Recorded<String>,
-}
-typed_codec!(EquipmentDestructionRow, 104,
-|row| (row.country as u128) << 72 | (row.cause as u128) << 64 | row.variant as u128,
-|key| Self { country: (key >> 72) as u32, cause: EquipmentDestructionCause::try_from((key >> 64) as u8)?, variant: key as u64, ..Default::default() },
-{ 0 => (amount_raw): I64, 1 => (coverage): U8, 2 => (unavailable_reason): Bytes }, |row| {
-    match (&row.coverage, &row.unavailable_reason) {
-        (Recorded::NotRecorded, Recorded::NotRecorded) if row.amount_raw > 0 => Ok(()),
-        (Recorded::Value(EquipmentDestructionCoverage::Complete), Recorded::Value(reason)) if row.key() != 0 && row.amount_raw != 0 && reason.is_empty() => Ok(()),
-        (Recorded::Value(EquipmentDestructionCoverage::SupplementalUnavailable), Recorded::Value(reason)) if row.key() == 0 && row.amount_raw == 0 && !reason.is_empty() => Ok(()),
-        _ => Err(invalid("invalid equipment destruction amount or availability marker")),
-    }
-});
-
 /// Stable disposition of a gameplay deletion or temporary roster removal.
 /// Its field is independent of the optional destruction cause.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum DivisionDeletionDisposition {
     #[default]
     Loss = 0,
@@ -394,7 +346,7 @@ impl NativeValue for Option<EquipmentDestructionCause> {
 /// A witness proves its event, not presence at an earlier census. A complete table
 /// certifies that no censused division disappeared without an event witness.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionEquipmentDeletionRow {
     /// Full native handle, joining Divisions.id.
     pub division_handle: u64,
@@ -447,4 +399,3 @@ typed_codec!(DivisionEquipmentDeletionRow, 64,
         Ok(())
     }
 });
-

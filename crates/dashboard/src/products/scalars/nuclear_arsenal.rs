@@ -19,17 +19,20 @@ use replay_data::rows::{NukeRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::Arc};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct NuclearArsenal;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NuclearArsenalParams {
     pub branch_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NukeType {
     pub ordinal: u32,
@@ -39,7 +42,8 @@ pub struct NukeType {
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NukeCount {
     pub ordinal: u32,
@@ -49,7 +53,8 @@ pub struct NukeCount {
     pub ready: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NukeCountry {
     pub tag: String,
@@ -59,7 +64,8 @@ pub struct NukeCountry {
     pub counts: Vec<NukeCount>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NuclearArsenalReply {
     pub hour: i32,
@@ -115,6 +121,7 @@ impl AtHour for NuclearArsenal {
     type Reply = NuclearArsenalReply;
     type Context = Result<Arc<Localisation>, String>;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![NuclearArsenalParams::decl(), NukeType::decl(), NukeCount::decl(), NukeCountry::decl(), NuclearArsenalReply::decl()]
     }

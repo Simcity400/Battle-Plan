@@ -190,9 +190,9 @@ impl Content {
     pub fn domain(&self, archetype: &str) -> Option<LossDomain> {
         let units = self.units.as_ref()?;
         let category = units.category(units.named(archetype)?);
-        Some(if category & engine_native::cequipment_type::PLANE_MASK != 0 {
+        Some(if category & engine_executable::native_values::equipment_type::PLANE_MASK != 0 {
             LossDomain::Air
-        } else if category & engine_native::cequipment_type::SHIP_MASK != 0 {
+        } else if category & engine_executable::native_values::equipment_type::SHIP_MASK != 0 {
             LossDomain::Naval
         } else {
             LossDomain::Land

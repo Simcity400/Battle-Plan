@@ -17,7 +17,8 @@ pub trait Grouped {
 }
 
 /// One table's readers.
-#[derive(Clone, replay_spool::Spooled)]
+#[derive(Clone)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 struct Readers<K> {
     /// By row key, each with the fields it reads.
     rows: HashMap<u128, Vec<(K, u64)>>,
@@ -90,7 +91,8 @@ impl<K: Clone> Readers<K> {
 }
 
 /// Which answers, by key, read what.
-#[derive(Clone, replay_spool::Spooled)]
+#[derive(Clone)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Dependents<K, D> {
     of: HashMap<K, Arc<[Read<D>]>>,
     tables: HashMap<TableId, Readers<K>>,

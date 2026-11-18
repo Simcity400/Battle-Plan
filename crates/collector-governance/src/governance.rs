@@ -1075,7 +1075,7 @@ impl Captured {
                     + [&r.daily, &r.weekly]
                         .into_iter()
                         .map(|nodes| {
-                            nodes.capacity() * size_of::<engine_native::modifier_breakdown::Node>()
+                            nodes.capacity() * size_of::<game_model::modifier_breakdown::Node>()
                                 + nodes.iter().map(|n| n.name.capacity()).sum::<usize>()
                         })
                         .sum::<usize>()

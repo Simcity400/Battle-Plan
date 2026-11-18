@@ -4,7 +4,7 @@
 use super::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum TemplateNameValue {
     /// Fresh guarded bytes equal this frame's complete dictionary row.
     #[default]
@@ -102,7 +102,7 @@ impl Value for TemplateNameValue {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TemplateDisplayName {
     pub sample_hour: PacketHour,
     pub value: TemplateNameValue,

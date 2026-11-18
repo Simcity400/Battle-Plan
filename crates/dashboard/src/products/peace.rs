@@ -20,6 +20,7 @@ use std::{
     io,
     sync::atomic::AtomicBool,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
@@ -31,21 +32,24 @@ fn invalid(what: impl Into<String>) -> io::Error {
 
 pub struct PeaceDeals;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PeaceDealsParams {
     pub branch_id: String,
 }
 
 /// The reads bounding a net change; neither a bid time nor an exact action time.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceDates {
     pub before_hour: i32,
     pub after_hour: i32,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum PeaceActionKind {
     StateTransfer,
@@ -55,7 +59,8 @@ pub enum PeaceActionKind {
 }
 
 /// A content-proved action name, else a neutral kind the widget can word.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceActionLabel {
     pub kind: PeaceActionKind,
@@ -63,7 +68,8 @@ pub struct PeaceActionLabel {
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceGovernment {
     pub ruling_party: Option<u32>,
@@ -71,7 +77,8 @@ pub struct PeaceGovernment {
     pub leader_ideology: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum PeaceChange {
     StateTransfer {
@@ -108,7 +115,8 @@ pub enum PeaceChange {
 }
 
 /// A state handed to the released country, with the holder that owned it before.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceReleasedState {
     pub state: u32,
@@ -117,7 +125,8 @@ pub struct PeaceReleasedState {
     pub victory_points_read_hour: Option<i32>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceItem {
     pub derived: bool,
@@ -128,7 +137,8 @@ pub struct PeaceItem {
     pub change: PeaceChange,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum PeaceObservation {
     RecordedConference,
@@ -138,7 +148,8 @@ pub enum PeaceObservation {
 }
 
 /// An endpoint's holder and the hour that supplies its tag and appearance.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceTransferCountry {
     pub slot: u32,
@@ -153,7 +164,8 @@ impl PeaceTransferCountry {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceTransferNode {
     pub id: String,
@@ -162,14 +174,16 @@ pub struct PeaceTransferNode {
     pub side: PeaceTransferSide,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum PeaceTransferSide {
     Source,
     Target,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceTransferLink {
     pub id: String,
@@ -181,7 +195,8 @@ pub struct PeaceTransferLink {
     pub states: Vec<PeaceTransferredState>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceTransferredState {
     pub state: u32,
@@ -194,14 +209,16 @@ pub struct PeaceTransferredState {
     pub released: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceTransferGraph {
     pub nodes: Vec<PeaceTransferNode>,
     pub links: Vec<PeaceTransferLink>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceCapturedAction {
     pub derived: bool,
@@ -218,7 +235,7 @@ pub struct PeaceCapturedAction {
     /// puppet demand with the country it puppets.
     pub name_country: Option<String>,
     #[serde(skip)]
-    #[ts(skip)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(skip))]
     pub(crate) cached_name: Option<Vec<u8>>,
     pub taker: u32,
     pub giver: u32,
@@ -238,7 +255,8 @@ pub struct PeaceCapturedAction {
     pub ratio: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceCapturedTransfer {
     pub derived: bool,
@@ -254,7 +272,8 @@ pub struct PeaceCapturedTransfer {
     pub automatic: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceCapturedSubject {
     pub derived: bool,
@@ -264,7 +283,8 @@ pub struct PeaceCapturedSubject {
     pub subject_tag: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceCaptured {
     pub hour: i32,
@@ -277,7 +297,8 @@ pub struct PeaceCaptured {
     pub subjects: Vec<PeaceCapturedSubject>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceDeal {
     pub id: String,
@@ -305,11 +326,11 @@ pub struct PeaceDeal {
     pub capture_unavailable: Option<String>,
     /// The settlement's hour when no conference span supplied this card.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub capture_observed_hour: Option<i32>,
     /// A failed settlement's hour: its reason is no evidence at an earlier hour.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub capture_unavailable_hour: Option<i32>,
     pub transfers: PeaceTransferGraph,
     /// Missing inputs or an attribution limitation, not evidence of no actions.
@@ -317,7 +338,8 @@ pub struct PeaceDeal {
 }
 
 /// Hours of the timeline each input was not read.
-#[derive(Clone, Debug, Default, Serialize, TS)]
+#[derive(Clone, Debug, Default, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceUnobserved {
     pub settlements: Vec<HourSpan>,
@@ -330,7 +352,8 @@ pub struct PeaceUnobserved {
     pub victory_points: Vec<HourSpan>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PeaceDealsReply {
     pub branch_id: String,
@@ -1096,6 +1119,7 @@ impl Product for PeaceDeals {
     type Params = PeaceDealsParams;
     type Reply = PeaceDealsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             PeaceDealsParams::decl(),

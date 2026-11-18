@@ -372,7 +372,7 @@ impl Catalogue {
 /// Whether effective category flags ([`equipment::Database::category`]) are
 /// the engine's plane family.
 fn is_plane(category: u64) -> bool {
-    category & engine_native::cequipment_type::PLANE_MASK != 0
+    category & engine_executable::native_values::equipment_type::PLANE_MASK != 0
 }
 
 /// The keys of every plane equipment type.

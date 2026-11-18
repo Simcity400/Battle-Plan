@@ -963,7 +963,7 @@ pub fn compare_camouflage(
         },
     };
     let expected = saved.and_then(|saved| {
-        engine_native::acclimatization_data::camouflage(
+        game_model::acclimatization::camouflage(
             saved
                 .entries
                 .iter()

@@ -33,6 +33,7 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// The part key of what no recorded content identifies.
@@ -49,42 +50,48 @@ fn invalid(what: impl Into<String>) -> io::Error {
 pub struct AirForceSize;
 pub struct NavySize;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum AirForceMeasure {
     Planes,
     Wings,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum AirForceOwnership {
     Roster,
     Effective,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum NavyMeasure {
     Ships,
     Strength,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum NavyOwnership {
     Roster,
     Logical,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum NavyGrouping {
     Class,
     Type,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirForceParams {
     pub branch_id: String,
@@ -94,11 +101,12 @@ pub struct AirForceParams {
     pub ownership: AirForceOwnership,
     /// None is the window manifest; a window's runs name it by its index.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub window: Option<usize>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavyParams {
     pub branch_id: String,
@@ -108,11 +116,12 @@ pub struct NavyParams {
     pub grouping: NavyGrouping,
     pub measure: NavyMeasure,
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub window: Option<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ForcePart {
     pub key: String,
@@ -120,26 +129,28 @@ pub struct ForcePart {
     pub unresolved: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ForceRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub starts_segment: bool,
     /// Null where the total is not recorded.
-    #[ts(type = "number | null")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "number | null"))]
     pub total: Option<i64>,
     /// Parallel to the reply's parts; every one null where the hour's rows do not split the total.
-    #[ts(type = "Array<number | null>")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "Array<number | null>"))]
     pub values: Vec<Option<i64>>,
     /// The navy's maximum hull HP (fixed5) for the strength measure, null for ships or where not
     /// recorded; absent for the air force.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "number | null")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional, type = "number | null"))]
     pub reference_total: Option<Option<i64>>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ForceSeries {
     pub tag: String,
@@ -149,7 +160,8 @@ pub struct ForceSeries {
     pub membership: Option<Vec<ArmySpan>>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ForceSizeReply {
     pub branch_id: String,
@@ -228,6 +240,7 @@ impl Product for AirForceSize {
     type Params = AirForceParams;
     type Reply = ForceSizeReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             AirForceParams::decl(),
@@ -265,6 +278,7 @@ impl Product for NavySize {
     type Params = NavyParams;
     type Reply = ForceSizeReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![NavyParams::decl(), ForceSizeReply::decl(), NavyMeasure::decl(), NavyOwnership::decl(), NavyGrouping::decl()]
     }

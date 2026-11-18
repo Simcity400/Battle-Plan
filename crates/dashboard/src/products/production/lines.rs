@@ -23,13 +23,15 @@ use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct ProductionLines;
 pub struct ProductionLineDetail;
 
 /// A stretch of a line's hours with one variant and the same factories: what its lane draws.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LineStep {
     pub first_hour: i32,
@@ -42,7 +44,8 @@ pub struct LineStep {
 }
 
 /// One production line's life in the branch.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LineHistory {
     /// Unique in the branch: the handle and which appearance of it this is.
@@ -59,14 +62,16 @@ pub struct LineHistory {
     pub before_recording: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionLinesParams {
     pub branch_id: String,
     pub tag: String,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionLinesReply {
     pub branch_id: String,
@@ -89,7 +94,8 @@ pub struct ProductionLinesReply {
 
 /// A request for window `window` of a country's line values: hours `window × detailHours`
 /// through the hour before the next window.
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionDetailParams {
     pub branch_id: String,
@@ -98,7 +104,8 @@ pub struct ProductionDetailParams {
 }
 
 /// Every recorded value of a line over hours it held still.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LineRun {
     pub first_hour: i32,
@@ -125,7 +132,8 @@ pub struct LineRun {
 }
 
 /// A line's values within one window.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LineDetail {
     /// The line's key in `production-lines`.
@@ -135,7 +143,8 @@ pub struct LineDetail {
     pub output: Vec<OutputRun>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProductionLineDetailReply {
     pub branch_id: String,
@@ -269,6 +278,7 @@ impl Product for ProductionLines {
     type Params = ProductionLinesParams;
     type Reply = ProductionLinesReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             LineKind::decl(),
@@ -514,6 +524,7 @@ impl Product for ProductionLineDetail {
     type Params = ProductionDetailParams;
     type Reply = ProductionLineDetailReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LineRun::decl(), LineDetail::decl(), ProductionDetailParams::decl(), ProductionLineDetailReply::decl()]
     }

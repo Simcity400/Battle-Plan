@@ -360,7 +360,7 @@ impl crate::ProductContent {
                     .snow_loader
                     .as_ref()
                     .ok_or_else(|| io::Error::other("snow content not configured"))
-                    .and_then(|loader| loader.snow(&self.map));
+                    .and_then(|loader| read_snow(loader, &self.map));
                 let result = result.and_then(|snow| {
                     self.record_snow_content(&snow)?;
                     Ok(snow)
@@ -382,29 +382,27 @@ impl crate::ProductContent {
             .map_err(|(kind, reason)| io::Error::new(*kind, reason.clone()))
     }
 }
-impl crate::loader::Loader {
-    pub fn snow(&self, map: &installed_content_core::map::MapData) -> io::Result<SnowContent> {
-        self.reads.load_retryable(|layers| {
-            let (definitions, defaults) = installed_content_core::terrain::read(layers)?;
-            let terrain = installed_content_image::bmp::decode_indexed(
-                &layers.read(&format!("map/{}", defaults.terrain))?,
-            )?;
-            if [terrain.width, terrain.height] != [map.width, map.height] {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "snow terrain dimensions differ from map",
-                ));
-            }
-            let cells =
-                map_snow::SnowCells::new(map, &map_snow::permanent_mask(&definitions, &terrain))?;
-            let defines = installed_content_core::defines::read(layers)?;
-            let regions = installed_content_regions::regions::read(layers)?.regions;
-            let winter = map_snow::winter::Winter::load(layers, &defines, map, &regions)?;
-            Ok(SnowContent {
-                cells,
-                winter,
-                fold: Mutex::new(Default::default()),
-            })
+fn read_snow(loader: &crate::loader::Loader, map: &installed_content_core::map::MapData) -> io::Result<SnowContent> {
+    loader.reads.load_retryable(|layers| {
+        let (definitions, defaults) = installed_content_core::terrain::read(layers)?;
+        let terrain = installed_content_image::bmp::decode_indexed(
+            &layers.read(&format!("map/{}", defaults.terrain))?,
+        )?;
+        if [terrain.width, terrain.height] != [map.width, map.height] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "snow terrain dimensions differ from map",
+            ));
+        }
+        let cells =
+            map_snow::SnowCells::new(map, &map_snow::permanent_mask(&definitions, &terrain))?;
+        let defines = installed_content_core::defines::read(layers)?;
+        let regions = installed_content_regions::regions::read(layers)?.regions;
+        let winter = map_snow::winter::Winter::load(layers, &defines, map, &regions)?;
+        Ok(SnowContent {
+            cells,
+            winter,
+            fold: Mutex::new(Default::default()),
         })
-    }
+    })
 }

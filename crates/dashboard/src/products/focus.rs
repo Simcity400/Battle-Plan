@@ -25,6 +25,7 @@ use std::{
     io,
     sync::{Arc, PoisonError, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Completed focuses a page holds.
@@ -39,7 +40,8 @@ pub(crate) const UNRECORDED: &str = "The country's focus row was not recorded";
 pub(crate) const INCOMPLETE: &str = "The country's completed focus list was not recorded whole";
 
 /// Hours a country's focus was not known, and why.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusMissing {
     pub first_hour: i32,
@@ -438,18 +440,19 @@ fn branch_of(id: &str) -> io::Result<u64> {
 }
 
 /// Page counts as decimal strings.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusPages {
     /// The order's place among the country's orders.
     #[serde(with = "decimal")]
-    #[ts(type = "string")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
     pub first: u64,
     #[serde(with = "decimal")]
-    #[ts(type = "string")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
     pub count: u64,
     #[serde(with = "decimal")]
-    #[ts(type = "string")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
     pub rows: u64,
 }
 
@@ -467,7 +470,8 @@ fn pages(first: usize, rows: usize) -> FocusPages {
     FocusPages { first: first as u64, count: (rows as u64).div_ceil(PAGE_ROWS), rows: rows as u64 }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusHourParams {
     pub branch_id: String,
@@ -477,7 +481,8 @@ pub struct FocusHourParams {
 
 /// A country's focus at `at`: its order holds from `hour` through `lastHour`; progress and the
 /// last day's rise are those at `at`.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusHour {
     pub slot: u32,
@@ -495,7 +500,8 @@ pub struct FocusHour {
 }
 
 /// `focus-hour`: none where the country's focus was not read at the hour, with why.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusHourReply {
     pub focus: Option<FocusHour>,
@@ -503,7 +509,8 @@ pub struct FocusHourReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusOrderPageParams {
     pub branch_id: String,
@@ -512,12 +519,13 @@ pub struct FocusOrderPageParams {
     /// The pages `focus-hour` gave for the hour.
     pub pages: FocusPages,
     #[serde(with = "decimal")]
-    #[ts(type = "string")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(type = "string"))]
     pub page: u64,
 }
 
 /// `focus-order-page`: one page of the completed focuses at an hour; none past the last page.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusOrderPage {
     pub entries: Option<Vec<FocusEntry>>,
@@ -525,7 +533,8 @@ pub struct FocusOrderPage {
 }
 
 /// `focus-completions`: every dated completion of a country, by hour and ordinal.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusCompletions {
     pub completions: Vec<FocusEntry>,
@@ -582,6 +591,7 @@ impl Product for FocusHourProduct {
     type Params = FocusHourParams;
     type Reply = FocusHourReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FocusHourParams::decl(), FocusHourReply::decl(), FocusHour::decl(), FocusPages::decl(), FocusMissing::decl()]
     }
@@ -605,6 +615,7 @@ impl Product for FocusOrderPageProduct {
     type Params = FocusOrderPageParams;
     type Reply = FocusOrderPage;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FocusOrderPageParams::decl(), FocusOrderPage::decl()]
     }
@@ -628,6 +639,7 @@ impl Product for FocusCompletionsProduct {
     type Params = CountryParams;
     type Reply = FocusCompletions;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FocusCompletions::decl()]
     }
@@ -647,14 +659,16 @@ impl Product for FocusCompletionsProduct {
 /// The tables a country's focus is read from, in the order a refusal names them.
 const FOCUS_TABLES: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::Focus, TableId::CompletedFocuses];
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusUnavailableParams {
     pub branch_id: String,
 }
 
 /// One focus table's refusal at an hour: its reason, or the rows a partial read missed.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusTableRefusal {
     pub table: String,
@@ -663,7 +677,8 @@ pub struct FocusTableRefusal {
 }
 
 /// `focus-unavailable`: the focus tables refused at the hour; none where none was.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusUnavailable {
     pub hour: i32,
@@ -697,6 +712,7 @@ impl AtHour for FocusUnavailableAt {
     type Reply = FocusUnavailable;
     type Context = ();
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![FocusUnavailableParams::decl(), FocusUnavailable::decl(), FocusTableRefusal::decl()]
     }

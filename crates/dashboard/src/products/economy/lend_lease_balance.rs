@@ -16,6 +16,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// Fixed-point denominator of every amount.
@@ -23,19 +24,21 @@ pub const SCALE: u32 = 100_000;
 
 pub struct LendLeaseBalance;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LendLeaseBalanceParams {
     pub branch_id: String,
     /// One country's partners; every country's totals when absent.
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub holder: Option<String>,
 }
 
 /// One country's (or partner's) cumulative totals: industry sent, fuel sent, industry received,
 /// fuel received.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LendLeaseRow {
     pub slot: u32,
@@ -44,7 +47,8 @@ pub struct LendLeaseRow {
     pub values: [String; 4],
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LendLeaseBalanceReply {
     pub holder: Option<String>,
@@ -164,6 +168,7 @@ impl AtHour for LendLeaseBalance {
         params.holder.as_deref().map_or(Ok(()), validate_tag)
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![LendLeaseBalanceParams::decl(), LendLeaseBalanceReply::decl(), LendLeaseRow::decl()]
     }

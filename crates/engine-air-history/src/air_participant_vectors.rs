@@ -19,9 +19,7 @@ use crate::{
 /// present and, when requested, their own donors.
 pub const RECIPROCAL_DONORS: usize = 0x1410;
 
-pub const DONOR: u8 = 0;
-pub const ALLY: u8 = 1;
-pub const ENEMY: u8 = 2;
+pub use game_model::air_participants::{DONOR, ALLY, ENEMY};
 
 /// Countries per gather and vectors per scattered copy.
 pub const BATCH: usize = 64;

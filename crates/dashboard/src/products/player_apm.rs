@@ -7,6 +7,7 @@ use std::{
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 pub struct PlayerApm;
@@ -14,14 +15,16 @@ pub struct PlayerApm;
 #[path = "player_apm_head.rs"]
 pub mod head;
 
-#[derive(Clone, Copy, Debug, Deserialize, TS, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ApmGroup {
     Country,
     Player,
 }
 
-#[derive(Clone, Debug, Deserialize, TS)]
+#[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApmParams {
     pub branch_id: String,
@@ -37,7 +40,8 @@ pub struct ApmParams {
     pub buckets: u32,
 }
 
-#[derive(Clone, Debug, Deserialize, TS)]
+#[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApmMembership {
     pub tag: String,
@@ -45,7 +49,8 @@ pub struct ApmMembership {
     pub last_hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ApmPlayer {
     pub id: String,
@@ -53,7 +58,8 @@ pub struct ApmPlayer {
     pub tags: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ApmValue {
     pub apm: Option<f64>,
@@ -66,7 +72,8 @@ pub struct ApmValue {
     pub gaps: bool,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ApmBucket {
     pub first_hour: i32,
@@ -74,7 +81,8 @@ pub struct ApmBucket {
     pub value: ApmValue,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ApmSeries {
     pub id: String,
@@ -85,7 +93,8 @@ pub struct ApmSeries {
     pub points: Vec<ApmBucket>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ApmReply {
     pub available: bool,
@@ -369,6 +378,7 @@ impl Product for PlayerApm {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ApmParams::decl(),

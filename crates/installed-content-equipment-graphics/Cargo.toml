@@ -11,7 +11,6 @@ doctest = false
 
 [dependencies]
 engine-executable.workspace = true
-engine-native.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 installed-content-core.workspace = true
@@ -27,11 +26,10 @@ test-support = ["installed-content-core/test-support"]
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 installed-content-equipment-graphics = { workspace = true, features = ["test-support"] }
 installed-content-states = { workspace = true, features = ["test-support"] }
-replay-data = { workspace = true, features = ["test-support"] }
-replay-frame = { workspace = true, features = ["test-support"] }
+replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }

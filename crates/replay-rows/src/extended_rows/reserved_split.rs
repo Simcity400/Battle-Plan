@@ -15,7 +15,7 @@ use super::*;
 ///
 /// Retired wire tombstone (`RETIRED_INPUTS_FORMAT`): no recording holds it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ReservedNearestNavyRow {
     pub slot: u32,
     pub present: bool,
@@ -28,7 +28,7 @@ typed_codec!(ReservedNearestNavyRow, 32, |row| row.slot as u128, |key| Self { sl
 ///
 /// Retired wire tombstone (`RETIRED_INPUTS_FORMAT`): no recording holds it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ReservedNearestBaseRow {
     pub slot: u32,
     pub province: u32,
@@ -43,7 +43,7 @@ typed_codec!(ReservedNearestBaseRow, 64, |row| (row.slot as u128) << 32 | row.pr
 /// ledger domain; true admits its TransportLedgers rows, each a nonempty
 /// region (an omitted region is empty within the original outer domain).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportNavyRow {
     pub ordinal: u32,
     pub slot: u32,
@@ -58,7 +58,7 @@ typed_codec!(TransportNavyRow, 32, |row| row.ordinal as u128, |key| Self { ordin
 /// TransportLedgers: key navy ordinal:region (64 bits), 1 payload mask bit.
 /// One [`TransportLedger`], in the navy's increasing native region order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportLedgerRow {
     pub navy: u32,
     pub region: u32,
@@ -70,7 +70,7 @@ typed_codec!(TransportLedgerRow, 64, |row| (row.navy as u128) << 32 | row.region
 /// TransportReceivers: key full task-force handle (64 bits), 8 payload mask bits.
 /// One entry of the unique increasing receiver dictionary.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportReceiverRow {
     pub receiver: TransportMissionReceiver,
 }
@@ -80,7 +80,7 @@ typed_codec!(TransportReceiverRow, 64, |row| row.receiver.task_force as u128, |k
 /// TransportSearchRegions: key physical region ordinal (32 bits), 1 payload mask bit.
 /// None is an authenticated null region slot.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportSearchRegionRow {
     pub ordinal: u32,
     pub region: Option<TransportNavalRegion>,
@@ -90,7 +90,7 @@ typed_codec!(TransportSearchRegionRow, 32, |row| row.ordinal as u128, |key| Self
 
 /// Where an owner's positional raw NAVY lanes are stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub enum SpottingLanes {
     /// Copied with this hour's read.
     Copied(Vec<i64>),
@@ -151,7 +151,7 @@ impl Value for SpottingLanes {
 
 /// [`TransportNavyIntel`] with its lanes stored or certified.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct SpottingNavyIntel {
     pub owner_raw_id: Option<u32>,
     pub owner_slot: Option<u32>,
@@ -169,7 +169,7 @@ value_struct!(SpottingNavyIntel {
 /// One [`TransportSpottingOwner`] in the context's slot order; `occurrence`
 /// counts earlier owners with the same slot.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportSpottingOwnerRow {
     pub owner_slot: u32,
     pub occurrence: u32,
@@ -186,7 +186,7 @@ typed_codec!(TransportSpottingOwnerRow, 64, |row| (row.owner_slot as u128) << 32
 /// not stored ([`SpottingSample::Derived`]); only the changed fields of a region are
 /// stored.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportSpottingRegionRow {
     pub ordinal: u32,
     pub region: TransportSpottingRegion,
@@ -199,7 +199,7 @@ typed_codec!(TransportSpottingRegionRow, 32, |row| row.ordinal as u128, |key| Se
 /// [`TransportAirCountry`] without its headers: `regions` is the length of its Enemy-vector header
 /// domain, None its refusal.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportAirRootRow {
     pub ordinal: u32,
     pub country: Option<u32>,
@@ -217,7 +217,7 @@ typed_codec!(TransportAirRootRow, 32, |row| row.ordinal as u128, |key| Self { or
 /// own region ID, an authentic zero count and an empty mission list). Below a
 /// root's `regions`, a header without a row is that empty header.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportAirRegionRow {
     pub root: u32,
     pub ordinal: u32,
@@ -240,7 +240,7 @@ impl TransportAirRegionRow {
 /// TransportRiskShips: key full task-force handle (64 bits), 2 payload mask bits.
 /// One SHIPS receiver, in the packet's unique increasing handle order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TransportRiskShipsRow {
     pub receiver: TransportReceiverShips,
 }

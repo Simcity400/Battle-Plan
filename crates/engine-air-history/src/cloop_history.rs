@@ -30,7 +30,7 @@ pub const QUEUE: usize = 0x08;
 /// CLoopHistory daily window pointer.
 pub const DAILY_WINDOW: usize = 0x10;
 /// Records in the daily window.
-pub const DAILY_WINDOW_CAPACITY: u32 = 30;
+pub use engine_executable::native_values::air_history::DAILY_WINDOW_CAPACITY;
 /// The third history window advances when the twelve-record second window wraps.
 pub const WINDOW: usize = 0x20;
 /// History self-reference pointer, required to equal its object.
@@ -320,7 +320,7 @@ fn array(
 /// Air-statistics semantics attached to a history instance.
 pub mod air_stats {
     /// Air-statistics field count 89.
-    pub const FIELD_COUNT: u32 = 89;
+    pub use engine_executable::native_values::air_history::FIELD_COUNT;
     /// Non-building air-statistics display divisor.
     pub const DISPLAY_DIVISOR: i64 = 100_000;
     /// Building-bombing display divisor for fields zero and 41.

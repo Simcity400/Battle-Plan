@@ -277,4 +277,12 @@ fn row_changes_rebuild_every_later_version() {
             .unwrap()
             .is_none()
     );
+    let error = links(3)
+        .apply_changes(RowChanges {
+            rows: TableRows::Countries(Vec::new()),
+            deleted: Vec::new(),
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "row changes of another table");
 }

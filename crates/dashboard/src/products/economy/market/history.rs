@@ -28,6 +28,7 @@ use std::{
     io,
     sync::{Arc, PoisonError, atomic::AtomicBool},
 };
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 /// An agreement that ended: its key, the hours it stood in its run, its row at its last read, and
@@ -163,7 +164,8 @@ pub fn run_ended(source: &Source, run: u32) -> io::Result<Arc<Vec<Ended>>> {
 }
 
 /// An agreement the branch saw end, with its terms and fuel totals at its last read.
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EndedLease {
     pub terms: LeaseTerms,
@@ -175,7 +177,8 @@ pub struct EndedLease {
     pub last_hour: i32,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LendLeaseHistoryReply {
     pub branch_id: String,
@@ -197,6 +200,7 @@ impl Product for LendLeaseHistory {
     type Params = BranchParams;
     type Reply = LendLeaseHistoryReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![EndedLease::decl(), LendLeaseHistoryReply::decl()]
     }

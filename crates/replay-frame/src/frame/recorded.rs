@@ -58,7 +58,7 @@ impl Updates {
 }
 
 #[derive(Clone, Debug)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RecordedFrame {
     pub branch: BranchId,
     pub hour: Hour,
@@ -67,10 +67,10 @@ pub struct RecordedFrame {
     pub tables: RecordedTables,
 }
 #[derive(Clone, Debug)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RecordedTables(Backing);
 #[derive(Clone, Debug)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 enum Backing {
     Frame(Arc<Frame>),
     Tables {

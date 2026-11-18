@@ -13,7 +13,7 @@ use std::io;
 /// lifetimes are the run's holder history. Rows numbered [`Self::UNKNOWN`] live while Countries
 /// or CountryLinks is not complete, `slot` naming why ([`TagHolderRow::REASONS`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TagHolderRow {
     /// The writer's number for the tag ([`TagNameRow`]).
     pub number: u32,
@@ -44,7 +44,7 @@ impl TagHolderRow {
 /// country no link resolves, and the hours each history was not observed (group 0 humans, 1
 /// factions, 2 wars).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GroupSpanRow {
     pub kind: u8,
     pub group: u32,
@@ -68,7 +68,7 @@ impl GroupSpanRow {
 
 /// Derived beside [`GroupSpanRow`]: each faction's group number, never deleted.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GroupRow {
     pub number: u32,
     pub faction: u64,
@@ -77,7 +77,7 @@ pub struct GroupRow {
 /// Derived beside [`GroupSpanRow`]: each faction name's operands, numbered, never deleted: the
 /// literal, the template token and that token's spelling (empty when none).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GroupNameRow {
     pub number: u32,
     pub literal: Vec<u8>,
@@ -91,7 +91,7 @@ pub struct GroupNameRow {
 /// capitulation's `first` is the capitulated country's. [`TagHolderRow::NONE`] where no link
 /// resolved the country.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct WarEventRow {
     pub kind: u8,
     pub hour: i32,
@@ -110,7 +110,7 @@ impl WarEventRow {
 /// lifetimes are the run's history: the tag's number ([`TagNameRow`]) and its look's
 /// ([`LookFactRow`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LookSpanRow {
     pub number: u32,
     pub fact: u32,
@@ -120,7 +120,7 @@ pub struct LookSpanRow {
 
 /// Derived beside [`LookSpanRow`]: each distinct look, numbered and encoded, never deleted.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LookFactRow {
     pub number: u32,
     pub look: Vec<u8>,
@@ -131,7 +131,7 @@ pub struct LookFactRow {
 /// raw country id and the hour, so drops in consecutive hours are rows apart; the balance before
 /// and after, fixed5.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct BalanceDropRow {
     pub kind: u8,
     pub country: u32,
@@ -142,7 +142,7 @@ pub struct BalanceDropRow {
 
 /// Derived beside [`TagHolderRow`]: each tag number the run gave, never deleted.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TagNameRow {
     pub number: u32,
     pub tag: Vec<u8>,
@@ -154,7 +154,7 @@ pub struct TagNameRow {
 /// recorded while some division of that attribution has an owner no link resolves, or a value
 /// the total cannot count.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ArmyTotalRow {
     pub slot: u32,
     pub owner_divisions: Recorded<i64>,
@@ -176,7 +176,7 @@ pub struct ArmyTotalRow {
 /// province, occupied those a known country controls that another known country owns. A rule's cells are not
 /// recorded while some place's country under that rule no link resolves.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TerritoryTotalRow {
     pub slot: u32,
     pub owned_states: Recorded<i64>,
@@ -205,7 +205,7 @@ impl TerritoryTotalRow {
 /// stability, war support and maximum command power less allocated, each fixed5, keyed by raw
 /// country id. A value whose operands are not recorded is not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryStabilityRow {
     pub country: u32,
     pub stability: Recorded<i64>,
@@ -217,7 +217,7 @@ pub struct CountryStabilityRow {
 /// (0 owner, 1 host), from its divisions' templates. Not recorded while the attribution's
 /// composition is unknown.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ArmyMixRow {
     pub slot: u32,
     pub attribution: u8,
@@ -231,7 +231,7 @@ pub struct ArmyMixRow {
 /// while some wing of that attribution has an owner no link resolves, or, for planes, while a wing
 /// counted there has a negative plane word.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirForceTotalRow {
     pub slot: u32,
     pub roster_planes: Recorded<i64>,
@@ -245,7 +245,7 @@ pub struct AirForceTotalRow {
 /// the planes no equipment entry identifies. Not recorded where a wing's equipment cannot split
 /// its planes exactly. While an attribution is unknown it has no rows.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirForcePartRow {
     pub slot: u32,
     pub ownership: u8,
@@ -256,7 +256,7 @@ pub struct AirForcePartRow {
 /// Derived beside [`AirForcePartRow`]: each country's wings by attribution and composition, the
 /// composition numbered in [`AirForceWingSignatureRow`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirForceWingKindRow {
     pub slot: u32,
     pub ownership: u8,
@@ -269,7 +269,7 @@ pub struct AirForceWingKindRow {
 /// variants a wing's equipment holds positive amounts of, ascending, each as eight
 /// little-endian bytes ([`Self::encode`]); empty for a wing whose equipment identifies none.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirForceWingSignatureRow {
     pub number: u32,
     pub variants: Vec<u8>,
@@ -294,7 +294,7 @@ impl AirForceWingSignatureRow {
 /// has an owner no link resolves (or no task force); hull HP while a ship counted there has a
 /// negative one; maximum hull HP while one has no model counter.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavyTotalRow {
     pub slot: u32,
     pub roster_ships: Recorded<i64>,
@@ -308,7 +308,7 @@ pub struct NavyTotalRow {
 /// Derived beside [`NavyTotalRow`]: each country's ships and hull HP by attribution (0 roster,
 /// 1 logical) and class token. While an attribution is unknown it has no rows.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavyClassRow {
     pub slot: u32,
     pub ownership: u8,
@@ -325,7 +325,7 @@ pub struct NavyClassRow {
 /// in exile. Each sum wraps as the game's dwords do. A cell is not recorded while a term of it is
 /// not known.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryDeployedManpowerRow {
     pub slot: u32,
     pub army: Recorded<i32>,
@@ -343,7 +343,7 @@ pub struct CountryDeployedManpowerRow {
 /// it but one with host [`TagHolderRow::NONE`] and its count not recorded; a list whose sender no
 /// link resolves makes that row of sender and host [`TagHolderRow::NONE`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct MilitaryAidRow {
     pub sender: u32,
     pub host: u32,
@@ -364,7 +364,7 @@ impl MilitaryAidRow {
 /// The three are not recorded together while some division's owner no link resolves (every row)
 /// or one of the country's divisions has a supply operand not known.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct SupplyHealthRow {
     pub slot: u32,
     pub no_supply: Recorded<i64>,
@@ -382,7 +382,7 @@ pub struct SupplyHealthRow {
 /// once the drain is withheld for the run; `incomplete_from` is the first hour from which an
 /// exchange that ended after its last read makes a lend-lease leaf a lower bound.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EquipmentLossTotalRow {
     pub slot: u32,
     pub country: u32,
@@ -407,7 +407,7 @@ impl EquipmentLossTotalRow {
 
     /// The variant reference id of an equipment design handle; none for another reference type.
     pub fn variant_id(handle: u64) -> Option<u32> {
-        (handle as u32 == engine_native::cequipment_variant::REFERENCE_TYPE).then_some((handle >> 32) as u32)
+        (handle as u32 == engine_reference_values::native_values::equipment_variant::REFERENCE_TYPE).then_some((handle >> 32) as u32)
     }
 }
 
@@ -417,7 +417,7 @@ impl EquipmentLossTotalRow {
 /// past `NGame.COMBAT_LOG_MAX_MONTHS` and a month more), its amount then kept in its leaf's
 /// [`EquipmentLossTotalRow::freed`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CombatLogDroppedRow {
     pub country: u32,
     pub group: u32,
@@ -437,7 +437,7 @@ pub struct CombatLogDroppedRow {
 /// hour is the most entries of it one read listed; it is dated at `sink_hour`. Each slot and
 /// country is at most [`Self::FIELD`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ShipLossRow {
     pub slot: u32,
     pub country: u32,
@@ -471,7 +471,7 @@ impl ShipLossRow {
 /// resolved (drain, ships, convoys and lend-lease; and with the Combat Log's). A cell another kind
 /// of row holds is not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct EquipmentLossCoverageRow {
     pub slot: u32,
     pub country: u32,
@@ -519,7 +519,7 @@ impl EquipmentLossCoverageRow {
 /// position holds the design. Both are not recorded while some Stockpiles row's country no link
 /// resolves; `amount` once the sum leaves i64.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct StockByVariantRow {
     pub slot: u32,
     pub variant: u64,
@@ -536,7 +536,7 @@ pub struct StockByVariantRow {
 /// the stockpile read the rows of the slot stand on, none while no such read is held. The counts
 /// but `unresolved` are not recorded while `unresolved` is not zero.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionEquipmentCountRow {
     pub slot: u32,
     pub side: u8,
@@ -563,7 +563,7 @@ impl DivisionEquipmentCountRow {
 /// stockpile read, not recorded while that stock is not known whole. Every cell is not recorded
 /// while some division of the attribution has an owner no link resolves.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionEquipmentTypeRow {
     pub slot: u32,
     pub side: u8,
@@ -579,7 +579,7 @@ pub struct DivisionEquipmentTypeRow {
 /// Derived beside [`DivisionEquipmentTypeRow`]: what a slot's read pools hold of one design, by
 /// its archetype and variant reference id (none for a pool entry that names no design), fixed5.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionEquipmentDesignRow {
     pub slot: u32,
     pub side: u8,
@@ -596,7 +596,7 @@ pub struct DivisionEquipmentDesignRow {
 /// archetypes some known division falls short of. `need_missing` says why the template's need
 /// is not known; empty while it is.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionEquipmentTemplateRow {
     pub slot: u32,
     pub side: u8,
@@ -628,7 +628,7 @@ pub struct DivisionEquipmentTemplateRow {
 /// lexer token of the design's recorded archetype the total is counted under in
 /// [`ProductionTypeTotalRow`] ([`ProductionTypeTotalRow::NO_ARCHETYPE`] while none was recorded).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ProductionTotalRow {
     pub country: u32,
     pub variant: u64,
@@ -666,7 +666,7 @@ impl ProductionTotalRow {
 /// it produced nothing. `*_inexact` counts the producer's designs and purposes whose units are a
 /// lower bound; `spent*` is not recorded once one of its parts' applied IC is unknown.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ProductionCountryTotalRow {
     pub country: u32,
     pub units: i64,
@@ -684,7 +684,7 @@ pub struct ProductionCountryTotalRow {
 /// [`Self::WORLD`] producer's rows sum every producer's. `archetype_spelling` is the archetype as
 /// last spelled. Columns as in [`ProductionCountryTotalRow`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ProductionTypeTotalRow {
     pub country: u32,
     pub archetype: u32,
@@ -708,7 +708,7 @@ impl ProductionTypeTotalRow {
 /// producer's own row holds the first hours its own Rocket output became unknown. Rows of a
 /// source are cleared when its observation restarts.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ProductionCoverageRow {
     pub country: u32,
     pub source: u8,
@@ -737,7 +737,7 @@ impl ProductionCoverageRow {
 /// no design rows, the unattributed rate not recorded. A cell another part does not hold is not
 /// recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DockyardRepairRateRow {
     pub country: u32,
     pub part: u8,
@@ -762,7 +762,7 @@ impl DockyardRepairRateRow {
 /// (both sides, attackers, defenders) and the earliest hour of it, not recorded while no roster
 /// was read whole.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandBattleRow {
     pub combat: u64,
     pub start_hour: i32,
@@ -788,7 +788,7 @@ pub struct LandBattleRow {
 /// a `result` the game then finalized none. The result's columns are the finalizer's, its
 /// countries resolved at the hour it was read.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LandBattleEndRow {
     pub combat: u64,
     pub start_hour: i32,
@@ -850,7 +850,7 @@ impl LandBattleEndRow {
 /// read (groups can be detached, so samples are never summed). Not recorded until a read with
 /// participants.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalBattleRow {
     pub combat: u64,
     pub first_hour: i32,
@@ -868,7 +868,7 @@ pub struct NavalBattleRow {
 /// [`Self::OBSERVED`], or why the source observes no battle, its other cells then not recorded.
 /// Quantities of a side are not recorded where its participants were not read whole.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalResultObservationRow {
     pub result: u64,
     pub refusal: u8,
@@ -914,7 +914,7 @@ impl NavalResultObservationRow {
 /// read after hours unread long enough for the game's retention to have pruned sinkings unseen,
 /// or without the retention define; a cell another kind of row holds is not recorded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalLossTotalRow {
     pub slot: u32,
     pub country: u32,
@@ -955,7 +955,7 @@ impl NavalLossTotalRow {
 /// of row holds is not recorded. A sum that leaves i64 is not recorded from then. Carry: sum on
 /// every count and amount, none on `latest_*`, `first_day`, `last_*`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PowerSpendTotalRow {
     pub holder: u32,
     pub currency: u8,
@@ -1006,7 +1006,7 @@ impl PowerSpendTotalRow {
 /// recorded identity; `site` and `first_*` are its first payment's site, own hour, read hour, raw
 /// country, capture epoch and change sequence (a cost's ordinal), where a reply names it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PowerItemRow {
     pub holder: u32,
     pub ordinal: u32,
@@ -1053,7 +1053,7 @@ impl PowerItemRow {
 /// recorded. `spent` is not recorded when a charge was not; `covered` while every payment was;
 /// `read` is the hour its first payment was read. Carry none.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PowerDayPartRow {
     pub holder: u32,
     pub currency: u8,
@@ -1074,7 +1074,7 @@ pub struct PowerDayPartRow {
 /// breaks, a refund cannot name its allocation, the holder's allocated total is not read or zero,
 /// or what the holds name exceeds it. Carry none.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PowerHoldRow {
     pub holder: u32,
     pub hold: u64,
@@ -1103,7 +1103,7 @@ pub struct PowerHoldRow {
 /// reason names. `input_reason` is the reason an input partial or unavailable this hour gave, by
 /// name (empty when none was).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PowerSpendCoverageRow {
     pub holder: u32,
     pub political: bool,
@@ -1165,7 +1165,7 @@ impl PowerSpendCoverageRow {
 /// `backlog` that the occurrence was listed when the run began (a log input's backlog, dated at
 /// its own `hour`), not read as an event of `read_hour`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FeedEventRow {
     pub generation: u64,
     pub sequence: u64,
@@ -1236,7 +1236,7 @@ impl FeedEventRow {
 /// the dispatch's FeedEvents identity (generation, sequence) and read hour. Deleted when the choice
 /// is read (an immediate-effects option leaves it open) or a new generation begins.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FeedOpenEventRow {
     pub kind: u32,
     pub id: u32,
@@ -1253,7 +1253,7 @@ pub struct FeedOpenEventRow {
 /// hour. Deleted when it completes, is cancelled, times out or is removed, at a read not complete or
 /// not following the one before, and when a new generation begins.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FeedOpenDecisionRow {
     pub generation: u64,
     pub sequence: u64,
@@ -1269,7 +1269,7 @@ pub struct FeedOpenDecisionRow {
 /// not: `rows` how many do, `hour` the hour it was written to FeedEvents (none while no read has
 /// listed it uncancelled). Deleted when no row holds it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FeedGuaranteeRow {
     pub first: u32,
     pub second: u32,
@@ -1293,7 +1293,7 @@ pub struct FeedGuaranteeRow {
 /// `share_refusal` (empty when none); `own` is not recorded while an owner of a nonzero current
 /// there has no link.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct NavalRegionControlRow {
     pub viewer: u32,
     pub region: u32,
@@ -1317,7 +1317,7 @@ impl NavalRegionControlRow {
 /// delay elapsed. Every live country has a row, so one without a stockpile holds a recorded zero;
 /// a cell is not recorded while one of the country's Nukes cells it adds is not.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryNukeTotalRow {
     pub country: u32,
     pub total: Recorded<i64>,
@@ -1328,7 +1328,7 @@ pub struct CountryNukeTotalRow {
 /// contribution to world tension added, before the game caps the sum into the tension it shows,
 /// in contribution units. The singleton row is not recorded while an aggregate it adds is not.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ThreatTotalRow {
     pub sum: Recorded<i64>,
 }
@@ -1340,7 +1340,7 @@ pub struct ThreatTotalRow {
 /// game's rule). A faction has a row while it has a member. A cell is not recorded while the
 /// faction's roster, or a member's cell it adds, is not.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionTotalRow {
     pub faction: u64,
     pub owned_states: Recorded<i64>,
@@ -1394,7 +1394,7 @@ pub struct FactionTotalRow {
 /// `victim_slot` is the victim's canonical slot ([`TagHolderRow::NONE`] when not known) and
 /// `victim_unknown` why the victim or its slot is not known.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct RaidEndRow {
     pub hour: i32,
     pub id: u32,
@@ -1452,7 +1452,7 @@ impl RaidEndRow {
 /// registration's ordinal. A region's wings in registration order are its rows by `ordinal`. It
 /// is available exactly when AirMissionCounts is, for the same reason.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirMissionWingRow {
     pub slot: u32,
     pub region: u32,
@@ -1465,7 +1465,7 @@ pub struct AirMissionWingRow {
 /// and results whose outcome is won or lost; none before its first row. A row is deleted in the
 /// hour the writer reads the leader's UnitLeaders row deleted.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LeaderBattleTotalRow {
     pub leader: u64,
     pub fought: u32,
@@ -1479,7 +1479,7 @@ pub struct LeaderBattleTotalRow {
 /// gain, else the first row. A row is deleted in the hour the writer reads the leader's
 /// UnitLeaders row deleted.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LeaderTraitDateRow {
     pub leader: u64,
     pub token: u32,
@@ -1495,7 +1495,7 @@ pub struct LeaderTraitDateRow {
 /// named the leader since the writer last read it naming another or none), its kind and its
 /// stored name then. A row lives while its formation names the leader.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LeaderCommandSpanRow {
     pub source: u8,
     pub formation: u64,
@@ -1511,7 +1511,7 @@ pub struct LeaderCommandSpanRow {
 /// place among the leader's rows of the hour: a [`LeaderCommandSpanRow`]'s formation, kind and
 /// name, its `first_hour` and `last_hour`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LeaderCommandRow {
     pub leader: u64,
     pub hour: i32,
@@ -1540,7 +1540,7 @@ impl LeaderCommandRow {
 /// country's one gains row. The read a row was written at is CountryExperience's read hour (the
 /// table is read whole), which the recording holds in its pages ([`TableId::CountryExperience`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryExperienceDailyRow {
     pub country: u32,
     pub army_change: Recorded<i64>,
@@ -1556,7 +1556,7 @@ pub struct CountryExperienceDailyRow {
 /// Each part's reason is [`Self::KNOWN`] with its value, or names why the value is not recorded
 /// ([`Self::REASONS`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CountryGameScoreRow {
     pub country: u32,
     pub army: Recorded<i64>,
@@ -1623,7 +1623,7 @@ impl CountryGameScoreRow {
 /// are not known (a term not recorded, or the read's lines not recorded with it). A part with no
 /// row while the total is recorded is zero.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct StabilityPartRow {
     pub country: u32,
     pub measure: u8,
@@ -1647,7 +1647,7 @@ impl StabilityPartRow {
 /// recorded bytes. A term's identity is its formula term name; a remainder, clamp or total has
 /// none. Fields a kind has none of are zero or empty.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct StabilityPartKeyRow {
     pub handle: u32,
     pub kind: u8,
@@ -1687,7 +1687,7 @@ impl StabilityPartKeyRow {
 /// that listing equal in country, second country, date and reason, so a reader follows one source
 /// from its listing to its drop.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ThreatEventRow {
     pub kind: u8,
     pub slot: u32,
@@ -1740,7 +1740,7 @@ pub const fn fits_key_field(value: u32) -> bool {
 /// read's day leaves out, so no update is counted twice. [`Self::measures`] is the Fuel chart's
 /// view of a day.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDayRow {
     pub country: u32,
     pub read_hour: i32,
@@ -1797,8 +1797,8 @@ impl FuelDayRow {
     /// receipts. None where the day's kind holds none, a cell is not recorded, or a value passes
     /// i64.
     pub fn measures(raw: [Option<i64>; 14]) -> [Option<i64>; 15] {
-        let quantity = i128::from(engine_fuel::ccountry_fuel_status::QUANTITY_SCALE);
-        let gain = i128::from(engine_fuel::ccountry_fuel_status::MODIFIER_SCALE);
+        let quantity = i128::from(engine_reference_values::native_values::fuel_status::QUANTITY_SCALE);
+        let gain = i128::from(engine_reference_values::native_values::fuel_status::MODIFIER_SCALE);
         let wide = raw.map(|cell| cell.map(i128::from));
         let [gained, burned, army, air, navy, other, base, states, oil, negative, converted, incoming, outgoing, flat] = wide;
         let received = [army, air, navy];
@@ -1832,7 +1832,7 @@ impl FuelDayRow {
 /// and the widened sums of each known part's daily projection, as is and clamped at zero. While
 /// the pack is not known every cell is not recorded and each reason names why.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FuelDemandTotalRow {
     pub country: u32,
     pub native_army: Recorded<i64>,
@@ -1855,7 +1855,7 @@ pub struct FuelDemandTotalRow {
 /// [`TagHolderRow::NONE`] in both fields. A sum past i64 is not recorded. The key's slots and ids
 /// are 24-bit fields ([`key_field`]).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TradeFlowRow {
     pub seller_slot: u32,
     pub seller: u32,
@@ -1878,7 +1878,7 @@ pub struct TradeFlowRow {
 /// ended, and its output since observation began. A count's entries are its changes: each rise is
 /// the read that counted it, dated by the rise list beside it where it has one.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ConstructionProjectRow {
     pub line: u64,
     /// [`Self::BUILDING`] or [`Self::RAILWAY`].
@@ -1941,7 +1941,7 @@ pub struct ConstructionProjectRow {
 /// whole life, so a run's index of its lines is one read of the log, not the projects' history.
 /// Keyed by that hour and the line.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ConstructionLineEndRow {
     pub hour: i32,
     pub line: u64,
@@ -2026,7 +2026,7 @@ impl ConstructionProjectRow {
 /// line or the last state of a railway (which has no building type), told apart by the railway bit.
 /// A state or type the line does not name is [`TagHolderRow::NONE`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ConstructionSpendRow {
     pub slot: u32,
     pub country: u32,
@@ -2077,7 +2077,7 @@ impl Default for ConstructionSpendRow {
 /// (`template_key`, not recorded when the literal names it); not recorded where
 /// DivisionTemplateIcons and DivisionTemplates did not give them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct DivisionEventRow {
     pub kind: u8,
     pub hour: i32,
@@ -2132,7 +2132,7 @@ impl DivisionEventRow {
 /// side won, the leader commanded one side and the result is dated from its participation on).
 /// A participation leaves the result's columns not recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LeaderBattleRow {
     pub leader: u64,
     pub hour: i32,
@@ -2184,7 +2184,7 @@ impl LeaderBattleRow {
 /// traits are read after hours they were not: one the run saw before is no gain). `spelling` is
 /// the trait's token as UnitLeaderTraits spelled it then.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct LeaderTraitGainRow {
     pub leader: u64,
     pub hour: i32,
@@ -2210,7 +2210,7 @@ impl LeaderTraitGainRow {
 /// while the assignment is active (its last read is the holder's), `awaiting` 1 while a later
 /// read may still prove an ended assignment completed.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ResearchAssignmentRow {
     pub holder_slot: u32,
     pub holder_id: u32,
@@ -2242,7 +2242,7 @@ impl ResearchAssignmentRow {
 /// (`member` the slot index): from a read through the hours before the next is due, while the
 /// holder and its owners' read hours hold. `since` is the open span's first hour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ResearchCoverageRow {
     pub holder_slot: u32,
     pub holder_id: u32,
@@ -2260,7 +2260,7 @@ impl ResearchCoverageRow {
 /// faction: the last such `faction`, and `member` 1 while it still is. Deleted when the account
 /// row goes, its country no longer resolves to the same holder, or its membership is ambiguous.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct FactionAccountOwnerRow {
     pub account: u32,
     pub faction: u64,
@@ -2281,7 +2281,7 @@ pub struct FactionAccountOwnerRow {
 /// `state` is [`Self::NONE`] for kinds naming none; `victory_points` the state's at the after
 /// read, none when Provinces cannot supply it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PeaceOutcomeRow {
     pub after_hour: i32,
     pub ordinal: u32,
@@ -2318,7 +2318,7 @@ impl PeaceOutcomeRow {
 /// live `compared_hour`, measured from `before_hour`), [`Self::NO_BEFORE`] (no complete read
 /// before it) or [`Self::OVERLAPPED`] (other sampled conferences overlap it).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct PeaceConferenceSpanRow {
     pub conference: u64,
     pub hour: i32,
@@ -2347,7 +2347,7 @@ impl PeaceConferenceSpanRow {
 /// WarRelations no longer lists the lifetime: an ended lifetime's counters are its row's last.
 /// Each slot and id is at most [`Self::FIELD`].
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CasualtyLifetimeRow {
     pub slot_a: u32,
     pub id_a: u32,
@@ -2375,7 +2375,7 @@ impl CasualtyLifetimeRow {
 /// i64, and from then for the run. A row lives from the identity's first lifetime and is never
 /// deleted.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct CasualtyTotalRow {
     pub slot: u32,
     pub id: u32,
@@ -2394,7 +2394,7 @@ pub struct CasualtyTotalRow {
 /// state's controller resolves to no identity (or the state has no States row), every row's sums
 /// and counts are not recorded. A row lives while its identity occupies or garrisons a state.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct OccupierTotalRow {
     pub slot: u32,
     pub id: u32,
@@ -2413,7 +2413,7 @@ pub struct OccupierTotalRow {
 /// positive masks selects its bit. With the table complete, an (owner, region) without a row has
 /// no registered wing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirMissionCountRow {
     pub slot: u32,
     pub region: u32,
@@ -2460,7 +2460,7 @@ impl AirMissionCountRow {
 /// Derived by the recorder's AirRegionWings writer from AirWings: the wings of every owner whose
 /// mission region is the region. With the table complete, a region without a row has none.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirRegionWingRow {
     pub region: u32,
     pub wings: i64,
@@ -2472,7 +2472,7 @@ pub struct AirRegionWingRow {
 /// last hour of each earlier day of the run (`activity_total`). A row is written only where the
 /// activity changes, so the activity before a later day adds the row's once for each day between.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirRegionDayRow {
     pub region: u32,
     pub day: i32,
@@ -2492,7 +2492,7 @@ pub struct AirRegionDayRow {
 /// country under it no link resolves; area is not recorded while the province areas are not held or
 /// a province credited has none; states while their exact sum's denominator passes 63 bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct TerritoryRegionTotalRow {
     pub holder: u32,
     pub region: u32,
@@ -2532,7 +2532,7 @@ impl TerritoryRegionTotalRow {
 /// dates every row: `since`, the hour the totals count from (the later of the lines' and Rocket
 /// output's observations), and `as_of`, production's latest read.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct ProducedValueRow {
     pub country: u32,
     pub archetype: u32,
@@ -2591,7 +2591,7 @@ impl ProducedValueRow {
 /// not adds nothing. `late` is the most hours any event counted in the row was read after it
 /// happened. A total past 64 bits is not recorded. Rows live while the run does.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirLossTotalRow {
     pub slot: u32,
     pub id: u32,
@@ -2620,7 +2620,7 @@ impl AirLossTotalRow {
 /// BuildingBombingDamage and CountryLinks were available count. `late` as [`AirLossTotalRow`]'s. A
 /// total past 64 bits is not recorded. Rows live while the run does.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct BombingTotalRow {
     pub slot: u32,
     pub id: u32,
@@ -2643,7 +2643,7 @@ impl BombingTotalRow {
 /// garrison's displayed strength, a signed fixed5 fraction (100000 is full), keyed as its
 /// StateGarrisons row. Not recorded where an input of it is not known, `reason` saying which.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct GarrisonStrengthRow {
     pub controller: u32,
     pub state: u32,
@@ -2675,7 +2675,7 @@ impl GarrisonStrengthRow {
 /// so the totals before a later day add the row's scores once for each day between. A row lives
 /// while the run does: its totals are what a span's days sum to.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirOwnerDayRow {
     pub country: u32,
     pub region: u32,
@@ -2690,7 +2690,7 @@ pub struct AirOwnerDayRow {
 /// AirWings: the wings of each air theatre whose mission region is the region. A theatre's regions
 /// are those with a row; with the table complete, a region without one is outside the theatre.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirTheatreRegionRow {
     pub theatre: u64,
     pub region: u32,
@@ -2703,7 +2703,7 @@ pub struct AirTheatreRegionRow {
 /// (`friendly_total`, `enemy_total`). A row is written only where its sums change, so the totals
 /// before a later day add the row's sums once for each day between. Rows live while the run does.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct AirRegionActivityRow {
     pub region: u32,
     pub day: i32,

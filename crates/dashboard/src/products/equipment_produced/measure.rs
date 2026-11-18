@@ -7,9 +7,9 @@ use crate::products::production_spending::runs::Piece;
 
 /// The hour one calendar month before `hour`: the same day and hour of the month before, or that
 /// month's last day when it is shorter (engine calendar: 365-day years from
-/// `engine_native::cdate::HOUR_EPOCH`). None before the calendar begins.
+/// `game_model::calendar::HOUR_EPOCH`). None before the calendar begins.
 pub fn month_before(hour: i32) -> Option<i32> {
-    use engine_native::cdate::{HOUR_EPOCH, MONTH_LENGTHS};
+    use game_model::calendar::{HOUR_EPOCH, MONTH_LENGTHS};
     let elapsed = i64::from(hour) - i64::from(HOUR_EPOCH);
     if elapsed < 0 {
         return None;
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn a_month_before_is_the_same_day_or_the_shorter_months_last() {
-        use engine_native::cdate::HOUR_EPOCH;
+        use game_model::calendar::HOUR_EPOCH;
         let day = |days: i32, hour: i32| HOUR_EPOCH + days * 24 + hour;
         // 15 February of year 1, 06:00, is 15 January's.
         assert_eq!(month_before(day(365 + 31 + 14, 6)), Some(day(365 + 14, 6)));

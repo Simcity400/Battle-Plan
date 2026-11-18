@@ -16,12 +16,14 @@ use dashboard_query::{
 };
 use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};
+#[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ScoreboardColumnKey {
     Factories,
@@ -117,7 +119,8 @@ fn def_of(key: ScoreboardColumnKey) -> &'static Def {
 }
 
 /// A declared measure as a request names it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardFamily {
     pub kind: String,
@@ -138,7 +141,8 @@ fn family(measure: (&str, &str)) -> ScoreboardFamily {
     ScoreboardFamily { kind: measure.0.to_owned(), measure: measure.1.to_owned() }
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardColumn {
     pub key: ScoreboardColumnKey,
@@ -149,7 +153,7 @@ pub struct ScoreboardColumn {
     pub available: bool,
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub note: Option<String>,
     /// The declared measure its values are, followed at the head.
     pub family: Option<ScoreboardFamily>,
@@ -157,7 +161,8 @@ pub struct ScoreboardColumn {
     pub partial: Option<ScoreboardFamily>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardColumnsReply {
     pub branch_id: String,
@@ -203,6 +208,7 @@ impl Product for ScoreboardColumns {
     type Params = BranchParams;
     type Reply = ScoreboardColumnsReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![ScoreboardColumnsReply::decl(), ScoreboardColumn::decl(), ScoreboardColumnKey::decl(), ScoreboardFamily::decl()]
     }
@@ -240,7 +246,8 @@ impl Product for ScoreboardColumns {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScoreboardTop {
     pub count: u32,
@@ -250,7 +257,8 @@ pub struct ScoreboardTop {
     pub descending: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScoreboardParams {
     pub branch_id: String,
@@ -260,11 +268,12 @@ pub struct ScoreboardParams {
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<ScoreboardTop>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardCell {
     pub value_raw: Option<String>,
@@ -274,7 +283,8 @@ pub struct ScoreboardCell {
     pub partial: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardRow {
     pub tag: String,
@@ -282,7 +292,8 @@ pub struct ScoreboardRow {
     pub cells: Vec<ScoreboardCell>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardReply {
     pub branch_id: String,
@@ -305,6 +316,7 @@ impl Product for Scoreboard {
     type Params = ScoreboardParams;
     type Reply = ScoreboardReply;
 
+    #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
         vec![
             ScoreboardParams::decl(),
