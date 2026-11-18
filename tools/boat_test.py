@@ -39,6 +39,10 @@ class FakeBoat:
         self.renewed = threading.Event()
         self.missing = set()
         self.failing = set()
+        self.refused = set()
+        # Infos a resumed VM stays starting for, then hydrates over, one entry per info; a VM absent keeps its hydration.
+        self.starting = {}
+        self.hydrating = {}
 
     def boat(self, *args, check=True, idempotent=None, shielded=False):
         self.calls.append(args)
@@ -46,7 +50,15 @@ class FakeBoat:
         if command == "list":
             return OK, [{"sandboxes": [dict(vm) for vm in self.vms.values()]}]
         if command == "info":
-            return OK, [{"sandbox": dict(self.vms[args[1]])}]
+            vm = self.vms[args[1]]
+            if vm["state"] == "starting":
+                self.starting[vm["id"]] -= 1
+                vm["state"] = "starting" if self.starting[vm["id"]] > 0 else "ready"
+            elif vm["id"] in self.hydrating:
+                vm["hydration"] = {"entriesDone": vm.get("hydration", {}).get("entriesDone", 0) + 1}
+                self.hydrating[vm["id"]] -= 1
+                vm["hydrated"] = self.hydrating[vm["id"]] <= 0
+            return OK, [{"sandbox": dict(vm)}]
         if command == "extend":
             self.vms[args[1]]["ttlSeconds"] = int(args[3])
             if int(args[3]) == bt.LEASE_SECONDS:
@@ -54,7 +66,9 @@ class FakeBoat:
             return OK, []
         if command == "resume":
             vm = self.vms[args[1]]
-            vm.update(state="idle", ttlSeconds=int(args[3]))
+            if vm["id"] in self.refused:
+                raise bt.Failure("Boat resume failed (1): Please reduce your request rate")
+            vm.update(state="starting" if vm["id"] in self.starting else "idle", ttlSeconds=int(args[3]))
             if "--type" in args:
                 vm["type"] = args[args.index("--type") + 1]
             return OK, []
@@ -117,7 +131,14 @@ class Harness(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.state = bt.State(self.root / "state")
-        self.saved = {name: getattr(bt, name) for name in ("boat", "remote", "quick", "deliver", "run_program", "RENEW_SECONDS", "HYDRATION_SECONDS", "UPLOAD_CHUNKS")}
+        self.saved = {name: getattr(bt, name) for name in ("boat", "remote", "quick", "deliver", "run_program", "wait_ready", "RENEW_SECONDS", "UPLOAD_CHUNKS")}
+        # Boat's waits run on a clock that each pause advances, never on wall-clock time.
+        self.now = 0.0
+
+        def pause(seconds):
+            self.now += seconds
+
+        bt.wait_ready = lambda vmid: self.saved["wait_ready"](vmid, clock=lambda: self.now, pause=pause)
 
     def tearDown(self):
         for name, value in self.saved.items():
@@ -146,6 +167,11 @@ class Rank(unittest.TestCase):
     def test_never_picks_stopping_cooling_or_unlisted_vms(self):
         states = {"a": vm("a", "stopping"), "b": vm("b"), "c": vm("c", "stopped")}
         self.assertEqual(bt.rank(["a", "b", "c", "gone"], states, None, "large", lambda vmid: vmid == "b"), ["c"])
+
+    def test_a_running_vm_still_hydrating_comes_after_the_hydrated_ones(self):
+        # A stopped VM hydrates anew, so what its last run left does not count.
+        states = {"a": vm("a", hydrated=False), "b": vm("b"), "c": vm("c", "stopped", hydrated=False), "d": vm("d", "stopped")}
+        self.assertEqual(bt.rank(sorted(states), states, "c", "large", lambda _: False), ["b", "a", "c", "d"])
 
     def test_large_work_skips_running_default_vms_but_can_grow_stopped_ones(self):
         states = {"a": vm("a", "idle", "default"), "b": vm("b", "stopped", "default")}
@@ -533,14 +559,34 @@ class Reconcile(Harness):
 
 
 class Acquire(Harness):
-    def test_hydration_timeout_cools_the_vm_and_ends_its_lease(self):
-        fake = self.use(FakeBoat([vm("a", "stopped", hydrated=False)]))
-        bt.HYDRATION_SECONDS = 0
-        with self.assertRaises(bt.Failure):
-            bt.acquire(self.state, "lane", "large", "t", {})
-        self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
-        self.assertTrue(self.state.cooling("a", 0))
-        self.state.lock("a").close()
+    def test_a_vm_that_does_not_start_or_stops_hydrating_is_cooled_and_passed_by(self):
+        fake = self.use(FakeBoat([vm("a", "stopped"), vm("b", "stopped", hydrated=False), vm("c", "stopped", hydrated=False)]))
+        fake.starting["a"] = 10 ** 6
+        # c starts and then hydrates, each for longer than a stall lasts.
+        fake.starting["c"] = fake.hydrating["c"] = bt.STALL_SECONDS // bt.POLL_SECONDS + 5
+        record = {}
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
+        lease.end()
+        lock.close()
+        self.assertEqual(vmid, "c")
+        self.assertEqual([item["vm"] for item in record["passed_over"]], ["a", "b"])
+        self.assertIn("not running", record["passed_over"][0]["reason"])
+        self.assertIn("stalled", record["passed_over"][1]["reason"])
+        for vmid in ("a", "b"):
+            self.assertTrue(self.state.cooling(vmid, 0))
+            self.assertEqual(fake.ttl_calls(vmid)[-1], bt.IDLE_SECONDS)
+            self.state.lock(vmid).close()
+        self.assertTrue(all("--no-wait" in call for call in fake.calls if call[0] == "resume"))
+
+    def test_a_refused_resume_passes_the_vm_by_without_cooling_it(self):
+        fake = self.use(FakeBoat([vm("a", "stopped"), vm("b", "stopped")]))
+        fake.refused.add("a")
+        record = {}
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
+        lease.end()
+        lock.close()
+        self.assertEqual((vmid, [item["vm"] for item in record["passed_over"]]), ("b", ["a"]))
+        self.assertFalse(self.state.cooling("a", 0))
 
     def test_resume_never_shrinks_a_large_vm(self):
         fake = self.use(FakeBoat([vm("a", "stopped", "large")]))

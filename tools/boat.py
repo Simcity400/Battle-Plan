@@ -111,8 +111,13 @@ LEASE_SECONDS = 900
 RENEW_SECONDS = 240
 # Warm 5 min after a run, skipping the next run's multi-minute resume (27 Oct: 86% of reuses came within 5 min).
 IDLE_SECONDS = 300
-# Give slow resumed images up to 30 min to finish hydration.
+# Boat gives up on a resume after 360 s ("Resume degraded"); a VM not running by then is passed by.
+START_SECONDS = 420
+# Hydration that moves is waited for up to 30 min; one that stops moving has stalled (19 Nov: clones too, for hours).
 HYDRATION_SECONDS = 1800
+STALL_SECONDS = 180
+POLL_SECONDS = 10
+STARTED = {"ready", "idle", "running"}
 COOLDOWN_SECONDS = 1800
 CREATE_SPACING_SECONDS = 5.1
 UNAVAILABLE = 75
@@ -430,7 +435,7 @@ class State:
 
 
 def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0, rebuilds=lambda vmid: (0, 0)):
-    """Usable VMs, best first: running before stopped, then the fewest crates to compile anew and to take from the cache, the lane's own, the right size, the least recently used."""
+    """Usable VMs, best first: running before stopped, hydrated before not, then the fewest crates to compile anew and to take from the cache, the lane's own, the right size, the least recently used."""
     ranked = []
     for vmid in registered:
         vm = states.get(vmid)
@@ -441,7 +446,8 @@ def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0, rebuil
         if size == "large" and vm.get("type") != "large" and not stopped:
             continue
         # Another lane's VM holds that lane's build cache: take the one whose lane has been away longest.
-        ranked.append((stopped, rebuilds(vmid), vmid != lane_vm, vm.get("type") != size, used(vmid), vmid))
+        # A stopped VM hydrates anew whatever its last run left.
+        ranked.append((stopped, not stopped and vm.get("hydrated") is False, rebuilds(vmid), vmid != lane_vm, vm.get("type") != size, used(vmid), vmid))
     return [row[-1] for row in sorted(ranked)]
 
 
@@ -719,16 +725,29 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
         allocator.close()
 
 
-def wait_hydrated(vmid):
-    # Boat reports ready before the clone's files are all present; cached mtimes must wait for them.
-    deadline = time.monotonic() + HYDRATION_SECONDS
+def wait_ready(vmid, clock=time.monotonic, pause=time.sleep):
+    """Waits until the VM runs and holds all its files; Failure once it stops getting there."""
+    # Restoring cached mtimes waits on each file's content, so it cannot start before hydration ends.
+    started = running = moved = clock()
+    progress = None
     while True:
         vm = info(vmid)
-        if vm.get("hydrated") is not False:
+        now = clock()
+        if vm.get("state") == "error":
+            raise Failure(f"{vmid}: Boat reports an error: {vm.get('error')}")
+        if vm.get("state") not in STARTED:
+            running = moved = now
+            if now - started >= START_SECONDS:
+                raise Failure(f"{vmid}: not running {START_SECONDS} s after its start ({vm.get('state')}; {vm.get('error')})")
+        elif vm.get("hydrated") is not False:
             return vm
-        if time.monotonic() >= deadline:
+        elif vm.get("hydration") != progress:
+            progress, moved = vm.get("hydration"), now
+        elif now - moved >= STALL_SECONDS:
+            raise Failure(f"{vmid}: hydration stalled for {STALL_SECONDS} s at {json.dumps(progress)}")
+        if now - running >= HYDRATION_SECONDS:
             raise Failure(f"{vmid}: filesystem hydration did not finish within {HYDRATION_SECONDS} s")
-        time.sleep(3)
+        pause(POLL_SECONDS)
 
 
 def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0)):
@@ -737,24 +756,36 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0)):
     for _ in range(3):
         vmid, vm, lock, created = choose(state, lane, size, passed, rebuilds)
         record.update(vm=vmid, vm_type=vm.get("type"), vm_state=vm.get("state"), created=created)
+        record.pop("resumed", None)
         say(f"Boat VM {vmid} ({vm.get('type')}, {vm.get('state')}), lane {lane[:10]}")
         lease = None
         try:
             started = time.monotonic()
-            if vm["state"] == "stopped":
-                grow = resume_type(vm.get("type"), size)
-                boat("resume", vmid, "--ttl", str(LEASE_SECONDS), *(["--type", grow] if grow else []))
-                record["resumed"] = True
-            elif not created:
-                boat("extend", vmid, "--ttl", str(LEASE_SECONDS))
-            lease = Lease(vmid)
-            # A running VM the listing shows hydrated stays so; a resumed or cloned one hydrates again.
-            if vm["state"] == "stopped" or created or vm.get("hydrated") is False:
-                try:
-                    wait_hydrated(vmid)
-                except Failure:
-                    state.cool(vmid, "hydration")
-                    raise
+            waited = False
+            try:
+                if vm["state"] == "stopped":
+                    grow = resume_type(vm.get("type"), size)
+                    # Boat's own wait holds the run up to 30 minutes on a resume that will not finish.
+                    boat("resume", vmid, "--ttl", str(LEASE_SECONDS), "--no-wait", *(["--type", grow] if grow else []))
+                    record["resumed"] = True
+                elif not created:
+                    boat("extend", vmid, "--ttl", str(LEASE_SECONDS))
+                lease = Lease(vmid)
+                # A running VM the listing shows hydrated stays so; a resumed or cloned one hydrates again.
+                if vm["state"] == "stopped" or created or vm.get("hydrated") is False:
+                    waited = True
+                    wait_ready(vmid)
+            except Failure as error:
+                # A refused call may be the account's start limit, not this VM: only a VM that failed to get ready cools.
+                if waited:
+                    state.cool(vmid, str(error))
+                passed.add(vmid)
+                record.setdefault("passed_over", []).append({"vm": vmid, "reason": str(error)})
+                say(f"{error}; passing it by")
+                if lease:
+                    lease.end()
+                lock.close()
+                continue
             record["ready_seconds"] = round(time.monotonic() - started, 2)
             # Before the claim, so every VM decides claims by this runner's rules.
             install_runner(state, vmid)
@@ -1193,7 +1224,7 @@ def make_snapshot(state, worktree, revision):
     lease = Lease(vmid)
     token, stage = uuid.uuid4().hex, None
     try:
-        wait_hydrated(vmid)
+        wait_ready(vmid)
         install_runner(state, vmid)
         manifest = source_manifest(worktree)
         for index, (mode, args) in enumerate(WARM + frequent_tests(state.logs / "timings.jsonl", time.time())):
