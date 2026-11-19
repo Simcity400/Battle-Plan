@@ -29,7 +29,6 @@ unify-bitflags-1 = { workspace = true }
 unify-crossbeam-utils = { workspace = true }
 unify-fdeflate = { workspace = true }
 unify-flate2 = { workspace = true }
-unify-getrandom = { workspace = true }
 unify-hashbrown = { workspace = true }
 unify-lock_api = { workspace = true }
 unify-log = { workspace = true }

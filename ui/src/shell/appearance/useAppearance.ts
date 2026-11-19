@@ -49,6 +49,7 @@ export function applyAppearance(root: HTMLElement, settings: AppearanceSettings,
   root.dataset.backdrop = settings.workspaceBackdrop.kind === 'same' ? settings.backdrop.kind : settings.workspaceBackdrop.kind;
   root.dataset.headerFlag = settings.headerFlag;
   root.dataset.chartMotion = settings.charts.motion;
+  root.dataset.playbackRate = settings.charts.frameRate;
   root.dataset.countryColours = settings.charts.countryColours;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', colors.chrome);
   // Canvas charts cannot see CSS changes; tell them to re-read their tokens.

@@ -36,7 +36,9 @@ test('a history reply is checked and its slots made ready to join reads to', () 
 
 test('rewind hides new slots, future assignments and outcomes not yet observed', () => {
   const data = validateResearchReply(reply([{ ...entry('radio', 0, 10), outcomeObservedHour: 30 }, entry('radar', 40, null)]));
+  assert.equal(researchEntryAt(data.history.slots[0], state('radio', 0, 0), 5)?.outcomeObservedHour, null);
   const [early] = researchAt(data.history, 20);
+  assert.equal(early.entries[0].outcomeObservedHour, null);
   assert.deepEqual(early.entries.map(item => [item.token, item.outcome, item.endedByHour]), [['radio', 'unknown', 10]]);
   const [late] = researchAt(data.history, 50);
   assert.deepEqual(late.entries.map(item => item.outcome), ['completed', 'active']);

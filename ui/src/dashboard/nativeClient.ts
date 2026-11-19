@@ -1,6 +1,6 @@
 import { queryFailure, RefusedError } from './queryError.ts';
 import type { QueryError } from '../generated/dashboard';
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { newId } from '../shell/ids.ts';
 import { desktopAvailable } from '../shell/api';
@@ -17,18 +17,6 @@ import type { Compression } from '../recorder/compression';
 import { perfLog } from '../shell/perf.ts';
 import { busy } from '../shell/busy.ts';
 import type { QueryTiming } from '../shell/perf';
-
-/** Every follow store's listener: the desktop keeps one channel for the page, so each recording's store hears every
- * message on it and keeps its own. */
-const followListeners = new Set<(bytes: ArrayBuffer) => void>();
-let followChannel: Promise<void> | null = null;
-
-function openFollowChannel(): Promise<void> {
-  // Raw bodies arrive as an ArrayBuffer: the store reads typed arrays over it, with no copy and no base64.
-  const channel = new Channel<ArrayBuffer>();
-  channel.onmessage = bytes => { for (const listener of [...followListeners]) listener(bytes); };
-  return invoke<void>('dashboard_follow_channel', { channel }).catch(error => { followChannel = null; throw error; });
-}
 
 function cancelled(): DOMException {
   return new DOMException('Request cancelled', 'AbortError');
@@ -144,6 +132,18 @@ export const nativeDashboardClient: DashboardClient = {
   available: desktopAvailable,
   // Outside the desktop app there is no host to list or pick files.
   ...(desktopAvailable ? {
+    openFollow(port: MessagePort) {
+      return new Promise<void>((resolve, reject) => {
+        const reader = new Worker(new URL('./pull.worker.ts', import.meta.url), { type: 'module' });
+        const fail = (reason: string) => { reader.terminate(); reject(new Error(reason)); };
+        reader.onmessage = ({ data }) => {
+          if (data === 'ready') { reader.onmessage = null; reader.onerror = null; resolve(); }
+          else if (data.reason) fail(data.reason);
+        };
+        reader.onerror = event => fail(event.message);
+        reader.postMessage({ port, session: crypto.randomUUID() }, [port]);
+      });
+    },
     replayLibrary: () => invoke<ReplayLibrary>('replay_library'),
     replayLibraryStamp: () => invoke<string>('replay_library_stamp'),
     setReplayFolder: (folder: string) => invoke<ReplayLibrary>('set_replay_folder', { folder }),
@@ -187,14 +187,6 @@ export const nativeDashboardClient: DashboardClient = {
   },
 
   releaseSource,
-
-  async onFollowMessages(receive) {
-    if (!desktopAvailable) return () => {};
-    const listener = (bytes: ArrayBuffer) => receive(bytes);
-    followListeners.add(listener);
-    await (followChannel ??= openFollowChannel());
-    return () => { followListeners.delete(listener); };
-  },
 
   async setMapViews(views) {
     if (desktopAvailable) await invoke('set_dashboard_maps', { views });

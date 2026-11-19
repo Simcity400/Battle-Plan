@@ -75,7 +75,7 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
   const membership = resolved.membership;
   const member = useMemo(() => membership ? (tag: string, hour: number) => isMember(membership.get(tag), hour) : null, [membership]);
   const top = resolved.top ?? null;
-  // A top N's members are its structure: it renders when they change, at most four times a second while playing, and
+  // A top N's members are its structure: it renders when they change and
   // as scores land (paused, the scores of a push land after it). The table orders them by the painted scores.
   const woken = useMemo(() => new Set<() => void>(), []);
   useEffect(() => live.subscribe(() => { for (const wake of [...woken]) wake(); }), [live, woken]);

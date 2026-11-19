@@ -169,6 +169,7 @@ pub(super) fn hints(localisation: &Localisation) -> (BTreeMap<String, String>, V
 }
 
 impl AtHour for GameScore {
+    const ENCODE_LIVE_CELLS: bool = true;
     const KEY: &'static str = "game-score";
     const TITLE: &'static str = "Game score";
     const CONTENT_DEPENDENT: bool = true;
@@ -184,6 +185,31 @@ impl AtHour for GameScore {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         super::branch(&params.branch_id)
+    }
+
+    fn uses_sample(_table: TableId) -> bool { false }
+
+    const CLOCK_DEPENDENT: bool = false;
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+        let id = TableId::CountryGameScores;
+        if !edits.only_columns(id, dashboard_base::products::at_hour::field_mask(id, &SCORES)) { return Ok(false); }
+        let rows = frame.complete::<tables::CountryGameScores>()?;
+        for (&key, &mask) in edits.tables.get(&id).into_iter().flatten() {
+            let Ok(i) = rows.binary_search_by_key(&(key as u32), |row| row.country) else { return Ok(false) };
+            let row = &rows[i];
+            for (name, known) in SCORES.iter().zip([
+                (&row.total, row.total_reason), (&row.army, row.army_reason), (&row.navy, row.navy_reason),
+                (&row.air, row.air_reason), (&row.industry, row.industry_reason), (&row.land, row.land_reason),
+            ]) {
+                let column = dashboard_declare::field(id, name)?;
+                if mask & (1 << column) == 0 { continue; }
+                let shown = live.groups.iter().any(|g| g.table == id && g.columns.contains(&column) && g.keys.binary_search(&key).is_ok());
+                if shown != (matches!(known.0, Recorded::Value(_)) && known.1 == CountryGameScoreRow::KNOWN) { return Ok(false); }
+            }
+        }
+        live.patch(frame, &edits.tables, data);
+        Ok(true)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

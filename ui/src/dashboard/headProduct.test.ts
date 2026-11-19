@@ -1,10 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { headRead, headSource, headSubject, momentHour, retain } from './headProduct.ts';
+import { headRead, headSource, headSubject, momentHour, retain, whenDue } from './headProduct.ts';
 import type { BoundTrack, WidgetSpec } from './model';
+import { observeOnScreen } from './follow/useFollow.ts';
 
 const track = { id: 'main', axisOffset: 10, branch: { id: 'b', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
 const widget = (time: WidgetSpec['time']) => ({ kind: 'naval-yards', trackIds: ['main'], time }) as Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>;
+
+test('scrolling project details inside a visible widget keeps its follow', t => {
+  let watched: Element | undefined;
+  const placement = { closest: () => null } as unknown as Element;
+  const details = { closest: (selector: string) => selector === 'article.dash-widget' ? placement : null } as Element;
+  const scope = globalThis as unknown as Record<string, unknown>;
+  const before = [scope.IntersectionObserver, scope.getComputedStyle];
+  t.after(() => { [scope.IntersectionObserver, scope.getComputedStyle] = before; });
+  scope.IntersectionObserver = class { observe(e: Element) { watched = e; } disconnect() {} };
+  scope.getComputedStyle = () => ({ display: 'block' });
+  const stop = observeOnScreen(details, () => {});
+  assert.equal(watched, placement);
+  stop();
+});
 
 test('a widget following playback is followed; pinned, on a range or hovered, it asks its own hour', () => {
   const following = headRead(widget({ mode: 'follow' }), track, [track], null);
@@ -55,4 +70,24 @@ test('the reply kept while a push is on the way is of one history, product and p
   assert.equal(retain(kept, client, null, undefined, null), null, 'nor no subject');
   assert.equal(headSubject(undefined, 'aces', {}), null);
   assert.equal(headSubject(history('s', 1, 'b'), 'aces', null), null);
+});
+
+test('moving a dated pin backward clears the previous reply until the explicit target lands', () => {
+  const client = {};
+  const later = retain(null, client, 'projects', 'later header', 50, { exact: 50 });
+  assert.equal(retain(later, client, 'projects', 'later header', 50, { exact: 12 }), null);
+  assert.equal(retain(later, client, 'projects', undefined, null, { exact: 12 }), null);
+  assert.equal(retain(later, client, 'projects', 'earlier header', 12, { exact: 12 })?.data, 'earlier header');
+});
+
+test('a future fallback reply wakes on its first eligible clock frame', () => {
+  let hour = 10, wakes = 0;
+  const frames = new Set<() => void>();
+  const stop = whenDue(14, () => hour, frame => { frames.add(frame); return () => frames.delete(frame); }, () => wakes++);
+  for (hour of [11, 13, 14, 16]) {
+    frames.forEach(frame => frame());
+    assert.equal(wakes, hour >= 14 ? 1 : 0);
+  }
+  assert.equal(frames.size, 0);
+  stop();
 });

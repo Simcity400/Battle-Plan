@@ -21,7 +21,7 @@ import { followStore } from '../../dashboard/follow/connection.ts';
 import { answered, useHandoff, useLiveFollow } from '../../dashboard/follow/liveFollowed.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { FollowEntry } from '../../dashboard/follow/store';
-import { canonical } from '../../dashboard/follow/store.ts';
+import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
 import { followsHead, useFallbackHour, useFollow } from '../../dashboard/follow/useFollow.ts';

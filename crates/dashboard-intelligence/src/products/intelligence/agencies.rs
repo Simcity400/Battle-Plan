@@ -208,6 +208,44 @@ impl AtHour for AgencyComparison {
         branch(&params.branch_id)
     }
 
+    fn uses_sample(_table: TableId) -> bool { false }
+
+    const CLOCK_DEPENDENT: bool = false;
+
+    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::IntelligenceAgencies => Some(dashboard_base::products::at_hour::field_columns(table, &["created", "name", "defense_raw", "active_count", "unknown_f0"])),
+            TableId::Countries => Some(dashboard_base::products::at_hour::field_columns(table, &["canonical_slot", "tag"])),
+            _ => None,
+        }
+    }
+
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+        stage == 1 && edits.fields(TableId::AgencyUpgradeLevels, u64::MAX)
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+        let table = TableId::IntelligenceAgencies;
+        if !edits.only_columns(table, dashboard_base::products::at_hour::field_mask(table, &["defense_raw", "active_count", "unknown_f0"])) { return Ok(false); }
+        let rows = frame.complete::<tables::IntelligenceAgencies>()?;
+        let Some(agencies) = data["agencies"].as_array_mut() else { return Ok(false) };
+        for &key in edits.tables.get(&table).into_iter().flat_map(|e| e.keys()) {
+            let raw = key as u32;
+            let Ok(i) = agencies.binary_search_by_key(&u64::from(raw), |a| a["country"]["id"].as_u64().unwrap()) else { continue };
+            let row = &rows[rows.binary_search_by_key(&raw, |r| r.country).unwrap()];
+            let a = &mut agencies[i];
+            if a["defenseRaw"].as_str() != Some(&row.defense_raw.to_string()) {
+                let (text, value) = at.context.as_ref().ok().map(|c| c.defense(row.defense_raw)).map_or((None, None), |(t,v)| (t.ok(),v.ok()));
+                a["defenseRaw"] = row.defense_raw.to_string().into();
+                a["defenseText"] = text.into();
+                a["defenseValue"] = value.into();
+            }
+            a["activeCount"] = row.active_count.into();
+            a["maximum"] = (row.unknown_f0 as i32).into();
+        }
+        Ok(true)
+    }
+
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         vec![TableId::IntelligenceAgencies, TableId::AgencyUpgradeLevels, TableId::LexicalTokens, IDENTITY[0], IDENTITY[1]]
     }

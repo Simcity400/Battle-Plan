@@ -2,11 +2,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, HTMLAttributes, ReactNode, RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { VirtualListIndex } from './virtualListIndex';
-import { atNextSlot, structureOpen } from '../dashboard/structurePace.ts';
-
-/** How long after the reader's own input a scroll is still theirs (a smooth scroll runs on), and the input it is. */
-const READER_MS = 1000;
-const READER_EVENTS = ['wheel', 'pointerdown', 'touchmove', 'keydown'] as const;
 
 /** Native sequential stops, rather than every programmatically focusable node. */
 function focusables(node: HTMLElement) {
@@ -158,14 +153,8 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     const [first, last] = flows ? [0, keys.length] : index.range(top - rows, height, 0);
     const shown = shownRows.current;
     if (shown.flow === flows && first >= shown.start && last <= shown.end) return;
-    // Other rows are structure: while playing, taken in the page's slot unless the reader is scrolling.
-    if (structureOpen() || performance.now() - readerAt.current < READER_MS) setViewed(count => count + 1);
-    else heldPlace.current ??= atNextSlot(() => { heldPlace.current = null; placeLatest.current(); });
+    setViewed(count => count + 1);
   };
-  /** When the reader last moved the list (wheel, pointer, touch, keys), and a place held for the slot meanwhile. */
-  const readerAt = useRef(-Infinity);
-  const heldPlace = useRef<(() => void) | null>(null);
-  useEffect(() => () => { heldPlace.current?.(); }, []);
   const placeLatest = useRef(place);
   placeLatest.current = place;
   // The view's geometry is read only when the page has just been laid out (as its observer reports a size) or as the
@@ -198,8 +187,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     };
     measure();
     scroller.addEventListener('scroll', measure, { passive: true });
-    const reader = () => { readerAt.current = performance.now(); };
-    for (const type of READER_EVENTS) scroller.addEventListener(type, reader, { passive: true });
     const size = new ResizeObserver(entries => {
       const box = entries.find(entry => entry.target === scroller)?.borderBoxSize?.[0];
       if (box) scrollerHeight = box.blockSize;
@@ -223,7 +210,6 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     spacing?.observe(list, { attributes: true, attributeFilter: ['class', 'style'] });
     return () => {
       scroller.removeEventListener('scroll', measure);
-      for (const type of READER_EVENTS) scroller.removeEventListener(type, reader);
       size.disconnect(); spacing?.disconnect(); laidOut?.disconnect();
     };
   }, [scroller, measurements]);

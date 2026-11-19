@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PlaybackController, MAX_PLAYBACK_SPEED, MIN_PLAYBACK_SPEED, PLAYBACK_SPEEDS, speedLabel, speedParts, validPlaybackSpeed } from './playback.ts';
+import { WidgetFrames } from './widgetClock.ts';
+import { followStore } from './follow/connection.ts';
+import type { DashboardClient, DashboardSource } from './client';
+
+test('visible widgets on one page share native subscriptions through their individual frame signals', () => {
+  const clock = new PlaybackController(), client = {} as DashboardClient;
+  const source = { id: 'recording', revision: '1' } as DashboardSource;
+  const a = new WidgetFrames(clock, 'research'), b = new WidgetFrames(clock, 'active-research');
+  assert.equal(followStore(client, source, a.clock), followStore(client, source, b.clock));
+  assert.notEqual(followStore(client, source, a.clock, 24), followStore(client, source, b.clock));
+});
 
 test('custom playback rates accept fractions without seeking or starting playback', () => {
   const clock = new PlaybackController();
@@ -15,6 +26,17 @@ test('custom playback rates accept fractions without seeking or starting playbac
     assert.equal(snapshot.sequence, sequence);
     assert.equal(snapshot.playing, false);
   }
+});
+
+test('discarded pictures leave before a rewound clock is visible to a frame listener', () => {
+  const clock = new PlaybackController();
+  clock.setBounds({ firstHour: 0, lastHour: 100 });
+  clock.seek(80);
+  let painted: number | null = 80;
+  clock.onDiscard(() => { assert.equal(clock.getHour(), 80); painted = null; });
+  clock.subscribeFrame(() => assert.ok(painted === null || painted <= clock.getHour()));
+  clock.seek(10);
+  assert.equal(painted, null);
 });
 
 test('invalid custom rates leave the current speed unchanged', () => {
@@ -75,13 +97,14 @@ test('a subscriber that stops the clock on a speed change does not count the sam
 });
 
 test('pausing and changing speed keep the time played since the last tick', t => {
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
   const clock = new PlaybackController();
   t.after(() => clock.stop());
   clock.setBounds({ firstHour: 0, lastHour: 100_000 });
   clock.setSpeed(720);
   clock.setPlaying(true);
-  const busy = performance.now() + 20;
-  while (performance.now() < busy) { /* let time pass without a tick */ }
+  now += 20;
   const shown = clock.positionAt();
   clock.setSpeed(168);
   assert.ok(clock.getSnapshot().position >= shown, 'changing speed never steps back');
@@ -89,6 +112,19 @@ test('pausing and changing speed keep the time played since the last tick', t =>
   clock.setPlaying(false);
   assert.ok(clock.getSnapshot().position >= beforePause, 'pausing never steps back');
   assert.equal(clock.positionAt(performance.now() + 1000), clock.getSnapshot().position);
+});
+
+test('the page and drawing worker advance from the same instant even if starting play takes a frame', t => {
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  const clock = new PlaybackController();
+  t.after(() => clock.stop());
+  clock.setBounds({ firstHour: 0, lastHour: 100_000 });
+  clock.setSpeed(1440);
+  clock.subscribe(() => { now += 20; });
+  clock.setPlaying(true);
+  const anchor = clock.getSnapshot();
+  assert.equal(clock.positionAt(now), anchor.position + (now - anchor.composedAt!) / 1000 * anchor.hoursPerSecond);
 });
 
 
@@ -120,6 +156,18 @@ test('seek sequence survives coalesced playback updates but not pauses, speed ch
   assert.equal(clock.getSnapshot().seekSequence, initial + 2);
 });
 
+
+test('next hour banks play time since the last displayed frame', t => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const clock = new PlaybackController();
+  clock.setBounds({ firstHour: 0, lastHour: 100 });
+  clock.setSpeed(24); clock.setPlaying(true);
+  now = 625;
+  clock.step(1);
+  assert.equal(clock.getHour(), 16);
+  assert.equal(clock.getSnapshot().playing, false);
+});
 
 test('forward steps keep animation history and backward steps reset it', () => {
   const clock = new PlaybackController();

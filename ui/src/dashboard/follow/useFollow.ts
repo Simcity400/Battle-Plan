@@ -1,13 +1,11 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { RefObject } from 'react';
 import { perfLog } from '../../shell/perf.ts';
 import type { PlaybackController } from '../playback';
-import { atNextSlot, pagePace, structureOpen } from '../structurePace.ts';
-import type { PaceClock } from '../structurePace';
 import { countWork, measuredWidget } from '../widgetPerf.ts';
 import { PreparingPage } from '../preparing.ts';
 import type { FollowedAnswer } from './message.ts';
-import { canonical } from './store.ts';
+import { canonical } from './canonical.ts';
 import type { FollowEntry, FollowHandle, FollowQuery, FollowStore, Painter } from './store.ts';
 
 /** Tells `changed` whether `element` is on screen, now and as it changes; the returned function
@@ -24,6 +22,7 @@ export const DASHBOARD_SCROLL = '.dash-grid-scroll';
  * it is on screen while any of its children is, the children watched as they come and go. */
 export const observeOnScreen: OnScreen = (element, changed) => {
   if (typeof IntersectionObserver !== 'function') { changed(true); return () => {}; }
+  element = element.closest('article.dash-widget') ?? element;
   const root = element.closest(DASHBOARD_SCROLL);
   const reach: IntersectionObserverInit | undefined = root ? { root, rootMargin: NEAR_SCREEN } : undefined;
   if (getComputedStyle(element).display !== 'contents') {
@@ -73,87 +72,48 @@ export interface Followed {
   hidden: boolean;
 }
 
-/** Whether a widget reads its value at the head from follow, or asks for it as before: the one place the
- * request path is kept for a value follow does not serve (deleted with P11, when format 12 is the only one). */
+/** Whether the service accepted the widget's follow. */
 export const followsHead = (followed: Followed) => followed.status === 'followed';
 
-/** The fallback's clock, beside `followsHead` and deleted with it: the hour a widget asks by for a value
- * follow does not serve. While playing it moves only in the page's structure slot (`structureOpen`), with every other
- * structure of the page; at once when the clock stops, steps or seeks. Off, the hour is read as rendered and nothing
- * renders for it. */
+/** The request hour at an anchor, including paused seeks. */
 export function useFallbackHour(clock: PlaybackController, on = true): number {
   const widget = measuredWidget();
   countWork(widget, 'render');
-  const [paced, setPaced] = useState<{ clock: PlaybackController; hour: number } | null>(null);
-  useEffect(() => {
-    if (!on) return;
-    let last = Number.NaN, held: (() => void) | null = null;
-    const tell = () => {
-      const { hour, playing } = clock.getSnapshot();
-      if (hour === last) return;
-      if (!structureOpen(playing)) { held ??= atNextSlot(() => { held = null; tell(); }); return; }
-      last = hour;
-      countWork(widget, 'hour');
-      setPaced(before => before?.clock === clock && before.hour === hour ? before : { clock, hour });
-    };
-    tell();
-    const stop = clock.subscribeFrame(tell);
-    return () => { stop(); held?.(); setPaced(null); };
-  }, [clock, on, widget]);
-  return on && paced?.clock === clock ? paced.hour : clock.getHour();
+  const subscribe = useCallback((changed: () => void) => on ? clock.subscribe(changed) : () => {}, [clock, on]);
+  const read = useCallback(() => on ? clock.getHour() : null, [on, clock]);
+  return useSyncExternalStore(subscribe, read, read) ?? clock.getHour();
 }
 
-/** Follows `query` while `target` is on screen, or near the dashboard's view where its widget is active (from mount;
- * never beyond that reach, never after unmount) and paints its moving parts with `paint` in the animation frame from the store. A
- * value never renders the component: only its availability or a change of `structureOf` the
- * answer does (a row came or went), and with `pace` (the playback clock) such a change renders at most once a slot of
- * the page's shared structure pace while it plays, the newest at the slot's start or at once when it stops. Another
- * element taking `target`'s place (a loading state replaced by the content it waited for) keeps the follow unless it
- * is off screen. Inside the prepare lane's hidden copy of a page nothing is followed and nothing is hidden: the widget asks
- * its head as it does unfollowed, through the lane, so the reply its first render asks when shown is held. */
-export function useFollow(store: FollowStore | null, asked: FollowQuery | null, target: RefObject<Element | null>, paint: (entry: FollowEntry) => void,
-  structureOf: (answer: FollowedAnswer | undefined, entry: FollowEntry) => string = noStructure, onScreen: OnScreen = observeOnScreen, given?: PaceClock): Followed {
+/** A visible widget shares its query and renders when availability or row structure changes. */
+export function useFollow(store: FollowStore | null, asked: FollowQuery | null, target: RefObject<Element | null>, paint: ((entry: FollowEntry) => unknown) | null,
+  structureOf: (answer: FollowedAnswer | undefined, entry: FollowEntry) => string = noStructure, onScreen: OnScreen = observeOnScreen): Followed {
   const prepared = useContext(PreparingPage);
   const query = prepared ? null : asked;
-  // Every followed structure is paced: by the clock given, else the page's.
-  const pace = given ?? pagePace() ?? undefined;
   const widget = measuredWidget();
   const painting = useRef(paint); painting.current = paint;
   const shape = useRef(structureOf); shape.current = structureOf;
-  const shown = useRef<{ entry: FollowEntry | null; painter: Painter | null; listeners: Set<() => void>; visible: boolean; hidden: boolean;
+  const shown = useRef<{ entry: FollowEntry | null; store?: FollowStore; key?: string | null; painter: Painter | null; listeners: Set<() => void>; visible: boolean; hidden: boolean;
     show: ((visible: boolean) => void) | null }>(null);
   shown.current ??= { entry: null, painter: null, listeners: new Set(), visible: false, hidden: false, show: null };
   const box = shown.current;
   const key = query ? canonical(query) : null;
-  // With `pace`: what was rendered last, and the slot's wake-up while a newer one waits for it. While playing, anything
-  // the widget renders from its follow (status, the entry, its structure, hidden) is taken only in the slot's task.
-  const paced = useRef<{ snapshot: string; wake: (() => void) | null } | null>(null);
+  const entry = box.store === store && box.key === key ? box.entry : null;
+  const paints = paint !== null;
   const subscribe = useCallback((changed: () => void) => {
     box.listeners.add(changed);
-    const stop = pace?.subscribe(changed);
-    return () => { box.listeners.delete(changed); stop?.(); };
-  }, [box, pace]);
+    return () => { box.listeners.delete(changed); };
+  }, [box]);
   const read = () => {
-    const entry = box.entry;
-    const now = `${entry ? `${entry.status}\u0000${entry.reason ?? ''}\u0000${entry.id}\u0000${shape.current(entry.answer, entry)}`
+    const reading = box.store === store && box.key === key ? box.entry : null;
+    const now = `${reading ? `${reading.status}\u0000${reading.reason ?? ''}\u0000${reading.id}\u0000${shape.current(reading.answer, reading)}`
       : 'off\u0000\u0000\u0000'}\u0000${box.hidden ? 'hidden' : ''}`;
-    const held = paced.current;
-    if (!pace || !held) { paced.current = { snapshot: now, wake: null }; return now; }
-    if (held.snapshot === now) return now;
-    if (!structureOpen(pace.getSnapshot().playing)) {
-      held.wake ??= atNextSlot(() => { held.wake = null; for (const changed of box.listeners) changed(); });
-      return held.snapshot;
-    }
-    held.wake?.();
-    paced.current = { snapshot: now, wake: null };
     return now;
   };
   const snapshot = useSyncExternalStore(subscribe, read, () => 'off\u0000\u0000\u0000\u0000');
-  useEffect(() => () => { paced.current?.wake?.(); }, []);
   const followed = useMemo<Followed>(() => {
     const [status, reason, , structure, hidden] = snapshot.split('\u0000') as [Followed['status'], string, string, string, string];
-    return { status, reason: reason || undefined, structure, entry: box.entry, hidden: hidden === 'hidden' };
-  }, [snapshot, box]);
+    return { status, reason: reason || undefined, structure, entry, hidden: hidden === 'hidden' };
+  }, [snapshot, entry]);
   const structure = followed.structure;
   // The follow, held while the query stands and its element is on screen.
   useEffect(() => {
@@ -170,7 +130,9 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
         handle = store.acquire(query);
         if (widget !== null) perfLog?.followWidget(widget, handle.entry.id);
         box.entry = handle.entry;
-        painter = box.painter = store.painter(handle.entry, entry => painting.current(entry), true, widget);
+        box.store = store;
+        box.key = key;
+        if (paints) painter = box.painter = store.painter(handle.entry, entry => painting.current?.(entry), true, widget);
         unwatch = store.watch(handle.entry, tell);
         tell();
       } else if (!visible && handle) leave();
@@ -178,7 +140,7 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
     box.show(box.visible);
     return () => { box.show = null; leave(); };
     // `query` is compared by its canonical text, `key`.
-  }, [store, key, box, widget]);
+  }, [store, key, box, widget, paints]);
   // Whether its element is on screen: a new element is watched in its place without letting the follow go.
   useEffect(() => {
     const element = target.current;

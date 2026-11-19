@@ -42,6 +42,7 @@ use ts_rs::TS;
 
 pub mod details;
 mod fold;
+mod incremental;
 #[cfg(test)]
 mod tests;
 
@@ -68,6 +69,9 @@ pub struct SpecialProjects;
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecialProjectsParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub hour: Option<i32>,
     pub branch_id: String,
     pub tag: String,
 }
@@ -554,6 +558,7 @@ fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<
     } else {
         dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, Keys::These(&programs), piece.first, piece.last))?
     };
+    at_hour::count_rows(|| projects.iter().chain(&histories).chain([&programs]).flat_map(|h| &h.keys).map(|(_, steps)| steps.len() as u64).sum());
     Ok(PieceRows {
         projects,
         histories,
@@ -649,10 +654,10 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
 
 /// The holder runs of `tag` over the timeline cut at its stretches, and the holders as identity
 /// runs.
-fn pieces(query: &Query<'_>, tag: &str) -> (Vec<Piece>, Vec<CountryIdentityRun>) {
+fn pieces(query: &Query<'_>, tag: &str, through: i32) -> (Vec<Piece>, Vec<CountryIdentityRun>) {
     let mut pieces = Vec::new();
     let mut identities: Vec<CountryIdentityRun> = Vec::new();
-    for run in query.holders.within(tag, query.timeline.first, query.timeline.last) {
+    for run in query.holders.within(tag, query.timeline.first, through) {
         let Holder::Found { slot, id } = run.holder else { continue };
         match identities.last_mut() {
             Some(held) if (held.slot, held.country_id) == (slot, id) && held.last_hour.checked_add(1) == Some(run.first) => held.last_hour = run.last,
@@ -744,7 +749,13 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
     let branch = params.branch_id.parse::<u64>().map_err(|_| dashboard_core::invalid("Invalid branch"))?;
     let query = crate::answer::query(source, branch)?;
     let content = content(source, load)?;
-    let (pieces, identities) = pieces(&query, &params.tag);
+    let through = params.hour.unwrap_or(query.timeline.last);
+    if params.hour.is_some() && query.timeline.at(through).is_none() { return Err(dashboard_core::refused("Special projects hour is not recorded")); }
+    reply_through(query, params, &content, through, cancelled)
+}
+
+fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, through: i32, cancelled: &AtomicBool) -> io::Result<SpecialProjectsReply> {
+    let (pieces, identities) = pieces(&query, &params.tag, through);
     let mut fold = Fold::new(query.timeline.first);
     let mut observed: Vec<(i32, i32)> = Vec::new();
     let mut links: HashMap<u32, RunLinks> = HashMap::new();
@@ -754,54 +765,57 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
         let read = read_piece(&query, run_links, piece)?;
         fold_piece(&mut fold, piece, &read, &mut observed, cancelled)?;
     }
-    let mut naming = Naming::new(&content);
+    present(&query, params, content, &fold, observed, identities, cancelled, &mut None)
+}
+
+type Spelling = (BTreeMap<u32, i32>, BTreeMap<u32, i32>, Spelled, Refusals, BTreeMap<String, u64>);
+
+fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, fold: &Fold, observed: Vec<(i32, i32)>, identities: Vec<CountryIdentityRun>, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
+    let mut naming = Naming::new(content);
     let mut definitions: BTreeMap<u32, i32> = BTreeMap::new();
     let mut characters: BTreeMap<u32, i32> = BTreeMap::new();
-    let mut latest: BTreeMap<u32, i32> = BTreeMap::new();
     for run in fold.episodes.iter().flat_map(|episode| &episode.runs) {
         let look = &fold.looks[run.presentation as usize];
         let first = definitions.entry(look.definition).or_insert(run.first_hour);
         *first = (*first).min(run.first_hour);
-        let last = latest.entry(look.definition).or_insert(run.first_hour);
-        *last = (*last).max(run.first_hour);
         if let Person::Character(id) = look.person {
             let first = characters.entry(id).or_insert(run.first_hour);
             *first = (*first).min(run.first_hour);
         }
     }
-    let spelled = spell(&query, &mut naming, &definitions, &characters, cancelled)?;
-    // A name that reads scope is evaluated once, at the latest hour a run of it starts.
-    let mut named: HashMap<u32, Named> = HashMap::new();
-    for (&definition, &hour) in &latest {
-        let slot = query.holders.at(&params.tag, hour).and_then(|run| match run.holder {
-            Holder::Found { slot, .. } => Some(slot),
-            Holder::Unresolved => None,
-        });
-        let mut scoped = |key: &str| match slot {
-            Some(slot) => scoped_at(&query, &content, key, hour, slot),
-            None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
-        };
-        let shown = naming.definition(spelled.tokens.get(&definition).map(String::as_str), definition, &params.tag, &mut scoped);
-        named.insert(definition, shown);
+    if cache.as_ref().is_none_or(|(defs, chars, ..)| *defs != definitions || *chars != characters) {
+        let spelled = spell(query, &mut naming, &definitions, &characters, cancelled)?;
+        *cache = Some((definitions, characters, spelled, naming.refusals.get_mut().unwrap().clone(), naming.art.clone()));
     }
+    let (_, _, spelled, refused, art) = cache.as_ref().expect("spelled");
+    *naming.refusals.get_mut().unwrap() = refused.clone();
+    naming.art.clone_from(art);
     let mut people = Interned::new();
     let mut presentations = Interned::new();
-    let mut shown: HashMap<u32, u32> = HashMap::new();
-    for (id, look) in fold.looks.iter().enumerate() {
-        let person = match &look.person {
-            Person::Character(character) => spelled.people.get(character).cloned().unwrap_or_else(|| unread_person(&look.person)),
-            other => unread_person(other),
-        };
-        let scientist = people.id(person);
-        let name = named.get(&look.definition).cloned().unwrap_or_else(|| Named::unread("The definition was not read."));
-        let presentation = ProjectPresentation { name: name.name, specialization: name.specialization, specialization_name: name.specialization_name, icon: name.icon, icon_missing: name.icon_missing, scientist, scientist_as_of: look.as_of };
-        shown.insert(id as u32, presentations.id(presentation));
-    }
-    let mut projects = fold.episodes;
+    let mut names = HashMap::new();
+    let mut projects = fold.episodes.clone();
     for episode in &mut projects {
         let mut runs: Vec<SpecialProjectRun> = Vec::with_capacity(episode.runs.len());
         for mut run in std::mem::take(&mut episode.runs) {
-            run.presentation = shown[&run.presentation];
+            let look = &fold.looks[run.presentation as usize];
+            let hour = run.first_hour;
+            let name = names.entry((look.definition, hour)).or_insert_with(|| {
+                let slot = query.holders.at(&params.tag, hour).and_then(|run| match run.holder {
+                    Holder::Found { slot, .. } => Some(slot),
+                    Holder::Unresolved => None,
+                });
+                naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, &params.tag, &mut |key| match slot {
+                    Some(slot) => scoped_at(query, content, key, hour, slot),
+                    None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
+                })
+            });
+            let person = match &look.person {
+                Person::Character(id) => spelled.people.get(id).cloned().unwrap_or_else(|| unread_person(&look.person)),
+                other => unread_person(other),
+            };
+            run.presentation = presentations.id(ProjectPresentation { name: name.name.clone(), specialization: name.specialization.clone(),
+                specialization_name: name.specialization_name.clone(), icon: name.icon.clone(), icon_missing: name.icon_missing.clone(),
+                scientist: people.id(person), scientist_as_of: look.as_of });
             match runs.last_mut() {
                 Some(held) if held.last_hour.checked_add(1) == Some(run.first_hour) && fold::same(held, &run) => held.last_hour = run.last_hour,
                 _ => runs.push(run),
@@ -812,7 +826,7 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
     let counts: BTreeSet<i32> = projects.iter().flat_map(|episode| &episode.runs).filter_map(|run| run.iterations).collect();
     let iteration_texts: BTreeMap<i32, Option<String>> = counts.into_iter().map(|count| (count, naming.iterations(count))).collect();
     let mut warnings = content.definitions.warnings.clone();
-    warnings.extend(fold.warnings.into_iter().map(|(reason, count)| format!("{reason} ({count} observations).")));
+    warnings.extend(fold.warnings.iter().map(|(reason, count)| format!("{reason} ({count} observations).")));
     warnings.extend(naming.warnings());
     if !projects.is_empty() {
         warnings.push("Project icons and portraits are visual assets outside content hash coverage.".into());
@@ -840,6 +854,26 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
     };
     dashboard_base::products::check_reply_budget(&reply)?;
     Ok(reply)
+}
+
+pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Value) -> Result<Box<dyn dashboard_follow::panel::Panel>, String> {
+    let mut params = asked.clone();
+    params.as_object_mut().ok_or("Invalid special-projects panel")?.remove("panel");
+    let params: SpecialProjectsParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    SpecialProjects::validate(&params)?;
+    let branch = params.branch_id.parse().map_err(|_| "Invalid branch")?;
+    let query = crate::answer::query(source, branch).map_err(|e| e.to_string())?;
+    let content = content(source, load).map_err(|e| e.to_string())?;
+    let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
+    let params = Arc::new(params);
+    let advance = at_hour::shared_reader(source, load, SpecialProjects::KEY, asked, || incremental::reader(replay.clone(), timeline.clone(), holders.clone(), params.clone(), content.clone(), executable));
+    let read: dashboard_follow::panel::ExactReader = Arc::new(move |hour, cancelled| {
+        if timeline.at(hour).is_none() { return Err("Special projects hour is not recorded".into()); }
+        let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
+        let reply = engine_executable::executable_tables::scope(executable, || reply_through(query, &params, &content, hour, cancelled)).map_err(|e| e.to_string())?;
+        serde_json::to_value(reply).map_err(|e| e.to_string())
+    });
+    Ok(at_hour::product_panel(advance, read, Vec::new()))
 }
 
 impl Product for SpecialProjects {

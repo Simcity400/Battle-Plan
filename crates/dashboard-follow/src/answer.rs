@@ -2,8 +2,9 @@
 //! eight-byte boundary so the UI reads numbers as typed arrays over the message itself.
 //!
 //! Message: magic, flags (bit 0: a reset, the settled answers after a seek; the bits above: its
-//! follow's route, [`crate::Follow::route`]), hour, answer count; then each answer: id, hour (its
-//! table's head), body length, zero; then its body.
+//! follow's route, [`crate::Follow::route`]), confirmed hour, answer count, page seek, clock offset.
+//! Each answer has its id, reading hour, body length, zero, then the body. The confirmed hour
+//! covers unchanged answers through the common lane head.
 //!
 //! Body: kind (0 not recorded, 1 rows, 2 rows appended, 3 rows changed), three zero bytes, rows,
 //! columns, texts; kind 0 is one text, the reason. Kinds 1 to 3: keys' low and high 64 bits, rows;
@@ -17,7 +18,8 @@ use crate::invalid;
 use replay_data::Hour;
 use std::{collections::HashMap, io};
 
-pub const MAGIC: u32 = u32::from_le_bytes(*b"FOL1");
+pub const MAGIC: u32 = u32::from_le_bytes(*b"FOL2");
+
 pub const NO_REASON: u32 = u32::MAX;
 
 pub(crate) const NOT_RECORDED: u8 = 0;
@@ -28,8 +30,6 @@ pub(crate) const CHANGED: u8 = 3;
 const RESET: u32 = 1;
 /// The greatest route: the flags' bits above the reset bit.
 pub const ROUTES: u32 = u32::MAX >> 1;
-const MESSAGE_HEAD: usize = 16;
-const ANSWER_HEAD: usize = 16;
 
 /// A cell of an answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,18 +243,15 @@ pub fn not_recorded(reason: &str, out: &mut Vec<u8>) {
 }
 
 /// A message of the follow `route` being made in `out`.
-pub fn begin(out: &mut Vec<u8>, route: u32, hour: Hour, reset: bool) {
+pub fn begin(out: &mut Vec<u8>, route: u32, clock: i32, hour: Hour, seek: u32, reset: bool) {
     debug_assert!(route <= ROUTES, "a route fits above the reset bit");
     out.clear();
     out.extend_from_slice(&MAGIC.to_le_bytes());
     out.extend_from_slice(&(route << 1 | if reset { RESET } else { 0 }).to_le_bytes());
     out.extend_from_slice(&hour.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
-}
-
-/// The bytes an answer of `body` adds to a message.
-pub(crate) fn size(body: usize) -> usize {
-    ANSWER_HEAD + body
+    out.extend_from_slice(&seek.to_le_bytes());
+    out.extend_from_slice(&clock.to_le_bytes());
 }
 
 pub fn push(out: &mut Vec<u8>, id: u32, hour: Hour, body: &[u8]) {
@@ -267,17 +264,15 @@ pub fn push(out: &mut Vec<u8>, id: u32, hour: Hour, body: &[u8]) {
     out[12..16].copy_from_slice(&count.to_le_bytes());
 }
 
-pub(crate) fn empty() -> usize {
-    MESSAGE_HEAD
-}
-
 /// A message read back: its follow's route, its hour, whether it is a reset, and each answer's id,
 /// hour and body.
 #[derive(Debug)]
 pub struct Decoded<'a> {
+    pub stamp: (u32, i32),
     pub route: u32,
     pub hour: Hour,
     pub reset: bool,
+    pub limited: Vec<(u32, Hour)>,
     pub answers: Vec<(u32, Hour, &'a [u8])>,
 }
 
@@ -304,31 +299,29 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The route of the followed message `bytes`, read from its head alone.
-pub fn route(bytes: &[u8]) -> Option<u32> {
-    (bytes.len() >= MESSAGE_HEAD && bytes[..4] == MAGIC.to_le_bytes()).then(|| u32::from_le_bytes(bytes[4..8].try_into().expect("four bytes")) >> 1)
-}
-
 pub fn decode(bytes: &[u8]) -> io::Result<Decoded<'_>> {
     let mut reader = Reader { bytes, at: 0 };
-    if reader.u32()? != MAGIC {
+    let magic = reader.u32()?;
+    if magic != MAGIC {
         return Err(invalid("Not a followed message"));
     }
     let flags = reader.u32()?;
     let hour = reader.u32()? as Hour;
     let count = reader.u32()?;
-    let mut answers = Vec::with_capacity(count as usize);
+    let stamp = (reader.u32()?, reader.u32()? as i32);
+    let mut answers = Vec::new();
+    let mut limited = Vec::new();
     for _ in 0..count {
         let id = reader.u32()?;
         let at = reader.u32()? as Hour;
         let length = reader.u32()? as usize;
         reader.u32()?;
-        answers.push((id, at, reader.take(length)?));
+        if length == 0 { limited.push((id, at)); } else { answers.push((id, at, reader.take(length)?)); }
     }
     if reader.at != bytes.len() {
         return Err(invalid("A followed message holds bytes past its answers"));
     }
-    Ok(Decoded { route: flags >> 1, hour, reset: flags & RESET != 0, answers })
+    Ok(Decoded { stamp, route: flags >> 1, hour, reset: flags & RESET != 0, limited, answers })
 }
 
 /// An answer's body read back.
@@ -414,16 +407,17 @@ impl Answer {
 /// the answers superseded. Messages of two follows are refused: their hours are of two playheads.
 pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     let (old, new) = (decode(older)?, decode(newer)?);
-    if old.route != new.route {
+    if old.route != new.route || old.stamp != new.stamp {
         return Err(invalid("Messages of two follows do not merge"));
     }
     let mut out = Vec::with_capacity(older.len() + newer.len());
-    begin(&mut out, new.route, new.hour, old.reset || new.reset);
+    begin(&mut out, new.route, new.stamp.1, new.hour, new.stamp.0, old.reset || new.reset);
+    for &(id, through) in &new.limited { push(&mut out, id, through, &[]); }
     let mut superseded = 0;
     let is_log = |body: &[u8]| body.first() == Some(&LOG);
     let laid = |earlier: &[u8], later: &[u8]| later.first() == Some(&CHANGED) && matches!(earlier.first(), Some(&ROWS | &CHANGED));
     for &(id, hour, body) in &old.answers {
-        if is_log(body) && new.reset {
+        if new.reset {
             superseded += 1;
         } else if let Some(&(.., later)) = new.answers.iter().find(|&&(held, ..)| held == id) {
             if !is_log(body) && !laid(body, later) {
@@ -436,7 +430,7 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     for &(id, hour, body) in &new.answers {
         match old.answers.iter().find(|&&(held, ..)| held == id).map(|&(.., earlier)| earlier) {
             Some(earlier) if is_log(earlier) && is_log(body) && !new.reset => push(&mut out, id, hour, &logs(earlier, body)?),
-            Some(earlier) if laid(earlier, body) => push(&mut out, id, hour, &changed(earlier, body)?),
+            Some(earlier) if !new.reset && laid(earlier, body) => push(&mut out, id, hour, &changed(earlier, body)?),
             _ => push(&mut out, id, hour, body),
         }
     }

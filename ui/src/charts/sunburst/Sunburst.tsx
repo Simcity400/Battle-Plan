@@ -8,7 +8,6 @@ import { font } from '../draw';
 import { approach, easeTau } from '../easing';
 import { useMotionNow } from '../liveMotion.ts';
 import { setStyle } from '../domText.ts';
-import { atNextSlot, structureOpen } from '../../dashboard/structurePace.ts';
 import type { Live } from '../live';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
@@ -71,7 +70,7 @@ export interface SunburstProps {
   /** Content below the slice legend, retained when its rows are switched off. */
   legendExtra?: ReactNode;
   /** The playhead's values, read as each frame draws in place of the same props: the slices, the centre and the
-   * legend's amounts move with no render, and the legend's rows follow them at most four times a second. The props
+   * legend's amounts move with no render, and the legend's rows follow them. The props
    * stay what a render shows until then. Items it lacks are not drawn; a whole it cannot tell is `unavailableReason`. */
   live?: Live<SunburstValues>;
 }
@@ -204,7 +203,6 @@ export default function Sunburst(props: SunburstProps) {
       colours: Map<string, string>; nodes: SunburstNode[]; byId: Map<string, SunburstNode> } | null = null;
     let previousStretch = latest.current.props.stretch;
     let wasUnavailable = false;
-    let legendHeld: (() => void) | null = null;
     // Slice names measured once per name and font: a frame of playback measures no text it measured before.
     const labelWidths = new Map<string, number>();
     let labelFont = '';
@@ -221,10 +219,8 @@ export default function Sunburst(props: SunburstProps) {
       held.tree = next.tree; held.focus = next.focus;
       paintLegend(legendHost.current, next.focus, p.text);
       legendShow.current(next.focus, false, false);
-      // The legend's rows are structure: taken in the slot's task, made again there from the newest values.
       if (legendIds(next.focus) !== held.listed) {
-        if (structureOpen()) setAdopted({ live: p.live, items: p.items, values });
-        else legendHeld ??= atNextSlot(() => { legendHeld = null; liveTree.current = null; livePaint(); if (task.current) scheduler.wake(task.current); });
+        setAdopted({ live: p.live, items: p.items, values });
       }
       return next;
     };
@@ -440,7 +436,7 @@ export default function Sunburst(props: SunburstProps) {
     element.addEventListener('click', click);
     element.addEventListener('contextmenu', contextMenu);
     return () => {
-      remove(); unsubscribe(); sized.disconnect(); hideTooltip(owner); legendHeld?.();
+      remove(); unsubscribe(); sized.disconnect(); hideTooltip(owner);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerleave', leave);
       element.removeEventListener('click', click);

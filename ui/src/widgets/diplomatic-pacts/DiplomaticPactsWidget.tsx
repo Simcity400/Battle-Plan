@@ -29,8 +29,6 @@ const NO_WARNINGS: string[] = [];
  * which side holds it, and a bar per partner from when it started to when it was last listed. */
 export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
-  // The widget renders when an agreement starts, ends or is last listed by the head (paced; any hour while paused), never
-  // because the hour moved inside one; the playhead and the bars move with the clock each frame (`liveHead`).
   const followsClock = widget.time.mode === 'follow';
   const structure = useRef<(hour: number) => string>(() => '');
   const playbackHour = useHeadHour(clock, active && followsClock, hour => structure.current(hour));

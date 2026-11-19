@@ -7,7 +7,6 @@ import type { MenuItem } from '../../components/ContextMenu';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { hideTooltip, refreshTooltip, scrollTooltip, showTooltip, tooltipText } from '../tooltip';
 import { liveKey } from '../live';
-import { atNextSlot, structureOpen } from '../../dashboard/structurePace';
 import { useWhyCommit } from '../../dashboard/widgetPerf.ts';
 import type { Live, LiveValues } from '../live';
 import { scheduler } from '../scheduler';
@@ -167,7 +166,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   }, [columns, columnFit]);
   const hiddenColumns = useMemo(() => columnFit.hidden.length
     ? columns.filter(column => columnFit.hidden.includes(column.key) && !column.inTooltip) : NO_COLUMNS as readonly TableColumn<T>[], [columns, columnFit]);
-  // A sort by a painted column orders by the live values last committed: read again at most four times a second.
+  // A sort by a painted column orders by the live values last committed.
   const liveSort = live && !unsorted && sortedColumn && (sortedColumn.paint || sortedColumn.sortsLive) ? sortedColumn.key : null;
   const [sortedFrom, setSortedFrom] = useState<{ live: typeof live; values: LiveValues<SortValue> } | null>(null);
   const sortValues = liveSort === null ? null : sortedFrom && sortedFrom.live === live ? sortedFrom.values : live!.read();
@@ -599,7 +598,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     } };
   useLayoutEffect(() => {
     if (!live) return;
-    let painted: LiveValues<SortValue> | null = null, sortHeld: (() => void) | null = null;
+    let painted: LiveValues<SortValue> | null = null;
     const task: FrameTask = { frame: () => { paint(false); return false; } };
     const wake = () => scheduler.wake(task);
     const paint = (force: boolean) => {
@@ -625,14 +624,12 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       if (moved) at.refreshTip();
       if (at.liveSort === null || values === at.sortValues) return;
       if (!at.orderDiffers(values)) return;
-      // A new order is structure: taken in the slot's task, painted again there from the newest values.
-      if (!structureOpen()) { sortHeld ??= atNextSlot(() => { sortHeld = null; paint(true); }); return; }
       setSortedFrom({ live, values });
     };
     livePaint.current = paint;
     const remove = scheduler.add(task);
     const stop = live.subscribe(wake);
-    return () => { remove(); stop(); sortHeld?.(); livePaint.current = null; };
+    return () => { remove(); stop(); livePaint.current = null; };
   }, [live]);
   useLayoutEffect(() => {
     if (!live) { liveCells.current = []; return; }

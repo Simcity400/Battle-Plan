@@ -80,6 +80,7 @@ unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-tracing = { workspace = true }
+unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }

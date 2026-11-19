@@ -27,7 +27,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useLogPages } from '../../dashboard/useLogPages';
 import type { LogCut, LogSpec } from '../../dashboard/useLogPages';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
-import { useStructureState } from '../../dashboard/structurePace';
+import { useDistinctState } from '../../dashboard/useDistinctState';
 import type { Country, EspionageEndedReply, EspionageOperationsReply, FacetFilter, OperationState } from '../../generated/dashboard';
 import type { Failure } from '../../dashboard/queryError';
 import { OPTIONS } from './definition';
@@ -131,7 +131,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
 
   // Names and flags at each row's hour, for the rows drawn.
   // The list laid out again draws its rows as new objects: only rows naming other countries are news.
-  const [visible, onVisible] = useStructureState<readonly LogRow<OperationItem>[]>(runtime.clock, NO_ROWS, sameCountryRows);
+  const [visible, onVisible] = useDistinctState<readonly LogRow<OperationItem>[]>(NO_ROWS, sameCountryRows);
   const wanted = useMemo(() => {
     const seen = new Map<string, { hour: number; tag: string }>();
     for (const row of visible) for (const value of [row.item.owner, row.item.target]) {

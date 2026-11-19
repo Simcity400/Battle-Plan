@@ -582,7 +582,11 @@ fn a_hook_in_the_slot_runs_on_every_step_until_removed() {
     assert!(Arc::ptr_eq(&open(units(recording, "hook"), quick()).unwrap(), &entry), "a second caller gets the same playhead");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let held = Arc::clone(&seen);
-    let id = entry.hooks().add(Box::new(move |step, lanes| held.lock().unwrap().push((step.last(), lanes.get(0).and_then(|lane| lane.head())))));
+    let registry = Arc::downgrade(&entry.hooks);
+    let id = entry.hooks().add(Box::new(move |step, lanes| {
+        let unlocked = registry.upgrade().unwrap().held.try_lock().is_ok();
+        held.lock().unwrap().push((step.last(), lanes.get(0).and_then(|lane| lane.head()), unlocked));
+    }));
     let composes = Arc::new(Mutex::new(0));
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
     entry.playhead().play(4.0);
@@ -590,7 +594,7 @@ fn a_hook_in_the_slot_runs_on_every_step_until_removed() {
     frames_until(&mut side, |_, frame| frame.applied.is_some_and(|hour| hour >= 40));
     let steps = seen.lock().unwrap().clone();
     assert!(steps.len() >= 5);
-    assert!(steps.iter().all(|&(last, lane)| lane == Some(last)), "the hook sees the lanes at the step's end: {steps:?}");
+    assert!(steps.iter().all(|&(last, lane, unlocked)| lane == Some(last) && unlocked), "the hook sees the lanes at the step's end: {steps:?}");
     entry.hooks().remove(id);
     let count = seen.lock().unwrap().len();
     frames_until(&mut side, |_, frame| frame.applied.is_some_and(|hour| hour >= 80));
@@ -883,6 +887,31 @@ fn a_dependent_layer_follows_its_upstream_and_equals_composed() {
     assert!(starved > 0 && whole > 0, "starved {starved}, whole {whole}");
     side.set_budget(Duration::from_secs(1));
     frames_until(&mut side, |side, frame| frame.steps > 0 && check(side).is_some());
+}
+
+#[test]
+fn a_slower_page_anchor_publishes_fine_steps_from_the_current_head() {
+    use dashboard_follow::registry::Anchor;
+    let (recording, _) = record(1, BLOCK, busy);
+    let entry = open(units(recording, "slow-page"), quick()).unwrap();
+    let (tx, rx) = mpsc::channel();
+    entry.hooks().add(Box::new(move |s, _| { let _ = tx.send((s.reset(), s.last())); }));
+    let anchor = Anchor { hour: 0, position: 0., timestamps: None, playing: true, speed: 1440., frame_rate: 60., seek: 1, sought: true };
+    entry.follow_anchor(anchor);
+    while rx.recv().unwrap().1 < 24 {}
+    let epoch = entry.playhead().epoch();
+    entry.anchor(5, true, 60., false);
+    let slower = entry.playhead().epoch();
+    assert!(slower > epoch, "the map can deliver the new pace before the dashboard");
+    entry.follow_anchor(Anchor { hour: 5, position: 5., speed: 60., sought: false, ..anchor });
+    assert_eq!(entry.playhead().epoch(), slower);
+    while rx.recv().unwrap() != (true, 5) {}
+    assert_eq!(rx.recv().unwrap(), (false, 6));
+    entry.follow_anchor(Anchor { position: 7., hour: 7, sought: false, ..anchor });
+    entry.follow_anchor(Anchor { position: 8., hour: 8, speed: 60., sought: false, ..anchor });
+    assert!(entry.playhead().epoch() > slower);
+    while rx.recv().unwrap() != (true, 8) {}
+    assert_eq!(rx.recv().unwrap(), (false, 9));
 }
 
 #[test]
@@ -2545,8 +2574,7 @@ fn a_follow_host_is_held_neither_by_a_map_beside_it_nor_by_its_frames() {
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Sum::new(&Arc::new(Mutex::new(0))))], View::default()).unwrap();
     let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
     let anchored = |entry: &super::Entry, anchor: dashboard_follow::registry::Anchor| entry.anchor(anchor.hour, anchor.playing, anchor.speed, anchor.sought);
-    let due = dashboard_follow::due::Due::new(Arc::new(dashboard_follow::push::Push::default()));
-    let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), super::Entry::playhead, anchored, dashboard_follow::Follow::new(64 << 10), due, held).unwrap();
+    let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), super::Entry::playhead, anchored, dashboard_follow::Follow::new(0), held).unwrap();
     entry.playhead().play(240.0);
     entry.playhead().seek(100);
     let deadline = Instant::now() + Duration::from_secs(60);

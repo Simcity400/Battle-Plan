@@ -15,7 +15,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
-import { useStructureState } from '../../dashboard/structurePace';
+import { useDistinctState } from '../../dashboard/useDistinctState';
 import { airPercent, airState, airSummaryTooltip, airTooltip, momentViews, orderedRegions } from '../../dashboard/airSuperiority';
 import type { AirRegionView, AirView } from '../../dashboard/airSuperiority';
 import { useAirChoicesReply, useAirMoment } from '../../dashboard/useAirSuperiority';
@@ -33,7 +33,7 @@ const sameAdopted = (held: { source: unknown; key: string }, next: { source: unk
 
 /** Each region's bar at the moment shown: its structure (which regions, which sides) renders when it changes; its
  * shares, labels and wings are painted from the followed values each frame, and the order by activity or contest
- * changes at most four times a second while they move. */
+ * changes with the readings. */
 export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   const { widget, runtime, active } = props;
   const options = resolveOptions(OPTIONS, widget.options);
@@ -52,8 +52,7 @@ export default function AirSuperiorityRegionWidget(props: WidgetProps) {
   // Painted from the newest push: a region's activity, wings and shares move without a render.
   const current = air.current;
   const viewsAt = useCallback(() => { const now = current(); return now ? momentViews(now, live.read(), looks, choiceRegions) : []; }, [current, live, looks, choiceRegions]);
-  // The rows and their order, adopted from the values at most once a slot of the page's structure pace while playing.
-  const [adopted, setAdopted] = useStructureState<{ source: unknown; key: string }>(runtime.clock, { source: null, key: '' }, sameAdopted);
+  const [adopted, setAdopted] = useDistinctState<{ source: unknown; key: string }>({ source: null, key: '' }, sameAdopted);
   useWhyCommit('AirSuperiorityRegionWidget', { data, looks, adopted, choiceRegions, read: air.read, at: air.at });
   const source = useMemo(() => [data, looks, choiceRegions, order], [data, looks, choiceRegions, order]);
   const fresh = adopted.source !== source ? rowsKey(orderedRegions(viewsAt(), order)) : adopted.key;

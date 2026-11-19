@@ -13,7 +13,6 @@ import { useChartTokens } from '../../charts/useChartTokens';
 import { contentTitle } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { useShownHour } from '../../dashboard/widgetPerf';
 import ResearchExplanation from '../research/ResearchExplanation';
 import { ResearchWithDoctrines } from '../research/DoctrinePanel';
 import { researchArt, researchArtwork, researchAt, researchFolderAt, researchFolderLooks, researchLatestProgress, researchRecordedTemplates } from '../research/researchData';
@@ -44,16 +43,14 @@ type Shown = { scope: string; slotIndex: number; token: string; firstObservedHou
 function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot }: WidgetProps) {
   const menu = useContextMenu('Active research actions');
   const owner = useId();
-  const shownHour = useShownHour();
   const live = widget.time.mode === 'follow';
   const history = useResearchReply(widget, runtime, active);
   const { track, tag, data } = history;
   const root = useRef<HTMLElement | null>(null);
   // Cards render when what the slots hold changes; their numbers are painted each frame (progress from live cells).
-  const now = useResearchSlots(widget, runtime, active && !!data, slotsStructure, root, shownHour);
+  const now = useResearchSlots(widget, runtime, active && !!data, slotsStructure, root);
   const { latest } = now;
   const reply = now.data;
-  if (!live || !reply) shownHour(reply ? reply.hour : null);
   const { categories } = useChartTokens();
   const cards = useMemo(() => data && reply ? activeSlots(data.history, reply) : [], [data, reply]);
   const looks = useMemo(() => data ? researchFolderLooks(data, historyTokens(data.history), categories) : new Map(), [data, categories]);
@@ -105,7 +102,7 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
     const databaseIndex = entry?.databaseIndex ?? null;
     const name = text.name(token, databaseIndex), look = researchFolderAt(looks, token, databaseIndex), icon = text.icon(token);
     const content = () => {
-      const at = latest.current ?? reply, hour = now.hourNow(), current = at.slots.find(read => read.index === slot.index) ?? item.read;
+      const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index) ?? item.read;
       const full = data.history.slots.find(owner => owner.index === slot.index) ?? slot;
       const progress = researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, hour);
       return currentTooltip(token, slot.index, progress, slotNumbers(current, hour).left, !!entry, text, aheadOf, databaseIndex);
@@ -139,7 +136,7 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
         breakdown.openAt(() => target.isConnected ? target.getBoundingClientRect() : null); }}>
       {body}<Icon name="chevron-down" className="active-card-chevron" aria-hidden="true" /></button>;
   };
-  return <section key={scope} className="active-research" aria-label="Active research" ref={element => { root.current = element; now.root(element); }}>
+  return <section key={scope} className="active-research" aria-label="Active research" ref={now.root}>
     {header}
     {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}
     <div className="active-cards">{cards.map(card)}</div>

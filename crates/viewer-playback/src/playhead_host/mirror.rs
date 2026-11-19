@@ -588,9 +588,11 @@ impl Mirror {
                 _ => self.reason = None,
             }
         }
-        if changes.head().is_some() {
-            self.head = changes.head();
-        }
+        self.advance_head(changes);
+    }
+
+    pub(crate) fn advance_head(&mut self, changes: &Changes) {
+        self.head = changes.head().or(self.head);
     }
 
     /// The live rows packed to the slots `old` (ascending) lists them at: the rows before the

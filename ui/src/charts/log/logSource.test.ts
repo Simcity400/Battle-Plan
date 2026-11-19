@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { aheadThrough, askedPages, binPages, countsAhead, cumulativeCounts, drawnAhead, failedPage, heldPage, logPageRequest, missingNote, missingThrough, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from './logSource.ts';
 import type { LogRow } from './logData';
-import { AHEAD_ROWS } from '../reveal.ts';
 
 // Ten rows over three six-hour bins from hour 100: hours 100, 101, 104 | 106, 106, 110, 111 | 112, 115, 117.
 const hours = [100, 101, 104, 106, 106, 110, 111, 112, 115, 117];
@@ -121,16 +120,15 @@ test('after a seek the cut waits on every page of its bin, and the list asking f
   assert.deepEqual(binPages(counts, before, 95, 2), [], 'nor does a cut before the span');
 });
 
-test('playing, the pages of the next two seconds of playback are asked with the block, never more rows than its blocks draw; paused, the next page', () => {
+test('playing, the pages of the next two seconds of playback are asked with the block; paused, the next page', () => {
   // Three rows through hour 104; two seconds at one hour a second reach hour 106, whose bin ends at the seventh row.
   assert.equal(aheadThrough(counts, before, 3, 104, 1, true), 7);
   assert.deepEqual([...askedPages([], 3, 2, true, [], aheadThrough(counts, before, 3, 104, 1, true))].sort(), [1, 2, 3], 'pages of rows 3 to 6');
   assert.deepEqual([...askedPages([], 3, 2, true, [], aheadThrough(counts, before, 3, 104, 1, false))].sort(), [1, 2], 'paused: the head page and the next');
   assert.deepEqual([...askedPages([], 3, 2, true, [], aheadThrough(counts, before, 3, 104, 1440, true))].sort(), [1, 2, 3, 4], 'fast: through the last row');
-  // However fast, never more rows than the blocks of two seconds draw: one a quarter-second slot, AHEAD_ROWS and the next each.
   const busy = validateLogCounts({ branchId: '1', log: 'test', firstHour: 100, binHours: 6, missing: [], warnings: [],
     lines: [{ before: '0', total: '100000', bins: [[0, 100000]] }] }, 100, 105);
-  assert.equal(aheadThrough(busy, cumulativeCounts(busy), 10, 100, 1440, true), 10 + 8 * (AHEAD_ROWS + 1));
+  assert.equal(aheadThrough(busy, cumulativeCounts(busy), 10, 100, 1440, true), 100000);
   // Run 13's event feed at 1,440 h/s: some 370 rows a second, pages of 64. Two blocks of rows (242) are a quarter second of
   // playback; the pages are asked through the two seconds of rows instead.
   const feed = validateLogCounts({ branchId: '1', log: 'test', firstHour: 0, binHours: 30, missing: [], warnings: [],

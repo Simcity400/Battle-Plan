@@ -1,6 +1,6 @@
 import { dayLabel } from '../../charts/draw.ts';
 import { researchNumber } from '../research/researchBreakdown.ts';
-import type { ProgramDetails, ScientistDetails, SpecialProjectDetails, SpecialProjectEffects } from '../../generated/dashboard';
+import type { ProjectLabel, ProjectPerson, ScientistDetails, SpecialProjectDetails, SpecialProjectEffects } from '../../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
@@ -56,6 +56,23 @@ export function validateProjectEffects(value: unknown): SpecialProjectEffects {
   return value as unknown as SpecialProjectEffects;
 }
 
+export function effectsStructure(reply: SpecialProjectEffects) {
+  const shape = (value: SpecialProjectEffects['output']) => value && [value.text ? value.text.split('\n').length : 0, Object.keys(value.refusals)];
+  return JSON.stringify([reply.unavailable, reply.options.map(shape), shape(reply.output), reply.warnings]);
+}
+
+export function effectTexts(reply: SpecialProjectEffects) {
+  const out = new Map<string, string>();
+  const add = (prefix: string, value: SpecialProjectEffects['output']) => {
+    if (!value) return;
+    value.text.split('\n').forEach((line, i) => out.set(prefix + ':' + i, line));
+    for (const [reason, count] of Object.entries(value.refusals)) out.set(prefix + ':reason:' + reason, reason + ' (' + count + ')');
+  };
+  reply.options.forEach((value, i) => add(String(i), value));
+  add('output', reply.output);
+  return out;
+}
+
 const number = (value: string) => researchNumber(BigInt(value));
 const read = (hour: number | null) => hour === null ? '' : ` · read ${dayLabel(hour)}`;
 
@@ -87,6 +104,7 @@ export function detailTexts(details: SpecialProjectDetails): Map<string, string>
   for (const project of details.projects ?? []) {
     const at = `j:${project.owner}:${project.id}`;
     out.set(`${at}:read`, read(project.readHour));
+    if (project.seed !== null) out.set(`${at}:seed`, String(project.seed));
     project.variables?.forEach((variable, index) => out.set(`${at}:var:${index}`, number(variable.valueRaw)));
   }
   return out;
@@ -95,24 +113,16 @@ export function detailTexts(details: SpecialProjectDetails): Map<string, string>
 /** What the details show apart from the painted texts ([`detailTexts`]): a reply whose structure is unchanged renders
  * nothing. A facility source's or skill's value, a read date, a day count or a variable's value never renders. */
 export function detailsStructure(details: SpecialProjectDetails): string {
-  const program = (value: ProgramDetails) => ({ ...value, readHour: null, assignments: value.assignments?.map(item => ({ ...item, current: null, target: null })) ?? null,
-    facility: value.facility && { ...value.facility, speedRaw: null, sources: value.facility.sources.map(source => ({ ...source, valueRaw: null })) } });
-  return JSON.stringify({
-    ...details, hour: null,
-    scientists: details.scientists?.map(scientist => ({ ...scientist, active: null, injuryDays: null, injuryHour: null, visible: null, visibilityHour: null,
-      skills: scientist.skills?.map(skill => ({ ...skill, level: null, experienceRaw: null })) ?? null })) ?? null,
-    breakthroughs: details.breakthroughs?.map(progress => ({ ...progress, points: null, readHour: null })) ?? null,
-    programs: details.programs?.map(program) ?? null,
-    projects: details.projects?.map(project => ({ ...project, readHour: null, variables: project.variables?.map(variable => ({ ...variable, valueRaw: null })) ?? null })) ?? null,
-  });
-}
-
-/** Writes each painted text of `details` into its element under `root`. */
-export function paintDetails(root: ParentNode | null, details: SpecialProjectDetails | undefined) {
-  if (!root || !details) return;
-  const texts = detailTexts(details);
-  for (const element of root.querySelectorAll<HTMLElement>('[data-paint]')) {
-    const text = texts.get(element.dataset.paint ?? '');
-    if (text !== undefined && element.textContent !== text) element.textContent = text;
-  }
+  const label = (v: ProjectLabel | null) => v && [v.token, v.name];
+  const person = (v: ProjectPerson) => [v.assigned, v.id, v.name, v.portrait, v.missing];
+  return JSON.stringify([details.warnings, details.unavailable,
+    details.scientists?.map(s => [s.character, person(s.person), Object.entries(s.stateRefusals).sort(),
+      s.skills?.map(skill => label(skill.specialization)), s.traits?.map(label)]),
+    details.breakthroughs?.map(b => label(b.specialization)),
+    details.programs?.map(p => [p.id, p.province, p.assignments?.map(a => [a.ordinal, a.reference, person(a.person), a.timed]),
+      p.facility && [p.facility.unavailable, p.facility.sources.map(s => [s.kind, s.unit, label(s.label), label(s.modifier), s.assignment, s.scientistReference])]]),
+    details.projects?.map(p => [p.owner, p.id, label(p.label), p.pendingKnown, p.seed !== null, p.variables?.map(v => v.name),
+      p.pending && [label(p.pending.label), p.pending.description, p.pending.unavailable, p.pending.options.map(o => label(o.label))],
+      p.choices?.map(c => [c.ordinal, c.date, label(c.reward), label(c.option), c.province, c.progress, c.characterReference, c.country, c.scientist, c.state])]),
+  ]);
 }

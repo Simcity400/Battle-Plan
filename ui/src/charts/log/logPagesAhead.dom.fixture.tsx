@@ -11,8 +11,6 @@ import { useRevealClock } from '../reveal';
 import { useLogPages } from '../../dashboard/useLogPages';
 import type { LogCut, LogSpec } from '../../dashboard/useLogPages';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
-import { setPageClock } from '../../dashboard/structurePace.ts';
-import { FrameCommits } from '../../dashboard/frameUpdates.ts';
 import { busyCount, busyKinds } from '../../shell/busy.ts';
 import '../../styles.css';
 
@@ -84,7 +82,6 @@ const client = {
       waiting.push({ due: frames + LATENCY_FRAMES, land: () => failing ? reject(new Error('The page block does not decode')) : resolve(answer) });
     });
   },
-  onFollowMessages: async () => () => {},
 } as unknown as DashboardClient;
 
 const toRow = (row: LogReplyRow): LogRow<string> => ({ key: row.key, hour: row.hour, item: `Row ${row.key}` });
@@ -149,16 +146,9 @@ export const fixture = {
     for (let at = 0; at < 10; at++) await tick(0);
     return { offScreen, shown: requests.length - offScreen };
   },
-  /** The log on a page's clock with the page's commit mark at its root (`FrameCommits`, as `main.tsx` mounts it), its page
-   * left while playing with pages ahead in flight (a page switch, or the prepare lane's copy dropped as play begins), played
-   * on past every reply's landing and paused: the pages asked after it left and what is still in flight. Then a log shown
-   * again, paused, whose setting changes once it has settled: its commits and the frames until nothing is in flight. */
   async leaving(hours: number) {
     root?.unmount(); host?.remove();
     clock = new Clock(); requests.length = 0; waiting.length = 0; frames = 0; commits = 0;
-    setPageClock(clock);
-    const marks = createRoot(document.body.appendChild(document.createElement('div')));
-    marks.render(<FrameCommits />);
     host = document.body.appendChild(document.createElement('div'));
     host.style.cssText = 'width: 600px; height: 420px; display: flex; flex-direction: column;';
     root = createRoot(host);
@@ -182,8 +172,7 @@ export const fixture = {
     let settledIn = 0;
     while (settledIn < 30 && busyCount() > 0) { await tick(0); settledIn++; }
     const changed = { commits: commits - committed, frames: settledIn, busy: busyKinds() };
-    root.unmount(); root = null; marks.unmount();
-    setPageClock(null);
+    root.unmount(); root = null;
     return { askedAfter, left, shown, changed };
   },
   /** Paused with every page failing for `count` frames: the pages asked, then those asked once retried. `campaign` shows

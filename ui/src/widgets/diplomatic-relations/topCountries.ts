@@ -27,7 +27,7 @@ export interface TopCountries {
 }
 
 /** A top N: the countries highest on a Scoreboard measure at the hour shown, as the Scoreboard ranks them. Following,
- * the ranking is a followed `series-state` top and the tags are structure, taken at most four times a second; pinned,
+ * the ranking is a followed `series-state` top and the tags are structure; pinned,
  * or where the service does not follow it, one `scoreboard` reply ranks the hour. */
 export function useTopCountries({ widget, runtime, active }: Pick<WidgetProps, 'widget' | 'runtime' | 'active'>, track: BoundTrack | undefined,
   top: number | null, measure: OptionValue, root: RefObject<Element | null>): TopCountries {

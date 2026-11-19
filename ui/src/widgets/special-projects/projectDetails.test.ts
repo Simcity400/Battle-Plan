@@ -44,6 +44,10 @@ test('a daily read moves only painted texts: its read date, counts and values ne
       assignments: [{ ...reply.programs[0].assignments[0], current: 3 }, reply.programs[0].assignments[1]] }],
     projects: [{ ...reply.projects[0], readHour: 48, variables: [{ name: 'mod_array^0', valueRaw: '5' }] }] } satisfies SpecialProjectDetails;
   assert.equal(detailsStructure(next), detailsStructure(reply));
+  const reseeded = { ...next, projects: [{ ...next.projects[0], seed: 123 }] };
+  assert.equal(detailsStructure(reseeded), detailsStructure(next));
+  assert.equal(detailTexts(reseeded).get('j:5:1:seed'), '123');
+  assert.equal(detailsStructure({ ...Object.fromEntries(Object.entries(reply).reverse()) } as typeof reply), detailsStructure(reply));
   const before = detailTexts(reply), after = detailTexts(next);
   assert.deepEqual([...after.keys()], [...before.keys()], 'the same elements are painted');
   const changed = [...after].filter(([key, text]) => before.get(key) !== text).map(([key]) => key);

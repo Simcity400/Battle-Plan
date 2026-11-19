@@ -139,13 +139,24 @@ fn ordered<'a>(mut lines: Vec<&'a ProductionLineRow>, order: LineOrder) -> Vec<&
     lines
 }
 
-/// The owner's lines' handles at `hour` of run `run` from its index, or none where the index or
-/// the hour's links cannot be read (every line is then read).
-fn indexed_handles(context: &LinesContext, run: u32, hour: i32, held: &DecodedFrame, owner: Owner) -> Option<Vec<u64>> {
-    let links = held.complete::<tables::CountryLinks>().ok()?;
-    let index = context.index.run(run).ok()?;
-    let handles: BTreeSet<u64> = index.lines.iter().filter(|life| life.first <= hour && hour <= life.last && link_slot(links, life.country) == Some(owner.slot)).map(|life| life.handle).collect();
-    Some(handles.into_iter().collect())
+fn line_reads(at: &ReadsAt<'_, LinesContext>, held: &DecodedFrame, owner: Owner) -> (Vec<Read>, i32) {
+    let (Ok(links), Ok(index)) = (held.complete::<tables::CountryLinks>(), at.context.index.run(at.run)) else {
+        return (vec![Read::all(TableId::ProductionLines), Read::all(TableId::ProductionLineOutput)], at.hour);
+    };
+    let mut through = i32::MAX;
+    let mut handles = BTreeSet::new();
+    for life in &index.lines {
+        if life.last < at.hour || link_slot(links, life.country) != Some(owner.slot) { continue; }
+        if life.first > at.hour {
+            through = through.min(life.first - 1);
+        } else {
+            through = through.min(life.last);
+            handles.insert(life.handle);
+        }
+    }
+    let lines = Read::these(TableId::ProductionLines, handles.iter().copied().map(u128::from));
+    let output = Keys::Ranges(handles.into_iter().map(|handle| (u128::from(handle) << 32, u128::from(handle) << 32 | u128::from(u32::MAX))).collect());
+    (vec![lines, Read { table: TableId::ProductionLineOutput, keys: output }], through)
 }
 
 impl AtHour for ProductionLinesAt {
@@ -172,10 +183,64 @@ impl AtHour for ProductionLinesAt {
         Some(&params.tag)
     }
 
+    fn uses_sample(_table: TableId) -> bool { false }
+
+    const CLOCK_DEPENDENT: bool = false;
+
+    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+        let fields: &[&str] = match table {
+            TableId::Countries => &["canonical_slot", "tag"],
+            TableId::CountryAppearance => &["cosmetic_tag", "name_tag", "graphical_culture", "graphical_culture_2d"],
+            TableId::PoliticalParties => &["is_ruling", "token"],
+            TableId::Politics => &["capital", "original_capital"],
+            TableId::States | TableId::Factions => &[],
+            _ => return None,
+        };
+        Some(dashboard_base::products::at_hour::field_columns(table, fields))
+    }
+
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+        match stage {
+            1 => edits.fields(TableId::CountryLinks, u64::MAX),
+            2 => edits.fields(TableId::CountryLinks, u64::MAX)
+                || edits.fields(TableId::ProductionLines, dashboard_base::products::at_hour::field_mask(TableId::ProductionLines, &["variant", "mio", "country"]))
+                || edits.fields(TableId::ProductionLineOutput, dashboard_base::products::at_hour::field_mask(TableId::ProductionLineOutput, &["variant", "mio", "ended"])),
+            3 => [TableId::VariantDefinitions, TableId::IndustrialOrganisations, TableId::Politics].into_iter().any(|t| edits.fields(t, u64::MAX)),
+            _ => false,
+        }
+    }
+
+    fn advance(frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+        if !edits.replaced.is_empty() { return Ok(false); }
+        for (&table, rows) in &edits.tables {
+            let mask = match table {
+                TableId::ProductionLines => {
+                    let mut fields = vec!["active_factories", "requested_factories", "efficiency_raw", "speed_raw", "cost_raw"];
+                    match params.order.unwrap_or_default() {
+                        LineOrder::Game => {}
+                        LineOrder::Factories => fields.retain(|&s| s != "active_factories"),
+                        LineOrder::Output => fields.retain(|&s| s != "speed_raw"),
+                    }
+                    dashboard_base::products::at_hour::field_mask(table, &fields)
+                }
+                TableId::ProductionLineOutput => dashboard_base::products::at_hour::field_mask(table, &["units"]),
+                _ => return Ok(false),
+            };
+            if rows.values().any(|fields| fields & !mask != 0) { return Ok(false); }
+        }
+        live.patch(frame, &edits.tables, data);
+        Ok(true)
+    }
+
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         let mut tables = vec![TableId::ProductionLines, TableId::ProductionLineOutput];
         tables.extend_from_slice(names::TABLES);
         tables
+    }
+
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        if stage == 1 && let Some(owner) = owner { return line_reads(at, held, owner); }
+        (Self::reads_in(params, owner, stage, held, at), i32::MAX)
     }
 
     /// The countries whole; the owner's lines and their output rows (by key through the run's
@@ -185,13 +250,7 @@ impl AtHour for ProductionLinesAt {
         let Some(owner) = owner else { return Vec::new() };
         match step {
             0 => names::WHOLE.iter().map(|&table| Read::all(table)).collect(),
-            1 => match indexed_handles(at.context, at.run, at.hour, held, owner) {
-                Some(handles) => vec![
-                    Read::these(TableId::ProductionLines, handles.iter().map(|&handle| u128::from(handle))),
-                    Read { table: TableId::ProductionLineOutput, keys: Keys::Ranges(handles.iter().map(|&handle| (u128::from(handle) << 32, u128::from(handle) << 32 | u128::from(u32::MAX))).collect()) },
-                ],
-                None => vec![Read::all(TableId::ProductionLines), Read::all(TableId::ProductionLineOutput)],
-            },
+            1 => line_reads(at, held, owner).0,
             2 => {
                 let lines = owned(held, owner).unwrap_or_default();
                 let handles: BTreeSet<u64> = lines.iter().map(|line| line.handle).collect();
@@ -261,7 +320,10 @@ impl AtHour for ProductionLinesAt {
             if line.mio != 0 {
                 mios.insert(line.mio);
             }
-            let rows: Vec<_> = output.as_ref().map(|rows| rows.iter().filter(|row| row.line == line.handle && !row.ended).collect()).unwrap_or_default();
+            let rows: Vec<_> = output.as_ref().map(|rows| {
+                let first = rows.partition_point(|row| row.line < line.handle);
+                rows[first..].iter().take_while(|row| row.line == line.handle).filter(|row| !row.ended).collect()
+            }).unwrap_or_default();
             for row in &rows {
                 variants.insert(row.variant);
                 if row.mio != 0 {

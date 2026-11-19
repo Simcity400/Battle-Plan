@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FAIL, PARTIAL, PASS, STRUCTURE_PANELS, UNMEASURABLE, dashboardRows, floorOf, pacedRows, proofRows, spread, wholeHarness, wholeLog } from './playbackVerdicts.mjs';
+import { FAIL, PARTIAL, PASS, UNMEASURABLE, dashboardRows, floorOf, pacedRows, proofRows, spread, wholeHarness, wholeLog } from './playbackVerdicts.mjs';
 
 const T = 1e6 / 60;
 const FROM = 1000;
@@ -167,15 +167,10 @@ function syntheticLog() {
     records.push({ t: 'tick', at: at + 1, hour, playing, speed: 1440, sequence: index, seek });
     const commit = (playing && index === 61) || index === 10 ? 1 : 0;
     records.push({ t: 'frame', at, dt, playing, late: 0.1, commits: commit, main: 2, ...(commit && { zones: { 'widget:w1': 1 } }) });
-    if (playing) records.push({ t: 'follow_message', at: at + 3, hour: Math.floor(hour), answers: [[1, Math.floor(hour)]] });
   }
   // The planted commit and request, long after the anchor.
   const planted = records.find(record => record.t === 'frame' && record.at > 3000);
   Object.assign(planted, { commits: 1, zones: { 'widget:w1': 1 } });
-  // Two structure slots: one leaves its frame on time, one holds it back; neither is a commit caused by a value.
-  const slotFrames = records.filter(record => record.t === 'frame' && record.at > 3200);
-  Object.assign(slotFrames[0], { slot: { ms: 2, commits: 1, widgets: { 'widget:w2': 5 } } });
-  Object.assign(records.find(record => record.t === 'frame' && record.dt === 40), { slot: { ms: 30, commits: 1, widgets: { 'widget:w1': 40, 'widget:w2': 3 } } });
   records.push({ t: 'q', at: planted.at + 2, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 1 });
   // Asked at the play anchor and while paused: not judged; a cached answer and the follow protocol are no requests.
   records.push({ t: 'q', at: 1005, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 1 },
@@ -185,8 +180,10 @@ function syntheticLog() {
   return { records: records.sort((a, b) => a.at - b.at), cut: false };
 }
 
-test('the dashboard analyser finds exactly the late frame, the commit and the request planted, and nothing else', () => {
+test('the dashboard analyser judges frames and head reads, leaving commit attribution to the dated audit', () => {
   const log = syntheticLog();
+  log.records.push({ t: 'q', at: 3400, cmd: 'dashboard_product', product: 'sprite-artwork', hour: null, outcome: 'ok' });
+  log.records.find(r => r.t === 'frame' && r.at > 3400).work = { w2: { read: 1 } };
   const { whole, rows, follow } = dashboardRows(log, { page: 'Politics', refreshHz: 60 });
   assert.equal(whole.whole, true);
   const frames = rows.find(row => row.bar === 'webview frame interval' && row.page === 'Politics');
@@ -195,27 +192,17 @@ test('the dashboard analyser finds exactly the late frame, the commit and the re
   const lateFrame = log.records.filter(record => record.t === 'frame').findIndex(record => record.dt === 40);
   assert.equal(frames.worst.frame, lateFrame);
   const commits = rows.filter(row => row.bar === 'React commits caused by a value');
-  assert.deepEqual(commits.map(row => [row.page, row.values.count]), [['Politics', 1], ['Politics: Political power', 1]]);
-  const slots = rows.find(row => row.bar === 'structure slots fit their frame');
-  assert.deepEqual([slots.verdict, slots.values], [FAIL, { slots: 2, over: 1 }]);
-  assert.match(slots.note, /Political power 40, w2 3|Political power 40, .* 3/, slots.note);
+  assert.equal(commits.length, 0);
   const requests = rows.filter(row => row.bar === 'requests for values at the head');
   assert.deepEqual(requests.map(row => [row.page, row.values.count, row.verdict]), [['Politics', 1, FAIL]]);
   assert.equal(rows.find(row => row.bar === 'chart tile requests').verdict, PASS);
   assert.equal(rows.find(row => row.bar === 'long animation frames').verdict, PASS);
-  const age = rows.find(row => row.bar === "a followed value's age");
-  assert.equal(age.verdict, PASS, age.measured);
   assert.deepEqual(follow.widgets.map(widget => [widget.title, widget.followed, widget.fellBack]),
     [['Political power', ['series-state'], []], ['Stability', [], ['series-state: CountryStability is derived and not in the unit files']]]);
 });
 
-test('a followed answer older than two steps when painted fails, and a log that lost records judges nothing', () => {
+test('a log that lost records judges nothing', () => {
   const log = syntheticLog();
-  const message = log.records.filter(record => record.t === 'follow_message')[100];
-  message.answers = [[1, message.hour - 72]];
-  const age = dashboardRows(log, { refreshHz: 60 }).rows.find(row => row.bar === "a followed value's age");
-  assert.equal(age.verdict, FAIL);
-  assert.equal(age.values.worst, 4, 'evaluated three steps before it landed, painted the step after');
   const lost = { ...log, records: [...log.records, { t: 'lost', at: 9000, source: 'ui', count: 3 }] };
   assert.ok(dashboardRows(lost, { refreshHz: 60 }).rows.every(row => row.verdict === PARTIAL));
   assert.match(wholeLog(log, log.records, { playingSeconds: 10 }).reasons[0], /played 3\.\d s, asked 10/);
@@ -264,49 +251,4 @@ test('a window of the log judges only the play inside it, as the nightly sweep\'
   const { rows } = dashboardRows(log, { refreshHz: 60, window: { from: 1001, to: 2400 } });
   assert.equal(rows.find(row => row.bar === 'webview frame interval').verdict, PASS, 'the late frame at 2.5 s is outside');
   assert.equal(rows.find(row => row.bar === 'requests for values at the head').verdict, PASS);
-  assert.equal(rows.find(row => row.bar === 'React commits caused by a value').verdict, PASS);
-});
-
-/** `log` with a pushed panel of `product` (follow id 3, its cells pushed under `CELL`) held by a widget: its structure
- * pushed every `every` frames of play, evaluated `behind` hours before the head as a 250 ms rows tick leaves it, and its
- * cells answered in every followed message at `cellAge` hours before the message's hour. */
-const CELL = 2 ** 31 + 1;
-function withPanel(log, product, { every = 18, behind = 360, cellAge = 0 } = {}) {
-  const records = log.records.filter(record => record.t !== 'follow_message');
-  records.push({ t: 'widget', at: 0, id: 'w3', title: 'Territory breakdown' }, { t: 'follow', at: 1, id: 3, status: 'pending', product },
-    { t: 'follow_widget', at: 1, widget: 'w3', id: 3 }, { t: 'follow', at: 5, id: 3, status: 'followed' }, { t: 'follow_cells', at: 6, id: 3, cells: [CELL] });
-  let frame = 0;
-  for (const message of log.records.filter(record => record.t === 'follow_message')) {
-    records.push({ ...message, answers: [...message.answers, [CELL, message.hour - cellAge]] });
-    if (frame++ % every === 0) records.push({ t: 'follow_message', at: message.at + 1, hour: message.hour - behind, answers: [[3, message.hour - behind]] });
-  }
-  return { ...log, records: records.sort((a, b) => a.at - b.at) };
-}
-
-test('a structure panel\'s pushes are exempt from the age bar by name and its live cells judged; any other panel is judged as a value', () => {
-  // Occupied states joined once its garrison strength was a live cell too (lead's rule: every number live).
-  assert.ok(STRUCTURE_PANELS.has('territory-breakdown') && STRUCTURE_PANELS.has('occupied-states'));
-  const age = log => dashboardRows(log, { refreshHz: 60 }).rows.find(row => row.bar === "a followed value's age");
-  // The structure lags 15 steps behind (a 250 ms rows tick at 1,440 h/s), the cells keep up.
-  const breakdown = age(withPanel(syntheticLog(), 'territory-breakdown'));
-  assert.equal(breakdown.verdict, PASS, breakdown.note);
-  assert.ok(breakdown.values.cells > 0, 'the panel\'s cells are judged');
-  assert.match(breakdown.note, /exempt by name: territory-breakdown's structure \(\d+ pushes\)/);
-  // The same panel's cells three steps old fail, named as the panel's.
-  const stale = age(withPanel(syntheticLog(), 'territory-breakdown', { cellAge: 72 }));
-  assert.equal(stale.verdict, FAIL);
-  assert.match(stale.note, /worst: territory-breakdown's live cells \(Territory breakdown\)/);
-  // A panel not named carries its numbers itself: its pushes are values, 15 steps old.
-  const numbers = age(withPanel(syntheticLog(), 'air-missions'));
-  assert.equal(numbers.verdict, FAIL);
-  assert.equal(numbers.values.worst, 16, 'evaluated fifteen steps before it landed, painted the step after');
-  assert.match(numbers.note, /worst: air-missions \(Territory breakdown\)/);
-  // A structure pushed every frame is not a structure.
-  const crowded = age(withPanel(syntheticLog(), 'territory-breakdown', { every: 1, behind: 0 }));
-  assert.equal(crowded.verdict, FAIL);
-  assert.match(crowded.note, /territory-breakdown \(Territory breakdown\) pushed over 4 times in a second/);
-  // A log from before panels named their cells judges what it judged before.
-  const old = withPanel(syntheticLog(), 'territory-breakdown');
-  old.records = old.records.filter(record => record.t !== 'follow_cells');
-  assert.equal(age(old).values.cells, 0);
 });

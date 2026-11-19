@@ -171,7 +171,7 @@ fn born(at: u32) -> bool {
 /// the table catches up in a later step), so tests judge by the table's own hours.
 struct Played {
     stats: StepStats,
-    messages: Vec<Message>,
+    message: Option<Message>,
     /// The hours of Countries the step applied: its head before (none at a reset) and after.
     from: Hour,
     head: Hour,
@@ -183,9 +183,9 @@ impl Played {
         self.from <= self.head
     }
 
-    /// Each answer of its messages, in order: id, hour and body.
+    /// Each answer of the step: id, hour and body.
     fn answers(&self) -> Vec<(u32, Hour, Answer)> {
-        self.messages.iter().flat_map(|message| decode(&message.bytes).unwrap().answers.into_iter().map(|(id, hour, body)| (id, hour, Answer::parse(body).unwrap())).collect::<Vec<_>>()).collect()
+        self.message.iter().flat_map(|message| decode(&message.bytes).unwrap().answers.into_iter().map(|(id, hour, body)| (id, hour, Answer::parse(body).unwrap())).collect::<Vec<_>>()).collect()
     }
 }
 
@@ -207,19 +207,19 @@ struct Harness {
 }
 
 /// A step a day; the follow hook's sink is a channel.
-fn harness(pages: &Arc<Recording>, budget: usize) -> Harness {
-    stepping(pages, budget, 24)
+fn harness(pages: &Arc<Recording>) -> Harness {
+    stepping(pages, 24)
 }
 
 /// Steps of `every` hours; the follow hook's sink is a channel.
-fn stepping(pages: &Arc<Recording>, budget: usize, every: Hour) -> Harness {
-    let follow = Follow::new(budget);
+fn stepping(pages: &Arc<Recording>, every: Hour) -> Harness {
+    let follow = Follow::new(0);
     let (send, played) = mpsc::channel();
     let heads = Arc::new(Mutex::new((0, 0)));
     let told = Arc::clone(&heads);
-    let sink: Sink = Box::new(move |stats: &StepStats, messages: Vec<Message>| {
+    let sink: Sink = Box::new(move |stats: &StepStats, message: Option<Message>| {
         let (from, head) = *told.lock().unwrap();
-        let _ = send.send(Played { stats: *stats, messages, from, head });
+        let _ = send.send(Played { stats: *stats, message, from, head });
     });
     let mut inner = follow.hook(sink);
     let mut before: Option<Hour> = None;
@@ -237,7 +237,7 @@ fn stepping(pages: &Arc<Recording>, budget: usize, every: Hour) -> Harness {
     let reader = playhead.declare(Vec::new(), None).unwrap();
     let consumer = playhead.consumer(reader);
     let weak = Arc::downgrade(&playhead);
-    follow.bind(move |tables| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), playhead.log_reads()).unwrap();
+    follow.bind(move |tables, _joining| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), playhead.log_reads()).unwrap();
     Harness { pages: Arc::clone(pages), playhead: Some(playhead), follow, consumer, played, head: 0, seen: Hour::MIN, every, reached: Hour::MIN, awaiting: false }
 }
 
@@ -316,7 +316,7 @@ fn moves_slot_5(played: &Played) -> bool {
 #[test]
 fn a_query_is_evaluated_only_when_a_step_touched_its_columns_and_keys() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     // Slot 5's column 3 moves at hours 100 and 200; slot 0's column 3 never does, though its
     // column 0 moves every hour.
     harness.follow.follow(1, keys(&[105], &[3])).unwrap();
@@ -340,7 +340,7 @@ fn a_query_is_evaluated_only_when_a_step_touched_its_columns_and_keys() {
 #[test]
 fn an_answer_equal_to_the_last_is_not_sent() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     // Written every hour, the same at every step's end.
     harness.follow.follow(7, keys(&[106], &[2])).unwrap();
     harness.seek(0);
@@ -352,7 +352,7 @@ fn an_answer_equal_to_the_last_is_not_sent() {
         assert_eq!(played.stats.evaluated, 1, "written at hours {}..{}", played.from, played.head);
         let differs = played.head % 2 != sent;
         assert_eq!(played.stats.changed, u32::from(differs), "hours {}..{}", played.from, played.head);
-        assert_eq!(!played.messages.is_empty(), differs);
+        assert_eq!(!played.answers().is_empty(), differs);
         unchanged += u32::from(!differs);
         sent = played.head % 2;
     }
@@ -362,7 +362,7 @@ fn an_answer_equal_to_the_last_is_not_sent() {
 #[test]
 fn a_reset_evaluates_every_query_once() {
     let pages = record(churn);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     let queries = [
         keys(&[100, 105], &[0, 3]),
         Query::Cells { table: TABLE, columns: vec![0], rows: Rows::All },
@@ -378,7 +378,7 @@ fn a_reset_evaluates_every_query_once() {
     let played = harness.play(948);
     let reset = played.iter().find(|played| played.stats.reset).expect("the seek's reset step");
     assert_eq!((reset.stats.touched, reset.stats.evaluated), (4, 4));
-    let message = reset.messages.first().expect("a settled message");
+    let message = reset.message.as_ref().expect("a settled message");
     assert!(message.reset && decode(&message.bytes).unwrap().reset);
     for (id, hour, answer) in reset.answers() {
         assert_eq!(answer, harness.fresh(&queries[id as usize], hour), "query {id}");
@@ -388,7 +388,7 @@ fn a_reset_evaluates_every_query_once() {
 #[test]
 fn a_table_not_recorded_answers_not_recorded() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     harness.follow.follow(3, keys(&[100], &[0])).unwrap();
     harness.seek(0);
     let played = harness.play(400);
@@ -407,14 +407,12 @@ fn a_table_not_recorded_answers_not_recorded() {
     }
 }
 
-/// Every message of `played`, in the order sent, gives each id's answers oldest first: order across
-/// ids is the queue's, but no id's answer follows a newer one of its own.
 #[test]
 fn a_table_not_available_answers_its_recorded_reason_in_words_never_its_id() {
     const WHY: &str = "the game's navies could not be followed";
     let pages = record_with(|store| Status::Unavailable { reason: store.intern(WHY.as_bytes()).unwrap() }, quiet);
     let said = format!("Countries not available at this hour: {WHY}");
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     let query = keys(&[100], &[0]);
     harness.follow.follow(3, query.clone()).unwrap();
     harness.seek(0);
@@ -427,73 +425,6 @@ fn a_table_not_available_answers_its_recorded_reason_in_words_never_its_id() {
         assert_eq!(reason, &said, "the recorded reason's text, never its id");
     }
     assert_eq!(harness.fresh(&query, 310).not_recorded.as_deref(), Some(said.as_str()), "a lane sought into the stretch says the same");
-}
-
-fn each_id_in_order(played: &[Played]) {
-    let mut last: BTreeMap<u32, Hour> = BTreeMap::new();
-    for (step, played) in played.iter().enumerate() {
-        for (id, hour, _) in played.answers() {
-            if let Some(&before) = last.get(&id) {
-                assert!(hour >= before, "id {id}: an answer at hour {hour} after one at {before}, step {step} (hours {}..{})", played.stats.first, played.stats.last);
-            }
-            last.insert(id, hour);
-        }
-    }
-}
-
-#[test]
-fn the_budget_splits_a_step_into_messages_within_it_and_holds_no_answer_back() {
-    let pages = record(quiet);
-    // Room for one answer of one row a message.
-    let budget = 16 + 16 + 72;
-    let mut harness = harness(&pages, budget);
-    for slot in 0..3u128 {
-        harness.follow.follow(slot as u32, keys(&[100 + slot], &[0])).unwrap();
-    }
-    harness.seek(0);
-    let played = harness.play(280);
-    let mut steps = 0;
-    for played in played.iter().filter(|played| played.moved() && !played.stats.reset && played.head < 300) {
-        let answers = played.answers();
-        let mut ids: Vec<u32> = answers.iter().map(|(id, ..)| *id).collect();
-        ids.sort_unstable();
-        assert_eq!(ids, vec![0, 1, 2], "every answer of the step, in it, steps {}..{}", played.stats.first, played.stats.last);
-        assert_eq!(played.messages.len(), 3, "one answer fits a message");
-        assert!(played.messages.iter().all(|message| message.bytes.len() <= budget && !message.reset));
-        for (id, hour, answer) in &answers {
-            assert_eq!(*hour, played.head, "the newest answer of its id, made in this very step");
-            assert_eq!(answer, &harness.fresh(&keys(&[100 + u128::from(*id)], &[0]), *hour));
-        }
-        steps += 1;
-    }
-    assert!(steps > 5, "{steps} steps judged");
-    each_id_in_order(&played);
-}
-
-#[test]
-fn a_paused_seek_whose_answers_pass_one_message_sends_them_all_in_its_own_step() {
-    let pages = record(quiet);
-    let budget = 16 + 16 + 72;
-    let mut harness = harness(&pages, budget);
-    for slot in 0..3u128 {
-        harness.follow.follow(slot as u32, keys(&[100 + slot], &[0])).unwrap();
-    }
-    harness.seek(0);
-    harness.play(48);
-    harness.seek(600);
-    let played = harness.play(600);
-    let reset = played.iter().find(|played| played.stats.reset).expect("the seek's reset step");
-    let answers = reset.answers();
-    let mut ids: Vec<u32> = answers.iter().map(|(id, ..)| *id).collect();
-    ids.sort_unstable();
-    assert_eq!(ids, vec![0, 1, 2], "no answer waits for a step that may not come");
-    for (id, hour, answer) in &answers {
-        assert_eq!(answer, &harness.fresh(&keys(&[100 + u128::from(*id)], &[0]), *hour));
-    }
-    assert!(reset.messages.iter().all(|message| message.bytes.len() <= budget));
-    assert!(reset.messages[0].reset && reset.messages[1..].iter().all(|message| !message.reset), "the first message settles, the rest add to it");
-    assert!(answers.iter().all(|&(_, hour, _)| hour == reset.head), "each id's answer at the reset's hour");
-    each_id_in_order(&played);
 }
 
 #[test]
@@ -518,7 +449,7 @@ fn seventy_thousand_texts_are_each_read_back_by_their_own_row() {
 #[test]
 fn unfollow_at_a_step_boundary_sends_nothing_more() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     harness.follow.follow(1, keys(&[100], &[0])).unwrap();
     harness.follow.follow(2, keys(&[101], &[0])).unwrap();
     harness.seek(0);
@@ -547,7 +478,7 @@ fn unfollow_at_a_step_boundary_sends_nothing_more() {
 #[test]
 fn a_rank_reorders_only_when_its_column_was_written() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     let rank = Query::Cells { table: TABLE, columns: vec![3], rows: Rows::Top { column: 3, n: 3 } };
     harness.follow.follow(9, rank.clone()).unwrap();
     harness.seek(0);
@@ -569,7 +500,7 @@ fn a_log_pushes_exactly_the_rows_inserted_since_its_last_push() {
     // A row inserted and deleted inside one step is in no change set (the playhead nets them), so
     // these rows stay.
     let pages = record(appends);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     harness.follow.follow(4, Query::Cells { table: TABLE, columns: vec![0, 3], rows: Rows::Appended }).unwrap();
     harness.seek(0);
     let played = harness.play(1000);
@@ -601,7 +532,7 @@ static POWER: Series = Series {
 #[test]
 fn a_series_reads_its_tags_holder_at_the_head() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     let run = |first, last, slot, id| HolderRun { first, last, holder: Holder::Found { slot, id }, starts_segment: true };
     let mut holders = Holders::default();
     holders.tags.insert("AAA".into(), vec![run(0, 149, 0, 100), run(150, HOURS as Hour - 1, 1, 101)]);
@@ -653,7 +584,7 @@ fn series_identity(query: &Query) -> Identity {
 #[test]
 fn a_top_breaks_a_tie_at_its_last_place_by_tag_as_the_race_does() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     let held = |slot, id| vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot, id }, starts_segment: true }];
     // ZZZ's key (102) sorts before AAA's (103); their power is 0 alike, and one place is left after MMM's.
     let mut holders = Holders::default();
@@ -694,7 +625,7 @@ static PARTS: Series = Series {
 #[test]
 fn a_followed_owners_parts_are_its_rows_in_key_order_or_its_top_parts() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     let held = |id| vec![HolderRun { first: 0, last: HOURS as Hour - 1, holder: Holder::Found { slot: 0, id }, starts_segment: true }];
     let mut holders = Holders::default();
     holders.tags.insert("AAA".into(), held(25));
@@ -732,7 +663,7 @@ fn a_followed_owners_parts_are_its_rows_in_key_order_or_its_top_parts() {
 #[test]
 fn a_query_of_a_text_column_is_refused_by_name() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     harness.follow.follow(6, keys(&[100], &[1])).unwrap();
     harness.seek(0);
     let played = harness.play(48);
@@ -774,7 +705,7 @@ impl crate::registry::Playheads for Papers {
 }
 
 fn paper() -> Arc<Paper> {
-    Arc::new(Paper { follow: Follow::new(64 << 10), held: vec![true; TABLE + 1], anchors: Mutex::default() })
+    Arc::new(Paper { follow: Follow::new(0), held: vec![true; TABLE + 1], anchors: Mutex::default() })
 }
 
 fn nobody() -> Identity {
@@ -782,7 +713,7 @@ fn nobody() -> Identity {
 }
 
 fn follow_request(id: u32, kind: &str, measure: &str) -> serde_json::Value {
-    serde_json::json!({ "id": id, "branchId": "1", "query": { "product": "series-state", "params": {
+    serde_json::json!({ "id": id, "branchId": "1", "clock": 0, "query": { "product": "series-state", "params": {
         "branchId": "1", "family": { "kind": kind, "measure": measure }, "reads": [{ "tag": "GER", "hour": 5 }, { "tag": "SOV", "hour": 5 }, { "tag": "GER", "hour": 9 }] } } })
 }
 
@@ -819,9 +750,11 @@ fn two_tracks_of_one_timeline_at_different_anchors_each_follow_their_own_hours()
     asked["clock"] = 1000.into();
     registry.answer(path, "follow", &asked, |_| Ok(nobody()), Box::new(|_| None)).unwrap();
     assert_eq!((calendar.follow.declared().unwrap().len(), anchored.follow.declared().unwrap().len()), (1, 1), "each mapping's playhead reads its own follow");
-    let anchor = |clock: i32, hour: i32| serde_json::json!({ "branchId": "1", "clock": clock, "hour": hour, "playing": false, "speed": 24.0, "sought": true });
+    let anchor = |clock: i32, hour: i32| serde_json::json!({ "branchId": "1", "clock": clock, "seek": 12, "frameRate": 120, "hour": hour, "playing": false, "speed": 24.0, "sought": true });
     registry.answer(path, "follow-clock", &anchor(0, 10), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
     registry.answer(path, "follow-clock", &anchor(1000, 1010), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    assert_eq!(calendar.anchors.lock().unwrap()[0].seek, 12);
+    assert_eq!(calendar.anchors.lock().unwrap()[0].frame_rate, 120.0);
     let hours = |paper: &Paper| paper.anchors.lock().unwrap().iter().map(|anchor| anchor.hour).collect::<Vec<_>>();
     assert_eq!((hours(&calendar), hours(&anchored)), (vec![10], vec![1010]), "each at the hour its track shows");
 }
@@ -911,7 +844,7 @@ fn closing_a_recording_drops_its_follows() {
 /// A message of one answer: id `id`'s one value at `hour`.
 fn one(id: u32, hour: Hour, value: i64) -> Vec<u8> {
     let mut message = Vec::new();
-    crate::answer::begin(&mut message, 0, hour, false);
+    crate::answer::begin(&mut message, 0, 0, hour, 0, false);
     crate::answer::push(&mut message, id, hour, &body(id, value));
     message
 }
@@ -927,50 +860,14 @@ fn body(id: u32, value: i64) -> Vec<u8> {
 }
 
 #[test]
-fn a_frame_round_trips_the_pipe_and_a_slow_reader_makes_the_queue_supersede_never_grow() {
-    use crate::push::{FOLLOW, Push, QUEUED, read_frame, write_frame};
+fn a_frame_round_trips_the_pipe() {
+    use crate::push::{FOLLOW, read_frame, write_frame};
     let (mut reader, mut writer) = std::io::pipe().unwrap();
     let sent = one(7, 24, 123);
     write_frame(&mut writer, FOLLOW, 41, &sent).unwrap();
     let mut payload = Vec::new();
     assert_eq!(read_frame(&mut reader, &mut payload).unwrap(), Some((FOLLOW, 41)));
     assert_eq!(payload, sent, "byte for byte");
-
-    // Nobody reads: forty steps of ids 2 and 3, and id 1 in every tenth.
-    let push = Arc::new(Push::default());
-    for step in 0..40u32 {
-        let hour = step as Hour * 24;
-        let mut message = Vec::new();
-        crate::answer::begin(&mut message, 0, hour, false);
-        for id in [2u32, 3] {
-            crate::answer::push(&mut message, id, hour, &body(id, i64::from(step)));
-        }
-        if step % 10 == 0 {
-            crate::answer::push(&mut message, 1, hour, &body(1, i64::from(step)));
-        }
-        push.offer(message);
-        assert!(push.counters().most_queued <= QUEUED as u64, "never over its bound");
-    }
-    let counters = push.counters();
-    assert_eq!(counters.offered, 40);
-    assert!(counters.superseded > 0, "older answers were superseded");
-    assert_eq!(counters.unmerged, 0);
-    push.stop();
-    let mut drained = Vec::new();
-    push.drain(&mut drained).unwrap();
-    std::io::Write::write_all(&mut writer, &drained).unwrap();
-    drop(writer);
-    let mut newest: BTreeMap<u32, (Hour, i64)> = BTreeMap::new();
-    let mut frames = 0;
-    while let Some((kind, _)) = read_frame(&mut reader, &mut payload).unwrap() {
-        assert_eq!(kind, FOLLOW);
-        frames += 1;
-        for (id, hour, body) in decode(&payload).unwrap().answers {
-            newest.insert(id, (hour, Answer::parse(body).unwrap().values[0]));
-        }
-    }
-    assert!(frames <= QUEUED);
-    assert_eq!(newest, BTreeMap::from([(1, (30 * 24, 30)), (2, (39 * 24, 39)), (3, (39 * 24, 39))]), "the newest answer of every id reached the reader");
 }
 
 #[test]
@@ -1019,38 +916,23 @@ fn a_failed_write_stops_the_pushed_answers_by_name() {
     assert_eq!(std::str::from_utf8(&notice[4..]).unwrap(), failed);
 }
 
-/// Two recordings' follows share the pipe: a slow reader makes each one's messages merge with its
-/// own alone. Each message reaches the reader with its route, every answer in it of that route,
-/// at its own playhead's hour, and a reset of one never with the other's answers.
 #[test]
-fn the_queue_merges_a_follows_messages_with_its_own_and_never_with_another_follows() {
-    use crate::push::{Push, QUEUED, read_frame};
-    let push = Push::default();
-    for step in 0..20u32 {
-        for (route, id, first) in [(3u32, 1u32, 0), (8, 2, 5000)] {
-            let hour = first + step as Hour;
-            let mut message = Vec::new();
-            crate::answer::begin(&mut message, route, hour, route == 8 && step == 10);
-            crate::answer::push(&mut message, id, hour, &body(id, i64::from(step)));
-            push.offer(message);
-        }
-        assert!(push.counters().most_queued <= QUEUED as u64);
-    }
-    assert!(push.counters().merges > 0, "a slow reader merges");
-    push.stop();
-    let mut pipe = Vec::new();
-    push.drain(&mut pipe).unwrap();
-    let (mut input, mut payload, mut last) = (pipe.as_slice(), Vec::new(), std::collections::BTreeMap::new());
-    while read_frame(&mut input, &mut payload).unwrap().is_some() {
-        let message = decode(&payload).unwrap();
-        assert_eq!(crate::answer::route(&payload), Some(message.route));
-        let (id, first) = if message.route == 3 { (1, 0) } else { (2, 5000) };
-        assert!(message.answers.iter().all(|&(answer, at, _)| answer == id && at == message.hour), "route {} holds only its own answers at its hour", message.route);
-        assert!((first..first + 20).contains(&message.hour));
-        assert!(!message.reset || message.route == 8, "only the follow that sought is a reset");
-        last.insert(message.route, message.hour);
-    }
-    assert_eq!(last, [(3, 19), (8, 5019)].into(), "each follow's newest message reaches the reader");
+fn push_queues_charge_one_budget_and_count_only_pressure_merges() {
+    use crate::push::Push;
+    let packet = one(7, 24, 1);
+    let budget = playhead::ByteBudget::new(packet.len() * 2);
+    let first = Push::with_budget(budget.clone());
+    let second = Push::with_budget(budget.clone());
+    first.offer(packet.clone());
+    second.offer(packet.clone());
+    second.offer(packet);
+    assert_eq!(second.counters().pressure_merges, 0);
+    second.offer(one(7, 48, 2));
+    assert_eq!(second.counters().pressure_merges, 1);
+    assert!(second.failed().is_none());
+    first.take_waiting();
+    drop(second);
+    assert_eq!(budget.used(), 0);
 }
 
 #[test]
@@ -1059,7 +941,7 @@ fn a_merge_that_fails_sends_both_messages_as_they_are_in_order() {
     let push = Push::default();
     push.offer(rows_message(10, false, &[(1, 10)]));
     // Rows changed naming a key the rows before do not hold: the two do not merge.
-    push.offer(rows_message(11, true, &[(9, 1)]));
+    push.offer(rows_message(10, true, &[(9, 1)]));
     for step in 0..3 {
         push.offer(one(7, 12 + step, i64::from(step)));
     }
@@ -1077,7 +959,7 @@ fn a_merge_that_fails_sends_both_messages_as_they_are_in_order() {
 #[test]
 fn a_seek_sends_one_reset_message_and_follows_survive_it() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     harness.follow.follow(1, keys(&[100], &[0])).unwrap();
     harness.seek(0);
     harness.play(200);
@@ -1085,7 +967,7 @@ fn a_seek_sends_one_reset_message_and_follows_survive_it() {
     let played = harness.play(700);
     let resets: Vec<&Played> = played.iter().filter(|played| played.stats.reset).collect();
     assert_eq!(resets.len(), 1, "one reset message");
-    assert!(resets[0].messages.first().is_some_and(|message| message.reset));
+    assert!(resets[0].message.as_ref().is_some_and(|message| message.reset));
     let after: Vec<(Hour, Answer)> = played.iter().filter(|played| played.head >= 600).flat_map(Played::answers).map(|(_, hour, answer)| (hour, answer)).collect();
     assert!(after.len() > 3, "still followed after the seek");
     for (hour, answer) in after {
@@ -1099,7 +981,7 @@ fn a_seek_sends_one_reset_message_and_follows_survive_it() {
 #[test]
 fn a_reset_sends_every_answer_again_whole_though_equal_to_the_last_sent() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     // Key 105's column 3 is the hour over 100: zero through hour 99.
     harness.follow.follow(1, keys(&[105], &[3])).unwrap();
     harness.follow.follow(2, Query::Cells { table: TABLE, columns: vec![3], rows: Rows::Live(vec![105]) }).unwrap();
@@ -1122,7 +1004,7 @@ fn a_reset_sends_every_answer_again_whole_though_equal_to_the_last_sent() {
 fn golden() -> Vec<u8> {
     use crate::answer::{Table, begin, not_recorded, push};
     let mut message = Vec::new();
-    begin(&mut message, 0, 1234, true);
+    begin(&mut message, 0, 0, 1234, 0, true);
     let mut table = Table::default();
     table.clear(1, false);
     table.row(100);
@@ -1158,7 +1040,7 @@ fn the_message_bytes_are_the_ones_the_ui_reads() {
     assert_eq!(hex, GOLDEN);
 }
 
-const GOLDEN: &str = "464f4c3101000000d20400000300000007000000b0040000c800000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff020000000400000000000000000000000100000003000000000000000300000047455203000000534f5610000000534f5620686173206e6f2076616c756503000000495441190000004954412069732068656c64206279206e6f20636f756e747279000008000000d204000040000000000000000000000000000000000000000100000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f7572000000000009000000d204000050000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff00000000";
+const GOLDEN: &str = "464f4c3201000000d204000003000000000000000000000007000000b0040000c800000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff020000000400000000000000000000000100000003000000000000000300000047455203000000534f5610000000534f5620686173206e6f2076616c756503000000495441190000004954412069732068656c64206279206e6f20636f756e747279000008000000d204000040000000000000000000000000000000000000000100000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f7572000000000009000000d204000050000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff00000000";
 
 #[test]
 fn a_table_never_recorded_in_the_files_is_not_held() {
@@ -1206,7 +1088,7 @@ fn brief(at: u32, changes: &mut TableChanges<'_>) {
 #[test]
 fn a_log_pushes_a_row_born_and_gone_inside_a_step_once() {
     let pages = record(brief);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     harness.follow.follow(4, Query::Cells { table: TABLE, columns: vec![0, 3], rows: Rows::Appended }).unwrap();
     harness.seek(0);
     let played = harness.play(1000);
@@ -1224,43 +1106,9 @@ fn a_log_pushes_a_row_born_and_gone_inside_a_step_once() {
     assert_eq!(rows, wanted);
 }
 
-#[test]
-fn panel_messages_merge_by_id_and_the_queue_merges_each_kind_with_its_own() {
-    use crate::panel::{PanelData, merge, message};
-    use crate::push::{FOLLOW, PANEL, Push};
-    let data = |line: &str| -> PanelData { Ok(serde_json::json!({ "line": line })) };
-    let (a, b, c) = (data("a"), data("b"), data("c"));
-    let (merged, superseded) = merge(&message(&[(1, 10, &a), (2, 10, &b)]), &message(&[(1, 11, &c)])).unwrap();
-    assert_eq!(superseded, 1);
-    let body: serde_json::Value = serde_json::from_slice(&merged[4..]).unwrap();
-    assert_eq!(body["panels"].as_array().unwrap().len(), 2);
-    assert_eq!((body["panels"][0]["id"].as_u64(), body["panels"][0]["data"]["line"].as_str()), (Some(1), Some("c")), "the newer data of a panel wins");
-    let push = Push::default();
-    push.offer_kind(PANEL, message(&[(1, 1, &a)]));
-    for at in 0..8 {
-        push.offer(one(9, at, i64::from(at)));
-    }
-    push.offer_kind(PANEL, message(&[(1, 9, &c)]));
-    assert!(push.counters().most_queued <= crate::push::QUEUED as u64);
-    assert_eq!(push.counters().unmerged, 0, "every merge met its own kind");
-    let mut kinds = Vec::new();
-    while push.counters().written < push.counters().offered - push.counters().merges {
-        let (kind, bytes, ..) = push.take_kind().unwrap();
-        if kind == PANEL {
-            let body: serde_json::Value = serde_json::from_slice(&bytes[4..]).unwrap();
-            assert_eq!(body["panels"][0]["data"]["line"], "c", "the panel's newest data reaches the reader");
-        }
-        kinds.push(kind);
-    }
-    assert!(kinds.contains(&PANEL) && kinds.contains(&FOLLOW));
-}
-
-/// A log's columns in Countries' place: numbers, an optional number among them.
 const LOG: [Kind; 4] = [Kind::I64, Kind::OptionalU32, Kind::I32, Kind::U16];
 
-/// The log's hour `at` in the game's order: every 7th hour its oldest listed row forgotten first;
-/// `at % 4` rows appended (an optional cell missing or not given in some), one more appended and
-/// forgotten again every 13th hour; every 50th hour every other row of the oldest ten forgotten;
+/// Rows appended, listed, and forgotten again every 13th hour; every 50th hour every other row of the oldest ten forgotten;
 /// then the oldest while more than 30 are listed, consecutive ones as one run.
 fn log_hour(at: u32, changes: &mut TableChanges<'_>) {
     let listed = |changes: &TableChanges<'_>| changes.held().listed().unwrap().ones().collect::<Vec<u64>>();
@@ -1363,7 +1211,7 @@ fn a_followed_feed_of_a_log_pushes_what_its_span_gives() {
     let columns = vec![0, 1, 2];
     let (appended, _) = log_read_directly(&pages, &columns);
     for every in [1, 24, 240] {
-        let mut harness = stepping(&pages, 64 << 10, every);
+        let mut harness = stepping(&pages, every);
         harness.follow.follow(1, Query::Cells { table: TABLE, columns: columns.clone(), rows: Rows::Appended }).unwrap();
         assert_eq!(harness.follow.declared().unwrap(), vec![playhead::Declared { table: TABLE, columns: columns.clone(), keyed: true, passing: false }]);
         let mut stretches: Vec<(Hour, Hour, Vec<LogRow>)> = Vec::new();
@@ -1405,12 +1253,13 @@ fn a_followed_list_of_a_log_holds_its_listed_rows_at_twenty_seeks() {
         listed
     };
     let listed_at = |hour: Hour| -> Vec<(u128, Vec<(i64, State)>)> { listed(hour).values().map(|row| (row.0, row.2.clone())).collect() };
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     harness.follow.follow(2, Query::Cells { table: TABLE, columns: columns.clone(), rows: Rows::Listed }).unwrap();
     let mut answered = 0;
     for seek in [0, 1, 37, 719, 720, 721, 1000, 1150, 100, 500, 1190, 13, 50, 650, 900, 1100, 1200, 300, 800, 1180] {
         harness.seek(seek);
         let mut played = since_the_reset(harness.play(seek + 24));
+        assert_eq!(decode(&played[0].message.as_ref().unwrap().bytes).unwrap().hour, seek);
         let ordinals: Vec<u64> = listed(seek).keys().copied().collect();
         let read = harness.playhead().rows(Wanted { run: 0, table: TABLE, ordinals: ordinals.clone(), columns: columns.clone() }).wait();
         assert_eq!(read.map(|rows| rows.ordinals().to_vec()).map_err(|error| error.to_string()), Ok(ordinals), "the rows listed at {seek}, read by ordinal");
@@ -1432,7 +1281,7 @@ fn a_followed_list_of_a_log_holds_its_listed_rows_at_twenty_seeks() {
 #[test]
 fn a_followed_list_of_a_table_holding_state_is_refused_by_name() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     harness.follow.follow(3, Query::Cells { table: TABLE, columns: vec![0], rows: Rows::Listed }).unwrap();
     harness.seek(0);
     let refused = harness.play(48).iter().flat_map(Played::answers).find_map(|(_, _, answer)| answer.not_recorded).expect("an answer");
@@ -1460,7 +1309,7 @@ fn lay(held: &mut [(u128, Vec<(i64, State)>, Option<String>)], changed: &Answer)
 #[test]
 fn a_live_query_pushes_only_the_rows_that_changed_and_its_reader_holds_the_answer_at_every_step() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     // Key 100's column 0 moves every hour, key 105's column 3 at hours 100, 200 and 400, key 107 only in
     // a column not asked, and no row has key 999.
     let asked = [100, 105, 107, 999];
@@ -1508,7 +1357,7 @@ fn rows_message(hour: Hour, changed: bool, rows: &[(u128, i64)]) -> Vec<u8> {
     let mut body = Vec::new();
     if changed { table.encode_changed(&mut body) } else { table.encode(&mut body) }
     let mut message = Vec::new();
-    crate::answer::begin(&mut message, 0, hour, false);
+    crate::answer::begin(&mut message, 0, 0, hour, 0, false);
     crate::answer::push(&mut message, 4, hour, &body);
     message
 }
@@ -1536,7 +1385,7 @@ fn rows_changed_queued_behind_the_rows_they_change_are_laid_over_them_never_drop
 #[test]
 fn a_live_step_reads_the_cells_of_the_rows_it_touched_only() {
     let pages = record(quiet);
-    let mut harness = harness(&pages, 64 << 10);
+    let mut harness = harness(&pages);
     // Of four rows, key 100 moves every hour, key 106's column 2 is written every hour with
     // the hour's parity, key 105 moves at hours 100 and 200, and key 107 only in a column not asked:
     // a step touches two rows, three at hours 100 and 200, never all four. A step ending in the hours
@@ -1566,4 +1415,29 @@ fn a_live_step_reads_the_cells_of_the_rows_it_touched_only() {
         checked += 1;
     }
     assert!(checked > 5, "{checked} steps checked");
+}
+
+#[test]
+fn dated_panel_merge_keeps_the_reading_and_its_confirmation_separate() {
+    use crate::panel::dated::{self, Update};
+    let data = Ok(serde_json::json!({"rows": [7]}));
+    let packet = |update| dated::message(4, 8, 2, &[update]);
+    let (merged, _) = dated::merge(&packet(Update::Data(7, 10, &data)), &packet(Update::Stands(7, 24))).unwrap();
+    let records = dated::records(&merged).unwrap();
+    assert_eq!(records[0].body, b"\x81\xa4rows\x91\x07", "the worker reads MessagePack data records");
+    assert_eq!(records.iter().map(|r| (r.kind, r.hour)).collect::<Vec<_>>(), [(dated::DATA, 10), (dated::STANDS, 24)]);
+    assert!(dated::merge(&merged, &dated::message(4, 8, 3, &[Update::Stands(7, 30)])).is_err());
+}
+
+#[test]
+fn completed_product_step_has_constant_size_when_every_product_stands() {
+    use crate::panel::dated;
+    let mut batch = dated::ProductBatch::new((0, 3, 9));
+    batch.changed(7, 10, 18, dated::DATA, b"first");
+    let first = batch.finish(Some(10));
+    let next = dated::ProductBatch::new((0, 3, 9)).finish(Some(34));
+    assert_eq!(dated::records(&next).unwrap().len(), 1);
+    let (merged, _) = dated::merge(&first, &next).unwrap();
+    let rows = dated::records(&merged).unwrap();
+    assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::DATA, 10), (0, dated::COMPLETED, 34)]);
 }

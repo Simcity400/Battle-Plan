@@ -50,7 +50,7 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
   const headEntry = followsHead(followed) ? followed.entry : null;
   const [headFollowed, setHeadFollowed] = useState(false);
   useLayoutEffect(() => setHeadFollowed(headEntry !== null), [headEntry]);
-  // Structure: a refusal, or which warnings hold (whole coverage, classified pauses); one paced render a change.
+  // Structure: a refusal, or which warnings hold (whole coverage, classified pauses).
   const structureOf = (entry: FollowEntry | null) => clockStructure(clockHead(entry?.answer));
   const entryRef = useRef(headEntry); entryRef.current = headEntry;
   useHeadHour(runtime.clock, headEntry !== null, () => structureOf(entryRef.current), woken);

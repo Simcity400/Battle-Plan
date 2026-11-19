@@ -116,8 +116,9 @@ export const doctrineIcons = (reply: DoctrineMasteryReply | undefined): (string 
 
 /** What a render shows: folders, tracks, names, rewards and unlocks. Every number is a live cell, painted. */
 export function masteryStructure(reply: DoctrineMasteryReply): string {
-  return JSON.stringify(reply.folders.map(folder => [folder.id, folder.name, folder.icon, folder.grand, folder.completed,
-    folder.tracks.map(item => [item.ordinal, item.name, item.sub, item.rewards, item.unlocked])]));
+  const choice = (item: MasteryFolder['grand']) => item && [item.id, item.name, item.icon];
+  return JSON.stringify([reply.warnings, reply.folders.map(folder => [folder.ordinal, folder.id, folder.name, folder.icon, choice(folder.grand), folder.completed.map(choice),
+    folder.tracks.map(item => [item.ordinal, item.name, choice(item.sub), item.rewards.map(r => [r.id, r.name, r.threshold]), item.unlocked])])]);
 }
 
 /** A reward's description from a `doctrine-rewards` reply for its track: by its place, when the reply is of the same

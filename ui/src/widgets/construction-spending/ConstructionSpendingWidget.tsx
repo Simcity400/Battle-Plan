@@ -22,7 +22,7 @@ const ROOT = { id: 'all', label: 'All construction' };
 
 /** Where one country's civilian-factory output went, as a sunburst: new buildings or repairs, then building type,
  * then state. The branch's spending is asked once; following the playhead, the amounts are painted at each frame from
- * it, and the widget renders only when a leaf enters (at most four times a second while playing). Off, the whole
+ * it, and the widget renders only when a leaf enters. Off, the whole
  * campaign or the range chosen. */
 export default function ConstructionSpendingWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);

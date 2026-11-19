@@ -285,7 +285,8 @@ pub fn answers(product: &str, params: &Value) -> bool {
 /// The panels shown at the head, by the product key their follow query gives
 /// (`{"panel": <key>, ..params}`): each rows-at-an-hour product's ([`crate::products::AT_HOUR`]).
 pub fn panel(source: &Source, context: &LoadContext, query: &Value) -> Option<Result<Box<dyn dashboard_follow::panel::Panel>, String>> {
-    crate::products::at_hour::panel_of(source, context, query)
+    use crate::products::at_hour::{dated_panel_of, panel_of};
+    dated_panel_of(source, context, query).or_else(|| panel_of(source, context, query))
 }
 
 /// Whether `product` is a followed query's request: answered from the recording a forwarded

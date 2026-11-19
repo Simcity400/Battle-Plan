@@ -49,6 +49,11 @@ fn a_nuclear_total_adds_the_shown_counts_as_the_top_bar_does_and_ranks_ties_by_t
     assert_eq!(unheld, 1, "a country no tag holds is counted, not shown");
     let shown: Vec<(&str, i32, usize)> = countries.iter().map(|country| (country.tag.as_str(), country.total, country.counts.len())).collect();
     assert_eq!(shown, [("ENG", 5, 1), ("GER", 5, 2), ("FRA", 1, 1)]);
+    let mut rank = serde_json::to_value(&countries).unwrap();
+    let mut changed = rows.to_vec();
+    changed[0] = nuke(1, 0, 8);
+    nuclear_arsenal::rerank(&mut rank, &changed, 1, "GER").unwrap();
+    assert_eq!(rank, serde_json::to_value(nuclear_arsenal::countries(&changed, tag).0).unwrap());
     let (sentinel, _) = nuclear_arsenal::countries(&[NukeRow { country: 1, nuke_type: 0, amount_raw: i64::MAX, ready: 0 }, nuke(1, 1, 1)], tag);
     assert_eq!(sentinel[0].total, 0xa7c5 + 1, "the top bar adds the game's sentinel as it shows it");
 }

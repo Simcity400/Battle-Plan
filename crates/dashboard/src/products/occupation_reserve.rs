@@ -138,6 +138,19 @@ impl AtHour for OccupationReserve {
         branch(&params.branch_id)
     }
 
+    fn uses_sample(table: TableId) -> bool { table == TableId::CountryOccupationReserveManpower }
+
+    const CLOCK_DEPENDENT: bool = false;
+
+    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+        match table {
+            TableId::OccupationSettings => Some(Vec::new()),
+            TableId::CountryCounterInputs => Some(dashboard_base::products::at_hour::field_columns(table, &["owned_state_count"])),
+            TableId::Countries => Some(dashboard_base::products::at_hour::field_columns(table, &["canonical_slot", "tag"])),
+            _ => None,
+        }
+    }
+
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         TABLES.to_vec()
     }

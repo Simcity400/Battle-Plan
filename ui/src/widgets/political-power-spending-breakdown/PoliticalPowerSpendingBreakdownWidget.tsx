@@ -35,8 +35,7 @@ export function gainNote(gain: PowerGain | null, digits: number): string {
 }
 
 /** Political power spending by category and the item it shows as. Following playback, slices grow, the gain and the
- * notes move as each frame paints; the widget renders only where it goes from nothing spent to slices, and the chart's
- * legend takes a new slice at most four times a second. */
+ * notes move as each frame paints; the widget renders only where it goes from nothing spent to slices. */
 export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = sunburstSettings(options);

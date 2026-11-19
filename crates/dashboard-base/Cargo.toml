@@ -52,6 +52,7 @@ replay-spool.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true, features = ["float_roundtrip", "raw_value"] }
 rmp-serde.workspace = true
+rmp = "0.8"
 ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
@@ -107,6 +108,7 @@ unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-wgpu = { workspace = true }
+unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-core = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }

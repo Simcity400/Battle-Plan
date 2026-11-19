@@ -32,8 +32,7 @@ export interface CardList<C, A> {
 
 /** A card list's pages over the branch: counted by `log-counts` and paged by its product over the declared `feed-events`
  * log, cut at the head (one page ahead while playing), each loaded card shown as the hour shown shows it. While following,
- * that hour moves only where a held card changes (an edge read, a break, a day of an open card), at most four times a
- * second of playback. */
+ * that hour moves only where a held card changes (an edge read, a break, a day of an open card). */
 export function useCards<C, A>(runtime: WidgetRuntime, widget: WidgetSpec, track: BoundTrack | undefined, active: boolean, list: CardList<C, A>) {
   const follow = widget.time.mode === 'follow';
   const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
@@ -63,10 +62,7 @@ export function useCards<C, A>(runtime: WidgetRuntime, widget: WidgetSpec, track
     }
     return { edges: edges.sort((a, b) => a - b), days };
   }, [feed.pages, list]);
-  const headHour = useHeadHour(runtime.clock, active && follow, hour => {
-    const { hoursPerSecond, playing } = runtime.clock.getSnapshot();
-    return cardsKey(held.edges, breaks, held.days, Math.floor(hour) + offset, playing ? hoursPerSecond / 4 : 1);
-  });
+  const headHour = useHeadHour(runtime.clock, active && follow, hour => cardsKey(held.edges, breaks, held.days, Math.floor(hour) + offset));
   const hour = follow ? Math.floor(headHour) + offset : cut.follow ? null : cut.hour ?? track?.branch.lastHour ?? null;
   const shown = useRef<readonly LogPage<A>[]>([]);
   const pages = useMemo(() => shown.current = stableLogPages(shown.current, hour === null ? [] : cutPages(feed.pages, row => row.hour > hour ? null : list.at(row, hour, breaks))),

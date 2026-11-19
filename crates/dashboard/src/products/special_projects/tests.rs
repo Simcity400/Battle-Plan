@@ -137,3 +137,9 @@ fn owners_are_every_raw_id_linking_to_the_slot_and_edges_stay_in_the_piece() {
     assert_eq!(boundaries(20, 150, &[], &spans), [20, 30, 41, 60, 100]);
     assert_eq!(uncovered(&[(30, 40), (60, 300)], 20, 150), [(20, 29), (41, 59)]);
 }
+
+#[test]
+fn a_dated_project_request_accepts_the_displayed_hour() {
+    let params: SpecialProjectsParams = serde_json::from_value(serde_json::json!({"branchId":"1","tag":"GER","hour":23})).unwrap();
+    assert_eq!(params.hour, Some(23));
+}

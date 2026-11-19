@@ -1106,6 +1106,10 @@ impl Kept {
         self.mirror.is_some() || self.failed.is_some()
     }
 
+    fn answers_at(&self, hour: Hour) -> bool {
+        self.failed.is_some() || self.mirror.as_ref().is_some_and(|mirror| self.gap || mirror.head() == Some(hour))
+    }
+
     /// The table's rows as the steps applied left them, made again only when a step touched it
     /// (its mirror is held); the build recorded in `made`.
     fn view(&mut self, table: usize, order: &mut Vec<(u128, u32)>, made: &mut Made) -> SharedView {
@@ -1358,7 +1362,8 @@ fn apply_step(kept: &mut [Option<Kept>], consumer: &playhead::Consumer, capture:
     for changes in step.tables() {
         let table = changes.table();
         let Some(Some(kept)) = kept.get_mut(table) else { continue };
-        if kept.mirror.is_some() && !kept.gap && quiet(changes) {
+        if let Some(mirror) = &mut kept.mirror && !kept.gap && quiet(changes) {
+            mirror.advance_head(changes);
             continue;
         }
         let started = spent.is_some().then(Instant::now);
@@ -1923,7 +1928,8 @@ impl<'a> Worker<'a> {
         let (id, cadence, has_frame, ready) = (*id, *cadence, *has_frame, *ready);
         let cadence_held = self.cadence_held();
         let Some(hour) = self.hour else { return Due::Not };
-        if !tables.iter().copied().chain(keyed.iter().map(|keyed| keyed.table)).all(|table| self.kept[table].as_ref().is_some_and(Kept::answers)) {
+        let ready_at = |kept: &Kept| kept.answers_at(hour);
+        if !tables.iter().copied().chain(keyed.iter().map(|keyed| keyed.table)).all(|table| self.kept[table].as_ref().is_some_and(ready_at)) {
             return Due::Not;
         }
         let stamp = |kept: &[Option<Kept>], table: usize| kept[table].as_ref().map_or(0, |kept| kept.stamp);

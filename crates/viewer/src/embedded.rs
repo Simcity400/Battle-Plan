@@ -417,7 +417,7 @@ type FollowKey = (String, u64, i32);
 /// bound to `redeclare`, and its driver standing its reader at the clock's head.
 struct FollowPlayheads {
     push: Arc<dashboard_follow::push::Push>,
-    hosts: Mutex<BTreeMap<FollowKey, Arc<FollowHost>>>,
+    hosts: Mutex<BTreeMap<FollowKey, std::sync::Weak<FollowHost>>>,
     /// Hosts being built, by key: a caller of the same key waits for that build, one of another
     /// key or recording never does.
     building: Mutex<BTreeMap<FollowKey, std::sync::Weak<Mutex<()>>>>,
@@ -425,7 +425,9 @@ struct FollowPlayheads {
 
 impl FollowPlayheads {
     fn hosted(&self, key: &FollowKey) -> Option<Arc<FollowHost>> {
-        self.hosts.lock().unwrap_or_else(|error| error.into_inner()).get(key).cloned()
+        let mut hosts = self.hosts.lock().unwrap_or_else(|error| error.into_inner());
+        hosts.retain(|_, host| host.strong_count() > 0);
+        hosts.get(key).and_then(std::sync::Weak::upgrade)
     }
 
     fn gate(&self, key: &FollowKey) -> Arc<Mutex<()>> {
@@ -462,35 +464,49 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         // A mapping other than the map's (game hours, 0) runs a playhead of its own.
         let entry = crate::playhead_host::open_clocked(units, crate::playhead_host::settings(), clock).map_err(|error| error.to_string())?;
         entry.set_capture(capture);
-        let follow = dashboard_follow::Follow::new(64 << 10);
-        let due = dashboard_follow::due::Due::new(Arc::clone(push));
-        entry.hooks().add(follow.hook(due.sink()));
+        let follow = dashboard_follow::Follow::new(clock);
+        let out = Arc::clone(push);
+        let hook = follow.hook(Box::new(move |_, message| {
+            if let Some(message) = message { out.offer(message.bytes); }
+        }));
         let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
-        let rows = Arc::new(FollowRows { entry: Arc::clone(&entry), branch });
-        let host = dashboard_follow::host::PlayheadHost::new(entry, crate::playhead_host::Entry::playhead, |entry, anchor| entry.anchor(anchor.hour, anchor.playing, anchor.speed, anchor.sought), follow, due, held).map_err(|error| error.to_string())?;
+        let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), crate::playhead_host::Entry::playhead, crate::playhead_host::Entry::follow_anchor, follow, held).map_err(|error| error.to_string())?;
+        let hook = entry.hooks().add(hook);
+        let rows = Arc::new(FollowRows { entry, branch, hook });
         host.show_panels(rows, Arc::clone(push));
-        self.hosts.lock().unwrap_or_else(|error| error.into_inner()).insert(key, Arc::clone(&host));
+        self.hosts.lock().unwrap_or_else(|error| error.into_inner()).insert(key, Arc::downgrade(&host));
         Ok(host as Arc<dyn dashboard_follow::registry::Hosted>)
     }
 }
 
 /// Rows at the head of a follow host's playhead for its panels, at a panel's cadence.
 struct FollowRows {
+    hook: u64,
     entry: Arc<crate::playhead_host::Entry>,
     branch: u64,
+}
+
+impl Drop for FollowRows {
+    fn drop(&mut self) {
+        self.entry.hooks().remove(self.hook);
+    }
 }
 
 impl dashboard_follow::panel::PanelRows for FollowRows {
     fn reader(&self, tables: &[replay_data::rows::TableId]) -> io::Result<Box<dyn dashboard_follow::panel::PanelReader>> {
         use crate::playhead_host::rows::{Cadence, Recording, Rows};
         let rows = Rows::of(&self.entry, Recording { branch: self.branch })?;
-        Ok(Box::new(FollowRowReader(rows.reader(tables, Cadence::PerSecond(4)))))
+        Ok(Box::new(FollowRowReader(rows.reader(tables, Cadence::EveryStep))))
     }
 }
 
 struct FollowRowReader(crate::playhead_host::rows::RowReader);
 
 impl dashboard_follow::panel::PanelReader for FollowRowReader {
+    fn through_seek(&self, frame: &Arc<replay_frame::frame::DecodedFrame>) -> Option<(replay_data::Hour, u64)> {
+        self.0.through_seek(Arc::as_ptr(frame))
+    }
+
     fn frame(&self) -> Option<Arc<replay_frame::frame::DecodedFrame>> {
         self.0.frame()
     }

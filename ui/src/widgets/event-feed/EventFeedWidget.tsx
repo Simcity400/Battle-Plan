@@ -37,7 +37,7 @@ import { reasonsOf } from './scriptedGaps.ts';
 import './eventFeed.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
-import { useStructureState } from '../../dashboard/structurePace';
+import { useDistinctState } from '../../dashboard/useDistinctState';
 
 const NO_ROWS: readonly LogRow<FeedEvent>[] = [];
 const sameKeys = (held: readonly LogRow<FeedEvent>[], next: readonly LogRow<FeedEvent>[]) => held.length === next.length
@@ -101,7 +101,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const merged = useRef<readonly LogPage<FeedEvent>[]>(NO_PAGES);
   const pages = useMemo(() => merged.current = stableLogPages(merged.current, withFamilyRows(feed.pages, family, shownFamily)),
     [feed.pages, family, shownFamily]);
-  const [visible, setVisible] = useStructureState<readonly LogRow<FeedEvent>[]>(runtime.clock, NO_ROWS, sameKeys);
+  const [visible, setVisible] = useDistinctState<readonly LogRow<FeedEvent>[]>(NO_ROWS, sameKeys);
   // Following, the newest rows held (the block drawn and a view beneath it) are named with the block; only rows
   // scrolled to beyond them are named as they come into view, so the list's render is the only commit.
   const newest = useMemo(() => follow ? newestPageRows(pages, feed.ahead.length + 2 * AHEAD_ROWS) : NO_ROWS, [follow, pages, feed.ahead.length]);

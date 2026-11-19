@@ -1,26 +1,19 @@
-/** The playback bars on the raid tally's race and the raid log, in a real browser: both mounted on a clock the test
- * moves 15 hours a frame (1,440 h/s at 96 frames a second) through raids that start, launch and end as it plays;
- * their renders, the requests made and the hours they report shown. */
-import { Profiler } from 'react';
-import type { ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import RaidTallyWidget from '../raid-tally/RaidTallyWidget';
 import RaidLogWidget from './RaidLogWidget';
 import { syntheticEpisode, syntheticRaidLog } from '../../dashboard/raids.fixtures.ts';
-import { MeasuredWidget } from '../../dashboard/widgetPerf.ts';
-import { measureWith } from '../../shell/perf.ts';
-import type { PerfRecorder } from '../../shell/perf.ts';
+import { WidgetBody } from '../../dashboard/widgets.tsx';
+import { registerWidgets } from '../../dashboard/definitions.ts';
+import { definition as log } from './definition.ts';
+import { definition as tally } from '../raid-tally/definition.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 
 const native = window.requestAnimationFrame.bind(window);
 const frame = () => new Promise<void>(resolve => native(() => resolve()));
 async function settle(frames = 4) { for (let at = 0; at < frames; at++) await frame(); }
 
-const shown = new Map<string, (number | null)[]>();
-measureWith(new Proxy({ shown: (widget: string, hour: number | null) => { shown.set(widget, [...shown.get(widget) ?? [], hour]); } }, {
-  get: (target, name) => (target as Record<string | symbol, unknown>)[name] ?? (() => {}),
-}) as unknown as PerfRecorder);
+registerWidgets([{ ...log, render: RaidLogWidget }, { ...tally, render: RaidTallyWidget }]);
 
 const HOURS = 120_000;
 const START = 30_000;
@@ -62,7 +55,6 @@ function reply(product: string, params: Record<string, unknown>): unknown {
 
 let clock = new Clock();
 const requests: { product: string; params: Record<string, unknown> }[] = [];
-const renders: Record<string, number> = {};
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
@@ -72,50 +64,42 @@ const client = {
     requests.push({ product: request.product, params: request.params });
     return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: reply(request.product, request.params) };
   },
-  onFollowMessages: async () => () => {},
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
-
-const counted = (id: string, children: ReactNode) => <MeasuredWidget value={id}>
-  <Profiler id={id} onRender={() => { renders[id] = (renders[id] ?? 0) + 1; }}>{children}</Profiler>
-</MeasuredWidget>;
 
 export const fixture = {
   async mount() {
     root?.unmount(); host?.remove();
-    clock = new Clock(); requests.length = 0; shown.clear();
-    for (const key of Object.keys(renders)) delete renders[key];
+    clock = new Clock(); requests.length = 0;
     host = document.body.appendChild(document.createElement('div'));
     host.style.cssText = 'width: 640px; display: flex; flex-direction: column;';
     root = createRoot(host);
     const runtime = { tracks: [track], clock, client, addWidgetBelow() {}, campaigns: [], recordings: [] };
-    const tally = { id: 'tally', kind: 'raid-tally', trackIds: ['main'], countries: { kind: 'group', group: { type: 'top', count: 3 } }, time: { mode: 'follow' }, options: { view: 'race' } };
-    const log = { id: 'log', kind: 'raid-log', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'follow' }, options: {} };
+    const tally = { id: 'tally', kind: 'raid-tally', title: 'Raid tally', configVersion: 1, trackIds: ['main'], countries: { kind: 'group', group: { type: 'top', count: 3 } }, time: { mode: 'follow' }, options: { view: 'race' } };
+    const log = { id: 'log', kind: 'raid-log', title: 'Raid log', configVersion: 1, trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'follow' }, options: {} };
     const props = (widget: unknown) => ({ widget, runtime, active: true, onDiagnostics() {}, setOption() {} }) as unknown as WidgetProps;
     root.render(<>
-      <div style={{ height: '320px', display: 'flex' }}>{counted('tally', <RaidTallyWidget {...props(tally)} />)}</div>
-      <div style={{ height: '320px', display: 'flex' }}>{counted('log', <RaidLogWidget {...props(log)} />)}</div>
+      <div style={{ height: '320px', display: 'flex' }}><WidgetBody {...props(tally)} /></div>
+      <div style={{ height: '320px', display: 'flex' }}><WidgetBody {...props(log)} /></div>
     </>);
     await settle(30);
   },
-  /** Plays `frames` frames of `hours` each; what moved meanwhile, and how long it took. */
-  async play(frames: number, hours: number) {
-    clock.playing = true; clock.anchor();
-    await settle(30);
-    const before = { requests: requests.length, renders: { ...renders } };
-    const started = performance.now();
-    for (let at = 0; at < frames; at++) {
-      clock.step(hours);
-      await frame();
-    }
+  async playing(playing: boolean) {
+    clock.playing = playing;
+    clock.anchor();
     await settle();
-    const elapsed = performance.now() - started;
-    const asked = requests.slice(before.requests).map(request => request.product);
-    const rendered = Object.fromEntries(Object.entries(renders).map(([id, count]) => [id, count - (before.renders[id] ?? 0)]));
-    return { head: clock.getHour(), asked, rendered, elapsed };
   },
-  pause() { clock.playing = false; clock.anchor(); },
-  shown: () => Object.fromEntries([...shown].map(([id, hours]) => [id, hours.at(-1) ?? null])),
+  async advance() {
+    const before = requests.length;
+    clock.step(15);
+    await settle();
+    return requests.slice(before).map(request => request.product);
+  },
+  close() {
+    root?.unmount(); root = null;
+    host?.remove(); host = null;
+  },
+  states: () => [...host!.querySelectorAll('[role="status"]')].map(element => element.textContent),
   text: () => host?.textContent ?? '',
 };
 (window as unknown as { raidPlayback: typeof fixture }).raidPlayback = fixture;

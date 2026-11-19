@@ -6,35 +6,20 @@ import type { DashboardClient } from './client';
 import type { BoundTrack } from './model';
 import type { PlaybackController } from './playback';
 import { useFallbackHour } from './follow/useFollow.ts';
-import { atNextSlot, structureOpen } from './structurePace.ts';
 
 const unsubscribed = () => () => {};
 
-/** A value at the clock's head that changes rarely, such as a label: `read` takes the clock's hour
- * every frame (and at each `wake`), and the component renders only when what it gives changes (`same`), while playing
- * only in the page's structure slot (`structureOpen`). Off, it is read as rendered. */
+/** Renders when the value read at the head changes. */
 export function useAtHead<T>(clock: PlaybackController, on: boolean, read: (hour: number) => T, same: (a: T, b: T) => boolean = Object.is,
   wake?: (changed: () => void) => () => void): T {
   const shown = useRef<{ value: T } | null>(null);
-  const held = useRef<{ listeners: Set<() => void>; wake: (() => void) | null }>({ listeners: new Set(), wake: null });
   const subscribe = useCallback((changed: () => void) => {
-    const pending = held.current;
-    pending.listeners.add(changed);
-    const stops = [clock.subscribeFrame(changed), ...wake ? [wake(changed)] : []];
-    return () => {
-      for (const stop of stops) stop();
-      pending.listeners.delete(changed);
-      if (!pending.listeners.size) { pending.wake?.(); pending.wake = null; }
-    };
+    const stop = clock.subscribeFrame(changed), off = wake?.(changed);
+    return () => { stop(); off?.(); };
   }, [clock, wake]);
   const snapshot = () => {
     const value = read(clock.getHour());
     if (shown.current && same(shown.current.value, value)) return shown.current.value;
-    if (shown.current && !structureOpen(clock.getSnapshot().playing)) {
-      const pending = held.current;
-      pending.wake ??= atNextSlot(() => { pending.wake = null; for (const changed of [...pending.listeners]) changed(); });
-      return shown.current.value;
-    }
     shown.current = { value };
     return value;
   };
@@ -86,6 +71,6 @@ export function useIdentityHour(client: DashboardClient, track: Pick<BoundTrack,
     return at === null ? null : (timeline ? identitySince(timeline, at, tags) : undefined) ?? Number.NaN;
   });
   const unheld = on && Number.isNaN(settled);
-  const paced = useFallbackHour(clock, unheld);
-  return !on || unheld ? trackHour(paced) : settled;
+  const requestHour = useFallbackHour(clock, unheld);
+  return !on || unheld ? trackHour(requestHour) : settled;
 }

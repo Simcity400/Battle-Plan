@@ -177,6 +177,14 @@ impl AtHour for LendLeaseBalance {
         params.holder.as_deref()
     }
 
+    fn uses_sample(_table: TableId) -> bool { false }
+
+    const CLOCK_DEPENDENT: bool = false;
+
+    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+        (table == TableId::Countries).then(|| dashboard_base::products::at_hour::field_columns(table, &["canonical_slot", "tag"]))
+    }
+
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         vec![TableId::WarLendLeaseHistories, TableId::WarOwnedRelations, TableId::Countries, TableId::CountryLinks]
     }

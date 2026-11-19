@@ -70,42 +70,19 @@ test('a chart draw is in flight from its wake until it has drawn, never while hi
   assert.equal(busyKinds().draws, 0, 'a removed chart waits on nothing');
 });
 
-test('a followed answer is in flight until painted, and a seek until a message of the hour sought lands', () => {
+test('a followed answer is in flight until painted, and a seek clears it', () => {
   const transport = fakeTransport();
   const frames = manualFrames();
   const store = new FollowStore(transport, frames.schedule);
   const handle = store.acquire({ product: 'series-state', params: { branchId: '7', tags: ['GER'] } });
   store.painter(handle.entry, () => {});
-  assert.equal(busyKinds().follow, 1, 'a new painter is due');
-  frames.run();
-  assert.equal(busyKinds().follow, 0);
   transport.deliver(message(24, [{ id: 1, answer: one(100n, 5n) }]));
   assert.equal(busyKinds().follow, 1, 'an answer landed and is not yet painted');
   frames.run();
   assert.equal(busyKinds().follow, 0);
 
-  const sought = store.seek('7', 48);
-  assert.equal(busyKinds().follow, 1, 'the timeline holds hour 24, not 48');
-  transport.deliver(message(30, [{ id: 1, answer: one(100n, 6n) }]));
-  frames.run();
-  assert.equal(busyKinds().follow, 1, 'a message of another hour is not the one sought');
-  transport.deliver(message(48, [{ id: 1, answer: one(100n, 7n) }]));
-  assert.equal(busyKinds().follow, 1, 'the hour sought landed; its paint is due');
-  frames.run();
-  assert.equal(busyKinds().follow, 0);
-  sought();
-  assert.equal(busyKinds().follow, 0, 'ending a seek that ended is nothing');
-
-  store.seek('7', 48);
-  assert.equal(busyKinds().follow, 0, 'every query already holds the hour sought: nothing to wait on');
-  store.seek('9', 10);
-  assert.equal(busyKinds().follow, 0, 'nothing followed on that timeline');
-  const unanswered = store.seek('7', 60);
-  assert.equal(busyKinds().follow, 1);
-  unanswered();
-  assert.equal(busyKinds().follow, 0, 'the service follows nothing there');
-  store.seek('7', 72);
-  assert.equal(busyKinds().follow, 1);
+  store.seek('7');
+  assert.equal(handle.entry.answer, undefined);
   handle.release();
   assert.equal(busyKinds().follow, 0, 'its last query let go, no message will come');
   store.close();
@@ -125,7 +102,7 @@ test('data updates are in flight from when they are queued until their frame ren
     frames.shift()!();
     assert.deepEqual(ran, ['name', 'reply']);
     assert.equal(busyKinds().updates, 0);
-    assert.equal(busyKinds().commits, 0, 'with no commit mark mounted, rendered once run');
+    assert.equal(busyKinds().commits, 0, 'the batch finished rendering');
     assert.equal(busyCount(), 0);
   } finally {
     delete page.requestAnimationFrame;

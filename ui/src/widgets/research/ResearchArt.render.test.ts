@@ -9,11 +9,11 @@ test('history cells reserve a flask fallback without artwork reasons and say wha
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'research-art-fixture', enforce: 'pre',
       transform(source, id) {
-        if (id.replaceAll('\\', '/').endsWith('/research/ResearchWidget.tsx')) return `${source}\nexport { Art, LaneRow };`;
+        if (id.replaceAll('\\', '/').endsWith('/research/ResearchWidget.tsx')) return `${source}\nexport { Art, LaneRow, NowCell };`;
       },
     }] });
   try {
-    const { Art, LaneRow } = await vite.ssrLoadModule('/ui/src/widgets/research/ResearchWidget.tsx');
+    const { Art, LaneRow, NowCell } = await vite.ssrLoadModule('/ui/src/widgets/research/ResearchWidget.tsx');
     const ended = HOUR_EPOCH + 1944 * 8760 + 12;
     const entry = { token: 'mod_technology', technologyHandle: 1, continuityStartHour: ended - 240, level: 0, firstObservedHour: ended - 240,
       startedAfterHour: null, lastObservedHour: ended - 24, endedByHour: ended, outcome: 'completed' };
@@ -21,6 +21,9 @@ test('history cells reserve a flask fallback without artwork reasons and say wha
     const props = { item: { kind: 'completed', key: 'c', hour: ended, slot, entry }, slots: [slot], coverage: [],
       text: { name: () => 'Mod technology', icon: () => undefined, folder: () => undefined }, dimmed: () => false,
       tip() {}, untip() {}, jump: () => ({}), onOpen() {} };
+    const pending = renderToStaticMarkup(createElement(NowCell, { lane: { slot, items: [] }, history: { slots: [slot] }, latest: {} }));
+    assert.match(pending, /loading/i);
+    assert.doesNotMatch(pending, /not recorded/i);
     const cell = renderToStaticMarkup(createElement(LaneRow, props));
     assert.match(cell, /art-fallback/);
     assert.doesNotMatch(cell, /artwork unavailable|\?>/i);

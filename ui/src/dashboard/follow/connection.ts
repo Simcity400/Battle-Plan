@@ -1,19 +1,18 @@
-/** The follow store of one open recording, bound to the dashboard client: `follow` and `unfollow` go as
- * requests (the host forwards them to the viewer, where the playhead is), pushed messages come on the client's
- * raw channel, and the clock's anchors (play, pause, speed, seek) go once each so the playhead's clock runs as
- * the page's. A client with no channel follows nothing: every query is not available and widgets ask as before. */
 import type { DashboardClient, DashboardSource } from '../client';
 import type { PlaybackController } from '../playback';
 import { FollowStore, queryBranch } from './store.ts';
-import type { Availability, FollowQuery, FollowTransport } from './store.ts';
+import type { Availability, FollowTransport } from './store.ts';
 import { baseClient, PerClient } from '../prepare.ts';
-import { engine } from '../../engine/frame.ts';
+import { pageClock } from '../widgetClock.ts';
+import { drawClock, drawPost, openFollow, onDraw, playbackRate, onPlaybackRate } from '../pulled.ts';
+import { StructureQueue } from './structureQueue.ts';
+import type { PageReading } from '../../draw/followed';
 
 /** Ids are the viewer's, shared by every store this page makes. */
 let nextId = 1;
 const ids = () => nextId++;
 
-const stores = new PerClient<Map<string, FollowStore>>();
+const clocks = new WeakMap<PlaybackController, PerClient<Map<string, FollowStore>>>();
 
 const NO_CHANNEL: Availability = { available: false, reason: 'This connection has no channel for pushed answers' };
 
@@ -23,75 +22,139 @@ function availability(data: unknown): Availability {
   return { available: false, reason: typeof reply?.reason === 'string' ? reply.reason : 'The service did not say whether it follows this' };
 }
 
-/** The transport of `source` over `client`, the clock's anchors sent for every timeline followed. The track shows game
- * hour position + `offset` (its `axisOffset`): that hour is sent, and the offset with every request, so each mapping
- * of one timeline has a playhead of its own. A seek while paused is told to `seek` (branch, game hour), whose returned
- * function is called if the service follows nothing there. */
-export function followTransport(client: DashboardClient, source: DashboardSource, clock?: PlaybackController,
-  seek?: (branchId: string, hour: number) => () => void, offset = 0): FollowTransport {
-  const branches = new Set<string>();
-  const ask = (product: string, params: Record<string, unknown>) =>
-    client.product<unknown>({ sourceId: source.id, revision: source.revision, product, params }, new AbortController().signal);
-  let anchored = '';
-  let seeks = -1;
-  /** The hour last anchored while paused: a paused step to another hour (Next hour) is a seek there. */
-  let pausedAt: number | null = null;
+function followTransport(client: DashboardClient, source: DashboardSource, clock: PlaybackController, offset: number,
+  seek: (branch: string, retainThrough?: number) => void): FollowTransport {
+  const nameOf = (branch: string) => JSON.stringify([source.id, source.revision, offset, branch]);
+  interface Branch { ready: boolean; ids: Set<number>; route?: number; key?: string; sequence?: number; paused?: number | null; serial: Promise<unknown>; ticket: number; seek: number }
+  const branches = new Map<string, Branch>(), inFlight = new Map<number, Promise<Availability>>();
+  const structures = new StructureQueue();
+  const ask = (product: string, params: Record<string, unknown>) => client.product({
+    sourceId: source.id, revision: source.revision, product, params,
+  }, new AbortController().signal);
   const anchor = () => {
-    if (!clock || !branches.size) return;
-    const snapshot = clock.getSnapshot();
-    const hour = snapshot.playing ? null : Math.floor(snapshot.position);
-    const sought = snapshot.seekSequence !== seeks || (hour !== null && pausedAt !== null && hour !== pausedAt);
-    const key = JSON.stringify([snapshot.playing, snapshot.hoursPerSecond, snapshot.seekSequence, hour]);
-    if (key === anchored) return;
-    anchored = key;
-    seeks = snapshot.seekSequence;
-    pausedAt = hour;
-    for (const branchId of branches) {
-      const awaited = sought && !snapshot.playing ? seek?.(branchId, Math.floor(snapshot.position) + offset) : undefined;
-      void ask('follow-clock', { branchId, clock: offset, hour: snapshot.position + offset, playing: snapshot.playing, speed: snapshot.hoursPerSecond, sought })
-        .then(reply => { if (!availability(reply.data).available) awaited?.(); }, () => awaited?.());
+    const s = clock.getSnapshot();
+    const hour = Math.floor(s.position) + offset, paused = s.playing ? null : hour;
+    const frameRate = playbackRate();
+    const key = JSON.stringify([s.playing, s.hoursPerSecond, s.seekSequence, paused, frameRate]);
+    for (const [name, b] of branches) {
+      if (!b.ready || b.key === key) continue;
+      const sought = b.sequence !== s.seekSequence || (paused !== null && b.paused != null && paused !== b.paused);
+      const stopping = paused !== null && b.paused === null;
+      b.key = key; b.sequence = s.seekSequence; b.paused = paused;
+      // A pause can abandon a built step even without a page seek.
+      if (sought || stopping) {
+        structures.discard(b.ids);
+        const retainThrough = (sought && s.forwardSeek) || (!sought && stopping) ? hour : undefined;
+        seek(name, retainThrough);
+        b.seek = s.seekSequence;
+        drawPost({ type: 'seek', branch: nameOf(name), seek: b.seek, retainThrough });
+      }
+      const ticket = ++b.ticket;
+      const composedAt = performance.timeOrigin + (s.composedAt ?? performance.now());
+      b.serial = b.serial.then(async () => {
+        if (branches.get(name) !== b) return;
+        await ask('follow-clock', { branchId: name, clock: offset, hour: s.position + offset,
+          playing: s.playing, speed: s.hoursPerSecond, frameRate, seek: s.seekSequence, sought, composedAt, sentAt: performance.timeOrigin + performance.now() });
+      }).catch(() => { if (b.ticket === ticket) b.key = undefined; });
     }
   };
-  const stopClock = clock?.subscribe(anchor);
+  let stopWorkerClock: (() => void) | undefined;
+  const owners = new Map<number, Branch>();
+  const remove = (id: number) => {
+    const owner = owners.get(id);
+    if (!owner) return;
+    owners.delete(id);
+    structures.discard(new Set([id]));
+    owner.ids.delete(id);
+    drawPost({ type: 'remove', id });
+    if (!owner.ids.size) {
+      for (const [name, b] of branches) if (b === owner) branches.delete(name);
+      if (!branches.size) { stopWorkerClock?.(); stopWorkerClock = undefined; }
+    }
+  };
   return {
-    follow(id: number, query: FollowQuery) {
-      if (!client.onFollowMessages) return Promise.resolve(NO_CHANNEL);
-      const branchId = queryBranch(query);
-      if (branchId !== null && !branches.has(branchId)) {
-        branches.add(branchId);
-        anchored = '';
-        seeks = -1;
+    follow(id, query) {
+      const branch = queryBranch(query);
+      if (!client.openFollow || branch === null) return Promise.resolve(NO_CHANNEL);
+      let owner = branches.get(branch);
+      if (!owner) {
+        owner = { ready: false, ids: new Set(), serial: Promise.resolve(), ticket: 0, seek: 0 };
+        branches.set(branch, owner);
       }
-      return ask('follow', { id, branchId, clock: offset, query }).then(reply => {
+      owner.ids.add(id);
+      owners.set(id, owner);
+      stopWorkerClock ??= drawClock(clock);
+      drawPost({ type: 'add', branch: nameOf(branch), id, product: typeof query.panel === 'string' ? query.panel : undefined });
+      const registered = openFollow(client).then(() => ask('follow', { id, query, branchId: branch, clock: offset })).then(reply => {
         const told = availability(reply.data);
-        if (told.available) anchor();
+        if (!told.available) remove(id);
+        else if (owners.get(id) === owner) {
+          const route = (reply.data as { route: number }).route;
+          if (!Number.isInteger(route)) throw new Error('A followed subscription has no route');
+          owner.route = route;
+          drawPost({ type: 'bind', branch: nameOf(branch), route, seek: clock.getSnapshot().seekSequence });
+          owner.ready = true;
+          anchor();
+        }
         return told;
       });
+      inFlight.set(id, registered);
+      void registered.then(() => inFlight.delete(id), () => { inFlight.delete(id); remove(id); });
+      return registered;
     },
-    unfollow(id: number) {
-      if (client.onFollowMessages) void ask('unfollow', { id }).catch(() => {});
+    unfollow(id) {
+      if (!owners.has(id)) return;
+      remove(id);
+      void Promise.resolve(inFlight.get(id)).then(() => ask('unfollow', { id })).catch(() => {});
     },
-    listen(receive) {
-      if (!client.onFollowMessages) return () => stopClock?.();
-      let stopped = false, stop: (() => void) | null = null;
-      // A message costs a push where it arrives; every message since the last frame lands in its data phase, in order.
-      const land = engine.batch<ArrayBuffer | Uint8Array>(messages => { if (!stopped) for (const bytes of messages) receive(bytes); });
-      void client.onFollowMessages(land).then(unlisten => { if (stopped) unlisten(); else stop = unlisten; });
-      return () => { stopped = true; stop?.(); stopClock?.(); };
+    listen(receive, fail) {
+      let stopFrame: (() => void) | undefined;
+      const publish = (r: PageReading) => {
+        if (owners.get(r.id)?.seek === r.seek && clock.getSnapshot().seekSequence === r.seek) receive(r);
+      };
+      const drain = () => {
+        structures.drain(Math.floor(clock.positionAt()) + offset, publish);
+        if (!structures.pending) { stopFrame?.(); stopFrame = undefined; }
+      };
+      const off = clock.subscribe(anchor), offRate = onPlaybackRate(anchor);
+      const stop = onDraw(message => {
+        if (message.type === 'followFailure' || (message.type === 'failed' && message.page === -1)) {
+          for (const b of branches.values()) structures.discard(b.ids);
+          fail(message.reason);
+        }
+        if (message.type === 'resetStructures') {
+          for (const b of branches.values()) if (b.route === message.route && b.seek === message.seek) structures.discard(b.ids, message.from);
+        }
+        if (message.type === 'structureLead' && clock.getSnapshot().playing) {
+          for (const r of message.updates) if (owners.get(r.id)?.seek === r.seek) structures.add(r);
+          drain();
+          if (structures.pending) stopFrame ??= clock.subscribeFrame(drain);
+        }
+        if (message.type === 'inspection') {
+          const r = message.reading;
+          if (r && owners.has(r.id) && r.seek === clock.getSnapshot().seekSequence) receive(r);
+        }
+        if (message.type !== 'structure') return;
+        for (const update of message.updates) if (owners.get(update.id)?.seek === update.seek) receive(update);
+      });
+      return () => { stopFrame?.(); stop(); off(); offRate(); };
     },
   };
 }
 
 /** The one store of `source` (its revision) on `client` for a track showing game hour position + `offset`. */
-export function followStore(client: DashboardClient, source: DashboardSource, clock?: PlaybackController, offset = 0): FollowStore {
+export function followStore(client: DashboardClient, source: DashboardSource, widgetClock: PlaybackController, offset = 0): FollowStore {
+  const clock = pageClock(widgetClock);
+  let stores = clocks.get(clock);
+  if (!stores) clocks.set(clock, stores = new PerClient());
   let held = stores.get(client);
   if (!held) stores.set(client, held = new Map());
   const key = `${source.id}\u0000${source.revision}\u0000${offset}`;
   let store = held.get(key);
   if (!store) {
-    let made: FollowStore | null = null;
-    made = new FollowStore(followTransport(baseClient(client), source, clock, (branchId, hour) => made?.seek(branchId, hour) ?? (() => {}), offset), undefined, ids);
-    held.set(key, store = made);
+    const transport = followTransport(baseClient(client), source, clock, offset, (branch, retainThrough) => store?.seek(branch, retainThrough));
+    store = new FollowStore(transport, undefined, ids);
+    held.set(key, store);
   }
   return store;
 }

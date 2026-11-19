@@ -53,8 +53,7 @@ test('VirtualList consumes authored CSS row spacing for collapsed, expanded and 
     const input = await readFile(new URL('./VirtualList.tsx', import.meta.url), 'utf8');
     const source = input.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__virtualSpacing;')
       .replace("'react-dom'", JSON.stringify(import.meta.resolve('react-dom')))
-      .replace("'./virtualListIndex'", JSON.stringify(new URL('./virtualListIndex.ts', import.meta.url).href))
-      .replace("'../dashboard/structurePace.ts'", JSON.stringify(new URL('../dashboard/structurePace.ts', import.meta.url).href));
+      .replace("'./virtualListIndex'", JSON.stringify(new URL('./virtualListIndex.ts', import.meta.url).href));
     const compiled = transformSync('VirtualList.tsx', source, { lang: 'tsx', jsx: { runtime: 'classic', pragma: 'globalThis.__virtualSpacing.createElement' } }).code;
     const { VirtualList } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`);
     const scroller = { clientHeight: 400, clientWidth: 400, offsetHeight: 400, scrollTop: 0,

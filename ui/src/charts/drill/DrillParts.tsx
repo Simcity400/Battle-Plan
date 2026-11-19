@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MovingRow } from '../rowMotion';
-import { atNextSlot, structureOpen } from '../../dashboard/structurePace.ts';
 import type { Live } from '../live';
 import WindowedRows from '../WindowedRows';
 import { drillPartShare, drillPartsTotal, drillRows } from './parts';
@@ -36,7 +35,7 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
   /** A closing total row. */
   totalRow?: { label: string; value: string };
   /** Painted at the head: rendered only when its rows change, their values painted in each frame they move; their
-   * order follows the live values at most four times a second. */
+   * order follows the live values. */
   live?: LiveDrillParts;
 }) {
   // The live values a render last took its rows from: kept while the live source and the parts given hold.
@@ -69,16 +68,13 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
   useLayoutEffect(() => {
     if (!live) return;
     let read: ReturnType<LiveDrillParts['read']> | null = null;
-    let held: (() => void) | null = null;
     const paint = () => {
       const now = live.read();
       if (now === read) return;
       read = now;
       const shown = drillRows(now.parts, now.unattributed), scale = looks.current.scaleOf(shown, now.total);
-      // Rows in another order, or other rows, are structure: taken in the slot's task, read again there.
       if (shown.map(row => row.key).join('\u0000') !== given.current.rowKeys) {
-        if (structureOpen()) setAdopted({ live, parts: given.current.parts, now });
-        else held ??= atNextSlot(() => { held = null; read = null; paint(); });
+        setAdopted({ live, parts: given.current.parts, now });
       }
       for (const { key, item } of shown) {
         const held = cells.current.get(key);
@@ -94,7 +90,7 @@ export default function DrillParts({ parts, format, total, unattributed, totalRo
     };
     paint();
     const stop = live.subscribe(paint);
-    return () => { stop(); held?.(); };
+    return stop;
   }, [live, rows]);
   const reported = useRef<{ callback: typeof onVisible; ids: readonly string[] } | null>(null);
   const publishVisible = useCallback((ids: readonly string[]) => {

@@ -25,7 +25,7 @@ function heldIcons(client: DashboardClient, scope: string): Map<string, string |
  * image, null when it has no drawable art, or undefined while loading, so the widget draws its
  * text without a picture meanwhile. Frames already held are drawn at once and never asked again. */
 export function useSpriteArtwork(runtime: WidgetRuntime, track: BoundTrack | undefined, sprites: Iterable<SpriteFrame | null | undefined>,
-  active: boolean): (sprite: SpriteFrame | null | undefined) => string | null {
+  active: boolean, paint?: (icons: ReadonlyMap<string, string | null>) => void): (sprite: SpriteFrame | null | undefined) => string | null {
   const revision = useContentRevision(runtime.client);
   const scope = track ? JSON.stringify([track.source.id, track.source.revision, revision]) : '';
   const icons = heldIcons(runtime.client, scope);
@@ -40,13 +40,14 @@ export function useSpriteArtwork(runtime: WidgetRuntime, track: BoundTrack | und
     void loadTransientProduct<unknown>(runtime.client, request, controller.signal).then(reply => {
       if (controller.signal.aborted) return;
       for (const [id, icon] of spriteIcons(reply, asked)) icons.set(id, icon);
-      setLanded(count => count + 1);
+      if (paint) paint(icons);
+      else setLanded(count => count + 1);
     }).catch(() => {
       // Art is decoration: a refused request leaves the names without pictures until the frames asked change.
     });
     return () => controller.abort();
     // The key holds the source, the frames and the content revision.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runtime.client, key, active]);
+  }, [runtime.client, key, active, paint]);
   return sprite => (sprite && icons.get(spriteId(sprite))) ?? null;
 }

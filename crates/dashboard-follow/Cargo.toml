@@ -20,6 +20,7 @@ playhead = { path = "../playhead" }
 replay-columnar.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
+rmp-serde.workspace = true
 serde_json.workspace = true
 
 [[bin]]
@@ -49,3 +50,4 @@ unify-bitflags-2 = { workspace = true }
 unify-either = { workspace = true }
 unify-num-traits = { workspace = true }
 unify-smallvec = { workspace = true }
+unify-winapi-util = { workspace = true }

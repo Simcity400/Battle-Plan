@@ -39,3 +39,4 @@ unify-bitflags-2 = { workspace = true }
 unify-either = { workspace = true }
 unify-num-traits = { workspace = true }
 unify-smallvec = { workspace = true }
+unify-winapi-util = { workspace = true }

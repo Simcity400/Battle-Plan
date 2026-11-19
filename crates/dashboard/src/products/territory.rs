@@ -177,6 +177,14 @@ impl AtHour for TerritoryShare {
         MEASURES.contains(&params.measure.as_str()).then_some(()).ok_or("Unknown territory measure")
     }
 
+    fn uses_sample(_table: TableId) -> bool { false }
+
+    const CLOCK_DEPENDENT: bool = false;
+
+    fn projection(params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+        (table == TableId::TerritoryTotals).then(|| vec![MEASURES.iter().position(|&m| m == params.measure).expect("validated measure")])
+    }
+
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         vec![TableId::TerritoryTotals]
     }

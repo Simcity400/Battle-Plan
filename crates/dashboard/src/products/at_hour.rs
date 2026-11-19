@@ -19,3 +19,21 @@ pub fn panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Re
 
 #[cfg(test)]
 mod registry_tests;
+
+pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Result<Box<dyn Panel>, String>> {
+    use super::{doctrine_mastery::DoctrineMastery, economy::lend_lease_balance::LendLeaseBalance, intelligence::agencies::AgencyComparison, occupation_reserve::OccupationReserve, production::ProductionLinesAt, research::slots::ResearchSlots, scalars::GameScore, special_projects, territory::TerritoryShare};
+    Some(match asked["panel"].as_str()? {
+        "special-projects" => special_projects::dated_panel(source, load, asked),
+        "special-project-details" => exact_panel::<special_projects::details::SpecialProjectDetailsAt>(source, load, asked),
+        "doctrine-mastery" => exact_panel::<DoctrineMastery>(source, load, asked),
+        "research-slots" => exact_panel::<ResearchSlots>(source, load, asked),
+        "nuclear-arsenal" => exact_panel::<super::scalars::NuclearArsenal>(source, load, asked),
+        "game-score" => exact_panel::<GameScore>(source, load, asked),
+        "production-lines-at" => exact_panel::<ProductionLinesAt>(source, load, asked),
+        "agency-comparison" => exact_panel::<AgencyComparison>(source, load, asked),
+        "territory-share" => exact_panel::<TerritoryShare>(source, load, asked),
+        "occupation-reserve-manpower" => exact_panel::<OccupationReserve>(source, load, asked),
+        "lend-lease-balance" => exact_panel::<LendLeaseBalance>(source, load, asked),
+        _ => return None,
+    })
+}

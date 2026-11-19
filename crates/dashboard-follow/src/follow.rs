@@ -3,7 +3,7 @@
 //! is declared to the playhead at once. In the hook a query is evaluated only when the step wrote
 //! one of its columns for one of its rows, inserted or deleted a row it reads, changed or reset its
 //! table, or passed an hour its tags' holders change; an answer equal to the last one sent is not
-//! queued; the queued answers go out at once, in messages within the budget.
+//! queued; one dated message carries the step's changed answers.
 
 use crate::{
     answer::{self, Message, State, Table},
@@ -30,10 +30,10 @@ use std::{
     time::Instant,
 };
 
-/// Told after every step: what the step cost follow, and its messages, in order.
-pub type Sink = Box<dyn FnMut(&StepStats, Vec<Message>) + Send>;
+/// Told what each step cost and the dated message it produced.
+pub type Sink = Box<dyn FnMut(&StepStats, Option<Message>) + Send>;
 
-type Declare = Box<dyn Fn(Vec<Declared>) -> io::Result<()> + Send + Sync>;
+type Declare = Box<dyn Fn(Vec<Declared>, bool) -> io::Result<()> + Send + Sync>;
 
 /// One step in the hook.
 #[derive(Clone, Copy, Debug, Default)]
@@ -50,10 +50,10 @@ pub struct StepStats {
     pub changed: u32,
     /// Cells the evaluations read.
     pub cells: u32,
-    /// Answers sent, the messages they went in, and answers alone over the budget.
+    pub rows_read: u64,
+    /// Answers and messages sent.
     pub sent: u32,
     pub messages: u32,
-    pub oversize: u32,
     pub bytes: u32,
     /// The hook's whole time, the message made.
     pub ns: u64,
@@ -67,7 +67,6 @@ pub struct Counters {
     pub evaluated: u64,
     pub changed: u64,
     pub sent: u64,
-    pub oversize: u64,
     pub messages: u64,
     pub bytes: u64,
     pub ns: u64,
@@ -103,6 +102,7 @@ struct Reads {
 }
 
 struct Control {
+    products: BTreeMap<u32, Vec<Declared>>,
     ops: Vec<Op>,
     followed: BTreeMap<u32, Reads>,
     declare: Option<Declare>,
@@ -111,8 +111,12 @@ struct Control {
     classes: BTreeMap<usize, bool>,
 }
 
+type ProductHook = Arc<dyn Fn(&Step, &Lanes<'_>) + Send + Sync>;
+
 struct Shared {
-    budget: usize,
+    page_seek: Mutex<(u64, u32)>,
+    products: Mutex<Option<ProductHook>>,
+    clock: i32,
     route: u32,
     control: Mutex<Control>,
     report: Mutex<(Counters, Held)>,
@@ -129,13 +133,18 @@ pub struct Follow {
 }
 
 impl Follow {
-    /// Messages at most `budget` bytes, unless one answer alone is larger.
-    pub fn new(budget: usize) -> Self {
+    pub fn clock(&self) -> i32 {
+        self.shared.clock
+    }
+
+    pub fn new(clock: i32) -> Self {
         Self {
             shared: Arc::new(Shared {
-                budget,
+                clock,
+                products: Mutex::default(),
+                page_seek: Mutex::default(),
                 route: next_route(),
-                control: Mutex::new(Control { ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new() }),
+                control: Mutex::new(Control { products: BTreeMap::new(), ops: Vec::new(), followed: BTreeMap::new(), declare: None, logs: None, classes: BTreeMap::new() }),
                 report: Mutex::default(),
             }),
         }
@@ -150,17 +159,36 @@ impl Follow {
     /// The stepper's hook, which tells `sink` after every step.
     pub fn hook(&self, sink: Sink) -> Hook {
         let mut engine = Engine::new(Arc::clone(&self.shared), sink);
-        Box::new(move |step: &Step, lanes: &Lanes<'_>| engine.step(step, lanes))
+        Box::new(move |step: &Step, lanes: &Lanes<'_>| {
+            engine.step(step, lanes);
+            let products = lock(&engine.shared.products).clone();
+            if let Some(products) = products { products(step, lanes); }
+        })
+    }
+
+    pub(crate) fn anchor(&self, seek: u32, apply: impl FnOnce() -> u64) {
+        let mut page = lock(&self.shared.page_seek);
+        *page = (apply(), seek);
+    }
+
+    pub(crate) fn product_hook(&self, hook: ProductHook) {
+        *lock(&self.shared.products) = Some(hook);
+    }
+
+    pub(crate) fn product_lanes(&self, id: u32, lanes: Vec<Declared>) -> io::Result<()> {
+        let mut control = lock(&self.shared.control);
+        if lanes.is_empty() { control.products.remove(&id); } else { control.products.insert(id, lanes); }
+        redeclare(&mut control, false)
     }
 
     /// How the union of the followed queries' columns reaches the playhead (its reader's
     /// `redeclare`), called now and after every follow and unfollow; and the playhead's log reads,
     /// which say which tables are logs and read a log's listed rows.
-    pub fn bind(&self, declare: impl Fn(Vec<Declared>) -> io::Result<()> + Send + Sync + 'static, logs: LogReads) -> io::Result<()> {
+    pub fn bind(&self, declare: impl Fn(Vec<Declared>, bool) -> io::Result<()> + Send + Sync + 'static, logs: LogReads) -> io::Result<()> {
         let mut control = lock(&self.shared.control);
         control.logs = Some(logs);
         control.classes.clear();
-        declare(union(&mut control)?)?;
+        declare(union(&mut control)?, !control.followed.is_empty())?;
         control.declare = Some(Box::new(declare));
         Ok(())
     }
@@ -173,7 +201,7 @@ impl Follow {
         let mut control = lock(&self.shared.control);
         control.followed.insert(id, Reads { table: query.table(), columns: query.declared(), appended: query.appended(), listed: query.listed() });
         control.ops.push(Op::Follow(id, Box::new(query)));
-        redeclare(&mut control)
+        redeclare(&mut control, true)
     }
 
     /// Nothing more is sent for `id` from the next step boundary.
@@ -181,7 +209,7 @@ impl Follow {
         let mut control = lock(&self.shared.control);
         if control.followed.remove(&id).is_some() {
             control.ops.push(Op::Unfollow(id));
-            redeclare(&mut control)?;
+            redeclare(&mut control, false)?;
         }
         Ok(())
     }
@@ -205,10 +233,10 @@ fn next_route() -> u32 {
     NEXT.fetch_add(1, Ordering::Relaxed) & answer::ROUTES
 }
 
-fn redeclare(control: &mut Control) -> io::Result<()> {
+fn redeclare(control: &mut Control, joining: bool) -> io::Result<()> {
     let tables = union(control)?;
     match &control.declare {
-        Some(declare) => declare(tables),
+        Some(declare) => declare(tables, joining),
         None => Ok(()),
     }
 }
@@ -223,6 +251,11 @@ fn union(control: &mut Control) -> io::Result<Vec<Declared>> {
         entry.0.extend(&reads.columns);
         entry.1 |= reads.appended;
         entry.2 |= reads.appended || reads.listed;
+    }
+    for lane in control.products.values().flatten() {
+        let entry = tables.entry(lane.table).or_default();
+        entry.0.extend(&lane.columns);
+        entry.2 |= lane.keyed;
     }
     let mut declared = Vec::with_capacity(tables.len());
     for (table, (columns, feed, keyed)) in tables {
@@ -265,6 +298,7 @@ struct Followed {
     queued: bool,
     /// A live query: its rows, and those a step touched.
     live: LiveRows,
+    ranking: evaluate::Ranking,
     /// A log: the rows appended and not sent.
     log: Table,
     /// A log's rows listed now, by ordinal: each one's key and cells once known (from the step
@@ -288,7 +322,7 @@ impl Followed {
             Query::Series { tags, .. } => tags.iter().map(|tag| tag.capacity() + size_of::<String>()).sum(),
             Query::Head(_) => 0,
         };
-        (self.sent.capacity() + self.live.bytes(), self.pending.capacity() + log, size_of::<Self>() + query + standing + self.keys.capacity() * 16 + self.declared.capacity() * 8)
+        (self.sent.capacity() + self.live.bytes(), self.pending.capacity() + log, size_of::<Self>() + query + self.ranking.bytes() + standing + self.keys.capacity() * 16 + self.declared.capacity() * 8)
     }
 }
 
@@ -589,10 +623,10 @@ impl Engine {
             self.activate(lanes, &mut stats);
             self.fill();
             stats.touched += self.marked.len() as u32;
-            self.evaluate(lanes, &mut stats);
+            self.evaluate(step, lanes, &mut stats);
         }
         self.answer_heads(step, &mut stats);
-        let messages = self.send(step, &mut stats);
+        let message = self.send(step, lanes, &mut stats);
         let held = (changed || step.reset() || self.counters.steps.is_multiple_of(HELD_EVERY)).then(|| self.held());
         stats.ns = start.elapsed().as_nanos() as u64;
         let counters = &mut self.counters;
@@ -601,7 +635,6 @@ impl Engine {
         counters.evaluated += u64::from(stats.evaluated);
         counters.changed += u64::from(stats.changed);
         counters.sent += u64::from(stats.sent);
-        counters.oversize += u64::from(stats.oversize);
         counters.messages += u64::from(stats.messages);
         counters.bytes += u64::from(stats.bytes);
         counters.ns += stats.ns;
@@ -612,7 +645,7 @@ impl Engine {
             report.1 = held;
         }
         drop(report);
-        (self.sink)(&stats, messages);
+        (self.sink)(&stats, message);
     }
 
     /// Whether any query came or went.
@@ -631,19 +664,20 @@ impl Engine {
         changed
     }
 
-    /// At a reset every answer goes again whole, though equal to the last sent: messages wait for the
-    /// head to reach their step ([`crate::due`]), and those of steps a seek abandoned never go. An
-    /// active query is evaluated at the reset; a refused one's refusal is queued again.
+    /// A reset replaces every queued answer and starts live rows with a whole picture.
     fn resend(&mut self, hour: Hour) {
+        self.queue.clear();
         for (query, held) in self.slab.iter_mut().enumerate() {
             let Some(followed) = held else { continue };
-            followed.live.resend();
-            if !followed.has_sent || followed.query.appended() {
-                continue;
-            }
+            let refusal = (followed.phase == Phase::Refused).then(|| {
+                if followed.has_pending { mem::take(&mut followed.pending) } else { mem::take(&mut followed.sent) }
+            });
+            followed.queued = false;
+            followed.has_pending = false;
             followed.has_sent = false;
-            if followed.phase == Phase::Refused {
-                let mut body = mem::take(&mut followed.sent);
+            followed.log.clear(followed.declared.len(), true);
+            followed.live.resend();
+            if let Some(mut body) = refusal {
                 queue_body(followed, query, &mut body, hour, &mut self.queue);
             }
         }
@@ -667,6 +701,7 @@ impl Engine {
             pending_hour: 0,
             queued: false,
             live: LiveRows::default(),
+            ranking: evaluate::Ranking::default(),
             log: Table::default(),
             standing: BTreeMap::new(),
             asked: None,
@@ -771,6 +806,7 @@ impl Engine {
                 }
                 Query::Head(_) => continue,
                 Query::Series { identity, tags, top, parts, .. } => {
+                    followed.ranking.clear();
                     followed.tags = tags_at(&followed.query, head);
                     followed.until = identity_until(identity, tags, head);
                     index.until = index.until.min(followed.until);
@@ -999,6 +1035,7 @@ impl Engine {
                 if head >= followed.until {
                     let Query::Series { identity, tags, top, parts, .. } = &followed.query else { continue };
                     followed.until = identity_until(identity, tags, head);
+                    followed.ranking.clear();
                     followed.tags = tags_at(&followed.query, head);
                     let keys = if top.is_some() || *parts { Vec::new() } else { holder_keys(&followed.tags.rows) };
                     let old = mem::replace(&mut followed.keys, keys);
@@ -1019,7 +1056,7 @@ impl Engine {
         }
     }
 
-    fn evaluate(&mut self, lanes: &Lanes<'_>, stats: &mut StepStats) {
+    fn evaluate(&mut self, step: &Step, lanes: &Lanes<'_>, stats: &mut StepStats) {
         for query in mem::take(&mut self.marked) {
             let followed = self.slab[query].as_mut().expect("a marked query");
             followed.dirty = false;
@@ -1070,7 +1107,11 @@ impl Engine {
                 }
                 continue;
             }
-            evaluate::write(&followed.query, lane, &*index, &followed.tags, &self.reasons, &mut self.scratch, &mut self.body);
+            if let Some(rows) = followed.ranking.write(&followed.query, lane, step.table(followed.table), &followed.tags, &self.reasons, &mut self.scratch.table, &mut self.body) {
+                stats.rows_read += rows;
+            } else {
+                evaluate::write(&followed.query, lane, &*index, &followed.tags, &self.reasons, &mut self.scratch, &mut self.body);
+            }
             stats.cells += cells_of(&self.scratch.table, &self.body);
             stats.changed += u32::from(offer(followed, query, &mut self.body, evaluate::head(lane), &mut self.queue));
         }
@@ -1110,16 +1151,24 @@ impl Engine {
         }
     }
 
-    /// Every queued answer, oldest queued first, in messages within the budget (an answer alone
-    /// over it goes alone); a reset's first message settles. None waits for a later step.
-    fn send(&mut self, step: &Step, stats: &mut StepStats) -> Vec<Message> {
-        let budget = self.shared.budget;
-        let mut messages = Vec::new();
-        answer::begin(&mut self.message, self.shared.route, step.last(), step.reset());
-        let (mut size, mut answers) = (answer::empty(), 0);
+    fn send(&mut self, step: &Step, lanes: &Lanes<'_>, stats: &mut StepStats) -> Option<Message> {
+        let (first_epoch, seek) = *lock(&self.shared.page_seek);
+        if step.epoch() < first_epoch { return None; }
+        answer::begin(&mut self.message, self.shared.route, self.shared.clock, step.last(), seek, step.reset());
+        if !step.gap() {
+            for (&table, index) in &self.tables {
+                let head = lanes.get(table).and_then(Lane::head).unwrap_or(Hour::MIN);
+                let queries = if head < step.last() { &index.queries } else { &index.standing };
+                for &at in queries {
+                    let q = self.slab[at].as_ref().expect("indexed reading");
+                    let through = if q.asked.is_some() { Hour::MIN } else { head };
+                    if through < step.last() { answer::push(&mut self.message, q.id, through, &[]); }
+                }
+            }
+        }
         for query in self.queue.drain(..) {
             let followed = self.slab[query].as_mut().expect("a queued query");
-            let body = if followed.query.appended() {
+            let body = if followed.query.appended() && followed.phase != Phase::Refused {
                 if followed.log.rows() == 0 {
                     followed.queued = false;
                     continue;
@@ -1134,19 +1183,10 @@ impl Engine {
                 }
                 &followed.pending
             };
-            let need = answer::size(body.len());
-            if answers > 0 && size + need > budget {
-                messages.push(Message { hour: step.last(), reset: messages.is_empty() && step.reset(), answers, bytes: mem::take(&mut self.message) });
-                answer::begin(&mut self.message, self.shared.route, step.last(), false);
-                (size, answers) = (answer::empty(), 0);
-            }
-            stats.oversize += u32::from(size + need > budget);
             answer::push(&mut self.message, followed.id, followed.pending_hour, body);
-            size += need;
-            answers += 1;
             stats.sent += 1;
             followed.queued = false;
-            if followed.query.appended() {
+            if followed.query.appended() && followed.phase != Phase::Refused {
                 followed.log.clear(followed.declared.len(), true);
             } else {
                 mem::swap(&mut followed.sent, &mut followed.pending);
@@ -1157,12 +1197,12 @@ impl Engine {
                 }
             }
         }
-        if answers > 0 || (messages.is_empty() && step.reset()) {
-            messages.push(Message { hour: step.last(), reset: messages.is_empty() && step.reset(), answers, bytes: mem::take(&mut self.message) });
+        if stats.sent == 0 && !step.reset() && self.ids.is_empty() {
+            return None;
         }
-        stats.messages = messages.len() as u32;
-        stats.bytes = messages.iter().map(|message| message.bytes.len() as u32).sum();
-        messages
+        stats.messages = 1;
+        stats.bytes = self.message.len() as u32;
+        Some(Message { hour: step.last(), reset: step.reset(), answers: stats.sent, bytes: mem::take(&mut self.message) })
     }
 
     fn held(&self) -> Held {
@@ -1181,4 +1221,23 @@ impl Engine {
         held.total = held.sent + held.pending + held.queries_bytes + held.index + self.body.capacity() + self.message.capacity();
         held
     }
+}
+
+#[cfg(test)]
+#[test]
+fn reset_discards_an_abandoned_append_and_pending_body() {
+    let follow = Follow::new(0);
+    let mut engine = Engine::new(follow.shared, Box::new(|_, _| {}));
+    for (id, rows) in [(0, Rows::Appended), (1, Rows::All)] {
+        engine.add(id, Query::Cells { table: 2, columns: vec![0], rows });
+        let q = engine.slab[id as usize].as_mut().unwrap();
+        q.queued = true;
+        q.has_pending = true;
+        q.pending_hour = 99;
+        q.log.row(42);
+        engine.queue.push(id as usize);
+    }
+    engine.resend(3);
+    assert!(engine.queue.is_empty());
+    assert!(engine.slab.iter().flatten().all(|q| !q.queued && !q.has_pending && q.log.rows() == 0));
 }

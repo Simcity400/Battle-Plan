@@ -46,9 +46,6 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   const drillOpen = drill.breakdown !== null && !pinnedWeekly;
   const following = widget.time.mode === 'follow';
   const clock = runtime.clock;
-  // The widget renders when what it shows at the head changes (the balance, its lanes, its state's kind; any hour while
-  // paused), paced, never because the hour moved inside one; the playhead, the line, the bars and the header's value
-  // move with the clock each frame (`liveHead`).
   const structure = useRef<(hour: number) => string>(() => '');
   const playbackHour = useHeadHour(clock, active && (following || drillOpen && drill.follow), hour => structure.current(hour));
   const anchor = useRef<HTMLDivElement>(null);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
-import { paintResearchSlots, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
+import { slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
 import { activeSlots } from './activeResearchData.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
@@ -49,20 +49,31 @@ test('each open slot says what it researches, whether it is ahead of time, and i
   assert.notEqual(slotsStructure(reply(day(101), [radar, sonar])), slotsStructure(now));
 });
 
-test('the painter writes a slot\'s numbers into the elements naming it', () => {
-  const texts = new Map<string, { textContent: string }>([['percent', { textContent: '' }], ['days', { textContent: '' }], ['saved', { textContent: 'x' }]]);
-  const bar = { style: { width: '' } };
-  const card = { querySelector: (selector: string) => selector === '[data-paint="bar"]' ? bar : selector.startsWith('[data-paint=') ? texts.get(selector.slice(13, -2)) ?? null : null };
-  const root = { querySelectorAll: (selector: string) => selector === '[data-research-slot="0"]' ? [card] : [] } as unknown as Element;
+test('the drawn card uses the dated slot identity, progress and countdown', () => {
   const read: ResearchSlotNow = { index: 0, state: state('radar', day(0), { details: { remainingDays: 3, bonuses: null, modifiers: null } }),
     progress: { firstHour: day(96), lastHour: day(96), entryFirstObservedHour: day(0), baseDaysRaw: '100000', progressRaw: '50000' } };
-  paintResearchSlots(root, reply(day(97), [read]), day(97));
-  assert.deepEqual([...texts.values()].map(item => item.textContent), ['50%', '2 days left', '']);
-  assert.equal(bar.style.width, '50%');
-  // Followed, the progress is the slot's live cell and the days are counted at the head, not at the read.
-  paintResearchSlots(root, reply(day(97), [read]), day(98), slot => slot === 0 ? 0.625 : undefined);
-  assert.deepEqual([...texts.values()].map(item => item.textContent), ['63%', '1 day left', '']);
-  assert.equal(bar.style.width, '62.5%');
+  const values = slotValues(reply(day(97), [read]), day(97));
+  assert.equal(values.get('0:percent'), '50%');
+  assert.equal(values.get('0:days'), '2 days left');
+  assert.equal(values.get('0:bar'), '0.5');
+  const later = slotValues(reply(day(97), [read]), day(98), () => .625);
+  assert.equal(later.get('0:percent'), '63%');
+  assert.equal(later.get('0:days'), '1 day left');
+  assert.equal(later.get('0:bar'), '0.625');
+});
+
+test('spending an existing research grant changes its painted counts without replacing the row', () => {
+  const before = reply(day(1), []);
+  before.grants.grants.push({ id: 3, ordinal: 0, kind: 'speed', token: 'grant', name: null, uses: 2, activeClaims: 1,
+    speedBonusRaw: '25000', aheadReductionRaw: null, costReductionRaw: null, technologies: [], categories: [] });
+  const after = structuredClone(before);
+  after.grants.grants[0]!.uses--;
+  assert.equal(slotsStructure(before), slotsStructure(after));
+  assert.equal(slotValues(after, day(2)).get('grant:0:counts'), '1 use remaining · 1 active claim');
+  const group = { token: 'air', name: 'Air', databaseIndex: 3 };
+  before.grants.grants[0]!.categories = [group];
+  after.grants.grants[0]!.categories = [{ databaseIndex: 3, name: 'Air', token: 'air' }];
+  assert.equal(slotsStructure(before), slotsStructure(after), 'binary and exact reads can order the same fields differently');
 });
 
 test('at an hour without a read, slots open at the last read are unavailable rather than guessed', () => {

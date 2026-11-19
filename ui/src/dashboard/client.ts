@@ -137,9 +137,8 @@ export interface DashboardClient {
   onMapOptions?(callback: (event: MapOptionsEvent) => void): Promise<() => void>;
   /** The native map picker clicked a toggle whose setting the host owns. */
   onMapToggle?(callback: (event: MapToggleEvent) => void): Promise<() => void>;
-  /** Followed answers pushed by the service, one message a playhead step, as raw bytes; absent where the
-   * connection has no such channel (the browser bridge), so nothing is followed there. */
-  onFollowMessages?(receive: (bytes: ArrayBuffer) => void): Promise<() => void>;
+  /** Opens the dated stream into the drawing worker. */
+  openFollow?(port: MessagePort): Promise<void>;
 }
 
 export interface MapOptionsEvent { viewId: string; options: MapOptions }

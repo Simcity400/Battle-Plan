@@ -76,14 +76,11 @@ export function occurrenceCountryRequests(occurrences: readonly ScriptOccurrence
   return [...wanted.values()];
 }
 
-/** The hour a card list reads its cards at while following: the head, held while no card it holds changes there. A card
- * changes where an edge is read, a recording break begins, or (open) a day turns; the key is taken at most four times a
- * second of playback. */
-export function cardsKey(edges: readonly number[], breaks: readonly RecordingBreak[], days: boolean, hour: number, step: number): string {
-  const at = step > 1 ? Math.floor(hour / step) * step : hour;
-  const read = edges.filter(edge => edge <= at).length;
-  const broken = breaks.filter(span => span.firstHour <= at).length;
-  return `${read}|${broken}|${days ? Math.floor(at / 24) : ''}`;
+/** A card changes at a recorded edge, the start of a break or the next day of an open card. */
+export function cardsKey(edges: readonly number[], breaks: readonly RecordingBreak[], days: boolean, hour: number): string {
+  const read = edges.filter(edge => edge <= hour).length;
+  const broken = breaks.filter(span => span.firstHour <= hour).length;
+  return `${read}|${broken}|${days ? Math.floor(hour / 24) : ''}`;
 }
 
 /** A stretch the recording does not cover: a capture gap, or reads whose events are incomplete because the recorder was

@@ -68,7 +68,6 @@ pub struct NukeCountry {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NuclearArsenalReply {
-    pub hour: i32,
     /// Every type the game names and every other type a country holds at the hour, by ordinal.
     pub types: Vec<NukeType>,
     /// Every country a tag holds with a stockpile row, greatest total first, ties by tag.
@@ -113,8 +112,25 @@ pub(super) fn countries(rows: &[NukeRow], tag_of: impl Fn(u32) -> Option<String>
     (out, unheld)
 }
 
+pub(super) fn rerank(rank: &mut serde_json::Value, rows: &[NukeRow], country: u32, tag: &str) -> io::Result<()> {
+    let rank = rank.as_array_mut().expect("an arsenal ranking");
+    if let Some(old) = rank.iter().position(|c| c["countryId"].as_u64() == Some(country.into())) { rank.remove(old); }
+    let first = rows.partition_point(|r| r.country < country);
+    let rows = &rows[first..first + rows[first..].partition_point(|r| r.country == country)];
+    if rows.is_empty() { return Ok(()); }
+    let counts: Vec<_> = rows.iter().map(|r| NukeCount { ordinal: r.nuke_type, value: NukeRow::shown(r.amount_raw), ready: r.ready }).collect();
+    let total = counts.iter().fold(0i32, |sum, c| sum.wrapping_add(c.value));
+    let index = rank.partition_point(|c| {
+        let held = c["total"].as_i64().expect("a stockpile total");
+        held > i64::from(total) || held == i64::from(total) && c["tag"].as_str().expect("a ranked tag") < tag
+    });
+    rank.insert(index, serde_json::to_value(NukeCountry { country_id: country, tag: tag.into(), counts, total })?);
+    Ok(())
+}
+
 impl AtHour for NuclearArsenal {
     const KEY: &'static str = "nuclear-arsenal";
+    const CLOCK_DEPENDENT: bool = false;
     const TITLE: &'static str = "Nuclear arsenal";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NuclearArsenalParams;
@@ -126,8 +142,32 @@ impl AtHour for NuclearArsenal {
         vec![NuclearArsenalParams::decl(), NukeType::decl(), NukeCount::decl(), NukeCountry::decl(), NuclearArsenalReply::decl()]
     }
 
+    fn uses_sample(_table: TableId) -> bool { false }
+
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         super::branch(&params.branch_id)
+    }
+
+    fn advance(frame: &DecodedFrame, _: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+        if !edits.only_columns(TableId::Nukes, u64::MAX) { return Ok(false); }
+        let rows = frame.complete::<tables::Nukes>()?;
+        let mut last = None;
+        for (&key, &mask) in edits.tables.get(&TableId::Nukes).into_iter().flatten() {
+            if mask == u64::MAX && !NAMED_TYPES.contains(&(key as u32)) {
+                let present = rows.iter().any(|r| r.nuke_type == key as u32);
+                let named = data["types"].as_array().unwrap().iter().any(|t| t["ordinal"].as_u64() == Some(u64::from(key as u32)));
+                if present != named { return Ok(false); }
+            }
+            let id = (key >> 32) as u32;
+            if last == Some(id) { continue; }
+            last = Some(id);
+            let existing = data["countries"].as_array().unwrap().iter().find(|c| c["countryId"].as_u64() == Some(id.into()));
+            let tag = existing.and_then(|c| c["tag"].as_str()).map(str::to_owned);
+            let tag = tag.or_else(|| at.holders.tags.keys().find(|tag| matches!(at.holders.at(tag, at.hour).map(|r| r.holder), Some(dashboard_query::identity::Holder::Found { id: held, .. }) if held == id)).cloned());
+            if let Some(tag) = tag { rerank(&mut data["countries"], rows, id, &tag)?; }
+            else if mask == u64::MAX { return Ok(false); }
+        }
+        Ok(true)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -149,7 +189,7 @@ impl AtHour for NuclearArsenal {
     }
 
     fn reply(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let mut reply = NuclearArsenalReply { hour: frame.hour, types: Vec::new(), countries: Vec::new(), missing: None, warnings: Vec::new() };
+        let mut reply = NuclearArsenalReply { types: Vec::new(), countries: Vec::new(), missing: None, warnings: Vec::new() };
         let nukes = match rows::<tables::Nukes>(frame) {
             Ok(nukes) => nukes,
             Err(reason) => {

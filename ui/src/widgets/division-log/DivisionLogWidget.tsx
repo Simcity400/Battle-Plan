@@ -37,7 +37,7 @@ import type { DivisionKind, DivisionLogEntry } from './divisionLogData';
 import './divisionLog.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
-import { useStructureState } from '../../dashboard/structurePace';
+import { useDistinctState } from '../../dashboard/useDistinctState';
 
 const NO_ROWS: readonly LogRow<DivisionLogEntry>[] = [];
 const sameKeys = (held: readonly LogRow<DivisionLogEntry>[], next: readonly LogRow<DivisionLogEntry>[]) => held.length === next.length
@@ -119,7 +119,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   // Following, the newest rows held (the block drawn and a view beneath it) are named with the block, before the list
   // draws them; only rows scrolled to beyond them are named as they come into view. Else the rows drawn.
   const newest = list.ahead.length + 2 * AHEAD_ROWS;
-  const [visible, setVisible] = useStructureState<readonly LogRow<DivisionLogEntry>[]>(runtime.clock, NO_ROWS, sameKeys);
+  const [visible, setVisible] = useDistinctState<readonly LogRow<DivisionLogEntry>[]>(NO_ROWS, sameKeys);
   const named = useMemo(() => divisionNamedRows(follow, list.pages, newest, visible), [follow, list.pages, newest, visible]);
   const namedKeys = useMemo(() => follow ? new Set(named.map(row => row.key)) : null, [follow, named]);
   // The list reports a new array whenever it lays out again; following, only rows the block did not name are news.
@@ -140,9 +140,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     { sourceId: track!.source.id, revision: track!.source.revision, product: 'place-names', params: { branchId: branch, places: asked, states: [] } },
     signal, validatePlaceNamesReply, track?.source).then(reply => ({ values: reply.places.map(place => [placeKey(place.provinceId, place.hour), place] as const), warnings: reply.warnings })),
   [runtime.client, track, branch]);
-  // Landings are painted into the rows at once and commit in the widget's structure slot (`runtime.clock` as the pace).
-  const placeReads = useKeyedReads<{ provinceId: number; hour: number }, PlaceName>(placesOwner, places, active, place => placeKey(place.provinceId, place.hour), readPlaces,
-    undefined, undefined, runtime.clock);
+  const placeReads = useKeyedReads<{ provinceId: number; hour: number }, PlaceName>(placesOwner, places, active, place => placeKey(place.provinceId, place.hour), readPlaces);
   const root = useRef<HTMLDivElement>(null);
   useKeyedPainter(placeReads.reads as never, root, 'place', key => {
     const reads = placeReads.reads, text = divisionPlaceText(reads.values.get(key), { pending: reads.pendingKey(key), failed: reads.failures.has(key) });

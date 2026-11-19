@@ -6,46 +6,6 @@ interface Shown { open: boolean; month: string; days: number[]; time: string; he
 interface CalendarPlayed { renders: number; changes: number; from: { year: number; month: number }; to: { year: number; month: number }; seen: { head: number; shown: number[] }[] }
 type Act = <T>(expression: string) => Promise<T>;
 
-/** The army breakdown's roster and pinned header chip while the head moves: the roster is a text panel the service
- * pushes when it differs, asked of nobody and rendered only when its text differs, and asked at the paced hour where
- * no playhead shows it; the chip renders only when its country's identity changes, its date painted every frame. */
-async function breakdownAtTheHead(t: { diagnostic: (message: string) => void }, act: Act) {
-  await act('seek(1000)');
-  await act('mountBreakdown()');
-  await act('pushRoster(1000, ["Infantry division"])');
-  t.diagnostic(`roster follow: ${JSON.stringify(await act('breakdown()'))}`);
-  assert.equal((await act<{ roster: string }>('breakdown()')).roster, 'Infantry division', 'the pushed text shows');
-  await act('rosterPasses()');
-  const inside = await act<Played>('play(1440, 40)');
-  const quiet = await act<{ renders: number; commits: number }>('rosterPasses()');
-  t.diagnostic(`breakdown, ${inside.changes} hour changes with the roster followed: renders ${JSON.stringify(inside.renders)}, requests ${JSON.stringify(inside.requests)}`);
-  assert.ok(inside.changes >= 30);
-  assert.deepEqual(inside.requests.filter(product => product === 'army-size'), [], 'a followed roster is asked of nobody');
-  assert.equal(quiet.commits, 0, `the roster committed no render while its text held (${quiet.renders} passes)`);
-  assert.equal(inside.renders.breakdownChip ?? 0, 0, 'the chip did not render as the hour moved');
-  assert.equal(inside.tooltips, inside.changes, "the chip's date was painted at every hour change");
-  await act('pushRoster(2000, ["Infantry division"])');
-  assert.equal((await act<{ commits: number }>('rosterPasses()')).commits, 0, 'the same text again renders nothing');
-  await act('pushRoster(2100, ["Armoured division"])');
-  assert.equal((await act<{ commits: number }>('rosterPasses()')).commits, 1, 'a text that differs renders once');
-  assert.equal((await act<{ roster: string }>('breakdown()')).roster, 'Armoured division');
-  await act('seek(4800)');
-  const across = await act<Played>('play(1440, 40)');
-  t.diagnostic(`breakdown across the rename at 5000 (${across.from} to ${across.to}): renders ${JSON.stringify(across.renders)}`);
-  assert.equal(across.renders.breakdownChip, 1, 'one render: the name changed');
-  assert.equal((await act<{ chip: string }>('breakdown()')).chip, 'German Reich');
-  // No playhead: the roster is asked at the paced hour, as before.
-  await act('seek(1000)');
-  await act('panelsShown(false)');
-  const unfollowed = await act<Played>('play(1440, 40)');
-  const asked = unfollowed.requests.filter(product => product === 'template-roster').length;
-  t.diagnostic(`breakdown with no playhead: ${asked} roster requests in ${unfollowed.elapsed.toFixed(0)} ms`);
-  assert.ok(asked >= 1 && asked <= Math.ceil(unfollowed.elapsed / 250) + 1, `asked at the paced hour: ${asked}`);
-  assert.equal((await act<{ roster: string }>('breakdown()')).roster, 'Infantry division');
-}
-
-/** The controls' date picker, open while the clock plays: it opens on the head, follows it painting the day without a
- * render, renders once a month, and holds still once the user pages or picks. */
 async function calendarFollowsTheHead(t: { diagnostic: (message: string) => void }, act: Act) {
   await act('mountCalendar(2)');
   await act('startCalendar(1440, 60)');
@@ -94,7 +54,7 @@ async function calendarFollowsTheHead(t: { diagnostic: (message: string) => void
 
 interface Played { tooltips: number; changes: number; from: number; to: number; elapsed: number; renders: Record<string, number>; requests: string[]; dates: number; chip: string; identity: string }
 
-test('nothing that reads the hour at the head renders or asks as it moves; a name that changes renders once; the fallback paces itself', async t => {
+test('nothing that reads the hour at the head renders or asks as it moves; a name that changes renders once', async t => {
   await withNativePage('at-head', '/ui/src/dashboard/atHead.dom.fixture.tsx', page => page.stage('at head', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.atHeadFixture.${expression}`);
     await act('mount(1000)');
@@ -105,11 +65,6 @@ test('nothing that reads the hour at the head renders or asks as it moves; a nam
     for (const id of ['strip', 'chip', 'section', 'map', 'identity', 'off']) assert.equal(steady.renders[id] ?? 0, 0, `${id} rendered as the hour moved`);
     assert.deepEqual(steady.requests, [], 'nothing was asked as the hour moved');
     assert.equal(steady.chip, 'Axis');
-    // The fallback, and an identity whose timeline is not held, ask by their own paced clock.
-    const paced = Math.ceil(steady.elapsed / 250) + 1;
-    for (const id of ['fallback', 'unheld']) {
-      assert.ok((steady.renders[id] ?? 0) >= 1 && steady.renders[id]! <= paced, `${id} rendered ${steady.renders[id]} times in ${steady.elapsed.toFixed(0)} ms`);
-    }
     // Across the rename: the chip, the section and the identity each render once.
     await act('seek(4800)');
     const renamed = await act<Played>('play(1440, 40)');
@@ -124,11 +79,6 @@ test('nothing that reads the hour at the head renders or asks as it moves; a nam
     const seek = await act<Record<string, number>>('seek(200)');
     assert.equal(seek.fallback, 1);
     assert.ok((seek.map ?? 0) >= 1, 'the map renders on an anchor');
-    for (const tags of [8, 439]) {
-      const micros = await act<number>(`identityCost(${tags}, 20)`);
-      t.diagnostic(`identity at the head over ${tags} tags of 20 runs: median ${micros.toFixed(2)} µs a frame`);
-    }
-    await breakdownAtTheHead(t, act);
     await calendarFollowsTheHead(t, act);
   }, 120_000));
 });

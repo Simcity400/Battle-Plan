@@ -34,11 +34,11 @@ export async function cdpSession(url) {
     listeners.get(method).add(listener);
     return () => { listeners.get(method)?.delete(listener); };
   };
-  const send = (method, params = {}, timeout = 60_000) => new Promise((resolve, reject) => {
+  const send = (method, params = {}, timeout = 60_000, sessionId) => new Promise((resolve, reject) => {
     const id = ++sequence;
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, timeout);
     pending.set(id, { resolve, reject, timer, method });
-    socket.send(JSON.stringify({ id, method, params }));
+    socket.send(JSON.stringify({ id, method, params, sessionId }));
   });
   return { send, on, close: () => socket.close() };
 }

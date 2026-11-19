@@ -1,8 +1,8 @@
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import { researchNumber } from '../research/researchBreakdown';
+import { grantCounts } from '../research/researchSlots';
 import type { GrantInventory } from '../../generated/dashboard';
 
-const plural = (count: number, noun: string) => `${count} ${count === 1 ? noun : `${noun}s`}`;
 type Grant = GrantInventory['grants'][number];
 
 /** A grant's effects, each once, in one line. */
@@ -20,7 +20,7 @@ export default function ResearchGrants({ inventory }: { inventory: GrantInventor
     {inventory.grants.length === 0 && <p>No research bonuses held.</p>}
     <ul>{inventory.grants.map((grant, index) => <li key={`${grant.kind}:${grant.ordinal}:${index}`}>
       <b data-tooltip={contentTitleHint(grant.token)}>{contentTitle(grant.name, grant.token, 'Bonus name unavailable')}</b>
-      <span>{[`${plural(grant.uses, 'use')} remaining`, grant.activeClaims !== null ? plural(grant.activeClaims, 'active claim') : null].filter(Boolean).join(' · ')}</span>
+      <span data-prose="" data-paint={`grant:${index}:counts`}>{grantCounts(grant)}</span>
       {effects(grant) !== '' && <span>{effects(grant)}</span>}
       {grant.technologies.length > 0 && <span>Technologies: {grant.technologies.map((restriction, index) => <span key={index} data-tooltip={contentTitleHint(restriction.token)}>
         {index > 0 && ', '}{contentTitle(restriction.name, restriction.token, 'Technology name unavailable')}</span>)}</span>}

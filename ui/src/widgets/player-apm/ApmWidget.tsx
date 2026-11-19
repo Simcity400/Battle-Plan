@@ -68,7 +68,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   const following = widget.time.mode === 'follow';
 
   // The values at the head: a followed value computed from the command index, pushed when it differs. Which rows it
-  // holds is structure (one paced render a change); every number is painted.
+  // holds is structure; every number is painted.
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);

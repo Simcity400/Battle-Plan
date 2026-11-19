@@ -31,6 +31,8 @@ export interface PlaybackSnapshot {
   sequence: number;
   /** Distinguishes a seek from forward playback even when updates coalesce. */
   seekSequence: number;
+  forwardSeek?: boolean;
+  composedAt?: number;
   bounds: HourWindow | null;
 }
 
@@ -39,11 +41,11 @@ export interface PlaybackSnapshot {
  *   and for values read at the head that render only when they change (`useAtHead`).
  * - `subscribe`: the clock's anchor (play, pause, speed, seek, step, bounds, the branch end), not
  *   forward playback; the native maps run their own clock between anchors.
- * Values at the head are followed and painted; a widget follow does not serve asks by the fallback's
- * clock (`useFallbackHour`), its own. */
+ * Fallback requests read the hour at the anchor. */
 export class PlaybackController {
   private snapshot: PlaybackSnapshot = { position: 0, hour: 0, fraction: 0, playing: false, hoursPerSecond: 1, sequence: 0, seekSequence: 0, bounds: null };
   private listeners = new Set<() => void>();
+  private discards = new Set<() => void>();
   private frameListeners = new Set<() => void>();
   private lastTime = 0;
   private framing = OUTSIDE;
@@ -69,6 +71,7 @@ export class PlaybackController {
   getHour = () => this.snapshot.hour;
   getMotion = () => this.snapshot.playing ? this.snapshot.hoursPerSecond : undefined;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  onDiscard = (listener: () => void) => { this.discards.add(listener); return () => { this.discards.delete(listener); }; };
   subscribeFrame = (listener: () => void) => { this.frameListeners.add(listener); return () => { this.frameListeners.delete(listener); }; };
 
   setBounds(bounds: HourWindow | null, reset = false): void {
@@ -76,14 +79,15 @@ export class PlaybackController {
     if (!reset && previous?.firstHour === bounds?.firstHour && previous?.lastHour === bounds?.lastHour) return;
     const position = !bounds ? 0 : reset || !previous ? bounds.firstHour
       : Math.max(bounds.firstHour, Math.min(bounds.lastHour, this.snapshot.position));
-    this.publish({ ...this.snapshot, bounds, position, playing: false }, true);
+    this.publish({ ...this.snapshot, bounds, position, playing: false, forwardSeek: false }, true);
     this.syncTimer();
   }
 
   seek(position: number): void {
     const bounds = this.snapshot.bounds;
     if (!bounds || !Number.isFinite(position)) return;
-    this.publish({ ...this.snapshot, position: Math.max(bounds.firstHour, Math.min(bounds.lastHour, Math.floor(position))), playing: false }, true);
+    const target = Math.max(bounds.firstHour, Math.min(bounds.lastHour, Math.floor(position)));
+    this.publish({ ...this.snapshot, position: target, playing: false, forwardSeek: target > this.positionAt() }, true);
     this.syncTimer();
   }
 
@@ -91,8 +95,9 @@ export class PlaybackController {
   step(direction: -1 | 1): void {
     const bounds = this.snapshot.bounds;
     if (!bounds) return;
-    const position = Math.max(bounds.firstHour, Math.min(bounds.lastHour, this.snapshot.hour + direction));
-    this.publish({ ...this.snapshot, position, playing: false }, direction < 0);
+    const current = this.bank();
+    const position = Math.max(bounds.firstHour, Math.min(bounds.lastHour, Math.floor(current) + direction));
+    this.publish({ ...this.snapshot, position, playing: false, forwardSeek: position > current }, position < current);
     this.syncTimer();
   }
 
@@ -148,13 +153,14 @@ export class PlaybackController {
 
   /** `forward` marks a playback step, which moves no anchor unless it ends playback. */
   private publish(next: PlaybackSnapshot, discontinuity = false, forward = false): void {
+    if (discontinuity && !next.forwardSeek) for (const discard of this.discards) discard();
     const hour = Math.floor(next.position);
     const hourChanged = hour !== this.snapshot.hour;
     const anchor = !forward || next.playing !== this.snapshot.playing;
-    this.snapshot = { ...next, hour, fraction: next.position - hour,
+    this.snapshot = { ...next, hour, composedAt: next.playing ? this.lastTime : performance.now(), fraction: next.position - hour,
       sequence: this.snapshot.sequence + (hourChanged || discontinuity ? 1 : 0),
       seekSequence: this.snapshot.seekSequence + (discontinuity ? 1 : 0) };
-    perfLog?.clock(this.snapshot.position, this.snapshot.playing, this.snapshot.hoursPerSecond, this.snapshot.sequence, this.snapshot.seekSequence);
+    perfLog?.clock(this.snapshot.position, this.snapshot.playing, this.snapshot.hoursPerSecond, this.snapshot.sequence, this.snapshot.seekSequence, this.snapshot.composedAt);
     // A playing step's listeners paint in its frame's paint phase; anything else is told at once.
     if (!forward || !this.paintTask || !next.playing) this.tellFrame();
     else this.paintTask.wake();
@@ -163,7 +169,6 @@ export class PlaybackController {
 
   private syncTimer(): void {
     this.cancelTimer();
-    this.lastTime = performance.now();
     if (!this.snapshot.playing) return;
     // One step per display frame, so the playhead moves as smoothly as the screen refreshes, in the page's one frame loop.
     this.paintTask = this.engine.every('paint', frame => {
@@ -207,6 +212,6 @@ export function useTransitionValue<T>(subscribe: ((changed: () => void) => () =>
 
 /** The rate charts ease at: the playback speed while playing, none while paused, so a jump,
  * a scrub or a new selection is drawn at once. Only anchors change it. */
-export function usePlaybackMotion(clock: PlaybackController): number | undefined {
-  return useTransitionValue(clock.subscribe, clock.getMotion);
+export function usePlaybackMotion(clock: PlaybackController, active = true): number | undefined {
+  return useTransitionValue(active ? clock.subscribe : null, clock.getMotion);
 }

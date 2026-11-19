@@ -26,6 +26,7 @@ brotli-decompressor = { version = "5.0.3", default-features = false, features = 
 byteorder = { version = "1.5.0", default-features = false, features = ["default", "std"] }
 bytes = { version = "1.12.1", default-features = false, features = ["default", "std"] }
 cfb = { version = "0.7.3", default-features = false, features = [] }
+cfg-if = { version = "1.0.4", default-features = false, features = [] }
 cpufeatures = { version = "0.2.17", default-features = false, features = [] }
 crc32fast = { version = "1.5.1", default-features = false, features = ["default", "std"] }
 crypto-common = { version = "0.1.7", default-features = false, features = ["std"] }
@@ -107,7 +108,10 @@ urlpattern = { version = "0.3.0", default-features = false, features = [] }
 utf8_iter = { version = "1.0.4", default-features = false, features = [] }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
 walkdir = { version = "2.5.0", default-features = false, features = [] }
+winapi-util = { version = "0.1.11", default-features = false, features = [] }
 windows-sys = { version = "0.61.2", default-features = false, features = ["Wdk", "Wdk_Foundation", "Wdk_Storage", "Wdk_Storage_FileSystem", "Wdk_System", "Wdk_System_IO", "Wdk_System_SystemInformation", "Wdk_System_Threading", "Win32", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics", "Win32_Graphics_Gdi", "Win32_Networking", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authentication", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_System", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_JobObjects", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Performance", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Time", "Win32_System_WindowsProgramming", "Win32_UI", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging", "default"] }
+windows-targets = { version = "0.52.6", default-features = false, features = [] }
+windows_x86_64_msvc = { version = "0.52.6", default-features = false, features = [] }
 winnow = { version = "1.0.4", default-features = false, features = [] }
 writeable = { version = "0.6.4", default-features = false, features = [] }
 yoke = { version = "0.8.3", default-features = false, features = ["derive", "zerofrom"] }
@@ -118,6 +122,7 @@ zstd-sys = { version = "2.1.0", default-features = false, features = ["experimen
 
 [build-dependencies]
 cc = { version = "1.4.5", default-features = false, features = ["parallel"] }
+getrandom = { version = "0.4.3", default-features = false, features = ["std"] }
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["default", "proc-macro", "span-locations"] }
 quote = { version = "1.0.47", default-features = false, features = ["default", "proc-macro"] }
 syn-2 = { package = "syn", version = "2.0.119", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "full", "parsing", "printing", "proc-macro", "visit"] }
@@ -125,3 +130,4 @@ syn-3 = { package = "syn", version = "3.0.5", default-features = false, features
 tauri-build = { version = "2.6.3", default-features = false, features = ["config-json", "default"] }
 tauri-utils = { version = "2.9.3", default-features = false, features = ["brotli", "build-2", "cargo_metadata", "compression", "html-manipulation-2", "proc-macro2", "quote", "resources", "schema", "schemars", "swift-rs", "walkdir"] }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
+windows-sys = { version = "0.61.2", default-features = false, features = ["Win32", "Win32_Foundation", "Win32_Globalization", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_System", "Win32_System_Com", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_UI", "Win32_UI_Shell", "default"] }

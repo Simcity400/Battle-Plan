@@ -348,7 +348,7 @@ export default function LandBattleList(props: Props) {
     .then(reply => ({ values: reply.provinces.map(entry => [String(entry.provinceId), entry] as const), warnings: reply.warnings })),
   [context.runtime.client, context.track.source]);
   const terrainReads = useKeyedReads(JSON.stringify([context.track.source.id, context.track.source.revision, content]), context.heldPlaces ?? NO_PLACES,
-    context.active, place => String(place.provinceId), readTerrain, undefined, undefined, context.runtime.clock);
+    context.active, place => String(place.provinceId), readTerrain);
   for (const entry of terrainReads.reads.values.values()) terrains.names.set(entry.provinceId, entry);
   const provinces = following.current ? [] : asked?.held === terrains ? asked.provinces : missingTerrain(terrains, drawn.current);
   const terrainRequest = provinces.length ? { sourceId: context.track.source.id, revision: context.track.source.revision,

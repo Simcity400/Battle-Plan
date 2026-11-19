@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Live } from '../../charts/live';
+import { useMemo, useSyncExternalStore } from 'react';
 import type { Span } from '../../charts/series';
 import type { DashboardClient } from '../../dashboard/client';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
@@ -22,7 +21,6 @@ import { chartChoices, choiceKey, CHOSEN_KEYS, stockGroups, typeName, validateSt
 import type { Grouping } from './stockpileData';
 import { pinnedGrouping } from './stockpileDrill';
 import type { StockpileCatalogueReply } from './types';
-import { atNextSlot, structureOpen } from '../../dashboard/structurePace.ts';
 
 /** The included types a widget saves, as content keys. */
 export const includedTypes = (widget: WidgetSpec) => contentSet(typeof widget.options?.included === 'string' ? widget.options.included : '').map(contentKey);
@@ -41,34 +39,6 @@ export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack
   }, track?.source);
 }
 
-/** `live`'s values as a render reads them: read when `live` is new, when the widget comes into or out of view, and after
- * `live` tells of a change; else the values held, so a render for another reason never hands down new values and what
- * derives from them (which rows show, their order, a drill's figures, the diagnostics) stands. While they move, a render
- * at most four times a second (taken in the page's structure slot), so they follow the head without a commit each frame. */
-export function usePacedValues<T>(live: Live<T>, active: boolean): T {
-  const [, setRevision] = useState(0);
-  const held = useRef<{ live: Live<T>; active: boolean; value: T; stale: boolean } | null>(null);
-  const before = held.current;
-  if (!before || before.live !== live || before.active !== active || before.stale) {
-    const value = live.read();
-    held.current = { live, active, value: before?.live === live && Object.is(before.value, value) ? before.value : value, stale: false };
-  }
-  useEffect(() => {
-    if (!active) return;
-    let timer: (() => void) | undefined;
-    const commit = () => { timer = undefined; setRevision(revision => revision + 1); };
-    const stop = live.subscribe(() => {
-      const shown = held.current;
-      if (!shown || shown.live !== live || shown.stale || Object.is(live.read(), shown.value)) return;
-      shown.stale = true;
-      if (structureOpen()) commit();
-      else timer = atNextSlot(commit);
-    });
-    return () => { stop(); timer?.(); };
-  }, [live, active]);
-  return held.current!.value;
-}
-
 /** One holder's stockpile at the hour `widget` shows (`equipment-stockpile-at`): followed at the head as a pushed panel
  * whose numbers are live cells, else asked for its hour (a pinned or range widget, a hovered or drilled hour). */
 export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, active: boolean, hoverHour: number | null = null) {
@@ -77,8 +47,8 @@ export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: 
 }
 
 /** The catalogue with `at`'s structure and values as the view of the hour they are of. */
-function useView(catalogue: StockpileCatalogueReply | undefined, at: ReturnType<typeof useStockpileAt>, track: BoundTrack | undefined, active: boolean, tag?: string) {
-  const values = usePacedValues(at.live, active);
+function useView(catalogue: StockpileCatalogueReply | undefined, at: ReturnType<typeof useStockpileAt>, track: BoundTrack | undefined, tag?: string) {
+  const values = useSyncExternalStore(at.live.subscribe, at.live.read, at.live.read);
   const hour = (at.read === 'followed' ? at.shownAt() ?? at.at : at.hour) ?? track?.branch.lastHour ?? 0;
   const view = useMemo<PreparedStockpileReply | undefined>(() => catalogue && track
     ? stockpileView(catalogue, at.data ? atReply(at.data, values, hour, track.branch.id) : undefined, hour, tag) : undefined,
@@ -97,7 +67,7 @@ export function useEquipmentStockpile(widget: WidgetSpec, runtime: WidgetRuntime
     [tag, withinKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const catalogue = useStockpileCatalogue(runtime.client, track, holders, included, active);
   const at = useStockpileAt(runtime, widget, tag ?? null, active);
-  const { view, hour } = useView(catalogue.data, at, track, active);
+  const { view, hour } = useView(catalogue.data, at, track);
   return { track, tag, holders, included, catalogue: catalogue.data, data: view, hour, at, error: catalogue.error ?? at.error,
     retry: () => { catalogue.retry(); at.retry(); } };
 }
@@ -138,7 +108,7 @@ export function useStockpileCountry(selection: DatedCountrySelection | null, run
   const tag = holderAt(holders, follows ? Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0) : hour);
   const spec = useMemo<WidgetSpec>(() => ({ ...widget, time: follows ? { mode: 'follow' } : widget.time }), [widget, follows]);
   const at = useStockpileAt(runtime, spec, tag, live, follows ? null : hour);
-  const { view, hour: shownHour } = useView(catalogue.data, at, track, live, selection?.tag);
+  const { view, hour: shownHour } = useView(catalogue.data, at, track, selection?.tag);
   const error = catalogue.error ?? at.error;
   const failure = (history ? undefined : groups.error) ?? error;
   const reason = (failure ? failureText(failure, 'Couldn’t load country.') : null) ?? (!history ? 'Loading country…'

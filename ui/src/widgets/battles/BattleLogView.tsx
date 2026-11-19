@@ -37,7 +37,7 @@ import { DEFAULT_SORT, DEFAULT_TOP_N } from './battleOptions';
 import './battles.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
-import { useStructureState } from '../../dashboard/structurePace';
+import { useDistinctState } from '../../dashboard/useDistinctState';
 import { useWhyCommit } from '../../dashboard/widgetPerf';
 
 interface ViewRow extends BattleRow { provinceId: number; windowIndex: number }
@@ -182,7 +182,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const playheadWindow = ahead ? battleWindowIndex(windows ?? [], hourAt(block.hour) ?? first) : headWindow;
   const blockHour = windows?.[playheadWindow]?.lastHour ?? null;
   const browseIndex = browsing ? battleWindowIndex(windows ?? [], browse.hour!) : playheadWindow;
-  const [visibleWindows, setVisibleWindows] = useStructureState<VisibleWindows>(runtime.clock, NO_VISIBLE_WINDOWS, sameWindows);
+  const [visibleWindows, setVisibleWindows] = useDistinctState<VisibleWindows>(NO_VISIBLE_WINDOWS, sameWindows);
   // The windows of the rows drawn, until the list reports others: never dropped as the playhead enters a window, which
   // released the history in view and asked it again at the head.
   const visibleIndices = visibleWindows.identity === identity ? visibleWindows.windows : [];
@@ -239,7 +239,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   // Following, the measures that move between structural hours are painted from the rows at the head.
   const paintHead = useMemo(() => following && !browsing
     ? { hour: () => hourAt(runtime.clock.getHour()), rowsAt, clock: runtime.clock } : undefined, [following, browsing, hourAt, rowsAt, runtime.clock]);
-  const [visible, setVisible] = useStructureState<readonly Row[]>(runtime.clock, NO_ROWS, sameRows);
+  const [visible, setVisible] = useDistinctState<readonly Row[]>(NO_ROWS, sameRows);
   // Biggest's drawn rows as the ranking now has them; the log's are its states as drawn, each at its own hour.
   const currentRows = useMemo(() => view === 'log' ? null : new Map(shown.map(row => [row.id, row])), [view, shown]);
   // Following the log, what the rows need is asked for the windows held or the block drawn, never as rows come into
@@ -268,8 +268,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     revision: track!.source.revision, product: 'place-names', params: { branchId: track!.branch.id, places, states: [], land: adapter.landPlaceNames === true } },
   signal, validatePlaceNamesReply, track?.source).then(reply => ({ values: reply.places.map(place => [placeKey(place.provinceId, place.hour), place] as const), warnings: reply.warnings })),
   [runtime.client, track, adapter.landPlaceNames]);
-  // Landings are painted into the rows at once and commit in the widget's structure slot (`runtime.clock` as the pace).
-  const placeReads = useKeyedReads<PlaceAt, PlaceName>(track ? namesOwner : null, windowPlaces ?? drawnPlaces, active, placeAtKey, readPlaces, undefined, undefined, runtime.clock);
+  const placeReads = useKeyedReads<PlaceAt, PlaceName>(track ? namesOwner : null, windowPlaces ?? drawnPlaces, active, placeAtKey, readPlaces);
   const knownNames = placeReads.reads.values;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- the names held grow as each read lands
   const placeNamesHeld = useMemo(() => ({ places: [...knownNames.values()], states: [], warnings: [] }), [knownNames, placeReads.version]);
@@ -289,7 +288,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     revision: track!.source.revision, product: details!.product, params: { branchId: track!.branch.id, battles } }, signal, details!.validate, track?.source)
     .then(reply => ({ values: reply.rows.map(row => [detailKey(row), row] as const), warnings: reply.warnings })), [runtime.client, track, details]);
   const detailReads = useKeyedReads<BattleDetailAsk, BattleDetailAsk>(details && track && identity !== null ? JSON.stringify([identity, content, details.product]) : null,
-    detailWanted, active, detailKey, readDetails, undefined, undefined, runtime.clock);
+    detailWanted, active, detailKey, readDetails);
   const described = useMemo(() => {
     if (!details) return null;
     const reads = detailReads.reads;

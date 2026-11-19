@@ -114,7 +114,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     params: { branchId: track.branch.id, tags: [], between: false, window: null } } : null;
   const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs, track?.source);
   // Following, the widget renders when the head enters another window (the chord paints the hours inside one from the
-  // clock), and a breakdown that follows renders at most four times a second.
+  // clock).
   const drillFollows = drill.breakdown !== null && drill.follow;
   const headWindow = useCallback((at: number) => String(casualtyPairWindows(manifest.data, at, false)[0] ?? -1), [manifest.data]);
   // A following breakdown renders where its flows (or their subtotal marks) change: its numbers are painted.

@@ -9,7 +9,7 @@ import { StyledIcon } from '../shell/appearance/StyledIcon';
 import { WidgetIconsContext } from '../shell/appearance/WidgetIconMenu';
 import WidgetState from '../components/WidgetState';
 import type { MapOptions } from '../shell/api';
-import { createWidget, GRID_COLUMNS, widgetAtDefault } from './model';
+import { createWidget, GRID_COLUMNS, resolveWindow, widgetAtDefault } from './model';
 import { resolveWidgetCampaign } from './campaigns';
 import { useFactionStylesKey } from './campaignSettings';
 import { recordingDisplayName } from './recordingNames';
@@ -28,7 +28,6 @@ import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
 import { WidgetFrames } from './widgetClock';
-import { setPageClock } from './structurePace';
 import { perfLog } from '../shell/perf';
 import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
@@ -53,7 +52,6 @@ function DashboardGrid({ prepared = false, template, runtime, editing, onLayouts
   // other widget's follows while idle, so another page or an added widget needs none fetched.
   const kinds = [...new Set(template.widgets.map(widget => widget.kind))].join(' ');
   useEffect(() => { preloadWidgetRenderers(kinds.split(' ')); preloadAllWidgetRenderers(); }, [kinds]);
-  useLayoutEffect(() => prepared ? undefined : (setPageClock(runtime.clock), () => setPageClock(null)), [runtime.clock, prepared]);
   const changed = useCallback((_layout: Layout, layouts: ResponsiveLayouts<Breakpoint>) => {
     runtime.maps.schedule();
     const next: GridLayouts = {};
@@ -198,6 +196,8 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const canFollow = !!definition?.history && definition.timeModes.includes('follow') && definition.timeModes.includes('campaign');
   const live = widget.time.mode === 'follow';
   const campaignTrack = runtime.tracks.find(track => track.id === effective.trackIds[0]);
+  const fixedAt = perfLog && campaignTrack && effective.time.mode !== 'follow'
+    ? resolveWindow(effective, campaignTrack, runtime.tracks, 0)?.lastHour : undefined;
   const source = campaignTrack && definition?.data !== false && campaignTrack.roleId !== runtime.defaultRoleId ? campaignTrack.source : undefined;
   // A native picker toggle of this widget's map that failed to save, by setting, until it saves or the map
   // shows another recording.
@@ -226,7 +226,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   // A widget only its page can draw (the native map) is left out of a prepared copy.
   const drawnHere = !prepared || definition?.preview !== false;
   return <article ref={element} className={`${prepared ? 'dash-widget-prepared' : 'dash-widget'} kind-${widget.kind}`}
-    {...(prepared ? {} : { 'data-widget': widget.id, 'data-settings': settings, 'aria-label': widget.title })}>
+    {...(prepared ? {} : { 'data-widget': widget.id, 'data-settings': settings, 'data-fixed-hour': fixedAt === undefined ? undefined : fixedAt - campaignTrack!.axisOffset, 'aria-label': widget.title })}>
     <header className="dash-widget-header">
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
       <span className="dash-widget-icon" aria-hidden="true" data-widget-icon={widget.id} style={icon.colour ? { color: icon.colour } : undefined}

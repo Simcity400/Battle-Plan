@@ -3,7 +3,7 @@
  * - `data`: everything that arrived since the last frame lands, in arrival order, in one batch;
  * - `measure`: the only place a layout read belongs, before anything in the frame writes;
  * - `paint`: every moving part draws from the data the frame holds (writes only, never a layout read);
- * - `commit`: React (the structure slot while playing, frame updates while paused);
+ * - `commit`: React updates;
  * - `after`: one-shots that wait for the next frame.
  * Work added during a phase for a later phase of the same frame runs in that frame; for the same or an earlier phase, in
  * the next (a task later in its phase may still run in this one). Without animation frames (tests, a hidden window) it ticks on a timer. */

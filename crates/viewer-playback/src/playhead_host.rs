@@ -159,9 +159,11 @@ mod share {
 pub type Hook = Box<dyn FnMut(&Step, &Lanes<'_>) + Send>;
 
 /// The stepper's hook, filled and emptied by other modules while the playhead runs.
+type HookList = Vec<(u64, Arc<Mutex<Hook>>)>;
+
 #[derive(Default)]
 pub struct Hooks {
-    held: Mutex<Vec<(u64, Hook)>>,
+    held: Mutex<Arc<HookList>>,
     next: AtomicU64,
 }
 
@@ -169,17 +171,22 @@ impl Hooks {
     /// Adds `hook`; its id removes it.
     pub fn add(&self, hook: Hook) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        lock(&self.held).push((id, hook));
+        Arc::make_mut(&mut lock(&self.held)).push((id, Arc::new(Mutex::new(hook))));
         id
     }
 
     pub fn remove(&self, id: u64) {
-        lock(&self.held).retain(|(held, _)| *held != id);
+        let removed = {
+            let mut hooks = lock(&self.held);
+            hooks.iter().position(|(held, _)| *held == id).map(|at| Arc::make_mut(&mut hooks).remove(at))
+        };
+        drop(removed);
     }
 
     fn run(&self, step: &Step, lanes: &Lanes<'_>) {
-        for (_, hook) in lock(&self.held).iter_mut() {
-            hook(step, lanes);
+        let hooks = Arc::clone(&lock(&self.held));
+        for (_, hook) in hooks.iter() {
+            lock(hook)(step, lanes);
         }
     }
 }
@@ -190,6 +197,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// One playhead and what its callers share.
 pub struct Entry {
+    page_time: Mutex<playhead::PageTime>,
     playhead: Playhead,
     pages: Arc<dyn Pages>,
     kinds: Arc<Vec<Vec<Kind>>>,
@@ -209,6 +217,20 @@ pub struct Entry {
 }
 
 impl Entry {
+    pub fn follow_anchor(&self, anchor: dashboard_follow::registry::Anchor) {
+        let at = lock(&self.page_time).composed(anchor.timestamps, Instant::now());
+        let mut held = lock(&self.anchors);
+        let pace = (anchor.playing && anchor.speed > 0.0, anchor.speed.to_bits());
+        let previous_step = self.playhead.step_hours();
+        self.playhead.frame_rate(anchor.frame_rate);
+        if held.1.is_none_or(|(_, speed)| speed != pace.1) { self.playhead.pace(anchor.speed); }
+        // A pause needs its exact hour even if the stepper has already built past it.
+        let seek = anchor.sought || self.playhead.step_hours() < previous_step || (!pace.0 && held.1.is_some_and(|(moving, _)| moving));
+        held.1 = Some(pace);
+        if seek { held.0 = Some(anchor.hour); }
+        self.playhead.anchor(anchor.position, pace.0, anchor.speed, at, seek);
+    }
+
     /// One playback anchor for this (recording, timeline), whoever sends it: a seek to the hour it
     /// is already holding at, or already at and not moving, is dropped; so is a pace it already
     /// has. The map and follow send the same anchors; only the first does anything.
@@ -216,6 +238,7 @@ impl Entry {
         let mut held = lock(&self.anchors);
         let playhead = &self.playhead;
         let pace = (playing && speed > 0.0, speed.to_bits());
+        let old_step = playhead.step_hours();
         let at = held.0 == Some(hour) && (playhead.holding().is_some() || (playhead.head(Instant::now()) == hour && held.1.is_none_or(|(moving, _)| !moving)));
         // The pace first: the steps a seek builds ahead of the head are sized by it.
         if held.1 != Some(pace) {
@@ -228,7 +251,7 @@ impl Entry {
             }
             held.1 = Some(pace);
         }
-        if sought && !at {
+        if (sought && !at) || playhead.step_hours() < old_step {
             playhead.seek(hour);
             held.0 = Some(hour);
         }
@@ -346,7 +369,7 @@ pub fn open_clocked(units: Units, settings: Settings, clock: Hour) -> io::Result
     let stepper_hooks = Arc::clone(&hooks);
     let hook: playhead::Hook = Box::new(move |step: &Step, lanes: &Lanes<'_>| stepper_hooks.run(step, lanes));
     let playhead = Playhead::new(Arc::clone(&units.pages), units.timeline, settings, Some(hook))?;
-    let entry = Arc::new(Entry { playhead, pages: units.pages, kinds: units.kinds, hooks, anchors: Mutex::new((None, None)), capture: Default::default(), maps: Default::default(), head: AtomicU64::new(NO_HEAD), rosters: Default::default() });
+    let entry = Arc::new(Entry { page_time: Default::default(), playhead, pages: units.pages, kinds: units.kinds, hooks, anchors: Mutex::new((None, None)), capture: Default::default(), maps: Default::default(), head: AtomicU64::new(NO_HEAD), rosters: Default::default() });
     entries.push((key, Arc::downgrade(&entry)));
     Ok(entry)
 }

@@ -107,7 +107,6 @@ const client = {
       asks.push(ask);
     });
   },
-  onFollowMessages: async () => () => {},
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
 

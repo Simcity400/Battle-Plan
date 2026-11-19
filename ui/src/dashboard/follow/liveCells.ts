@@ -6,7 +6,7 @@
  * `Live<LiveValues<number>>` keyed `liveKey(row, column)`. */
 import { liveKey, noValues } from '../../charts/live.ts';
 import type { Live, LiveValues } from '../../charts/live';
-import { CELL, cellNumber, cellState, cellValue, rowKey, rowReason } from './message.ts';
+import { CELL, cellNumber, cellState, cellValue, rowReason } from './message.ts';
 import type { FollowedAnswer } from './message';
 
 /** The bit of every follow id a panel's host takes for a group of its cells. */
@@ -23,7 +23,7 @@ export type LiveOp = 'value' | 'sum' | 'difference' | 'ratio';
 export interface LiveKind { id: string; op: LiveOp; scale: number }
 /** One followed query of the cells: these keys of a table, each read in these columns; its values at the asked hour,
  * the id it is followed under, or why it is not. */
-export interface LiveGroupSpec { table: number; columns: number[]; keys: string[]; values?: (number | string)[]; follow?: number; unavailable?: string }
+export interface LiveGroupSpec { table: number; columns: number[]; keys: string[]; values?: (number | string)[]; follow?: number; seedHour?: number; unavailable?: string }
 /** Per cell, flat: its row, its kind, its sources' count, then each source's group, row and column. */
 export interface LiveSection { groups: LiveGroupSpec[]; rows: string[]; kinds: LiveKind[]; cells: number[] }
 
@@ -41,8 +41,10 @@ export function liveSection(reply: unknown): LiveSection | null {
   for (const group of section.groups) {
     const size = Array.isArray(group?.keys) && Array.isArray(group.columns) ? group.keys.length * group.columns.length : -1;
     if (!group || !integer(group.table) || !group.columns.every(integer) || !texts(group.keys)
-      || [group.values !== undefined, group.follow !== undefined, group.unavailable !== undefined].filter(Boolean).length !== 1
+      || (group.values !== undefined || group.follow !== undefined) === (group.unavailable !== undefined)
+      || (group.values !== undefined && group.follow !== undefined) !== (group.seedHour !== undefined)
       || group.values !== undefined && (!Array.isArray(group.values) || group.values.length !== size || !group.values.every(value => typeof value === 'string' || Number.isFinite(value)))
+      || group.seedHour !== undefined && (!Number.isSafeInteger(group.seedHour) || !group.values?.every(value => typeof value === 'string' || Number.isSafeInteger(value)))
       || group.follow !== undefined && !(integer(group.follow) && isCellsId(group.follow))
       || group.unavailable !== undefined && typeof group.unavailable !== 'string')
       throw new Error('A live cells group is malformed.');
@@ -73,33 +75,44 @@ export function sectionOf(reply: unknown): LiveSection | null {
 
 /** Where a cell's source is read: a number, or undefined with `missing` saying why. */
 export interface GroupValues {
-  readonly version: number;
   get(row: number, column: number): number | undefined;
   missing(row: number, column: number): string;
 }
 
 /** A group whose every cell is missing for one reason. */
-const missingGroup = (reason: string): GroupValues => ({ version: 0, get: () => undefined, missing: () => reason });
+const missingGroup = (reason: string): GroupValues => ({ get: () => undefined, missing: () => reason });
 
 /** A group's values as a request's reply carries them, row by row. */
 function valuedGroup(spec: LiveGroupSpec, values: readonly (number | string)[]): GroupValues {
   const width = spec.columns.length;
   return {
-    version: 0,
     get: (row, column) => { const value = values[row * width + column]; return typeof value === 'number' ? value : undefined; },
     missing: (row, column) => { const value = values[row * width + column]; return typeof value === 'string' ? value : NOT_READ; },
   };
 }
 
-/** A followed group's cells as its answers left them: a whole answer replaces them, an answer of rows changed lays its
- * rows over them by key, "not recorded" makes every one missing for its reason. */
+/** One exact seed or one decoded snapshot of the group's cells. */
 export class CellGroup implements GroupValues {
-  version = 0;
+  seek?: number;
+  start: number | null = null;
+  private seeded?: GroupValues;
+
+  get landedHour() { return this.seeded ? null : this.start; }
+
+  seed(spec: LiveGroupSpec) {
+    if (spec.seedHour === undefined || !spec.values) return;
+    this.start = this.through = spec.seedHour;
+    this.seeded = valuedGroup(spec, spec.values);
+  }
+
   /** The hour its cells are current through: the newest message of its timeline; null before its first answer. */
-  through: number | null = null;
+  private confirmed: number | null = null;
+  private lane?: { hour: number };
+  get through(): number | null { return this.confirmed === null ? null : Math.max(this.confirmed, this.lane?.hour ?? -Infinity); }
+  set through(hour: number | null) { this.confirmed = hour; }
+  follow(lane?: { hour: number }) { this.confirmed = this.through; this.lane = lane; }
   /** The follow its answers come from, kept for the panel that names it after its first answer. */
   route: number | null = null;
-  private byKey = new Map<string, number>();
   private width = 0;
   private values = new Float64Array(0);
   private states = new Uint8Array(0);
@@ -107,44 +120,31 @@ export class CellGroup implements GroupValues {
   private whole: string | null = NOT_READ;
 
   land(answer: FollowedAnswer): void {
-    this.version++;
     if (answer.kind === 'notRecorded') { this.whole = answer.reason; return; }
-    if (answer.kind === 'changed') {
-      if (this.whole !== null) return;
-      for (let row = 0; row < answer.rows; row++) {
-        const at = this.byKey.get(String(rowKey(answer, row)));
-        if (at !== undefined) this.copy(answer, row, at);
-      }
-      return;
-    }
     this.whole = null;
     this.width = answer.columns;
-    this.byKey = new Map();
     this.values = new Float64Array(answer.rows * answer.columns);
     this.states = new Uint8Array(answer.rows * answer.columns);
     this.reasons = new Array<string | null>(answer.rows).fill(null);
     for (let row = 0; row < answer.rows; row++) {
-      this.byKey.set(String(rowKey(answer, row)), row);
-      this.copy(answer, row, row);
+      for (let column = 0; column < this.width; column++) {
+        const at = row * this.width + column;
+        this.states[at] = cellState(answer, at);
+        this.values[at] = cellNumber(answer, at) ?? Number(cellValue(answer, at));
+      }
+      this.reasons[row] = rowReason(answer, row);
     }
-  }
-
-  private copy(answer: Exclude<FollowedAnswer, { kind: 'notRecorded' }>, from: number, to: number): void {
-    for (let column = 0; column < this.width; column++) {
-      const cell = from * answer.columns + column, at = to * this.width + column;
-      this.states[at] = cellState(answer, cell);
-      this.values[at] = cellNumber(answer, cell) ?? Number(cellValue(answer, cell));
-    }
-    this.reasons[to] = rowReason(answer, from);
   }
 
   get(row: number, column: number): number | undefined {
+    if (this.seeded) return this.seeded.get(row, column);
     if (this.whole !== null || row >= this.reasons.length) return undefined;
     const at = row * this.width + column;
     return this.states[at] === CELL.value ? this.values[at] : undefined;
   }
 
   missing(row: number, column: number): string {
+    if (this.seeded) return this.seeded.missing(row, column);
     if (this.whole !== null) return this.whole;
     if (row >= this.reasons.length) return NOT_READ;
     const state = this.states[row * this.width + column];
@@ -201,7 +201,7 @@ export function sectionValues(section: LiveSection, groups: readonly GroupValues
 
 /** The groups of `section`: its values, the store's group for each followed id (`group`), or missing for its reason. */
 export function sectionGroups(section: LiveSection, group: (id: number) => GroupValues | undefined): GroupValues[] {
-  return section.groups.map(spec => spec.values ? valuedGroup(spec, spec.values)
+  return section.groups.map(spec => spec.values && spec.follow === undefined ? valuedGroup(spec, spec.values)
     : spec.follow !== undefined ? group(spec.follow) ?? missingGroup(NOT_READ)
     : missingGroup(spec.unavailable ?? NOT_READ));
 }
@@ -222,51 +222,9 @@ export function repliedCells(reply: unknown): Live<LiveValues<number>> {
   }
 }
 
-/** Where a panel's cells come from: its newest section and the store's groups, and what wakes it. */
-export interface CellsSource {
-  section(): LiveSection | null;
-  group(id: number): GroupValues | undefined;
-  subscribe(changed: () => void): () => void;
-}
-
-/** A panel's cells read as a chart paints: the same values until its section or one of its groups moves. */
-export function followedCells(source: CellsSource): Live<LiveValues<number>> {
-  let made: { section: LiveSection | null; groups: GroupValues[]; stamp: number; values: LiveValues<number> } | null = null;
-  let failed: { reason: string; values: LiveValues<number> } | null = null;
-  return {
-    read: () => {
-      let section: LiveSection | null;
-      try { section = source.section(); } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        if (failed?.reason !== reason) failed = { reason, values: noValues(reason) };
-        return failed.values;
-      }
-      if (!section) return NO_CELLS;
-      const groups = made?.section === section ? made.groups : sectionGroups(section, source.group);
-      // A followed group that had not landed yet when the section was resolved is looked up again.
-      const fresh = section.groups.some((spec, at) => spec.follow !== undefined && groups[at]!.version === 0 && source.group(spec.follow) !== groups[at])
-        ? sectionGroups(section, source.group) : groups;
-      const stamp = fresh.reduce((sum, group) => sum + group.version, 0);
-      if (!made || made.section !== section || made.stamp !== stamp || made.groups !== fresh)
-        made = { section, groups: fresh, stamp, values: sectionValues(section, fresh) };
-      return made.values;
-    },
-    subscribe: changed => source.subscribe(changed),
-  };
-}
-
 /** `live` read as before, `report` told as each read paints: how a widget reports the hour it shows. */
 export function reporting<T>(live: Live<T>, report: () => void): Live<T> {
   return { read: () => { report(); return live.read(); }, subscribe: live.subscribe };
-}
-
-/** The follow ids a panel's reply names for its cells. */
-export function cellIds(reply: unknown): number[] {
-  try {
-    return liveSection(reply)?.groups.flatMap(group => group.follow === undefined ? [] : [group.follow]) ?? [];
-  } catch {
-    return [];
-  }
 }
 
 /** The reason a live cell has when its table was read but holds no row of its key (the follow layer's `NO_ROW`): for a

@@ -1,3 +1,6 @@
+import { encode } from '@msgpack/msgpack';
+import { parseFollowed } from './message.ts';
+import type { PageReading } from '../../draw/followed';
 /** Followed messages written as the service writes them (`crates/dashboard-follow/src/answer.rs`), for tests. */
 
 export type Spec =
@@ -50,9 +53,9 @@ function body(spec: Spec): number[] {
 }
 
 /** A message of `answers` at `hour`, of the follow `route`. */
-export function message(hour: number, answers: { id: number; hour?: number; answer: Spec }[], reset = false, route = 0): Uint8Array {
+export function message(hour: number, answers: { id: number; hour?: number; answer: Spec }[], reset = false, route = 0, seek = 0): Uint8Array {
   const out = new Bytes();
-  out.u32(0x314c4f46); out.u32(route * 2 + (reset ? 1 : 0)); out.u32(hour); out.u32(answers.length);
+  out.u32(0x324c4f46); out.u32(route * 2 + (reset ? 1 : 0)); out.u32(hour); out.u32(answers.length); out.u32(seek); out.u32(0);
   for (const { id, hour: at, answer } of answers) {
     const held = body(answer);
     out.u32(id); out.u32(at ?? hour); out.u32(held.length); out.u32(0);
@@ -61,16 +64,27 @@ export function message(hour: number, answers: { id: number; hour?: number; answ
   return new Uint8Array(out.bytes);
 }
 
+export function datedPanel(id: number, hour: number, data?: unknown, seek = 1) {
+  const body = data === undefined ? new Uint8Array() : encode(data);
+  const out = new Uint8Array((44 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);
+  words.set([0x324c4e50, 4, 1, 0, 9, seek, id, hour, data === undefined ? 3 : 1, body.length]);
+  out.set(body, 44);
+  return out;
+}
+
 /** A transport that records what it is sent and delivers what a test hands it. */
 export function fakeTransport() {
   const sent: string[] = [];
-  let receive: ((bytes: ArrayBuffer | Uint8Array) => void) | null = null;
+  let receive: ((reading: PageReading) => void) | null = null;
   return {
     sent,
     follow: (id: number, query: unknown) => { sent.push(`follow ${id} ${JSON.stringify(query)}`); },
     unfollow: (id: number) => { sent.push(`unfollow ${id}`); },
-    listen: (handler: (bytes: ArrayBuffer | Uint8Array) => void) => { receive = handler; return () => { receive = null; }; },
-    deliver: (bytes: Uint8Array) => receive?.(bytes),
+    listen: (handler: (reading: PageReading) => void) => { receive = handler; return () => { receive = null; }; },
+    deliver(bytes: Uint8Array) {
+      const step = parseFollowed(bytes);
+      for (const { id, hour, answer } of step.answers) receive?.({ id, hour, answer, through: step.hour, seek: 0 });
+    },
   };
 }
 

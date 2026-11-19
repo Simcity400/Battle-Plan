@@ -153,6 +153,8 @@ export const fixture = {
     // then. A window played starts from what was received by its mark.
     const received = receivedAround(mark, label === 'play' ? mark : nextMark(mark));
     client!.window = received.map(item => item.bytes);
+    client!.at = mark.at;
+    client!.windowEnd = nextMark(mark).at;
     if (shownPage === page && label === 'page') {
       clock!.seek(mark.head);
       // What the service pushed for the hour sought, to the follows already made.
@@ -244,6 +246,8 @@ export const fixture = {
     commits.clear(); why.clear(); paints.clear(); asked.layout = 0; asked.measure = 0;
     counting = true;
     const began = performance.now();
+    client!.at = start.at;
+    client!.windowEnd = end.at;
     clock!.setSpeed(1440);
     clock!.setPlaying(true);
     let next = 0, frames = 0;
@@ -251,7 +255,11 @@ export const fixture = {
       await frame();
       frames++;
       const hour = clock!.getHour();
-      while (next < messages.length && messages[next]!.hour! <= hour) client!.deliver(messages[next++]!.bytes);
+      while (next < messages.length && messages[next]!.hour! <= hour) {
+        const message = messages[next++]!;
+        client!.at = message.at;
+        client!.deliver(message.bytes);
+      }
       if (!clock!.getSnapshot().playing) break;
     }
     const elapsed = performance.now() - began;

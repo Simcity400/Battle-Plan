@@ -36,9 +36,7 @@ const NO_WARNINGS: string[] = [];
 
 /** Every recorded faction over time: a band per faction whose thickness follows its member count, and a lane per member
  * from join to leave, the leader's stretch marked. Factions founded and dissolved partway through are included; names,
- * members and leaders come from the recording. The `country-groups` history is read once; following playback, the
- * widget renders only when the head passes a faction or membership change (paced), never because the hour moved
- * inside one, and the playhead moves with the clock each frame. */
+ * members and leaders come from the recording. The history comes from one `country-groups` request. */
 export default function FactionsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const clock = runtime.clock;
   const followsClock = widget.time.mode === 'follow';

@@ -8,7 +8,7 @@ import { BUILT_IN_THEMES, themeColors } from './themes';
 import type { ThemeDefinition, ThemeMode } from './themes';
 import { parseThemeText, serializeTheme, uniqueThemeName } from './themeFile';
 import { CONTRAST_STEP, LIMITS, MAX_CUSTOM_THEMES } from './settings';
-import type { AppearanceSettings as Settings, Backdrop, BackdropKind, ChartMotion, ColorScheme, CountryColours, HeaderFlag, MotionPreference } from './settings';
+import type { AppearanceSettings as Settings, Backdrop, BackdropKind, ChartMotion, PlaybackFrameRate, ColorScheme, CountryColours, HeaderFlag, MotionPreference } from './settings';
 import { deleteBackdrop, importBackdrop, listBackdrops } from './backdrops';
 import type { BackdropImage } from './backdrops';
 import TypographySettings from './TypographySettings';
@@ -268,6 +268,10 @@ export default function AppearanceSettings({ appearance, onEdit, searchTarget }:
     </SettingsBlock>
 
     <SettingsBlock id="appearance-charts" title="Charts">
+      <div className="settings-row" id="appearance-playback-rate"><span className="settings-row-text"><strong>Playback frame rate</strong><small>Uncapped follows the display refresh rate.</small></span>
+        <Segmented<PlaybackFrameRate> label="Playback frame rate" value={settings.charts.frameRate}
+          onChange={frameRate => update(previous => ({ ...previous, charts: { ...previous.charts, frameRate } }))}
+          options={[{ value: '30', label: '30' }, { value: '60', label: '60' }, { value: '120', label: '120' }, { value: 'uncapped', label: 'Uncapped' }]} /></div>
       <div className="settings-row" id="appearance-chart-motion"><span className="settings-row-text"><strong>Chart motion</strong><small>How charts transition between values during playback.</small></span>
         <Segmented<ChartMotion> label="Chart motion" value={settings.charts.motion} onChange={motion => update(previous => ({ ...previous, charts: { ...previous.charts, motion } }))}
           options={[{ value: 'snappy', label: 'Snappy' }, { value: 'smooth', label: 'Smooth' }, { value: 'cinematic', label: 'Cinematic' }]} /></div>

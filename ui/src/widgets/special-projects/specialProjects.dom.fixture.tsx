@@ -1,3 +1,5 @@
+import { datedPanel } from '../../dashboard/follow/messages.fixture.ts';
+import { FollowDecoder } from '../../dashboard/follow/decode.ts';
 /** Special projects at 1,440 game hours a second in a real browser: Current and History of one country mounted on a
  * clock the test moves 15 hours a frame, served one whole-branch reply whose progress steps every day and in which one
  * project starts while playing, and the details under Current pushed as a panel whose daily values move each day;
@@ -18,7 +20,13 @@ const frame = () => new Promise<void>(resolve => native(() => resolve()));
 async function settle(frames = 4) { for (let at = 0; at < frames; at++) await frame(); }
 
 const shown = new Map<string, (number | null)[]>();
-measureWith(new Proxy({ shown: (widget: string, hour: number | null) => { shown.set(widget, [...shown.get(widget) ?? [], hour]); } }, {
+const recordHour = (widget: string, hour: number | null) => { shown.set(widget, [...shown.get(widget) ?? [], hour]); };
+measureWith(new Proxy({
+  shown: recordHour,
+  present(widget: string, view: string, date: { through: number } | null) {
+    if (view === 'special-projects') recordHour(widget, date?.through ?? null);
+  },
+}, {
   get: (target, name) => (target as Record<string | symbol, unknown>)[name] ?? (() => {}),
 }) as unknown as PerfRecorder);
 
@@ -67,16 +75,17 @@ export const details = (read: number): SpecialProjectDetails => ({ hour: read, u
   programs: [] });
 
 /** Whether the service follows the details panel, the panel id it gave, and who hears pushed messages. */
-const panels = { id: -1, receivers: new Set<(bytes: ArrayBuffer | Uint8Array) => void>() };
+const stamp = { route: 9, epoch: 1, generation: 1 };
+const panels: { id: number; port?: MessagePort } = { id: -1 };
+const decoder = new FollowDecoder();
 function follow(params: { id: number; query: { panel?: string } }) {
   if (params.query.panel !== 'special-project-details') return { available: false, reason: 'not followed here' };
   panels.id = params.id;
-  return { available: true };
+  return { available: true, ...stamp };
 }
 function push(hour: number) {
   const read = hour - (hour - 4) % 24;
-  const bytes = new TextEncoder().encode(`PNL1${JSON.stringify({ panels: [{ id: panels.id, hour, data: details(read), refused: null }] })}`);
-  for (const receive of panels.receivers) receive(bytes);
+  panels.port?.postMessage([decoder.item(datedPanel(panels.id, hour, details(read)).buffer)]);
 }
 
 let clock: Clock;
@@ -116,10 +125,10 @@ const client = {
   available: true,
   product: async (request: { sourceId: string; revision: string; product: string; params: Record<string, unknown> }) => {
     requests.push(request.product);
-    const data = request.product === 'follow' ? follow(request.params as never) : answer(request.product);
+    const data = request.product === 'follow' ? follow(request.params as never) : request.product === 'follow-clock' || request.product === 'unfollow' ? stamp : answer(request.product);
     return { sourceId: request.sourceId, revision: request.revision, product: request.product, data };
   },
-  onFollowMessages: async (receive: (bytes: ArrayBuffer | Uint8Array) => void) => { panels.receivers.add(receive); return () => { panels.receivers.delete(receive); }; },
+  openFollow: async (port: MessagePort) => { panels.port = port; },
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
 
@@ -133,7 +142,7 @@ export const fixture = {
     clock = new Clock(); requests.length = 0; shown.clear(); panels.id = -1;
     for (const key of Object.keys(renders)) delete renders[key];
     host = document.body.appendChild(document.createElement('div'));
-    host.style.cssText = 'width: 640px; display: flex; flex-direction: column;';
+    host.style.cssText = 'zoom: 0.75; width: 640px; display: flex; flex-direction: column;';
     root = createRoot(host);
     const runtime = { tracks: [track], clock, client, addWidgetBelow() {}, campaigns: [], recordings: [], requestSeek() {} };
     const widget = (id: string, view: string) => ({ id, kind: 'special-projects', trackIds: ['main'], countries: { kind: 'tags', tags: ['GER'] },
@@ -153,8 +162,7 @@ export const fixture = {
     const before = { requests: requests.length, renders: { ...renders } };
     for (let at = 0; at < frames; at++) {
       clock.step(hours);
-      // The service pushes the details panel at most four times a second (every 15 frames), when it differs.
-      if (at % 15 === 14) push(clock.getHour());
+      push(clock.getHour());
       await frame();
     }
     await settle(30);

@@ -63,7 +63,6 @@ export function useTiles(client: DashboardClient, series: TileSeries | null, act
       const now = { lines: tiles.current !== null, error: tiles.error };
       if (live && shown && shown.lines === now.lines && Object.is(shown.error, now.error)) return;
       shown = now;
-      // A landing renders with the page's data updates: in the structure slot while playing, never in a commit of its own.
       const landed = { key, lines: tiles.current, error: tiles.error };
       inFrame(() => setState(landed));
     });

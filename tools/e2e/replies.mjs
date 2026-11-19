@@ -8,7 +8,7 @@
 //   {t:'open', at, ms, head, args, ok, reply}       the recording opened (its reply is the source the widgets are bound to)
 //   {t:'product', at, ms, head, args, ok, reply}    a product reply (`args.query` is the request; `ok` false: `reply` is
 //                                                   the refusal), cancelled requests included: their replies still came
-//   {t:'follow', at, head, channel, index, bytes}   a followed message, base64, in the channel's own order
+//   {t:'follow', at, head, bytes}   a followed message, base64, in pull order
 //   {t:'mark', at, head, label, ...}                what the sweep did (`page`, `play`, `pause`), with the page's layout
 // `at` is milliseconds since the page's time origin, `head` the clock's hour on the timeline control then.
 import { execFileSync } from 'node:child_process';
@@ -18,7 +18,7 @@ import path from 'node:path';
 import { createGzip } from 'node:zlib';
 
 export const KIND = 'battle-plan recorded replies';
-export const VERSION = 1;
+export const VERSION = 3;
 /** The tables of the recording format, listed by the test that holds them equal to the code. */
 export const FORMAT_FILE = 'crates/replay-data/src/rows/registry.golden';
 /** Characters of entries the page hands over a take. */
@@ -30,11 +30,9 @@ export function formatOf(text) {
   return { lines, digest: createHash('sha256').update(lines.join('\n')).digest('hex') };
 }
 
-/** Installed in the page: wraps `fetch` for the host's IPC replies and the callback table for channel messages. */
+/** Installed in the page: records the host's IPC replies and the dated payloads captured in the pull worker. */
 export const CAPTURE = `(() => {
   if (window.__replies) return true;
-  const internals = window.__TAURI_INTERNALS__;
-  if (!internals || !internals.callbacks) throw new Error('no Tauri callback table to record followed messages from');
   const held = [];
   const lines = [];
   let cursor = 0;
@@ -57,14 +55,12 @@ export const CAPTURE = `(() => {
     })).catch(error => held.push({ t: kind, at, ms: performance.now() - at, head: hour, args, ok: false, reply: null, failed: String(error) }));
     return promise;
   };
-  const table = internals.callbacks;
-  const set = Map.prototype.set;
-  const wrap = (id, callback) => typeof callback !== 'function' ? callback : function (data) {
-    if (data && data.message instanceof ArrayBuffer) held.push({ t: 'follow', at: performance.now(), head: head(), channel: id, index: data.index, message: data.message });
-    return callback.apply(this, arguments);
+  const followed = new BroadcastChannel('recorded-follow');
+  let captureError;
+  followed.onmessage = ({ data }) => {
+    if (data.error) { captureError = data.error; return; }
+    for (const message of data) held.push({ t: 'follow', at: performance.now(), head: head(), message });
   };
-  for (const [id, callback] of [...table]) set.call(table, id, wrap(id, callback));
-  table.set = function (id, callback) { return set.call(this, id, wrap(id, callback)); };
   const base64 = buffer => {
     const bytes = new Uint8Array(buffer);
     let out = '';
@@ -77,6 +73,7 @@ export const CAPTURE = `(() => {
     mark(entry) { held.push({ t: 'mark', at: performance.now(), head: head(), ...entry }); },
     // At most \`budget\` characters a call, a long entry in pieces: no one message of the debugger grows with a reply.
     take(budget) {
+      if (captureError) throw new Error(captureError);
       const parts = [];
       let size = 0;
       while (size < budget) {
@@ -98,6 +95,34 @@ export const CAPTURE = `(() => {
   };
   return true;
 })()`;
+
+/** Installed through the debugger only during a reply capture, before the worker starts reading. */
+function capturePulls() {
+  let followed;
+  const read = Response.prototype.arrayBuffer;
+  Response.prototype.arrayBuffer = function () {
+    const body = read.call(this);
+    if (this.url && new URL(this.url).pathname === '/follow' && this.ok) {
+      body.then(buffer => {
+        if (!buffer.byteLength) return;
+        followed ??= new BroadcastChannel('recorded-follow');
+        const view = new DataView(buffer), packets = [];
+        for (let at = 0; at < view.byteLength;) {
+          const size = view.getUint32(at, true);
+          at += 4;
+          if (at + size > view.byteLength) throw new Error('A recorded follow message ends early');
+          packets.push(buffer.slice(at, at + size));
+          at += size;
+        }
+        followed.postMessage(packets);
+      }).catch(error => {
+        followed ??= new BroadcastChannel('recorded-follow');
+        followed.postMessage({ error: String(error) });
+      });
+    }
+    return body;
+  };
+}
 
 /** The page's layout as a page shows it: the grid's size and each widget's place, so a fixture lays it out alike. */
 const LAYOUT = `(() => {
@@ -136,6 +161,19 @@ export class ReplyRecorder {
     await app.send('Inspector.enable');
     await app.evaluate(CAPTURE);
     const recorder = new ReplyRecorder(app, file);
+    recorder.detach = app.on('Target.attachedToTarget', ({ sessionId, targetInfo }) => {
+      const send = (method, params) => app.send(method, params, 60_000, sessionId);
+      void (async () => {
+        try {
+          if (targetInfo.type === 'worker') {
+            const result = await send('Runtime.evaluate', { expression: `(${capturePulls})()` });
+            if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+          }
+        } finally { await send('Runtime.runIfWaitingForDebugger', {}); }
+      })().catch(error => { recorder.failed = error; });
+    });
+    await app.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
+      filter: [{ type: 'worker' }, { exclude: true }] });
     await recorder.line({ kind: KIND, version: VERSION, formatDigest: format.digest, format: format.lines, app: { revision: app_revision }, recordedAt: new Date().toISOString() });
     return recorder;
   }
@@ -164,6 +202,7 @@ export class ReplyRecorder {
   /** Moves what the page holds into the file, one take at a time; replies parsed, so the file is one JSON value a line. */
   take() {
     const run = this.queue.then(async () => {
+      if (this.failed) throw this.failed;
       for (let more = true; more;) {
         const taken = await this.app.evaluate(`window.__replies.take(${TAKE_BUDGET})`, 120_000);
         for (const [piece, whole] of taken.parts) {
@@ -193,6 +232,8 @@ export class ReplyRecorder {
 
   async finish() {
     clearInterval(this.timer);
+    await this.app.send('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true });
+    this.detach();
     await this.take();
     this.gzip.end();
     await this.closed;

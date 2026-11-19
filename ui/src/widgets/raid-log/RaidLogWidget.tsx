@@ -35,7 +35,7 @@ const NO_ROWS: readonly LogRow<RaidAt>[] = [];
 const COLUMNS = 'var(--space-6) minmax(0, 1fr) auto';
 
 /** The campaign's raids, read once, at the hour shown: each dated by the phase it shows. Following, the list renders
- * only when a raid's phase starts or stops being read (paced), and a preparing raid's hours are painted each frame. */
+ * only when a raid's phase starts or stops being read, and a preparing raid's hours are painted each frame. */
 export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);

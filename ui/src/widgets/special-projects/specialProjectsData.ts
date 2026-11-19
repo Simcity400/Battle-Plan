@@ -161,13 +161,17 @@ export function currentKey(data: SpecialProjectsReply, hour: number): string {
   if (!observedAt(data, hour)) return 'unobserved';
   const { running, completed, earlier, cancelled } = currentProjects(data, hour);
   const part = (cards: readonly ProjectCard[], extra: (card: ProjectCard) => string) =>
-    cards.map(card => `${card.project.id}\u0001${card.run.presentation}\u0001${extra(card)}`).join('\u0002');
+    JSON.stringify(cards.map(card => [card.project.id, card.info, data.people[card.info.scientist], extra(card)]));
   return [part(running, card => card.run.state), part(completed, card => String(card.run.completion!.hour)), part(earlier, () => ''),
     part(cancelled, card => `${card.run.cancellation!.hour}\u0001${card.run.progress}`)].join('\u0003');
 }
 
 /** The numbers a running card shows at `hour`, painted each frame: its progress and iteration count; null where the
  * hour holds no run of it. */
+export function projectStructure(reply: SpecialProjectsReply, hour: number) {
+  return JSON.stringify([currentKey(reply, hour), reply.unavailable, reply.warnings]);
+}
+
 export function runningValues(project: ProjectEpisode, hour: number): { progress: string; fill: number; iterations: string } | null {
   const run = runAt(project.runs, hour);
   return run ? { progress: `${run.progress}%`, fill: Math.max(0, run.progress) / 100, iterations: iterationCount(run.iterations) } : null;

@@ -1,3 +1,4 @@
+import { researchVerdict } from './research.mjs';
 // The suite's report: a table per area with each item's timings and verdict, failures with their
 // screenshots, and the run's duration. Exits 0 when everything passed, 1 otherwise.
 // usage: node tools/e2e/report.mjs --run <run.json> --sweeps <dir> --perf <work dir> --out <dir> [--baseline <dir>] [--history <file>]
@@ -9,8 +10,8 @@ import readline from 'node:readline';
 import path from 'node:path';
 import { compareCaptures } from '../../ui/e2e/compare.mjs';
 import { mergeHistory, readHistory, slowestCards } from './coverage.mjs';
-import { MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, machineLine, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, sessionStart } from './verdicts.mjs';
-import { BUDGET_MS, FRAME_BUDGET_MS, SUSTAINED_DROPS, consoleFailures, droppedFrames, failedReplies, firstContent, frameTimes, freshness, groupBy, item, mapAcks, mapSeek, quantiles } from './verdicts.mjs';
+import { sought, MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, asked, catalogueHour, machineLine, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, phaseSeconds, popoutPresented, presentedAt, playbackPace } from './verdicts.mjs';
+import { BUDGET_MS, FRAME_BUDGET_MS, MAX_PLAYBACK_AGE_HOURS, SUSTAINED_DROPS, consoleFailures, failedReplies, firstContent, frameTimes, groupBy, item, mapAcks, mapSeek, quantiles } from './verdicts.mjs';
 import { FAIL, PARTIAL, dashboardRows } from './playbackVerdicts.mjs';
 import { perFrame } from './trace.mjs';
 
@@ -40,13 +41,14 @@ async function perfRecords(folder) {
     for await (const line of readline.createInterface({ input: createReadStream(path.join(folder, name), 'utf8'), crlfDelay: Infinity })) keep(line);
   };
   const records = [], mapRecords = [];
-  const wanted = /^\{"t":"(map_state|tick|shown|widget|q|frame|lost)"/;
+  const wanted = /^\{"t":"(map_state|tick|workerFrame|picture|ink|commit|shown|widget|q|frame|lost)"/;
   // The host writes a loss record with its kind last: any line naming a loss is read whatever its field order.
   const lost = line => line.includes('"t":"lost"') && JSON.parse(line).t === 'lost';
   for (const name of pages) await read(name, line => {
     if (!wanted.test(line) && !lost(line)) return;
     const record = JSON.parse(line);
     if ((record.t === 'q' && record.outcome !== 'error') || (record.t === 'frame' && !record.playing)) return;
+    if (record.t === 'q') record.session = name.slice('perf-'.length, -'.jsonl'.length);
     records.push(record);
   });
   for (const name of viewers) await read(name, line => {
@@ -209,25 +211,15 @@ if (sweep) {
 
   under('seeks');
   // Seeks. A widget that reports the hour it shows has finished a seek only once it shows the sought hour.
-  const shownBy = records ? groupBy(records.filter(record => record.t === 'shown').sort((a, b) => a.at - b.at), record => record.widget) : new Map();
-  const sought = result => {
-    if (!result.widgetIds || result.input == null) return result;
-    const reasons = [...result.reasons];
-    let ms = result.ms;
-    for (const [id, title] of Object.entries(result.widgetIds)) {
-      const list = shownBy.get(id);
-      if (!list) continue;
-      const reached = list.find(record => record.at >= result.input && record.hour === result.hour);
-      if (!reached || reached.at - result.input > 10_000) reasons.push(`${title}: never showed the sought hour ${result.hour}`);
-      else ms = Math.max(ms ?? 0, reached.at - result.input);
-    }
-    if (result.check !== false && ms > BUDGET_MS && !reasons.some(reason => reason.includes(' ms, over'))) reasons.push(`${Math.round(ms)} ms, over ${BUDGET_MS} ms`);
-    return { ...result, ms, reasons, pass: reasons.length === 0 };
-  };
+  const starts = (sweep.meta.sessions ?? []).map(meta => Date.parse(meta.started)).filter(Number.isFinite);
+  const inputs = (sweep.meta.sessions ?? []).flatMap(meta => meta.seekInputs ?? []).sort((a, b) => a - b);
+  const dated = new Set(records?.filter(r => r.t === 'picture').map(r => r.widget));
+  const shownBy = records ? groupBy(records.filter(record => record.t === 'picture' || record.t === 'shown' && !dated.has(record.widget)).sort((a, b) => a.at - b.at), record => record.widget) : new Map();
+
   section('Seeks (ms from the click on the timeline to every visible widget showing content; each hour cold in a fresh session, then warm)',
     ['Page', ...sweep.meta.seeks.map(([label]) => `${label} cold`), ...sweep.meta.seeks.map(([label]) => `${label} warm`), 'Cold p50', 'Cold p95', 'Cold max', 'Result', 'Why'],
     sweep.meta.pages.map(page => {
-      const steps = area('seeks').filter(result => result.item === page).map(result => sought(result));
+      const steps = area('seeks').filter(result => result.item === page).map(result => sought(result, shownBy, starts, inputs.find(at => at > result.input) ?? Infinity));
       const cold = steps.filter(result => !result.label.endsWith(' warm'));
       const warm = steps.filter(result => result.label.endsWith(' warm'));
       const summary = item(page, cold);
@@ -342,14 +334,15 @@ if (sweep) {
 
   under('playback');
   // Playback. A widget's reports count only within its own app session.
-  const starts = (sweep.meta.sessions ?? []).map(meta => Date.parse(meta.started)).filter(Number.isFinite);
+
   const refresh = run.refreshHz ?? null;
-  section(`Playback (frame time: each playing frame's main-thread time to render, against ${FRAME_BUDGET_MS.toFixed(1)} ms; dropped: an interval over 1.5 refreshes of the ${refresh ?? '?'} Hz display, failing on ${SUSTAINED_DROPS} or more in a row; freshness: hours a widget's values lag the clock)`,
-    ['Page', 'h/s', 'Frames', 'Frame p50', 'Frame p95', 'Frame max', 'Interval p95', 'Dropped', 'Longest drop run', 'Fresh widgets', 'Result', 'Why'],
+  section(`Playback (frame time: each playing frame's main-thread time to render, against ${FRAME_BUDGET_MS.toFixed(1)} ms; dropped: an interval over 1.5 refreshes of the ${refresh ?? '?'} Hz display, failing on ${SUSTAINED_DROPS} or more in a row)`,
+    ['Page', 'h/s', 'Frames', 'Frame p50', 'Frame p95', 'Frame max', 'Interval p95', 'Dropped', 'Longest drop run', 'Result', 'Why'],
     area('playback').map(result => {
-      const frames = frameTimes(result.frames), reasons = [...result.reasons];
+      const { count, main, interval, drops } = frameTimes(records ?? [], result.from, result.to, refresh);
+      const reasons = [...result.reasons];
       // The clock must have played at the speed chosen, or the row measures another speed.
-      const ticks = records ? records.filter(record => record.t === 'tick' && record.at >= result.from && record.at <= result.to) : null;
+      const ticks = records ? records.filter(record => record.t === 'tick' && record.playing && record.at >= result.from && record.at <= result.to) : null;
       if (ticks && !ticks.length) reasons.push('the clock recorded no ticks while playing');
       else if (ticks) {
         const other = ticks.find(tick => tick.speed !== result.speed);
@@ -358,37 +351,36 @@ if (sweep) {
         const sorted = [...ticks].sort((a, b) => a.at - b.at), first = sorted[0];
         const ended = result.lastHour == null ? -1 : sorted.findIndex(tick => tick.hour >= result.lastHour);
         const last = ended >= 0 ? sorted[ended] : sorted.at(-1);
-        const seconds = (last.at - first.at) / 1000, moved = last.hour - first.hour;
-        const step = Math.max(1, Math.ceil(result.speed * 0.25));
-        const slack = Math.max(2 * step + 1, 0.05 * result.speed * seconds);
+        const seconds = (last.at - first.at) / 1000;
+        const pace = playbackPace(first, last, result.speed);
         if (seconds < 1) reasons.push(`the clock ticked over only ${seconds.toFixed(2)} s, too little to tell its pace`);
-        else if (Math.abs(moved - result.speed * seconds) > slack)
-          reasons.push(`the clock moved ${moved} hours in ${seconds.toFixed(1)} s, ${(moved / seconds).toFixed(1)} h/s, not the ${result.speed} h/s chosen`);
+        else if (!pace.pass) reasons.push(`measured clock speed ${pace.hps?.toFixed(1) ?? 'unknown'} h/s, expected ${result.speed} h/s`);
       }
       if (!result.complete) reasons.push(`the perf log lost records: ${JSON.stringify(result.losses)}`);
-      if (!frames.n) reasons.push('no playing frames recorded');
+      if (!count) reasons.push('no playing frames recorded');
       // Every playing frame must carry its own main-thread time: one without it may be the slow one.
-      const untimed = records ? records.filter(record => record.t === 'frame' && record.playing && record.at >= result.from && record.at <= result.to && !Number.isFinite(record.main)).length : 0;
+      const untimed = count - main.n;
       if (untimed) reasons.push(`${untimed} playing frames have no main-thread time, so the frame times are incomplete`);
-      else if (frames.p95 > FRAME_BUDGET_MS) reasons.push(`frame p95 ${frames.p95.toFixed(1)} ms, over ${FRAME_BUDGET_MS.toFixed(1)} ms`);
-      const drops = records && refresh ? droppedFrames(records, result.from, result.to, refresh) : null;
+      else if (main.p95 > FRAME_BUDGET_MS) reasons.push(`frame p95 ${main.p95.toFixed(1)} ms, over ${FRAME_BUDGET_MS.toFixed(1)} ms`);
+      if (interval.n < count) reasons.push(`${count - interval.n} playing frames have no interval`);
       if (!drops) reasons.push(refresh ? 'no perf log for dropped frames' : 'the display refresh rate was not recorded');
       else if (!drops.frames) reasons.push('no playing frame intervals in the perf log');
       else if (!drops.pass) reasons.push(`${drops.longest} dropped frames in a row (intervals over ${drops.limit.toFixed(1)} ms)`);
-      // Only this page's widgets in view are judged here; every kind's coverage is the freshness table's.
-      const inView = new Set((result.widgets ?? []).filter(widget => widget.visible).map(widget => widget.id));
-      const all = records ? freshness(records, result.from, result.to, sessionStart(starts, result.from)) : null;
-      const fresh = all && { ...all, widgets: all.widgets.filter(widget => inView.has(widget.widget)) };
-      if (!fresh) reasons.push('no perf log for freshness');
-      else {
-        for (const widget of fresh.widgets.filter(widget => !widget.pass))
-          reasons.push(`${widget.title}: values ${widget.p95 >= Number.MAX_VALUE ? 'missing' : `${fmt(widget.p95)} h off the clock`} at p95 (${widget.none} frames with none, ${widget.ahead} ahead of it), over one tick (${fmt(widget.step)} h)`);
-      }
       const pass = reasons.length === 0;
-      return { pass, cells: [result.page, result.speed, frames.n, frames.p50?.toFixed(1) ?? '–', frames.p95?.toFixed(1) ?? '–', frames.max?.toFixed(1) ?? '–',
-        result.frames?.playing?.p95?.toFixed(1) ?? '–', drops?.rate == null ? '–' : `${(drops.rate * 100).toFixed(1)}% (${drops.dropped})`, drops?.longest ?? '–',
-        fresh ? `${fresh.widgets.filter(widget => widget.pass).length} of ${fresh.widgets.length} reporting` : '–', verdict(pass), why(reasons)] };
+      return { pass, cells: [result.page, result.speed, count, main.p50?.toFixed(1) ?? '–', main.p95?.toFixed(1) ?? '–', main.max?.toFixed(1) ?? '–',
+        interval.p95?.toFixed(1) ?? '–', drops?.rate == null ? '–' : `${(drops.rate * 100).toFixed(1)}% (${drops.dropped})`, drops?.longest ?? '–',
+        verdict(pass), why(reasons)] };
     }));
+
+  const research = area('playback').filter(r => r.page === 'Research' && r.speed === 1440);
+  let auditedPlacements = [];
+  if (research.length || sweep.meta.sessions?.some(s => s.requestedPages?.includes('Research') && s.phases?.includes('playback'))) {
+    const result = researchVerdict(research, records ?? []);
+    auditedPlacements = result.placements;
+    await writeFile(path.join(files.out, 'research-playback.json'), JSON.stringify(result, null, 2));
+    section('Research playback at 1,440 game hours per second', ['Result', 'Why'],
+      [{ pass: result.pass, cells: [verdict(result.pass), why(result.reasons)] }]);
+  }
 
   // The browser's own trace of one playing window a page: where a frame's main-thread time goes beyond the app's painting.
   const ms2 = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : value.toFixed(2));
@@ -438,10 +430,10 @@ if (sweep) {
 
   under('playback', 'visual');
   // Freshness by widget kind: every kind must report the hour it shows.
-  const freshKinds = records ? freshnessByKind(records, area('playback'), area('hours'), starts) : null;
-  section('Freshness by widget kind (paused at the picture hour, every placement reports showing the clock hour; playing, each in view lags it by under one tick)', ['Kind', 'Placements', 'Worst lag p95 (h)', 'Result', 'Why'],
-    freshKinds === null ? [{ pass: false, cells: ['–', '–', '–', verdict(false), 'no perf log'] }]
-      : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, verdict(kind.pass), why(kind.reasons)] })));
+  const freshKinds = records ? freshnessByKind(records, area('playback'), area('hours'), starts, auditedPlacements) : null;
+  section(`Freshness by widget kind (exact while paused, worker eligibility within ${MAX_PLAYBACK_AGE_HOURS} h at p95, zero future frames)`, ['Kind', 'Placements', 'Displayed lag p95 (h)', 'Worker eligible lag p95 (h)', 'Result', 'Why'],
+    freshKinds === null ? [{ pass: false, cells: ['–', '–', '–', '–', verdict(false), 'no perf log'] }]
+      : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, kind.eligible ?? '–', verdict(kind.pass), why(kind.reasons)] })));
 
   under(...(run.tier === 'quick' ? ['visual'] : ['visual', 'catalogue']));
   // The visual check against the accepted baseline.
@@ -468,12 +460,14 @@ if (sweep) {
     lost.map(loss => ({ pass: false, cells: [loss.source, loss.count, new Date(loss.from).toISOString(), new Date(loss.to).toISOString()] })), lost.length ? null : 'None.');
 
   // Replies and console.
-  const windows = (sweep.meta.sessions ?? []).filter(meta => meta.finished).map(meta => ({ from: Date.parse(meta.started), to: Date.parse(meta.finished) }));
-  const replies = records ? failedReplies(records, windows) : null;
+  const closed = new Set((run.sessions ?? []).filter(s => s.appExit === 0).map(s => s.name.replaceAll(' ', '-')));
+  const finished = new Map(sweep.meta.sessions.filter(meta => meta.finished && closed.has(meta.session))
+    .map(meta => [meta.session, Date.parse(meta.finished)]));
+  const replies = records ? failedReplies(records, finished) : null;
   section('Failed or refused replies', ['Product', 'Count', 'First failure', 'Hours'], replies === null
     ? [{ pass: false, cells: ['–', '–', 'no perf log: replies could not be checked', ''] }]
-    : replies.map(reply => ({ pass: false, cells: [reply.product, reply.count, why([reply.first]), reply.hours.join(', ')] })),
-    `${replies?.length === 0 ? 'None. ' : ''}Replies still unanswered when a session's sweep finished were cut off by the suite closing that app, and are not counted.`);
+    : replies.failures.map(reply => ({ pass: false, cells: [reply.product, reply.count, why([reply.first]), reply.hours.join(', ')] })),
+    replies && `${replies.failures.length === 0 ? 'None. ' : ''}${replies.shutdown} requests ended during app shutdown after their sweep finished.`);
   const messages = consoleFailures(sweep.console ?? []);
   const byText = groupBy(messages, message => `${message.type}|${message.text}`);
   section('Console errors and warnings', ['Type', 'Count', 'First during', 'Message'],

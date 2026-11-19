@@ -11,7 +11,6 @@ import ProductionSpendingWidget from '../widgets/production-spending/ProductionS
 import TradeFlowsWidget from '../widgets/trade-flows/TradeFlowsWidget';
 import AirKillsLossesWidget from '../widgets/air-kills-losses/AirKillsLossesWidget';
 import { MeasuredWidget } from './widgetPerf.ts';
-import { setPageClock } from './structurePace.ts';
 import { WINDOW_HOURS } from './heldWindows.ts';
 import type { WidgetProps } from './definitions';
 import '../styles.css';
@@ -128,7 +127,6 @@ const client = {
     requests.push({ product: request.product, window: typeof request.params.window === 'number' ? request.params.window : null, head: clock.getHour(), playing: clock.playing });
     return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: reply(request.product, request.params) };
   },
-  onFollowMessages: async () => () => {},
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
 
@@ -153,7 +151,6 @@ export const fixture = {
   async mount() {
     root?.unmount(); host?.remove();
     clock = new Clock(); requests.length = 0;
-    setPageClock(clock);
     for (const key of Object.keys(renders)) delete renders[key];
     for (const key of Object.keys(errors)) delete errors[key];
     host = document.body.appendChild(document.createElement('div'));

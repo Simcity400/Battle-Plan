@@ -44,6 +44,7 @@ const searchItems: SettingsTarget[] = [
   { section: 'appearance', title: 'Sidebar and top bar glass', id: 'appearance-chrome-glass', keywords: 'glass blur opacity transparency frosted sidebar header top bar' },
   { section: 'appearance', title: 'Corner radius', id: 'appearance-radius', keywords: 'rounding rounded corners' },
   { section: 'appearance', title: 'Motion', id: 'appearance-motion', keywords: 'animation reduced transitions' },
+  { section: 'appearance', title: 'Playback frame rate', id: 'appearance-playback-rate', keywords: 'dashboard fps refresh uncapped' },
   { section: 'appearance', title: 'Chart motion', id: 'appearance-chart-motion', keywords: 'charts animation easing playback smooth cinematic snappy' },
   { section: 'appearance', title: 'Top-bar flag', id: 'appearance-header-flag', keywords: 'flag header country size native large smooth' },
   { section: 'appearance', title: 'Country colours', id: 'appearance-country-colours', keywords: 'charts map colours colors contrast raw adjusted' },

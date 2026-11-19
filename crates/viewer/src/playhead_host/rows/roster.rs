@@ -4,7 +4,7 @@
 //! that differs pushed).
 
 use super::{Cadence, RowReader, Rows};
-use dashboard_follow::panel::{Panel, PanelData, message};
+use dashboard_follow::panel::{Panel, PanelData, dated};
 use installed_content_core::ResolveOptions;
 use replay_frame::frame::DecodedFrame;
 use serde_json::{Value, json};
@@ -58,7 +58,7 @@ impl RosterLine {
         let data = self.panel.data(&frame);
         self.evaluations.push(started.elapsed().as_nanos() as u64);
         if self.data.as_ref() != Some(&data) {
-            self.pushed.push(message(&[(1, frame.hour, &data)]).len());
+            self.pushed.push(dated::message(0, 0, 0, &[dated::Update::Data(1, frame.hour, &data)]).len());
             self.data = Some(data);
         }
         self.last = Some(frame);

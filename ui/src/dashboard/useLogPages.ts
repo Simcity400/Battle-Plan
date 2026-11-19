@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LogPage, LogRow } from '../charts/log/logData';
 import { stableLogPages } from '../charts/log/logPages.ts';
-import { aheadLimit, aheadThrough, askedPages, binPages, cumulativeCounts, drawnAhead, failedPage, logPageRequest, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from '../charts/log/logSource.ts';
+import { aheadThrough, askedPages, binPages, cumulativeCounts, drawnAhead, failedPage, logPageRequest, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from '../charts/log/logSource.ts';
 import type { HeldPages, LogCounts, LogReplyRow } from '../charts/log/logSource';
 import { AHEAD_ROWS, aheadEnd } from '../charts/reveal.ts';
 import { useAheadHour } from './aheadHour.ts';
@@ -11,7 +11,6 @@ import { inFrame } from './frameUpdates.ts';
 import type { PlaybackController } from './playback';
 import { loadProduct, useProduct } from './products.ts';
 import { asFailure } from './queryError.ts';
-import { StructurePace } from './structurePace.ts';
 
 /** A declared log over a span: the recording, the history, the log as `LOGS` names it, its facet filters (by values,
  * or a country facet by tags) and the span's hours. */
@@ -74,28 +73,10 @@ export function useLogPages<T, N = never>(client: DashboardClient, clock: Playba
   const latest = useRef({ spec, row, notes, loaded, counts, before, cut, active, drawn: 0, shown: 0, playing: false, at: null as number | null });
   latest.current = { ...latest.current, spec, row, notes, loaded, counts, before, cut, active };
   const flights = useRef(new Map<number, AbortController>());
-  // Following and playing, what changes the pages held (one landing at the head, one failing, pages let go) commits in the
-  // widget's structure slot with the rest of its structure (`StructurePace`), every change held for the slot in one
-  // commit; paused, in the frame (`inFrame`). A page landing past the rows drawn commits nothing (`stash`).
-  const [, setSlot] = useState(0);
   const [, setLanded] = useState(0);
-  const queued = useRef<(() => void)[]>([]);
-  const pace = useRef<StructurePace<number> | null>(null);
-  pace.current ??= new StructurePace<number>(0, Object.is, value => { for (const run of queued.current.splice(0)) run(); setSlot(value); });
   // Gone, it asks and takes nothing: its list lets its pages go as it leaves, after its flights were cancelled here.
   const gone = useRef(false);
   useEffect(() => { gone.current = false; return () => { gone.current = true; }; }, []);
-  const paced = useCallback((update: () => void) => {
-    if (gone.current) return;
-    if (!clock.getSnapshot().playing) { inFrame(update); return; }
-    queued.current.push(update);
-    pace.current!.offer(pace.current!.held + 1, true);
-  }, [clock]);
-  useEffect(() => {
-    const held = pace.current!;
-    const stop = clock.subscribe(() => { if (!clock.getSnapshot().playing) held.settle(); });
-    return () => { stop(); held.drop(); };
-  }, [clock]);
   const wanted = useRef<ReadonlySet<number>>(new Set());
 
   const shownAt = useCallback((hour: number | null) => {
@@ -155,25 +136,24 @@ export function useLogPages<T, N = never>(client: DashboardClient, clock: Playba
       const said = latest.current.notes?.(value);
       const now = latest.current, waiting = stash.current;
       if (waiting.lane !== asked || now.loaded.lane !== asked) return;
-      // Held at once, so no want between its landing and its render asks it again; a page past the rows drawn waits there
-      // for the block that draws them, one the list shows renders in the slot (`paced`).
+      // Cache the rows before scheduling a render so the next request can already see them.
       waiting.rows.set(index, rows);
       if (said) waiting.notes.set(index, said);
       waiting.version++;
-      if (!(now.playing && at >= now.drawn)) paced(() => setLanded(count => count + 1));
+      if (!(now.playing && at >= now.drawn)) inFrame(() => setLanded(count => count + 1));
     }).catch(error => {
       if (controller.signal.aborted) return;
       if (stash.current.lane === asked) stash.current.failed.add(index);
-      paced(() => setHeld(before => failedPage(before, latest.current.loaded.lane, asked, index, asFailure(error))));
+      inFrame(() => setHeld(before => failedPage(before, latest.current.loaded.lane, asked, index, asFailure(error))));
     }).finally(() => { if (flights.current.get(index) === controller) flights.current.delete(index); });
-  }, [client, lane, pageSize, paced]);
+  }, [client, lane, pageSize]);
 
   // The pages wanted: those the list holds in view and, following, the page at the head and those ahead; others go. A
   // page from the head's on that a list following may still draw is never cancelled nor let go by a want that leaves it
   // out (one told with an older block's rows): it would be asked again at the head.
   const keep = useCallback((asked: ReadonlySet<number>) => {
     wanted.current = asked;
-    const { cut: at, shown } = latest.current, head = Math.floor(shown / pageSize), limit = aheadLimit(shown);
+    const { cut: at, shown } = latest.current, head = Math.floor(shown / pageSize), limit = shown + AHEAD_ROWS + 1;
     const kept = (index: number) => asked.has(index) || (at.follow && index >= head && index * pageSize < limit);
     for (const [index, controller] of flights.current) if (!kept(index)) { controller.abort(); flights.current.delete(index); }
     for (const index of asked) load(index);
@@ -181,11 +161,10 @@ export function useLogPages<T, N = never>(client: DashboardClient, clock: Playba
     for (const index of [...waiting.rows.keys()]) if (!kept(index)) { waiting.rows.delete(index); waiting.notes.delete(index); waiting.version++; }
     const held = merged.current?.held ?? latest.current.loaded;
     if ([...held.rows.keys()].some(index => !kept(index))) {
-      const release = () => setHeld(before => before.lane !== lane ? before : { lane, rows: new Map([...before.rows].filter(([index]) => kept(index))),
+      setHeld(before => before.lane !== lane ? before : { lane, rows: new Map([...before.rows].filter(([index]) => kept(index))),
         notes: new Map([...before.notes].filter(([index]) => kept(index))), errors: before.errors });
-      if (clock.getSnapshot().playing) paced(release); else release();
     }
-  }, [load, lane, pageSize, paced, clock]);
+  }, [load, lane, pageSize]);
   // The pages the cut waits on (its bin's, while a page of it is not held), asked at once and never released by the list.
   const waiting = useCallback(() => {
     const { counts: c, before: b, cut: at } = latest.current;

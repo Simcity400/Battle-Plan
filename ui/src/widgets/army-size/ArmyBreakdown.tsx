@@ -36,7 +36,7 @@ import { ARMY_REMAINDER, armyDrillBands, armyDrillNumbers, armyDrillIdentityRepl
 import { armySizeRequest, armyWindows, formatArmyValue, measureName, mergeArmyWindows, typeName, validateArmyWindow } from './armySizeData';
 import type { armyCountrySelection } from './ArmyCountryChip';
 import { useFrameProduct } from './frameProduct.ts';
-import { pacedKey, useHeadHour } from './headHour.ts';
+import { useHeadHour } from './headHour.ts';
 
 type Roster = { sections: string[]; warnings: string[] };
 const sameSections = (a: Roster, b: Roster) => JSON.stringify(a.sections) === JSON.stringify(b.sections);
@@ -51,17 +51,16 @@ export function rosterReply(data: unknown): Roster {
 const NO_PAINT = () => {};
 
 /** A pinned breakdown's header chip; following, it renders only when the country it names or that country's name or
- * flag changes (at the paced hour where the country timeline does not hold the head), its date painted from the frame. */
+ * flag changes, its date painted from the frame. */
 export function BreakdownHeader({ runtime, track, active, countrySlot, live, hour: givenHour, actorAt, error, saved }: {
   runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean; countrySlot: HTMLElement; live: boolean; hour: number;
   actorAt: (hour: number) => string | null; error: Failure | undefined; saved: boolean;
 }) {
   const offset = track?.axisOffset ?? 0;
-  const paced = useMemo(() => pacedKey(runtime.clock), [runtime.clock]);
   const identity = useIdentityKey(runtime.client, track, live);
   const shown = useHeadHour(runtime.clock, live, at => {
     const head = Math.floor(at) + offset, of = actorAt(head);
-    return `${of}|${identity(head, of ? [of] : []) ?? paced(at)}`;
+    return `${of}|${identity(head, of ? [of] : []) ?? at}`;
   });
   const hour = live ? Math.floor(shown) + offset : givenHour;
   const liveDate = useMemo(() => live ? { read: () => runtime.clock.getHour() + offset, subscribe: runtime.clock.subscribeFrame } : undefined,
@@ -140,8 +139,6 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
   const rosterAt = (at: number, of: string) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'template-roster',
     params: { branchId: track!.branch.id, tag: of, hour: at } });
   const heldRoster = useProduct<Roster>(runtime.client, !live && track && actor ? rosterAt(hour, actor) : null, active, rosterReply, track?.source);
-  // Following the head, the roster is a panel the viewer pushes when its reply differs (from rows at the head);
-  // where no playhead shows it, it is asked at the paced hour.
   const [rosterElement, setRosterElement] = useState<HTMLElement | null>(null);
   const rosterRoot = useMemo(() => ({ current: rosterElement }), [rosterElement]);
   const rosterStore = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
@@ -149,10 +146,9 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
     [live, actor, track?.branch.id]);
   const followedRoster = useFollow(rosterStore, rosterQuery, rosterRoot, NO_PAINT, panelStructure);
   const rosterPushed = followsHead(followedRoster);
-  const paced = useMemo(() => pacedKey(runtime.clock), [runtime.clock]);
   const liveRoster = useFrameProduct<Roster>(runtime.client, runtime.clock, live && !rosterPushed, at => {
     const of = countryDrillTagAt(identitySpans, Math.floor(at) + offset);
-    return of ? { key: `${of}|${paced(Math.floor(at))}`, request: rosterAt(Math.floor(at) + offset, of) } : null;
+    return of ? { key: `${of}|${Math.floor(at)}`, request: rosterAt(Math.floor(at) + offset, of) } : null;
   }, rosterReply, track?.source, sameSections);
   // A new text moves the structure; nothing else makes a new state.
   const pushedRoster = useMemo(() => {

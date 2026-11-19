@@ -18,9 +18,7 @@ import { OPTIONS } from './definition';
 import { tallyEntries, tallyIdentities, tallyLabel, tallyLines, tallyLineTooltip, tallyModel, tallySegmentAt, tallyTooltip, tallyValue } from './raidTallyData';
 import type { TallyMetric } from './raidTallyData';
 
-/** Each country's raid launches and wins, counted from the campaign's raids read once. Following, the race's values
- * are painted from that count at the head each frame; the widget renders only when the race's rows change, paced,
- * and asks nothing while playback moves. */
+/** Each country's raid launches and wins, counted from the campaign's raids read once. */
 export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const metric = options.metric as TallyMetric;

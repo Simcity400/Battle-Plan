@@ -21,6 +21,7 @@ export type MotionPreference = 'system' | 'full' | 'reduced';
 export type BackdropKind = 'ambient' | 'solid' | 'image';
 export interface Backdrop<Kind = BackdropKind> { kind: Kind; imageId: string | null; dim: number; blur: number }
 /** How chart shapes glide between recorded samples. */
+export type PlaybackFrameRate = '30' | '60' | '120' | 'uncapped';
 export type ChartMotion = 'snappy' | 'smooth' | 'cinematic';
 /** Raw recorded map colours, or colours lightened or darkened to read on the theme and kept apart. */
 export type CountryColours = 'raw' | 'fixed';
@@ -49,7 +50,7 @@ export interface AppearanceSettings {
   backdrop: Backdrop;
   /** The main view's own backdrop; 'same' shows the sidebar and top bar's through it. */
   workspaceBackdrop: Backdrop<BackdropKind | 'same'>;
-  charts: { motion: ChartMotion; countryColours: CountryColours };
+  charts: { frameRate: PlaybackFrameRate; motion: ChartMotion; countryColours: CountryColours };
   /** Own icons and colours for sidebar items. */
   sidebarIcons: SidebarIconStyles;
   /** Own header icons and colours for widget kinds, shared by every copy of a kind. */
@@ -62,7 +63,7 @@ export const DEFAULT_APPEARANCE: AppearanceSettings = {
   typography: structuredClone(DEFAULT_TYPOGRAPHY),
   backdrop: { kind: 'solid', imageId: null, dim: 55, blur: 0 },
   workspaceBackdrop: { kind: 'same', imageId: null, dim: 55, blur: 0 },
-  charts: { motion: 'smooth', countryColours: 'raw' },
+  charts: { frameRate: '60', motion: 'smooth', countryColours: 'raw' },
   sidebarIcons: {},
   widgetIcons: {},
 };
@@ -136,6 +137,7 @@ export function parseAppearance(input: unknown): AppearanceSettings {
     backdrop: parseBackdrop(input.backdrop, ['ambient', 'solid', 'image'], defaults.backdrop),
     workspaceBackdrop: parseBackdrop(input.workspaceBackdrop, ['same', 'ambient', 'solid', 'image'], defaults.workspaceBackdrop),
     charts: {
+      frameRate: charts.frameRate === '30' || charts.frameRate === '120' || charts.frameRate === 'uncapped' ? charts.frameRate : '60',
       motion: charts.motion === 'snappy' || charts.motion === 'smooth' || charts.motion === 'cinematic' ? charts.motion : defaults.charts.motion,
       countryColours: charts.countryColours === 'raw' || charts.countryColours === 'fixed' ? charts.countryColours : defaults.charts.countryColours,
     },

@@ -1,6 +1,12 @@
 // The suite's verdicts from what a run measured: pure functions, so they can be tested without the app.
 
 export const BUDGET_MS = 100;
+export const MAX_PLAYBACK_AGE_HOURS = 48;
+export function playbackPace(first, last, speed) {
+  const elapsed = (last?.composedAt ?? last?.at) - (first?.composedAt ?? first?.at);
+  const hps = elapsed > 0 ? 1000 * (last.hour - first.hour) / elapsed : null;
+  return { hps, pass: hps !== null && Math.abs(hps / speed - 1) <= .02 };
+}
 /** One frame at 95 Hz, the host's frame budget (crates/desktop/src/perf.rs). */
 export const FRAME_BUDGET_MS = 1000 / 95;
 /** How long a seek may take the map to present its hour. */
@@ -269,10 +275,10 @@ export const sessionStart = (starts, at) => Math.max(-Infinity, ...starts.filter
 
 /** Per widget kind on the default pages. Paused, each placement scrolled into view must report showing the clock's
  * hour (`hours`: one check per placement, at its epoch `at`, with the clock's `hour`). Playing, each placement in view
- * must report, and lag the clock by under one tick; out of view it reports none, as it shows none. */
-export function freshnessByKind(records, playbackResults, hourChecks = [], starts = []) {
+ * must report its dated values; out of view it reports none, as it shows none. */
+export function freshnessByKind(records, playbackResults, hourChecks = [], starts = [], dated = []) {
   const kinds = new Map();
-  const entryOf = kind => { const entry = kinds.get(kind) ?? { kind, placements: new Set(), unreported: new Set(), wrong: [], stale: [], worst: null }; kinds.set(kind, entry); return entry; };
+  const entryOf = kind => { const entry = kinds.get(kind) ?? { kind, placements: new Set(), unreported: new Set(), wrong: [], stale: [], worst: null, eligible: null }; kinds.set(kind, entry); return entry; };
   const shown = groupBy(shownHours(records).sort((a, b) => a.at - b.at), record => record.widget);
   for (const check of hourChecks) {
     const entry = entryOf(check.kind);
@@ -284,11 +290,19 @@ export function freshnessByKind(records, playbackResults, hourChecks = [], start
     else if (last.hour !== check.hour) entry.wrong.push(`${where} shows hour ${last.hour ?? 'none'}, the clock is at ${check.hour}`);
   }
   for (const result of playbackResults) {
-    const fresh = freshness(records, result.from, result.to, sessionStart(starts, result.from));
-    const reported = new Map(fresh.widgets.map(widget => [widget.widget, widget]));
+    const pictures = new Map(dated.filter(p => p.from === result.from).map(p => [p.widget, p]));
+    let reported;
     for (const widget of (result.widgets ?? []).filter(widget => widget.visible)) {
       const entry = entryOf(widget.kind);
       entry.placements.add(`${result.page}: ${widget.title}`);
+      const picture = pictures.get(widget.id);
+      if (picture) {
+        if (picture.p95 !== null) entry.worst = Math.max(entry.worst ?? -Infinity, picture.p95);
+        if (picture.eligibleP95 !== null) entry.eligible = Math.max(entry.eligible ?? -Infinity, picture.eligibleP95);
+        if (!picture.pass) entry.stale.push(`${result.page}: failed the worker presentation gate (${picture.future} future frames, exact reads ${picture.exact ? 'passed' : 'failed'})`);
+        continue;
+      }
+      reported ??= new Map(freshness(records, result.from, result.to, sessionStart(starts, result.from)).widgets.map(w => [w.widget, w]));
       const seen = reported.get(widget.id);
       if (!seen) { entry.unreported.add(`${result.page}: ${widget.title}`); continue; }
       if (entry.worst === null || seen.p95 > entry.worst) entry.worst = seen.p95;
@@ -299,7 +313,7 @@ export function freshnessByKind(records, playbackResults, hourChecks = [], start
     const reasons = [];
     if (entry.unreported.size) reasons.push(`does not report the hour it shows (${[...entry.unreported].join(', ')})`);
     reasons.push(...entry.wrong, ...entry.stale);
-    return { kind: entry.kind, placements: entry.placements.size, worst: entry.worst, pass: reasons.length === 0, reasons };
+    return { kind: entry.kind, placements: entry.placements.size, worst: entry.worst, eligible: entry.eligible, pass: reasons.length === 0, reasons };
   });
 }
 
@@ -325,10 +339,10 @@ export function handledAt(mapRecords, posted) {
   return frames.length ? Math.min(...frames.map(record => record.at)) : null;
 }
 
-/** The playback frame times: each playing frame's main-thread time to render it (the host's `main`). */
-export function frameTimes(summary) {
-  const main = summary?.playing_main_ms;
-  return main?.count ? { n: main.count, p50: main.p50, p95: main.p95, max: main.max } : { n: 0, p50: null, p95: null, max: null };
+export function frameTimes(records, from, to, refreshHz) {
+  const frames = records.filter(r => r.t === 'frame' && r.playing && r.at >= from && r.at <= to).sort((a, b) => a.at - b.at);
+  return { count: frames.length, main: quantiles(frames.map(r => r.main)), interval: quantiles(frames.map(r => r.dt)),
+    drops: refreshHz ? droppedFrames(frames, refreshHz) : null };
 }
 
 /** A playing frame interval longer than this many display refreshes is a dropped frame. */
@@ -336,11 +350,9 @@ export const DROP_REFRESHES = 1.5;
 /** This many dropped frames in a row is stutter a user sees, whatever the main thread's time. */
 export const SUSTAINED_DROPS = 3;
 
-/** Dropped frames over the playing frames of [from, to]: their share and the longest run of them in a row. */
-export function droppedFrames(records, from, to, refreshHz) {
+/** Dropped frames over a playing window, in presentation order. */
+export function droppedFrames(frames, refreshHz) {
   const limit = DROP_REFRESHES * 1000 / refreshHz;
-  const frames = records.filter(record => record.t === 'frame' && record.playing && record.at >= from && record.at <= to && Number.isFinite(record.dt))
-    .sort((a, b) => a.at - b.at);
   let dropped = 0, run = 0, longest = 0;
   for (const frame of frames) {
     if (frame.dt > limit) { dropped++; run++; longest = Math.max(longest, run); } else run = 0;
@@ -350,16 +362,13 @@ export function droppedFrames(records, from, to, refreshHz) {
 }
 
 /** Per widget that reports the hour it shows, over the playing frames of [from, to]: how many hours its values
- * lagged the clock's hour (no values counts as never current). `step` is the hours one data tick moves. */
+ * lagged the clock's hour (no values counts as never current). */
 export function freshness(records, from, to, since = -Infinity) {
   const ticks = records.filter(record => record.t === 'tick').sort((a, b) => a.at - b.at);
   const frames = records.filter(record => record.t === 'frame' && record.playing && record.at >= from && record.at <= to);
   const shown = groupBy(shownHours(records, since).sort((a, b) => a.at - b.at), record => record.widget);
   const titles = new Map(records.filter(record => record.t === 'widget').map(record => [record.id, record.title]));
   const at = (list, time) => { let low = 0, high = list.length - 1, found = null; while (low <= high) { const mid = (low + high) >> 1; if (list[mid].at <= time) { found = list[mid]; low = mid + 1; } else high = mid - 1; } return found; };
-  const speed = at(ticks, frames[0]?.at ?? from)?.speed ?? 1;
-  // The clock tells data hours on a lattice of this many hours per quarter second of play.
-  const step = Math.max(1, Math.ceil(speed * 0.25));
   const widgets = [];
   for (const [widget, list] of shown) {
     const lags = [];
@@ -368,16 +377,16 @@ export function freshness(records, from, to, since = -Infinity) {
       const clock = at(ticks, frame.at), value = at(list, frame.at);
       if (!clock) continue;
       if (value?.hour == null) { none++; lags.push(Infinity); continue; }
-      // Ahead of the clock by more than the tick it may have just told is a value the clock never reached.
-      const off = Math.floor(clock.hour) - value.hour;
-      if (off < -step) ahead++;
-      lags.push(off < -step ? -off : Math.max(0, off));
+      const head = clock.hour + (clock.playing ? Math.max(0, frame.at - (clock.composedAt ?? clock.at)) * clock.speed / 1000 : 0);
+      const age = Math.floor(head) - value.hour;
+      if (age < 0) ahead++;
+      lags.push(age);
     }
     if (!lags.length) continue;
     const q = quantiles(lags.map(lag => (Number.isFinite(lag) ? lag : Number.MAX_VALUE)));
-    widgets.push({ widget, title: titles.get(widget) ?? widget, frames: lags.length, none, ahead, step, p50: q.p50, p95: q.p95, max: q.max, pass: q.p95 <= step && ahead === 0 });
+    widgets.push({ widget, title: titles.get(widget) ?? widget, frames: lags.length, none, ahead, p50: q.p50, p95: q.p95, max: q.max, pass: q.p95 <= MAX_PLAYBACK_AGE_HOURS && ahead === 0 });
   }
-  return { step, frames: frames.length, widgets };
+  return { frames: frames.length, widgets };
 }
 
 /** Records the perf logs dropped, by source: any loss can hide a failure or a slow frame, so each fails the run. */
@@ -386,16 +395,48 @@ export function losses(records) {
     .map(([source, list]) => ({ source, count: list.reduce((sum, record) => sum + (record.count ?? 0), 0), from: Math.min(...list.map(record => record.from ?? record.at)), to: Math.max(...list.map(record => record.to ?? record.at)) }));
 }
 
-/** Failed or refused replies in the perf log, by product. A reply that failed on its closed connection after its session's
- * sweep finished was cut off by the suite closing the app, not failed by it: `sessions` are those sweeps' [from, to]
- * in epoch ms, and a record's `at` is when it was asked. */
-export function failedReplies(records, sessions = []) {
-  const cutOff = record => /connection closed/i.test(record.failure ?? '')
-    && sessions.some(({ from, to }) => record.at >= from && record.at <= to && record.at + record.ms > to);
-  const failed = records.filter(record => record.t === 'q' && record.outcome === 'error' && !cutOff(record));
-  return [...groupBy(failed, record => record.product)].map(([product, list]) => ({ product, count: list.length, first: list[0].failure ?? 'no failure text recorded', hours: [...new Set(list.map(record => record.hour))].slice(0, 5) }));
+export function failedReplies(records, finished = new Map()) {
+  let shutdown = 0;
+  const failed = [];
+  for (const record of records) {
+    if (record.t !== 'q' || record.outcome !== 'error') continue;
+    const end = finished.get(record.session);
+    const closed = record.failure === 'failed: The dashboard is closing' || record.failure === 'failed: The dashboard data connection closed';
+    if (closed && record.at + record.ms > end) shutdown++;
+    else failed.push(record);
+  }
+  const failures = [...groupBy(failed, record => record.product)].map(([product, list]) => ({ product, count: list.length, first: list[0].failure ?? 'no failure text recorded', hours: [...new Set(list.map(record => record.hour))].slice(0, 5) }));
+  return { failures, shutdown };
 }
 
 /** Console output from our code: everything but the browser's own advice, which `cdp.mjs` already left out. */
 export const consoleFailures = messages => messages.map(message => ({ ...message, pass: false }));
 
+
+export function sought(result, shownBy, starts = [], nextInput = Infinity) {
+  if (!result.widgetIds || result.input == null) return result;
+  const reasons = [...result.reasons];
+  let ms = result.ms;
+  const start = sessionStart(starts, result.input);
+  const end = Math.min(nextInput, ...starts.filter(at => at > result.input));
+  for (const [id, title] of Object.entries(result.widgetIds)) {
+    const list = (shownBy.get(id) ?? []).filter(r => r.at >= start && r.at < end);
+    const before = list.findLast(r => r.at < result.input);
+    const after = list.filter(r => r.at >= result.input);
+    const pin = result.pins ? result.pins[id] : before?.fixedHour ?? after[0]?.fixedHour;
+    const target = pin ?? result.hour;
+    const matches = r => (r.axisHour ?? r.hour) === target && (r.fixedHour == null || r.fixedHour === pin);
+    let reached = pin != null && before && matches(before) ? result.input : null;
+    for (const r of after) {
+      if (matches(r)) reached ??= r.at;
+      else if (reached !== null || (pin != null && r.fixedHour != null && r.fixedHour !== pin)) {
+        reasons.push(`${title} left hour ${target} before the next input`);
+        break;
+      }
+    }
+    if (reached === null || reached - result.input > MAP_WAIT_MS) reasons.push(`${title} never showed hour ${target} within 10 s`);
+    else ms = Math.max(ms ?? 0, reached - result.input);
+  }
+  if (result.check !== false && ms > BUDGET_MS && !reasons.some(r => r.includes(' ms, over'))) reasons.push(`${Math.round(ms)} ms, over ${BUDGET_MS} ms`);
+  return { ...result, ms, reasons, pass: reasons.length === 0 };
+}

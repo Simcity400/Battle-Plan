@@ -7,7 +7,6 @@ import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import LandBattlesWidget from './LandBattlesWidget';
 import { MeasuredWidget } from '../../dashboard/widgetPerf.ts';
-import { setPageClock } from '../../dashboard/structurePace.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import '../../styles.css';
 
@@ -101,7 +100,6 @@ const client = {
       return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: reply(request.product, request.params) };
     } catch (error) { errors.push(String(error)); throw error; }
   },
-  onFollowMessages: async () => () => {},
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
 
@@ -161,7 +159,6 @@ export const fixture = {
   async mount(options: Record<string, unknown> = {}) {
     root?.unmount(); host?.remove();
     clock = new Clock(); errors.length = 0;
-    setPageClock(clock as never);
     host = document.body.appendChild(document.createElement('div'));
     host.style.cssText = 'width: 1200px; display: flex; flex-direction: column;';
     observer?.disconnect();

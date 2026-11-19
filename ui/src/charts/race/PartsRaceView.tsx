@@ -22,7 +22,7 @@ import { followStore } from '../../dashboard/follow/connection.ts';
 import { CELL, cellState, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
-import { canonical } from '../../dashboard/follow/store.ts';
+import { canonical } from '../../dashboard/follow/canonical.ts';
 import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
 import { useTiles } from '../../dashboard/tiles/useTiles';

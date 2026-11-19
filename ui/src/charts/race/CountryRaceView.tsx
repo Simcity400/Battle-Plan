@@ -43,11 +43,15 @@ import { linesAt, linesTooltip } from './lines';
 import type { LabelAt } from './lines';
 import type { RaceView } from './options';
 import RaceChart from './RaceChart';
+import DatedArsenal from './DatedArsenal';
+import type { ArsenalFeed } from '../../draw/arsenal';
 import type { LiveRace, RemoteRaceRows } from './RaceChart';
 import type { RaceItem } from './race';
 import './countryRace.css';
 
 export interface CountryRaceViewProps {
+  present?: () => void;
+  arsenal?: ArsenalFeed & { exactRead?: (hour: number) => Promise<unknown> };
   runtime: WidgetRuntime; track: BoundTrack | undefined; active: boolean;
   options: Readonly<Record<string, OptionValue>>; view: RaceView;
   extent: [number, number]; playhead: number | null; moment: number; slots: number;
@@ -129,7 +133,7 @@ type RawPickOwner = { scope: string; client: WidgetRuntime['client'];
 
 /** Race, country lines and one-country mix use the same colours, hour-specific
  * identities, exact reads, chart controls and Jump to across all race widgets. */
-export default function CountryRaceView({ runtime, track, active, options, view, extent: shownExtent, playhead, moment, slots, ranked, liveRanked, lines, remoteRows,
+export default function CountryRaceView({ runtime, track, active, options, view, extent: shownExtent, playhead, moment, slots, ranked, liveRanked, lines, remoteRows, present, arsenal,
   parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, countryLookHours, countryLookHour, entityLooks, lineLegendLabel = 'Countries', segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
   keyHours: suppliedHours, strip, beforeChart, pending, badges, onViewChange: reportViewport, lineSummaries, lineData, onSummaryView, liveHead, onReachHour, exactLineTags, navigation, onPick, pickOwner, selectedHour, selectedHead = false, state, formatAxis, formatTick, labels: chartLabels, lineEmpty, notRecorded, mixEmpty, resetKey,
   presentation = {}, label, empty, formatValue, gaps }: CountryRaceViewProps) {
@@ -137,7 +141,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   const [extentFirst, extentLast] = shownExtent;
   const extent = useMemo<[number, number]>(() => [extentFirst, extentLast], [extentFirst, extentLast]);
   const tokens = useChartTokens();
-  const hoursPerSecond = usePlaybackMotion(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock, !arsenal);
   const viewport = useViewportHeight();
   const menu = useContextMenu(chartLabels?.actions ?? `${label} actions`);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
@@ -358,12 +362,29 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   const common = { extent, playhead, playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24,
     hoursPerSecond, branchStart: track.branch.firstHour, active, onContextMenu: jump,
     axes: { xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: linesView && options.log === true } };
-  if (view === 'race' && !ranked.length && (!remoteRows || remoteRows.total === 0) && presentation.raceEmptyState !== false) return <WidgetState kind="empty" message={empty} />;
+  if (view === 'race' && !ranked.length && (!remoteRows || remoteRows.total === 0) && presentation.raceEmptyState !== false)
+    return <WidgetState kind="empty" message={empty} />;
   if (view === 'lines' && !lines.length && lineEmpty) return <WidgetState kind="empty" {...lineEmpty} />;
   const mixState = view === 'mix' && mixEmpty ? !mix ? <WidgetState kind="empty" icon={mixEmpty.icon} message={mixEmpty.message} />
     : !(linesView ? keyHours : mixHours).length ? <WidgetState kind="unavailable" message={mixEmpty.unavailable(mixName)} /> : null : null;
   const legend = (shown: readonly CountryRacePart[], map: ReadonlyMap<string, string>) => <Legend label={partsLabel} windowed={presentation.windowedLegend}
     items={shown.map(part => ({ id: part.id, label: part.label, color: part.color ?? map.get(part.id) ?? tokens.muted, value: part.value }))} />;
+  const raceProps: import('./RaceChart').RaceChartProps = {
+    present, label: raceLabelAt(chartLabels?.race, moment) ?? `${label}, ${dayLabel(moment)}`, items, live, slots, remoteRows,
+    name: (key, item) => nameOf(raceTag(key, item), raceHour(item)), nameSamples: !entityLooks && presentation.countryLooks !== false ? COUNTRY_NAME_SAMPLES : undefined,
+    flag: entity.flag ? (key, item) => entity.flag?.(raceTag(key, item)) : undefined,
+    countryFlag: entity.countryFlag ? raceCountryFlag : undefined, formatTick, pickOwner: timePickOwner,
+    onPick: onPick ? (key, item) => onPick(raceHour(item), raceTag(key, item)) : undefined,
+    tooltip: (key, item) => {
+      const tag = raceTag(key, item), hour = raceHour(item);
+      showTip(hour, [tag]);
+      if (arsenal && item) return { title: nameOf(tag, hour), subtitle: dayLabel(hour),
+        rows: [{ label, value: item.label }, ...item.segments.filter(p => p.id !== 'total').map(p => ({ label: parts.find(n => n.id === p.id)?.label ?? p.id, value: formatValue(p.value) }))] };
+      return tipAt(tag, hour, entityLooks ? nameOf(tag, hour) : labelAt(hour)(tag).name);
+    },
+    onContextMenu: (key, x, y, item) => jump(raceHour(item), x, y, raceTag(key, item)), dateOverlay: dateOverlay ? dayLabel(moment) : null,
+    empty, hoursPerSecond: common.hoursPerSecond, active, resetKey: resetKey ?? `${track.source.id}:${track.branch.id}`,
+  };
   return <div className="country-race" data-detail={[...new Set(tags.flatMap(tag => [entity.nameFailure?.(tag)?.message, entity.countryFlag?.(tag)?.flagDetail]).filter(Boolean))].join("\n") || undefined}>
     {view === 'mix' && mix && <p className={`country-race-country${presentation.strongMixName ? ' is-strong' : ''}`}>{mixName}</p>}
     {view === 'race' && legend(raceLegendParts, colours)}
@@ -373,19 +394,9 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     {beforeChart}
     {mixState}
     <div className="country-race-chart" onPointerLeave={() => showTip(null)}>
-      {view === 'race' ? <RaceChart label={raceLabelAt(chartLabels?.race, moment) ?? `${label}, ${dayLabel(moment)}`} items={items} live={live} slots={slots} remoteRows={remoteRows}
-        name={(key, item) => nameOf(raceTag(key, item), raceHour(item))}
-        nameSamples={!entityLooks && presentation.countryLooks !== false ? COUNTRY_NAME_SAMPLES : undefined}
-        flag={entity.flag ? (key, item) => entity.flag?.(raceTag(key, item)) : undefined}
-        countryFlag={entity.countryFlag ? raceCountryFlag : undefined} formatTick={formatTick}
-        pickOwner={timePickOwner}
-        onPick={onPick ? (key, item) => onPick(raceHour(item), raceTag(key, item)) : undefined}
-        tooltip={(key, item) => {
-          const tag = raceTag(key, item), hour = raceHour(item);
-          showTip(hour, [tag]); return tipAt(tag, hour, entityLooks ? nameOf(tag, hour) : labelAt(hour)(tag).name);
-        }}
-        onContextMenu={(key, x, y, item) => jump(raceHour(item), x, y, raceTag(key, item))} dateOverlay={options.dateOverlay === true ? dayLabel(moment) : null}
-        empty={empty} hoursPerSecond={common.hoursPerSecond} active={active} resetKey={resetKey ?? `${track.source.id}:${track.branch.id}`} />
+      {view === 'race' ? arsenal ? <DatedArsenal {...raceProps} exactRead={arsenal.exactRead} clock={runtime.clock} model={{ ...arsenal, exactRead: undefined, tokens, slots, overlay: dateOverlay, colours,
+        looks: new Map(tags.map(tag => [tag, { name: nameOf(tag), color: country(tag), flag: entity.flag?.(tag) }])) }} />
+        : <RaceChart {...raceProps} />
         : <TimeChart key={presentation.resetTimeView ? view : undefined} {...common} label={view === 'mix' && mix ? chartLabels?.mix?.(mixName) ?? `${label} over time`
           : chartLabels?.lines ?? `${label} over time`} layers={timeLayers} gaps={gaps} notRecorded={notRecorded} strip={strip} formatValue={formatAxis ?? formatTick}
           keyHours={timeHours} badges={badges?.length ? badges : undefined}

@@ -27,7 +27,7 @@ import type { ShipsSunkWindowReply } from './useShipsSunk';
 import { OPTIONS } from './definition';
 import { manifestClassChoices, shipClassName, shipCountryLabels, shipDescription, shipName, shipPlace, shipTooltip } from './shipsSunkData';
 import { useShipsSunk, validateSinkingWindow } from './useShipsSunk';
-import { useStructureState } from '../../dashboard/structurePace';
+import { useDistinctState } from '../../dashboard/useDistinctState';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly LogRow<SinkingItem>[] = [];
@@ -82,7 +82,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   const [browse, setBrowse] = useState<{ identity: string | null; hour: number | null }>({ identity: null, hour: null });
   const shownHour = browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, coveredHour ?? browse.hour) : coveredHour;
   const browseIndex = battleWindowIndex(manifest.data?.windows ?? [], shownHour ?? 0);
-  const [visibleWindows, setVisibleWindows] = useStructureState<VisibleWindows>(runtime.clock, NO_VISIBLE_WINDOWS, sameWindows);
+  const [visibleWindows, setVisibleWindows] = useDistinctState<VisibleWindows>(NO_VISIBLE_WINDOWS, sameWindows);
   // The windows of the rows drawn, until the list reports others: never dropped as the playhead enters a window, which
   // released the history in view and asked it again at the head.
   const visibleIndices = visibleWindows.identity === identity ? visibleWindows.windows : [];
@@ -106,7 +106,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   const rows = useMemo(() => rowsThrough != null && match.ready ? sinkingWindowRows(history.data, rowsThrough,
     contentSet(classes).map(contentKey), role, country, from, campaignKey) : NO_ROWS,
   [history.data, rowsThrough, match.ready, classes, role, country, from, campaignKey]);
-  const [visible, setVisible] = useStructureState<readonly LogRow<SinkingItem>[]>(runtime.clock, NO_ROWS, sameRows);
+  const [visible, setVisible] = useDistinctState<readonly LogRow<SinkingItem>[]>(NO_ROWS, sameRows);
   const currentRows = useMemo(() => new Map(rows.map(row => [row.key, row])), [rows]);
   // Revealed by the clock, the countries of every sinking the block draws are asked with it, never as rows come into view.
   const drawn = useMemo(() => reveal ? rows : visible.flatMap(row => { const current = currentRows.get(row.key); return current ? [current] : []; }),

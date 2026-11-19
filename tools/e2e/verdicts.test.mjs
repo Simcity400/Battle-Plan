@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { takesShot } from './session.mjs';
-import { shownHours, catalogueHour, droppedFrames, failedReplies, firstContent, framesLate, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, quantiles, UNPRESENTED } from './verdicts.mjs';
+import { shownHours, catalogueHour, droppedFrames, failedReplies, firstContent, framesLate, frameTimes, freshness, freshnessByKind, item, losses, mapDrew, mapFrames, mapSeek, pageShown, presentedAt, quantiles, UNPRESENTED } from './verdicts.mjs';
 import { asked, machineLine, noVisibleChange, phaseSeconds, settingDrawn, stepOver, stillInFlight } from './verdicts.mjs';
 
 test('a setting that changed nothing is known once its widget reports drawing it, never while it loads or before it took it', () => {
@@ -127,25 +127,36 @@ test('a map seek ends at the first acknowledgement presenting the moved position
 test('freshness counts hours behind the clock per playing frame, and frames with no values as never current', () => {
   const records = [
     { t: 'widget', id: 'w', title: 'Widget' },
-    { t: 'tick', at: 0, hour: 100, speed: 24 },
-    { t: 'tick', at: 250, hour: 106, speed: 24 },
+    { t: 'tick', at: 0, hour: 100, speed: 24, playing: true },
+    { t: 'tick', at: 250, hour: 106, speed: 24, playing: true },
     { t: 'shown', at: 0, widget: 'w', hour: 100 },
     { t: 'shown', at: 300, widget: 'w', hour: 106 },
     ...[10, 260, 310, 320].map(at => ({ t: 'frame', at, playing: true })),
   ];
   const result = freshness(records, 0, 1000);
-  assert.equal(result.step, 6);
   assert.deepEqual(result.widgets.map(w => [w.title, w.frames, w.p95, w.pass]), [['Widget', 4, 6, true]]);
+  const future = freshness([...records, { t: 'shown', at: 315, widget: 'w', hour: 108 }], 0, 1000);
+  assert.deepEqual(future.widgets.map(w => [w.ahead, w.pass]), [[1, false]]);
+  const stale = freshness(records.map(r => r.t === 'shown' ? { ...r, hour: 12 } : r), 0, 1000);
+  assert.equal(stale.widgets[0].pass, false);
 });
 
 test('a dropped frame is an interval over 1.5 refreshes, and three in a row fail as stutter', () => {
   const frames = dts => dts.map((dt, index) => ({ t: 'frame', at: index * 10, dt, playing: true }));
-  const scattered = droppedFrames(frames([10.6, 22, 10.6, 22, 10.6, 22, 10.6]), 0, 1000, 94);
+  const scattered = droppedFrames(frames([10.6, 22, 10.6, 22, 10.6, 22, 10.6]), 94);
   assert.deepEqual([scattered.dropped, scattered.longest, scattered.pass], [3, 1, true]);
   assert.equal(scattered.rate, 3 / 7);
-  const sustained = droppedFrames(frames([10.6, 22, 21.3, 32, 10.6]), 0, 1000, 94);
+  const sustained = droppedFrames(frames([10.6, 22, 21.3, 32, 10.6]), 94);
   assert.deepEqual([sustained.longest, sustained.pass], [3, false]);
-  assert.equal(droppedFrames([], 0, 1000, 94).pass, false);
+  assert.equal(droppedFrames([], 94).pass, false);
+});
+
+test('page frame times end with timed playback, before the scripted inputs and idle measurement', () => {
+  const frame = (at, main, dt, playing = true) => ({ t: 'frame', at, main, dt, playing });
+  const measured = frameTimes([frame(0, 2, 10), frame(1, 90, 100, false), frame(2, 4, 12), frame(3, 120, 80)], 0, 2);
+  assert.equal(measured.main.p95, 4);
+  assert.equal(measured.interval.p95, 12);
+  assert.equal(measured.main.n, 2);
 });
 
 test('the map is judged at 120 Hz on its main process frames, and a highlight after a whole later frame is late', () => {
@@ -190,6 +201,18 @@ test('a widget kind fails by name when a placement never reports the hour it sho
   assert.match(kinds[0].reasons[0], /does not report the hour it shows \(Overview: Feed\)/);
 });
 
+test('the worker presentation gate owns dated widgets in the measured window', () => {
+  const widget = { id: 'w', kind: 'research', title: 'Research history', visible: true };
+  const window = { page: 'Research', speed: 1440, from: 10, to: 50, widgets: [widget] };
+  const dated = { from: 10, widget: 'w', p95: 105, eligibleP95: 37, future: 0, exact: true, pass: true };
+  const judge = placements => freshnessByKind([], [window], [], [], placements)[0];
+  assert.equal(judge([dated]).pass, true);
+  assert.equal(judge([dated]).worst, 105);
+  assert.equal(judge([dated]).eligible, 37);
+  assert.equal(judge([{ ...dated, pass: false }]).pass, false);
+  assert.equal(judge([{ ...dated, from: 0 }]).pass, false);
+});
+
 test('a reply cut off by the suite closing its session is not a failure, and nothing else is excused', () => {
   const records = [
     { t: 'q', product: 'a', at: 100, ms: 5, outcome: 'error', failure: 'refused: no' },
@@ -197,8 +220,14 @@ test('a reply cut off by the suite closing its session is not a failure, and not
     { t: 'q', product: 'c', at: 190, ms: 50, outcome: 'error', failure: 'failed: the reader crashed' },
     { t: 'q', product: 'd', at: 120, ms: 5, outcome: 'error', failure: 'failed: The dashboard data connection closed' },
   ];
-  assert.deepEqual(failedReplies(records, [{ from: 0, to: 200 }]).map(reply => reply.product), ['a', 'c', 'd']);
-  assert.equal(failedReplies(records).length, 4);
+  const closing = { t: 'q', product: 'art', ms: 2, outcome: 'error', failure: 'failed: The dashboard is closing' };
+  const log = [...records, { ...closing, at: 199 }, { ...closing, at: 204 }, { ...closing, at: 180 },
+    { ...closing, at: 210, failure: 'failed: a real read error' }].map(r => ({ ...r, session: 'quick' }));
+  log.push({ ...closing, session: 'other', at: 220 });
+  const { failures, shutdown } = failedReplies(log, new Map([['quick', 200]]));
+  assert.equal(shutdown, 3);
+  assert.deepEqual(failures.map(r => [r.product, r.count]), [['a', 1], ['c', 1], ['d', 1], ['art', 3]]);
+  assert.equal(failedReplies(log).shutdown, 0);
 });
 
 test('a map frame is presented when the paint the next frame record carries ended', () => {
@@ -251,4 +280,16 @@ test('with the app\'s count of what it has in flight, a step is over one frame a
     assert.equal(over({ settled: true, busy: null, idle: 0, heldMs: 200, wait: 200 }), true);
   }
   assert.equal(stillInFlight({ requests: 2, updates: 0, commits: 0, draws: 1, follow: 0, waits: 0 }, 6000), 'still in flight after 6 s: requests 2, draws 1');
+});
+
+test('a seek holds its captured pin through the next input, even after a correct first report', async () => {
+  const { sought } = await import('./verdicts.mjs');
+  const seek = { hour: 99, input: 100, pass: true, reasons: [], widgetIds: { p: 'Panel' } };
+  const records = [{ at: 95, hour: 27, fixedHour: 27 }, { at: 105, hour: 27, fixedHour: 27 },
+    { at: 115, hour: 99, fixedHour: 99 }, { at: 120, hour: 27, fixedHour: 27 }];
+  assert.equal(sought(seek, new Map([['p', records]]), [], 110).pass, true);
+  assert.equal(sought(seek, new Map([['p', records]]), [], 125).pass, false);
+  const latePin = [{ at: 105, hour: 40, fixedHour: 40 }, { at: 110, hour: 99 }, { at: 112, hour: 40, fixedHour: 40 }];
+  assert.equal(sought(seek, new Map([['p', latePin]]), [], 120).pass, false);
+  assert.equal(sought(seek, new Map([['p', [{ at: 105, hour: 99 }, { at: 110, hour: 98 }]]]), [], 120).pass, false);
 });

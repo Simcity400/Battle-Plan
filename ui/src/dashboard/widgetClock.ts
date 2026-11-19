@@ -1,6 +1,9 @@
 import type { PlaybackController } from './playback';
 import { perfLog, timePaint } from '../shell/perf.ts';
 
+const pages = new WeakMap<PlaybackController, PlaybackController>();
+export const pageClock = (clock: PlaybackController) => pages.get(clock) ?? clock;
+
 /** The page's clock as one widget's components see it: the same clock in every respect but its frame signal, which
  * reaches the widget's listeners only while the widget is on screen, and once more the moment it comes back, so what
  * they paint shows the head at once. A widget off screen does no work a frame, whatever its painters do. In a measured
@@ -28,6 +31,7 @@ export class WidgetFrames {
       if (!made) bound.set(key, made = (value as (...args: unknown[]) => unknown).bind(target));
       return made;
     } });
+    pages.set(this.clock, pageClock(page));
   }
 
   /** Whether the widget is on screen: off, its listeners hear no frame; back on, each hears one at once. */

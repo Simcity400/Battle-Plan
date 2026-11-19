@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'r
 import type { RefObject } from 'react';
 import { perfLog } from '../../shell/perf.ts';
 import { measuredWidget } from '../../dashboard/widgetPerf.ts';
-import { canonical } from '../../dashboard/follow/store.ts';
+import { canonical } from '../../dashboard/follow/canonical.ts';
 import type { FollowEntry, FollowHandle, FollowQuery, FollowStore } from '../../dashboard/follow/store';
 import { observeOnScreen } from '../../dashboard/follow/useFollow.ts';
 import type { OnScreen } from '../../dashboard/follow/useFollow';

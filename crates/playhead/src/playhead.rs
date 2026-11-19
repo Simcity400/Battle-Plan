@@ -28,7 +28,7 @@ use std::{
     io,
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread::JoinHandle,
@@ -59,7 +59,7 @@ pub struct Settings {
     pub fetch_threads: usize,
     /// Steps of read-ahead past the newest step built.
     pub ahead: u32,
-    /// Steps built past the head, at most.
+    /// Steps built past the head, at most, unless a lead asks more ([`Playhead::lead`]).
     pub ring: usize,
     /// The clock's game hours a second at the start, and frames a second: a step is
     /// `speed / rate` hours, at least one.
@@ -218,6 +218,29 @@ impl<'a> Lanes<'a> {
 
 /// Called on the stepper's thread after each step is built, before readers can take it.
 pub type Hook = Box<dyn FnMut(&Step, &Lanes<'_>) + Send>;
+
+/// The steps a lead asks ([`Playhead::lead`]) and those built past the head.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LeadHeld {
+    pub steps: usize,
+    pub past: usize,
+    pub bytes: usize,
+    /// The bytes past the head reached the lead's bound short of its steps.
+    pub capped: bool,
+}
+
+/// What a lead asks ([`Playhead::lead`]): seconds of play built past the head, the most bytes
+/// those steps hold.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lead {
+    pub seconds: f64,
+    pub bytes: usize,
+}
+
+impl Lead {
+    /// No lead: the settings' ring, unbounded, and nothing kept at a paused head.
+    pub const NONE: Self = Self { seconds: 0.0, bytes: usize::MAX };
+}
 
 /// What the playhead holds, in bytes.
 #[derive(Clone, Copy, Debug, Default)]
@@ -549,13 +572,16 @@ struct Control {
     head: Hour,
     /// Each reader's head as it asked it last in this seek, by consumer (none: [`Playhead::advance`]).
     asks: BTreeMap<Option<usize>, Hour>,
-    pace: (f64, f64),
+    pace: f64,
+    rate: f64,
     seek: Option<(Hour, u64)>,
     /// When the seek waiting for the stepper was asked.
     asked: Option<Instant>,
     readers: BTreeMap<Reader, Declaration>,
     next_reader: u64,
     selection: u64,
+    /// A query changed while reading exactly the same lanes.
+    hook_requested: bool,
     /// Consumers that asked to land ([`Consumer::land`]).
     lands: Vec<usize>,
     done: Vec<Done>,
@@ -580,8 +606,8 @@ struct Shared {
     clock: Mutex<Clock>,
     flight: Arc<Flight>,
     report: Mutex<(Report, Report, Counters)>,
-    /// [`Playhead::exact_when_paused`].
-    exact: AtomicBool,
+    /// [`Playhead::lead`].
+    lead: Mutex<Lead>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -619,8 +645,11 @@ impl Shared {
     }
 
     fn seek(&self, hour: Hour) {
+        self.seek_locked(&mut lock(&self.clock), hour);
+    }
+
+    fn seek_locked(&self, clock: &mut Clock, hour: Hour) {
         let hour = self.timeline.clamp(hour);
-        let mut clock = lock(&self.clock);
         let epoch = lock(&self.ring).abandon();
         self.epoch.store(epoch, Ordering::Release);
         clock.seek(hour, epoch);
@@ -631,13 +660,22 @@ impl Shared {
             control.asks.clear();
             control.newest = None;
         });
-        drop(clock);
     }
 
-    /// The clock's head while it is paused and holds no seek.
-    fn paused_at(&self) -> Option<Hour> {
-        let clock = lock(&self.clock);
-        (!clock.playing() && clock.held().is_none()).then(|| self.timeline.clamp(clock.head(Instant::now())))
+    /// The ring sized for the lead at the pace: `ceil(lead Ã— speed / step hours)` steps, at least
+    /// the settings' ring, past the head at most the lead's bytes.
+    fn resize(&self) {
+        let (speed, rate) = { let control = lock(&self.control); (control.pace, control.rate) };
+        let Lead { seconds, bytes, .. } = *lock(&self.lead);
+        let quantum = ((speed / rate).round() as Hour).max(1);
+        let steps = ((seconds * speed / f64::from(quantum)).ceil() as usize).max(self.settings.ring);
+        lock(&self.ring).resize(steps, bytes);
+        self.nudge(|_| {});
+    }
+
+    /// A lead is asked: the follow host's, while it ships values ahead.
+    fn leads(&self) -> bool {
+        lock(&self.lead).seconds > 0.0
     }
 
     fn queue(&self, jobs: impl IntoIterator<Item = ((u8, i64), Job)>) {
@@ -952,12 +990,13 @@ impl Playhead {
                 version: 0,
                 head: first,
                 asks: BTreeMap::new(),
-                pace: (settings.speed, settings.rate),
+                pace: settings.speed, rate: settings.rate,
                 seek: None,
                 asked: None,
                 readers: BTreeMap::new(),
                 next_reader: 0,
                 selection: 0,
+                hook_requested: false,
                 lands: Vec::new(),
                 done: Vec::new(),
                 newest: None,
@@ -972,7 +1011,7 @@ impl Playhead {
             clock: Mutex::new(Clock::new(first, last, settings.speed)),
             flight: Arc::new(Flight::default()),
             report: Mutex::new(Default::default()),
-            exact: AtomicBool::new(false),
+            lead: Mutex::new(Lead::NONE),
         });
         let mut threads = Vec::new();
         let spawn = |name: String, work: Box<dyn FnOnce() + Send>| std::thread::Builder::new().name(name).spawn(work);
@@ -1013,7 +1052,17 @@ impl Playhead {
     }
 
     /// The reader's own selection change: its tables and columns are now these; its rebuild stays.
+    /// An unchanged declaration reaches the hook at once, or on the next grouped step during fast play.
     pub fn redeclare(&self, reader: Reader, tables: Vec<Declared>) -> io::Result<()> {
+        if self.shared.leads() {
+            let mut control = lock(&self.shared.control);
+            if control.readers.get(&reader).is_some_and(|held| held.tables == tables) {
+                control.hook_requested = true;
+                control.version += 1;
+                self.shared.wake.notify_all();
+                return Ok(());
+            }
+        }
         self.check(&tables)?;
         let mut found = false;
         self.shared.nudge(|control| {
@@ -1077,6 +1126,32 @@ impl Playhead {
         lock(&self.shared.clock).frame(now)
     }
 
+    /// Follows a page clock already running at `at`. Only a seek abandons the buffered steps.
+    pub fn anchor(&self, position: f64, playing: bool, speed: f64, at: Instant, sought: bool) {
+        let mut clock = lock(&self.shared.clock);
+        if sought {
+            self.shared.seek_locked(&mut clock, position.floor() as Hour);
+        }
+        clock.anchor(position, playing, speed, at);
+        drop(clock);
+        self.shared.nudge(|_| {});
+    }
+
+    pub fn frame_rate(&self, rate: f64) {
+        if !(rate.is_finite() && rate > 0.0) { return; }
+        let mut control = lock(&self.shared.control);
+        if control.rate == rate { return; }
+        control.rate = rate;
+        control.version += 1;
+        drop(control);
+        self.shared.resize();
+    }
+
+    pub fn step_hours(&self) -> Hour {
+        let control = lock(&self.shared.control);
+        ((control.pace / control.rate).round() as Hour).max(1)
+    }
+
     /// Plays at `speed` game hours a second, which also sets a step's length ([`Self::pace`]).
     pub fn play(&self, speed: f64) {
         if speed > 0.0 {
@@ -1090,9 +1165,30 @@ impl Playhead {
     /// those built past the hour the frames have taken, those are built again at its size.
     pub fn pace(&self, speed: f64) {
         if speed > 0.0 {
-            let rate = self.shared.settings.rate;
-            self.shared.nudge(|control| control.pace = (speed, rate));
+            self.shared.nudge(|control| control.pace = speed);
+            if self.shared.leads() { self.shared.resize(); }
         }
+    }
+
+    /// Builds the lead's seconds of play past the head at the pace, as fast as steps build, so what
+    /// is made of a step is shipped before its hour and a pause in building is not seen:
+    /// `ceil(seconds Ã— speed / step hours)` steps (at least the settings' ring), holding at most
+    /// its bytes past the head (one step always). Sized again at each pace.
+    pub fn lead(&self, lead: Lead) {
+        *lock(&self.shared.lead) = Lead { seconds: lead.seconds.max(0.0), ..lead };
+        self.shared.resize();
+    }
+
+    pub fn share_budget(&self, budget: Arc<crate::ByteBudget>) -> io::Result<()> {
+        lock(&self.shared.ring).share_budget(budget)
+    }
+
+    /// The lead now, at the furthest head asked.
+    pub fn lead_held(&self) -> LeadHeld {
+        let head = lock(&self.shared.control).head;
+        let ring = lock(&self.shared.ring);
+        let (past, bytes, capped) = ring.lead(head);
+        LeadHeld { steps: ring.size(), past, bytes, capped }
     }
 
     pub fn pause(&self) {
@@ -1100,12 +1196,15 @@ impl Playhead {
         self.shared.nudge(|_| {});
     }
 
-    /// From now on, while the clock is paused, every step and every view the hook is shown is of
-    /// the head's hour: no step is built past the head, and a pause with steps built past it resets
-    /// the lanes at it, as a seek there. A hook's answer made while paused is then the clock's.
-    pub fn exact_when_paused(&self) {
-        self.shared.exact.store(true, Ordering::Release);
-        self.shared.nudge(|_| {});
+    /// A lane query joining a paused clock needs a reset at the head before its future steps.
+    pub fn seed_paused_query(&self) {
+        let mut clock = lock(&self.shared.clock);
+        if !clock.playing() && clock.held().is_none() {
+            let hour = clock.head(Instant::now());
+            if self.newest().is_some_and(|newest| newest > hour) {
+                self.shared.seek_locked(&mut clock, hour);
+            }
+        }
     }
 
     /// The seek whose reset the clock is held for, if any.
@@ -1168,7 +1267,7 @@ impl Playhead {
         }
     }
 
-    /// The newest declaration made ([`Self::declare`], [`Self::redeclare`]), as a stamp the
+    /// The newest change to the declarations ([`Self::declare`], [`Self::redeclare`]), as a stamp the
     /// stepper reports applied in [`Counters::declarations_applied`].
     pub fn declarations(&self) -> u64 {
         lock(&self.shared.control).selection
@@ -1372,7 +1471,8 @@ struct Stepper {
     helpers: Vec<Sender<Help>>,
     epoch: u64,
     head: Hour,
-    pace: (f64, f64),
+    pace: f64,
+    rate: f64,
     seek: Option<Seek>,
     slots: Vec<Slot>,
     piece: usize,
@@ -1382,6 +1482,7 @@ struct Stepper {
     made: BTreeMap<usize, Selected>,
     selection_seen: u64,
     selection_applied: bool,
+    hook_requested: bool,
     generation: u64,
     joining: BTreeMap<usize, Join>,
     /// Tables each reader declared anew that the lanes hold as it reads them: each lands for the
@@ -1427,7 +1528,7 @@ impl Stepper {
             hook,
             helpers,
             epoch: 0,
-            pace: (settings.speed, settings.rate),
+            pace: settings.speed, rate: settings.rate,
             seek: None,
             slots: Vec::new(),
             piece: 0,
@@ -1436,6 +1537,7 @@ impl Stepper {
             made: BTreeMap::new(),
             selection_seen: 0,
             selection_applied: true,
+            hook_requested: false,
             generation: 0,
             joining: BTreeMap::new(),
             owed: BTreeMap::new(),
@@ -1476,7 +1578,12 @@ impl Stepper {
     }
 
     fn quantum(&self) -> Hour {
-        ((self.pace.0 / self.pace.1).round() as Hour).max(1)
+        ((self.pace / self.rate).round() as Hour).max(1)
+    }
+
+    /// Steps the ring builds past the head now.
+    fn ring_size(&self) -> usize {
+        lock(&self.shared.ring).size()
     }
 
     fn run(mut self) -> Vec<Lane> {
@@ -1499,6 +1606,8 @@ impl Stepper {
                 self.head = control.head;
                 self.stood = control.stood;
                 self.pace = control.pace;
+                self.rate = control.rate;
+                self.hook_requested |= std::mem::take(&mut control.hook_requested);
                 let readers = (control.selection != self.selection_seen).then(|| {
                     self.selection_seen = control.selection;
                     control.readers.iter().map(|(&reader, declaration)| (reader, declaration.clone())).collect::<Vec<_>>()
@@ -1535,13 +1644,17 @@ impl Stepper {
                         self.finish_seek()?;
                         moved = true;
                     }
-                } else if self.reset_at_pause() {
-                    moved = true;
+
                 } else if self.newest.is_some() {
                     if !self.selection_applied {
                         if !self.apply_selection() {
                             self.hook_declared();
                         }
+                        moved = true;
+                    } else if self.hook_requested
+                        && (self.quantum() == 1 || self.newest == Some(self.shared.timeline.last()) || !lock(&self.shared.clock).playing())
+                    {
+                        self.hook_declared();
                         moved = true;
                     }
                     moved |= self.read_for_standing();
@@ -1574,19 +1687,6 @@ impl Stepper {
         self.slots.into_iter().map(|slot| *slot.lane).collect()
     }
 
-    /// Kept exact while paused: steps built past the paused head are abandoned for a reset there,
-    /// which the hook sees in place of them. Whether it sought.
-    fn reset_at_pause(&self) -> bool {
-        if !self.shared.exact.load(Ordering::Acquire) {
-            return false;
-        }
-        let (Some(newest), Some(head)) = (self.newest, self.shared.paused_at()) else { return false };
-        if newest <= head {
-            return false;
-        }
-        self.shared.seek(head);
-        true
-    }
 
     fn discard(&self, done: Done) {
         match done {
@@ -1766,7 +1866,7 @@ impl Stepper {
         let keep = self.ends_kept();
         self.slots.iter_mut().for_each(|slot| slot.ended(hour, keep));
         (held.first, held.last, held.piece, held.reset, held.built) = (hour, hour, piece, true, built);
-        self.publish(step);
+        self.publish(step)?;
         self.slots.iter_mut().for_each(|slot| slot.lane.clear_texts());
         Ok(())
     }
@@ -2004,6 +2104,7 @@ impl Stepper {
     /// A declaration that joins no table (what it reads is stepped already, or it reads none) is
     /// shown to the hook at once, in a step of no hours after the newest: paused, no step may come.
     fn hook_declared(&mut self) {
+        self.hook_requested = false;
         let (Some(newest), Some(hook)) = (self.newest, &mut self.hook) else { return };
         let piece = match self.shared.timeline.region(newest) {
             Region::Piece(piece) => Some(piece),
@@ -2023,7 +2124,7 @@ impl Stepper {
         self.generation += 1;
         self.counters.joins += 1;
         let piece = self.shared.timeline.pieces[self.piece];
-        let span = (self.shared.settings.ring as Hour + self.shared.settings.ahead as Hour) * self.quantum();
+        let span = (self.ring_size() as Hour + self.shared.settings.ahead as Hour) * self.quantum();
         let prepare = Prepare {
             epoch: self.epoch,
             purpose: Purpose::Join,
@@ -2079,7 +2180,7 @@ impl Stepper {
 
     /// How many step ends a slot keeps: enough to see the steps past the frames.
     fn ends_kept(&self) -> usize {
-        2 * self.shared.settings.ring + 4
+        2 * self.ring_size() + 4
     }
 
     /// Lands every join whose lane holds the parts through the newest step, at the place the frames
@@ -2302,9 +2403,9 @@ impl Stepper {
                 }
                 steps.push(Arc::new(step));
             }
-            ring.give(reader, position, &steps);
+            ring.give(reader, position, &steps)?;
         }
-        let replaced = ring.complete(shared);
+        let replaced = ring.complete(shared)?;
         drop(ring);
         self.retire_changes(replaced);
         self.counters.joins_at_head += ready.len() as u64;
@@ -2433,7 +2534,7 @@ impl Stepper {
                 return Ok(false);
             }
             let piece = self.shared.timeline.pieces[self.piece];
-            let span = (self.shared.settings.ring as Hour + self.shared.settings.ahead as Hour) * quantum;
+            let span = (self.ring_size() as Hour + self.shared.settings.ahead as Hour) * quantum;
             let (mut pending, mut jobs) = (BTreeMap::new(), Vec::with_capacity(self.slots.len()));
             for slot in &self.slots {
                 self.generation += 1;
@@ -2664,11 +2765,11 @@ impl Stepper {
         for (consumer, reader, mut step) in steps {
             step.seq = before;
             match consumer {
-                Some(id) => ring.jump(id, Arc::new(step)),
+                Some(id) => ring.jump(id, Arc::new(step))?,
                 None => {
                     let tables = step.tables.iter().map(Changes::table).collect();
                     let step = Arc::new(step);
-                    ring.give(reader, before, &[Arc::clone(&step)]);
+                    ring.give(reader, before, &[Arc::clone(&step)])?;
                     self.given.push(Given { reader, tables, step, hour: newest, stood: self.stood, read: false });
                 }
             }
@@ -2711,7 +2812,7 @@ impl Stepper {
             return;
         }
         let quantum = self.quantum();
-        let lead = (quantum * (self.shared.settings.ring as Hour + self.shared.settings.ahead as Hour)).max((self.pace.0 * PREPARE_SECONDS) as Hour);
+        let lead = (quantum * (self.ring_size() as Hour + self.shared.settings.ahead as Hour)).max((self.pace * PREPARE_SECONDS) as Hour);
         if pieces[self.piece].last - newest > lead {
             return;
         }
@@ -2792,7 +2893,7 @@ impl Stepper {
             tables.push(changes);
         }
         let step = Arc::new(Step { epoch: self.epoch, first: catch.from + 1, last: catch.from, piece: catch.piece, tables, states: Mutex::new(standing.states), ..Step::default() });
-        let landed = lock(&self.shared.ring).land_standing(catch.id, catch.from, step, &standing.revoke);
+        let landed = lock(&self.shared.ring).land_standing(catch.id, catch.from, step, &standing.revoke)?;
         if let Err(step) = landed {
             if let Some(given) = self.given.iter_mut().find(|given| Arc::ptr_eq(&given.step, &standing.revoke)) {
                 given.read = false;
@@ -2995,7 +3096,7 @@ impl Stepper {
             }
             let at = catch.at;
             let (id, steps) = (self.catching[index].id, std::mem::take(&mut self.catching[index].steps));
-            let landed = lock(&self.shared.ring).land_at(id, at, steps);
+            let landed = lock(&self.shared.ring).land_at(id, at, steps)?;
             match landed {
                 Ok(()) => {
                     let catch = self.catching.swap_remove(index);
@@ -3019,18 +3120,19 @@ impl Stepper {
         Ok(moved)
     }
 
-    fn publish(&mut self, step: Arc<Step>) {
+    fn publish(&mut self, step: Arc<Step>) -> io::Result<()> {
         // The hook saw the hours of the steps a new pace rebuilt already: it sees the steps after them.
-        if let Some(hook) = &mut self.hook
-            && self.hidden.is_none_or(|hidden| step.last > hidden)
-        {
-            hook(&step, &Lanes { slots: &self.slots });
+        if self.hidden.is_none_or(|hidden| step.last > hidden) {
+            self.hook_requested = false;
+            if let Some(hook) = &mut self.hook {
+                hook(&step, &Lanes { slots: &self.slots });
+            }
         }
         if self.hidden.is_some_and(|hidden| step.last >= hidden) {
             self.hidden = None;
         }
         let last = step.last;
-        let held = lock(&self.shared.ring).publish(step);
+        let held = lock(&self.shared.ring).publish(step)?;
         match held {
             Ok(()) => {
                 self.release();
@@ -3041,6 +3143,7 @@ impl Stepper {
             }
             Err(step) => self.shared.free(step),
         }
+        Ok(())
     }
 
     /// Builds the next step when the ring has room: hours after the newest step through one step
@@ -3079,9 +3182,6 @@ impl Stepper {
             self.why = IDLE_END;
             return Ok(false);
         }
-        if newest >= self.head && self.shared.exact.load(Ordering::Acquire) && !lock(&self.shared.clock).playing() {
-            return Ok(false);
-        }
         let quantum = self.quantum();
         self.paced = quantum;
         let start = newest + 1;
@@ -3096,7 +3196,7 @@ impl Stepper {
                 self.retire_changes(std::mem::take(&mut held.tables));
                 (held.first, held.last, held.piece, held.reset) = (start, end, None, false);
                 held.built.fetched = std::mem::take(&mut self.fetching);
-                self.publish(step);
+                self.publish(step)?;
                 Ok(true)
             }
             Region::Piece(piece) if piece != self.piece => self.enter_piece(piece),
@@ -3188,7 +3288,7 @@ impl Stepper {
         (held.first, held.last, held.piece, held.reset) = (start, end, Some(piece), false);
         built.ns = started.elapsed().as_nanos() as u64;
         held.built = built;
-        self.publish(step);
+        self.publish(step)?;
         Ok(())
     }
 

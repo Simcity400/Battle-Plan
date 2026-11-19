@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react';
 import type { CSSProperties, HTMLAttributes, KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -23,17 +23,22 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
+import { useHeadProduct } from '../../dashboard/headProduct';
+import type { PanelFeed } from '../../dashboard/panelFeed';
+import { panelFeed } from '../../dashboard/panelFeed';
 import { useProducts } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { useShownHour } from '../../dashboard/widgetPerf';
+import { useRecordedRows, useShownHour } from '../../dashboard/widgetPerf';
+import { perfLog } from '../../shell/perf';
 import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
-import { closedLane, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, observedAt, projectCountries,
-  projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, scientistName,
+import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, observedAt, projectCountries,
+  projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName,
   validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
+import { useDrawnPanel } from '../../dashboard/DrawnPanel';
+import type { PlaybackController } from '../../dashboard/playback';
 import ProjectDetails from './ProjectDetails';
 import './specialProjects.css';
 import type { ProjectPresentation, SpecialProjectsReply } from '../../generated/dashboard';
@@ -60,33 +65,30 @@ type HourNow = () => number;
 
 /** Current: running projects as compact cards whose progress and iterations the painter moves each frame, then
  * one-line completed rows, the projects already complete when first recorded folded into one row, and cancelled rows. */
-function CurrentList({ reply, at, item, now, subscribe }: { reply: SpecialProjectsReply; at: number; item: ItemProps; now: HourNow;
-  subscribe: (changed: () => void) => () => void }) {
+function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps; feed: PanelFeed | null }) {
   const list = useRef<HTMLDivElement>(null);
-  const shown = useShownHour();
-  const { running, completed, earlier, cancelled } = useMemo(() => currentProjects(reply, at), [reply, at]);
-  useLayoutEffect(() => {
-    const paint = () => {
-      const hour = now();
-      const root = list.current;
-      if (!root) return;
-      for (const card of running) {
-        const element = root.querySelector<HTMLElement>(`[data-project="${CSS.escape(card.project.id)}"]`);
-        const values = runningValues(card.project, hour);
-        if (!element || !values) continue;
-        const progress = element.querySelector<HTMLElement>('[data-paint="progress"]'), iterations = element.querySelector<HTMLElement>('[data-paint="iterations"]');
-        if (progress && progress.textContent !== values.progress) progress.textContent = values.progress;
-        if (iterations && iterations.textContent !== values.iterations) iterations.textContent = values.iterations;
-        element.style.setProperty('--project-progress', String(values.fill));
-      }
-      shown(observedAt(reply, hour) ? hour : null);
-    };
-    paint();
-    return subscribe(paint);
-  }, [running, reply, now, subscribe, shown]);
+  const valueId = useId();
+  const widths = useMemo(() => {
+    const progress = new Set<string>(), iterations = new Set<string>();
+    for (const project of reply.projects) for (const run of project.runs) {
+      if (run.state === 'completed' || run.state === 'cancelled') continue;
+      progress.add((run.progress + '%').replace(/\d/g, '0'));
+      iterations.add(iterationCount(run.iterations).replace(/\d/g, '0'));
+    }
+    return [...progress].map(text => <strong key={text}>{text}</strong>)
+      .concat([...iterations].map(text => <small key={text}>{text}</small>));
+  }, [reply]);
+  const exactRead = feed?.exactRead;
+  useDrawnPanel(list, clock, feed, true);
+  const groups = useMemo(() => currentProjects(reply, at), [reply, at]);
+  const { running, completed, earlier, cancelled } = groups;
+  const rows = (g: typeof groups) => (['running', 'completed', 'earlier', 'cancelled'] as const).flatMap(section =>
+    g[section].map(card => JSON.stringify([section, card.project.id, card.run.presentation])));
+  useRecordedRows('project list', perfLog && exactRead ? { hour: at, rows: () => rows(groups),
+    exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined);
   if (!running.length && !completed.length && !earlier.length && !cancelled.length) return <WidgetState kind="empty" message="No special projects yet." />;
   const row = (card: ProjectCard, line: string, className = '') => <div key={card.project.id} className={`special-project-row${className}`} {...item(card)}>
-    <ProjectTile icon={card.info.icon} /><span className="special-project-label"><strong>{card.info.name}</strong><span>{line}</span></span></div>;
+    <ProjectTile icon={card.info.icon} /><span className="special-project-label"><strong data-panel-label={card.project.id}>{card.info.name}</strong><span>{line}</span></span></div>;
   return <div className="special-project-list" ref={list}>
     {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
       const { run, info } = card;
@@ -97,10 +99,11 @@ function CurrentList({ reply, at, item, now, subscribe }: { reply: SpecialProjec
           {run.state === 'paused' && <><b className="special-project-state is-paused">Paused</b>·</>}
           {run.state === 'unknown' && <><b className="special-project-state">State unknown</b>·</>}
           <Scientist reply={reply} info={info} /></span></span>
-        <span className="special-project-now-left"><strong data-paint="progress">{run.progress}%</strong><small data-paint="iterations">{iterationCount(run.iterations)}</small></span>
+        <span className="special-project-now-left"><span className="project-value-widths" aria-hidden="true">{widths}</span>
+          <strong id={`${valueId}-${card.project.id}-progress`} data-paint="progress">{run.progress}%</strong><small id={`${valueId}-${card.project.id}-iterations`} data-paint="iterations">{iterationCount(run.iterations)}</small></span>
         <span className="special-project-progress" aria-hidden="true"><span /><i /></span>
       </div>;
-    })}</Section> : <p className="special-project-none">No projects in progress.</p>}
+    })}</Section> : <p data-panel-label="none" className="special-project-none">No projects in progress.</p>}
     {completed.length + earlier.length > 0 && <Section label="Completed" count={completed.length + earlier.length}>
       {completed.map(card => {
         const person = reply.people[card.info.scientist].name;
@@ -117,6 +120,16 @@ function CurrentList({ reply, at, item, now, subscribe }: { reply: SpecialProjec
     {cancelled.length > 0 && <Section label="Cancelled" count={cancelled.length}>
       {cancelled.map(card => row(card, `Cancelled · ${dayLabel(card.run.cancellation!.hour)} · ${card.run.progress}%`, ' is-cancelled'))}
     </Section>}
+    <table className="sr-only"><caption>Special projects</caption>
+      <thead><tr><th scope="col">Project</th><th scope="col">Status</th><th scope="col">Scientist</th><th scope="col">Progress</th><th scope="col">Iterations</th></tr></thead>
+      <tbody>{[...running, ...completed, ...earlier, ...cancelled].map(card => {
+        const active = card.run.state !== 'completed' && card.run.state !== 'cancelled';
+        return <tr key={card.project.id}><th scope="row">{card.info.name}</th><td>{card.run.state}</td>
+          <td>{scientistName(reply, card.info)}</td>
+          <td aria-labelledby={active ? `${valueId}-${card.project.id}-progress` : undefined}>{active ? null : `${card.run.progress}%`}</td>
+          <td aria-labelledby={active ? `${valueId}-${card.project.id}-iterations` : undefined}>{active ? null : iterationCount(card.run.iterations)}</td>
+        </tr>;
+      })}</tbody></table>
   </div>;
 }
 
@@ -134,29 +147,33 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     [widget.countries, track, fallback, groups.data]);
   const tags = resolved.tags;
   // Each country's episodes over its branch, asked once: the head moves nothing here, it is read from the reply.
-  const requests = useMemo(() => track && resolved.ready ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
-    params: { branchId: track.branch.id, tag } })) : [], [track, resolved.ready, tags]);
-  const { data, error, retry } = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
+  const requests = useMemo(() => track && resolved.ready && view === 'history' ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
+    params: { branchId: track.branch.id, tag } })) : [], [track, resolved.ready, tags, view]);
+  const history = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
+  const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
+  const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));
+  const live = useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { tag } : null,
+    { active, validate: validateSpecialProjectsReply, structure: projectStructure });
+  const currentData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
+  const data = view === 'history' ? history.data : currentData;
+  const { error, retry } = view === 'history' ? history : live;
   const membershipAt = useCallback((hour: number) => resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour), [resolved.unobserved]);
   // While following, the widget renders only when what it shows other than the numbers changes; the painter and the
   // chart move those each frame.
   const structure = useCallback((clockHour: number) => {
     const hour = Math.floor(clockHour) + axisOffset;
+    if (view === 'live') return JSON.stringify([membershipAt(hour), tags.find(tag => resolved.match.matches(tag, hour)), resolved.match.known(hour)]);
     if (!data) return '';
-    if (view === 'live') {
-      const reply = data.find(item => resolved.match.matches(item.tag, hour));
-      return `${membershipAt(hour)}\u0004${reply ? `${reply.tag}\u0004${currentKey(reply, hour)}` : `none\u0004${resolved.match.known(hour)}`}`;
-    }
     return `${membershipAt(hour)}\u0004${data.map(reply => historyKey(reply, hour, resolved.memberships.get(reply.tag))).join('\u0004')}`;
-  }, [data, view, axisOffset, resolved, membershipAt]);
-  const playbackHour = useHeadHour(runtime.clock, active && following && !!data, structure);
+  }, [data, view, axisOffset, resolved, membershipAt, tags]);
+  const playbackHour = useHeadHour(runtime.clock, active && following && (view === 'live' || !!data), structure);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const pinned = widget.time.mode === 'pin';
   const playhead = (following || pinned) && window ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
   const extent = projectHistoryExtent(first, last, playhead, options.grow === true);
-  const at = Math.floor(playhead ?? last);
+  const at = view === 'live' ? live.at ?? target ?? last : Math.floor(playhead ?? last);
   const now = useCallback<HourNow>(() => following ? Math.floor(runtime.clock.getSnapshot().position) + axisOffset : at, [following, runtime.clock, axisOffset, at]);
   const subscribe = useCallback((changed: () => void) => {
     if (!following) return () => {};
@@ -179,9 +196,16 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
   // The details under Current carry their own warnings: what they could not name or draw.
-  const [detailWarnings, setDetailWarnings] = useState<readonly string[]>([]);
-  const diagnostics = useMemo(() => [...(data?.flatMap(reply => reply.warnings) ?? []), ...detailWarnings, ...(groups.data?.warnings ?? [])], [data, detailWarnings, groups.data]);
-  useDiagnostics(onDiagnostics, diagnostics);
+  const bounded = useProducts<SpecialProjectsReply>(runtime.client, requests.map(r => ({ ...r, params: { ...r.params, hour: at } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
+  const notes = view === 'history' ? bounded.data : currentData;
+  const baseWarnings = useMemo(() => [...(notes?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [notes, groups.data]);
+  const detailWarnings = useRef<readonly string[]>([]);
+  const reportWarnings = useCallback((warnings: readonly string[]) => {
+    detailWarnings.current = warnings;
+    onDiagnostics([...baseWarnings, ...warnings]);
+  }, [onDiagnostics, baseWarnings]);
+  useEffect(() => { reportWarnings(detailWarnings.current); }, [reportWarnings]);
+  useEffect(() => () => onDiagnostics([]), [onDiagnostics]);
   useEffect(() => () => hideTooltip(owner), [owner, view, at]);
   const from = extent[0];
   const lanes = useMemo(() => view !== 'history' ? [] : data?.flatMap((reply, country) => {
@@ -246,8 +270,9 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     const reply = data.find(reply => resolved.match.matches(reply.tag, at));
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
     else {
-      const details = <ProjectDetails runtime={runtime} widget={widget} tag={reply.tag} active={active} onWarnings={setDetailWarnings} />;
-      body = observedAt(reply, at) ? <><CurrentList reply={reply} at={at} item={item(reply)} now={now} subscribe={subscribe} />{details}</>
+      const details = <ProjectDetails runtime={runtime} widget={widget} tag={reply.tag} active={active} onWarnings={reportWarnings} />;
+      body = observedAt(reply, at) ? <><CurrentList clock={runtime.clock} feed={panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime)}
+        reply={reply} at={at} item={item(reply)} />{details}</>
         : <><WidgetState kind="unavailable" message="Projects were not recorded at this time." />{details}</>;
     }
   } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown
@@ -267,7 +292,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
       const card = id === null ? null : historyCard(reply, id, now(), resolved.memberships.get(reply.tag));
       if (card) openMenu(card, x, y);
     }} />;
-  return <div className="special-projects">{groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{body}{menu.menu}</div>;
+  return <div className="special-projects" ref={view === 'live' ? live.root : undefined}>{groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{body}{menu.menu}</div>;
 }
 
 export default function SpecialProjectsWidget(props: WidgetProps) {

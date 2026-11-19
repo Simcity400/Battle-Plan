@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ResearchHistory, ResearchSlotHistory } from './types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { researchAt, researchFolderList, researchFolderLooks } from './researchData.ts';
-import { completedTooltip, coverageAt, researchDateRange, researchItemDate, researchLanes, researchLanesAt, researchRows } from './researchLayout.ts';
+import { completedTooltip, coverageAt, recordedResearchLanes, researchDateRange, researchItemDate, researchLanes, researchLanesAt, researchRows } from './researchLayout.ts';
 import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
 
 // Noon on 1 Jan 1944, so day arithmetic never crosses the calendar's 24:00 display hour.
@@ -32,6 +32,10 @@ test('indexed lanes match clipped histories through gaps, late confirmations and
   ] };
   const project = (lanes: ReturnType<typeof researchLanes>) => lanes.map(lane => ({ index: lane.slot.index, appeared: lane.appeared,
     offset: lane.offset, items: lane.items.map(item => { const { slot: _slot, ...value } = item as typeof item & { slot?: ResearchSlotHistory }; return value; }) }));
+  const presented = researchLanesAt(history, 80);
+  const rewound = recordedResearchLanes(history, 19);
+  assert.notDeepEqual(project(presented), project(rewound));
+  assert.deepEqual(rewound.map(l => l.items.map(item => item.kind)), [[]]);
   const hours = Array.from({ length: 104 }, (_, at) => at - 1);
   for (const hour of [...hours, ...[...hours].reverse()]) assert.deepEqual(project(researchLanesAt(history, hour)), project(lanesAt(history, hour)), `hour ${hour}`);
   assert.deepEqual(researchLanesAt(history, NaN), []);

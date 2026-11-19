@@ -8,6 +8,7 @@ use std::sync::Mutex;
 /// One step: game hours `first` to `last`, every stepped table's change set in table order.
 #[derive(Debug, Default)]
 pub struct Step {
+    pub(crate) charge: Mutex<Option<crate::Charge>>,
     pub(crate) epoch: u64,
     pub(crate) seq: u64,
     pub(crate) restep: u64,
@@ -80,7 +81,7 @@ impl Step {
     /// states rebuilt for it move to the copy.
     pub(crate) fn copied(&self) -> Self {
         let states = std::mem::take(&mut *self.states.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        Self { epoch: self.epoch, seq: self.seq, restep: self.restep, first: self.first, last: self.last, piece: self.piece, reset: self.reset, tables: self.tables.clone(), states: Mutex::new(states), built: self.built }
+        Self { charge: Mutex::default(), epoch: self.epoch, seq: self.seq, restep: self.restep, first: self.first, last: self.last, piece: self.piece, reset: self.reset, tables: self.tables.clone(), states: Mutex::new(states), built: self.built }
     }
 
     pub fn built(&self) -> &Built {

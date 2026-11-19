@@ -8,7 +8,7 @@
 //! Panels carrying a product's reply ([`panel`]) are shown on the same playheads and pushed on the same pipe.
 
 mod answer;
-pub mod due;
+pub mod lead;
 mod evaluate;
 mod follow;
 pub mod head;

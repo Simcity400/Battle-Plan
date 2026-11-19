@@ -65,8 +65,7 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
   client: DashboardClient; track: BoundTrack; tag: string; hour: number;
   history: ResearchHistory; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; description?: string | null;
 }) {
-  const [asked] = useState(hour);
-  const parts = breakdownParts(slots, slot, entry, asked);
+  const parts = breakdownParts(slots, slot, entry, hour);
   const request = { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, tag, parts } };
   const { data, error, retry } = useProduct<ResearchBreakdownReply>(client, request, true, validateResearchBreakdown, track.source);
   const joined = useMemo<ResearchHistory>(() => ({ coverage: history.coverage, slots: withBreakdown(history.slots, data) }), [history, data]);

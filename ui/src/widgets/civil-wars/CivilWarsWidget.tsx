@@ -49,8 +49,6 @@ const pendingCountry = () => ({ name: NAME_LOADING });
  * default, with each side beneath it in its own colour and a breakaway indented
  * under the side it broke from. Playback looks up the one branch reply locally. */
 export default function CivilWarsWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
-  // The widget renders when a war, a side or a name changes by the head (paced; any hour while paused), never because the
-  // hour moved inside one; the playhead and the bars move with the clock each frame (`liveHead`).
   const clock = runtime.clock;
   const followsClock = widget.time.mode === 'follow';
   const structure = useRef<(hour: number) => string>(() => '');

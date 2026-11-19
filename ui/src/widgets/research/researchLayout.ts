@@ -4,6 +4,7 @@ import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { formatDate, formatDateTime, gameDate, monthNames } from '../../dashboard/calendar.ts';
 import { researchNumber } from './researchBreakdown.ts';
 import type { ResearchFolderLook } from './researchData';
+import { researchAt } from './researchData.ts';
 import { researchAssignments, researchStartKnown } from './researchJourney.ts';
 import type { ResearchCoverage, ResearchEntry } from '../../generated/dashboard';
 
@@ -69,6 +70,10 @@ export function researchLanes(slots: readonly ResearchSlotHistory[], coverage: r
     lane.offset = Math.max(lane.offset, other.offset + other.items.filter(item => item.hour <= lane.appeared).length);
   }
   return lanes.sort((a, b) => a.slot.index - b.slot.index);
+}
+
+export function recordedResearchLanes(history: ResearchHistory, hour: number) {
+  return researchLanes(researchAt(history, hour), coverageAt(history.coverage, hour), hour);
 }
 
 interface IndexedLane { source: ResearchLane; reveals: { hour: number; position: number; item: ResearchItem }[]; count: number; shown: ResearchLane }

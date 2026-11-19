@@ -3,8 +3,7 @@
 //! for the recording and timeline ([`Playheads`], the viewer's host), and its files must hold the
 //! query's table; otherwise the reply says why and no reader is made. Follows are kept across a
 //! seek (a reset message settles them), are per timeline and clock mapping (a track's anchor), and
-//! go when their recording closes. A
-//! follow whose query names a `panel` shows a panel ([`crate::panel`]) the caller builds.
+//! go when their recording closes. A `panel` query shows a panel the caller builds.
 
 use crate::{
     Follow,
@@ -25,7 +24,11 @@ use std::{
 /// The clock's anchors as the UI sends them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Anchor {
+    pub seek: u32,
+    pub frame_rate: f64,
     pub hour: i32,
+    pub position: f64,
+    pub timestamps: Option<(f64, f64)>,
     pub playing: bool,
     pub speed: f64,
     /// The hour was sought (not only played or paused at).
@@ -159,16 +162,19 @@ impl Registry {
                         return Ok(unavailable(error.to_string()));
                     }
                 }
-                if let Some(old) = lock(&self.followed).insert(id, Followed { path: path.to_path_buf(), branch, clock, host: Arc::clone(&host), panel: is_panel })
-                    && (!Arc::ptr_eq(&old.host, &host) || old.panel != is_panel)
                 {
-                    old.release(id)?;
+                    let mut followed = lock(&self.followed);
+                    let old = followed.insert(id, Followed { path: path.to_path_buf(), branch, clock, host: Arc::clone(&host), panel: is_panel });
+                    if let Some(old) = old && (!Arc::ptr_eq(&old.host, &host) || old.panel != is_panel) {
+                        old.release(id)?;
+                    }
                 }
-                Ok(json!({ "available": true }))
+                Ok(json!({"available":true, "route":host.follow().route()}))
             }
             "unfollow" => {
                 let id = id(params)?;
-                if let Some(held) = lock(&self.followed).remove(&id) {
+                let mut followed = lock(&self.followed);
+                if let Some(held) = followed.remove(&id) {
                     held.release(id)?;
                 }
                 Ok(json!({ "available": true }))
@@ -178,23 +184,19 @@ impl Registry {
                 let clock = clock(params)?;
                 let number = |name: &str| params.get(name).and_then(Value::as_f64).ok_or_else(|| crate::invalid(format!("A clock anchor names no {name}")));
                 let anchor = Anchor {
+                    frame_rate: params["frameRate"].as_f64().filter(|rate| rate.is_finite() && *rate > 0.0).ok_or_else(|| crate::invalid("A clock anchor needs a positive frame rate"))?,
+                    seek: params["seek"].as_u64().and_then(|s| s.try_into().ok()).ok_or_else(|| crate::invalid("A clock anchor names no seek"))?,
                     hour: number("hour")?.floor() as i32,
+                    position: number("hour")?,
+                    timestamps: params["composedAt"].as_f64().zip(params["sentAt"].as_f64()),
                     playing: params.get("playing").and_then(Value::as_bool).unwrap_or(false),
                     speed: number("speed")?,
                     sought: params.get("sought").and_then(Value::as_bool).unwrap_or(false),
                 };
-                let hosts: Vec<Arc<dyn Hosted>> = {
-                    let followed = lock(&self.followed);
-                    let mut hosts: Vec<Arc<dyn Hosted>> = Vec::new();
-                    for held in followed.values().filter(|held| held.path == path && held.branch == branch && held.clock == clock) {
-                        if !hosts.iter().any(|host| Arc::ptr_eq(host, &held.host)) {
-                            hosts.push(Arc::clone(&held.host));
-                        }
-                    }
-                    hosts
-                };
-                hosts.iter().for_each(|host| host.anchor(anchor));
-                Ok(json!({ "available": !hosts.is_empty() }))
+                let host = lock(&self.followed).values().find(|held| held.path == path && held.branch == branch && held.clock == clock).map(|held| Arc::clone(&held.host));
+                let Some(host) = host else { return Ok(json!({"available":false})); };
+                host.anchor(anchor);
+                Ok(json!({"available":true}))
             }
             "follow-close" => {
                 self.close(path);
@@ -230,12 +232,9 @@ fn id(params: &Value) -> io::Result<u32> {
     Ok(id)
 }
 
-/// The game hour at UI clock 0 a request names (its track's anchor); 0 when it names none.
+/// The game hour at UI clock zero for this track.
 fn clock(params: &Value) -> io::Result<i32> {
-    match params.get("clock") {
-        None | Some(Value::Null) => Ok(0),
-        Some(clock) => clock.as_i64().and_then(|clock| i32::try_from(clock).ok()).ok_or_else(|| crate::invalid("A follow request's clock is not an hour")),
-    }
+    params["clock"].as_i64().and_then(|clock| i32::try_from(clock).ok()).ok_or_else(|| crate::invalid("A follow request's clock is not an hour"))
 }
 
 fn branch(params: &Value) -> io::Result<u64> {

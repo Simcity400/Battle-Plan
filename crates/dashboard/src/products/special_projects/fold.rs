@@ -112,6 +112,16 @@ impl Fold {
         Self { campaign_start, ..Self::default() }
     }
 
+    pub fn open_episodes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.open.values().copied()
+    }
+
+    pub fn extend(&mut self, before: i32, last: i32) {
+        for index in self.open.values() {
+            if let Some(run) = self.episodes[*index].runs.last_mut().filter(|run| run.last_hour == before) { run.last_hour = last; }
+        }
+    }
+
     fn look(&mut self, look: Look) -> u32 {
         if let Some(&id) = self.look_ids.get(&look) {
             return id;

@@ -46,6 +46,7 @@ export interface LiveRace {
 const SPOKEN_MS = 1000;
 
 export interface RaceChartProps {
+  present?: () => void;
   /** Names the chart for screen readers. */
   label: string;
   /** The entries at the moment shown, ranked highest first (`rankItems`). Pass the
@@ -233,6 +234,7 @@ export default function RaceChart(props: RaceChartProps) {
       for (const row of inView) picture.push(row.key, row.y, row.alpha, row.widths, row.inset, row.item.label, row.item.segments);
       if (p.live && !forced.current && painted && painted.length === picture.length && painted.every((value, at) => Object.is(value, picture[at]))) {
         shown.current = { layout, rows, items, min, max, height: layoutHeight, owner: remote?.owner ?? p.pickOwner, resetKey: p.resetKey };
+        p.present?.();
         return raceMoving(state);
       }
       painted = picture; forced.current = false;
@@ -343,6 +345,7 @@ export default function RaceChart(props: RaceChartProps) {
         if (text !== spokenText.current) { spokenText.current = text; setSpoken(text); }
       } else { tooltipFor = null; hideTooltip(owner); }
       keyIntent.current = false;
+      p.present?.();
       return raceMoving(state) || grew;
     };
     const current: FrameTask = { frame: draw };

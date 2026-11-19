@@ -13,7 +13,7 @@ import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { NumericReply } from '../../dashboard/numericReply';
-import { pacedKey, useHeadHour } from '../../widgets/army-size/headHour.ts';
+import { useHeadHour } from '../../widgets/army-size/headHour.ts';
 import { dayLabel } from '../draw';
 import DrillHost from '../drill/DrillHost';
 import DrillParts from '../drill/DrillParts';
@@ -25,8 +25,7 @@ import type { CountryPartsData } from './countryPartsDrillData';
 import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill, UNATTRIBUTED_PART } from './partsRaceDrill';
 
 /** A country's parts over time beside a race: one reply of the country's whole branch (`params(tag)`), decoded by the
- * widget into the parts drill's model. Opened from a bar or a line, or pinned as its own widget. Following the head,
- * it renders at most four times a second of playback (the hour it shows moves with the clock between). */
+ * widget into the parts drill's model. Opened from a bar or a line, or pinned as its own widget. */
 export default function CountryPartsDrill<T>({ widget, runtime, active, countrySlot = null, onDiagnostics, track, options, extent, playhead, moment,
   product, params, validate, decode, numbers, defaultTag, pickTag, title, measure, virtual = false, positiveGeometry = false, warnings,
   resetKey, state, main, details }: Pick<WidgetProps, 'widget' | 'runtime' | 'active' | 'countrySlot' | 'onDiagnostics'> & {
@@ -51,8 +50,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const originTag = storedOrigin?.owner === contextOwner ? storedOrigin.tag : null;
   const setOrigin = (hour: number, tag: string) => setStoredOrigin({ owner: contextOwner, hour, tag });
   const offset = track?.axisOffset ?? 0;
-  const paced = useMemo(() => pacedKey(runtime.clock), [runtime.clock]);
-  const playbackHour = useHeadHour(runtime.clock, active && drill.breakdown != null && drill.follow, paced);
+  const playbackHour = useHeadHour(runtime.clock, active && drill.breakdown != null && drill.follow, String);
   const anchor = useRef<HTMLDivElement>(null);
   const pinned = options.show === 'breakdown';
   useEffect(() => { dispatch({ type: 'close' }); setStoredOrigin(null); }, [contextOwner]);

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { PresentationRate } from '../draw/frameRate.ts';
 import { axisFraction, hitZone, plotFrame, pointerHour, wheelSteps } from './frame.ts';
 import { hideTooltip, showTooltip, tooltipStore } from './tooltip.ts';
 import { parseAppearance, DEFAULT_APPEARANCE } from '../shell/appearance/settings.ts';
@@ -46,8 +47,8 @@ test('the tooltip store publishes changes only and each owner hides only its own
 });
 
 test('chart settings default to smooth motion and raw colours, and reject unknown values', () => {
-  assert.deepEqual(DEFAULT_APPEARANCE.charts, { motion: 'smooth', countryColours: 'raw' });
-  assert.deepEqual(parseAppearance({ charts: { motion: 'cinematic', countryColours: 'fixed' } }).charts, { motion: 'cinematic', countryColours: 'fixed' });
+  assert.deepEqual(DEFAULT_APPEARANCE.charts, { motion: 'smooth', countryColours: 'raw', frameRate: '60' });
+  assert.deepEqual(parseAppearance({ charts: { motion: 'cinematic', countryColours: 'fixed', frameRate: '120' } }).charts, { motion: 'cinematic', countryColours: 'fixed', frameRate: '120' });
   assert.deepEqual(parseAppearance({ charts: { motion: 'warp', countryColours: 'neon' } }).charts, DEFAULT_APPEARANCE.charts);
   assert.deepEqual(parseAppearance({}).charts, DEFAULT_APPEARANCE.charts);
 });
@@ -65,4 +66,26 @@ test('the pointer never shows hours after the playhead', () => {
   assert.equal(pointerHour(900, [0, 1000], 600), 600);
   assert.equal(pointerHour(1500, [1200, 2000], 600), null);
   assert.equal(pointerHour(-5, [0, 1000], 600), 0);
+});
+
+test('the worker presents 60 frames on both a 95 Hz and a 240 Hz display and skips missed turns', () => {
+  for (const hz of [95, 240]) {
+    const cadence = new PresentationRate();
+    const times = Array.from({ length: hz }, (_, i) => 1000 * i / hz);
+    assert.equal(times.filter(at => cadence.due(at, 60)).length, 60);
+    assert.equal(cadence.due(2500, 60), true);
+    assert.equal(cadence.due(2501, 60), false);
+    assert.equal(times.filter(at => cadence.due(at, 0)).length, hz);
+  }
+});
+
+test('a 60 FPS cap presents each eligible native step when the 95 Hz display starts between steps', () => {
+  const cadence = new PresentationRate(), presented = [];
+  const stepMs = 1000 / 60, origin = 4;
+  for (let i = 0; i <= 95; i++) {
+    const at = i * 1000 / 95;
+    const step = Math.floor((at - origin) / stepMs);
+    if (cadence.due(at, 60, origin + step * stepMs)) presented.push(step);
+  }
+  assert.deepEqual(presented, Array.from({ length: 61 }, (_, i) => i - 1));
 });

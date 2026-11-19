@@ -1,4 +1,5 @@
-import { createContext, use, useEffect, useMemo, useRef } from 'react';
+import { createContext, use, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import type { StructureRead } from '../shell/perf';
 import type { PlaybackController } from './playback';
 import type { Live } from '../charts/live';
 import { perfLog, type WidgetWork } from '../shell/perf.ts';
@@ -11,6 +12,15 @@ export const MeasuredWidget = createContext<string | null>(null);
 export function measuredWidget(): string | null {
   // `use` may be called conditionally, so runs that measure nothing never read the context.
   return perfLog ? use(MeasuredWidget) : null;
+}
+
+export function useRecordedRows(source: string, read: StructureRead | undefined) {
+  const widget = measuredWidget(), previous = useRef<StructureRead>(undefined);
+  useLayoutEffect(() => {
+    if (widget && read && previous.current && previous.current.hour !== read.hour)
+      perfLog?.structure(widget, source, previous.current, read);
+    previous.current = read;
+  }, [widget, source, read]);
 }
 
 /** Counts one piece of `widget`'s work toward the next frame record. */
@@ -61,19 +71,19 @@ export function useShownHour(): (hour: number | null) => void {
  * those values are of, at each frame of the clock, so a measured run sees the hour move without a render; after each
  * commit, so values that landed while paused are reported; and on each change of `live` (a panel's followed cells),
  * which moves the hour with neither a frame nor a render. */
-export function useShownEachFrame(clock: Pick<PlaybackController, 'subscribeFrame'>, at: () => number | null,
+export function useShownEachFrame(clock: Pick<PlaybackController, 'subscribeFrame'>, at: (() => number | null) | null,
   live?: Pick<Live<unknown>, 'subscribe'>): void {
   const shown = useShownHour();
   const latest = useRef(at);
   latest.current = at;
-  useEffect(() => { if (perfLog) shown(latest.current()); });
-  const subscribeLive = live?.subscribe;
+  useEffect(() => { if (perfLog && latest.current) shown(latest.current()); });
+  const subscribeLive = live?.subscribe, enabled = !!at;
   useEffect(() => {
-    if (!perfLog) return undefined;
-    const report = () => shown(latest.current());
+    if (!perfLog || !enabled) return undefined;
+    const report = () => shown(latest.current?.() ?? null);
     const stops = [clock.subscribeFrame(report), ...subscribeLive ? [subscribeLive(report)] : []];
     return () => { for (const stop of stops) stop(); };
-  }, [clock, shown, subscribeLive]);
+  }, [clock, shown, subscribeLive, enabled]);
 }
 
 widgetZones(MeasuredWidget);

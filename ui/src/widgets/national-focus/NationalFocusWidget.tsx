@@ -176,7 +176,7 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
     return hour === undefined || !track || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour);
   };
   useShownEachFrame(runtime.clock, () => data ? trackHour(runtime.clock.getHour()) : null);
-  // Following, the widget renders where the shown order changes, at most four times a second of playback.
+  // Following, the widget renders where the shown order changes.
   const headHour = useHeadHour(runtime.clock, active && live && !!data, clockHour => data ? focusShownAt(data, trackHour(clockHour)) : '');
   // Off the head the hour is the pin's or the campaign's end, read as rendered.
   const settled = live ? null : trackHour(runtime.clock.getHour());

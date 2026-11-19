@@ -27,11 +27,11 @@ function machineReasons(run) {
   return Number.isFinite(least) && least < PAGING_FREE_MB ? [`the machine was paging: ${least} MB of memory free at the least, under ${PAGING_FREE_MB}`] : [];
 }
 /** The dashboard's bars. */
-export const DASHBOARD = { intervalP99: 1.1, intervalWorst: 2, ageWorstSteps: 2, tileBins: 256 };
-/** Commits, requests and ages within this long after play, pause, a speed change or a seek are the anchor's, not a value's. */
+export const DASHBOARD = { intervalP99: 1.1, intervalWorst: 2, tileBins: 256 };
+/** Requests within this long after play, pause, a speed change or a seek are the anchor's, not a value's. */
 export const ANCHOR_SETTLE_MS = 300;
 /** Perf-log records that happen at a time, as against those that state something for the session. */
-const TIMED = new Set(['tick', 'frame', 'q', 'loaf', 'longtask', 'follow_message', 'shown', 'hour']);
+const TIMED = new Set(['tick', 'frame', 'q', 'loaf', 'longtask', 'shown', 'picture']);
 /** Products of the follow protocol itself: sent on anchors, never for a value. */
 export const FOLLOW_PRODUCTS = new Set(['follow', 'unfollow', 'follow-clock', 'follow-close']);
 
@@ -45,10 +45,7 @@ export const TODAY = {
   seek: '102–313 ms before the map\'s 0.3 s',
   memory: 'cursor 1,228 MB; process 4.7 GB',
   webview: 'not measured',
-  commits: 'one transition per 250 ms tick',
-  slots: 'not measured',
   requests: '26 a second for seven widgets',
-  age: 'up to 360 h (a 250 ms tick)',
 };
 
 /** The value at nearest rank p of `values` (finite numbers), as the harness and verdicts.mjs compute it. */
@@ -433,8 +430,8 @@ export function dashboardRows(log, { page = 'page', refreshHz = null, expect = {
   // A window (epoch ms) keeps the timed records inside it; what a record states for the session (widgets, follows, losses) stays.
   const records = window ? log.records.filter(record => !TIMED.has(record.t) || (record.at >= window.from && record.at <= window.to)) : log.records;
   const whole = wholeLog(log, records, expect);
-  const bars = ['webview frame interval', 'long animation frames', 'React commits caused by a value', 'structure slots fit their frame', 'requests for values at the head',
-    'list requests ahead of the head', 'chart tile requests', 'a followed value\'s age'];
+  const bars = ['webview frame interval', 'long animation frames', 'requests for values at the head',
+    'list requests ahead of the head', 'chart tile requests'];
   const ticks = records.filter(record => record.t === 'tick').sort((a, b) => a.at - b.at);
   const titles = new Map(records.filter(record => record.t === 'widget').map(record => [record.id, record.title]));
   const follow = followAccount(records, titles);
@@ -469,59 +466,20 @@ export function dashboardRows(log, { page = 'page', refreshHz = null, expect = {
     worst: longestLoaf ? { frame: null, hour: hourAt(longestLoaf.at) } : null, today: TODAY.webview,
     note: page0?.loaf === false ? 'this webview does not report long animation frames' : '', values: { count: loafs.length } }));
 
-  // Commits by the part of the page that rendered, in playing frames past an anchor's settling.
-  const judged = played.filter(frame => !settling(frame.at));
-  const commits = new Map();
-  for (const frame of judged) {
-    const zones = Object.entries(frame.zones ?? {});
-    const attributed = zones.reduce((sum, [, count]) => sum + count, 0);
-    if (frame.commits > 0 && !attributed) zones.push(['unattributed', frame.commits]);
-    for (const [zone, count] of zones) {
-      const entry = commits.get(zone) ?? { count: 0, frames: [] };
-      entry.count += count; entry.frames.push(frame);
-      commits.set(zone, entry);
-    }
-  }
-  const zoneName = zone => (zone.startsWith('widget:') ? titles.get(zone.slice(7)) ?? zone : zone);
-  rows.push(row({ page, run: 'perf log', bar: 'React commits caused by a value', measured: commits.size ? [...commits].map(([zone, entry]) => `${zoneName(zone)} ${entry.count}`).join(', ') : `none in ${judged.length} frames`,
-    limit: 'none while playing', verdict: commits.size ? FAIL : PASS, worst: at([...commits.values()][0]?.frames[0]), today: TODAY.commits,
-    note: `play, pause, speed and seek own the ${ANCHOR_SETTLE_MS} ms after them`, values: { count: [...commits.values()].reduce((sum, entry) => sum + entry.count, 0) } }));
-  for (const [zone, entry] of commits) rows.push(row({ page: `${page}: ${zoneName(zone)}`, run: 'perf log', bar: 'React commits caused by a value', measured: `${entry.count} in ${entry.frames.length} frames`,
-    limit: 'none while playing', verdict: FAIL, worst: at(entry.frames[0]), today: TODAY.commits, values: { count: entry.count } }));
-
-  // The page's structure slot (`slot` on a frame: every held structure of the page, committed once a quarter second in a
-  // task between frames) must hold no frame back: the frame drawn after it is dropped when its interval is over
-  // `intervalWorst` refreshes. A widget rendering in a slot that dropped its frame is named with its components rendered.
-  const slots = judged.filter(frame => frame.slot);
-  const missed = slots.filter(frame => frame.dt > DASHBOARD.intervalWorst * interval);
-  const worstSlot = worstOf(slots, frame => frame.dt);
-  const blamed = new Map();
-  for (const frame of missed) for (const [zone, count] of Object.entries(frame.slot.widgets ?? {})) blamed.set(zone, (blamed.get(zone) ?? 0) + count);
-  const named = [...blamed].sort((a, b) => b[1] - a[1]).map(([zone, count]) => `${zoneName(zone)} ${count}`);
-  rows.push(row({ page, run: 'perf log', bar: 'structure slots fit their frame',
-    measured: slots.length ? `${missed.length} of ${slots.length} slots dropped their frame; slot p95 ${fixed(rank(slots.map(frame => frame.slot.ms), 0.95), 1)} ms, worst interval ${fixed(worstSlot.dt / interval, 2)}`
-      : `no slot in ${judged.length} frames`,
-    limit: `no slot's frame over ${DASHBOARD.intervalWorst} intervals (${fixed(DASHBOARD.intervalWorst * interval, 2)} ms)`, verdict: missed.length ? FAIL : PASS, worst: at(missed[0] ?? null), today: TODAY.slots,
-    note: named.length ? `components rendered in the slots that dropped a frame: ${named.join(', ')}` : '', values: { slots: slots.length, over: missed.length } }));
-
   const requests = records.filter(record => record.t === 'q' && !record.cache && record.cmd !== undefined && !FOLLOW_PRODUCTS.has(record.product)
-    && inStretch(record.at) && !settling(record.at));
+    && !(record.product === 'sprite-artwork' && record.hour === null) && inStretch(record.at) && !settling(record.at));
   const lists = requests.filter(record => record.product !== 'series-tiles');
   const ahead = lists.filter(aheadOfHead);
   const values = lists.filter(record => !aheadOfHead(record));
   const byProduct = new Map();
   for (const record of values) byProduct.set(record.product, (byProduct.get(record.product) ?? 0) + 1);
   const reads = new Map();
-  for (const frame of judged) for (const [widget, work] of Object.entries(frame.work ?? {})) if (work.read) reads.set(widget, (reads.get(widget) ?? 0) + work.read);
+  for (const frame of played.filter(frame => !settling(frame.at))) for (const [widget, work] of Object.entries(frame.work ?? {})) if (work.read) reads.set(widget, (reads.get(widget) ?? 0) + work.read);
   rows.push(row({ page, run: 'perf log', bar: 'requests for values at the head', measured: values.length ? [...byProduct].map(([product, count]) => `${product} ${count}`).join(', ') : 'none',
     limit: 'none while playing', verdict: values.length ? FAIL : PASS, worst: values.length ? { frame: null, hour: hourAt(values[0].at) } : null, today: TODAY.requests,
-    note: reads.size ? `widgets that asked: ${[...reads].map(([widget, count]) => `${titles.get(widget) ?? widget} ${count}`).join(', ')}` : '', values: { count: values.length } }));
-  for (const [widget, count] of reads) rows.push(row({ page: `${page}: ${titles.get(widget) ?? widget}`, run: 'perf log', bar: 'requests for values at the head', measured: `${count} reads`,
-    limit: 'none while playing', verdict: FAIL, today: TODAY.requests, values: { count } }));
-
+    note: reads.size && values.length ? `widgets with reads: ${[...reads].map(([widget, count]) => `${titles.get(widget) ?? widget} ${count}`).join(', ')}` : '', values: { count: values.length } }));
   rows.push(aheadRow(page, ahead, playing, ticks, hourAt));
   rows.push(tileRow(page, requests.filter(record => record.product === 'series-tiles'), playing, ticks, hourAt));
-  rows.push(ageRow(page, records, ticks, playing, settling, follow, titles));
   return { whole, rows, follow };
 }
 
@@ -605,76 +563,6 @@ export function followAccount(records, titles) {
   }
   for (const [widget, title] of titles) if (!widgets.has(widget)) widgets.set(widget, { widget, title, followed: [], fellBack: [], none: true });
   return { queries: [...queries.values()], widgets: [...widgets.values()] };
-}
-
-/** Panels whose reply is structure alone (which rows there are, their order, names and art), every number they show a
- * live cell: their pushes are exempt from the age bar by name and judged instead at most four in any second of play,
- * and each of their cells is judged by its age. A panel not named here is judged as a value, so a panel whose numbers
- * are not live cells fails the bar. Name a product only once its reply carries no number that moves with the head. */
-export const STRUCTURE_PANELS = new Set(['territory-breakdown', 'world-tension', 'occupied-states']);
-/** The most pushes of a structure panel in any second of play. */
-export const STRUCTURE_PUSHES_A_SECOND = 4;
-/** The bit of every follow id a panel's host takes for a group of its live cells. */
-const CELLS = 2 ** 31;
-
-/** A followed value's age when it is painted: the steps the head took from the one its answer was evaluated at (the
- * last tick in that hour) to the first frame after its message landed (the frame the store paints it in). A step is a
- * tick of the clock, however far a late frame moved it. The service sends nothing for a step that changed no answer, so a
- * value not resent is current, not old. A panel's live cells are judged as its own values (`follow_cells` names whose
- * they are); a structure panel's own pushes are not values ([`STRUCTURE_PANELS`]). The longest wait between messages
- * while playing is beside it. */
-function ageRow(page, records, ticks, playing, settling, follow, titles) {
-  const base = { page, run: 'perf log', bar: "a followed value's age", limit: `at most ${DASHBOARD.ageWorstSteps} steps; a structure panel's pushes at most ${STRUCTURE_PUSHES_A_SECOND} a second`, today: TODAY.age };
-  const followed = new Map(follow.queries.filter(entry => entry.status === 'followed').map(entry => [entry.id, entry]));
-  if (!records.some(record => record.t === 'follow')) return row({ ...base, measured: '–', verdict: UNMEASURABLE, note: 'the perf log has no follow records' });
-  if (!followed.size) return row({ ...base, measured: '–', verdict: UNMEASURABLE, note: 'nothing was followed' });
-  const panelOf = new Map();
-  for (const record of records.filter(record => record.t === 'follow_cells')) for (const id of record.cells ?? []) panelOf.set(id, record.id);
-  const queryOf = id => followed.get(id >= CELLS ? panelOf.get(id) : id);
-  const structure = id => id < CELLS && STRUCTURE_PANELS.has(followed.get(id)?.product);
-  const messages = records.filter(record => record.t === 'follow_message').sort((a, b) => a.at - b.at);
-  const ages = [];
-  const pushes = new Map();
-  let gap = null;
-  for (const stretch of playing) {
-    const steps = ticks.filter(tick => tick.playing && tick.at >= stretch.from && tick.at <= stretch.to);
-    const within = messages.filter(message => message.at >= stretch.from && message.at <= stretch.to);
-    for (let index = 1; index < within.length; index++) gap = Math.max(gap ?? 0, within[index].at - within[index - 1].at);
-    for (const message of within) {
-      if (settling(message.at)) continue;
-      const painted = steps.findIndex(tick => tick.at > message.at);
-      if (painted < 0) continue;
-      for (const [id, hour] of message.answers ?? []) {
-        if (!queryOf(id)) continue;
-        if (structure(id)) {
-          if (!pushes.has(id)) pushes.set(id, []);
-          pushes.get(id).push(message.at);
-          continue;
-        }
-        let evaluated = painted;
-        while (evaluated > 0 && Math.floor(steps[evaluated].hour) > hour) evaluated--;
-        ages.push({ steps: painted - evaluated, hours: steps[painted].hour - hour, id, tick: steps[painted] });
-      }
-    }
-  }
-  const holders = query => [...query.widgets].map(widget => titles.get(widget) ?? widget).join(', ') || 'no widget named';
-  const crowded = [];
-  for (const [id, times] of pushes) {
-    const at = times.findIndex((time, index) => index + STRUCTURE_PUSHES_A_SECOND < times.length && times[index + STRUCTURE_PUSHES_A_SECOND] - time < 1000);
-    if (at >= 0) crowded.push({ id, note: `${followed.get(id).product} (${holders(followed.get(id))}) pushed over ${STRUCTURE_PUSHES_A_SECOND} times in a second` });
-  }
-  const exempt = [...pushes].map(([id, times]) => `${followed.get(id).product}'s structure (${times.length} pushes)`);
-  const cells = ages.filter(age => age.id >= CELLS).length;
-  const notes = [...crowded.map(entry => entry.note), ...(exempt.length ? [`exempt by name: ${exempt.join(', ')}`] : [])];
-  if (!ages.length) return row({ ...base, measured: '–', verdict: FAIL, note: ['no followed answer landed while playing', ...notes].join('; ') });
-  const worst = worstOf(ages, age => age.steps);
-  const p99 = rank(ages.map(age => age.steps), 0.99);
-  const query = queryOf(worst.id);
-  const named = `${query.product ?? 'a query'}${worst.id >= CELLS ? "'s live cells" : ''}`;
-  return row({ ...base, measured: `p99 ${fixed(p99, 0)} / worst ${worst.steps} steps (${fixed(worst.hours, 0)} h) over ${ages.length} answers, ${cells} of live cells`,
-    verdict: worst.steps <= DASHBOARD.ageWorstSteps && !crowded.length ? PASS : FAIL, worst: { frame: null, hour: worst.tick.hour },
-    note: [`worst: ${named} (${holders(query)}); longest wait between messages while playing ${fixed(gap, 0)} ms`, ...notes].join('; '),
-    values: { p99, worst: worst.steps, cells, crowded: crowded.length } });
 }
 
 // ---- The table.

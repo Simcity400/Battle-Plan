@@ -2,6 +2,7 @@
 
 mod dashboard_service;
 mod follow_push;
+mod pull;
 mod native;
 mod perf;
 mod popout;
@@ -205,6 +206,10 @@ fn context() -> tauri::Context {
     context
 }
 
+#[tauri::command]
+fn playback_pressure_merges() -> u64 { dashboard_follow::lead::pressure_merges() }
+
+
 fn main() {
     engine_heap::return_freed_memory_promptly();
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
@@ -237,7 +242,19 @@ fn main() {
     if let Err(error) = dashboard::artwork::configure_desktop() {
         eprintln!("{error}");
     }
+    let page_origin = context.config().build.dev_url.as_ref().filter(|_| tauri::is_dev())
+        .map_or_else(|| "http://tauri.localhost".to_owned(), |url| url.origin().ascii_serialization());
     let app = tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("push", move |context, request, responder| {
+            use tauri::http::{StatusCode, header};
+            if request.headers().get(header::ORIGIN).and_then(|origin| origin.to_str().ok()) != Some(&page_origin) {
+                return pull::refuse(responder, StatusCode::FORBIDDEN, "Only the dashboard may pull followed answers");
+            }
+            if request.uri().path() != "/follow" {
+                return pull::refuse(responder, StatusCode::NOT_FOUND, "No such stream");
+            }
+            context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder);
+        })
         .register_asynchronous_uri_scheme_protocol("artwork", |_, request, responder| {
             serve_artwork(request, responder)
         })
@@ -261,9 +278,8 @@ fn main() {
             // Followed answers come from the maps' playheads in this process.
             let push = app.handle().clone();
             viewer::host::install_follow(move |kind, payload| {
-                // Each payload names its own kind to the webview (`FOL1`, `PNL1`, `FEN1`).
                 if kind == dashboard_follow::push::FOLLOW || kind == dashboard_follow::push::PANEL {
-                    push.state::<follow_push::FollowPush>().send(payload);
+                    push.state::<follow_push::FollowPush>().offer(|queue| queue.offer_kind(kind, payload));
                 }
             })?;
             if let Some(window) = app.get_webview_window("main") {
@@ -283,6 +299,7 @@ fn main() {
             video::map_muted,
             video::set_map_muted,
             desktop_state,
+            playback_pressure_merges,
             set_map_view,
             select_native_view,
             map_action,
@@ -317,7 +334,6 @@ fn main() {
             popout::popout_fly_aircraft,
             dashboard_service::dashboard_open_source,
             dashboard_service::dashboard_product,
-            follow_push::dashboard_follow_channel,
             dashboard_service::dashboard_history_choice,
             dashboard_service::dashboard_map_settings,
             dashboard_service::dashboard_cancel,

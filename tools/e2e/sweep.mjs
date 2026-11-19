@@ -64,7 +64,9 @@ const QUICK_PLAYBACK = { pages: ['Politics', 'Overview', 'Army'], speeds: [1440]
 /** The quick tier glances at every page at this share of the span. */
 const GLANCE_AT = 0.5;
 const PRESETS = [0.25, 1, 4, 24, 168, 720, 1440];
-const PLAY_SECONDS = 8;
+const PLAY_SECONDS = Number((process.env.BATTLE_PLAN_PLAY_SECONDS ?? process.env.HOI4_PLAY_SECONDS) ?? 8);
+const rate = Number(flag('--cpu-throttle', '1'));
+if (!(rate >= 1 && Number.isFinite(rate) && PLAY_SECONDS > 0 && Number.isFinite(PLAY_SECONDS))) throw new Error('Invalid playback duration or throttle');
 /** One window a page is played again under the browser's trace, apart from the timed windows the tracing would slow. */
 const TRACE_SPEED = 1440;
 const TRACE_SECONDS = 4;
@@ -77,6 +79,11 @@ const replies = recordReplies ? await ReplyRecorder.start(app, recordReplies,
   { pid: appPid, revision: flag('--app-revision'), root: path.resolve(import.meta.dirname, '../..') }) : null;
 // From the start, so the map's first states and mode lists are seen.
 await app.evaluate('__e2e.listenMaps()');
+const throttle = async value => {
+  if (rate === 1) return;
+  await app.send('Emulation.setCPUThrottlingRate', { rate: value });
+  await app.evaluate(`(window.__weakCpu = ${value}, window.dispatchEvent(new Event('weakcpu')), true)`);
+};
 const s = new Session(app, out, session);
 await s.init();
 s.history = history;
@@ -86,9 +93,10 @@ const visual = new Visual(app, out, session);
 await visual.init();
 const started = new Date();
 const speeds = quick ? QUICK_PLAYBACK.speeds : SPEEDS;
-const meta = { session, tier, started: started.toISOString(), port, phases, epoch: s.epoch, pages: [], viewport: null, cataloguePage: CATALOGUE_PAGE, speeds, seeks: SEEKS, pictureSeek: PICTURE_SEEK };
+const meta = { session, tier, requestedPages: onlyPages, cpuThrottle: rate, started: started.toISOString(), port, phases, epoch: s.epoch, pages: [], viewport: null, cataloguePage: CATALOGUE_PAGE, speeds, seeks: SEEKS, pictureSeek: PICTURE_SEEK };
 const save = async () => {
   await replies?.take();
+  if (phases.includes('seeks')) meta.seekInputs = await app.evaluate('__e2e.seekInputs ?? []');
   const results = s.results.map(({ probe, ...result }) => ({ ...result, session }));
   await writeFile(path.join(out, `sweep-${session}.json`), JSON.stringify({ meta, results, console: app.messages.map(message => ({ ...message, session })) }, null, 1));
   await visual.finish({ pictureSeek: PICTURE_SEEK, viewport: meta.viewport });
@@ -230,6 +238,12 @@ await phase('glance', async () => {
 });
 
 await phase('seeks', async () => {
+  await app.evaluate(`(() => {
+    const inputs = __e2e.seekInputs = [];
+    for (const type of ['pointerdown', 'keydown', 'wheel']) addEventListener(type, event => {
+      if (event.isTrusted) inputs.push(performance.timeOrigin + event.timeStamp);
+    }, { capture: true, passive: true });
+  })()`);
   for (const [index, page] of meta.pages.entries()) {
     await s.openPage(page);
     // Each page seeks hours of its own, so every cold seek is that hour's first visit in this fresh session; then the same
@@ -237,12 +251,14 @@ await phase('seeks', async () => {
     for (const pass of ['cold', 'warm']) for (const [label, base] of SEEKS) {
       const fraction = base + index * SEEK_STEP;
       const line = await s.timeline();
+      const pins = await app.evaluate(`Object.fromEntries([...document.querySelectorAll('article[data-fixed-hour]')].map(a => [a.dataset.widget, Number(a.dataset.fixedHour)]))`);
       const result = await s.step('seeks', page, pass === 'cold' ? label : `${label} warm`, async () => {
         await app.click(Session.timelineX(line, fraction), line.y);
         return { fraction, pass };
       }, { timeout: 10_000, quiet: 300, check: pass === 'cold' });
       result.hour = (await s.timeline()).value;
       const shown = (await app.evaluate('__e2e.widgets()')).filter(widget => widget.visible);
+      result.pins = pins;
       result.maps = shown.filter(widget => widget.kind === 'map').map(widget => widget.key);
       result.widgetIds = Object.fromEntries(shown.map(widget => [widget.key, widget.title]));
     }
@@ -384,32 +400,187 @@ const traceWindow = async page => {
   }
 };
 
+const RESEARCH_INVENTORY = `(() => {
+  const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
+  const visible = node => {
+    if (!node) return false;
+    const box = node.getBoundingClientRect();
+    let top = Math.max(box.top, viewport.top), bottom = Math.min(box.bottom, viewport.bottom);
+    for (let p = node.parentElement; p && p !== grid; p = p.parentElement) {
+      if (getComputedStyle(p).overflowY === 'visible') continue;
+      const clip = p.getBoundingClientRect();
+      top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+    }
+    return box.width > 0 && top < bottom;
+  };
+  return [...grid.querySelectorAll('article.dash-widget')].map(a => {
+    const kind = [...a.classList].find(c => c.startsWith('kind-'))?.slice(5);
+    const surfaces = kind === 'special-projects' ? [
+      ...visible(a.querySelector('.special-project-list')) ? ['special-projects'] : [],
+      ...visible(a.querySelector('.project-details')) ? ['special-project-details'] : [],
+    ] : [kind === 'research' || kind === 'active-research' ? 'research-slots' : kind];
+    return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces };
+  });
+})()`;
+
+async function researchInputs() {
+  await app.evaluate(`(() => {
+    const visibility = [], actions = [];
+    const scan = () => {
+      const shown = [];
+      for (const c of document.querySelectorAll('article canvas[data-placement]')) {
+        const bounds = c.hidden ? c.parentElement : c;
+        if (!bounds?.checkVisibility()) continue;
+        const article = c.closest('article'), pin = article.getAttribute('data-fixed-hour');
+        const rect = bounds.getBoundingClientRect();
+        let top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
+        for (let p = c.parentElement; p && bottom > top; p = p.parentElement) {
+          if (getComputedStyle(p).overflowY === 'visible') continue;
+          const clip = p.getBoundingClientRect(); top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+        }
+        if (bottom > top && rect.width > 0) shown.push([Number(c.dataset.placement), pin === null ? null : Number(pin), article.dataset.widget]);
+      }
+      if (JSON.stringify(shown) !== JSON.stringify(visibility.at(-1)?.shown))
+        visibility.push({ at: performance.timeOrigin + performance.now(), shown });
+    };
+    const observer = new MutationObserver(scan);
+    observer.observe(document.querySelector('.dash-grid-scroll'), { subtree: true, childList: true, attributes: true,
+      attributeFilter: ['hidden','style','data-fixed-hour','data-placement'] });
+    addEventListener('scroll', scan, true); scan();
+    __e2e.inputMark = kind => actions.push({ kind,
+      pinWidget: kind === 'pin' ? document.querySelector('article.kind-active-research')?.dataset.widget : undefined, at: performance.timeOrigin + performance.now() });
+    __e2e.endInputs = () => { observer.disconnect(); removeEventListener('scroll', scan, true);
+      return { actions, visibility, to: performance.timeOrigin + performance.now() }; };
+  })()`);
+  const mark = kind => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)})`);
+  await mark('rewind');
+  const line = await s.timeline();
+  await app.click(Session.timelineX(line, .22), line.y);
+  if (!await s.until(`Number(document.querySelector('input.header-timeline').value) < ${line.value}`)) throw new Error('Research rewind did not move back');
+  await s.frames(4);
+  const x = fraction => Session.timelineX(line, fraction);
+  await app.mouse('mousePressed', x(.22), line.y, { buttons: 1 });
+  for (const fraction of [.3,.36,.27,.31]) {
+    await app.mouse('mouseMoved', x(fraction), line.y, { buttons: 1 }); await s.frames(1);
+  }
+  await app.mouse('mouseReleased', x(.31), line.y);
+  await s.frames(4);
+  const held = `['active-research','research','special-projects','nuclear-arsenal','doctrine-mastery'].every(kind => {
+    const article = document.querySelector('article.kind-' + kind);
+    return article && [...article.querySelectorAll('canvas[data-placement]:not([hidden])')].length > 0;
+  })`;
+  if (!await s.until(held)) throw new Error('Research scrub did not hold a complete visible position');
+  await mark('scrub');
+  const article = 'article.kind-active-research';
+  const config = article + ' [data-widget-settings]', time = '.widget-settings-menu:popover-open [aria-label="Time"] button';
+  await s.click(config);
+  if (!await s.until(`document.querySelector('${time}')`)) throw new Error('Research pin settings did not open');
+  await mark('pin'); await s.click(time, { text: 'Pinned' });
+  if (!await s.until(`document.querySelector('${article}[data-fixed-hour]')`)) throw new Error('Active research did not take its pin');
+  await s.escape(); await s.frames(4);
+  await s.click('button[aria-label="Play recording"]');
+  await mark('speed'); await setSpeed(168); await s.frames(5);
+  await mark('scroll');
+  const container = '.kind-active-research .active-research';
+  const before = await app.evaluate(`document.querySelector('${container}').scrollTop`);
+  const point = await s.need(container);
+  await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: 250 });
+  if (!await s.until(`document.querySelector('${container}').scrollTop > ${before} && document.querySelector('${container} [data-worker-panel] canvas[data-placement]:not([hidden])')`))
+    throw new Error('The inner scroller did not move with a worker-owned panel');
+  await s.frames(5);
+  await mark('pause'); await s.click('button[aria-label="Pause playback"]'); await s.frames(5);
+  const inputs = await app.evaluate('__e2e.endInputs()');
+  await s.click(config); await s.click(time, { text: 'Live' }); await s.escape();
+  return inputs;
+}
+
 await phase('playback', async () => {
   if (!await s.holds('window.__perf')) throw new Error('the app was not started with BATTLE_PLAN_PERF_LOG: playback cannot be measured');
-  const played = quick ? QUICK_PLAYBACK.pages.filter(page => meta.pages.includes(page)) : meta.pages;
-  if (quick) for (const page of QUICK_PLAYBACK.pages.filter(page => !meta.pages.includes(page))) await s.fail('playback', `${page}/${speeds[0]}`, null, 'the quick tier plays this page, and the recording has no such page');
-  for (const page of played) {
+  const requested = onlyPages ?? (quick ? QUICK_PLAYBACK.pages : meta.pages);
+  for (const page of requested) {
+    if (!meta.pages.includes(page)) { await s.fail('playback', page, null, 'page missing from the recording'); continue; }
     await s.openPage(page);
-    const widgets = await app.evaluate(`(() => { const view = document.querySelector('.dash-grid-scroll').getBoundingClientRect();
-      return [...document.querySelectorAll('article.dash-widget')].map(a => { const r = a.getBoundingClientRect();
-        return { id: a.dataset.widget, kind: [...a.classList].find(c => c.startsWith('kind-'))?.slice(5), title: a.getAttribute('aria-label'),
-          visible: r.bottom > view.top && r.top < view.bottom && r.height > 0 }; }); })()`);
-    for (const speed of speeds) {
-      await setSpeed(speed);
-      await seekTo(0.3);
-      await app.evaluate('window.__perf.start()');
-      await s.watch();
-      const from = s.epoch + await app.evaluate('performance.now()');
-      await settledForReplies();
-      await replies?.mark('play', { page, speed });
-      await s.click('button[aria-label="Play recording"]');
-      await sleep(PLAY_SECONDS * 1000);
-      await s.click('button[aria-label="Pause playback"]');
-      await replies?.mark('pause', { page, speed });
-      const to = s.epoch + await app.evaluate('performance.now()');
-      const summary = await app.evaluate('window.__perf.stop()', 120_000);
-      await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: true, reasons: await s.unwatch(), from, to, speed, page, widgets, lastHour: (await s.timeline()).max,
-        frames: summary.ui_frames, complete: summary.complete, losses: summary.losses, maps: summary.playback?.maps ?? null, screenshot: false });
+    const stops = page === 'Research' ? await app.evaluate(`(() => {
+      const grid = document.querySelector('.dash-grid-scroll');
+      const max = Math.max(0, grid.scrollHeight - grid.clientHeight);
+      const offsets = [0];
+      for (let y = grid.clientHeight; y < max; y += grid.clientHeight) offsets.push(y);
+      if (max) offsets.push(max);
+      return offsets;
+    })()`) : [0];
+    for (const scroll of stops) {
+      await app.evaluate(`new Promise(done => { document.querySelector('.dash-grid-scroll').scrollTop = ${scroll};
+        requestAnimationFrame(() => requestAnimationFrame(() => done(true))); })`);
+      for (const speed of speeds) {
+        await setSpeed(speed);
+        const seekStart = s.epoch + await app.evaluate('performance.now()');
+        await seekTo(0.3);
+        const widgets = await app.evaluate(RESEARCH_INVENTORY);
+        await throttle(rate);
+        const research = page === 'Research' && speed === 1440;
+        const pressureBefore = research && await app.evaluate('window.__perf.pressureMerges()');
+        if (research) await app.evaluate('window.__perf.beginAudit()');
+        const trace = research && await startTrace(app, ['disabled-by-default-display.framedisplayed', 'blink.user_timing']);
+        const clockMark = trace && await app.evaluate("performance.timeOrigin + performance.mark('research-clock').startTime");
+        await app.evaluate('window.__perf.start()');
+        if (page === 'Research') await app.evaluate(`(() => {
+          const reports = [], observed = new Set();
+          const observer = new IntersectionObserver(entries => {
+            for (const e of entries) {
+              const id = e.target.closest('article.dash-widget')?.dataset.widget;
+              if (id) reports.push({ id, at: performance.timeOrigin + e.time,
+                surface: e.target.matches('article') ? null : e.target.matches('.project-details') ? 'special-project-details' : 'special-projects',
+                top: e.boundingClientRect.top, bottom: e.boundingClientRect.bottom, scrollTop: document.querySelector('.dash-grid-scroll').scrollTop,
+                visible: e.isIntersecting && e.intersectionRect.width > 0 && e.intersectionRect.height > 0 });
+            }
+          });
+          const scan = () => {
+            for (const node of document.querySelectorAll('article.dash-widget,article.kind-special-projects .special-project-list,article.kind-special-projects .project-details')) {
+              if (!observed.has(node)) { observed.add(node); observer.observe(node); }
+            }
+          };
+          const layout = new MutationObserver(scan);
+          for (const node of document.querySelectorAll('article.kind-special-projects .special-projects')) layout.observe(node, { childList: true });
+          scan();
+          __e2e.endResearchWindow = () => { layout.disconnect(); observer.disconnect(); return reports; };
+        })()`);
+        else await s.watch();
+        const from = s.epoch + await app.evaluate('performance.now()');
+        await settledForReplies();
+        await replies?.mark('play', { page, speed });
+        await s.click('button[aria-label="Play recording"]');
+        if (research) {
+          const line = await s.timeline();
+          const endHour = line.value + Math.ceil((PLAY_SECONDS + 0.4) * speed);
+          if (endHour > line.max || !await s.until(`Number(document.querySelector('input.header-timeline').value) >= ${endHour}`, 2 * PLAY_SECONDS * 1000 + 5000))
+            throw new Error('Research playback did not cover the requested game hours');
+        } else await sleep(PLAY_SECONDS * 1000);
+        await s.click('button[aria-label="Pause playback"]');
+        await replies?.mark('pause', { page, speed });
+        const to = s.epoch + await app.evaluate('performance.now()');
+        let presented, audit, pressureMerges, inputs, idleCost;
+        if (trace) {
+          inputs = await researchInputs();
+          const events = await trace();
+          const origin = clockMark - events.find(e => e.name === 'research-clock').ts / 1000;
+          presented = [...new Set(events.filter(e => e.name === 'Display::FrameDisplayed').map(e => origin + e.ts / 1000))].sort((a, b) => a - b);
+          inputs.presented = presented.filter(at => at >= inputs.actions[0].at && at <= inputs.to);
+          await writeFile(path.join(out, `research-compositor-${scroll}.json.gz`), await promisify(gzip)(JSON.stringify(events)));
+          pressureMerges = await app.evaluate('window.__perf.pressureMerges()') - pressureBefore;
+          await setSpeed(1);
+          await s.click('button[aria-label="Play recording"]');
+          const start = await app.evaluate('performance.timeOrigin + performance.now()');
+          await s.frames(120);
+          idleCost = { from: start, to: await app.evaluate('performance.timeOrigin + performance.now()') };
+          await s.click('button[aria-label="Pause playback"]');
+          audit = await app.evaluate('window.__perf.auditPictures()', 240_000);
+        }
+        const summary = await app.evaluate('window.__perf.stop()', 120_000);
+        const visibility = page === 'Research' ? await app.evaluate('__e2e.endResearchWindow()') : undefined;
+        await throttle(1);
+        await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: true, reasons: page === 'Research' ? [] : await s.unwatch(), from, to, seekStart, speed, page, scroll, visibility, seconds: PLAY_SECONDS, widgets, lastHour: (await s.timeline()).max,
+          presented, pressureMerges, audit, inputs, idleCost, frames: summary.ui_frames, complete: summary.complete, losses: summary.losses, maps: summary.playback?.maps ?? null, screenshot: false });
+      }
     }
     await traceWindow(page);
     await save();

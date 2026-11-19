@@ -72,7 +72,6 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const following = active && widget.time.mode === 'follow';
   const headAt = (hour: number) => track ? resolveWindow(widget, track, runtime.tracks, hour)?.lastHour ?? null : null;
 
-  // At the head: the rows are structure, taken at most four times a second while playing.
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -128,7 +127,6 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const partialAt = useCallback((family: ScoreboardFamily | null, tag: string) => !!family && followedHead
     && isPartial(sources.get(familyKey(family))?.read().get(tag)), [followedHead, sources]);
 
-  // Elsewhere (pinned, or not followed): one reply at the hour, paced while playing.
   const playbackHour = useFallbackHour(runtime.clock, following && !followedHead);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const moment = Math.floor(window?.lastHour ?? lastHour);
@@ -213,7 +211,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     const absent = contentSet(options.columns).map(contentKey).filter(key => !registry.some(column => column.key === key));
     const unknown = registryData && absent.length
       ? [`${absent.length} selected ${absent.length === 1 ? 'column is' : 'columns are'} not in this recording: ${absent.join(', ')}.`] : [];
-    const unfollowed = following && !followedHead && store ? [`Values at the playhead are read every quarter second: ${ranking.reason ?? columnsFollowed.reason
+    const unfollowed = following && !followedHead && store ? [`Values requested at the playhead: ${ranking.reason ?? columnsFollowed.reason
       ?? 'the service does not follow them'}.`] : [];
     const warnings = [...(registryData?.warnings ?? []), ...(reply?.warnings ?? []), ...(groupsWarnings ?? []), ...unknown, ...unfollowed];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);

@@ -810,6 +810,24 @@ impl Cursor {
         self.hour
     }
 
+    /// First possible cell or row change in the open part, including the next part boundary.
+    pub fn next_change(&self) -> io::Result<Option<u16>> {
+        let Some(part) = self.parts.front() else { return Ok(None) };
+        let mut due = part.last + 1;
+        for column in part.columns.iter().flatten() {
+            due = due.min(column.older.due).min(column.born.due);
+        }
+        if let Some(span) = part.lifetimes {
+            let mut at = part.life.at;
+            let bytes = part.frames.upto(span);
+            if at < bytes.len() {
+                let gap = u16::try_from(get_varint(bytes, &mut at)?).map_err(|_| invalid("A lifetime exceeds its block"))?;
+                due = due.min(part.life.hour.saturating_add(gap));
+            }
+        }
+        Ok(Some(due))
+    }
+
     /// The list events it applied, by form ([`lists`]'s form bytes).
     pub fn list_forms(&self) -> [u64; 8] {
         self.forms

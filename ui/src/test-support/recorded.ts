@@ -4,11 +4,13 @@
 import type { DashboardClient, DashboardSource, ProductReply, ProductRequest } from '../dashboard/client';
 import { queryFailure } from '../dashboard/queryError.ts';
 import type { QueryError, SourceReply } from '../generated/dashboard';
+import { FollowDecoder, type Release } from '../dashboard/follow/decode.ts';
+import { DATED_FOLLOW, DATED_PANEL, parseDatedPanels } from '../dashboard/follow/message.ts';
 import { isCellsId } from '../dashboard/follow/liveCells.ts';
 import { busy, busyPreparing } from '../shell/busy.ts';
 
 export const RECORDED_KIND = 'battle-plan recorded replies';
-export const RECORDED_VERSION = 1;
+export const RECORDED_VERSION = 3;
 
 export interface RecordedHeader { kind: string; version: number; formatDigest: string; format: string[]; app: { revision: string }; recordedAt: string }
 export interface RecordedBox { x: number; y: number; width: number; height: number }
@@ -22,7 +24,7 @@ interface Query { sourceId: string; revision: string; product: string; params: u
 export type RecordedEntry =
   | { t: 'open'; at: number; head: number | null; ok: boolean; reply: unknown }
   | { t: 'product'; at: number; ms: number; head: number | null; args: { query: Query } | null; ok: boolean; reply: unknown }
-  | { t: 'follow'; at: number; head: number | null; channel: number; index: number; bytes: string }
+  | { t: 'follow'; at: number; head: number | null; bytes: string }
   | { t: 'mark'; at: number; head: number | null; label: string; page?: string; speed?: number; trace?: boolean; layout?: RecordedLayout };
 export type RecordedMark = Extract<RecordedEntry, { t: 'mark' }>;
 type FollowEntry = Extract<RecordedEntry, { t: 'follow' }>;
@@ -73,10 +75,6 @@ export async function loadRecorded(url = '/recorded-replies'): Promise<Recorded>
   return new Recorded(tree.file ?? url, header, entries);
 }
 
-const FOLLOW_MAGIC = 0x314c4f46;
-const PANEL_MAGIC = 0x314c4e50;
-const encoder = new TextEncoder(), decoder = new TextDecoder();
-
 function bytesOf(base64: string): Uint8Array {
   const text = atob(base64), bytes = new Uint8Array(text.length);
   for (let at = 0; at < text.length; at++) bytes[at] = text.charCodeAt(at);
@@ -88,9 +86,9 @@ export function messageHour(bytes: Uint8Array): number | null {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (bytes.byteLength < 4) return null;
   const magic = view.getUint32(0, true);
-  if (magic === FOLLOW_MAGIC && bytes.byteLength >= 16) return view.getInt32(8, true);
-  if (magic !== PANEL_MAGIC) return null;
-  const { panels } = JSON.parse(decoder.decode(bytes.subarray(4))) as { panels: { hour: number }[] };
+  if (magic === DATED_FOLLOW && bytes.byteLength >= 24) return view.getInt32(8, true);
+  if (magic !== DATED_PANEL) return null;
+  const { panels } = parseDatedPanels(bytes);
   return panels.length ? Math.max(...panels.map(panel => panel.hour)) : null;
 }
 
@@ -102,30 +100,22 @@ export function remapMessage(bytes: Uint8Array, idOf: (recorded: number) => numb
   if (bytes.byteLength < 4) return bytes;
   const magic = view.getUint32(0, true);
   const mapped = (id: number) => isCellsId(id) ? id : idOf(id);
-  if (magic === PANEL_MAGIC) {
-    const body = JSON.parse(decoder.decode(bytes.subarray(4))) as { panels: { id: number }[] };
-    const panels = body.panels.flatMap(panel => { const id = mapped(panel.id); return id === undefined ? [] : [{ ...panel, id }]; });
-    if (!panels.length) return null;
-    const json = encoder.encode(JSON.stringify({ ...body, panels }));
-    const out = new Uint8Array(4 + json.byteLength);
-    out.set(bytes.subarray(0, 4));
-    out.set(json, 4);
-    return out;
-  }
-  if (magic !== FOLLOW_MAGIC) return bytes;
+  const panel = magic === DATED_PANEL;
+  if (!panel && magic !== DATED_FOLLOW) return bytes;
+  const countAt = panel ? 8 : 12;
   const kept: [number, number, number][] = [];
-  for (let at = 16, count = view.getUint32(12, true), answer = 0; answer < count; answer++) {
-    const end = at + 16 + view.getUint32(at + 8, true);
+  for (let at = 24, count = view.getUint32(countAt, true), answer = 0; answer < count; answer++) {
+    const end = panel ? at + ((20 + view.getUint32(at + 12, true) + 7) & ~7) : at + 16 + view.getUint32(at + 8, true);
     const id = mapped(view.getUint32(at, true));
     if (id !== undefined) kept.push([at, end, id]);
     at = end;
   }
-  if (!kept.length) return null;
-  const out = new Uint8Array(16 + kept.reduce((sum, [start, end]) => sum + end - start, 0));
+  if (!kept.length && (panel || view.getUint32(countAt, true))) return null;
+  const out = new Uint8Array(24 + kept.reduce((sum, [start, end]) => sum + end - start, 0));
   const written = new DataView(out.buffer);
-  out.set(bytes.subarray(0, 16));
-  written.setUint32(12, kept.length, true);
-  let at = 16;
+  out.set(bytes.subarray(0, 24));
+  written.setUint32(countAt, kept.length, true);
+  let at = 24;
   for (const [start, end, id] of kept) {
     out.set(bytes.subarray(start, end), at);
     written.setUint32(at, id, true);
@@ -147,7 +137,9 @@ const ITEMIZED: Record<string, { asks: string; answers: string[]; place?: string
 type Itemized = { reply: { data: Record<string, unknown> }; at: number; item: unknown };
 
 const productKey = (product: string, params: unknown) => `${product}\u0000${stableJson(params)}`;
-const followKey = (params: unknown) => { const { branchId, query } = params as { branchId?: unknown; query?: unknown }; return stableJson({ branchId, query }); };
+type FollowParams = { id?: number; branchId: string; clock: number; query?: unknown; playing?: boolean };
+const followKey = (params: unknown) => { const { branchId, clock, query } = params as FollowParams; return stableJson({ branchId, clock, query }); };
+const clockKey = (params: unknown) => { const { branchId, clock } = params as FollowParams; return stableJson({ branchId, clock }); };
 
 /** A request a fixture's widgets made of the recorded client. */
 export interface RecordedAsk { product: string; params: unknown; asksFrom?: number; served: boolean; at: number; lane: boolean; head: number | null }
@@ -160,14 +152,18 @@ export class RecordedClient implements DashboardClient {
   /** The messages the app received around the moment shown: a query followed here is answered from them, in order, as the
    * service answers a new follow with what it holds at the head. */
   window: readonly Uint8Array[] = [];
+  at = 0;
+  windowEnd = 0;
   /** The clock's hour, stamped on each ask (the head it was sent at). */
   hourOf: () => number | null = () => null;
   private readonly replies = new Map<string, ReplyEntry>();
   private readonly items = new Map<string, Itemized>();
   private readonly follows = new Map<string, { ids: Set<number>; entry: ReplyEntry }>();
-  private readonly control = new Map<string, ReplyEntry>();
+  private readonly anchors = new Map<string, ReplyEntry[]>();
+  private unfollow?: ReplyEntry;
   private readonly ids = new Map<number, number>();
-  private readonly receivers = new Set<(bytes: ArrayBuffer) => void>();
+  private port?: MessagePort;
+  private readonly decoder = new FollowDecoder();
 
   constructor(entries: readonly RecordedEntry[]) {
     for (const entry of entries) {
@@ -177,7 +173,12 @@ export class RecordedClient implements DashboardClient {
         const key = followKey(params), id = (params as { id: number }).id;
         const held = this.follows.get(key);
         if (held) held.ids.add(id); else this.follows.set(key, { ids: new Set([id]), entry });
-      } else if (product === 'unfollow' || product === 'follow-clock') this.control.set(product, entry);
+      } else if (product === 'follow-clock') {
+        const key = clockKey(params);
+        let anchors = this.anchors.get(key);
+        if (!anchors) this.anchors.set(key, anchors = []);
+        anchors.push(entry);
+      } else if (product === 'unfollow') this.unfollow = entry;
       else if (ITEMIZED[product]) {
         if (!entry.ok) continue;
         const { asks } = ITEMIZED[product];
@@ -192,6 +193,7 @@ export class RecordedClient implements DashboardClient {
         if (!held || (!held.ok && entry.ok)) this.replies.set(key, entry);
       }
     }
+    for (const entries of this.anchors.values()) entries.sort((a, b) => a.at - b.at);
   }
 
   get misses(): RecordedAsk[] { return this.asked.filter(ask => !ask.served); }
@@ -208,7 +210,7 @@ export class RecordedClient implements DashboardClient {
     let entry: ReplyEntry | undefined;
     if (product === 'follow') {
       const held = this.follows.get(followKey(params));
-      if (held) {
+      if (held?.entry.ok && (held.entry.reply as ProductReply<{ available: boolean }>).data.available) {
         for (const id of held.ids) this.ids.set(id, (params as { id: number }).id);
         // Once the follow's reply is taken, as the service's first push comes after it.
         setTimeout(() => this.replay(held.ids), 0);
@@ -221,7 +223,23 @@ export class RecordedClient implements DashboardClient {
       if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
       if (!itemized) throw new Error(`Not recorded: ${product} ${stableJson(params).slice(0, 400)}`);
       return itemized;
-    } else entry = product === 'unfollow' || product === 'follow-clock' ? this.control.get(product) : this.replies.get(productKey(product, params));
+    } else if (product === 'follow-clock') {
+      const anchors = this.anchors.get(clockKey(params)) ?? [];
+      for (const anchor of anchors) {
+        if (anchor.at > this.at) break;
+        entry = anchor;
+      }
+      const playing = (params as FollowParams).playing;
+      if (!entry || (playing && !(entry.args!.query.params as FollowParams).playing)) {
+        entry = anchors.find(anchor => anchor.at >= this.at && anchor.at <= this.windowEnd
+          && (anchor.args!.query.params as FollowParams).playing === playing) ?? entry;
+      }
+    } else if (product === 'unfollow') {
+      const { id } = params as { id: number };
+      for (const [recorded, local] of this.ids) if (local === id) this.ids.delete(recorded);
+      this.decoder.release(id);
+      entry = this.unfollow;
+    } else entry = this.replies.get(productKey(product, params));
     this.asked.push({ product, params, ...(asksFrom === undefined ? {} : { asksFrom }), served: entry !== undefined, at: performance.now(), lane, head: this.hourOf() });
     await Promise.resolve();
     if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
@@ -255,16 +273,16 @@ export class RecordedClient implements DashboardClient {
     return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: data as T };
   }
 
-  async onFollowMessages(receive: (bytes: ArrayBuffer) => void): Promise<() => void> {
-    this.receivers.add(receive);
-    return () => { this.receivers.delete(receive); };
+  async openFollow(port: MessagePort) {
+    this.port = port;
+    port.onmessage = ({ data }: MessageEvent<Release>) => this.decoder.release(data);
   }
 
   /** The window's messages for the app's follows `ids`, under this page's ids, in order. */
   private replay(ids: ReadonlySet<number>): void {
     for (const bytes of this.window) {
       const mapped = remapMessage(bytes, id => ids.has(id) ? this.ids.get(id) : undefined);
-      if (mapped) for (const receive of this.receivers) receive(mapped.slice().buffer);
+      if (mapped) this.port?.postMessage([this.decoder.item(mapped.slice().buffer)]);
     }
   }
 
@@ -273,7 +291,7 @@ export class RecordedClient implements DashboardClient {
   deliver(bytes: Uint8Array): boolean {
     const mapped = remapMessage(bytes, id => this.ids.get(id));
     if (!mapped) return false;
-    for (const receive of this.receivers) receive(mapped.slice().buffer);
+    this.port?.postMessage([this.decoder.item(mapped.slice().buffer)]);
     return true;
   }
 
@@ -311,10 +329,9 @@ export class Recorded {
 
   client(): RecordedClient { return new RecordedClient(this.entries); }
 
-  /** The followed messages received from `from` to `to` (marks), in the channel's order, each with its hour. */
-  messages(from: RecordedMark, to: RecordedMark): { hour: number | null; bytes: Uint8Array }[] {
+  /** The followed messages received from `from` to `to` (marks), in pull order, each with its hour. */
+  messages(from: RecordedMark, to: RecordedMark): { at: number; hour: number | null; bytes: Uint8Array }[] {
     return this.entries.filter((entry): entry is FollowEntry => entry.t === 'follow' && entry.at >= from.at && entry.at <= to.at)
-      .sort((a, b) => a.channel - b.channel || a.index - b.index)
-      .map(entry => { const bytes = bytesOf(entry.bytes); return { hour: messageHour(bytes), bytes }; });
+      .map(entry => { const bytes = bytesOf(entry.bytes); return { at: entry.at, hour: messageHour(bytes), bytes }; });
   }
 }

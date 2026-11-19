@@ -41,8 +41,6 @@ const NO_WARNINGS: string[] = [];
  * bar from when it became one to when it stopped, coloured by its level. Levels and
  * their names come from the campaign's content; colours follow their order. */
 export default function SubjectsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  // The widget renders when a relation, a level or an identity changes by the head (paced; any hour while paused), never
-  // because the hour moved inside one; the playhead and the bars move with the clock each frame (`liveHead`).
   const clock = runtime.clock;
   const followsClock = widget.time.mode === 'follow';
   const structure = useRef<(hour: number) => string>(() => '');

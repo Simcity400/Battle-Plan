@@ -25,8 +25,7 @@ pub mod tests;
 /// A recording's pages as units, the timeline of one branch over them, and its tables' column
 /// kinds.
 pub struct Units {
-    /// What names the recording: the playhead of a second caller with the same and the same
-    /// timeline is shared.
+    /// Recording identity shared by map and follow readers.
     pub name: String,
     pub pages: Arc<dyn Pages>,
     pub timeline: Timeline,

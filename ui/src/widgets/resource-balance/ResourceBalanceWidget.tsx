@@ -107,8 +107,8 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const [resourceId, setResourceId] = useState<number>();
   const following = widget.time.mode === 'follow';
-  const paced = useFallbackHour(runtime.clock, active && !following && widget.time.mode !== 'campaign');
-  const window = resolveWindow(widget, track, runtime.tracks, paced);
+  const requestHour = useFallbackHour(runtime.clock, active && !following && widget.time.mode !== 'campaign');
+  const window = resolveWindow(widget, track, runtime.tracks, requestHour);
   const savedExtent = saved?.extent ? [track.branch.firstHour + saved.extent[0], track.branch.firstHour + saved.extent[1]] as [number, number] : null;
   const extent: [number, number] = savedExtent && savedExtent[0] >= track.branch.firstHour && savedExtent[1] <= track.branch.lastHour ? savedExtent
     : widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour];

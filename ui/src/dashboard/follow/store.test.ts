@@ -2,16 +2,38 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { CELL, cellState, cellValue, parseFollowed, rowHour, rowKeys, rowName, rowReason } from './message.ts';
 import type { FollowedAnswer } from './message.ts';
-import { fakeTransport, manualFrames, message } from './messages.fixture.ts';
+import { datedPanel, fakeTransport, manualFrames, message } from './messages.fixture.ts';
 import { BarCell, TextCell, formatAmountFast, paintArmy, paintMeasure, paintStability } from './painters.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { FollowStore } from './store.ts';
-import type { Availability } from './store.ts';
-import { followStore, followTransport } from './connection.ts';
-import { followsHead } from './useFollow.ts';
-import { panelReply } from './panel.ts';
+import { Followed } from '../../draw/followed.ts';
+import { StructureQueue } from './structureQueue.ts';
+import { liveKey } from '../../charts/live.ts';
+import { DatedStore } from './datedStore.ts';
+import { FollowDecoder } from './decode.ts';
+import type { FollowEntry } from './store.ts';
 
 const one = (key: bigint, value: bigint) => ({ keys: [key], columns: 1, values: [value] });
+
+test('queued row structures publish only at their hour and a reset removes abandoned rows through the next input', () => {
+  const q = new StructureQueue(), published: number[] = [];
+  const record = (hour: number, seek = 5) => ({ id: 1, seek, hour, through: hour });
+  const drain = (hour: number) => q.drain(hour, r => published.push(r.hour));
+  q.add(record(12)); q.add(record(30)); q.add(record(20));
+  drain(11); assert.deepEqual(published, []);
+  drain(15); assert.deepEqual(published, [12]);
+  q.discard(new Set([1]), 20);
+  q.add(record(24)); drain(40);
+  assert.deepEqual(published, [12, 24]);
+  q.add(record(48)); q.discard(new Set([1])); q.add(record(3, 6)); drain(50);
+  assert.deepEqual(published, [12, 24, 3]);
+  q.add(record(60)); q.add({ ...record(68), id: 2 }); q.add(record(72));
+  q.add({ ...record(72), through: 75 });
+  const due: number[][] = [];
+  q.drain(75, r => due.push([r.id, r.hour, r.through]));
+  assert.deepEqual(due.sort((a, b) => a[0]! - b[0]!), [[1, 72, 75], [2, 68, 68]],
+    'a delayed page frame publishes only the newest eligible structure per subscription');
+});
 
 /** A text cell over plain objects, as an element's text node and title. */
 function cell() {
@@ -42,43 +64,18 @@ test('a painter runs at most once a frame and only when its version moved', () =
   const handle = store.acquire({ q: 1 });
   const painted: number[] = [];
   store.painter(handle.entry, entry => painted.push(entry.hour));
-  assert.equal(frames.run(), 1, 'a new painter is due once');
-  assert.deepEqual(painted, [0]);
+  assert.equal(frames.run(), 0);
+  assert.deepEqual(painted, []);
   transport.deliver(message(24, [{ id: 1, answer: one(100n, 5n) }]));
   transport.deliver(message(48, [{ id: 1, answer: one(100n, 6n) }]));
   transport.deliver(message(72, [{ id: 1, answer: one(100n, 7n) }]));
   assert.equal(frames.pending, 1, 'three messages, one frame');
   frames.run();
-  assert.deepEqual(painted, [0, 72], 'painted once, with the newest');
+  assert.deepEqual(painted, [72], 'painted once, with the newest');
   frames.run();
   transport.deliver(message(96, [{ id: 2, answer: one(1n, 1n) }], false, 1));
   assert.equal(frames.pending, 0, 'nothing due when its entry did not move');
-  assert.deepEqual(painted, [0, 72]);
-});
-
-test('an answer not resent is current through the newest message of its timeline, and its painter hears it', () => {
-  const transport = fakeTransport();
-  const frames = manualFrames();
-  const store = new FollowStore(transport, frames.schedule);
-  const moved = store.acquire({ product: 'series-state', params: { branchId: '7', tags: ['GER'] } }).entry;
-  const still = store.acquire({ product: 'series-state', params: { branchId: '7', tags: ['ITA'] } }).entry;
-  const shown: number[] = [];
-  store.painter(still, entry => shown.push(entry.through));
-  frames.run();
-  transport.deliver(message(24, [{ id: moved.id, answer: one(1n, 5n) }, { id: still.id, answer: one(2n, 9n) }]));
-  transport.deliver(message(48, [{ id: moved.id, hour: 40, answer: one(1n, 6n) }]));
-  assert.deepEqual([moved.hour, moved.through, still.hour, still.through], [40, 48, 24, 48], 'the unchanged answer holds at the message\'s hour');
-  frames.run();
-  assert.deepEqual(shown, [0, 48], 'painted once, at the newest hour it holds through');
-  transport.deliver(message(72, [], true));
-  assert.equal(still.through, 72, 'a settled message with no answer still moves every query of the one timeline followed');
-  const other = store.acquire({ panel: 'roster', branchId: '9' }).entry;
-  const elsewhere = store.acquire({ product: 'series-state', params: { branchId: '9', tags: ['SOV'] } }).entry;
-  transport.deliver(message(96, [{ id: moved.id, answer: one(1n, 7n) }]));
-  assert.deepEqual([still.through, elsewhere.through, other.through], [96, 0, 0], 'another timeline\'s queries and panels hold their own hours');
-  transport.deliver(message(100, [{ id: elsewhere.id, answer: one(3n, 1n) }], false, 1));
-  transport.deliver(message(120, [], false, 1));
-  assert.deepEqual([still.through, elsewhere.through], [96, 120], 'a message naming none moves the queries of its own playhead alone');
+  assert.deepEqual(painted, [72]);
 });
 
 test('an off-screen widget is not painted and catches up when shown', () => {
@@ -123,14 +120,12 @@ test('one message lands in every entry it names, parsed once, and 500 painters t
   const bytes = message(100, Array.from({ length: 500 }, (_, at) => ({ id: at + 1, answer: one(BigInt(at), BigInt(at) * 100_000n) })));
   assert.ok(bytes.length < 64 * 1024, `${bytes.length} bytes`);
   transport.deliver(bytes);
-  assert.equal(store.counts.messages, 1);
   assert.equal(frames.pending, 1, 'one frame for every entry');
   for (let round = 0; round < 3; round++) {
     transport.deliver(message(100 + round, Array.from({ length: 500 }, (_, at) => ({ id: at + 1, answer: one(BigInt(at), BigInt(at + round) * 100_000n) }))));
     assert.equal(frames.run(), 1);
   }
-  assert.equal(store.counts.messages, 4);
-  assert.equal(store.counts.paints, 500 * 4, 'every painter once a frame: its first, then four messages in three frames');
+  assert.equal(store.counts.paints, 500 * 3, 'each painter runs once per frame with a reading');
   assert.equal(slots[499]!.node.data, String(499 + 2));
 });
 
@@ -196,35 +191,6 @@ test('the army painter draws each row as a share of the greatest', () => {
   assert.deepEqual(rows.map(row => [row.style.width, row.value.node.data]), [['0%', '—'], ['0%', '—'], ['0%', '—']]);
 });
 
-test('a reset clears the rows a log held', () => {
-  const transport = fakeTransport();
-  const frames = manualFrames();
-  const store = new FollowStore(transport, frames.schedule);
-  const handle = store.acquire({ log: 1 });
-  transport.deliver(message(30, [{ id: 1, answer: { keys: [5n], columns: 1, values: [1n], hours: [25] } }]));
-  assert.equal(handle.entry.answer?.kind, 'log');
-  transport.deliver(message(900, [], true));
-  assert.equal(handle.entry.answer, undefined, 'rows from before the seek are gone');
-});
-
-test("a store hears only its own follows: another recording's messages move none of its hours and clear none of its logs", () => {
-  const channel = fakeTransport(), other = fakeTransport();
-  const deliver = (bytes: Uint8Array) => { channel.deliver(bytes); other.deliver(bytes); };
-  const ids = (() => { let next = 1; return () => next++; })();
-  const mine = new FollowStore(channel, manualFrames().schedule, ids), theirs = new FollowStore(other, manualFrames().schedule, ids);
-  const log = mine.acquire({ log: 1, branchId: '1' }).entry, series = mine.acquire({ product: 'series-state', params: { branchId: '1' } }).entry;
-  const elsewhere = theirs.acquire({ log: 1, branchId: '1' }).entry;
-  deliver(message(30, [{ id: log.id, answer: { keys: [5n], columns: 1, values: [1n], hours: [25] } }, { id: series.id, answer: one(1n, 5n) }], false, 4));
-  deliver(message(70, [{ id: elsewhere.id, answer: { keys: [6n], columns: 1, values: [2n], hours: [60] } }], false, 9));
-  deliver(message(900, [], true, 9));
-  assert.equal(log.answer?.kind, 'log', "another recording's seek leaves this log's rows");
-  assert.equal(elsewhere.answer, undefined, 'its own seek clears its own');
-  deliver(message(80, [], false, 9));
-  assert.deepEqual([log.through, series.through], [30, 30], "another recording's hours move none of these");
-  deliver(message(48, [], false, 4));
-  assert.deepEqual([log.through, series.through, elsewhere.through], [48, 48, 80], 'a message of their own follow moves them');
-});
-
 test('the fast amount writes every value as formatAmount does', () => {
   const edges = [0n, 1n, 4n, 5n, 49_999n, 50_000n, 99_999n, 100_000n, 150_000n, 123_456_789n, 9_007_199_254_740_991n, 9_007_199_254_740_992n, 1n << 62n];
   let seed = 12345n;
@@ -239,7 +205,7 @@ test('the fast amount writes every value as formatAmount does', () => {
 });
 
 /** A message the service wrote (`crates/dashboard-follow/src/tests.rs`, `golden`): the same bytes. */
-const GOLDEN = '464f4c3101000000d20400000300000007000000b0040000c800000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff020000000400000000000000000000000100000003000000000000000300000047455203000000534f5610000000534f5620686173206e6f2076616c756503000000495441190000004954412069732068656c64206279206e6f20636f756e747279000008000000d204000040000000000000000000000000000000000000000100000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f7572000000000009000000d204000050000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff00000000';
+const GOLDEN = '464f4c3201000000d204000003000000000000000000000007000000b0040000c800000000000000010000000300000001000000050000006400000000000000650000000000000000000000000000000000000000000000000000000000000000000000000000004e61bc0000000000000000000000000000000000000000000001030000000000ffffffff020000000400000000000000000000000100000003000000000000000300000047455203000000534f5610000000534f5620686173206e6f2076616c756503000000495441190000004954412069732068656c64206279206e6f20636f756e747279000008000000d204000040000000000000000000000000000000000000000100000027000000436f756e747269657320776173206e6f74207265636f72646564206174207468697320686f7572000000000009000000d204000050000000000000000200000001000000020000000000000005000000000000004000000000000000feffffffffffffff09000000000000004c040000000000000000000000000000ffffffff00000000ffffffff00000000';
 
 test('the bytes the service writes read back as it wrote them', () => {
   const bytes = new Uint8Array(GOLDEN.match(/../g)!.map(pair => parseInt(pair, 16)));
@@ -260,23 +226,6 @@ test('the bytes the service writes read back as it wrote them', () => {
   assert.deepEqual([cellValue(log!, 0), cellValue(log!, 1)], [-2n, 9n]);
 });
 
-test('a notice that pushed answers stopped makes every query unavailable by name, now and later', async () => {
-  const transport = fakeTransport();
-  const store = new FollowStore(transport, manualFrames().schedule);
-  const power = store.acquire({ q: 'power' });
-  let told = 0;
-  store.watch(power.entry, () => told++);
-  assert.equal(power.entry.status, 'followed');
-  const reason = 'Pushed answers stopped: their pipe could not be read (broken)';
-  transport.deliver(new TextEncoder().encode(`FEN1${reason}`));
-  assert.deepEqual([power.entry.status, power.entry.reason, told], ['unavailable', reason, 1], 'the widget is told, so it asks as before');
-  const stability = store.acquire({ q: 'stability' });
-  await Promise.resolve();
-  await Promise.resolve();
-  assert.deepEqual([stability.entry.status, stability.entry.reason], ['unavailable', reason]);
-  assert.equal(transport.sent.filter(sent => sent.startsWith('follow ')).length, 1, 'nothing more is followed');
-});
-
 test('seventy thousand texts are each read back by their own row', () => {
   const rows = 70_000;
   const keys = Array.from({ length: rows }, (_, row) => BigInt(row));
@@ -288,125 +237,261 @@ test('seventy thousand texts are each read back by their own row', () => {
   }
 });
 
-test('a query the service does not follow is unavailable with its reason, and one it follows is followed', async () => {
-  const told = new Map<number, Availability>([[1, { available: false, reason: 'CountryStability is not in this playhead\'s files' }], [2, { available: true }]]);
-  const watched: string[] = [];
-  const store = new FollowStore({ follow: id => Promise.resolve(told.get(id)!), unfollow: () => {}, listen: () => () => {} }, manualFrames().schedule);
-  const stability = store.acquire({ q: 'stability' }), power = store.acquire({ q: 'power' });
-  assert.equal(stability.entry.status, 'pending');
-  store.watch(stability.entry, () => watched.push(stability.entry.status));
-  await Promise.resolve();
-  await Promise.resolve();
-  assert.equal(stability.entry.status, 'unavailable');
-  assert.equal(stability.entry.reason, 'CountryStability is not in this playhead\'s files');
-  assert.deepEqual(watched, ['unavailable'], 'the widget is told, so it keeps asking as before');
-  assert.equal(power.entry.status, 'followed');
-  assert.equal(followsHead({ status: stability.entry.status, structure: '', entry: stability.entry, hidden: false }), false);
-  assert.equal(followsHead({ status: power.entry.status, structure: '', entry: power.entry, hidden: false }), true);
-  const bridge = followTransport({ available: true } as never, { id: 's', path: 'p', revision: 'r' } as never);
-  assert.deepEqual(await bridge.follow(3, { product: 'series-state', params: { branchId: '1' } }),
-    { available: false, reason: 'This connection has no channel for pushed answers' }, 'a client with no channel follows nothing');
+function dated(head: () => number) {
+  const decoder = new FollowDecoder();
+  const store = new DatedStore(() => {}, what => decoder.release(what));
+  let next = 0;
+  return {
+    store,
+    add() {
+      const entry: FollowEntry = { id: ++next, status: 'followed', answer: undefined, hour: 0, through: 0, version: 0 };
+      store.add(entry, '1');
+      return entry;
+    },
+    deliver(bytes: Uint8Array) {
+      const item = decoder.item(bytes.slice().buffer);
+      if (item.kind !== 'failure') store.accept(item);
+      store.drain(head());
+    },
+    frame: () => store.drain(head()),
+  };
+}
+const datedStep = (through: number, answers: Parameters<typeof message>[1], epoch: number, reset = false) =>
+  message(through, answers, reset, 9, epoch);
+
+test('a dated panel reads the native MessagePack bytes', () => {
+  const bytes = datedPanel(1, 7, { rows: [7] });
+  assert.deepEqual([...bytes.slice(44, 52)], [0x81, 0xa4, 114, 111, 119, 115, 0x91, 7]);
+  const { store, add, deliver } = dated(() => 7);
+  const entry = add();
+  store.bind('1', 9, 1);
+  deliver(bytes);
+  assert.deepEqual(entry.panel?.data, { rows: [7] });
 });
 
-test('a panel lands in its entry, tells its watchers only when its reply differs, and a malformed one is refused', () => {
-  const transport = fakeTransport();
-  const store = new FollowStore(transport, manualFrames().schedule);
-  const { entry } = store.acquire({ panel: 'template-roster', branchId: '1', tag: 'GER' });
-  let told = 0;
-  store.watch(entry, () => told++);
-  const panel = (hour: number, sections: string[], refused: string | null = null) =>
-    new TextEncoder().encode(`PNL1${JSON.stringify({ panels: [{ id: entry.id, hour, data: refused === null ? { sections, warnings: ['w'] } : null, refused }, { id: 999, hour, data: {}, refused: null }] })}`);
-  transport.deliver(panel(10, ['Infantry division']));
-  assert.deepEqual(entry.panel?.data, { sections: ['Infantry division'], warnings: ['w'] });
-  assert.equal(entry.answer, undefined, 'a panel is no followed answer');
-  const version = entry.version;
-  transport.deliver(panel(11, ['Infantry division']));
-  assert.equal(entry.version, version, 'the same text moves nothing');
-  assert.equal(entry.hour, 11);
-  transport.deliver(panel(12, ['Armoured division']));
-  transport.deliver(panel(13, [], 'Template roster country is unavailable at this hour'));
-  assert.equal(told, 3, 'told for the first text and each that differed');
-  assert.equal(entry.panel?.refused, 'Template roster country is unavailable at this hour');
-  assert.throws(() => transport.deliver(new TextEncoder().encode('PNL1{"panels":[{"id":1}]}')), /malformed/);
+test('one completed product step covers every joined product without waking idle pictures or a late seed', () => {
+  const dirty: number[] = [], store = new DatedStore(entry => dirty.push(entry.id), () => {});
+  const decoder = new FollowDecoder();
+  const entries = [1, 2, 3].map(id => {
+    const entry: FollowEntry = { id, status: 'followed', answer: undefined, hour: 0, through: 0, version: 0 };
+    store.add(entry, '1');
+    return entry;
+  });
+  store.bind('1', 9, 1);
+  function land(bytes: Uint8Array) {
+    const item = decoder.item(bytes.slice().buffer);
+    if (item.kind !== 'failure') store.accept(item);
+  }
+  for (const id of [1, 2, 3]) {
+    const seed = datedPanel(id, 10, { value: id });
+    if (id < 3) seed[33] = 1;
+    land(seed);
+  }
+  store.drain(10);
+  dirty.length = 0;
+  const completed = datedPanel(0, 34);
+  completed[32] = 4;
+  land(completed);
+  store.drain(33);
+  assert.deepEqual(entries.map(e => store.coverage(e)?.through), [10, 10, 10]);
+  store.drain(34);
+  assert.deepEqual(entries.map(e => store.coverage(e)?.through), [34, 34, 10]);
+  assert.deepEqual(dirty, []);
+  const unchanged = { id: 4, status: 'followed', hour: 0, through: 0, version: 0, answer: undefined } satisfies FollowEntry;
+  store.add(unchanged, '1');
+  land(datedStep(34, [{ id: 4, answer: one(1n, 7n) }], 1));
+  store.drain(34);
+  dirty.length = 0;
+  land(datedStep(58, [], 1));
+  store.drain(58);
+  assert.equal(store.coverage(unchanged)?.through, 58);
+  assert.deepEqual(dirty, [], 'the lane clock covers unchanged answers without scheduling their painters');
+  store.seek('1', 2);
+  assert.ok(entries.every(e => store.coverage(e) === null));
 });
 
-test('a panel carrying a reply lands as data, is painted and told only when the reply differs, and validates once', () => {
-  const transport = fakeTransport();
-  const frames = manualFrames();
-  const store = new FollowStore(transport, frames.schedule);
-  const { entry } = store.acquire({ panel: 'naval-yards', tag: 'ENG', branchId: '1' });
-  let told = 0, validated = 0;
+test('a pending listed log limits only its own reading', () => {
+  const { store, add, deliver } = dated(() => 40);
+  const log = add(), country = add();
+  store.bind('1', 9, 1);
+  deliver(datedStep(10, [log, country].map(e => ({ id: e.id, answer: one(1n, 7n) })), 1));
+  const packet = new Uint8Array(40);
+  packet.set(datedStep(40, [], 1));
+  const wire = new DataView(packet.buffer);
+  wire.setUint32(12, 1, true);
+  wire.setUint32(24, log.id, true);
+  wire.setInt32(28, 10, true);
+  deliver(packet);
+  assert.deepEqual([log, country].map(e => store.coverage(e)?.through), [10, 40]);
+});
+
+test('a native record covers its proven unchanged interval before the next step arrives', () => {
+  let hour = 12;
+  const { store, add, deliver, frame } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const packet = datedPanel(entry.id, 10, 'held');
+  packet[33] = 3;
+  new DataView(packet.buffer).setInt32(40, 22, true);
+  deliver(packet);
+  deliver(datedPanel(entry.id, 23, 'changed'));
+  assert.deepEqual(store.coverage(entry), { start: 10, through: 22 });
+  assert.equal(entry.panel?.data, 'held');
+  hour = 23; frame();
+  assert.deepEqual(store.coverage(entry), { start: 23, through: 23 });
+  const followed = new Followed(() => {});
+  followed.add(1, '1'); followed.bind('1', 9, 1);
+  followed.land([{ kind: 'panels', batch: { route: 9, clock: 100, seek: 1, completed: undefined,
+    panels: [{ id: 1, hour: 110, through: 122, stepped: true, panel: { data: 'held', refused: null } }] } }]);
+  followed.drain(12);
+  assert.equal(followed.snapshot(1)?.through, 112, 'inspection stops at the presented hour on the panel clock');
+});
+
+test('page seeks admit their own packets immediately and a native reset supersedes its queued future', () => {
+  let head = 10;
+  const { store, add, deliver, frame } = dated(() => head);
+  const entry = add(), panel = add();
+  store.bind('1', 9, 17);
+  const step = (at: number, seek: number, reset = false) => deliver(datedStep(at, [{ id: entry.id, answer: one(1n, BigInt(at)) }], seek, reset));
+  step(30, 17);
+  step(10, 17, true);
+  deliver(datedPanel(panel.id, 10, 'current', 17));
+  head = 30;
+  frame();
+  assert.equal(entry.hour, 10);
+  assert.equal(panel.panel?.data, 'current');
+  store.seek('1', 18);
+  head = 6;
+  step(6, 17, true);
+  deliver(datedPanel(panel.id, 5, 'old seek', 17));
+  assert.equal(entry.answer, undefined);
+  assert.equal(panel.panel, undefined);
+  step(6, 18, true);
+  deliver(datedPanel(panel.id, 6, 'new seek', 18));
+  assert.equal(entry.hour, 6);
+  assert.equal((panel as FollowEntry).panel?.data, 'new seek');
+  store.seek('1', 19, 50);
+  head = 50;
+  assert.equal((panel as FollowEntry).panel, undefined, 'a forward seek beyond confirmed coverage waits for a reading');
+  deliver(datedPanel(panel.id, 50, 'replacement', 19));
+  assert.equal((panel as FollowEntry).panel?.data, 'replacement');
+});
+
+test('a forward scrub keeps the confirmed interval containing the target', () => {
+  const { store, add, deliver } = dated(() => 12);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const packet = datedPanel(entry.id, 10, 'still current');
+  packet[33] = 3;
+  new DataView(packet.buffer).setInt32(40, 22, true);
+  deliver(packet);
+  store.seek('1', 2, 17);
+  assert.deepEqual(store.coverage(entry), { start: 10, through: 22 });
+  assert.equal(entry.panel?.data, 'still current');
+});
+
+test('an early panel leaves the eligible picture up until its hour arrives', () => {
+  let hour = 10;
+  const { store, add, deliver, frame } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  deliver(datedPanel(entry.id, 10, 'early'));
+  deliver(datedPanel(entry.id, 13, 'later'));
+  assert.equal(entry.panel?.data, 'early');
+  hour = 13;
+  frame();
+  assert.equal(entry.panel?.data, 'later');
+  store.seek('1', 2);
+  deliver(datedPanel(entry.id, 5, 'abandoned generation'));
+  assert.equal(entry.panel, undefined);
+  deliver(datedPanel(entry.id, 5, 'after seek', 2));
+  assert.equal((entry as FollowEntry).panel?.data, 'after seek');
+});
+
+test('exact research slot snapshots stay paintable when their live progress stream has passed the read', () => {
+  const { store, add, deliver } = dated(() => 100);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const id = 0x80000001;
   const painted: number[] = [];
-  store.watch(entry, () => told++);
-  store.painter(entry, held => painted.push(held.hour));
-  frames.run();
-  const push = (hour: number, data: unknown, refused: string | null = null) =>
-    transport.deliver(new TextEncoder().encode(`PNL1${JSON.stringify({ panels: [{ id: entry.id, hour, data, refused }] })}`));
-  const validate = (data: unknown) => { validated++; return data as { rows: { yard: string; ships: number }[] }; };
-  push(10, { rows: [{ yard: 'Portsmouth', ships: 3 }] });
-  assert.deepEqual(entry.panel?.data, { rows: [{ yard: 'Portsmouth', ships: 3 }] });
-  frames.run();
-  push(11, { rows: [{ yard: 'Portsmouth', ships: 3 }] });
-  assert.equal(frames.pending, 0, 'an equal reply is not painted again');
-  push(12, { rows: [{ yard: 'Portsmouth', ships: 4 }] });
-  frames.run();
-  assert.deepEqual(painted, [0, 10, 12]);
-  assert.equal(told, 2);
-  assert.deepEqual(panelReply(entry.panel, validate).data, { rows: [{ yard: 'Portsmouth', ships: 4 }] });
-  panelReply(entry.panel, validate);
-  assert.equal(validated, 1, 'one push is validated once however often it is read');
-  assert.match(panelReply(entry.panel, () => { throw new Error('The yards reply is malformed.'); }).error?.message ?? '', /yards reply/,
-    'a reply read through another validation is that validation');
-  push(13, null, 'No country holds ENG at this hour');
-  assert.equal(panelReply(entry.panel, validate).error?.message, 'No country holds ENG at this hour');
-  assert.deepEqual(panelReply(undefined, validate), {}, 'nothing before the first push');
+  for (const hour of [10, 20, 30]) {
+    deliver(datedStep(hour + 2, [{ id, hour: hour + 2, answer: one(1n, 90n) }], 1));
+    deliver(datedPanel(entry.id, hour, { live: {
+      groups: [{ table: 0, columns: [0], keys: ['1'], follow: id, seedHour: hour, values: [hour] }], rows: [], kinds: [], cells: [],
+    } }));
+    painted.push(store.coverage(entry)!.through);
+    assert.equal(store.group(entry, id)?.get(0, 0), hour, 'the exact progress belongs to the painted hour');
+  }
+  assert.deepEqual(painted, [10, 20, 30]);
 });
 
-test('a panel naming its history beside its params anchors the clock for that history', async () => {
-  const asked: { product: string; params: Record<string, unknown> }[] = [];
-  const client = { product: (request: { product: string; params: Record<string, unknown> }) => {
-    asked.push(request);
-    return Promise.resolve({ ...request, data: request.product === 'follow' ? { available: true } : {} });
-  }, onFollowMessages: () => Promise.resolve(() => {}) };
-  const clock = { getSnapshot: () => ({ playing: true, hoursPerSecond: 1440, seekSequence: 0, position: 100 }), subscribe: () => () => {} };
-  const transport = followTransport(client as never, { id: 's', revision: 'r' } as never, clock as never);
-  assert.deepEqual(await transport.follow(1, { panel: 'naval-yards', tag: 'ENG', branchId: 'b' }), { available: true });
-  assert.deepEqual(asked.map(request => [request.product, request.params.branchId]), [['follow', 'b'], ['follow-clock', 'b']]);
+test('a dated panel and two independently confirmed cell readings meet at their shared coverage', () => {
+  let hour = 40;
+  const { store, add, deliver, frame } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const spec = (follow: number, seedHour: number) => ({ table: 0, keys: ['1'], columns: [0], follow, seedHour, values: [12] });
+  const groups = [spec(0x80000001, 10), spec(0x80000002, 12)];
+  deliver(datedPanel(entry.id, 12, { live: { groups, rows: [], kinds: [], cells: [] } }));
+  deliver(datedPanel(entry.id, 30));
+  const step = (at: number, id: number, start: number) =>
+    deliver(datedStep(at, [{ id, hour: start, answer: one(1n, 12n) }], 1));
+  step(22, groups[0]!.follow, 10);
+  assert.deepEqual(store.coverage(entry), { start: 12, through: 12 }, 'the second seed confirms only its own hour');
+  step(24, groups[1]!.follow, 12);
+  assert.deepEqual(store.coverage(entry), { start: 12, through: 24 });
+  assert.equal(entry.hour, 12, 'the confirmation leaves the structure start intact');
+  assert.equal(entry.through, 30);
+  deliver(datedPanel(entry.id, 25, { live: { groups: groups.map(g => ({ ...g, seedHour: 25 })), rows: [], kinds: [], cells: [] } }));
+  deliver(datedPanel(entry.id, 40));
+  deliver(datedStep(29, [], 1));
+  assert.deepEqual(store.coverage(entry), { start: 25, through: 29 }, 'an established stream can confirm a newer exact seed');
+  hour = 30;
+  step(30, groups[1]!.follow, 34);
+  assert.deepEqual(store.coverage(entry), { start: 25, through: 29 }, 'an individual reading ahead of the common lane head waits');
+  hour = 34;
+  frame();
+  assert.deepEqual(store.coverage(entry), { start: 25, through: 29 }, 'the two readings still have no shared hour');
+  hour = 35;
+  deliver(datedStep(35, [], 1));
+  assert.deepEqual(store.coverage(entry), { start: 34, through: 35 });
 });
 
-test('a track aligned at its anchor follows the game hour it shows, and each clock mapping has its own store', async () => {
-  const asked: { product: string; params: Record<string, unknown> }[] = [];
-  const client = { product: (request: { product: string; params: Record<string, unknown> }) => {
-    asked.push(request);
-    return Promise.resolve({ ...request, data: { available: true } });
-  }, onFollowMessages: () => Promise.resolve(() => {}) };
-  const clock = { getSnapshot: () => ({ playing: false, hoursPerSecond: 24, seekSequence: 3, position: 10.5 }), subscribe: () => () => {} };
-  const source = { id: 's', revision: 'r' } as never;
-  const transport = followTransport(client as never, source, clock as never, undefined, 1000);
-  await transport.follow(1, { product: 'series-state', params: { branchId: 'b' } });
-  assert.deepEqual(asked.map(({ product, params }) => [product, params.clock, params.hour]), [['follow', 1000, undefined], ['follow-clock', 1000, 1010.5]],
-    'the hour the track shows (its anchor on), and the mapping the host keys its playhead by');
-  assert.notEqual(followStore(client as never, source, clock as never, 1000), followStore(client as never, source, clock as never, 0));
-  assert.equal(followStore(client as never, source, clock as never, 1000), followStore(client as never, source, clock as never, 1000));
+test('a changing value stays in the worker until interaction requests its dated snapshot', () => {
+  const decoder = new FollowDecoder(), released: unknown[] = [];
+  const followed = new Followed(what => { released.push(what); decoder.release(what); });
+  followed.add(3, 'branch');
+  followed.bind('branch', 9, 1);
+  const group = 0x80000001;
+  const live = { groups: [{ table: 0, keys: ['1'], columns: [0], follow: group, seedHour: 10, values: [7] }],
+    rows: ['1'], kinds: [{ id: 'progress', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] };
+  const land = (packet: Uint8Array, hour: number) => {
+    followed.land([decoder.item(packet.slice().buffer)]);
+    followed.drain(hour);
+    return [...followed.structures(true)];
+  };
+  assert.equal(land(datedPanel(3, 10, { live }), 10)[0]?.values?.get(liveKey('1', 'progress')), 7);
+  const full = datedStep(11, [{ id: group, hour: 10, answer: one(1n, 8n) }], 1);
+  assert.deepEqual(land(full, 11), []);
+  assert.deepEqual(land(datedPanel(3, 11), 11), []);
+  const snapshot = followed.snapshot(3);
+  assert.equal(snapshot?.through, 11);
+  assert.equal(snapshot?.values?.get(liveKey('1', 'progress')), 8);
+  followed.seek('branch', 2);
+  assert.equal(followed.snapshot(3)?.panel, null);
+  followed.remove(3);
+  assert.deepEqual(released, [3, { route: 9 }]);
 });
 
-test('paused, an hour stepped moves the followed playhead to it; a pause alone seeks nothing', async () => {
-  const asked: { product: string; params: Record<string, unknown> }[] = [];
-  const client = { product: (request: { product: string; params: Record<string, unknown> }) => {
-    asked.push(request);
-    return Promise.resolve({ ...request, data: { available: true } });
-  }, onFollowMessages: () => Promise.resolve(() => {}) };
-  let snapshot = { playing: true, hoursPerSecond: 24, seekSequence: 1, position: 40.5 };
-  const listeners = new Set<() => void>();
-  const clock = { getSnapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); } };
-  const move = (next: Partial<typeof snapshot>) => { snapshot = { ...snapshot, ...next }; for (const listener of listeners) listener(); };
-  const transport = followTransport(client as never, { id: 's', revision: 'r' } as never, clock as never, undefined, 100);
-  await transport.follow(1, { product: 'series-state', params: { branchId: 'b' } });
-  const anchors = () => asked.filter(({ product }) => product === 'follow-clock').map(({ params }) => [params.hour, params.playing, params.sought]);
-  move({ playing: false, position: 52.25 });
-  move({ position: 53.25 });
-  move({ position: 53.5 });
-  move({ position: 52.25 });
-  assert.deepEqual(anchors(), [[140.5, true, true], [152.25, false, false], [153.25, false, true], [152.25, false, true]],
-    'Next hour and Previous hour each move it; within the hour, or a pause, nothing is sought');
+test('a staged product computes its structural result only once', () => {
+  const followed = new Followed(() => {});
+  followed.add(1, 'a', 'nuclear-arsenal'); followed.bind('a', 1, 1);
+  let validations = 0;
+  const reply = { missing: null, warnings: [], types: [], get countries() { validations++; return []; } };
+  followed.land([{ kind: 'panels', batch: { route: 1, clock: 0, seek: 1, completed: undefined,
+    panels: [{ id: 1, hour: 1, stepped: true, panel: { data: reply, refused: null } }] } }], () => {});
+  const prepared = validations;
+  followed.drain(1);
+  [...followed.structures(true)];
+  assert.ok(prepared > 0); assert.equal(validations, prepared);
 });

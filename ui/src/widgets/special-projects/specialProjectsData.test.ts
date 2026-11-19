@@ -1,3 +1,4 @@
+import { panelStructure, panelValues } from '../../draw/panels/views.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
@@ -7,6 +8,15 @@ import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, ea
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
+import { effectsStructure, effectTexts } from './projectDetailsData.ts';
+
+test('an open effect keeps its layout when its dated line or refusal count changes', () => {
+  const record = (hour: number, count: number) => ({ hour, options: [], warnings: [], unavailable: null,
+    output: { text: 'Modifier\nAmount ' + count, refusals: { 'Unknown effect': count } } });
+  assert.equal(effectsStructure(record(12, 3)), effectsStructure(record(24, 8)));
+  assert.equal(effectTexts(record(24, 8)).get('output:1'), 'Amount 8');
+  assert.equal(effectTexts(record(24, 8)).get('output:reason:Unknown effect'), 'Unknown effect (8)');
+});
 
 const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],
   identities: [{firstHour:100,lastHour:199,slot:5,countryId:10},{firstHour:220,lastHour:300,slot:5,countryId:10}],
@@ -18,6 +28,24 @@ const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spa
     {firstHour:100,lastHour:147,presentation:0,progress:17,state:'running',cancellation:null,completion:null,iterations:2},
     {firstHour:148,lastHour:199,presentation:0,progress:100,state:'completed',cancellation:null,completion:{hour:140,exact:true},iterations:3},
   ]}],
+});
+
+test('a dated project packet reveals its own rows and warnings', () => {
+  const data = fixture();
+  assert.notEqual(panelStructure('special-projects', data, 147), panelStructure('special-projects', data, 148));
+  const before = panelStructure('special-projects', data, 147);
+  const renamed = fixture();
+  renamed.presentations[0].name = 'New name in another seed';
+  assert.notEqual(panelStructure('special-projects', renamed, 147), before);
+  data.warnings.push('Unknown project state');
+  assert.notEqual(panelStructure('special-projects', data, 147), before);
+});
+
+test('an exact project read derives its structure from the sampled hour', () => {
+  const data = fixture();
+  const stale = currentKey(data, 147);
+  const values = panelValues('special-projects', data, null, 148, stale);
+  assert.equal(values?.get('episode'), 'Mod project name');
 });
 
 test('daily reads step without interpolation and future completion stays hidden', () => {

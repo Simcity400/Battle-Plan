@@ -19,7 +19,7 @@ use crate::{
 };
 use dashboard_follow::{
     live::{Cells, Group, GroupState, Live},
-    panel::{Panel, PanelData},
+    panel::{Declared, Panel, PanelData},
 };
 use dashboard_query::{
     Query,
@@ -33,10 +33,14 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     marker::PhantomData,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
+
+mod incremental;
+mod encoding;
+pub use incremental::Edits;
 
 /// Which rows of a table a read keeps.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +76,14 @@ impl Read {
         keys.dedup();
         Self { table, keys: Keys::These(keys) }
     }
+}
+
+pub fn field_mask(table: TableId, fields: &[&str]) -> u64 {
+    fields.iter().map(|field| 1u64 << dashboard_declare::field(table, field).expect("a declared product field")).fold(0, |a, b| a | b)
+}
+
+pub fn field_columns(table: TableId, fields: &[&str]) -> Vec<usize> {
+    fields.iter().map(|field| dashboard_declare::field(table, field).expect("a declared product field")).collect()
 }
 
 /// The holder of the tag a reply is about at its hour: canonical slot and raw country id.
@@ -114,6 +126,7 @@ pub trait AtHour: 'static {
     /// Whether any reply field reads localisation, artwork or content definitions.
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = true;
+    const ENCODE_LIVE_CELLS: bool = false;
     type Params: DeserializeOwned + Send + 'static;
     type Reply: Serialize + ReplyWarnings + 'static;
     /// What a reply needs of the recorded content, made once per request or per follow.
@@ -156,11 +169,30 @@ pub trait AtHour: 'static {
         Self::reads(params, owner, step, held)
     }
 
+    /// The staged keys and the last hour they hold in the absence of a dependency change.
+    fn retained_reads(params: &Self::Params, owner: Option<Owner>, stage: usize, held: &DecodedFrame, at: &ReadsAt<'_, Self::Context>) -> (Vec<Read>, i32) {
+        (Self::reads_in(params, owner, stage, held, at), i32::MAX)
+    }
+
     /// The fields a request reads of `table`'s rows: every one unless the product names fewer, for
     /// a table whose other fields it never looks at (they hold their row's defaults, never decoded).
     fn columns(table: TableId) -> Option<Vec<usize>> {
         let _ = table;
         None
+    }
+
+    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> { Self::columns(table) }
+
+    fn plan_changes(_stage: usize, edits: &Edits) -> bool { !edits.tables.is_empty() || !edits.replaced.is_empty() }
+
+    fn compares_previous(_table: TableId) -> bool { false }
+
+    fn uses_sample(_table: TableId) -> bool { true }
+
+    const CLOCK_DEPENDENT: bool = true;
+
+    fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Value) -> io::Result<bool> {
+        Ok(false)
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context>;
@@ -209,9 +241,29 @@ fn converted<'a>(reads: &'a [Read], fields: &'a [Option<Vec<usize>>]) -> Vec<rep
         .collect()
 }
 
+thread_local! { static READ_ROWS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) }; }
+
+pub fn counted<T>(work: impl FnOnce() -> T) -> (T, u64) {
+    let before = READ_ROWS.replace(Some(0));
+    let value = work();
+    let rows = READ_ROWS.replace(before).unwrap();
+    (value, rows)
+}
+
+pub fn count_rows(rows: impl FnOnce() -> u64) {
+    if let Some(n) = READ_ROWS.get() { READ_ROWS.set(Some(n + rows())); }
+}
+
+fn count_frame(frame: &DecodedFrame, reads: &[Read]) {
+    count_rows(|| reads.iter().map(|r| match frame.tables[r.table.index()].held() {
+        replay_frame::frame::TableView::Complete(rows) | replay_frame::frame::TableView::Truncated { rows, .. } => rows.len() as u64,
+        _ => 0,
+    }).sum());
+}
+
 fn frame_at(query: &Query<'_>, run: u32, hour: i32, reads: &[Read], columns: fn(TableId) -> Option<Vec<usize>>) -> io::Result<DecodedFrame> {
     let fields: Vec<Option<Vec<usize>>> = reads.iter().map(|read| columns(read.table)).collect();
-    replay::at::frame(query.replay.recording(), run, hour, &converted(reads, &fields))
+    replay::at::frame(query.replay.recording(), run, hour, &converted(reads, &fields)).inspect(|frame| count_frame(frame, reads))
 }
 
 /// [`frame`]s at hours a reply asks in turn, of whatever tables and keys each asks, through one
@@ -231,7 +283,7 @@ impl<'q> Frames<'q> {
     pub fn frame(&mut self, hour: i32, reads: &[Read], title: &str) -> io::Result<DecodedFrame> {
         let run = self.query.timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{title} hour is not recorded")))?.run;
         let fields: Vec<Option<Vec<usize>>> = vec![None; reads.len()];
-        dashboard_query::cost::storage(|| self.seeker.frame(run, hour, &converted(reads, &fields)))
+        dashboard_query::cost::storage(|| self.seeker.frame(run, hour, &converted(reads, &fields))).inspect(|frame| count_frame(frame, reads))
     }
 }
 
@@ -250,7 +302,7 @@ pub fn frame_with(query: &Query<'_>, hour: i32, reads: &[Read], columns: fn(Tabl
 /// `P`'s reply at `hour` of `query`'s timeline: the hour's run and the holder resolved, then the
 /// content (`context`), then the rows it names read step by step, their time counted as storage.
 pub fn answer<P: AtHour>(query: &Query<'_>, params: &P::Params, hour: i32, context: impl FnOnce() -> io::Result<P::Context>, cancelled: &AtomicBool) -> io::Result<P::Reply> {
-    answered::<P>(query, params, hour, context, cancelled).map(|(reply, _)| reply)
+    answered::<P, _>(query, params, hour, context, cancelled, None).map(|(reply, _)| reply)
 }
 
 /// Whether `read` holds every row of `group`.
@@ -266,22 +318,35 @@ fn covers(read: &Read, group: &Group) -> bool {
 /// [`answer`], and the live cells it names with their values at `hour` ([`Live::json`]), none when
 /// it names none. A table holding a cell's row the product did not read is read again at the hour,
 /// the rows of every group of it, as that read replaces the product's.
-fn answered<P: AtHour>(query: &Query<'_>, params: &P::Params, hour: i32, context: impl FnOnce() -> io::Result<P::Context>, cancelled: &AtomicBool) -> io::Result<(P::Reply, Option<Value>)> {
+fn answered<P: AtHour, C: std::borrow::Borrow<P::Context>>(query: &Query<'_>, params: &P::Params, hour: i32, context: impl FnOnce() -> io::Result<C>, cancelled: &AtomicBool,
+    mut readers: Option<&mut Vec<Option<replay::at::Readers>>>) -> io::Result<(P::Reply, Option<Value>)> {
     let run = query.timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
     let owner = holder::<P>(&query.holders, params, hour)?;
-    let context = context()?;
+    let held = context()?;
+    let context = held.borrow();
     let mut answer = AnswerFrame::new(query.timeline.id, hour);
+    let mut stage = 0;
+    let mut read_frame = |reads: &[Read]| dashboard_query::cost::storage(|| {
+        let Some(readers) = readers.as_deref_mut() else { return frame_at(query, run, hour, reads, P::columns) };
+        let fields = reads.iter().map(|read| P::columns(read.table)).collect::<Vec<_>>();
+        if stage == readers.len() { readers.push(None); }
+        let mut cursor = replay::at::Cursor::resume(query.replay.recording(), &converted(reads, &fields), readers[stage].take())?;
+        let frame = cursor.frame(run, hour)?;
+        readers[stage] = cursor.into_readers();
+        stage += 1;
+        Ok(frame)
+    });
     for step in 0.. {
         crate::metadata::check_cancel(cancelled)?;
-        let reads = P::reads_in(params, owner, step, &answer.frame, &ReadsAt { holders: &query.holders, context: &context, run, hour });
+        let reads = P::reads_in(params, owner, step, &answer.frame, &ReadsAt { holders: &query.holders, context, run, hour });
         if reads.is_empty() {
             break;
         }
-        answer.read(query, run, reads, P::columns)?;
+        answer.read(reads, &mut read_frame)?;
     }
     let cells = Cells::default();
-    let reply = P::reply(&answer.frame, params, &At { owner, holders: &query.holders, hour, context: &context, cancelled, live: &cells })?;
-    let live = answer.live(query, run, &cells.finish(), P::columns)?;
+    let reply = P::reply(&answer.frame, params, &At { owner, holders: &query.holders, hour, context, cancelled, live: &cells })?;
+    let live = answer.live(&cells.finish(), &mut read_frame)?;
     Ok((reply, live))
 }
 
@@ -297,8 +362,8 @@ impl AnswerFrame {
     }
 
     #[inline(never)]
-    fn read(&mut self, query: &Query<'_>, run: u32, reads: Vec<Read>, columns: fn(TableId) -> Option<Vec<usize>>) -> io::Result<()> {
-        let read = dashboard_query::cost::storage(|| frame_at(query, run, self.frame.hour, &reads, columns))?;
+    fn read(&mut self, reads: Vec<Read>, read_frame: &mut impl FnMut(&[Read]) -> io::Result<DecodedFrame>) -> io::Result<()> {
+        let read = read_frame(&reads)?;
         for asked in reads {
             self.frame.tables[asked.table.index()] = read.tables[asked.table.index()].clone();
             self.held.insert(asked.table, asked);
@@ -307,29 +372,30 @@ impl AnswerFrame {
     }
 
     #[inline(never)]
-    fn live(&mut self, query: &Query<'_>, run: u32, live: &Live, columns: fn(TableId) -> Option<Vec<usize>>) -> io::Result<Option<Value>> {
+    fn live(&mut self, live: &Live, read_frame: &mut impl FnMut(&[Read]) -> io::Result<DecodedFrame>) -> io::Result<Option<Value>> {
         if live.is_empty() {
             return Ok(None);
         }
-        let mut unread: BTreeMap<TableId, BTreeSet<u128>> = BTreeMap::new();
-        for group in live.groups.iter().filter(|group| !self.held.get(&group.table).is_some_and(|read| covers(read, group))) {
-            unread.entry(group.table).or_default();
-        }
-        for group in &live.groups {
-            if let Some(keys) = unread.get_mut(&group.table) {
-                keys.extend(&group.keys);
-            }
-        }
-        if !unread.is_empty() {
-            let reads: Vec<Read> = unread.into_iter().map(|(table, keys)| Read { table, keys: Keys::These(keys.into_iter().collect()) }).collect();
-            let read = dashboard_query::cost::storage(|| frame_at(query, run, self.frame.hour, &reads, columns))?;
-            for asked in &reads {
-                self.frame.tables[asked.table.index()] = read.tables[asked.table.index()].clone();
-            }
+        let reads = supplemental(live, |group| self.held.get(&group.table).is_some_and(|read| covers(read, group)));
+        if !reads.is_empty() {
+            self.read(reads, read_frame)?;
         }
         let states: Vec<GroupState> = live.values(&self.frame).into_iter().map(GroupState::Values).collect();
         Ok(Some(live.json(&states)))
     }
+}
+
+fn supplemental(live: &Live, covered: impl Fn(&Group) -> bool) -> Vec<Read> {
+    let mut unread: BTreeMap<TableId, BTreeSet<u128>> = BTreeMap::new();
+    for group in live.groups.iter().filter(|group| !covered(group)) {
+        unread.entry(group.table).or_default();
+    }
+    for group in &live.groups {
+        if let Some(keys) = unread.get_mut(&group.table) {
+            keys.extend(&group.keys);
+        }
+    }
+    unread.into_iter().map(|(table, keys)| Read::these(table, keys)).collect()
 }
 
 /// A reply and the live cells it names, as the UI reads them: the reply's fields and `live`.
@@ -378,8 +444,61 @@ fn load<P: AtHour>(source: &Source, lease_id: &str, mut request: Value, load: &L
     P::validate(&params).map_err(str::to_owned)?;
     super::reply_json(source, lease_id, P::KEY, P::CONTENT_DEPENDENT, load, cancelled, || {
         let query = crate::queries::query(source, dashboard_query::branch(&request)?)?;
-        answered::<P>(&query, &params, hour, || P::context_for(source, load, &params), cancelled).map(|(reply, live)| WithLive { reply, live })
+        answered::<P, _>(&query, &params, hour, || P::context_for(source, load, &params), cancelled, None).map(|(reply, live)| WithLive { reply, live })
     })
+}
+
+pub fn exact_panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Result<Box<dyn Panel>, String>
+where P::Params: Sync, P::Context: Sync {
+    let branch = dashboard_query::branch(asked).map_err(|e| e.to_string())?;
+    let query = crate::queries::query(source, branch).map_err(|e| e.to_string())?;
+    let mut request = asked.clone();
+    if let Some(fields) = request.as_object_mut() { fields.remove("panel"); }
+    let params = P::Params::deserialize(request).map_err(|e| format!("Invalid {} panel: {e}", P::KEY))?;
+    P::validate(&params)?;
+    let context = Arc::new(P::context_for(source, load, &params).map_err(|e| e.to_string())?);
+    let declared = if P::owner(&params).is_none() {
+        let recording = query.replay.recording();
+        P::tables(&params).into_iter().filter(|t| recording.withheld_reason(t.index()).is_none()).map(|table| {
+            let columns = P::columns(table).unwrap_or_else(|| recording.read_columns(table.index()));
+            Declared { table: table.index(), columns, keyed: true, passing: false }
+        }).collect()
+    } else { Vec::new() };
+    let params = Arc::new(params);
+    let warnings = content_warnings::<P>(source, load);
+    let advance = shared_reader(source, load, P::KEY, asked, || incremental::reader::<P>(source, params.clone(), context.clone(), Query { replay: query.replay, holders: query.holders.clone(), timeline: query.timeline.clone() }, warnings.clone()));
+    let (replay, holders, timeline, executable) = (source.replay(), query.holders, query.timeline, source.tables());
+    let cold: dashboard_follow::panel::ExactReader = Arc::new(move |hour, cancelled| {
+        let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
+        let mut own = OwnRefusals::default();
+        let (mut reply, live) = engine_executable::executable_tables::scope(executable, || own_refusals(&mut own, ||
+            answered::<P, _>(&query, &params, hour, || Ok(context.as_ref()), cancelled, None))).map_err(|e| e.to_string())?;
+        finish(reply.warnings_mut(), &own, &warnings);
+        serde_json::to_value(WithLive { reply, live }).map_err(|e| e.to_string())
+    });
+    Ok(product_panel(advance, cold, declared))
+}
+
+pub fn product_panel(advance: dashboard_follow::panel::ProductReader, cold: dashboard_follow::panel::ExactReader, declared: Vec<Declared>) -> Box<dyn Panel> {
+    let current = advance.clone();
+    let read = Arc::new(move |hour, cancelled: &AtomicBool| current(hour, false, cancelled, None).value.as_ref().clone());
+    Box::new(dashboard_follow::panel::AtHour { read, cold, advance, declared })
+}
+
+pub fn shared_reader(source: &Source, load: &LoadContext, product: &str, params: &Value, make: impl FnOnce() -> dashboard_follow::panel::ProductReader) -> dashboard_follow::panel::ProductReader {
+    type WeakReader = std::sync::Weak<dyn Fn(i32, bool, &AtomicBool, Option<dashboard_follow::panel::ProductStep<'_>>) -> dashboard_follow::panel::ProductRead + Send + Sync>;
+    #[derive(Default)]
+    struct Shared(HashMap<String, WeakReader>);
+    let mut args = params.clone();
+    if let Some(obj) = args.as_object_mut() { obj.remove("panel"); }
+    let key = format!("{product} {args} {:?}", load.content.as_ref().map(|c| (&c.options.game_dir, &c.options.user_dir, &c.options.cache_dir, c.allow_unverified, Arc::as_ptr(c.presentation.binding()), c.presentation.identity())));
+    let shared = source.state::<Shared>();
+    let mut cache = shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.0.retain(|_, r| r.strong_count() > 0);
+    if let Some(reader) = cache.0.get(&key).and_then(WeakReader::upgrade) { return reader; }
+    let reader = make();
+    cache.0.insert(key, Arc::downgrade(&reader));
+    reader
 }
 
 /// `P` at the head: its reply as the panel's data, made from the playhead's rows.

@@ -52,6 +52,7 @@ test('a track’s numbers are its live cells: texts painted from them, a missing
 
 test('numbers do not change what renders; rows, names and unlocks do', () => {
   const later = structuredClone(reply);
+  later.folders[0].grand = { icon: null, name: 'Mobile warfare', id: 'mobile' };
   assert.equal(masteryStructure(later), masteryStructure(reply));
   later.folders[0].tracks[0].unlocked = 2;
   assert.notEqual(masteryStructure(later), masteryStructure(reply));

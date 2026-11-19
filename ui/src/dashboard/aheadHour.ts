@@ -12,7 +12,7 @@ export function aheadKey(held: AheadBlock | null, hour: number): string {
 
 /** Following, the block of hours a list renders its rows for: rendered at the hour the clock entered it, with the rows
  * revealed before `until` drawn ahead for the frame loop to reveal (`LogList` and `Table` take a `RevealClock`). It
- * renders again only when the clock leaves the block (paced as `useHeadHour`), never for a row revealed inside it.
+ * renders again only when the clock leaves the block, never for a row revealed inside it.
  * `end(hour)` is the end of a block rendered at `hour` (`aheadEnd`); the same function while the rows stand. Not
  * enabled, the block is the clock's hour as rendered. */
 export function useAheadHour(clock: HeadClock, enabled: boolean, end: (hour: number) => number): AheadBlock {

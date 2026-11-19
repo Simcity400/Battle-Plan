@@ -236,6 +236,8 @@ pub struct Context {
     replay: Arc<Replay>,
     index: Arc<Index>,
     visibility: visibility::Cache,
+    scoped_details: std::sync::atomic::AtomicBool,
+    coverage: std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
 }
 
 fn context(source: &Source, load: &LoadContext) -> Context {
@@ -244,6 +246,8 @@ fn context(source: &Source, load: &LoadContext) -> Context {
         replay: source.replay(),
         index: crate::answer::index(source),
         visibility: visibility::Cache::default(),
+        scoped_details: false.into(),
+        coverage: Default::default(),
     }
 }
 
@@ -273,9 +277,15 @@ fn held_since(query: &Query<'_>, tag: &str, holder: Owner, read: i32, hour: i32)
     false
 }
 
+struct Coverage {
+    block: u32,
+    reads: Vec<(i32, i32)>,
+}
+
 /// The hours values are read at: the reply's, and its run's.
 struct Reads<'r, 'q> {
     query: &'r Query<'q>,
+    coverage: &'r std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
     tag: &'r str,
     holder: Owner,
     run: u32,
@@ -287,14 +297,36 @@ impl Reads<'_, '_> {
     /// holder held the tag, or why there is none (`what` names the values).
     fn last(&self, table: TableId, what: &str) -> Result<i32, String> {
         let from = self.hour.saturating_sub(STAGGER_PERIOD - 1);
-        let spans = cost::storage(|| lanes::available_reads(self.query.replay.recording(), self.run, table, from, self.hour)).map_err(|error| format!("{what}: {error}"))?;
-        let read = spans.last().map(|span| span.1).ok_or_else(|| format!("{what} were not read in the day up to this hour"))?;
+        let recording = self.query.replay.recording();
+        let run = recording.run(self.run).map_err(|e| e.to_string())?;
+        let block = run.ordinal(self.hour).ok_or_else(|| format!("{what}: hour not recorded"))? / replay_columnar::unit::BLOCK;
+        let mut cache = self.coverage.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (self.run, table);
+        if cache.get(&key).is_none_or(|c| c.block != block) {
+            let first = run.block_first_hour(block);
+            let last = first.saturating_add(replay_columnar::unit::BLOCK as i32 - 1).min(run.last_hour());
+            let reads = cost::storage(|| lanes::available_reads(recording, self.run, table, first.saturating_sub(STAGGER_PERIOD - 1), last)).map_err(|e| format!("{what}: {e}"))?;
+            cache.insert(key, Coverage { block, reads });
+        }
+        let spans = &cache[&key].reads;
+        let at = spans.partition_point(|s| s.0 <= self.hour);
+        let read = at.checked_sub(1).map(|i| spans[i].1.min(self.hour)).filter(|&h| h >= from).ok_or_else(|| format!("{what} were not read in the day up to this hour"))?;
         self.supplies(read).then_some(read).ok_or_else(|| format!("{what} were last read before this country held the tag"))
     }
 
     /// Whether a read at `read` supplies the reply's hour: within the day before it, by the same holder.
     fn supplies(&self, read: i32) -> bool {
         read <= self.hour && self.hour - read < STAGGER_PERIOD && held_since(self.query, self.tag, self.holder, read, self.hour)
+    }
+
+    /// The new sample while the old reply's coverage (including its reason) still holds.
+    fn continued(&self, previous: i32, table: TableId, what: &str) -> Option<Option<i32>> {
+        let before = Self { hour: previous, ..*self };
+        match (before.last(table, what), self.last(table, what)) {
+            (Ok(_), Ok(hour)) => Some(Some(hour)),
+            (Err(old), Err(new)) if old == new => Some(None),
+            _ => None,
+        }
     }
 }
 
@@ -486,6 +518,61 @@ impl AtHour for SpecialProjectDetailsAt {
         Some(&params.tag)
     }
 
+    fn uses_sample(_table: TableId) -> bool { false }
+
+    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+        (table == TableId::Projects).then(|| dashboard_base::products::at_hour::field_columns(table, &["definition_id", "runtime"]))
+    }
+
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+        match stage {
+            1 => [TableId::CountryLinks, TableId::Scientists, TableId::ProjectPrograms].iter().any(|&t| edits.fields(t, u64::MAX)),
+            2 => DETAIL_TABLES.iter().any(|&t| t != TableId::SliceReads && t != TableId::LexicalTokens && edits.fields(t, u64::MAX)),
+            _ => false,
+        }
+    }
+
+    fn advance(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+        if !edits.only_columns(TableId::SliceReads, dashboard_base::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"])) || at.context.scoped_details.load(std::sync::atomic::Ordering::Relaxed) { return Ok(false); }
+        let Some(holder) = at.owner else { return Ok(false) };
+        let q = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
+        let reads = Reads { query: &q, coverage: &at.context.coverage, tag: &params.tag, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
+        let Some(previous) = data["hour"].as_i64().and_then(|h| i32::try_from(h).ok()) else { return Ok(false) };
+        for (table, group, what) in [(TableId::ProjectPrograms, "programs", "Program assignments"), (TableId::ProjectBreakthroughs, "breakthroughs", "Specialization progress points")] {
+            let Some(read) = reads.continued(previous, table, what) else { return Ok(false) };
+            if let Some(hour) = read {
+                let Some(items) = data[group].as_array_mut() else { return Ok(false) };
+                for item in items { item["readHour"] = hour.into(); }
+            }
+        }
+        let Some(daily) = reads.continued(previous, TableId::ScientistDaily, "Scientist injuries and visibility") else { return Ok(false) };
+        if let Some(daily) = daily {
+            if frame.complete::<tables::ScientistDaily>().is_ok_and(|rows| rows.iter().any(|r| matches!(r.template_visibility, Recorded::Value(Some(1))))) { return Ok(false); }
+            let Some(scientists) = data["scientists"].as_array_mut() else { return Ok(false) };
+            for scientist in scientists {
+                for key in ["visibilityHour", "injuryHour"] {
+                    if !scientist[key].is_null() { scientist[key] = daily.into(); }
+                }
+            }
+        }
+        let Ok(slices) = frame.complete::<tables::SliceReads>() else { return Ok(false) };
+        let Ok(owners) = owners_of(frame, holder.slot) else { return Ok(false) };
+        let Ok(rows) = frame.complete::<tables::Projects>() else { return Ok(false) };
+        for &owner in &owners {
+            if (owner == holder.id || !prefixed(rows, owner, |r| r.owner).is_empty()) && !replay_data::sliced::read_hour(slices, TableId::Projects, owner).is_some_and(|read| reads.supplies(read)) {
+                return Ok(false);
+            }
+        }
+        let Some(projects) = data["projects"].as_array_mut() else { return Ok(false) };
+        for project in projects {
+            let owner = project["owner"].as_u64().unwrap() as u32;
+            let Some(read) = replay_data::sliced::read_hour(slices, TableId::Projects, owner) else { return Ok(false) };
+            project["readHour"] = read.into();
+        }
+        data["hour"] = at.hour.into();
+        Ok(true)
+    }
+
     fn tables(_params: &Self::Params) -> Vec<TableId> {
         DETAIL_TABLES.to_vec()
     }
@@ -544,7 +631,7 @@ impl AtHour for SpecialProjectDetailsAt {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project details name no country"))?;
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project details hour is not recorded"))?.run;
-        let reads = Reads { query: &query, tag: &params.tag, holder: owner, run, hour: at.hour };
+        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.tag, holder: owner, run, hour: at.hour };
         let mut namer = Namer::new(&at.context.content, &query, at.hour, owner.slot);
         let mut out = SpecialProjectDetails { hour: at.hour, scientists: None, programs: None, breakthroughs: None, projects: None, unavailable: Vec::new(), warnings: Vec::new() };
         if let Some(why) = &namer.missing {
@@ -561,6 +648,7 @@ impl AtHour for SpecialProjectDetailsAt {
         out.breakthroughs = breakthroughs(frame, &owners, &reads, &mut namer, &mut out.unavailable);
         out.programs = programs(frame, &owners, &reads, &mut namer, &mut out.unavailable);
         out.projects = projects(frame, &owners, &reads, &mut namer, &params.tag, &mut out.unavailable);
+        if !namer.scoped.is_empty() { at.context.scoped_details.store(true, std::sync::atomic::Ordering::Relaxed); }
         out.warnings = namer.warnings();
         Ok(out)
     }
@@ -936,7 +1024,7 @@ impl AtHour for SpecialProjectEffectsAt {
         };
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
-        let reads = Reads { query: &query, tag: &params.tag, holder: owner, run, hour: at.hour };
+        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.tag, holder: owner, run, hour: at.hour };
         // The game reads the program's scientist as it stood at its daily read: only that hour knows it.
         let scientist = (|| {
             if project.program_reference as u32 != PROGRAM_REFERENCE {

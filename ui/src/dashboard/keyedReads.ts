@@ -1,8 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { inFrameNow } from './frameUpdates.ts';
-import { StructurePace } from './structurePace.ts';
-import type { PaceClock } from './structurePace.ts';
 import { asFailure } from './queryError.ts';
 import type { Failure } from './queryError';
 
@@ -81,22 +79,10 @@ export class KeyedReads<A, V> {
  * one starts afresh and stops the reads of the last). `wanted` comes in the order the view shows it: the first `lead`
  * new asks are read alone and the rest once that read settles, so the service answers the rows in view first. `read`
  * asks one chunk. A landing is told to the reads' listeners at once (`useKeyedPainter` writes it into the rows), and
- * `version` moves: with `pace` (the playback clock), in the widget's shared structure slot (`StructurePace`), so while
- * playing the reads commit at most once a slot with the rest of the widget's structure, at once paused; without, in
- * the frame they land in (`inFrameNow`). Nothing else renders it. */
+ * the next frame renders their new version. */
 export function useKeyedReads<A, V>(owner: string | null, wanted: readonly A[], active: boolean, keyOf: (ask: A) => string,
-  read: (chunk: readonly A[], signal: AbortSignal) => Promise<KeyedAnswer<V>>, chunk = 256, lead = LEAD_ASKS, pace?: PaceClock): { reads: KeyedReads<A, V>; version: number } {
+  read: (chunk: readonly A[], signal: AbortSignal) => Promise<KeyedAnswer<V>>, chunk = 256, lead = LEAD_ASKS): { reads: KeyedReads<A, V>; version: number } {
   const [version, setVersion] = useState(0);
-  const paced = useRef<{ pace: StructurePace<number>; count: number } | null>(null);
-  paced.current ??= { pace: new StructurePace<number>(0, Object.is, value => setVersion(value)), count: 0 };
-  const clock = useRef(pace);
-  clock.current = pace;
-  useEffect(() => {
-    if (!pace) return undefined;
-    const held = paced.current!.pace;
-    const stop = pace.subscribe(() => { if (!pace.getSnapshot().playing) held.settle(); });
-    return () => { stop(); held.drop(); };
-  }, [pace]);
   const held = useRef<{ owner: string | null; reads: KeyedReads<A, V>; controller: AbortController } | null>(null);
   const fresh = () => ({ owner, reads: new KeyedReads<A, V>(keyOf, chunk, lead), controller: new AbortController() });
   if (!held.current || held.current.owner !== owner) {
@@ -113,9 +99,7 @@ export function useKeyedReads<A, V>(owner: string | null, wanted: readonly A[], 
     // A landing renders in its frame, while playing too: the rows in view wait on it.
     const told = () => {
       reads.told();
-      const at = clock.current, version = paced.current!;
-      if (at) version.pace.offer(++version.count, at.getSnapshot().playing);
-      else inFrameNow(() => setVersion(value => value + 1));
+      inFrameNow(() => setVersion(value => value + 1));
     };
     const ask = (asks: readonly A[]) => reader.current(asks, controller.signal).then(answer => { if (!controller.signal.aborted) { reads.landed(asks, answer); told(); } },
       error => { if (!controller.signal.aborted) { reads.failed(asks, asFailure(error)); told(); } });

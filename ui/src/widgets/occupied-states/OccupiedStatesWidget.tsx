@@ -1,6 +1,6 @@
 import { nameReadText } from '../../dashboard/nameReads.ts';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
@@ -25,7 +25,6 @@ import { DEFAULT_SORT, OPTIONS } from './definition';
 import { STRENGTH, garrisonBar, garrisonCell, garrisonText, garrisonTone, occupationTooltip, occupiedRows, percentCell, stateName, validateOccupiedStates } from './occupiedStatesData.ts';
 import type { OccupiedRow } from './occupiedStatesData';
 import './occupiedStates.css';
-import { useStructureState } from '../../dashboard/structurePace.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly OccupiedRow[] = [];
@@ -71,8 +70,8 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   [data, match, widget.countries, groups.data, choiceAt, role]);
   const rows = view?.rows ?? NO_ROWS;
   // The countries of the rows drawn, for their names and flags: news only when other countries are drawn (a push or a
-  // re-sort moves rows, not countries), and paced with the widget's other structure, so at most a commit a slot.
-  const [drawn, setDrawn] = useStructureState(runtime.clock, '');
+  // re-sort moves rows, not countries).
+  const [drawn, setDrawn] = useState('');
   const onVisibleRows = useCallback((shownRows: readonly OccupiedRow[]) => setDrawn(countriesOf(shownRows)), [setDrawn]);
   const tagsKey = useMemo(() => countriesOf(rows), [rows]);
   const stableTags = useMemo(() => tagsKey ? tagsKey.split(',') : [], [tagsKey]);

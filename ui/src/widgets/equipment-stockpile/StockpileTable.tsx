@@ -48,8 +48,7 @@ export function paintedCells(rows: readonly StockRow[]): Map<string, SortValue> 
 
 /** One country's stockpile at an hour: every equipment type with anything then, led by the game's surplus or
  * shortage (shortages first), with its models and output a day; for an AI-controlled country, for which the game
- * computes none, what it holds. Which rows show and their names render (at most four times a second while the head
- * moves); the surplus, stock, output and the models line are painted from the live cells each frame. Rows open the
+ * computes none, what it holds. Which rows show and their names render; the surplus, stock, output and the models line are painted from the live cells each frame. Rows open the
  * type's breakdown; the rest of the types are counted, not listed. */
 export default function StockpileTable({ data, hour, at, live, shownAt, included, count, setCount, narrow, active, runtime, track, widget, viewport, onDiagnostics, onPick }: {
   data: EquipmentStockpileReply; hour: number; at: (values: LiveValues<number>) => EquipmentStockpileReply | undefined;

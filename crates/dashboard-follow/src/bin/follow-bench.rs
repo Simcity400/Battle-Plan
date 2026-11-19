@@ -40,7 +40,7 @@ use std::{
 };
 
 const USAGE: &str = "follow-bench <recording> [--run=N | --from=<game hour> --hours=N] --page=0|7|50|500 --select=<file> [--hook=on|off] [--flat] [--speed=1440] [--hz=60] \
-    [--step-threads=2] [--fetch-threads=1] [--seek=<frames>] [--seeks=20] [--seconds=S] [--check] [--budget=65536] [--service] [--log=<Table>] [--table]";
+    [--step-threads=2] [--fetch-threads=1] [--seek=<frames>] [--seeks=20] [--seconds=S] [--check] [--service] [--log=<Table>] [--table]";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -60,7 +60,6 @@ struct Options {
     seeks: usize,
     seconds: Option<f64>,
     check: bool,
-    budget: usize,
     service: bool,
     log: Option<String>,
     table: bool,
@@ -83,7 +82,6 @@ fn main() -> io::Result<()> {
         seeks: 20,
         seconds: None,
         check: false,
-        budget: 64 << 10,
         service: false,
         log: None,
         table: false,
@@ -111,7 +109,6 @@ fn main() -> io::Result<()> {
                     "--seek" => options.seek_every = Some(number()?.max(1.0) as u64),
                     "--seeks" => options.seeks = number()? as usize,
                     "--seconds" => options.seconds = Some(number()?),
-                    "--budget" => options.budget = number()? as usize,
                     "--log" => options.log = Some(value.to_owned()),
                     _ => return Err(invalid(USAGE)),
                 }
@@ -331,11 +328,11 @@ type Piped = (u32, Instant, Vec<u8>);
 
 fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], options: &Options) -> io::Result<serde_json::Value> {
     let timeline = Timeline::new(&**pages, options.pieces.clone())?;
-    let follow = Follow::new(options.budget);
+    let follow = Follow::new(0);
     let (requests, parsed) = if options.service { service_page(page, options.table) } else { (Vec::new(), page.iter().cloned().map(Some).collect()) };
     let owned: Vec<Query> = parsed.iter().map(|query| query.clone().unwrap_or_else(|| page[0].clone())).collect();
     let page = owned.as_slice();
-    let (send, received) = mpsc::channel::<(StepStats, Vec<Message>)>();
+    let (send, received) = mpsc::channel::<(StepStats, Option<Message>)>();
     let (step_send, step_received) = mpsc::channel::<StepRecord>();
     let following = options.hook && !page.is_empty();
     let log_table = options.log.as_ref().map(|_| page[0].table());
@@ -366,16 +363,16 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
     let pushing = Arc::clone(&push);
     let service = options.service;
     let (offer_send, offers) = mpsc::channel::<u64>();
-    let mut inner: Option<Hook> = following.then(|| follow.hook(Box::new(move |stats: &StepStats, messages: Vec<Message>| {
+    let mut inner: Option<Hook> = following.then(|| follow.hook(Box::new(move |stats: &StepStats, message: Option<Message>| {
         if service {
-            for message in messages {
+            if let Some(message) = message {
                 let offering = Instant::now();
                 pushing.offer(message.bytes);
                 let _ = offer_send.send(offering.elapsed().as_nanos() as u64);
             }
-            drop(send.send((*stats, Vec::new())));
+            drop(send.send((*stats, None)));
         } else {
-            drop(send.send((*stats, messages)));
+            drop(send.send((*stats, message)));
         }
     })));
     let hook: Hook = Box::new(move |step, lanes| {
@@ -395,7 +392,7 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
     if following {
         let reader = playhead.declare(Vec::new(), None)?;
         let weak = Arc::downgrade(&playhead);
-        follow.bind(move |tables| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), playhead.log_reads())?;
+        follow.bind(move |tables, _joining| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), playhead.log_reads())?;
         if service {
             let held = dashboard_follow::host::held_tables(&**pages, TableId::ALL.len());
             let registry = dashboard_follow::registry::Registry::new(Some(Arc::new(BenchPlayheads(Arc::new(BenchHost { follow: follow.clone(), held })))));
@@ -404,7 +401,7 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
                     follow.follow(id as u32, parsed[id].clone().expect("a log"))?;
                     continue;
                 }
-                let reply = registry.answer(Path::new("bench"), "follow", &json!({ "id": id, "branchId": "1", "query": request }), |_| Err(invalid("The query layer reads no format-12 recording yet")), Box::new(|_| None));
+                let reply = registry.answer(Path::new("bench"), "follow", &json!({ "id": id, "branchId": "1", "clock": 0, "query": request }), |_| Err(invalid("The query layer reads no format-12 recording yet")), Box::new(|_| None));
                 unavailable.push(Some((id, match reply {
                     Ok(reply) => reply.get("reason").and_then(serde_json::Value::as_str).unwrap_or("followed").to_owned(),
                     Err(error) => error.to_string(),
@@ -416,7 +413,7 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
             }
         }
     } else if !page.is_empty() {
-        let plain = Follow::new(options.budget);
+        let plain = Follow::new(0);
         for (id, followed) in page.iter().enumerate() {
             plain.follow(id as u32, followed.clone())?;
         }
@@ -514,15 +511,15 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
                 last_answer.insert(id, (hour, body.to_vec()));
             }
         }
-        while let Ok((stat, messages)) = received.try_recv() {
+        while let Ok((stat, message)) = received.try_recv() {
             if stat.reset {
                 known.clear();
                 if let Some(seek) = seeks.last_mut().filter(|seek| seek.settled.is_none() && seek.hour == stat.last) {
-                    seek.settled = Some((stat.evaluated, stat.sent, messages.first().is_some_and(|message| message.reset)));
+                    seek.settled = Some((stat.evaluated, stat.sent, message.as_ref().is_some_and(|message| message.reset)));
                 }
             }
             known.push(stat.last);
-            for message in messages {
+            if let Some(message) = message {
                 messages_reset += u64::from(message.reset);
                 stretch += u64::from(message.reset);
                 let decoded = decode(&message.bytes)?;
@@ -607,8 +604,8 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
     while let Ok(record) = step_received.try_recv() {
         steps.push(record);
     }
-    while let Ok((stat, messages)) = received.try_recv() {
-        for message in messages {
+    while let Ok((stat, message)) = received.try_recv() {
+        if let Some(message) = message {
             for (id, hour, body) in decode(&message.bytes)?.answers {
                 if log_table.is_some() {
                     logged.push((stretch, body.to_vec()));
@@ -637,7 +634,7 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
     let checked = match log_table {
         Some(table) if options.check => check_log(pages, table, options.pieces[0], &logged, &steps)?,
         Some(_) => json!(null),
-        None if options.check => check(pages, page, &answers, &last_answer, options)?,
+        None if options.check => check(pages, page, &answers, &last_answer)?,
         None => json!(null),
     };
     let mut seek_taken: Vec<u64> = seeks.iter().filter_map(|seek| seek.taken_ms.map(|ms| (ms * 1000.0) as u64)).collect();
@@ -646,7 +643,7 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
         "push_latency_ns": percentiles(&mut latency),
         "push_offer_ns": percentiles(&mut offer_ns),
         "push": { "offered": push_counters.offered, "written": push_counters.written, "superseded": push_counters.superseded, "merges": push_counters.merges,
-            "unmerged": push_counters.unmerged, "most_queued": push_counters.most_queued, "bytes": push_counters.bytes, "bound": dashboard_follow::push::QUEUED },
+            "unmerged": push_counters.unmerged, "most_queued": push_counters.most_queued, "bytes": push_counters.bytes, "byte_bound": dashboard_follow::lead::BYTES },
     }));
     Ok(json!({
         "page": page.len(), "hook": following, "flat": options.flat, "speed": settings.speed, "hz": settings.rate, "quantum": quantum,
@@ -657,7 +654,7 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
         "touched": percentiles(&mut touched), "evaluated": percentiles(&mut evaluated), "changed": percentiles(&mut changed),
         "message_bytes": percentiles(&mut bytes),
         "follow": {
-            "messages": follow_counters.messages, "sent": follow_counters.sent, "oversize": follow_counters.oversize,
+            "messages": follow_counters.messages, "sent": follow_counters.sent,
             "messages_reset": messages_reset, "most_ns": follow_counters.most_ns, "evaluated": follow_counters.evaluated, "changed": follow_counters.changed,
         },
         "age_hours": signed(&mut ages), "age_steps": signed(&mut ages_steps),
@@ -730,14 +727,14 @@ fn check_log(pages: &Arc<dyn Pages>, table: usize, piece: playhead::Piece, logge
 
 /// Sampled answers and every query's last, each against its query answered from a lane sought to
 /// its hour.
-fn check(pages: &Arc<dyn Pages>, page: &[Query], answers: &[(u32, Hour, Vec<u8>)], last: &HashMap<u32, (Hour, Vec<u8>)>, options: &Options) -> io::Result<serde_json::Value> {
+fn check(pages: &Arc<dyn Pages>, page: &[Query], answers: &[(u32, Hour, Vec<u8>)], last: &HashMap<u32, (Hour, Vec<u8>)>) -> io::Result<serde_json::Value> {
     let every = (answers.len() / 400).max(1);
     let mut wanted: Vec<(Hour, u32, &[u8])> = answers.iter().step_by(every).map(|(id, hour, body)| (*hour, *id, body.as_slice())).collect();
     wanted.extend(last.iter().map(|(id, (hour, body))| (*hour, *id, body.as_slice())));
     wanted.retain(|(_, id, _)| !matches!(page[*id as usize], Query::Cells { rows: Rows::Appended, .. }));
     wanted.sort_by_key(|(hour, id, _)| (*hour, *id));
     let mut columns: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    let plain = Follow::new(options.budget);
+    let plain = Follow::new(0);
     for (id, query) in page.iter().enumerate() {
         plain.follow(id as u32, query.clone())?;
     }

@@ -84,6 +84,18 @@ pub struct Group {
 }
 
 impl Group {
+    pub(crate) fn seed(&self, frame: &DecodedFrame) -> Option<Vec<CellValue>> {
+        let view = &frame.tables[self.table.index()];
+        if view.is_not_declared() || view.held().is_not_selected()
+            || view.fields().is_some_and(|fields| self.columns.iter().any(|&column| column >= 64 || fields & (1 << column) == 0))
+        {
+            return None;
+        }
+        let values = group_values(self, view.held());
+        // The binary follow preserves all i64s; the panel's JSON is read as JavaScript numbers.
+        values.iter().all(|v| !matches!(v, CellValue::Number(n) if n.unsigned_abs() >= 1 << 53)).then_some(values)
+    }
+
     /// The query following it: the rows that changed pushed after the first answer.
     pub fn query(&self) -> Query {
         Query::Cells { table: self.table.index(), columns: self.columns.clone(), rows: Rows::Live(self.keys.clone()) }
@@ -104,6 +116,7 @@ pub enum GroupState {
     Values(Vec<CellValue>),
     /// Followed at the head under this id.
     Follow(u32),
+    Seeded { follow: u32, hour: i32, values: Vec<CellValue> },
     /// Not followed, and why: every one of its cells is missing for it.
     Unavailable(String),
 }
@@ -138,12 +151,18 @@ impl Live {
                     "columns": group.columns,
                     "keys": group.keys.iter().map(u128::to_string).collect::<Vec<_>>(),
                 });
-                let (name, value) = match state {
-                    GroupState::Values(values) => ("values", values.iter().map(|value| match value {
+                let values_json = |values: &[CellValue]| values.iter().map(|value| match value {
                         CellValue::Number(number) => json!(number),
                         CellValue::Missing(reason) => json!(reason),
-                    }).collect::<Value>()),
+                    }).collect::<Value>();
+                let (name, value) = match state {
+                    GroupState::Values(values) => ("values", values_json(values)),
                     GroupState::Follow(id) => ("follow", json!(id)),
+                    GroupState::Seeded { follow, hour, values } => {
+                        out["seedHour"] = json!(hour);
+                        out["values"] = values_json(values);
+                        ("follow", json!(follow))
+                    }
                     GroupState::Unavailable(reason) => ("unavailable", json!(reason)),
                 };
                 out[name] = value;
@@ -152,6 +171,28 @@ impl Live {
             .collect();
         let kinds: Vec<Value> = self.kinds.iter().map(|(id, op, scale)| json!({ "id": id, "op": op.name(), "scale": scale })).collect();
         json!({ "groups": groups, "rows": self.rows, "kinds": kinds, "cells": self.cells })
+    }
+
+    /// Patch the seeded value array at the positions of changed source cells.
+    pub fn patch(&self, frame: &DecodedFrame, changed: &BTreeMap<TableId, BTreeMap<u128, u64>>, data: &mut Value) {
+        for (i, group) in self.groups.iter().enumerate() {
+            let Some(keys) = changed.get(&group.table) else { continue };
+            let Ok(rows) = rows_of(group.table, frame.tables[group.table.index()].held()) else { continue };
+            let values = &mut data["live"]["groups"][i]["values"];
+            for (&key, &mask) in keys {
+                let Ok(place) = group.keys.binary_search(&key) else { continue };
+                let Some(row) = find(rows, key) else { continue };
+                let _ = row.visit_wire(&mut |col, raw| {
+                    if mask & (1u64 << col) != 0 && let Ok(c) = group.columns.binary_search(&col) {
+                        values[place * group.columns.len() + c] = match cell(group.table, col, raw) {
+                            CellValue::Number(n) => json!(n),
+                            CellValue::Missing(m) => json!(m),
+                        };
+                    }
+                    Ok(())
+                });
+            }
+        }
     }
 
     /// Each group's cells at `frame`'s hour, row by row, from the frame's rows of its table:

@@ -1,3 +1,4 @@
+import type { PictureInterval } from '../draw/pictureDate';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { attributeCommits, takeCommits } from './commitCount.ts';
@@ -86,7 +87,83 @@ function tileOf(product: unknown, params: unknown): { key: string; bins: unknown
   return { key: JSON.stringify([named.branchId, named.family, named.tags]), bins: named.binHours, index: named.index };
 }
 
+export type ExactPicture = (hour: number) => Promise<{ values: ReadonlyMap<string, string>; ranked?: boolean } | null>;
+export interface StructureRead { hour: number; rows: () => readonly string[]; exact: () => Promise<readonly string[]> }
+interface RowChange { widget: string; source: string; previous: StructureRead; current: StructureRead }
+
 export class PerfRecorder {
+  private readers = new Map<number, { owner: number; exact: ExactPicture }>();
+  private auditReaders?: Map<string, ExactPicture>;
+  private commitSequence = 0;
+  private commitAudit?: { at: number; serial: number; widgets: string[]; causes: object; changes: RowChange[]; input?: string }[];
+  private rowChanges: RowChange[] = [];
+
+  structure(widget: string, source: string, previous: StructureRead, current: StructureRead) {
+    if (this.commitAudit && JSON.stringify(previous.rows()) !== JSON.stringify(current.rows()))
+      this.rowChanges.push({ widget, source, previous, current });
+  }
+
+  reader(id: number, owner: number, exact: ExactPicture) {
+    this.readers.set(id, { owner, exact });
+    this.auditReaders?.set(id + '/' + owner, exact);
+  }
+  releaseReader(id: number) { this.readers.delete(id); }
+  ink(id: number, visible: boolean) {
+    if (this.auditReaders) this.push({ t: 'ink', at: epoch(performance.now()), placement: id, visible });
+  }
+
+  async beginAudit() {
+    this.rowChanges = [];
+    this.commitAudit = [];
+    this.auditReaders = new Map();
+    for (const [id, { owner, exact }] of this.readers) this.auditReaders.set(id + '/' + owner, exact);
+    await (await import('../dashboard/pulled.ts')).capturePictures(true);
+  }
+
+  async auditPictures() {
+    const records = await (await import('../dashboard/pulled.ts')).capturePictures(false);
+    const readers = this.auditReaders;
+    this.auditReaders = undefined;
+    const commits = this.commitAudit ?? [];
+    this.commitAudit = undefined;
+    const checks = new WeakMap<StructureRead, boolean>();
+    const verify = async (read: StructureRead) => {
+      if (!checks.has(read)) {
+        try { checks.set(read, JSON.stringify(read.rows()) === JSON.stringify(await read.exact())); }
+        catch { checks.set(read, false); }
+      }
+      return checks.get(read)!;
+    };
+    for (const { changes, ...commit } of commits) {
+      const verified = [];
+      for (const c of changes) verified.push({ widget: c.widget, source: c.source, hour: c.current.hour, previousHour: c.previous.hour,
+        before: c.previous.rows(), after: c.current.rows(), verified: await verify(c.previous) && await verify(c.current) });
+      this.push({ t: 'commit', ...commit, changes: verified });
+    }
+    const results = [];
+    for (const record of records) {
+      this.push({ ...record });
+      if (record.t !== 'picture' || !record.rows || record.hour === null) continue;
+      const { widget, surface, placement, owner, rows } = record;
+      const hour = record.hour + record.offset;
+      let error: string | null = null;
+      try {
+        const exact = await readers?.get(placement + '/' + owner)?.(hour);
+        if (!exact || !rows.length) error = 'Displayed rows or exact read missing';
+        else if (exact.ranked && JSON.stringify(rows.map(r => r.row + ':' + r.key)) !== JSON.stringify([...exact.values.keys()])) error = 'Ranked row identities differ';
+        else for (const row of rows) {
+          const key = exact.ranked ? row.row + ':' + row.key : row.key;
+          if (row.overflow) { error = key + ' exceeds its slot by ' + row.overflow.toFixed(1) + ' px'; break; }
+          if (!exact.ranked && row.row !== key && !key.startsWith(row.row + ':')) { error = 'Wrong row identity for ' + key; break; }
+          if (!exact.values.has(key) || exact.values.get(key) !== row.value) {
+            error = key + ': displayed ' + row.value + ', expected ' + exact.values.get(key); break;
+          }
+        }
+      } catch (cause) { error = String(cause); }
+      results.push({ widget, surface, placement, hour, error });
+    }
+    return results;
+  }
   private lines: string[] = [];
   /** `bytes` here are UTF-16 units, the budget's measure. */
   private buffered = empty();
@@ -108,8 +185,6 @@ export class PerfRecorder {
   private zones = new Map<string, number>();
   /** Why each widget's commits since the last frame record began (`CommitCauses`), counted. */
   private causes = new Map<string, Map<string, number>>();
-  /** The structure slots taken since the last frame record: their ms, commits, and components rendered by widget. */
-  private slots: { ms: number; commits: number; widgets: Map<string, number>; why: Map<string, Map<string, number>> } | null = null;
   /** Milliseconds each widget spent painting, by the animation frame's time it painted for (`OUTSIDE`: no frame's). */
   private paints = new Map<number, Map<string, number>>();
   private playing = false;
@@ -149,18 +224,15 @@ export class PerfRecorder {
         const work = this.work.size ? Object.fromEntries(this.work) : undefined;
         const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
         const why = this.causes.size ? Object.fromEntries([...this.causes].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) : undefined;
-        const slot = this.slots && { ms: round(this.slots.ms), commits: this.slots.commits, widgets: Object.fromEntries(this.slots.widgets),
-          why: Object.fromEntries([...this.slots.why].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) };
         this.work.clear();
         this.zones.clear();
         this.causes.clear();
-        this.slots = null;
         const painted = this.takePaints(this.lastFrame);
         const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(now - this.lastFrame), playing: this.playing,
-          late: round(performance.now() - now), commits: takeCommits(), ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...(slot && { slot }), ...painted };
+          late: round(performance.now() - now), commits: takeCommits(), commitSequence: this.commitSequence, ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
         const main = mains.get(this.lastFrame);
         if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
-      } else { takeCommits(); this.zones.clear(); this.causes.clear(); this.paints.clear(); this.slots = null; }
+      } else { takeCommits(); this.zones.clear(); this.causes.clear(); this.paints.clear(); }
       this.lastFrame = now;
       rendered.port2.postMessage(now);
       this.frameRequest = requestAnimationFrame(frame);
@@ -168,6 +240,14 @@ export class PerfRecorder {
     this.frameRequest = requestAnimationFrame(frame);
     this.timer = setInterval(() => { void this.flush(); }, FLUSH_MS);
     attributeCommits((rendered, causes) => {
+      this.commitSequence++;
+      if (this.commitAudit) {
+        const event = window.event;
+        const input = event?.isTrusted && /^(click|key(down|up)|pointer(down|up)|input|change)$/.test(event.type) ? event.type : undefined;
+        this.commitAudit.push({ at: epoch(performance.now()), serial: this.commitSequence, widgets: [...rendered].map(z => z.replace(/^widget:/, '')),
+          causes: Object.fromEntries([...causes].map(([z, keys]) => [z, Object.fromEntries(keys)])), changes: this.rowChanges, input });
+        this.rowChanges = [];
+      }
       for (const zone of rendered) this.zones.set(zone, (this.zones.get(zone) ?? 0) + 1);
       this.addCauses(causes);
     });
@@ -217,10 +297,10 @@ export class PerfRecorder {
   }
 
   /** The playback clock published a position. */
-  clock(position: number, playing: boolean, hoursPerSecond: number, sequence: number, seekSequence: number): void {
+  clock(position: number, playing: boolean, hoursPerSecond: number, sequence: number, seekSequence: number, composedAt?: number): void {
     this.playing = playing;
     this.position = position;
-    this.push({ t: 'tick', at: epoch(performance.now()), hour: round(position), playing, speed: hoursPerSecond, sequence, seek: seekSequence });
+    this.push({ t: 'tick', at: epoch(performance.now()), hour: round(position), composedAt: composedAt === undefined ? undefined : epoch(composedAt), playing, speed: hoursPerSecond, sequence, seek: seekSequence });
   }
 
   /** A widget on the dashboard, named so its counted work can be read by title. */
@@ -248,21 +328,14 @@ export class PerfRecorder {
     widgets.set(widget, (widgets.get(widget) ?? 0) + ms);
   }
 
-  /** The page's structure slot was taken in `ms`, committing `commits` times, each widget rendering `widgets` components:
-   * written with the next frame record (`slot`, with each widget's commit causes as `why`), whose `main` it is part of. */
-  slot(ms: number, commits: number, widgets: ReadonlyMap<string, number>, causes: ReadonlyMap<string, ReadonlyMap<string, number>>): void {
-    const held = this.slots ??= { ms: 0, commits: 0, widgets: new Map(), why: new Map() };
-    held.ms += ms;
-    held.commits += commits;
-    for (const [widget, count] of widgets) held.widgets.set(widget, (held.widgets.get(widget) ?? 0) + count);
-    for (const [zone, named] of causes) {
-      let into = held.why.get(zone);
-      if (!into) held.why.set(zone, into = new Map());
-      for (const [cause, count] of named) into.set(cause, (into.get(cause) ?? 0) + count);
-    }
+  /** The hour whose values a widget now shows; null while it shows none (loading, or values still read). */
+  present(widget: string, surface: string, date: PictureInterval | null, head: number, renderer: 'worker' | 'dom' | 'race',
+    evidence?: { id?: number; seek?: number; rows?: readonly { row: string; key: string; value?: string }[]; follow?: number; readHour?: number; cellHour?: number; at?: number; offset?: number; fixedHour?: number }) {
+    const hour = date === null ? null : Math.max(date.since, Math.min(date.through, Math.floor(head)));
+    this.push({ t: 'picture', at: epoch(performance.now()), widget, surface, renderer, hour, head,
+      placement: evidence?.id, seek: evidence?.seek, rows: evidence?.rows, drawnAt: evidence?.at, fixedHour: evidence?.fixedHour, offset: evidence?.offset, follow: evidence?.follow, readHour: evidence?.readHour, cellHour: evidence?.cellHour });
   }
 
-  /** The hour whose values a widget now shows; null while it shows none (loading, or values still read). */
   shown(widget: string, hour: number | null): void {
     this.push({ t: 'shown', at: epoch(performance.now()), widget, hour });
   }
@@ -275,21 +348,6 @@ export class PerfRecorder {
   /** A widget holds the followed query `id`. */
   followWidget(widget: string, id: number): void {
     this.push({ t: 'follow_widget', at: epoch(performance.now()), widget, id });
-  }
-
-  /** A pushed panel names the follow ids its live cells' groups are pushed under (none: it names no live cells). */
-  followCells(id: number, cells: readonly number[]): void {
-    this.push({ t: 'follow_cells', at: epoch(performance.now()), id, cells: [...cells] });
-  }
-
-  /** A pushed message landed: the hour it is at, and each answer's query and the hour it was evaluated at. */
-  followMessage(hour: number, answers: readonly (readonly [number, number])[]): void {
-    this.push({ t: 'follow_message', at: epoch(performance.now()), hour, answers });
-  }
-
-  /** The clock told data views its hour (paced while playing). */
-  hour(hour: number): void {
-    this.push({ t: 'hour', at: epoch(performance.now()), hour });
   }
 
   /** The dashboard maps laid out, recorded when which are visible or following changes. */
@@ -438,5 +496,6 @@ export async function startPerf(): Promise<void> {
       .catch(error => console.error('Measurement finish failed:', error));
   });
   // Driven from the debugger: `await window.__perf.start()`, `await window.__perf.stop()`.
-  Object.assign(window, { __perf: { start: () => recorder.start(), stop: () => recorder.stop(), flush: () => recorder.flush() } });
+  Object.assign(window, { __perf: { start: () => recorder.start(), stop: () => recorder.stop(), flush: () => recorder.flush(),
+    beginAudit: () => recorder.beginAudit(), auditPictures: () => recorder.auditPictures(), pressureMerges: () => invoke('playback_pressure_merges') } });
 }

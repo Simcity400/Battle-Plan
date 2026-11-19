@@ -1,8 +1,7 @@
 import type { Failure } from '../../dashboard/queryError';
 import type { FacetFilter, LogCell, MembershipRun, MissingSpan } from '../../generated/dashboard';
 import type { LogPage, LogRow } from './logData';
-import { AHEAD_ROWS, AHEAD_SECONDS } from '../reveal.ts';
-import { STRUCTURE_SLOT_MS } from '../../dashboard/structurePace.ts';
+import { AHEAD_SECONDS } from '../reveal.ts';
 
 /** A declared log's rows counted per bin over a span (`log-counts`, its lines summed): `counts[i]` rows in the hours
  * from `firstHour + i * binHours`, `total` in the whole span, `before` on the timeline before it (where the service's
@@ -176,11 +175,6 @@ export function askedPages(inView: readonly string[], shown: number, pageSize: n
   return asked;
 }
 
-/** The most blocks a list following the head takes in `AHEAD_SECONDS` of playback: one a structure slot. */
-const AHEAD_BLOCKS = Math.ceil(AHEAD_SECONDS * 1000 / STRUCTURE_SLOT_MS);
-/** The ordinal past the most rows a list following the head can draw in `AHEAD_SECONDS` from `shown` rows. */
-export const aheadLimit = (shown: number) => shown + AHEAD_BLOCKS * (AHEAD_ROWS + 1);
-
 /** Following at `hour` with `shown` rows through it, the ordinal the pages are held to: playing, the rows counted through
  * `AHEAD_SECONDS` of playback, so a page is asked that long before the clock reaches it however dense the log (run 13:
  * the event feed's pages, asked two blocks of rows ahead, a quarter second at 1,440 h/s, landed after the head had passed
@@ -189,7 +183,7 @@ export function aheadThrough(counts: LogCounts, before: Uint32Array, shown: numb
   if (!playing || !(hoursPerSecond > 0)) return shown + 1;
   const bin = Math.floor((hour + Math.ceil(hoursPerSecond * AHEAD_SECONDS) - counts.firstHour) / counts.binHours);
   const counted = bin < 0 ? 0 : before[Math.min(bin + 1, counts.counts.length)];
-  return Math.max(shown + 1, Math.min(counted, aheadLimit(shown)));
+  return Math.max(shown + 1, counted);
 }
 
 /** The first hour a page from the span's ordinal `at` can hold: the start of the bin its first row is counted in (`before`

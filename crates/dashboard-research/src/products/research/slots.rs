@@ -89,8 +89,7 @@ fn owners(frame: &DecodedFrame, owner: Owner) -> Option<Vec<u32>> {
 
 /// The keys from `low << shift` through every key of `high` above it.
 fn owned(owners: &[u32], shift: u32) -> Keys {
-    let (low, high) = (owners[0], owners[owners.len() - 1]);
-    Keys::Range(u128::from(low) << shift, (u128::from(high) << shift) | ((1u128 << shift) - 1))
+    Keys::Ranges(owners.iter().map(|&owner| { let low = u128::from(owner) << shift; (low, low | ((1u128 << shift) - 1)) }).collect())
 }
 
 /// The restriction tokens `rows` name: the lexical tokens a grant inventory spells.
@@ -134,6 +133,70 @@ impl AtHour for ResearchSlots {
 
     fn owner(params: &Self::Params) -> Option<&str> {
         Some(&params.tag)
+    }
+
+    fn compares_previous(table: TableId) -> bool { table == TableId::SliceReads }
+
+    fn uses_sample(_table: TableId) -> bool { false }
+
+    const CLOCK_DEPENDENT: bool = false;
+
+    fn plan_changes(stage: usize, edits: &dashboard_base::products::at_hour::Edits) -> bool {
+        match stage {
+            1 => edits.fields(TableId::CountryLinks, u64::MAX),
+            2 => edits.fields(TableId::CountryLinks, u64::MAX) || edits.fields(TableId::ResearchModifiers, u64::MAX),
+            _ => false,
+        }
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+        if !edits.replaced.is_empty() || !data["missing"].is_null() { return Ok(false); }
+        let table = TableId::ResearchInputs;
+        let moving = dashboard_base::products::at_hour::field_mask(table, &["progress_raw", "banked_days_raw", "applied_days_raw"]);
+        for (&t, changes) in &edits.tables {
+            if t != TableId::SliceReads && (t != table || changes.values().any(|mask| mask & !moving != 0)) { return Ok(false); }
+        }
+        let Ok(inputs) = frame.complete::<tables::ResearchInputs>() else { return Ok(false) };
+        let Ok(samples) = frame.complete::<tables::SliceReads>() else { return Ok(false) };
+        let Some(input) = inputs.first() else { return Ok(false) };
+        let Some(read) = replay_data::sliced::read_hour(samples, table, input.country) else { return Ok(false) };
+        if read > at.hour { return Ok(false); }
+        let Some(previous) = edits.previous.get(&TableId::SliceReads) else { return Ok(false) };
+        let replay_frame::frame::TableView::Complete(previous) = previous.held() else { return Ok(false) };
+        let previous = previous.rows::<tables::SliceReads>().unwrap();
+        let Some(old_read) = data["readHour"].as_i64().and_then(|h| i32::try_from(h).ok()) else { return Ok(false) };
+        // Rebuild the structure only if the slot, bonus or grant readings stop or start joining.
+        let sample = replay_data::sliced::read_hour;
+        if inputs.iter().any(|r| sample(samples, table, r.country) != Some(read))
+            || samples.iter().chain(previous).filter(|r| r.table == BONUSES || r.table == MODIFIERS).any(|r| {
+                let t = if r.table == BONUSES { TableId::ResearchAppliedBonuses } else { TableId::ResearchModifiers };
+                (sample(previous, t, r.owner) == Some(old_read)) != (sample(samples, t, r.owner) == Some(read))
+            }) { return Ok(false); }
+        data["readHour"] = read.into();
+        let Some(slots) = data["slots"].as_array_mut() else { return Ok(false) };
+        let assignments = frame.complete::<tables::ResearchAssignments>()?;
+        let mods = frame.complete::<tables::ResearchModifiers>().ok();
+        for r in inputs {
+            let index = r.index;
+            let key = (u128::from(r.country) << 32) | u128::from(index);
+            if old_read == read && !edits.tables.get(&table).is_some_and(|keys| keys.contains_key(&key)) { continue; }
+            let Some(slot) = slots.get_mut(index as usize) else { return Ok(false) };
+            slot["state"]["firstHour"] = read.into();
+            slot["state"]["lastHour"] = read.into();
+            if !slot["progress"].is_null() {
+                slot["progress"]["firstHour"] = read.into();
+                slot["progress"]["lastHour"] = read.into();
+            }
+            let joined = assignments.iter().find(|a| a.index == index && a.lane == 0 && a.outcome == ResearchAssignmentRow::ACTIVE && r.technology_present != 0 && r.database_index == replay_data::rows::Recorded::Value(a.database_index) && r.token == a.token);
+            let rate = mods.filter(|_| sample(samples, TableId::ResearchModifiers, r.country) == Some(read)).and_then(|m| super::modifiers::breakdown(r, Some(m))).and_then(|m| super::modifiers::rate(&m, r.ahead_reduction_raw, read))
+                .or_else(|| joined.filter(|a| a.started_after_hour.is_some() && read - a.first_observed_hour < 24).map(|_| i128::from(r.research_speed_raw)));
+            slot["state"]["details"]["remainingDays"] = if r.technology_present != 0 { rate.and_then(|v| super::remaining(r, v)) } else { None }.into();
+            slot["state"]["bankedDaysRaw"] = r.banked_days_raw.to_string().into();
+            slot["state"]["appliedDaysRaw"] = r.applied_days_raw.to_string().into();
+            if !slot["progress"].is_null() { slot["progress"]["progressRaw"] = r.progress_raw.to_string().into(); }
+        }
+        live.patch(frame, &edits.tables, data);
+        Ok(true)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

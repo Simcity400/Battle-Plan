@@ -13,13 +13,13 @@ export const TRACE_MARKS = { from: 'e2e-trace-from', to: 'e2e-trace-to' };
 const COMPLETE_MS = 120_000;
 
 /** Starts tracing on `cdp` (`send`, `on` returning an unsubscribe); the result stops it and gives every event. */
-export async function startTrace(cdp) {
+export async function startTrace(cdp, categories = TRACE_CATEGORIES) {
   const events = [];
   let complete;
   const completed = new Promise(resolve => { complete = resolve; });
   const stops = [cdp.on('Tracing.dataCollected', ({ value }) => { for (const event of value) events.push(event); }),
     cdp.on('Tracing.tracingComplete', () => complete())];
-  await cdp.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { recordMode: 'recordAsMuchAsPossible', includedCategories: TRACE_CATEGORIES } });
+  await cdp.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { recordMode: 'recordAsMuchAsPossible', includedCategories: categories } });
   let stopped = null;
   return () => stopped ??= (async () => {
     try {

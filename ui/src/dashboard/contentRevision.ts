@@ -45,7 +45,12 @@ export function contentRevision(client: DashboardClient): ContentRevision {
   return revision;
 }
 
-export function useContentRevision(client: DashboardClient): number {
+const noContentSubscription = () => () => {};
+const zeroContentRevision = () => 0;
+
+export function useContentRevision(client: DashboardClient, enabled = true): number {
   const revision = contentRevision(client);
-  return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);
+  const subscribe = enabled ? revision.subscribe : noContentSubscription;
+  const snapshot = enabled ? revision.snapshot : zeroContentRevision;
+  return useSyncExternalStore(subscribe, snapshot, snapshot);
 }

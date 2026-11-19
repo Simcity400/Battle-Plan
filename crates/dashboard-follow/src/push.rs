@@ -1,11 +1,7 @@
 //! Pushed messages from the stepper to a pipe: frames of `length u32, kind u8, more u8, two zero
 //! bytes, sequence u32` and the payload, little-endian: followed answers ([`FOLLOW`]) and panels
 //! ([`PANEL`]) share the pipe. A message of any size goes as frames of at most [`PART`] bytes, each
-//! but its last marked `more`, which the reader joins. The stepper and the panels hand each message
-//! to [`Push`], a queue of [`QUEUED`] messages that never blocks: past it the oldest is merged into
-//! the next of its kind, the newer answer or data of each id kept, so a slow reader makes older ones
-//! superseded, never a longer queue; two that do not merge are both sent as they are. A writer
-//! thread drains it; a write that fails stops it and names why ([`Push::failed`], [`failure`]).
+//! but its last marked `more`. A writer drains the dated queue and reports pipe failures by name.
 
 use crate::{answer, invalid, panel};
 use std::{
@@ -17,10 +13,8 @@ use std::{
 
 /// A frame of followed answers ([`crate::Message`]'s bytes).
 pub const FOLLOW: u8 = 1;
-/// A frame of panels ([`panel::message`]).
+/// A frame of panels ([`panel::dated::message`]).
 pub const PANEL: u8 = 2;
-/// Messages waiting, past which they merge.
-pub const QUEUED: usize = 4;
 /// The most payload one frame carries: a longer message goes in parts.
 pub const PART: usize = 1 << 22;
 const HEAD: usize = 12;
@@ -92,6 +86,7 @@ pub struct PushCounters {
     /// Answers dropped because a newer one of the same id was queued behind them.
     pub superseded: u64,
     pub merges: u64,
+    pub pressure_merges: u64,
     /// Merges that failed: both messages are sent as they are.
     pub unmerged: u64,
     /// Messages not written because the pipe failed ([`Push::failed`]).
@@ -100,12 +95,43 @@ pub struct PushCounters {
     pub bytes: u64,
 }
 
-/// Whether `newer` is what `older` merges into: of its kind, and a followed message of its follow.
-fn merges(older: &Queued, newer: &Queued) -> bool {
-    older.kind == newer.kind && (older.kind == PANEL || answer::route(&older.bytes) == answer::route(&newer.bytes))
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stream {
+    Notice,
+    Steps { route: u32, seek: u32, due: i32 },
+    Panels { route: u32, seek: u32 },
+}
+
+impl Stream {
+    fn of(kind: u8, bytes: &[u8]) -> Self {
+        if kind == FOLLOW && bytes.len() >= 24 && bytes.starts_with(&answer::MAGIC.to_le_bytes()) {
+            let word = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("a dated header word"));
+            let mut due = word(8) as i32;
+            let mut at = 24;
+            while let Some(header) = bytes.get(at..).and_then(|tail| tail.get(..16)) {
+                due = due.max(i32::from_le_bytes(header[4..8].try_into().expect("answer hour")));
+                let size = u32::from_le_bytes(header[8..12].try_into().expect("answer length"));
+                at += 16 + size as usize;
+            }
+            Self::Steps { route: word(4) >> 1, seek: word(16), due }
+        } else if kind == PANEL && let Some((route, seek)) = panel::dated::stamp(bytes) {
+            Self::Panels { route, seek }
+        } else {
+            Self::Notice
+        }
+    }
+
+    fn version(self) -> Option<(u32, u32)> {
+        match self {
+            Self::Notice => None,
+            Self::Steps { route, seek, .. } => Some((route, seek)),
+            Self::Panels { route, seek } => Some((route, seek)),
+        }
+    }
 }
 
 struct Queued {
+    stream: Stream,
     kind: u8,
     bytes: Vec<u8>,
     sequence: u32,
@@ -114,9 +140,10 @@ struct Queued {
     kept: bool,
 }
 
-#[derive(Default)]
 struct State {
+    charge: playhead::Charge,
     queue: VecDeque<Queued>,
+    bytes: usize,
     next: u32,
     stopped: bool,
     failed: Option<String>,
@@ -129,11 +156,70 @@ pub struct Push {
     ready: Condvar,
 }
 
+impl Default for State {
+    fn default() -> Self { Self::new(crate::lead::budget()) }
+}
+
 fn lock(held: &Mutex<State>) -> MutexGuard<'_, State> {
     held.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+impl State {
+    fn new(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
+        Self { charge: budget.charge(), queue: VecDeque::new(), bytes: 0, next: 0, stopped: false, failed: None, counters: PushCounters::default() }
+    }
+
+    fn merge(&mut self, at: usize, later: usize) -> bool {
+        let (older, newer) = (&self.queue[at], &self.queue[later]);
+        let result = match older.stream {
+            Stream::Panels { .. } => panel::dated::merge(&older.bytes, &newer.bytes),
+            Stream::Notice => return false,
+            Stream::Steps { .. } => answer::merge(&older.bytes, &newer.bytes),
+        };
+        match result {
+            Ok((bytes, superseded)) => {
+                let older = self.queue.remove(at).expect("queued");
+                let newer = &mut self.queue[later - 1];
+                self.bytes -= older.bytes.len() + newer.bytes.len();
+                self.bytes += bytes.len();
+                newer.bytes = bytes;
+                newer.offered = older.offered;
+                self.counters.superseded += u64::from(superseded);
+                self.counters.merges += 1;
+                true
+            }
+            Err(_) => {
+                self.queue[at].kept = true;
+                self.counters.unmerged += 1;
+                false
+            }
+        }
+    }
+
+    fn compact(&mut self, stream: Stream) {
+        let Some(version) = stream.version() else { return };
+        let last = self.queue.len() - 1;
+        let kind = self.queue[last].kind;
+        if matches!(stream, Stream::Steps { .. })
+            && let Some(at) = (0..last).rev().find(|&i| self.queue[i].kind == kind && self.queue[i].stream.version() == Some(version))
+            && !self.queue[at].kept && self.queue[at].stream == stream {
+            self.merge(at, last);
+        }
+        while self.charge.resize(self.bytes).is_err() {
+            let mut ours = self.queue.iter().enumerate().filter(|(_, q)| q.kind == kind && q.stream.version() == Some(version));
+            let (Some((at, first)), Some((later, _))) = (ours.next(), ours.next()) else { break };
+            if first.kept || !self.merge(at, later) { break; }
+            self.counters.pressure_merges += 1;
+            crate::lead::count_merge();
+        }
+    }
+}
+
 impl Push {
+    pub fn with_budget(budget: std::sync::Arc<playhead::ByteBudget>) -> Self {
+        Self { state: Mutex::new(State::new(budget)), ready: Condvar::new() }
+    }
+
     /// Queues a message of followed answers; never waits.
     pub fn offer(&self, bytes: Vec<u8>) {
         self.offer_kind(FOLLOW, bytes);
@@ -148,28 +234,33 @@ impl Push {
         let sequence = state.next;
         state.next = state.next.wrapping_add(1);
         state.counters.offered += 1;
-        state.queue.push_back(Queued { kind, bytes, sequence, offered: Instant::now(), kept: false });
-        while state.queue.len() > QUEUED {
-            // The oldest message not kept with a later one of its kind (and follow) is merged into it.
-            let queue = &state.queue;
-            let pair = (0..queue.len()).filter(|&at| !queue[at].kept).find_map(|at| (at + 1..queue.len()).find(|&later| merges(&queue[at], &queue[later])).map(|later| (at, later)));
-            let Some((at, later)) = pair else { break };
-            let (older, newer) = (&queue[at], &queue[later]);
-            let merged = if older.kind == PANEL { panel::merge(&older.bytes, &newer.bytes) } else { answer::merge(&older.bytes, &newer.bytes) };
-            match merged {
-                Ok((merged, superseded)) => {
-                    let older = state.queue.remove(at).expect("queued");
-                    let newer = &mut state.queue[later - 1];
-                    newer.bytes = merged;
-                    newer.offered = older.offered;
-                    state.counters.superseded += u64::from(superseded);
-                    state.counters.merges += 1;
-                }
-                Err(_) => {
-                    state.queue[at].kept = true;
-                    state.counters.unmerged += 1;
-                }
+        let stream = Stream::of(kind, &bytes);
+        if let Some((route, stamp)) = stream.version() {
+            if state.queue.iter().any(|q| q.kind == kind && q.stream.version().is_some_and(|(r, held)| r == route && held.wrapping_sub(stamp) as i32 > 0)) {
+                return;
             }
+            let mut removed = 0;
+            state.queue.retain(|q| {
+                let keep = q.kind != kind || q.stream.version().is_none_or(|(r, old)| r != route || stamp.wrapping_sub(old) as i32 <= 0);
+                if !keep { removed += q.bytes.len(); }
+                keep
+            });
+            state.bytes -= removed;
+        }
+        state.bytes += bytes.len();
+        state.queue.push_back(Queued { stream, kind, bytes, sequence, offered: Instant::now(), kept: false });
+        state.compact(stream);
+        let queued = state.bytes;
+        if let Err(error) = state.charge.resize(queued) {
+            let reason = error.to_string();
+            state.charge.resize(0).expect("releasing the failed queue");
+            let bytes = failure(&reason);
+            state.counters.unwritten += state.queue.len() as u64;
+            state.queue.clear();
+            state.bytes = bytes.len();
+            state.queue.push_back(Queued { stream: Stream::Notice, kind: FOLLOW, bytes, sequence, offered: Instant::now(), kept: false });
+            state.failed = Some(reason);
+            state.stopped = true;
         }
         state.counters.most_queued = state.counters.most_queued.max(state.queue.len() as u64);
         drop(state);
@@ -186,6 +277,9 @@ impl Push {
         let mut state = lock(&self.state);
         loop {
             if let Some(held) = state.queue.pop_front() {
+                state.bytes -= held.bytes.len();
+                let remaining = state.bytes;
+                state.charge.resize(remaining).expect("releasing a sent packet");
                 state.counters.written += 1;
                 state.counters.bytes += held.bytes.len() as u64;
                 return Some((held.kind, held.bytes, held.sequence, held.offered));
@@ -195,6 +289,13 @@ impl Push {
             }
             state = self.ready.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
+    }
+
+    pub fn take_waiting(&self) -> Vec<Vec<u8>> {
+        let mut state = lock(&self.state);
+        state.bytes = 0;
+        state.charge.resize(0).expect("releasing queued packets");
+        state.queue.drain(..).map(|held| held.bytes).collect()
     }
 
     pub fn stop(&self) {
@@ -223,6 +324,8 @@ impl Push {
                 state.counters.bytes -= bytes.len() as u64;
                 state.counters.unwritten += 1 + state.queue.len() as u64;
                 state.queue.clear();
+                state.bytes = 0;
+                state.charge.resize(0).expect("releasing queued packets");
                 return Err(error);
             }
         }

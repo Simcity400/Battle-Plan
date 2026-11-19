@@ -312,3 +312,36 @@ fn a_panel_made_on_the_panels_thread_reads_with_its_recordings_executable_tables
     let data = std::thread::scope(|threads| threads.spawn(|| panel.data(&frame)).join().unwrap());
     assert_eq!(data.unwrap()["scoped"], true, "a panel reading recorded keywords or registries would find them withheld");
 }
+
+#[test]
+fn dated_read_in_a_gap_refuses_the_hour_between_two_recorded_stretches() {
+    let segments = [(1, FIRST..=FIRST + 5), (2, FIRST + 10..=LAST)].map(|(branch, hours)| {
+        records(branch, hours.map(|hour| DecodedFrame { branch, ..frame(hour) }).collect())
+    });
+    let replay = Replay::from_records(CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
+    let token = AtomicBool::new(false);
+    let source = Source::from_replay(crate::SourceKey { source_id: "gapped".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &token).unwrap();
+    let panel = exact_panel::<Power>(&source, &load(), &json!({"panel": "test-power", "branchId":"1","tag":"GER"})).unwrap();
+    let exact = panel.exact().unwrap();
+    assert!((exact.read)(FIRST + 5, &token).is_ok());
+    assert_eq!((exact.read)(FIRST + 8, &token), Err("Power hour is not recorded".into()));
+    assert!((exact.read)(FIRST + 10, &token).is_ok());
+}
+
+#[test]
+fn incremental_reads_include_cells_outside_the_staged_joins() {
+    let (source, _) = recording();
+    let params = json!({"branchId": "1", "tag": "GER"});
+    let panel = exact_panel::<Power>(&source, &load(), &params).unwrap();
+    let other = exact_panel::<Power>(&source, &load(), &params).unwrap();
+    let reader = panel.exact().unwrap();
+    assert!(Arc::ptr_eq(&reader.advance, &other.exact().unwrap().advance));
+    let token = false.into();
+    for hour in (FIRST..=LAST).chain([FIRST, ITA_LEAVES, LAST]) {
+        let value = (reader.advance)(hour, hour == FIRST, &token, None).value;
+        assert_eq!(*value, (reader.cold)(hour, &token), "hour {hour}");
+        let again = (other.exact().unwrap().advance)(hour, hour == FIRST, &token, None);
+        assert!(Arc::ptr_eq(&again.value, &value));
+        assert_eq!(again.rows, 0);
+    }
+}

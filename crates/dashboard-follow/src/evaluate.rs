@@ -154,6 +154,74 @@ pub(crate) fn series_value(source: &Source, cells: &TableState, slot: u32) -> (i
     }
 }
 
+#[derive(Default)]
+pub(crate) struct Ranking {
+    ready: bool,
+    sorted: std::collections::BTreeSet<(i64, u32, u128)>,
+    slots: HashMap<u32, (i64, u32, u128)>,
+    order: Vec<u32>,
+    dirty: Vec<u32>,
+}
+
+impl Ranking {
+    pub(crate) fn clear(&mut self) { self.ready = false; }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.sorted.len() * (32 + 16) + self.slots.capacity() * 48 + (self.order.capacity() + self.dirty.capacity()) * 4
+    }
+
+    pub(crate) fn write(&mut self, query: &Query, lane: &Lane, changes: Option<&playhead::changes::Changes>, tags: &Tags, reasons: &Reasons, table: &mut Table, out: &mut Vec<u8>) -> Option<u64> {
+        let Query::Series { tags: names, top: Some(n), least, parts: false, .. } = query else { return None };
+        let source = query.source()?;
+        let cells = lane.cells();
+        out.clear();
+        if let Some(reason) = reasons.unrecorded(lane) {
+            self.clear();
+            answer::not_recorded(&reason, out);
+            return Some(0);
+        }
+        self.dirty.clear();
+        if self.ready && let Some(c) = changes.filter(|c| !c.reset() && c.renumber().is_none()) {
+            for slot in c.deleted().slots() {
+                if let Some(old) = self.slots.remove(slot) { self.sorted.remove(&old); }
+            }
+            self.dirty.extend(c.inserted().slots());
+            let columns = query.declared();
+            self.dirty.extend(c.columns().iter().filter(|w| columns.contains(&w.column())).flat_map(|w| w.slots()));
+            self.dirty.sort_unstable();
+            self.dirty.dedup();
+        } else {
+            self.slots.clear();
+            self.sorted.clear();
+            let mut order: Vec<_> = (0..names.len()).collect();
+            order.sort_unstable_by_key(|&i| &names[i]);
+            self.order.resize(order.len(), 0);
+            for (rank, i) in order.into_iter().enumerate() { self.order[i] = rank as u32; }
+            self.dirty.extend(cells.rows());
+            self.ready = true;
+        }
+        let mut read = 0;
+        for &slot in &self.dirty {
+            if let Some(old) = self.slots.remove(&slot) { self.sorted.remove(&old); }
+            let Some(key) = cells.key(slot) else { continue };
+            let Some(&at) = tags.by_key.get(&key) else { continue };
+            read += 1;
+            let (value, State::Value) = series_value(&source, cells, slot) else { continue };
+            let ranked = (if *least { value } else { !value }, self.order[at as usize], key);
+            self.sorted.insert(ranked);
+            self.slots.insert(slot, ranked);
+        }
+        table.clear(1, false);
+        for &(value, _, key) in self.sorted.iter().take(*n) {
+            table.row(key);
+            table.cell(if *least { value } else { !value }, State::Value);
+            table.name(&names[tags.by_key[&key] as usize]);
+        }
+        table.encode(out);
+        Some(read)
+    }
+}
+
 /// Reusable buffers of the answers made on one thread.
 #[derive(Default)]
 pub(crate) struct Scratch {

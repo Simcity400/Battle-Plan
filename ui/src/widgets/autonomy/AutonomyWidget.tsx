@@ -99,8 +99,6 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const clock = runtime.clock;
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const followsClock = widget.time.mode === 'follow';
-  // The widget renders when a lane's level or standing at the head changes (paced), never because the hour moved
-  // inside one; the playhead and the progress line move with the clock each frame (`liveHead`).
   const structure = useRef<(hour: number) => string>(() => '');
   const playbackHour = useHeadHour(clock, active && followsClock, hour => structure.current(hour));
   const tokens = useChartTokens();

@@ -3299,7 +3299,7 @@ export type WarLossesReply = { branchId: string, hour: number,
  * Each war the viewpoint saw at the hour, in the order of the wars.
  */
 wars: Array<WarCasualties>, warnings: Array<string>, };
-export type SpecialProjectsParams = { branchId: string, tag: string, };
+export type SpecialProjectsParams = { hour?: number, branchId: string, tag: string, };
 export type ProjectDate = { hour: number,
 /**
  * False: it happened by this hour, not at it.
@@ -4020,7 +4020,7 @@ export type NukeCountry = { tag: string, countryId: number,
  * The top bar's stockpile: every type's count added with signed 32-bit wrapping.
  */
 total: number, counts: Array<NukeCount>, };
-export type NuclearArsenalReply = { hour: number,
+export type NuclearArsenalReply = {
 /**
  * Every type the game names and every other type a country holds at the hour, by ordinal.
  */

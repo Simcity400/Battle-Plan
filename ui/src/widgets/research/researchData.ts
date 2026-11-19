@@ -17,6 +17,7 @@ export function researchAt(history: ResearchHistory, hour: number): ResearchSlot
     progress: slot.progress.filter(p => p.firstHour <= hour).map(p => ({ ...p, lastHour: Math.min(p.lastHour, hour) })),
     entries: slot.entries.filter(e => e.firstObservedHour <= hour).map(e => ({ ...e,
       lastObservedHour: Math.min(e.lastObservedHour, hour),
+      outcomeObservedHour: e.outcomeObservedHour != null && e.outcomeObservedHour <= hour ? e.outcomeObservedHour : null,
       endedByHour: e.endedByHour !== null && e.endedByHour <= hour ? e.endedByHour : null,
       outcome: e.endedByHour !== null && e.endedByHour <= hour
         ? e.outcomeObservedHour != null && e.outcomeObservedHour > hour ? 'unknown' : e.outcome : 'active',
@@ -54,7 +55,7 @@ export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotSt
   for (; low < slot.entries.length && slot.entries[low].firstObservedHour === state.entryFirstObservedHour; low++) {
     const entry = slot.entries[low];
     if (entry.token === state.token && entry.firstObservedHour <= hour && (entry.endedByHour === null || entry.endedByHour > hour))
-      return { ...entry, lastObservedHour: Math.min(entry.lastObservedHour, hour), endedByHour: null, outcome: 'active' as const };
+      return { ...entry, lastObservedHour: Math.min(entry.lastObservedHour, hour), endedByHour: null, outcomeObservedHour: null, outcome: 'active' as const };
   }
   return null;
 }

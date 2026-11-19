@@ -157,14 +157,14 @@ fn main() -> io::Result<()> {
     let last = (options.blocks * BLOCK) as Hour - 1;
     let seen: Arc<Mutex<Vec<StepStats>>> = Arc::default();
     let held = Arc::clone(&seen);
-    let sink: Sink = Box::new(move |stats: &StepStats, _: Vec<Message>| held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(*stats));
-    let follow = Follow::new(64 << 10);
+    let sink: Sink = Box::new(move |stats: &StepStats, _: Option<Message>| held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(*stats));
+    let follow = Follow::new(0);
     let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 3, speed: f64::from(options.every) * 60.0, rate: 60.0 };
     let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages)?, settings, Some(follow.hook(sink)))?);
     let reader = playhead.declare(Vec::new(), None)?;
     let mut consumer = playhead.consumer(reader);
     let weak = Arc::downgrade(&playhead);
-    follow.bind(move |tables| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), playhead.log_reads())?;
+    follow.bind(move |tables, _joining| weak.upgrade().map_or(Ok(()), |playhead| playhead.redeclare(reader, tables)), playhead.log_reads())?;
     let rows = if options.standing { Rows::Listed } else { Rows::Appended };
     follow.follow(1, Query::Cells { table, columns: (0..KINDS.len()).collect(), rows })?;
     playhead.seek(0);
@@ -203,7 +203,7 @@ fn main() -> io::Result<()> {
         json!({
             "query": if options.standing { "listed" } else { "appended" }, "rows_a_step": rows_a_step, "every": options.every, "blocks": options.blocks, "appended": appended, "listed": options.listed,
             "steps": steps.len(), "step_hours": percentiles(&hours), "hook_ns": percentiles(&ns), "hook_ns_a_row_mean": ns.iter().sum::<u64>() as f64 / rows as f64,
-            "message_bytes": percentiles(&bytes), ""messages": counters.messages, "oversize": counters.oversize,
+            "message_bytes": percentiles(&bytes), "messages": counters.messages,
             "follow_held_peak": peak_follow, "follow_held_end": follow.held().total,
             "playhead_held_peak": holds(&playhead.held().1), "playhead_held_end": holds(&playhead.held().0),
             "unit_bytes": pages.bytes.len(), "made_s": made_s, "wall_s": wall_s, "last": last,

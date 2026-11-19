@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
@@ -8,8 +8,9 @@ import { setToken } from '../../dashboard/options';
 import { useChartTokens } from '../../charts/useChartTokens';
 import type { ResearchData, ResearchHistory, ResearchSlotsAt } from './types';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
-import { liveKey } from '../../charts/live.ts';
-import { paintResearchSlots } from './researchSlots.ts';
+import { useDrawnPanel } from '../../dashboard/DrawnPanel';
+import { panelFeed } from '../../dashboard/panelFeed';
+import type { RefObject } from 'react';
 import { researchFolderList, researchFolderLooks, validateResearchReply, validateResearchSlots } from './researchData';
 import type { ResearchUse } from './researchData';
 
@@ -43,36 +44,24 @@ export function useResearchReply(widget: WidgetSpec, runtime: WidgetRuntime, act
  * `root` with no render: each frame while followed, progress from the slots' live cells and days left counted down
  * at the head; `shown` hears the hour they are of. `data.hour` is the hour the reply is shown for. */
 export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, structure: (reply: ResearchSlotsReply) => string,
-  root: { current: Element | null }, shown: (hour: number | null) => void, hoverHour: number | null = null) {
+  root: RefObject<HTMLElement | null>, hoverHour: number | null = null) {
   const { tag, track } = researchTarget(widget, runtime);
   const params = useMemo(() => tag ? { tag } : null, [tag]);
-  const latest = useRef<ResearchSlotsReply | undefined>(undefined);
-  const painter = useRef<() => void>(() => {});
-  const paint = useCallback((reply: ResearchSlotsReply) => { latest.current = reply; painter.current(); }, []);
-  const now = useHeadProduct<ResearchSlotsReply>(runtime, widget, 'research-slots', params, { active, validate: validateResearchSlots, structure, paint, hoverHour });
-  // The hour the numbers are counted at: the head while followed, else the hour asked.
-  const headHour = useCallback(() => {
-    if (!track) return null;
-    if (now.read !== 'followed') return now.hour ?? now.at;
-    return Math.max(track.branch.firstHour, Math.min(track.branch.lastHour, Math.floor(runtime.clock.getHour()) + track.axisOffset));
-  }, [track, now.read, now.hour, now.at, runtime.clock]);
-  painter.current = () => {
-    const reply = now.read === 'followed' ? latest.current ?? now.data : now.data, hour = headHour();
-    if (!reply || hour === null) return;
-    const values = now.live.read();
-    paintResearchSlots(root.current, reply, hour, slot => values.get(liveKey(String(slot), 'progress')));
-    shown(now.shownAt() ?? hour);
-  };
-  useEffect(() => {
-    if (!active) return;
-    const repaint = () => painter.current();
-    const stops = [runtime.clock.subscribeFrame(repaint), runtime.clock.subscribe(repaint), now.live.subscribe(repaint)];
-    repaint();
-    return () => { for (const stop of stops) stop(); };
-  }, [active, runtime.clock, now.live, now.data]);
-  const fallback = now.hour ?? now.at ?? track?.branch.lastHour ?? null;
+  const now = useHeadProduct<ResearchSlotsReply>(runtime, widget, 'research-slots', params,
+    { active, validate: validateResearchSlots, structure, hoverHour });
+  const attach = useCallback((element: HTMLElement | null) => {
+    root.current = element;
+    now.root(element);
+  }, [root, now.root]);
+  const offset = track?.axisOffset ?? 0;
+  const fixed = widget.time.mode !== 'follow' || hoverHour !== null;
+  const fallback = now.at;
+  const headHour = () => fixed ? fallback : runtime.clock.getHour() + offset;
+  const feed = panelFeed('research-slots', now, structure, widget, runtime);
+  useDrawnPanel(root, runtime.clock, feed && hoverHour !== null ? { ...feed, fixed: hoverHour - offset } : feed, active);
+  const latest = { get current() { const read = now.current(), hour = now.shownAt(); return read && hour !== null ? { ...read, hour } : undefined; } };
   const data = useMemo<ResearchSlotsAt | undefined>(() => now.data && fallback !== null ? { ...now.data, hour: fallback } : undefined, [now.data, fallback]);
-  return { ...now, data, latest, hourNow: () => headHour() ?? fallback ?? 0 };
+  return { ...now, root: attach, data, latest, hourNow: () => headHour() ?? fallback ?? 0 };
 }
 
 /** The folder filter's choices: the folders this country's research shows, in

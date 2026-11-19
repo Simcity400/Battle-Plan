@@ -1,8 +1,9 @@
+import { decode } from '@msgpack/msgpack';
+
 /** A step's message of followed answers (`crates/dashboard-follow/src/answer.rs`), read once: the
  * numbers stay where they arrived, read through one set of typed views over the whole message,
  * which every answer in it shares (each section starts on an eight-byte boundary). */
 
-const MAGIC = 0x314c4f46;
 const RESET = 1;
 const NO_REASON = 0xffff_ffff;
 
@@ -43,37 +44,10 @@ export interface FollowedRows {
 
 export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedRows;
 
-/** A panel at the head (`crates/dashboard-follow/src/panel.rs`): the product's reply as JSON, or why it has none
- * at this hour. `dataText` is the reply as it arrived, what "differs" compares. */
+/** A panel at the head (`crates/dashboard-follow/src/panel.rs`): the product's reply or its recorded refusal. */
 export interface FollowedPanel {
   data?: unknown;
-  dataText?: string;
   refused: string | null;
-}
-
-/** `PNL1`, a panel message's first four bytes, as a little-endian u32. */
-const PANEL_MAGIC = 0x314c4e50;
-
-/** Whether `bytes` is a message of text panels rather than of followed answers. */
-export function isPanelMessage(bytes: ArrayBuffer | Uint8Array): boolean {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  return view.byteLength >= 4 && new DataView(view.buffer, view.byteOffset, 4).getUint32(0, true) === PANEL_MAGIC;
-}
-
-/** A message of panels: each panel's id and hour, and its reply or its refusal. */
-export function parsePanels(bytes: ArrayBuffer | Uint8Array): { id: number; hour: number; panel: FollowedPanel }[] {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (!isPanelMessage(view)) throw new Error('Not a panel message.');
-  const body = JSON.parse(decoder.decode(view.subarray(4))) as { panels?: unknown };
-  if (!Array.isArray(body.panels)) throw new Error('A panel message names no panels.');
-  return body.panels.map(item => {
-    const { id, hour, refused, data } = item as Record<string, unknown>;
-    if (!Number.isSafeInteger(id) || !Number.isSafeInteger(hour) || !(refused === null || typeof refused === 'string') || (refused === null && data == null)) {
-      throw new Error('A panel in the message is malformed.');
-    }
-    const panel: FollowedPanel = refused === null ? { data, dataText: JSON.stringify(data), refused } : { refused };
-    return { id: id as number, hour: hour as number, panel };
-  });
 }
 
 /** `FEN1`: the first four bytes of the notice that pushed answers stopped (`crates/dashboard-follow/src/push.rs`, `failure`). */
@@ -87,12 +61,14 @@ export function followFailure(bytes: ArrayBuffer | Uint8Array): string | null {
 }
 
 export interface FollowedMessage {
+  limited?: Map<number, number>;
   /** The follow (one playhead's) that sent it. */
   route: number;
   hour: number;
   /** The settled answers after a seek: logs start again. */
   reset: boolean;
-  answers: { id: number; hour: number; answer: FollowedAnswer }[];
+  seek: number; clock: number;
+  answers: { id: number; hour: number; answer: FollowedAnswer; span?: [number, number] }[];
 }
 
 const decoder = new TextDecoder();
@@ -154,9 +130,7 @@ function body(views: MessageViews, data: DataView, start: number, end: number): 
   return { kind: kind === 2 ? 'log' : kind === 3 ? 'changed' : 'rows', rows, columns, views, keys, values, hours, states, reasons, names, texts: starts, decoded: [] };
 }
 
-/** `bytes` read as a followed message; bytes not starting on an eight-byte boundary are copied
- * once so the views can lie over them. */
-export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage {
+function viewsOf(bytes: ArrayBuffer | Uint8Array) {
   let view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   if (view.byteOffset % 8 !== 0 || view.byteLength % 8 !== 0) view = view.slice();
   const { buffer, byteOffset, byteLength } = view;
@@ -165,17 +139,37 @@ export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage 
     u32: new Uint32Array(buffer, byteOffset, words * 2),
     i32: new Int32Array(buffer, byteOffset, words * 2), i64: new BigInt64Array(buffer, byteOffset, words), u64: new BigUint64Array(buffer, byteOffset, words) };
   const data = new DataView(buffer, byteOffset, byteLength);
-  if (byteLength < 16 || data.getUint32(0, true) !== MAGIC) throw new Error('Not a followed message.');
+  return { views, data, byteLength };
+}
+
+export function parseAnswer(bytes: Uint8Array): FollowedAnswer {
+  const { views, data, byteLength } = viewsOf(bytes);
+  return body(views, data, 0, byteLength);
+}
+
+export const DATED_FOLLOW = 0x324c4f46, DATED_PANEL = 0x324c4e50;
+
+export function wireKind(bytes: ArrayBuffer | Uint8Array): number {
+  const v = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  return v.byteLength < 4 ? 0 : new DataView(v.buffer, v.byteOffset, 4).getUint32(0, true);
+}
+
+/** `bytes` read as a followed message; bytes not starting on an eight-byte boundary are copied
+ * once so the views can lie over them. */
+export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage {
+  const { views, data, byteLength } = viewsOf(bytes);
+  if (byteLength < 24 || data.getUint32(0, true) !== DATED_FOLLOW) throw new Error('Not a followed message.');
   const flags = data.getUint32(4, true);
-  const message: FollowedMessage = { route: flags >>> 1, hour: data.getInt32(8, true), reset: (flags & RESET) !== 0, answers: [] };
+  const message: FollowedMessage = { route: flags >>> 1, hour: data.getInt32(8, true), reset: (flags & RESET) !== 0, seek: data.getUint32(16, true), clock: data.getInt32(20, true), answers: [] };
   const count = data.getUint32(12, true);
-  let at = 16;
+  let at = 24;
   for (let i = 0; i < count; i++) {
     if (at + 16 > byteLength) throw new Error('A followed message ends early.');
     const id = data.getUint32(at, true), hour = data.getInt32(at + 4, true), length = data.getUint32(at + 8, true);
     const start = at + 16, end = start + length;
     if (end > byteLength) throw new Error('A followed message ends early.');
-    message.answers.push({ id, hour, answer: body(views, data, start, end) });
+    if (!length) (message.limited ??= new Map()).set(id, hour);
+    else message.answers.push({ id, hour, answer: body(views, data, start, end), span: [start, end] });
     at = end;
   }
   if (at !== byteLength) throw new Error('A followed message holds bytes past its answers.');
@@ -221,3 +215,39 @@ export function rowKeys(answer: FollowedAnswer | undefined): string {
   for (let row = 0; row < answer.rows; row++) out += `${row ? ',' : ''}${rowKey(answer, row)}`;
   return out;
 }
+
+export interface DatedPanel { id: number; hour: number; panel: FollowedPanel | null; stepped?: boolean; through?: number }
+
+export function parseDatedPanels(bytes: Uint8Array) {
+  const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (data.byteLength < 24 || wireKind(bytes) !== DATED_PANEL || data.getUint16(4, true) !== 4) throw new Error('Invalid dated panel header.');
+  const count = data.getUint32(8, true), clock = data.getInt32(12, true), route = data.getUint32(16, true), seek = data.getUint32(20, true);
+  const panels: DatedPanel[] = [];
+  let completed: number | undefined;
+  let at = 24;
+  for (let i = 0; i < count; i++) {
+    const id = data.getUint32(at, true), hour = data.getInt32(at + 4, true), kind = data.getUint8(at + 8);
+    const length = data.getUint32(at + 12, true), end = at + 20 + length;
+    if (end > bytes.length || ![0, 1, 3, 4].includes(kind) || (kind >= 3 && length)) throw new Error('Invalid dated panel record.');
+    if (kind === 4) {
+      if (id !== 0 || i !== count - 1) throw new Error('Invalid completed product step.');
+      completed = hour; at = aligned(end); continue;
+    }
+    const body = bytes.subarray(at + 20, end);
+    panels.push({ id, hour, panel: kind === 3 ? null : kind === 0 ? { refused: decoder.decode(body) } : { data: decode(body), refused: null } });
+    if (data.getUint8(at + 9) & 1) panels.at(-1)!.stepped = true;
+    if (data.getUint8(at + 9) & 2) {
+      const through = data.getInt32(at + 16, true);
+      if (through < hour) throw new Error('A panel confirmation ends before its reading.');
+      panels.at(-1)!.through = through;
+    }
+    at = aligned(end);
+  }
+  if (at !== bytes.length) throw new Error('Unexpected bytes after dated panels.');
+  return { route, clock, seek, panels, completed };
+}
+
+export type FollowItem =
+  | { kind: 'panels'; batch: ReturnType<typeof parseDatedPanels> }
+  | { kind: 'followed'; message: FollowedMessage }
+  | { kind: 'failure'; reason: string };

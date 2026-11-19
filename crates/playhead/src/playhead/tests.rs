@@ -1187,54 +1187,28 @@ fn a_declaration_that_joins_no_table_is_shown_to_the_hook_at_once_while_paused()
     assert_eq!(playhead.held().2.joins_at_head, 0, "nothing joined");
 }
 
-/// Kept exact while paused, what the hook is shown while the clock is paused is of the paused hour:
-/// a pause with steps built past the head resets the lanes there (the hook sees that reset, the
-/// clock holds at the hour paused), no step is built past it, and a declaration is shown at it.
 #[test]
-fn kept_exact_a_pause_past_the_steps_built_resets_at_the_head_and_builds_nothing_past_it() {
+fn a_paused_follow_builds_its_lead_and_seeds_a_new_query_at_the_paused_hour() {
     let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
-    let (send, seen) = std::sync::mpsc::channel();
-    let hook: super::Hook = Box::new(move |step, _lanes| {
-        let _ = send.send((step.epoch(), step.first(), step.last(), step.reset()));
+    let (sent, seen) = std::sync::mpsc::channel();
+    let hook: super::Hook = Box::new(move |step, _| {
+        if step.reset() { sent.send((step.epoch(), step.last())).unwrap(); }
     });
-    // Eight steps of a day past the head: the clock would run eight seconds to pass them.
-    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), Settings { ring: 8, ..whole_ahead() }, Some(hook)).unwrap();
-    playhead.exact_when_paused();
-    let log = Log::default();
-    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
-    let mut consumer = playhead.consumer(reader);
-    playhead.play(24.0);
-    playhead.seek(0);
-    playhead.advance(0);
-    let mut taken = Vec::new();
-    playhead.wait_until(|| {
-        take(&mut consumer, 0, &mut taken);
-        !taken.is_empty()
-    });
-    playhead.wait_until(|| playhead.ring_len() == 8);
-    let newest = playhead.newest().unwrap();
-    while seen.try_recv().is_ok() {}
-    playhead.pause();
-    let paused = playhead.head(Instant::now());
-    assert!(paused < newest, "paused at {paused}, before the newest step built ({newest})");
-    let shown = || seen.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| panic!("the hook was shown no reset at the paused head {paused}"));
-    let reset = loop {
-        let step = shown();
-        if step.3 {
-            break step;
-        }
-    };
-    assert_eq!((reset.1, reset.2), (paused, paused), "a reset at the paused head, in place of the steps built past it");
-    assert_eq!(playhead.head(Instant::now() + Duration::from_secs(3600)), paused, "the clock stays where it paused");
-    playhead.advance(paused);
-    playhead.wait_until(|| {
-        take(&mut consumer, paused, &mut taken);
-        taken.last().is_some_and(|step| step.reset() && step.last() == paused)
-    });
-    assert_eq!(playhead.newest(), Some(paused), "nothing built past the paused head");
-    let _none = playhead.declare(Vec::new(), None).unwrap();
-    assert_eq!(shown(), (reset.0, paused + 1, paused, false), "a declaration shown at the paused head, never at a step ahead of it");
-    assert_eq!(playhead.newest(), Some(paused));
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), whole_ahead(), Some(hook)).unwrap();
+    let reader = playhead.declare(every(&[0]), None).unwrap();
+    let mut side = Side::new(&playhead, reader);
+    playhead.seek(100);
+    frames(&playhead, &mut [&mut side], 100, 100);
+    let (first, hour) = seen.recv().unwrap();
+    assert_eq!(hour, 100);
+    playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest > 100));
+    playhead.seed_paused_query();
+    let (next, hour) = seen.recv().unwrap();
+    assert!(next > first);
+    assert_eq!(hour, 100);
+    frames(&playhead, &mut [&mut side], 100, 100);
+    playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest > 100));
+    assert_eq!(playhead.head(Instant::now()), 100);
 }
 
 /// Several tables declared at once while paused all arrive at the hour taken, in one step: two
@@ -2571,4 +2545,103 @@ fn paused_a_new_pace_builds_the_steps_ahead_again_and_each_hour_shows_that_hour(
         let at = step.table(0).unwrap().head().unwrap();
         assert!(held[&0].holds(&states[0][0][at as usize]), "table 0 at {at}");
     });
+}
+
+#[test]
+fn completed_steps_keep_exact_byte_bounds_through_parking_and_rewind() {
+    let changes = |table, count: u32| {
+        let mut changes = Changes::default();
+        changes.begin(table, &[], false, false);
+        for slot in 0..count {
+            changes.inserted.push(1, slot, slot.into());
+        }
+        changes
+    };
+    let mut ring = crate::ring::Ring::new(16);
+    let budget = crate::ByteBudget::new(256);
+    ring.share_budget(budget.clone()).unwrap();
+    let fast = ring.join(Reader(0));
+    let slow = ring.join(Reader(1));
+    ring.asks(fast);
+    ring.asks(slow);
+    let publish = |ring: &mut crate::ring::Ring, hour, count| {
+        ring.publish(Arc::new(Step { epoch: ring.epoch, first: hour, last: hour, piece: Some(0), tables: vec![changes(0, count)], ..Step::default() })).unwrap().unwrap();
+    };
+    for hour in 1..=4 {
+        publish(&mut ring, hour, hour as u32);
+    }
+    let mut before = Vec::new();
+    ring.ahead(fast, &mut before);
+    ring.complete(vec![(before[3].seq(), vec![changes(0, 1)]), (before[1].seq(), vec![changes(1, 2), changes(0, 6)])]).unwrap();
+    assert_eq!(budget.used(), (13 + 2 + 4) * 8);
+    assert_eq!(before[1].payload(), 2 * 8);
+    ring.resize(16, 12 * 8);
+    assert_eq!(ring.lead(1), (3, 12 * 8, true));
+    assert_eq!(ring.lead(2), (2, 4 * 8, false));
+    ring.set_bound(9 * 8);
+    let mut taken = Vec::new();
+    ring.take(fast, 2, &mut taken);
+    assert_eq!(ring.parked(slow), None);
+    ring.take(slow, 1, &mut taken);
+    ring.take(fast, 3, &mut taken);
+    assert_eq!(ring.parked(slow), Some(1));
+    ring.land_at(slow, 3, vec![]).unwrap().unwrap();
+    assert_eq!(ring.lead(3), (1, 8, false));
+    ring.cut(before[3].seq());
+    assert_eq!(budget.used(), 18 * 8);
+    drop(taken);
+    drop(before);
+    assert_eq!(budget.used(), 0);
+    publish(&mut ring, 4, 5);
+    assert_eq!(ring.lead(3), (1, 5 * 8, false));
+    ring.abandon();
+    assert_eq!(budget.used(), 0);
+    assert_eq!(ring.lead(0), (0, 0, false));
+    publish(&mut ring, 1, 3);
+    assert_eq!(ring.lead(0), (1, 3 * 8, false));
+    let orphan = Arc::new(Step { tables: vec![changes(0, 4)], ..Step::default() });
+    ring.give(Reader(9), 0, std::slice::from_ref(&orphan)).unwrap();
+    ring.give(Reader(1), 0, std::slice::from_ref(&orphan)).unwrap();
+    assert_eq!(budget.used(), 7 * 8);
+    ring.abandon();
+    assert_eq!(budget.used(), 4 * 8);
+    drop(orphan);
+    assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn a_lead_builds_its_seconds_of_steps_past_the_head_sized_by_the_pace_and_stops_at_its_bytes() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), Settings { ring: 2, rate: 60.0, ..whole_ahead() }, None).unwrap();
+    let reader = playhead.declare(every(&[0]), None).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    let mut taken = Vec::new();
+    let from_the_start = |consumer: &mut Consumer, taken: &mut Vec<Taken>| {
+        playhead.seek(0);
+        playhead.advance(0);
+        taken.clear();
+        playhead.wait_until(|| {
+            take(consumer, 0, taken);
+            taken.iter().any(|step| step.reset())
+        });
+    };
+    playhead.pace(240.0);
+    from_the_start(&mut consumer, &mut taken);
+    playhead.wait_until(|| playhead.ring_len() == 2);
+    assert_eq!(playhead.lead_held().steps, 2, "no lead: the settings' ring");
+    playhead.lead(super::Lead { seconds: 0.5, bytes: usize::MAX });
+    assert_eq!(playhead.lead_held().steps, 30, "half a second at 240 h/s in steps of 4 h");
+    playhead.wait_until(|| playhead.ring_len() == 30);
+    let whole = playhead.lead_held();
+    assert!(!whole.capped && whole.bytes > 0, "{whole:?}");
+    playhead.pace(24.0);
+    assert_eq!(playhead.lead_held().steps, 12, "steps of an hour at 24 h/s: half a second is 12");
+    playhead.lead(super::Lead { seconds: 0.01, bytes: usize::MAX });
+    assert_eq!(playhead.lead_held().steps, 2, "never fewer than the settings' ring");
+    playhead.pace(240.0);
+    playhead.lead(super::Lead { seconds: 0.5, bytes: whole.bytes / 3 });
+    from_the_start(&mut consumer, &mut taken);
+    playhead.wait_until(|| playhead.lead_held().capped);
+    let capped = playhead.lead_held();
+    assert!(capped.past < 30 && capped.bytes >= whole.bytes / 3, "stopped at its bytes, short of its steps: {capped:?}");
 }

@@ -81,7 +81,6 @@ const client = {
       head: clock.getHour(), playing: clock.playing });
     return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: reply(request.product, request.params) };
   },
-  onFollowMessages: async () => () => {},
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
 

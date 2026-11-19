@@ -25,15 +25,14 @@ test('a card page asks the opening and continuing kinds that continue nothing, b
     [{ name: 'kind', values: [9, 10], tags: [] }, { name: 'opener', values: [-1], tags: [] }]);
 });
 
-test('the hour a card list reads moves only where a held card changes, and at most four times a second of playback', () => {
+test('the hour a card list reads moves only where a held card changes', () => {
   const breaks = recordingBreaks({ gaps: [{ firstHour: 50, lastHour: 60 }], eventLosses: [{ afterHour: 80, hour: 90 }] });
   assert.deepEqual(breaks, [{ firstHour: 50, lastHour: 60 }, { firstHour: 81, lastHour: 90 }]);
-  const key = (hour: number, step = 1, days = false) => cardsKey([10, 30], breaks, days, hour, step);
+  const key = (hour: number, days = false) => cardsKey([10, 30], breaks, days, hour);
   assert.equal(key(10), key(29), 'nothing changes between two edges');
   assert.notEqual(key(29), key(30));
   assert.notEqual(key(49), key(50), 'a break begins');
-  assert.notEqual(key(23, 1, true), key(24, 1, true), 'an open card names its days');
-  assert.equal(key(31, 360), key(359, 360), 'playing at 1,440 hours a second the key is taken at most every 360 hours');
+  assert.notEqual(key(23, true), key(24, true), 'an open card names its days');
 });
 
 test('a loaded page holds the cards the hour shows, counted by them; a page not loaded keeps its count', () => {

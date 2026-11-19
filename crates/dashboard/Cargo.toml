@@ -20,6 +20,7 @@ dashboard-intelligence.workspace = true
 dashboard-base.workspace = true
 dashboard-declare.workspace = true
 dashboard-follow = { path = "../dashboard-follow" }
+playhead = { path = "../playhead" }
 dashboard-query.workspace = true
 replay-columnar.workspace = true
 job-priority.workspace = true
@@ -62,9 +63,10 @@ blake3.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true
 recorder-platform.workspace = true
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
+rmp-serde.workspace = true
 ts-rs = "11.1"
 base64 = "0.22.1"
 png.workspace = true
@@ -87,7 +89,6 @@ path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
 dashboard = { workspace = true, features = ["export-types"] }
-playhead = { path = "../playhead" }
 dashboard-base = { workspace = true, features = ["test-support"] }
 engine-research.workspace = true
 replay = { workspace = true, features = ["test-support"] }
@@ -132,6 +133,7 @@ unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-wgpu = { workspace = true }
+unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-core = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
