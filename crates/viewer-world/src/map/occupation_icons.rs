@@ -412,6 +412,7 @@ pub fn lay_out(inputs: &Inputs<'_>, marks: &Marks) -> PreparedOccupationIcons {
                     world,
                     cutoff: defines.cutoff,
                     family: IconFamily::Occupation,
+                    moves: None,
                 },
                 text: percentage(raw, row.speed, mode),
                 color,

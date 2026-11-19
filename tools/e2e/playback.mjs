@@ -9,7 +9,7 @@ import path from 'node:path';
 import { FAIL, PARTIAL, dashboardRows, floorOf, floorRows, pacedRows, passed, proofRows, spread, table, wholeHarness, wholeProof } from './playbackVerdicts.mjs';
 
 /** The phase's runs in the order playback.py makes them. */
-const ROLES = ['floor', 'today', 'layers', 'layers-only', 'layers-seeks', 'layers-only-seeks', 'proof'];
+const ROLES = ['floor', 'layers', 'layers-seeks', 'proof'];
 const readJSON = async file => (existsSync(file) ? JSON.parse((await readFile(file, 'utf8')).replace(/^﻿/, '')) : null);
 
 /** A JSON-lines file: its records, and whether a line failed to parse (a run cut off while writing). */
@@ -72,7 +72,7 @@ async function judgeMap(phase, acceptReconciliation = false) {
     '## Runs', '', '| Run | Kind | Exit | Whole | Cores | Load | Peak working set / private (runner) | Wall |', '|---|---|---|---|---|---|---|---|'];
   for (const entry of runs) {
     const verdict = whole(entry, acceptReconciliation);
-    lines.push(`| ${entry.run.label} | ${entry.run.kind}${entry.run.playhead ?? entry.run.units ? ', playhead on' : ''}${entry.run.todayOff ? ', today off' : ''} | ${entry.run.exit ?? '–'}${entry.run.stopped ? ` (${entry.run.stopped})` : ''} | ${verdict.whole ? 'whole' : `**partial**: ${verdict.reasons.join('; ')}`} | ${entry.run.cores ?? 'not pinned'} | ${loadLine(entry.run)} | ${entry.run.peak ? `${entry.run.peak.working_set_mb} / ${entry.run.peak.private_mb} MB` : '–'} | ${entry.run.seconds?.toFixed(1) ?? '–'} s |`);
+    lines.push(`| ${entry.run.label} | ${entry.run.kind} | ${entry.run.exit ?? '–'}${entry.run.stopped ? ` (${entry.run.stopped})` : ''} | ${verdict.whole ? 'whole' : `**partial**: ${verdict.reasons.join('; ')}`} | ${entry.run.cores ?? 'not pinned'} | ${loadLine(entry.run)} | ${entry.run.peak ? `${entry.run.peak.working_set_mb} / ${entry.run.peak.private_mb} MB` : '–'} | ${entry.run.seconds?.toFixed(1) ?? '–'} s |`);
   }
   lines.push('', '## Verdicts', '', table(rows), '');
   const spreads = spread(rows);

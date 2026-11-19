@@ -97,7 +97,6 @@ export function wholeHarness(run, report, frames, { acceptReconciliation = false
   if (report.from_hour !== from || report.game_hours !== hours) reasons.push(`the report covers ${report.from_hour} + ${report.game_hours} h, asked ${from} + ${hours}`);
   const gaps = list.filter((frame, index) => frame.frame !== index).length;
   if (gaps) reasons.push(`${gaps} frames out of sequence`);
-  if (todayOff(run) && report.layers_only?.on !== true) reasons.push('asked with today\'s pipeline off, the report says it ran');
   if (back !== null && report.seek_back !== back) reasons.push(`asked to seek back to ${back}, the report says ${report.seek_back ?? 'none'}`);
   if (arg(run.args, '--paced') !== null) {
     const paced = report.paced;
@@ -150,9 +149,6 @@ export function wholeProof(run, summary, frames) {
   return { whole: reasons.length === 0, reasons };
 }
 
-/** Whether a run was asked with today's pipeline off: by the runner's record or by the viewer's own flag. */
-const todayOff = run => Boolean(run.todayOff) || ['--layers-only', '--today-off'].some(flag => (run.args ?? []).includes(flag));
-
 const row = (fields) => ({ worst: null, today: '', note: '', values: {}, ...fields });
 
 /** Every row of a run that is not whole: named, with no figure. */
@@ -179,14 +175,11 @@ function seekWindows(report) {
 /** The rows of one paced harness run against the map's bars. `floor` is the floor run's late-frame rate, if one ran. */
 export function pacedRows({ page = 'map', label, run, report, frames, floor = null, acceptReconciliation = false }) {
   const whole = wholeHarness(run, report, frames, { acceptReconciliation });
-  // Runs before the format-12 swap named their unit files; since, the recording's playhead is on unless --no-playhead.
-  const layered = Boolean(run.playhead ?? run.units);
-  const todayOn = !todayOff(run);
   const bars = [...PACED_BARS, ...(num(run.args, '--seeks') ? ['seek: sought hour on screen'] : [])];
   if (!whole.whole) return partialRows(page, label, bars, whole.reasons);
   const list = frames.frames, paced = report.paced;
   const hz = paced.refresh_hz, interval = 1e6 / hz, step = paced.speed_hours_per_second / hz;
-  const shownAt = frame => (layered ? frame.layers?.drawn != null : frame.drawn_hour != null);
+  const shownAt = frame => frame.layers?.drawn != null;
   const first = list.findIndex(shownAt);
   if (first < 0) return partialRows(page, label, bars, []).map(entry => ({ ...entry, verdict: FAIL, measured: 'no picture was drawn', note: `none in ${list.length} frames of a whole run` }));
   const measured = list.slice(first);
@@ -228,8 +221,7 @@ export function pacedRows({ page = 'map', label, run, report, frames, floor = nu
       note: [firstNote, outside.size ? `outside the ${report.layers.seeks.length} seek windows` : '', missing.length ? `${missing.length} frames show nothing of ${side} (first ${missing[0].frame})` : '']
         .filter(Boolean).join('; '), values: { p50, p99, worst: worstLag } }));
   };
-  if (layered) lagRow('the layers', frame => frame.layers?.lag_hours ?? null);
-  if (todayOn) lagRow('today\'s parts', frame => (frame.drawn_hour == null ? null : frame.lag_hours));
+  lagRow('the layers', frame => frame.layers?.lag_hours ?? null);
 
   const seconds = paced.seconds - list[first].start_us / 1e6;
   const pictures = (lagSide, changed) => {
@@ -238,8 +230,7 @@ export function pacedRows({ page = 'map', label, run, report, frames, floor = nu
     rows.push(row({ page, run: label, bar: `new pictures a second, ${lagSide}`, measured: `${fixed(count / seconds, 1)} (${count} in ${fixed(seconds, 2)} s)`, limit: `one a frame (${hz})`,
       verdict: REPORTED, today: TODAY.pictures, values: { perSecond: count / seconds } }));
   };
-  if (layered) pictures('the layers', (frame, before) => frame.layers?.drawn !== before?.layers?.drawn);
-  if (todayOn) pictures('today\'s parts', frame => frame.new_hour);
+  pictures('the layers', (frame, before) => frame.layers?.drawn !== before?.layers?.drawn);
   const layers = report.layers?.layers ?? [];
   const cpuOf = (frame, index) => {
     const parts = frame.layers?.cpu_ms?.[index];
@@ -280,7 +271,7 @@ export function pacedRows({ page = 'map', label, run, report, frames, floor = nu
     const bytes = stepper.playhead_bytes ?? {};
     rows.push(row({ page, run: label, bar: 'playhead held()', measured: `peak ${fixed(bytes.peak / 1e6, 1)} MB (ring ${fixed(bytes.ring_peak / 1e6, 1)}, states ${fixed(bytes.states_peak / 1e6, 1)}); the map's side ${fixed(stepper.host_bytes?.total / 1e6, 1)} MB at the end`,
       limit: `at most ${MAP.heldPeakBytes / 1e6} MB (section 6)`, verdict: bytes.peak <= MAP.heldPeakBytes ? PASS : FAIL, today: TODAY.memory, values: { peakMb: bytes.peak / 1e6 } }));
-  } else if (layered) {
+  } else {
     rows.push(row({ page, run: label, bar: 'playhead step time', measured: '–', limit: 'p99 5 / worst 10 ms, at most three threads; no stall', verdict: UNMEASURABLE,
       today: TODAY.step, note: 'this viewer\'s report carries no stepper section' }));
   }

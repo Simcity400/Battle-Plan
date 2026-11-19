@@ -13,7 +13,7 @@
 use super::{Admits, Counters, PHASES, Sees, Source, TABLES, action};
 use crate::{
     layers::{
-        Budget, Carried, Fed as Products, Gpu, Inputs, Layer, Published, Upstream, View,
+        Carried, Settling, Fed as Products, Inputs, Layer, Published, Upstream, View,
         relations::{self, Relations},
         vision::{SightChange, SightCopy, SightKeys, Vision as VisionLayer},
     },
@@ -115,7 +115,7 @@ impl Work {
                 None => self.sight = change.whole().cloned(),
             }
             if let Some(copy) = &self.sight {
-                self.model.take_sight((copy.choice().clone(), copy.sight_epoch()), change.provinces(), change.units(), &self.mirrors);
+                self.model.take_sight((copy.choice().clone(), copy.sight_epoch()), change.whole().is_some(), change.provinces(), change.units(), &self.mirrors);
             }
         }
     }
@@ -124,8 +124,8 @@ impl Work {
     fn make(&mut self, epoch: u64, stamp: Option<Hour>, answers: usize, started: Instant) -> Made {
         let content = Arc::clone(&self.model.content);
         let (model, mirrors, sight) = (&mut self.model, &*self.mirrors, self.sight.as_ref());
-        content.scoped(|| model.settle_dirty(mirrors, &mut Budget::unlimited(), sight.map(Sees::Copy)));
-        self.model.publish(&mut Budget::unlimited());
+        content.scoped(|| model.settle_dirty(mirrors, sight.map(Sees::Copy)));
+        self.model.publish();
         let held = self.model.held() + self.mirrors.iter().map(Mirror::bytes).sum::<usize>() + self.sight.as_ref().map_or(0, SightCopy::bytes);
         Made {
             epoch,
@@ -144,7 +144,7 @@ impl Work {
 
 /// The tests' hold on the worker: it waits at each job it receives while held, and counts the jobs
 /// it has answered.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct Gate {
     held: std::sync::Mutex<bool>,
@@ -152,7 +152,7 @@ pub struct Gate {
     answered: std::sync::atomic::AtomicUsize,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Gate {
     fn pass(&self) {
         let mut held = self.held.lock().unwrap();
@@ -166,7 +166,7 @@ impl Gate {
     }
 }
 
-fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, #[cfg(test)] gate: Arc<Gate>) {
+fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, #[cfg(any(test, feature = "test-support"))] gate: Arc<Gate>) {
     let mut work: Option<Work> = None;
     let mut epoch = 0;
     let mut next = None;
@@ -178,7 +178,7 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, #[cfg(test)] gate: A
                 Err(_) => return,
             },
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         gate.pass();
         let started = Instant::now();
         let product = match job {
@@ -194,7 +194,7 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, #[cfg(test)] gate: A
             // Jobs go in the order sent, each epoch's after its reset: one of an epoch restarted is
             // dropped by the frame.
             Job::Frame { epoch: of, .. } if of != epoch => {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 gate.answer(1);
                 continue;
             }
@@ -213,7 +213,7 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, #[cfg(test)] gate: A
                             answers += 1;
                         }
                         Job::Frame { .. } => {
-                            #[cfg(test)]
+                            #[cfg(any(test, feature = "test-support"))]
                             gate.answer(1);
                         }
                         reset @ Job::Reset { .. } => {
@@ -225,12 +225,12 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, #[cfg(test)] gate: A
                 held.make(epoch, stamp, answers, started)
             }
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let answers = product.answers;
         if made.send(product).is_err() {
             return;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         gate.answer(answers);
     }
 }
@@ -238,14 +238,6 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>, #[cfg(test)] gate: A
 /// What the frame saw of its worker while playing, for the paced report.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Tally {
-    /// Settles within a frame's budget.
-    pub settles: u64,
-    /// Of those, the settles at which a job of an earlier frame was still unanswered: the product
-    /// of the step before had not arrived, and the layer showed an older hour.
-    pub late: u64,
-    /// The most such settles in a row.
-    pub late_run_worst: u64,
-    late_run: u64,
     /// Products taken, the jobs they answered, and the worker's time making them.
     pub products: u64,
     pub jobs: u64,
@@ -281,14 +273,14 @@ pub struct Fed {
     /// The worker stopped (it panicked): no stacks are drawn from then on.
     stopped: bool,
     tally: Tally,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     gate: Arc<Gate>,
     /// Jobs sent, the waits for the worker, and the products taken, since the layer was made.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     sent: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     blocked: u64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     taken: u64,
 }
 
@@ -314,13 +306,13 @@ impl Fed {
             worker_held: 0,
             stopped: false,
             tally: Tally::default(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             gate: Arc::default(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             sent: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             blocked: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             taken: 0,
         }
     }
@@ -384,30 +376,30 @@ impl Fed {
     }
 
     /// Holds the worker at the next job it receives, or lets it go on.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn hold_worker(&self, held: bool) {
         *self.gate.held.lock().unwrap() = held;
         self.gate.open.notify_all();
     }
 
     /// The worker has answered every job sent.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn answered(&self) -> bool {
         self.gate.answered.load(Ordering::Acquire) == self.sent
     }
 
     /// The times the frame waited for the worker, and the products it took.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn blocked(&self) -> u64 {
         self.blocked
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn taken(&self) -> u64 {
         self.taken
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn applied_hour(&self) -> Option<Hour> {
         self.products.applied_hour()
     }
@@ -421,7 +413,7 @@ impl Fed {
             && jobs.send(job).is_ok()
         {
             self.owed += 1;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             {
                 self.sent += 1;
             }
@@ -434,7 +426,7 @@ impl Fed {
         if let Some(receive) = &self.made {
             loop {
                 let made = if wait && self.owed > 0 {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     {
                         self.blocked += 1;
                     }
@@ -462,7 +454,7 @@ impl Fed {
             let tally = &mut self.tally;
             (tally.products, tally.jobs, tally.made_ns, tally.made_ns_worst) = (tally.products + 1, tally.jobs + made.answers as u64, tally.made_ns + made.made_ns, tally.made_ns_worst.max(made.made_ns));
             (self.stacks, self.admits, self.refused, self.marked, self.phases, self.worker_held) = (Some(made.stacks), made.admits, made.refused, made.marked, made.phases, made.held);
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             {
                 self.taken += 1;
             }
@@ -486,20 +478,24 @@ impl Layer for Fed {
         self.spec.inputs(view, inputs)
     }
 
+    fn moved_at(&self, step: &playhead::Step, mirrors: &Mirrors, into: &mut viewer_foundation::map::counter_move::MovedHours) {
+        self.spec.moved_at(step, mirrors, into);
+    }
+
     /// The worker started from the mirrors' copies (made here, off the frame thread), the vision's
     /// sight whole and the relations; its first product waited for.
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
         if self.jobs.is_none() {
             let (jobs, receive) = mpsc::channel();
             let (send, made) = mpsc::channel();
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             let gate = Arc::clone(&self.gate);
             thread::Builder::new().name("counters fold".into()).spawn(move || {
                 viewer_foundation::worker_priority::background_priority();
                 run(
                     receive,
                     send,
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     gate,
                 )
             })?;
@@ -551,24 +547,14 @@ impl Layer for Fed {
         self.waiting.retain(|step| kept.is_some_and(|kept| step.last() <= kept));
     }
 
-    /// What the worker has made taken, never waited for while playing: a product not yet made
-    /// leaves the layer at the hour of the one it has. This frame's steps and its vision's,
-    /// relations' and view's changes then go to the worker in one job. A whole settle waits for the
+    /// What the worker has made taken: while the step waits for nothing, a product not yet made
+    /// leaves the layer at the hour of the one it has and joins the step after. This frame's steps
+    /// and its vision's, relations' and view's changes then go to the worker in one job. A settle
+    /// that waits ([`Settling::waits`]: a whole settle, or this product at the bound) waits for the
     /// product of its hour.
-    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
-        let whole = budget.unlimited_now();
+    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
+        let whole = settling.waits();
         self.exchange(false);
-        if !whole {
-            let tally = &mut self.tally;
-            tally.settles += 1;
-            if self.owed > 0 {
-                tally.late += 1;
-                tally.late_run += 1;
-                tally.late_run_worst = tally.late_run_worst.max(tally.late_run);
-            } else {
-                tally.late_run = 0;
-            }
-        }
         let applied = self.products.applied_hour();
         let mut steps = Vec::new();
         while self.waiting.front().is_some_and(|step| applied.is_some_and(|applied| step.last() <= applied)) {
@@ -595,13 +581,10 @@ impl Layer for Fed {
         Ok(())
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_with(mirrors, &Upstream::new(&[]), budget)
+    fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        self.settle_with(mirrors, &Upstream::new(&[]), settling)
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         // Every mark is the worker's: published, not carried.
@@ -631,13 +614,10 @@ pub fn summary(side: &crate::playhead_host::MapSide) -> serde_json::Value {
     let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Fed>())) else { return serde_json::Value::Null };
     let tally = layer.tally();
     serde_json::json!({
-        "settles_playing": tally.settles,
-        "settles_late": tally.late,
-        "settles_late_in_a_row_worst": tally.late_run_worst,
         "products": tally.products,
         "jobs": tally.jobs,
         "make_ms_mean": (tally.products > 0).then(|| tally.made_ns as f64 / tally.products as f64 / 1e6),
         "make_ms_worst": tally.made_ns_worst as f64 / 1e6,
-        "scope": "The counters' worker as the frame saw it. settles_late: settles within a frame's budget at which a job sent at an earlier frame was still unanswered, so the counters showed the hour of an older product (the frame never waits for one while playing). jobs over products: the frames' jobs the worker made into one product when they queued while it worked. make_ms: the worker's time for a product, from the job received to the product sent.",
+        "scope": "The counters' worker as the frame saw it. jobs over products: the frames' jobs the worker made into one product when they queued while it worked. make_ms: the worker's time for a product, from the job received to the product sent. How often the layer stood behind the step's hour is in layers.standing, with every other layer's.",
     })
 }

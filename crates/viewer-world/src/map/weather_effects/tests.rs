@@ -8,16 +8,16 @@ fn weather_parent_acceptance_is_a_fresh_ordered_prefix_with_plane_contact() {
     let views = vec![([0.; 3], outside), ([0.; 3], contact), ([0.; 3], outside)];
     assert_eq!(
         parent_admission([0.; 3], 1., &views),
-        native::ViewMask::Some(vec![false, true, true])
+        Some(native::ViewMask::Some(vec![false, true, true]))
     );
     //The previous call does not leave a stamp in a later frame.
-    assert!(parent_admission([0.; 3], 1., &[([0.; 3], outside); 3]).is_empty());
-    assert!(parent_admission([0.; 3], -1., &[([0.; 3], [[0.; 4]; 6])]).is_empty());
-    assert!(parent_admission([f32::MAX, 0., 0.], 1., &[([0.; 3], contact)]).is_empty());
+    assert!(parent_admission([0.; 3], 1., &[([0.; 3], outside); 3]).is_none());
+    assert!(parent_admission([0.; 3], -1., &[([0.; 3], [[0.; 4]; 6])]).is_none());
+    assert!(parent_admission([f32::MAX, 0., 0.], 1., &[([0.; 3], contact)]).is_none());
     // A free camera's frame can hold more views than eight: the mask has one per view.
     let mut many = vec![([0.; 3], outside); 8];
     many.extend([([0.; 3], contact), ([0.; 3], outside)]);
-    let mask = parent_admission([0.; 3], 1., &many);
+    let mask = parent_admission([0.; 3], 1., &many).expect("a view accepts it");
     assert!((0..8).all(|view| !mask.contains(view)));
     assert!(mask.contains(8) && mask.contains(9));
 }
@@ -36,7 +36,7 @@ fn native_tiles_consume_two_hashes_and_survive_particle_motion() {
     sim.tick(&emitter, 1. / 60.);
     assert_eq!(sim.particles.len(), 1);
     let tile = sim.particles[0].tile;
-    emitter.emission = 0.;
+    emitter.emission.base = 0.;
     sim.tick(&emitter, 0.25);
     assert_eq!(sim.particles[0].tile, tile);
 }
@@ -56,24 +56,24 @@ fn descriptor_selection_preserves_small_fallback_and_native_draw_count() {
     let mut seed = 0x1234_5678_0000_0001;
     let mut expected = seed;
     let index = random_bits(&mut expected) as usize % 3;
-    assert!(std::ptr::eq(
-        select_pair(&systems, 0, false, &mut seed).unwrap(),
-        &systems[&(0, false)][index]
-    ));
+    assert_eq!(
+        select_pair_at(&systems, 0, false, &mut seed),
+        Some(((0, false), index))
+    );
     assert_eq!(seed, expected);
-    assert!(std::ptr::eq(
-        select_pair(&systems, 0, true, &mut seed).unwrap(),
-        &systems[&(0, true)][0]
-    ));
-    assert!(std::ptr::eq(
-        select_pair(&systems, 4, true, &mut seed).unwrap(),
-        &systems[&(4, false)][0]
-    ));
+    assert_eq!(
+        select_pair_at(&systems, 0, true, &mut seed),
+        Some(((0, true), 0))
+    );
+    assert_eq!(
+        select_pair_at(&systems, 4, true, &mut seed),
+        Some(((4, false), 0))
+    );
     let before = seed;
-    assert!(select_pair(&systems, 2, true, &mut seed).is_none());
+    assert!(select_pair_at(&systems, 2, true, &mut seed).is_none());
     assert_eq!(seed, before, "an absent bank consumes no random draw");
     let only_small = BTreeMap::from([((0, true), vec![empty_pair()])]);
-    assert!(select_pair(&only_small, 0, false, &mut seed).is_none());
+    assert!(select_pair_at(&only_small, 0, false, &mut seed).is_none());
 }
 
 #[test]
@@ -109,50 +109,168 @@ fn shown_weather_entities_present_their_sound_events_while_their_region_keeps_it
         [viewer_foundation::map::province_admission::OPEN; 6],
     )];
     let mut starts = SoundStarts::new();
+    let mut fades = fade::Fades::default();
+    // The pairs the anchors drew are kept for the field and presentation that drew them, and the
+    // sounds read them: a kept answer is the one a fresh walk gives, and a new hour draws again.
+    let mut drawn = Drawn::default();
+    let mut changes = 0;
     let mut collect = |height: f32, time: f32, field: &Field, presentation: &Presentation| {
         let mut names = super::super::sound_events::Names::default();
         let mut out = Vec::new();
+        fades.produce(presentation.0.keys().copied(), height, &graphics, |_| true);
+        let kept = drawn
+            .for_field(&anchors, &systems, field, presentation, changes)
+            .to_vec();
+        // A change count the store has not seen makes the draws again: the fresh walk over every
+        // anchor must give what the kept answer gave for the same field and presentation.
+        changes += 1;
+        let again = drawn
+            .for_field(&anchors, &systems, field, presentation, changes)
+            .to_vec();
+        assert_eq!(kept, again, "a kept draw is the draw a walk makes");
         sound_events(
             SoundInputs {
                 anchors: &anchors,
                 systems: &systems,
-                graphics: &graphics,
-                field,
+                fades: &fades,
                 presentation,
+                drawn: &kept,
                 starts: &mut starts,
                 time,
             },
-            height,
             &accepting,
             &mut names,
             &mut out,
         );
         out
     };
-    // Mid zoom shows only the entity; its timed event waits for its time.
+    let effects = |events: &[super::super::sound_events::SoundEvent]| {
+        events
+            .iter()
+            .map(|event| (event.effect.to_string(), event.age))
+            .collect::<Vec<_>>()
+    };
+    let named = |pairs: &[(&str, f32)]| {
+        pairs
+            .iter()
+            .map(|&(effect, age)| (effect.to_owned(), age))
+            .collect::<Vec<_>>()
+    };
+    // Mid zoom shows both members of the new pair; the timed event waits for its time.
     let near = collect(800.0, 10.0, &field, &presentation);
-    assert_eq!(near.len(), 1);
-    assert_eq!(&*near[0].effect, "rain_loop");
+    assert_eq!(effects(&near), named(&[("rain_loop", 0.0), ("far_wind", 0.0)]));
     assert_eq!(near[0].position, [10.0, 5.0, 20.0]);
-    assert_eq!(near[0].age, 0.0);
-    // The far band also shows the fading entity, which appears now.
     let far = collect(1300.0, 16.0, &field, &presentation);
     assert_eq!(
-        far.iter()
-            .map(|event| (&*event.effect, event.age))
-            .collect::<Vec<_>>(),
-        [("rain_loop", 6.0), ("thunder", 1.0), ("far_wind", 0.0)]
+        effects(&far),
+        named(&[("rain_loop", 6.0), ("thunder", 1.0), ("far_wind", 6.0)])
     );
     assert_eq!(far[0].key, near[0].key, "the region kept its weather");
-    // Zoomed in below the cutoff the entity is not drawn, so it does not sound.
-    assert!(collect(300.0, 17.0, &field, &presentation).is_empty());
-    // A region without weather presents nothing.
+    // Below the zoom-in cutoff the fading entity goes inactive; the entity keeps its far-band
+    // state, so it still sounds.
+    assert_eq!(
+        effects(&collect(300.0, 17.0, &field, &presentation)),
+        named(&[("rain_loop", 7.0), ("thunder", 2.0)])
+    );
+    // Beyond the far cutoff both go inactive, and the entity stays so back below the far band.
+    assert!(collect(1600.0, 17.5, &field, &presentation).is_empty());
+    assert!(collect(300.0, 17.75, &field, &presentation).is_empty());
+    // A region whose producer holds no weather presents nothing.
     let clear = Field {
         hour: 21,
         kinds: BTreeMap::new().into(),
         ..field
     };
-    assert!(collect(800.0, 18.0, &clear, &presentation).is_empty());
+    assert!(collect(800.0, 18.0, &clear, &Presentation::default()).is_empty());
+}
+
+/// The game compares the wanted kind with the held one only when a region's producer runs.
+#[test]
+fn an_unlisted_region_keeps_its_pairs_through_weather_that_comes_back_and_swaps_when_listed() {
+    let defines = reference_defines();
+    let field = |hour: i32, kinds: &[(u32, usize)]| Field {
+        branch: 1,
+        hour,
+        kinds: kinds.iter().copied().collect::<BTreeMap<_, _>>().into(),
+    };
+    // Anchors 0 and 1 lie in region 7, anchor 2 in region 8.
+    let region_of = |anchor: usize| if anchor < 2 { 7 } else { 8 };
+    let mut wanted = Presentation::default();
+    let mut previous = field(10, &[(7, 0), (8, 0)]);
+    wanted.transition(&Field::default(), &previous, Continuity::Continue);
+    let mut held = Presentation::default();
+    let mut fades = fade::Fades::default();
+    let mut runtimes = BTreeMap::new();
+    let mut pending = BTreeMap::from([
+        ((0, false, 0), "rain 0"),
+        ((1, true, 0), "rain 1"),
+        ((2, false, 0), "rain 2"),
+    ]);
+    let mut run = |listed: &[u32], wanted: &Presentation, pending: &mut BTreeMap<_, _>| {
+        let swap = swap_listed(listed, wanted, &mut held, &mut fades, (&mut runtimes, pending), region_of);
+        fades.produce(listed.iter().copied().filter(|region| held.0.contains_key(region)), 1300.0, &defines, |_| true);
+        (swap, held.clone(), fades.members(7), runtimes.clone())
+    };
+    // The first listed frame creates the pairs with the runtimes prepared for them.
+    let ((swapped, let_go), first, members, made) = run(&[7, 8], &wanted, &mut pending);
+    assert!(swapped && let_go.is_empty() && pending.is_empty());
+    assert_eq!(first.0[&7], RegionPresentation { kind: 0, seed_hour: 10 });
+    assert_eq!(made.values().copied().collect::<Vec<_>>(), ["rain 0", "rain 1", "rain 2"]);
+    assert!(members.iter().all(|member| member.active));
+    // Region 7 goes clear, then rains again, between listed frames: the wanted rain begins anew.
+    for (hour, kinds) in [(11, &[(8, 0)][..]), (12, &[(7, 0), (8, 0)][..])] {
+        let next = field(hour, kinds);
+        wanted.transition(&previous, &next, Continuity::Continue);
+        previous = next;
+        let ((swapped, let_go), _, _, _) = run(&[], &wanted, &mut BTreeMap::new());
+        assert!(!swapped && let_go.is_empty());
+    }
+    assert_eq!(wanted.0[&7].seed_hour, 12);
+    // Listed again, its producer finds the kind it holds: pairs, seed, runtimes and member
+    // states stay, and the runtimes prepared for the new rain are not taken.
+    let mut prepared = BTreeMap::from([((0, false, 0), "new rain 0")]);
+    let ((swapped, let_go), kept, kept_members, kept_runtimes) = run(&[7], &wanted, &mut prepared);
+    assert!(!swapped && let_go.is_empty());
+    assert_eq!(kept.0[&7], first.0[&7]);
+    assert_eq!(kept_members, members);
+    assert_eq!(kept_runtimes, made);
+    assert_eq!(prepared.len(), 1);
+    // Region 7 turns to snow, unlisted: nothing changes until its first listed frame swaps.
+    let next = field(13, &[(7, 2), (8, 0)]);
+    wanted.transition(&previous, &next, Continuity::Continue);
+    let mut prepared = BTreeMap::from([((0, false, 0), "snow 0")]);
+    let ((swapped, _), unlisted, _, _) = run(&[8], &wanted, &mut prepared);
+    assert!(!swapped && unlisted.0[&7] == first.0[&7]);
+    let ((swapped, mut let_go), snow, snow_members, snow_runtimes) = run(&[7, 8], &wanted, &mut prepared);
+    assert!(swapped);
+    assert_eq!(snow.0[&7], RegionPresentation { kind: 2, seed_hour: 13 });
+    let_go.sort_unstable();
+    assert_eq!(let_go, ["rain 0", "rain 1"]);
+    assert_eq!(snow_runtimes.values().copied().collect::<Vec<_>>(), ["snow 0", "rain 2"]);
+    assert_eq!(snow_members, fade::created(1300.0, &defines), "the new pairs start fresh");
+    // Wanting no weather, the producer lets its pairs go and holds nothing.
+    let clear = field(14, &[(8, 0)]);
+    wanted.transition(&next, &clear, Continuity::Continue);
+    let ((swapped, let_go), none, _, rest) = run(&[7], &wanted, &mut BTreeMap::new());
+    assert!(swapped && let_go == ["snow 0"] && !none.0.contains_key(&7));
+    assert_eq!(rest.values().copied().collect::<Vec<_>>(), ["rain 2"]);
+    // The weather switch off makes every run want none ([`Pass::produce`]): region 8 keeps its
+    // pairs while unlisted, lets them go when listed, and gets new ones only on a listed frame
+    // after the switch is back on.
+    let off = Presentation::default();
+    let held_8 = |held: &Presentation| held.0.get(&8).copied();
+    let rain_8 = Some(RegionPresentation { kind: 0, seed_hour: 10 });
+    let ((swapped, _), kept, _, kept_runtimes) = run(&[7], &off, &mut BTreeMap::new());
+    assert!(!swapped && held_8(&kept) == rain_8 && kept_runtimes.len() == 1);
+    // A replacement prepared for region 8 goes with its pairs; nothing stays resident.
+    let mut storm = BTreeMap::from([((2, true, 0), "storm 2")]);
+    let ((swapped, let_go), released, _, rest) = run(&[8], &off, &mut storm);
+    assert!(swapped && let_go == ["rain 2", "storm 2"] && held_8(&released).is_none());
+    assert!(rest.is_empty() && storm.is_empty());
+    let ((swapped, _), unlisted, _, _) = run(&[], &wanted, &mut BTreeMap::new());
+    assert!(!swapped && held_8(&unlisted).is_none());
+    let ((swapped, _), back, _, _) = run(&[8], &wanted, &mut BTreeMap::new());
+    assert!(swapped && held_8(&back) == rain_8);
 }
 
 #[test]
@@ -197,7 +315,7 @@ pub(super) fn reference_defines() -> CameraDefines {
     }
 }
 
-fn gates(height: f32) -> (f32, f32, f32) {
+fn gates(height: f32) -> (f32, bool, f32) {
     super::gates(height, &reference_defines())
 }
 
@@ -337,17 +455,18 @@ fn changed_content_controls_both_camera_bands_and_the_playback_floor() {
         playback_rate_cutoff: 800.0,
         playback_rate_length: 400.0,
     };
-    assert_eq!(super::gates(50.0, &defines), (0.2, 0.0, 1.0));
+    assert_eq!(super::gates(50.0, &defines), (0.2, false, 1.0));
     assert!((super::gates(200.0, &defines).0 - 0.6).abs() < 1e-6);
     assert_eq!(super::gates(300.0, &defines).0, 1.0);
     assert!((super::gates(600.0, &defines).2 - 0.7).abs() < 1e-6);
-    assert_eq!(super::gates(1400.0, &defines), (1.0, 0.0, 0.4));
-    assert_eq!(super::gates(1700.0, &defines), (0.5, 0.5, 0.4));
-    assert_eq!(super::gates(2000.0, &defines), (0.0, 0.0, 0.4));
+    assert_eq!(super::gates(1400.0, &defines), (1.0, false, 0.4));
+    assert_eq!(super::gates(1700.0, &defines), (0.5, true, 0.4));
+    assert_eq!(super::gates(2000.0, &defines), (0.0, true, 0.4));
+    assert_eq!(super::gates(2100.0, &defines), (0.0, true, 0.4));
 }
 
 #[test]
-fn the_entity_fades_with_zoom_and_the_fading_entity_draws_only_far() {
+fn the_camera_fade_runs_from_the_zoom_in_cutoff_and_the_far_band_starts_at_1100() {
     // `WEATHER_ZOOM_IN_FADE_FACTOR` is 0, so nothing draws below the cutoff.
     assert_eq!(gates(50.0).0, 0.0);
     assert_eq!(gates(310.131).0, 0.0);
@@ -363,12 +482,12 @@ fn the_entity_fades_with_zoom_and_the_fading_entity_draws_only_far() {
     assert!((gates(1167.101).0 - 0.832_25).abs() < 1e-5);
     assert_eq!(gates(1500.0).0, 0.0);
     assert_eq!(gates(1600.0).0, 0.0);
-    // The fading entity draws only in the far band, at the same alpha.
+    // The far band starts above 1100 and includes the heights beyond the cutoff.
     for h in [50.0, 310.131, 358.0, 431.4655, 597.5275, 1100.0] {
-        assert_eq!(gates(h).1, 0.0, "companion at {h}");
+        assert!(!gates(h).1, "far at {h}");
     }
-    for h in [1167.101, 1300.0] {
-        assert_eq!(gates(h).1, gates(h).0, "companion at {h}");
+    for h in [1100.001, 1167.101, 1300.0, 1500.0, 1600.0] {
+        assert!(gates(h).1, "near at {h}");
     }
 }
 
@@ -405,6 +524,332 @@ fn scalar_and_block_curve_parameters_both_preserve_the_reference() {
     assert_eq!(alpha.sample(0.5, 1.0), 0.0);
     assert!((size.sample(1.0, 0.5) - 7.0).abs() < 0.01);
     assert!((size.sample(0.0, 0.5) - 5.0).abs() < 0.01);
+    // Each comma track keeps its last number.
+    let doc = parser::parse(br#"rotation={ 0.000,0.000 0.000,180.000 }"#).unwrap();
+    let rotation = Parameter::read(&doc.items, "rotation", 0.0, &curves);
+    assert_eq!((rotation.base, rotation.spread), (0.0, 180.0));
+}
+
+fn moving_particle(position: [f32; 3]) -> LiveParticle {
+    LiveParticle {
+        age: 0.0,
+        life: 10.0,
+        mass: 1.0,
+        position,
+        velocity: [0.0; 3],
+        size: 1.0,
+        rotation: [0.0; 3],
+        spin: [0.0; 3],
+        color: [255.0; 4],
+        tile: [0; 4],
+    }
+}
+
+fn assert_near(left: [f32; 3], right: [f32; 3]) {
+    assert!(
+        left.iter().zip(right).all(|(l, r)| (l - r).abs() < 1e-5),
+        "{left:?} != {right:?}"
+    );
+}
+
+/// A spin force moves a still particle exactly onto its rotation by `amount * dt` about the
+/// axis, then trades the velocity along its path for the next step's rotation.
+#[test]
+fn spin_turns_a_particle_by_its_amount_each_update() {
+    let mut emitter = activation_test_emitter();
+    emitter.emission.base = 0.;
+    emitter.forces = vec![test_force(
+        ForceKind::Spin,
+        [0.0; 3],
+        [0.0, 2.0, 0.0],
+        std::f32::consts::FRAC_PI_2,
+    )];
+    let mut sim = Simulation::cold(&emitter, 7, [0.; 3], 0.);
+    sim.particles.push(moving_particle([1.0, 0.0, 0.0]));
+    sim.tick(&emitter, 1.0);
+    assert_near(sim.particles[0].position, [0.0, 0.0, 1.0]);
+    assert_near(sim.particles[0].velocity, [-1.0, 0.0, 1.0]);
+    sim.tick(&emitter, 1.0);
+    assert_near(sim.particles[0].position, [-1.0, 0.0, 0.0]);
+    assert_near(sim.particles[0].velocity, [-1.0, 0.0, -1.0]);
+}
+
+/// A vortex pushes along the axis-perpendicular offset turned by its yaw: at 90 degrees the
+/// push is tangential, at none it is radial. Its amount scales with the displacement scale.
+#[test]
+fn vortex_pushes_around_its_axis_by_its_yaw() {
+    let quarter = 90f32 * std::f32::consts::PI / 180.0;
+    for (yaw, force) in [
+        ([quarter.sin(), quarter.cos()], [2.0 * quarter.cos(), 0.0, 2.0]),
+        ([0.0; 2], [2.0, 0.0, 0.0]),
+    ] {
+        let mut emitter = activation_test_emitter();
+        emitter.emission.base = 0.;
+        let mut vortex = test_force(ForceKind::Vortex, [0.0; 3], [0.0, 1.0, 0.0], 2.0);
+        vortex.yaw = yaw;
+        emitter.forces = vec![vortex];
+        let mut sim = Simulation::cold(&emitter, 7, [0.; 3], 0.);
+        sim.particles.push(moving_particle([2.0, 5.0, 0.0]));
+        sim.tick(&emitter, 0.5);
+        let velocity = force.map(|f| f * 0.5);
+        assert_near(sim.particles[0].velocity, velocity);
+        assert_near(
+            sim.particles[0].position,
+            [2.0 + velocity[0] * 0.5, 5.0, velocity[2] * 0.5],
+        );
+    }
+}
+
+/// A system's creation draws every subsystem's creation values in order from its one stream,
+/// the leading subsystem's, and seeds the turbulence fields from it only after them.
+#[test]
+fn a_system_draws_its_subsystems_then_its_turbulence_from_one_stream() {
+    let mut leader = activation_test_emitter();
+    leader.noise_divisions = vec![16];
+    leader.position[0].spread = 4.0;
+    let mut follower = activation_test_emitter();
+    follower.leads = false;
+    follower.duration = Parameter {
+        base: 3.0,
+        spread: 1.0,
+        curve: None,
+    };
+    let mut a = Simulation::cold(&leader, 7, [0.; 3], 0.);
+    let mut b = Simulation::cold(&follower, 8, [0.; 3], 0.);
+    advance_system(
+        &mut [
+            Member { sim: &mut a, emitter: &leader, space: None },
+            Member { sim: &mut b, emitter: &follower, space: None },
+        ],
+        0.0,
+        1.0,
+    );
+    let mut stream = 7u64;
+    let x = random(&mut stream) * (4.0 + 4.0) + (0.0 - 4.0);
+    let duration = random(&mut stream) * (1.0 + 1.0) + (3.0 - 1.0);
+    let fields = Noise::new(&mut stream, 16);
+    assert_eq!((a.origin[0], b.duration), (x, duration));
+    assert_eq!(a.noise[0].permutation, fields.permutation);
+    assert_eq!((a.seed, b.seed), (stream, 8));
+}
+
+/// A system's turbulence fields live once, with its leading subsystem, and every populated
+/// subsystem's update advances them: two populated subsystems advance two slices a step.
+#[test]
+fn subsystems_of_one_system_share_and_advance_its_turbulence_fields() {
+    let mut leader = activation_test_emitter();
+    leader.noise_divisions = vec![16];
+    leader.forces = vec![test_force(ForceKind::Turbulence, [0.0; 3], [0.0; 3], 10.0)];
+    let mut follower = leader.clone();
+    follower.leads = false;
+    let mut a = Simulation::cold(&leader, 7, [0.; 3], 0.);
+    let mut b = Simulation::cold(&follower, 8, [0.; 3], 0.);
+    advance_system(
+        &mut [
+            Member { sim: &mut a, emitter: &leader, space: None },
+            Member { sim: &mut b, emitter: &follower, space: None },
+        ],
+        0.05,
+        1.0,
+    );
+    assert!(!a.particles.is_empty() && !b.particles.is_empty());
+    assert_eq!((a.noise.len(), b.noise.len()), (1, 0));
+    assert_eq!(a.noise[0].slice, 2);
+    // The follower's particles felt the shared field; advanced alone, with none, they do not.
+    let mut alone = Simulation::cold(&follower, 8, [0.; 3], 0.);
+    alone.advance(&follower, 0.05, 1.0);
+    assert_ne!(b.particles[0].velocity, alone.particles[0].velocity);
+}
+
+/// A delayed particle system does not exist until its entity event fires: a negative sampled
+/// start cannot make it emit early, and it starts its own clock from its creation.
+#[test]
+fn a_delayed_system_waits_for_its_event_before_it_starts() {
+    let mut emitter = activation_test_emitter();
+    emitter.delay = 2.0;
+    emitter.start.base = -3.0;
+    let mut sim = Simulation::cold(&emitter, 7, [0.; 3], 0.);
+    sim.advance(&emitter, 1.0, 1.0);
+    assert!(sim.waiting() && sim.particles.is_empty());
+    // The entity tests `previous <= event < current`: at the event time it has not fired.
+    sim.advance(&emitter, 2.0, 1.0);
+    assert!(sim.waiting() && sim.particles.is_empty());
+    // It fires before the frame's particle updates, which then take the whole frame.
+    sim.advance(&emitter, 2.25, 1.0);
+    assert!(!sim.waiting() && !sim.particles.is_empty());
+    // Three float substeps on 3.0.
+    assert!((sim.age - 3.25).abs() < 1e-5, "{}", sim.age);
+    // An event crossed while culled has fired when the system returns to view.
+    let mut culled = Simulation::cold(&emitter, 7, [0.; 3], 0.);
+    culled.advance(&emitter, 1.0, 1.0);
+    culled.time = 5.0;
+    culled.advance(&emitter, 5.25, 1.0);
+    assert!(!culled.waiting() && !culled.particles.is_empty());
+}
+
+/// A pair's entity begins when its producer creates it, on the clock of the frame that did,
+/// whatever the camera sees; a let-go pair forgets it and a clock that went back restamps it.
+#[test]
+fn a_producer_s_pairs_keep_the_clock_they_were_created_on() {
+    let defines = reference_defines();
+    let mut fades = fade::Fades::default();
+    fades.produce([7], 800.0, &defines, |_| true);
+    assert_eq!(fades.born(7), None);
+    fades.stamp(5.0);
+    fades.produce([7], 800.0, &defines, |_| true);
+    fades.stamp(9.0);
+    assert_eq!(fades.born(7), Some(5.0));
+    fades.stamp(1.0);
+    assert_eq!(fades.born(7), Some(1.0));
+    fades.remove(7);
+    assert_eq!(fades.born(7), None);
+}
+
+/// An entity event's emitters retire together: a finished subsystem stays on its system's
+/// clock while a sibling still has particles.
+#[test]
+fn an_event_s_finished_subsystem_retires_with_its_system() {
+    let mut short = activation_test_emitter();
+    short.life.base = 0.05;
+    short.leads = false;
+    let mut long = long_lived_test_emitter();
+    long.leads = true;
+    let mut event = crate::map::models::order_tests::events(
+        crate::map::models::order_tests::ORDERS[0],
+        false,
+    )
+    .remove(0);
+    let name = event.definition.particle.clone().expect("a particle event");
+    let entities = BTreeMap::from([(name, (1.0, vec![long, short]))]);
+    let mut simulations = EntitySimulations::default();
+    for (age, end) in [(0.1, None), (0.3, Some(0.2)), (0.5, Some(0.2)), (0.7, Some(0.2))] {
+        event.age = age;
+        event.emission_end = end;
+        simulations.prepare(&entities, std::slice::from_ref(&event)).unwrap();
+    }
+    let state = simulations.presentation_state();
+    let lines: Vec<_> = state.lines().collect();
+    assert_eq!(lines.len(), 2, "{state}");
+    // The finished subsystem was kept, not recreated emitting at the current age.
+    assert!(lines.iter().all(|line| line.contains("time=0.7 ")), "{state}");
+    assert!(lines[1].contains("emitting=false") && lines[1].contains("particles=[]"), "{state}");
+}
+
+/// A ranged value's base takes its spawn-time animation before the spread draws around it.
+#[test]
+fn a_ranged_value_draws_around_its_animated_base() {
+    let half = Curve::new(&[[0.0, 0.5], [1.0, 0.5]], 0.0, 1.0, 0.0, 1.0);
+    let base = half.apply(10.0, 0.0);
+    assert!((base - 5.0).abs() < 1e-5);
+    let value = Parameter {
+        base: 10.0,
+        spread: 2.0,
+        curve: Some(half),
+    };
+    let mut seed = 0x1234_5678_0000_0001;
+    let mut expected = seed;
+    let drawn = value.at(&mut seed, 0.0);
+    assert_eq!(drawn, random(&mut expected) * 4.0 + (base - 2.0));
+    assert!((3.0..=7.0).contains(&drawn));
+}
+
+/// `emission = { base spread }` draws a fresh rate within the range at every emitting update.
+#[test]
+fn a_ranged_emission_draws_a_new_rate_every_update() {
+    let mut emitter = activation_test_emitter();
+    emitter.emission = Parameter {
+        base: 0.1,
+        spread: 2.0,
+        curve: None,
+    };
+    let mut sim = Simulation::cold(&emitter, 12345, [0.; 3], 0.);
+    let mut accumulator = 0.0f32;
+    let mut rates = Vec::new();
+    for _ in 0..12 {
+        let mut seed = sim.seed;
+        let rate = random(&mut seed) * (2.0 + 2.0) + (0.1 - 2.0);
+        accumulator += rate.max(0.0) * 0.5;
+        accumulator -= (accumulator as usize) as f32;
+        sim.tick(&emitter, 0.5);
+        assert_eq!(sim.accumulator, accumulator);
+        rates.push(rate);
+    }
+    assert!(rates.iter().all(|rate| (-1.9..=2.1).contains(rate)));
+    assert!(rates.windows(2).any(|pair| pair[0] != pair[1]));
+}
+
+/// Subsystems name system forces in their own order, a repeat applying twice and an unknown
+/// name skipped; types fold case and a yaw turns in degrees. Ranged emission and position read
+/// both tracks. A force of an unknown type, or a nested subsystem, refuses the particle by name.
+#[test]
+fn particle_blocks_read_forces_ranges_and_refuse_what_the_map_cannot_present() {
+    let doc = parser::parse(
+        br#"particle = { name = storm
+            subsystem = { name = cloud max_amount = 4 force = spin,vortex,missing,1,spin
+                emission = { 0.1 2.0 } position = { x = { 0 4 } y = 15 } duration = { 3 1 } }
+            force = { type = "VORTEX" name = "vortex" position = { 0 25 0 } direction = { 1 1 0 }
+                local_force = yes yaw = 90 amount = 4 }
+            force = { type = "spin" name = "spin" direction = { 0 1 0 } amount = 0.1 }
+            force = { type = "magnet" name = "odd" }
+        }"#,
+    )
+    .unwrap();
+    let root = particle_root(&doc, "fixture", "storm", Pick::Last).unwrap();
+    let [cloud] = &parse_emitters(root).unwrap()[..] else {
+        panic!("one subsystem");
+    };
+    assert_eq!(
+        cloud.forces.iter().map(|f| f.kind).collect::<Vec<_>>(),
+        [ForceKind::Spin, ForceKind::Vortex, ForceKind::Spin]
+    );
+    let vortex = &cloud.forces[1];
+    let quarter = 90f32 * std::f32::consts::PI / 180.0;
+    assert_eq!(vortex.yaw, [quarter.sin(), quarter.cos()]);
+    assert_eq!((vortex.position, vortex.direction), ([0., 25., 0.], [1., 1., 0.]));
+    assert!(vortex.local && !cloud.forces[0].local);
+    assert_eq!(vortex.amount.base, 4.0);
+    assert_eq!((cloud.emission.base, cloud.emission.spread), (0.1, 2.0));
+    assert_eq!((cloud.position[0].spread, cloud.position[1].base), (4.0, 15.0));
+    assert_eq!((cloud.duration.base, cloud.duration.spread), (3.0, 1.0));
+    for (source, why) in [
+        (
+            &br#"particle = { name = storm subsystem = { name = cloud max_amount = 1 force = odd }
+                force = { type = "magnet" name = "odd" } }"#[..],
+            "particle storm subsystem cloud: force odd has unknown type \"magnet\"",
+        ),
+        (
+            br#"particle = { name = storm subsystem = { name = outer max_amount = 4
+                subsystem = { name = inner max_amount = 2 } } }"#,
+            "particle storm subsystem outer: nests particle subsystems",
+        ),
+    ] {
+        let doc = parser::parse(source).unwrap();
+        let root = particle_root(&doc, "fixture", "storm", Pick::Last).unwrap();
+        let error = parse_emitters(root).unwrap_err().to_string();
+        assert!(error.contains(why), "{error}");
+    }
+    // A hidden subsystem draws nothing, its children with it.
+    let doc = parser::parse(
+        br#"particle = { name = storm subsystem = { name = outer hide = yes max_amount = 4
+            subsystem = { name = inner max_amount = 2 } } }"#,
+    )
+    .unwrap();
+    let root = particle_root(&doc, "fixture", "storm", Pick::Last).unwrap();
+    assert!(parse_emitters(root).unwrap().is_empty());
+}
+
+fn test_force(kind: ForceKind, position: [f32; 3], direction: [f32; 3], amount: f32) -> Force {
+    Force {
+        kind,
+        amount: Parameter {
+            base: amount,
+            ..Parameter::default()
+        },
+        position,
+        direction,
+        yaw: [0.0; 2],
+        local: false,
+    }
 }
 
 /// [`activation_test_emitter`] with particles that live ten seconds.
@@ -430,23 +875,24 @@ pub(crate) fn activation_test_emitter() -> Emitter {
         sphere_yaw: scalar(0.0),
         emitter_yaw: scalar(0.0),
         emitter_pitch: scalar(0.0),
-        position: [0.0, 0.0, 0.0],
+        position: [scalar(0.0), scalar(0.0), scalar(0.0)],
         velocity: scalar(10.0),
         pitch: scalar(0.0),
         yaw: scalar(0.0),
         life: scalar(3.0),
         mass: scalar(1.0),
         start: scalar(0.0),
-        duration: -1.0,
+        duration: scalar(-1.0),
         size: scalar(5.0),
         rotation: [scalar(0.0), scalar(0.0), scalar(0.0)],
         spin: [scalar(0.0), scalar(0.0), scalar(0.0)],
         color: [scalar(200.0), scalar(200.0), scalar(200.0), scalar(255.0)],
-        emission: 60.0,
+        emission: scalar(60.0),
         max: 100,
-        acceleration: [0.0, -9.0, 0.0],
-        turbulence: 0.0,
-        noise_division: 1,
+        forces: vec![test_force(ForceKind::Planar, [0.0, 0.0, 0.0], [0.0, -9.0, 0.0], 1.0)],
+        noise_divisions: Vec::new(),
+        leads: true,
+        delay: 0.0,
         local_space: false,
         render: installed_content_core::particles::RenderDescriptor::read(&[]).unwrap(),
         system_local_space: false,
@@ -509,10 +955,12 @@ fn fresh_emitter_accumulates_births_only_after_frame_updates() {
 fn native_births_interpolate_motion_without_retransforming_survivors() {
     use installed_content_core::mesh::Transform;
     let mut emitter = activation_test_emitter();
-    emitter.emission = 2.;
+    emitter.emission.base = 2.;
     emitter.velocity.base = 0.;
-    emitter.acceleration = [0.; 3];
-    emitter.position = [1., 2., 3.];
+    emitter.forces.clear();
+    for (axis, base) in emitter.position.iter_mut().zip([1., 2., 3.]) {
+        axis.base = base;
+    }
     emitter.system_local_space = true;
     let world = Transform::from_trs([10., 0., 0.], [0., 0., 0., 1.], 2.);
     let mut sim = Simulation::cold(&emitter, 7, world.translation, 0.);
@@ -520,6 +968,7 @@ fn native_births_interpolate_motion_without_retransforming_survivors() {
         &emitter,
         1.,
         Some(motion::Space::new(false, true, 3., world)),
+        &mut Vec::new(),
     );
     assert_eq!(
         sim.particles.iter().map(|p| p.position).collect::<Vec<_>>(),
@@ -533,6 +982,7 @@ fn native_births_interpolate_motion_without_retransforming_survivors() {
         &emitter,
         1.,
         Some(motion::Space::new(false, true, 3., moved)),
+        &mut Vec::new(),
     );
     assert_eq!(
         sim.particles.iter().map(|p| p.position).collect::<Vec<_>>(),
@@ -545,8 +995,8 @@ fn native_births_interpolate_motion_without_retransforming_survivors() {
 fn expiry_preserves_native_packet_order_and_ages_each_survivor_once() {
     for (trail, expected) in [(false, vec![5, 1, 3]), (true, vec![1, 3, 5])] {
         let mut emitter = activation_test_emitter();
-        emitter.emission = 6.;
-        emitter.acceleration = [0.; 3];
+        emitter.emission.base = 6.;
+        emitter.forces.clear();
         emitter.render.trail = trail;
         let mut simulation = Simulation::cold(&emitter, 12345, [0.; 3], 0.);
         simulation.tick(&emitter, 1.);
@@ -570,7 +1020,7 @@ fn expiry_preserves_native_packet_order_and_ages_each_survivor_once() {
             particle.velocity = [index as f32, 0., 0.];
             particle.position = [0.; 3];
         }
-        emitter.emission = 0.;
+        emitter.emission.base = 0.;
         simulation.tick(&emitter, 0.5);
         assert_eq!(
             simulation
@@ -596,7 +1046,7 @@ fn expiry_preserves_native_packet_order_and_ages_each_survivor_once() {
             );
         }
         //New births append after native compaction, without aging this tick.
-        emitter.emission = 2.;
+        emitter.emission.base = 2.;
         simulation.tick(&emitter, 0.5);
         assert_eq!(simulation.particles.last().unwrap().age, 0.);
     }
@@ -605,12 +1055,12 @@ fn expiry_preserves_native_packet_order_and_ages_each_survivor_once() {
 #[test]
 fn expiry_keeps_unordered_age_and_lifetime_like_native_comiss() {
     let mut emitter = activation_test_emitter();
-    emitter.emission = 2.;
+    emitter.emission.base = 2.;
     let mut simulation = Simulation::cold(&emitter, 12345, [0.; 3], 0.);
     simulation.tick(&emitter, 1.);
     simulation.particles[0].age = f32::NAN;
     simulation.particles[1].life = f32::NAN;
-    emitter.emission = 0.;
+    emitter.emission.base = 0.;
     simulation.tick(&emitter, 0.5);
     assert_eq!(simulation.particles.len(), 2);
     assert!(simulation.particles[0].age.is_nan());
@@ -625,6 +1075,7 @@ fn prepared_emitter_starts_at_the_first_render_clock() {
     prepared.prepared = true;
     let mut direct = Simulation::cold(&emitter, 12345, anchor, 8.0);
     prepared.advance(&emitter, 8.0, 1.0);
+    direct.advance(&emitter, 8.0, 1.0);
     assert_same_state(&prepared, &direct);
     prepared.advance(&emitter, 8.25, 1.0);
     direct.advance(&emitter, 8.25, 1.0);
@@ -647,7 +1098,7 @@ fn suspension_retains_population_instead_of_inventing_steady_state() {
 }
 
 /// Simulations move in and out of the pass's map on every hour change, so
-/// the large noise table stays behind a box.
+/// the large noise tables stay on the heap.
 // regression: b8f2e16886 Free weather runtimes off the frame path and box their noise tables
 #[test]
 fn a_simulation_moves_without_its_noise_table() {

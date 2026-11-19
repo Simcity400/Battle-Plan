@@ -30,7 +30,6 @@ use crate::{
     Config, Options,
     app::{Viewer, date, load_scene, map_overlay, partial_notice},
     document::{Content, Document, InitialHour},
-    hours::{Resources, SharedDecoder},
 };
 use viewer_world::map::scene::Scene;
 
@@ -46,7 +45,6 @@ struct MapSource {
     texture_quality: u8,
     visual_mods: Option<Vec<installed_content_core::content::visual::Choice>>,
     source: Arc<Source>,
-    decoder: Arc<SharedDecoder>,
     content: Option<Arc<Content>>,
     error: Option<String>,
 }
@@ -161,7 +159,7 @@ pub struct DashboardMaps {
     options: Options,
     service: Arc<Service>,
     gpu: Option<(wgpu::Device, wgpu::Queue)>,
-    resources: Arc<Resources>,
+    pool: Arc<crate::worker_pool::WorkerPool>,
     sources: BTreeMap<MapSourceKey, MapSource>,
     source_bindings: BTreeMap<RequestedSource, Result<Arc<Source>, String>>,
     opening_source: Option<OpeningSource>,
@@ -237,7 +235,7 @@ impl DashboardMaps {
         options: Options,
         service: Arc<Service>,
         gpu: Option<(wgpu::Device, wgpu::Queue)>,
-        resources: Arc<Resources>,
+        pool: Arc<crate::worker_pool::WorkerPool>,
     ) -> io::Result<Self> {
         let limits = MapLimits::new(&gpu);
         Ok(Self {
@@ -246,7 +244,7 @@ impl DashboardMaps {
             options,
             service,
             gpu,
-            resources,
+            pool,
             sources: BTreeMap::new(),
             source_bindings: BTreeMap::new(),
             opening_source: None,
@@ -406,7 +404,7 @@ impl DashboardMaps {
         for key in &stale {
             if let Some(source) = self.sources.get_mut(key) {
                 if let Some(content) = source.content.take() {
-                    self.resources.pool().dropper().drop_later(content);
+                    self.pool.dropper().drop_later(content);
                 }
                 source.error = None;
             }
@@ -452,7 +450,7 @@ impl DashboardMaps {
                 continue;
             };
             if let Some(content) = source.content.take() {
-                self.resources.pool().dropper().drop_later(content);
+                self.pool.dropper().drop_later(content);
             }
             source.error = None;
             for view in self.views.values_mut() {
@@ -517,7 +515,7 @@ impl DashboardMaps {
         }
         for source in self.sources.values_mut() {
             if let Some(content) = source.content.take() {
-                self.resources.pool().dropper().drop_later(content);
+                self.pool.dropper().drop_later(content);
             }
             source.error = None;
         }
@@ -606,7 +604,7 @@ impl DashboardMaps {
                         self.config.clone(),
                         self.options.clone(),
                         self.gpu.clone(),
-                        Arc::clone(&self.resources),
+                        Arc::clone(&self.pool),
                     )),
                 },
             );
@@ -642,7 +640,7 @@ impl DashboardMaps {
                 load.alive.store(false, Ordering::Release);
             }
             if let Some(source) = self.sources.remove(&key) {
-                self.resources.pool().dropper().drop_later(source);
+                self.pool.dropper().drop_later(source);
             }
         }
         self.admit(frame);
@@ -688,17 +686,12 @@ impl DashboardMaps {
             visual_mods: settings.visual_mods.clone(),
         };
         if !self.sources.contains_key(&key) {
-            let decoder = self
-                .resources
-                .decoder(source.replay())
-                .map_err(|error| error.to_string())?;
             self.sources.insert(
                 key.clone(),
                 MapSource {
                     visual_mods: settings.visual_mods,
                     texture_quality: settings.graphics.texture_quality,
                     source,
-                    decoder,
                     content: None,
                     error: None,
                 },
@@ -785,7 +778,7 @@ impl DashboardMaps {
                         if job_alive.load(Ordering::Acquire) {
                             let _ = sender.send(result);
                         }
-                        wake.request_repaint();
+                        viewer_foundation::worker_priority::at_least(Some(0), || wake.request_repaint());
                     }) {
                     Ok(_) => {
                         self.opening_source = Some(OpeningSource {
@@ -837,7 +830,7 @@ impl DashboardMaps {
             match (self.sources.get_mut(&key).filter(|_| valid), result) {
                 (Some(source), Ok(content)) => source.content = Some(content),
                 (Some(source), Err(error)) => source.error = Some(error),
-                (None, Ok(content)) => self.resources.pool().dropper().drop_later(content),
+                (None, Ok(content)) => self.pool.dropper().drop_later(content),
                 (None, Err(_)) => {}
             }
         }
@@ -956,8 +949,8 @@ impl DashboardMaps {
             let wake = ctx.clone();
             let alive = Arc::new(AtomicBool::new(true));
             let job_alive = Arc::clone(&alive);
-            let workers = self.resources.pool().workers();
-            if self.resources.pool().try_submit(Box::new(move || {
+            let workers = self.pool.workers();
+            if self.pool.try_submit(Box::new(move || {
                 if !job_alive.load(Ordering::Acquire) {
                     return;
                 }
@@ -970,7 +963,7 @@ impl DashboardMaps {
                 if job_alive.load(Ordering::Acquire) {
                     let _ = sender.send(result);
                 }
-                wake.request_repaint();
+                viewer_foundation::worker_priority::at_least(Some(0), || wake.request_repaint());
             })) {
                 view.loading = Some(SceneLoad {
                     samples: graphics.samples,
@@ -1003,7 +996,6 @@ impl DashboardMaps {
         let decisions = crate::visual_fallback::lock(&self.fallbacks).decisions(&recording);
         let load_visual_mods = visual_mods.clone();
         let source_handle = Arc::clone(&source.source);
-        let decoder = Arc::clone(&source.decoder);
         let allow = self.options.allow_unverified;
         let config = self.config.clone();
         let alive = Arc::new(AtomicBool::new(true));
@@ -1042,16 +1034,16 @@ impl DashboardMaps {
                     let Document {
                         content, playback, ..
                     } = document;
-                    // A busy decoder may take time to release its source lock.
-                    // Keep this wait and the old block's destruction off the UI.
-                    decoder.seed(playback).map_err(|error| error.to_string())?;
+                    // The load's block and map walk are destroyed here, off the UI thread; the
+                    // map draws from the recording's playhead, never by walking it.
+                    drop(playback);
                     Ok(content)
                 }))
                 .unwrap_or_else(|_| Err("Native map asset loading panicked".into()));
                 if job_alive.load(Ordering::Acquire) {
                     let _ = sender.send(result);
                 }
-                wake.request_repaint();
+                viewer_foundation::worker_priority::at_least(Some(0), || wake.request_repaint());
             }) {
             Ok(_) => {
                 self.loading = Some(LoadingSource {
@@ -1201,9 +1193,7 @@ impl DashboardMaps {
                 .and_then(|key| self.sources.get(key))
                 .map(|source| source.source.replay_ref());
             let partial = replay.is_some_and(|replay| replay.is_partial());
-            // Hatched snow and mud say why in ordinary viewing too.
-            let weather = view.viewer.weather_notice();
-            if state.loading || diagnostics || partial || weather.is_some() {
+            if state.loading || diagnostics || partial {
                 let points = view.viewer.interface_points;
                 map_overlay(ui, clip, (id, "status"), points, |ui, height| {
                     if partial {
@@ -1214,9 +1204,6 @@ impl DashboardMaps {
                         {
                             ui.colored_label(egui::Color32::YELLOW, SOFTWARE_RENDERER_NOTICE);
                         }
-                    }
-                    if let Some(weather) = weather {
-                        ui.colored_label(egui::Color32::YELLOW, format!("{weather}."));
                     }
                     if state.loading {
                         ui.label(match state.hour {
@@ -1374,6 +1361,7 @@ mod tests {
             fraction: 0.0,
             sequence: 7,
             seek_sequence: Some(2),
+            composed_at: 0.0,
             bounds: ViewBounds {
                 x: 0,
                 y: 0,
@@ -1438,7 +1426,7 @@ mod tests {
             Options::default(),
             Service::new(Arc::new(|_| true)).unwrap(),
             None,
-            Resources::new().unwrap(),
+            crate::worker_pool::WorkerPool::new().unwrap(),
         )
         .unwrap();
         // Without a device, admission still follows the widget's size.
@@ -1462,6 +1450,7 @@ mod tests {
             fraction: 0.0,
             sequence: 1,
             seek_sequence: None,
+            composed_at: 0.0,
             bounds,
             clip: bounds,
             visible: true,
@@ -1541,6 +1530,7 @@ mod tests {
             fraction: 0.0,
             sequence: 0,
             seek_sequence: None,
+            composed_at: 0.0,
             bounds: bounds(0),
             clip: bounds(0),
             visible: true,

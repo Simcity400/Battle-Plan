@@ -40,7 +40,7 @@ fn unknown_at(world: vec2<f32>) -> bool {
         return false;
     }
     let cell = min(vec2<u32>(world / p.surface.w), p.map.zw - 1u);
-    return textureLoad(unknown, cell, 0).r > 0.5;
+    return textureLoad(unknown, cell, 0).r > 0.0;
 }
 
 // One vertex of a block (origin, step, snapped edges) on the terrain's 65 by 65 vertex grid.

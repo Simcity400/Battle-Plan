@@ -8,12 +8,8 @@
 pub(crate) mod proof;
 #[cfg(test)]
 mod tests;
-mod today;
 
-use crate::playhead_host::{
-    Entry, MapSide,
-    rows::{AtHead, Recording},
-};
+use crate::playhead_host::views::{AtHead, Pace, Views};
 use replay_data::{Hour, rows::TableId};
 use replay_frame::frame::{DecodedFrame, discovering};
 use std::{
@@ -47,14 +43,11 @@ impl Prepare for province_tooltips::Content {
     }
 }
 
-/// The playhead's map's entry and the branch of the clock, which rows at its head carry.
-pub(crate) type Head<'a> = (&'a Arc<Entry>, Recording);
+/// The open map side's view store, whose mirrors a tooltip reads the hour from.
+pub(crate) type Head<'a> = &'a Views;
 
 /// How long the capture waits for a hover's rows and text before it names it loading.
 const CAPTURE_LIMIT: Duration = Duration::from_secs(120);
-
-/// How often the map's vision is made again for the hovers while it plays: the rows' cadence.
-const VISION_CADENCE: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Family {
@@ -216,7 +209,6 @@ pub(crate) struct Caches {
     pub provinces: Arc<Mutex<province_tooltips::Cache>>,
 }
 
-#[derive(Default)]
 struct Hover {
     rows: AtHead,
     worker: Option<Worker>,
@@ -228,6 +220,16 @@ struct Hover {
 }
 
 impl Hover {
+    fn new(family: Family) -> Self {
+        // Asked every frame the pointer rests on its target: its rows follow every publication, so a
+        // hovered value moves with the map, and it keeps the text it has while the view store is
+        // busy. The capture's reads are exact at a side standing still: opened and learned at once,
+        // since no later post would apply them.
+        let rows = AtHead::with(family.name(), &[], Pace::Step);
+        let rows = if family == Family::Capture { rows } else { rows.keeps_its_answer() };
+        Self { rows, worker: None, posted: None, shown: None, loading: Loading::default(), asked: false }
+    }
+
     /// Takes in what the worker made since: a text is shown; tables its rows lacked are learned.
     fn take(&mut self) {
         if let Some(made) = self.worker.as_ref().and_then(Worker::take) {
@@ -250,100 +252,20 @@ impl Hover {
     }
 }
 
-/// The map's vision as the hovers and selections read it, made from the vision layer again when
-/// what that layer shows has moved, at most [`VISION_CADENCE`] apart while the head plays. The frame
-/// copies the layer's arrays; a thread of its own makes the vision (every province's byte, every
-/// unit's level and sight) and the frame takes it when it has arrived, keeping the one before
-/// meanwhile: no frame makes a vision.
-#[derive(Default)]
-pub(crate) struct ShownVision {
-    held: Option<(VisionKey, Instant, Result<Arc<Vision>, String>)>,
-    asked: bool,
-    /// The copy being made, by its key and when it was copied; the maker's thread.
-    making: Option<(VisionKey, Instant)>,
-    maker: Option<(std::sync::mpsc::Sender<crate::layers::vision::SeenCopy>, std::sync::mpsc::Receiver<Arc<Vision>>)>,
-}
-
-/// What moves the vision layer's value: a step applied, its worker's product, its units still
-/// settling, and the perspective.
-#[derive(Clone, Debug, PartialEq)]
-struct VisionKey {
-    applied: Option<Hour>,
-    published: crate::layers::Published,
-    carried: usize,
-    choice: viewer_foundation::map::perspective::Choice,
-}
-
-impl ShownVision {
-    pub(crate) fn shown(&mut self, side: &MapSide) -> Result<Arc<Vision>, String> {
-        use crate::layers::Layer as _;
-        self.asked = true;
-        self.take_made();
-        let layer = side.parts().map(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::vision::Vision>()));
-        let layer = match layer {
-            Some(Some(layer)) => layer,
-            Some(None) => return Err("the map draws no vision layer".into()),
-            None => return self.held.as_ref().map_or_else(|| Err("the vision layer is composing".into()), |(_, _, held)| held.clone()),
-        };
-        let key = VisionKey { applied: side.applied(), published: layer.published(), carried: layer.carried().entities, choice: layer.choice().clone() };
-        let now = Instant::now();
-        let due = match &self.held {
-            None => true,
-            Some((held, made, value)) => *held != key && (value.is_err() || side.entry().paused() || now.duration_since(*made) >= VISION_CADENCE),
-        };
-        if due && self.making.is_none() {
-            match layer.shown_copy() {
-                Err(why) => self.held = Some((key, now, Err(why))),
-                Ok(copy) => self.make(key, now, copy),
-            }
-        }
-        self.held.as_ref().map_or_else(|| Err("the vision is being made".into()), |(_, _, held)| held.clone())
-    }
-
-    /// `copy` made into the vision on the maker's thread, started on first use.
-    fn make(&mut self, key: VisionKey, at: Instant, copy: crate::layers::vision::SeenCopy) {
-        if self.maker.is_none() {
-            let (jobs, receive) = std::sync::mpsc::channel::<crate::layers::vision::SeenCopy>();
-            let (send, made) = std::sync::mpsc::channel();
-            let started = std::thread::Builder::new().name("shown vision".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
-                for copy in receive {
-                    if send.send(Arc::new(copy.make())).is_err() {
-                        return;
-                    }
-                }
-            });
-            if started.is_ok() {
-                self.maker = Some((jobs, made));
-            }
-        }
-        match &self.maker {
-            Some((jobs, _)) if jobs.send(copy).is_ok() => self.making = Some((key, at)),
-            _ => self.held = Some((key, at, Err("no thread to make the vision on".into()))),
-        }
-    }
-
-    /// The vision made, once it has arrived.
-    fn take_made(&mut self) {
-        let Some((_, made)) = &self.maker else { return };
-        while let Ok(vision) = made.try_recv() {
-            if let Some((key, at)) = self.making.take() {
-                self.held = Some((key, at, Ok(vision)));
-            }
-        }
-    }
-}
-
 /// Every hover family's reader and worker.
-#[derive(Default)]
 pub(crate) struct HoverRows {
     hovers: [Hover; 5],
     caches: Caches,
-    vision: ShownVision,
     refused: bool,
     /// Timed (the paced harness): this frame's thread CPU spent asking, and the hour of the text
     /// the last ask showed, and what it was loading.
     timed: Option<(Duration, Option<Hour>, Option<String>)>,
+}
+
+impl Default for HoverRows {
+    fn default() -> Self {
+        Self { hovers: Family::ALL.map(Hover::new), caches: Caches::default(), refused: false, timed: None }
+    }
 }
 
 impl HoverRows {
@@ -352,7 +274,7 @@ impl HoverRows {
     pub(crate) fn seeded(seeded: &dyn Fn(Family) -> Vec<TableId>) -> Self {
         let mut hovers = Self::default();
         for family in Family::ALL {
-            hovers.hovers[family as usize].rows = AtHead::new(&seeded(family), crate::playhead_host::rows::Cadence::PerSecond(4));
+            hovers.hovers[family as usize].rows = AtHead::new(family.name(), &seeded(family), Pace::PerSecond(4));
         }
         hovers
     }
@@ -399,15 +321,7 @@ impl HoverRows {
 
     /// Every open hover's loading state and the map's vision's, named for the window's refusals.
     pub(crate) fn loading(&self) -> Vec<(String, usize)> {
-        let hovers = Family::ALL.into_iter().filter_map(|family| self.hovers[family as usize].loading.reason(&format!("the {} hover", family.name())));
-        let vision = self.vision.held.as_ref().and_then(|(_, _, held)| held.as_ref().err()).map(|why| format!("the hovers' vision: loading: {why}"));
-        hovers.chain(vision).map(|reason| (reason, 1)).collect()
-    }
-
-    /// The vision the playhead's map `side` shows, as the hovers read it; loading by name while
-    /// its vision layer has published nothing.
-    pub(crate) fn vision(&mut self, side: &MapSide) -> Result<Arc<Vision>, String> {
-        self.vision.shown(side)
+        Family::ALL.into_iter().filter_map(|family| self.hovers[family as usize].loading.reason(&format!("the {} hover", family.name()))).map(|reason| (reason, 1)).collect()
     }
 
     /// The next text `family`'s worker makes, whatever asked it (a leaf's late answer, a prepare
@@ -483,11 +397,11 @@ impl HoverRows {
 
     /// The text shown for `key` over rows at `head`, the frame asked over, and whether a text was
     /// asked now; no frame while the rows do not hold what the family reads.
-    fn post_head(&mut self, family: Family, (entry, recording): Head<'_>, key: Key, make: impl FnOnce(&Caches) -> Job) -> (Option<Arc<Tooltip>>, Option<usize>, bool) {
+    fn post_head(&mut self, family: Family, views: Head<'_>, key: Key, make: impl FnOnce(&Caches) -> Job) -> (Option<Arc<Tooltip>>, Option<usize>, bool) {
         let hover = &mut self.hovers[family as usize];
         hover.asked = true;
         hover.take();
-        let Some(rows) = hover.rows.frame(entry, recording) else {
+        let Some(rows) = hover.rows.frame(views) else {
             hover.loading.no_rows();
             return (hover.shown_for(&key), None, false);
         };
@@ -529,9 +443,6 @@ impl HoverRows {
     /// worker ends once its text in hand is done, and it holds no text. The capture's closes only
     /// once the capture ends, as it asks on the frames it writes alone.
     pub(crate) fn end_frame(&mut self, capturing: bool) {
-        if !std::mem::take(&mut self.vision.asked) {
-            self.vision.held = None;
-        }
         for family in Family::ALL {
             if family == Family::Capture && capturing {
                 continue;
@@ -755,21 +666,23 @@ pub(crate) fn make(posted: &mut Posted, retry: &Retry) -> Made {
 
 impl super::Viewer {
     /// The playhead's map while it is open: made, and not stopped at an error.
-    pub(super) fn open_map(&self) -> Option<&MapSide> {
+    pub(super) fn open_map(&self) -> Option<&crate::playhead_host::side::SideThread> {
         self.playhead_map.as_ref().filter(|side| side.on_screen().is_some())
     }
 
     /// Rows at the head of the open map with the clock's branch they carry; none with no map open
     /// or no clock.
-    pub(super) fn rows_head(&self) -> Option<(Arc<Entry>, Recording)> {
-        Some((Arc::clone(self.open_map()?.entry()), Recording { branch: self.playhead.as_ref()?.branch }))
+    pub(super) fn rows_head(&self) -> Option<Views> {
+        Some(self.open_map()?.views().clone())
     }
 
-    /// The vision the open map's vision layer shows, as the hovers read it; why there is none,
-    /// by name.
-    pub(super) fn shown_vision(&mut self) -> Result<Arc<Vision>, String> {
-        let side = self.playhead_map.as_ref().filter(|side| side.on_screen().is_some()).ok_or("the playhead's map is not open")?;
-        self.hover_rows.vision(side)
+    /// The vision the open map's vision layer shows, as the map's side copied it out for the step
+    /// it prepared; why there is none, by name.
+    pub(super) fn shown_vision(&self) -> Result<Arc<Vision>, String> {
+        match self.playhead_map.as_ref().filter(|side| side.on_screen().is_some()) {
+            Some(side) => side.products().vision.clone(),
+            None => Err("the playhead's map is not open".into()),
+        }
     }
 
     /// A point the paced harness holds the pointer at to keep `family`'s hover open: the first

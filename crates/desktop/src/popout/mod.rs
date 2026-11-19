@@ -144,7 +144,7 @@ enum Mirror {
     Diagnostics(bool),
     /// Every map's audio is silenced or restored together.
     Muted(bool),
-    /// VSync and map scale, queued like the main viewer's.
+    /// VSync, map scale and the frame rate limit, queued like the main viewer's.
     Display,
     SettingsSaved,
     /// The user asked for installed mods to be read again: the pop-out's maps check theirs too.
@@ -157,7 +157,7 @@ fn mirrored(action: &MapAction) -> Option<Mirror> {
     match action {
         MapAction::Diagnostics { enabled } => Some(Mirror::Diagnostics(*enabled)),
         MapAction::Mute { muted } => Some(Mirror::Muted(*muted)),
-        MapAction::Vsync { .. } | MapAction::UiScale { .. } => Some(Mirror::Display),
+        MapAction::Vsync { .. } | MapAction::UiScale { .. } | MapAction::FrameLimit { .. } => Some(Mirror::Display),
         MapAction::MapSettingsSaved => Some(Mirror::SettingsSaved),
         MapAction::RefreshVisualMods => Some(Mirror::RefreshVisualMods),
         MapAction::Unload { .. }
@@ -763,13 +763,7 @@ pub fn popout_seek(
     hour: i32,
     playback: Option<MapPlayback>,
 ) -> Result<(), String> {
-    running(&popouts, Some(generation))?.seek(
-        crate::replay_path(&path)?.to_string_lossy().into_owned(),
-        revision,
-        branch,
-        hour,
-        playback,
-    )
+    running(&popouts, Some(generation))?.seek(crate::replay_path(&path)?, revision, branch, hour, playback)
 }
 
 /// The pop-out's own perspective and fog, which the campaign map's controls choose.
@@ -835,6 +829,10 @@ mod tests {
         );
         assert_eq!(
             mirrored(&MapAction::UiScale { scale: None }),
+            Some(Mirror::Display)
+        );
+        assert_eq!(
+            mirrored(&MapAction::FrameLimit { hz: Some(60.0) }),
             Some(Mirror::Display)
         );
         assert_eq!(

@@ -52,15 +52,24 @@ impl Bloom {
             .map_err(refuse)
     }
 
-    pub(super) fn bindings(
+    /// b2 in both stages and pixel-stage t0 for one axis, kept while the grading's weights stand.
+    pub(super) fn kept(
         &self,
-        arena: &gpu::Arena,
+        device: &wgpu::Device,
+        buffer: &wgpu::Buffer,
+        offset: u32,
         blur: &Blur,
         source: &wgpu::TextureView,
     ) -> io::Result<gpu::Bindings> {
-        // Overwrite b2 in both stages and pixel-stage t0 for each axis.
         self.0
-            .bindings(arena, 2, bytemuck::bytes_of(blur), source)
+            .kept(
+                device,
+                buffer,
+                2,
+                offset,
+                bytemuck::bytes_of(blur),
+                &[source],
+            )
             .map_err(refuse)
     }
 

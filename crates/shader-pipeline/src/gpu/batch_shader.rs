@@ -1,9 +1,79 @@
 use crate::{Compiled, Shader, TextureKind};
+
+#[cfg(test)]
+mod instanced_tests;
 use naga::{Binding, BuiltIn, Handle, Module, TypeInner};
 use std::collections::BTreeMap;
 
 pub(super) const META_BINDING: u32 = super::CONSTANT_BINDINGS as u32;
 pub(super) const META_WORDS: usize = 4 + super::TEXTURE_BINDINGS + super::CONSTANT_BINDINGS;
+
+/// The rows block an instanced program reads: one row index a constant binding and one for the
+/// stream the draw reads per instance, four to a vector so the block is a uniform the draw
+/// selects with a dynamic offset.
+pub(super) const STREAM_ROW: usize = super::CONSTANT_BINDINGS;
+pub(super) const ROW_VECTORS: usize = (STREAM_ROW + 1).div_ceil(4);
+pub(super) const ROWS_BYTES: usize = ROW_VECTORS * 16;
+
+/// The instanced stream's own words, and each instance's first vertex in them.
+pub(super) const STREAM_BINDING: u32 = META_BINDING + 1;
+pub(super) const STREAM_BASE_BINDING: u32 = META_BINDING + 2;
+
+/// A vertex stream the draw reads one slab of per instance, as the pass declares it.
+#[derive(Clone)]
+pub(super) struct Stream {
+    pub slot: usize,
+    pub stride: u64,
+    pub attributes: Vec<wgpu::VertexAttribute>,
+}
+
+/// A stream format this rewrite can read from storage: its scalar kind, components and the
+/// bytes each component pair occupies. Packed and normalised formats are refused by name: a
+/// conversion of our own would not give the fetch's own bits.
+fn stream_format(format: wgpu::VertexFormat) -> Option<(naga::ScalarKind, u32, u32)> {
+    use naga::ScalarKind::{Float, Sint, Uint};
+    use wgpu::VertexFormat as F;
+    Some(match format {
+        F::Sint16x2 => (Sint, 2, 2),
+        F::Sint16x4 => (Sint, 4, 2),
+        F::Uint16x2 => (Uint, 2, 2),
+        F::Uint16x4 => (Uint, 4, 2),
+        F::Sint32 => (Sint, 1, 4),
+        F::Sint32x2 => (Sint, 2, 4),
+        F::Sint32x3 => (Sint, 3, 4),
+        F::Sint32x4 => (Sint, 4, 4),
+        F::Uint32 => (Uint, 1, 4),
+        F::Uint32x2 => (Uint, 2, 4),
+        F::Uint32x3 => (Uint, 3, 4),
+        F::Uint32x4 => (Uint, 4, 4),
+        F::Float32 => (Float, 1, 4),
+        F::Float32x2 => (Float, 2, 4),
+        F::Float32x3 => (Float, 3, 4),
+        F::Float32x4 => (Float, 4, 4),
+        _ => return None,
+    })
+}
+
+/// Component `at` of `format`, read from the stream words at `base` plus the attribute's own
+/// `offset` in the slab's vertex.
+fn stream_component(format: wgpu::VertexFormat, offset: u64, at: u32) -> Result<String, String> {
+    let (kind, _, width) = stream_format(format).ok_or("stream format")?;
+    if !offset.is_multiple_of(4) {
+        return Err("a per-instance vertex attribute does not start on a word".into());
+    }
+    let word = offset / 4 + u64::from(if width == 4 { at } else { at / 2 });
+    let value = format!("replay_batch_stream[replay_batch_vertex + {word}u]");
+    Ok(match (kind, width, at % 2) {
+        (naga::ScalarKind::Float, _, _) => format!("bitcast<f32>({value})"),
+        (naga::ScalarKind::Uint, 4, _) => value,
+        (naga::ScalarKind::Sint, 4, _) => format!("bitcast<i32>({value})"),
+        (naga::ScalarKind::Uint, _, 0) => format!("({value} & 65535u)"),
+        (naga::ScalarKind::Uint, _, _) => format!("({value} >> 16u)"),
+        (naga::ScalarKind::Sint, _, 0) => format!("(bitcast<i32>({value} << 16u) >> 16u)"),
+        (naga::ScalarKind::Sint, _, _) => format!("(bitcast<i32>({value}) >> 16u)"),
+        _ => return Err("a per-instance vertex stream supplies no scalar".into()),
+    })
+}
 
 pub(super) struct Program {
     pub vertex: String,
@@ -12,6 +82,32 @@ pub(super) struct Program {
     pub input: u32,
     pub varying: u32,
     pub position: Option<super::batch_position::Plan>,
+}
+
+/// How a rewritten stage finds the row of a constant buffer it reads.
+#[derive(Clone, Copy)]
+enum Rows {
+    /// Every constant buffer is a storage row the metadata of the batch's own vertex attribute
+    /// selects; textures become array layers and the fragment stage scissors itself.
+    Batch,
+    /// The bindings of the mask are storage arrays the draw's instance index selects, from the
+    /// base row the draw's rows block gives. Every other binding, the textures and the pixels
+    /// stay as the program has them. `carry` passes the index on to the fragment stage.
+    Instanced { mask: u32, carry: bool },
+}
+
+impl Rows {
+    fn batch(self) -> bool {
+        matches!(self, Self::Batch)
+    }
+
+    /// Whether the binding's reads become rows of a storage array.
+    fn takes(self, binding: u32) -> bool {
+        match self {
+            Self::Batch => true,
+            Self::Instanced { mask, .. } => binding < u32::BITS && mask & (1 << binding) != 0,
+        }
+    }
 }
 
 fn module(source: &str) -> Result<Module, String> {
@@ -229,7 +325,14 @@ fn stage(
     vertex: bool,
     input: u32,
     varying: u32,
+    rows: Rows,
+    stream: Option<&Stream>,
 ) -> Result<(String, Vec<(u32, u32)>), String> {
+    let stream = stream.filter(|_| vertex);
+    let carry = match rows {
+        Rows::Batch => true,
+        Rows::Instanced { carry, .. } => carry,
+    };
     if shader.wgsl.contains("replay_batch_") {
         return Err("reserved batch identifier is already used".into());
     }
@@ -287,10 +390,51 @@ fn stage(
         .ok_or("generated function name missing")?;
     let mut inputs = Vec::new();
     let mut calls = Vec::new();
+    let mut fetches = Vec::new();
     let mut position = None;
     for (index, (argument, binding)) in native.arguments.iter().zip(&argument_bindings).enumerate()
     {
         let name = format!("replay_batch_arg{index}");
+        if let Some(stream) = stream {
+            if matches!(&written.types[argument.ty].inner, TypeInner::Struct { .. }) {
+                return Err("a vertex input struct beside a per-instance stream requires a native draw".into());
+            }
+            if matches!(binding, Some(Binding::BuiltIn(BuiltIn::VertexIndex))) {
+                calls.push("replay_batch_vertex_index".into());
+                continue;
+            }
+            if let Some(Binding::Location { location, .. }) = binding
+                && let Some(read) = stream
+                    .attributes
+                    .iter()
+                    .find(|read| read.shader_location == *location)
+            {
+                let name_of = ty(&written, argument.ty)?;
+                let (kind, supplied, _) = stream_format(read.format).ok_or_else(|| {
+                    format!("a per-instance vertex stream supplies {:?}", read.format)
+                })?;
+                let (wanted_kind, wanted) = match &written.types[argument.ty].inner {
+                    TypeInner::Scalar(value) => (value.kind, 1),
+                    TypeInner::Vector { size, scalar } => (scalar.kind, *size as u32),
+                    _ => return Err("a per-instance vertex input is not a scalar or vector".into()),
+                };
+                if wanted_kind != kind || wanted > supplied {
+                    return Err(format!(
+                        "a per-instance vertex input reads {wanted} of {supplied} {kind:?} components"
+                    ));
+                }
+                let parts = (0..wanted)
+                    .map(|at| stream_component(read.format, read.offset, at))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let value = match wanted {
+                    1 => parts[0].clone(),
+                    _ => format!("{name_of}({})", parts.join(", ")),
+                };
+                fetches.push(format!("let {name}: {name_of} = {value};"));
+                calls.push(name);
+                continue;
+            }
+        }
         inputs.push(format!(
             "{}{}: {}",
             attribute(binding.as_ref())?,
@@ -322,7 +466,7 @@ fn stage(
     let result_type = ty(&written, result.ty)?;
     let mut fields = Vec::new();
     let mut copies = Vec::new();
-    if vertex {
+    if vertex && carry {
         match &written.types[result.ty].inner {
             TypeInner::Struct { members, .. } => {
                 for (index, member) in members.iter().enumerate() {
@@ -359,6 +503,9 @@ fn stage(
             continue;
         };
         if variable.space == naga::AddressSpace::Uniform {
+            if !rows.takes(binding.binding) {
+                continue;
+            }
             let name = variable.name.as_deref().ok_or("unnamed uniform")?;
             let prefix = format!("@group(0) @binding({})", binding.binding);
             let start = source
@@ -370,21 +517,27 @@ fn stage(
                     .ok_or("unterminated uniform declaration")?
                 + 1;
             source.replace_range(start..end, "");
-            let rows = format!("{name}_rows");
+            let array = format!("{name}_rows");
             declarations.push_str(&format!(
-                "@group(0) @binding({}) var<storage, read> {rows}: array<{}>;\n",
+                "@group(0) @binding({}) var<storage, read> {array}: array<{}>;\n",
                 binding.binding,
                 ty(&written, variable.ty)?
             ));
-            replacements.insert(
-                name.into(),
+            let row = if rows.batch() {
                 format!(
-                    "{rows}[replay_batch_meta[replay_batch_index].rows[{}]]",
+                    "replay_batch_meta[replay_batch_index].rows[{}]",
                     binding.binding
-                ),
-            );
+                )
+            } else {
+                format!(
+                    "replay_batch_rows.rows[{}][{}] + replay_batch_index",
+                    binding.binding / 4,
+                    binding.binding % 4
+                )
+            };
+            replacements.insert(name.into(), format!("{array}[{row}]"));
             buffers.push((binding.binding, layout[variable.ty].to_stride()));
-        } else if binding.group == 1 {
+        } else if rows.batch() && binding.group == 1 {
             if !matches!(
                 written.types[variable.ty].inner,
                 TypeInner::Image {
@@ -402,31 +555,79 @@ fn stage(
         }
     }
     source = tokens(&source, &replacements);
-    source = array_samples(&source, &images)?.replace("texture_2d<f32>", "texture_2d_array<f32>");
-    declarations.push_str(&format!("struct ReplayBatchMeta {{ scissor: vec4<f32>, layers: array<u32, {}>, rows: array<u32, {}>, }}\n@group(0) @binding({META_BINDING}) var<storage, read> replay_batch_meta: array<ReplayBatchMeta>;\n", super::TEXTURE_BINDINGS, super::CONSTANT_BINDINGS));
+    if rows.batch() {
+        source =
+            array_samples(&source, &images)?.replace("texture_2d<f32>", "texture_2d_array<f32>");
+        declarations.push_str(&format!("struct ReplayBatchMeta {{ scissor: vec4<f32>, layers: array<u32, {}>, rows: array<u32, {}>, }}\n@group(0) @binding({META_BINDING}) var<storage, read> replay_batch_meta: array<ReplayBatchMeta>;\n", super::TEXTURE_BINDINGS, super::CONSTANT_BINDINGS));
+    } else if !buffers.is_empty() || stream.is_some() {
+        declarations.push_str(&format!(
+            "struct ReplayBatchRows {{ rows: array<vec4<u32>, {ROW_VECTORS}>, }}\n@group(0) @binding({META_BINDING}) var<uniform> replay_batch_rows: ReplayBatchRows;\n"
+        ));
+    }
+    if let Some(stream) = stream {
+        if !stream.stride.is_multiple_of(4) {
+            return Err("a per-instance vertex stream's record is not whole words".into());
+        }
+        declarations.push_str(&format!(
+            "@group(0) @binding({STREAM_BINDING}) var<storage, read> replay_batch_stream: array<u32>;\n@group(0) @binding({STREAM_BASE_BINDING}) var<storage, read> replay_batch_stream_base: array<u32>;\n"
+        ));
+    }
     let wrapper = if vertex {
-        inputs.push(format!("@location({input}) replay_batch_id: u32"));
-        fields.push(format!("@location({varying}) @interpolate(flat) id: u32,"));
-        format!(
-            "struct ReplayBatchOutput {{ {} }}\n@vertex fn main({}) -> ReplayBatchOutput {{ replay_batch_index = replay_batch_id; let value = {native_name}({}); var out: ReplayBatchOutput; {} out.id = replay_batch_id; return out; }}\n",
-            fields.join("\n"),
-            inputs.join(", "),
-            calls.join(", "),
-            copies.join("\n")
-        )
+        let (carried, id) = if rows.batch() {
+            inputs.push(format!("@location({input}) replay_batch_id: u32"));
+            (true, "replay_batch_id")
+        } else {
+            inputs.push("@builtin(instance_index) replay_batch_instance: u32".into());
+            (carry, "replay_batch_instance")
+        };
+        let mut body = String::new();
+        if let Some(stream) = stream {
+            inputs.push("@builtin(vertex_index) replay_batch_vertex_index: u32".into());
+            body.push_str(&format!(
+                "let replay_batch_vertex = (replay_batch_stream_base[replay_batch_rows.rows[{}][{}] + replay_batch_instance] + replay_batch_vertex_index) * {}u; ",
+                STREAM_ROW / 4,
+                STREAM_ROW % 4,
+                stream.stride / 4
+            ));
+        }
+        body.push_str(&fetches.join(" "));
+        if !carried {
+            format!(
+                "@vertex fn main({}) -> {result_attribute}{result_type} {{ replay_batch_index = {id}; {body} return {native_name}({}); }}\n",
+                inputs.join(", "),
+                calls.join(", ")
+            )
+        } else {
+            fields.push(format!("@location({varying}) @interpolate(flat) id: u32,"));
+            format!(
+                "struct ReplayBatchOutput {{ {} }}\n@vertex fn main({}) -> ReplayBatchOutput {{ replay_batch_index = {id}; {body} let value = {native_name}({}); var out: ReplayBatchOutput; {} out.id = {id}; return out; }}\n",
+                fields.join("\n"),
+                inputs.join(", "),
+                calls.join(", "),
+                copies.join("\n")
+            )
+        }
     } else {
         inputs.push(format!(
             "@location({varying}) @interpolate(flat) replay_batch_id: u32"
         ));
-        let position = position.unwrap_or_else(|| {
-            inputs.push("@builtin(position) replay_batch_position: vec4<f32>".into());
-            "replay_batch_position".into()
-        });
-        format!(
-            "@fragment fn main({}) -> {result_attribute}{result_type} {{ replay_batch_index = replay_batch_id; let value = {native_name}({}); let clip = replay_batch_meta[replay_batch_index].scissor; if ({position}.x < clip.x || {position}.y < clip.y || {position}.x >= clip.z || {position}.y >= clip.w) {{ discard; }} return value; }}\n",
-            inputs.join(", "),
-            calls.join(", ")
-        )
+        if !rows.batch() {
+            format!(
+                "@fragment fn main({}) -> {result_attribute}{result_type} {{ replay_batch_index = replay_batch_id; return {native_name}({}); }}\n",
+                inputs.join(", "),
+                calls.join(", ")
+            )
+        } else {
+            let position = position.unwrap_or_else(|| {
+                inputs.push("@builtin(position) replay_batch_position: vec4<f32>".into());
+                "replay_batch_position".into()
+            });
+            format!(
+                "@fragment fn main({}) -> {result_attribute}{result_type} {{ replay_batch_index = replay_batch_id; let value = {native_name}({}); let clip = replay_batch_meta[replay_batch_index].scissor; if ({position}.x < clip.x || {position}.y < clip.y || {position}.x >= clip.z || {position}.y >= clip.w) {{ discard; }} return value; }}\n",
+                inputs.join(", "),
+                calls.join(", ")
+            )
+        }
     };
     let source =
         format!("diagnostic(off, derivative_uniformity);\n{source}\n{declarations}\n{wrapper}");
@@ -469,8 +670,10 @@ impl Program {
             .map(|input| input.location + 1)
             .max()
             .unwrap_or(0);
-        let (vertex, mut buffers) = stage(&compiled.vertex, true, input, varying)?;
-        let (pixel, pixel_buffers) = stage(&compiled.pixel, false, input, varying)?;
+        let (vertex, mut buffers) =
+            stage(&compiled.vertex, true, input, varying, Rows::Batch, None)?;
+        let (pixel, pixel_buffers) =
+            stage(&compiled.pixel, false, input, varying, Rows::Batch, None)?;
         buffers.extend(pixel_buffers);
         buffers.sort_unstable();
         Ok(Self {
@@ -480,6 +683,103 @@ impl Program {
             input,
             varying,
             position,
+        })
+    }
+}
+
+/// A program whose per-instance constant buffers are storage arrays the draw's instance index
+/// selects, from the base row its own rows block gives. Nothing else of the program moves: its
+/// other constant buffers, its textures and its pixels are the program's own.
+pub(super) struct Instanced {
+    pub vertex: String,
+    /// The rewritten fragment stage; none when the fragment stage reads nothing per instance and
+    /// is left exactly as the program has it.
+    pub pixel: Option<String>,
+    /// Each binding read per instance, ascending, and its storage row stride.
+    pub rows: Vec<(u32, u32)>,
+    /// The location the instance index is carried on, when the fragment stage reads one.
+    pub varying: u32,
+    /// The vertex stream the draw reads one slab of per instance, read from storage instead.
+    pub stream: Option<Stream>,
+}
+
+/// Whether a stage's own interface reads the instance index of its draw, which instancing would
+/// change under it.
+fn reads_instance_index(parsed: &Module) -> bool {
+    let instance = |binding: &Option<Binding>| {
+        matches!(binding, Some(Binding::BuiltIn(BuiltIn::InstanceIndex)))
+    };
+    parsed.entry_points.iter().any(|entry| {
+        entry.function.arguments.iter().any(|argument| {
+            instance(&argument.binding)
+                || matches!(&parsed.types[argument.ty].inner,
+                    TypeInner::Struct { members, .. }
+                        if members.iter().any(|member| instance(&member.binding)))
+        })
+    })
+}
+
+impl Instanced {
+    /// The program with the constant bindings of `mask` read per instance and the last vertex
+    /// stream read from storage, or why it cannot be.
+    pub fn new(compiled: &Compiled, mask: u32, pass: &super::Pass) -> Result<Self, String> {
+        let taken = |shader: &Shader| {
+            shader
+                .buffers
+                .iter()
+                .any(|buffer| buffer.binding < u32::BITS && mask & (1 << buffer.binding) != 0)
+        };
+        let (reads_vertex, carry) = (taken(&compiled.vertex), taken(&compiled.pixel));
+        let stream = pass.stream.map(|slot| Stream {
+            slot,
+            stride: pass.vertices[slot].stride,
+            attributes: pass.vertices[slot].attributes.clone(),
+        });
+        if !reads_vertex && !carry && stream.is_none() {
+            return Err("the program reads nothing per instance".into());
+        }
+        if let Some(stream) = &stream
+            && stream.slot + 1 != pass.vertices.len()
+        {
+            return Err("only the last vertex stream may be read per instance".into());
+        }
+        if compiled
+            .vertex
+            .buffers
+            .iter()
+            .chain(&compiled.pixel.buffers)
+            .any(|buffer| buffer.binding >= META_BINDING)
+        {
+            return Err("a constant binding stands where the instanced rows are read".into());
+        }
+        let vertex = module(&compiled.vertex.wgsl)?;
+        if reads_instance_index(&vertex) {
+            return Err("the program reads the instance index of its own draw".into());
+        }
+        let result = vertex.entry_points[0]
+            .function
+            .result
+            .as_ref()
+            .ok_or("vertex result missing")?;
+        let varying = locations(&vertex, result.ty, result.binding.as_ref());
+        let rows = Rows::Instanced { mask, carry };
+        let (vertex, mut buffers) =
+            stage(&compiled.vertex, true, 0, varying, rows, stream.as_ref())?;
+        let pixel = match carry {
+            false => None,
+            true => {
+                let (pixel, pixel_buffers) = stage(&compiled.pixel, false, 0, varying, rows, None)?;
+                buffers.extend(pixel_buffers);
+                Some(pixel)
+            }
+        };
+        buffers.sort_unstable();
+        Ok(Self {
+            vertex,
+            pixel,
+            rows: buffers,
+            varying,
+            stream,
         })
     }
 }

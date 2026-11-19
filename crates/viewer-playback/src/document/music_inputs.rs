@@ -55,7 +55,7 @@ struct Entry {
 pub struct Memo {
     entries: Mutex<VecDeque<Arc<Entry>>>,
     capacity: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     evaluations: std::sync::atomic::AtomicUsize,
 }
 
@@ -64,7 +64,7 @@ impl Memo {
         Self {
             entries: Mutex::new(VecDeque::new()),
             capacity: capacity.max(1),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             evaluations: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -124,7 +124,7 @@ impl Memo {
                 })
             });
             let evaluate = || {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 self.evaluations
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // The read certifies one outcome, including its refusal.
@@ -155,7 +155,7 @@ impl Memo {
                             "music input reuse changed song {} at branch {} hour {}",
                             index, frame.branch, frame.hour
                         );
-                        #[cfg(test)]
+                        #[cfg(any(test, feature = "test-support"))]
                         assert_eq!(value.value, last.value, "certified music outcome changed");
                     }
                     value

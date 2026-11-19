@@ -387,10 +387,14 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
     ]
     .map(str::to_owned)
     .into();
-    let private_frames = [1, 1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 8];
     let mut previous_bake = None;
-    for (frame, private_frame) in private_frames.into_iter().enumerate() {
+    let mut private_frame = 0;
+    for frame in 0..12 {
         let state = frame / 2;
+        // An odd frame uploads what the frame before it did: `state` changes on the even ones,
+        // and each of frames 6, 8 and 10 changes something of its own that the frame after it
+        // changes back (the presentation, the bake recipe, the interface scale).
+        private_frame += u64::from(!matches!(frame, 1 | 3 | 5));
         let mut a = base.clone();
         // Integer UNORM levels avoid rounding ties after the bake's texture conversion.
         a.constants[16] = if state % 2 == 0 { 1. } else { 128. / 255. };
@@ -446,7 +450,6 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
         }
         arena.reset();
         arena.vertices(&[0xff; 4096]).unwrap();
-        pass.set_camera_moving((2..4).contains(&frame));
         pass.upload(
             &device,
             &queue,
@@ -458,7 +461,9 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
         arena.flush(&queue);
         let mut encoder = device.create_command_encoder(&Default::default());
         pass.draw_pages(&mut encoder);
-        queue.submit([encoder.finish()]);
+        // A bake hands its commands to the frame, which submits them ahead of the draws that
+        // sample them ([`SpritePass::bake_buffers`]).
+        queue.submit(pass.bake_buffers().into_iter().chain([encoder.finish()]));
         let pixels = crate::map::test_support::gpu::render_with(&device, &queue, |render| {
             pass.draw_runs(render, [16, 16])
         });
@@ -471,18 +476,23 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
             usize::from(frame >= 4),
             "frame {frame}"
         );
+        // The presented quad is a compiled draw into a fade page. What its pipeline cost is not
+        // this stream's to count: a core is built once for the device and shared by every cache
+        // that asks for the same one ([`shader_pipeline::gpu`]).
         assert_eq!(
-            pass.fade_stream.cache.created,
-            usize::from(frame >= 6),
+            pass.fade_draws.len(),
+            usize::from(frame == 6),
             "frame {frame}"
         );
         assert_eq!(pass.bakes.len(), usize::from(frame >= 4), "frame {frame}");
+        // The pass's own arena starts a frame for an upload that emits, and an upload that
+        // retained what is resident leaves it alone.
         assert_eq!(
             pass.uploads.as_ref().unwrap().frame(),
             private_frame,
             "frame {frame}"
         );
-        assert_eq!(pass.retained_valid, !(2..4).contains(&frame));
+        assert!(pass.retained_valid, "frame {frame}");
         assert_eq!(pass.fade_pages, usize::from(frame == 6));
         assert_eq!(pass.native_draws.len(), if frame == 6 { 3 } else { 4 });
         if frame >= 4 {

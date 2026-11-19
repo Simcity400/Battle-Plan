@@ -111,11 +111,39 @@ pub struct Pass {
     /// replacement fell back, so its vertex inputs are the ones drawn.
     pub selection: shader_pipeline::library::Selection,
     reference: u32,
+    /// What draws of this pass must agree on for their order among a list's figures to leave
+    /// every pixel the same; none where no agreement makes it so ([`Order`]).
+    order: Option<Order>,
+}
+
+/// What two draws must agree on for no order of them to leave another pixel: the channels they
+/// write, the bias their depth is tested at, and the stencil bits they set and the value they
+/// set them to. Where they do, the nearer fragment wins whichever was drawn first, the one that
+/// loses leaves nothing of itself behind, and the stencil ends as the same bits whether the
+/// farther draw wrote them before the nearer one hid it or never passed at all. A pass that
+/// could leave another pixel whatever it is drawn beside has none of this: it blends with what
+/// is there, keeps a fragment that is not the nearest, reads or accumulates a stencil, or writes
+/// colour to more than the one target this test weighs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Order {
+    writes: u32,
+    bias: [u32; 3],
+    stencil: (u32, u32),
+}
+
+#[cfg(test)]
+impl Order {
+    /// An order of these channels and stencil, for a test of what two draws must agree on.
+    pub(crate) fn for_tests(writes: u32, stencil: (u32, u32)) -> Self {
+        Self { writes, bias: [0; 3], stencil }
+    }
 }
 
 impl Pass {
     /// `cache` is shared by the caller's parts, so parts with one program and state share
-    /// a pipeline and consecutive draws rebind only what changed.
+    /// a pipeline and consecutive draws rebind only what changed. `instanced` names the constant
+    /// bindings the pass reads one block of per instance ([`gpu::Pass::instanced`]).
+    #[allow(clippy::too_many_arguments, reason = "the technique, its geometry and its target")]
     pub fn new(
         cache: &mut gpu::Cache,
         device: &wgpu::Device,
@@ -124,9 +152,10 @@ impl Pass {
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         samples: u32,
+        instanced: u32,
     ) -> io::Result<Self> {
         Self::with_mode(
-            cache, device, selection, geometry, format, depth, samples, false,
+            cache, device, selection, geometry, format, depth, samples, false, instanced,
         )
     }
 
@@ -139,8 +168,11 @@ impl Pass {
         geometry: &Geometry,
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
+        instanced: u32,
     ) -> io::Result<Self> {
-        Self::with_mode(cache, device, selection, geometry, format, depth, 1, true)
+        Self::with_mode(
+            cache, device, selection, geometry, format, depth, 1, true, instanced,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -153,11 +185,12 @@ impl Pass {
         depth: wgpu::TextureFormat,
         samples: u32,
         caster: bool,
+        instanced: u32,
     ) -> io::Result<Self> {
         // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded_selection(selection, |selection| {
             Self::build(
-                cache, device, selection, geometry, format, depth, samples, caster,
+                cache, device, selection, geometry, format, depth, samples, caster, instanced,
             )
         })
     }
@@ -172,6 +205,7 @@ impl Pass {
         depth: wgpu::TextureFormat,
         samples: u32,
         caster: bool,
+        instanced: u32,
     ) -> io::Result<Self> {
         let source = &selection.effect.source;
         let technique = &source.techniques[selection.index];
@@ -198,6 +232,8 @@ impl Pass {
         let (depth, reference) =
             gpu::depth_stencil(&source.depth_stencil(technique), &raster, depth);
         pass.depth_stencil = Some(depth);
+        pass.instanced = instanced;
+        let order = order(&pass.targets, pass.depth_stencil.as_ref(), reference);
         let pipeline = cache
             .get_pass(device, selection, &state, &pass)
             .map_err(io::Error::other)?;
@@ -206,6 +242,7 @@ impl Pass {
             pipeline,
             selection: selection.clone(),
             reference,
+            order,
         })
     }
 
@@ -213,11 +250,79 @@ impl Pass {
         self.reference
     }
 
+    /// What this pass's draws must agree on for their order to leave the same pixels.
+    pub(crate) fn order(&self) -> Option<Order> {
+        self.order
+    }
+
     /// Dynamic mesh state; resource bindings select the executable pipeline.
     pub fn begin(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_stencil_reference(self.reference);
         pass.set_blend_constant(wgpu::Color::WHITE);
     }
+}
+
+/// What the draws of a pass must agree on for their order to leave every pixel the same, or none
+/// where it keeps a fragment that is not the nearest, blends it with what is there, writes a
+/// stencil a later draw reads, or writes colour to more than one target.
+fn order(
+    targets: &[Option<wgpu::ColorTargetState>],
+    depth: Option<&wgpu::DepthStencilState>,
+    reference: u32,
+) -> Option<Order> {
+    let depth = depth?;
+    let nearest = matches!(
+        depth.depth_compare,
+        Some(wgpu::CompareFunction::Less) | Some(wgpu::CompareFunction::LessEqual)
+    );
+    if depth.depth_write_enabled != Some(true) || !nearest || targets.len() > 1 {
+        return None;
+    }
+    let stencil = stencil(&depth.stencil, reference)?;
+    let mut writes = 0;
+    for target in targets.iter().flatten() {
+        if target.blend.is_some() {
+            return None;
+        }
+        writes = target.write_mask.bits();
+    }
+    Some(Order {
+        writes,
+        bias: [
+            depth.bias.constant as u32,
+            depth.bias.slope_scale.to_bits(),
+            depth.bias.clamp.to_bits(),
+        ],
+        stencil,
+    })
+}
+
+/// The stencil bits a pass's draw sets and the value it sets them to, or none where the order of
+/// two draws could leave another stencil: one the pass itself reads, one it counts up or down
+/// from what is there, or one a fragment that fails the depth test writes, which the draw after
+/// it would hide.
+fn stencil(state: &wgpu::StencilState, reference: u32) -> Option<(u32, u32)> {
+    use wgpu::StencilOperation as O;
+    let kept = |face: &wgpu::StencilFaceState| {
+        face.fail_op == O::Keep && face.depth_fail_op == O::Keep && face.pass_op == O::Keep
+    };
+    if state.write_mask == 0 || (kept(&state.front) && kept(&state.back)) {
+        return Some((0, 0));
+    }
+    let face = state.front;
+    if face != state.back
+        || face.compare != wgpu::CompareFunction::Always
+        || face.fail_op != O::Keep
+        || face.depth_fail_op != O::Keep
+    {
+        return None;
+    }
+    let value = match face.pass_op {
+        O::Replace => reference & state.write_mask,
+        O::Zero => 0,
+        _ => return None,
+    };
+    Some((state.write_mask, value))
 }
 
 /// The game copies only three weights. The content vertex shader derives the fourth.
@@ -352,6 +457,86 @@ pub(crate) mod tests {
             indices: vec![0, 1, 2],
             ..Default::default()
         }
+    }
+
+    /// The depth-stencil state of a pass that keeps the nearest fragment and nothing else.
+    fn nearest() -> wgpu::DepthStencilState {
+        wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth24PlusStencil8,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: wgpu::StencilState {
+                front: wgpu::StencilFaceState::IGNORE,
+                back: wgpu::StencilFaceState::IGNORE,
+                read_mask: 0xff,
+                write_mask: 0,
+            },
+            bias: Default::default(),
+        }
+    }
+
+    fn opaque() -> Option<wgpu::ColorTargetState> {
+        Some(wgpu::ColorTargetState {
+            format: wgpu::TextureFormat::Rgba16Float,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })
+    }
+
+    /// Only a pass whose every kept fragment is the nearest one, blended with nothing and
+    /// writing no stencil, may have its draws reordered among a list's figures; and two of them
+    /// only where they write the same channels at the same bias.
+    #[test]
+    fn draws_stand_in_any_order_only_where_no_order_of_two_fragments_leaves_another_pixel() {
+        let targets = [opaque()];
+        let free = order(&targets, Some(&nearest()), 0).expect("the nearest fragment alone");
+        assert_eq!(order(&[], Some(&nearest()), 0).map(|o| o.writes), Some(0), "depth alone");
+        assert_eq!(order(&targets, None, 0), None, "no depth test: the last fragment wins");
+        let blended = [Some(wgpu::ColorTargetState {
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            ..opaque().expect("made above")
+        })];
+        assert_eq!(order(&blended, Some(&nearest()), 0), None);
+        let held = wgpu::DepthStencilState { depth_write_enabled: Some(false), ..nearest() };
+        assert_eq!(order(&targets, Some(&held), 0), None, "nothing hides what follows it");
+        let equal = wgpu::DepthStencilState {
+            depth_compare: Some(wgpu::CompareFunction::Always),
+            ..nearest()
+        };
+        assert_eq!(order(&targets, Some(&equal), 0), None, "every fragment passes");
+        // A stencil the pass itself reads, or counts, makes the order of two draws its own.
+        let marked = |pass_op, compare| wgpu::DepthStencilState {
+            stencil: wgpu::StencilState {
+                front: wgpu::StencilFaceState { compare, pass_op, ..wgpu::StencilFaceState::IGNORE },
+                back: wgpu::StencilFaceState { compare, pass_op, ..wgpu::StencilFaceState::IGNORE },
+                read_mask: 0xff,
+                write_mask: 4,
+            },
+            ..nearest()
+        };
+        use wgpu::{CompareFunction as C, StencilOperation as O};
+        assert_eq!(order(&targets, Some(&marked(O::Replace, C::Equal)), 4), None, "read");
+        assert_eq!(order(&targets, Some(&marked(O::IncrementClamp, C::Always)), 4), None, "counted");
+        // Two passes stand in either order only where they agree: a channel one leaves is a
+        // channel the other's farther fragment keeps, a bias of its own ties them, and a stencil
+        // bit it sets is one the other's hidden fragment would have set differently.
+        let set = order(&targets, Some(&marked(O::Replace, C::Always)), 4).expect("set, not read");
+        assert_eq!(set.stencil, (4, 4), "the bit it sets and what it sets it to");
+        assert_eq!(order(&targets, Some(&marked(O::Replace, C::Always)), 12), Some(set), "4 of 12");
+        assert_ne!(order(&targets, Some(&marked(O::Replace, C::Always)), 0), Some(set), "cleared");
+        assert_ne!(order(&targets, Some(&marked(O::Zero, C::Always)), 4), Some(set));
+        assert_ne!(set, free, "another stencil bit than none");
+        let partial = [Some(wgpu::ColorTargetState {
+            write_mask: wgpu::ColorWrites::RED,
+            ..opaque().expect("made above")
+        })];
+        assert_ne!(order(&partial, Some(&nearest()), 0), Some(free), "another channel written");
+        assert_eq!(order(&partial, Some(&nearest()), 0), order(&partial, Some(&nearest()), 0));
+        let biased = wgpu::DepthStencilState {
+            bias: wgpu::DepthBiasState { constant: 1, slope_scale: 0., clamp: 0. },
+            ..nearest()
+        };
+        assert_ne!(order(&targets, Some(&biased), 0), Some(free), "another bias");
     }
 
     #[test]
@@ -544,6 +729,7 @@ pub(crate) mod tests {
             wgpu::TextureFormat::Rgba8Unorm,
             wgpu::TextureFormat::Depth24PlusStencil8,
             1,
+            0,
         )
         .unwrap();
         (pass, selection, recorded, geometry)

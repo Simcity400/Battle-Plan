@@ -206,6 +206,10 @@ impl NativeHost {
             crate::video::current_map_diagnostics(&window.state::<crate::video::VideoState>());
         let saved_muted =
             crate::video::current_map_muted(&window.state::<crate::video::VideoState>());
+        // The map reads its sources and map settings from the host's one service; it makes none.
+        let service = window
+            .state::<crate::dashboard_service::DashboardService>()
+            .runtime(window.app_handle())?;
         let parent = match &self.shared.lock().map_err(|e| e.to_string())?.popout {
             Some(window) => window.parent,
             None => own.unwrap_or_else(|| Err("The map's window has no handle".into()))?,
@@ -285,7 +289,7 @@ impl NativeHost {
         let ended_window = window.clone();
         // The map's events wait on this lock until its map is installed.
         let closing = map_window.clone();
-        let map = Map::start(Launch { args, window: map_window, inputs, events, role }, move |end| {
+        let map = Map::start(Launch { args, window: map_window, inputs, events, role, service }, move |end| {
             ending.ended(end, generation, &ended_window)
         })
         .map_err(|error| {
@@ -529,7 +533,7 @@ mod tests {
         assert_eq!(inner.generation, 4);
         assert!(!inner.status.running && !inner.status.ready && inner.status.error.is_none());
         inner.restore_commands();
-        assert_eq!(inner.pending.open, Some(("A".into(), "v1".into())));
+        assert_eq!(inner.pending.open, Some(("A".into(), Some("v1".into()))));
         assert_eq!(inner.pending.seek.as_ref().map(|seek| seek.hour), Some(12));
         // The new map lost it again before it was ready.
         assert!(!inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: hung)".into())));
@@ -551,7 +555,7 @@ mod tests {
         );
         assert!(!inner.status.running);
         inner.restore_commands();
-        assert_eq!(inner.pending.open, Some(("A".into(), "v1".into())));
+        assert_eq!(inner.pending.open, Some(("A".into(), Some("v1".into()))));
         // Closing the app is no failure.
         let mut closing = showing("A");
         closing.shutting_down = true;

@@ -640,13 +640,59 @@ impl<'a> TacticalTargetSources<'a> {
 /// require a hostile railway gun among their province occupants; other types are skipped. A state
 /// building lacks a province, so its lower-level railway branch remains undecided. Complete
 /// division/task-force identification can prove no railway gun; an unidentified occupant cannot.
+/// What the strategic and scout scans read of the content's regions and the hour's provinces, and
+/// nothing else: each region's states, and the scout's overlap count and coverage of them. It
+/// stands while the Provinces view does, so a reader that keeps it reads it once for every hour
+/// that leaves those rows alone ([`Self::read`]).
+pub struct RegionStates {
+    /// Empty without a complete Provinces table; `None` for a region with a province missing from it.
+    strategic: BTreeMap<u32, Option<BTreeSet<u32>>>,
+    scout: Option<BTreeMap<u32, Option<ScoutRegion>>>,
+}
+
+impl RegionStates {
+    /// What [`Self::read`] reads of the hour's provinces and nothing else: each row's province and
+    /// its state, in row order. Two hours that read the same have the same regions' states.
+    pub fn states_read(frame: &DecodedFrame) -> io::Result<Vec<u64>> {
+        Ok(complete::<tables::Provinces>(frame)?.map_or_else(Vec::new, |provinces| provinces.iter().map(|province| u64::from(province.id) << 32 | u64::from(province.state)).collect()))
+    }
+
+    pub fn read(frame: &DecodedFrame, region_provinces: &BTreeMap<u32, Vec<u32>>) -> io::Result<Self> {
+        let provinces = complete::<tables::Provinces>(frame)?;
+        let strategic = provinces.map_or_else(BTreeMap::new, |provinces| {
+            region_provinces
+                .iter()
+                .map(|(&region, ids)| {
+                    let states = ids.iter().try_fold(BTreeSet::new(), |mut states, &id| {
+                        let province = find(provinces, id, |row| row.id)?;
+                        if province.state != 0 {
+                            states.insert(province.state);
+                        }
+                        Some(states)
+                    });
+                    (region, states)
+                })
+                .collect()
+        });
+        let scout = provinces.map(|provinces| {
+            let mut state_totals = BTreeMap::<u32, u64>::new();
+            for province in provinces.iter().filter(|province| province.state != 0) {
+                *state_totals.entry(province.state).or_default() += 1;
+            }
+            region_provinces
+                .iter()
+                .map(|(&region, ids)| (region, ScoutRegion::from_provinces(ids, provinces, &state_totals)))
+                .collect()
+        });
+        Ok(Self { strategic, scout })
+    }
+}
+
 pub struct StrategicTargetSources<'a> {
     wars: &'a Wars<'a>,
     provinces: Option<&'a [ProvinceRow]>,
     states: Option<&'a [StateRow]>,
-    /// Empty without a complete Provinces table; `None` for a region with a
-    /// province missing from it.
-    regional_states: BTreeMap<u32, Option<BTreeSet<u32>>>,
+    regional_states: &'a BTreeMap<u32, Option<BTreeSet<u32>>>,
     state_buildings: Option<BTreeMap<u32, ActiveBuildings>>,
     province_buildings: Option<BTreeMap<u32, ActiveBuildings>>,
     occupants: Occupants<'a>,
@@ -673,24 +719,10 @@ impl<'a> StrategicTargetSources<'a> {
     pub fn read(
         frame: &'a DecodedFrame,
         wars: &'a Wars<'a>,
-        region_provinces: &BTreeMap<u32, Vec<u32>>,
+        regions: &'a RegionStates,
     ) -> io::Result<Self> {
         let provinces = complete::<tables::Provinces>(frame)?;
-        let regional_states = provinces.map_or_else(BTreeMap::new, |provinces| {
-            region_provinces
-                .iter()
-                .map(|(&region, ids)| {
-                    let states = ids.iter().try_fold(BTreeSet::new(), |mut states, &id| {
-                        let province = find(provinces, id, |row| row.id)?;
-                        if province.state != 0 {
-                            states.insert(province.state);
-                        }
-                        Some(states)
-                    });
-                    (region, states)
-                })
-                .collect()
-        });
+        let regional_states = &regions.strategic;
         let state_buildings = complete::<tables::StateBuildings>(frame)?;
         let province_buildings = complete::<tables::ProvinceBuildings>(frame)?;
         Ok(Self {
@@ -809,7 +841,7 @@ pub struct ScoutTargetSources<'a> {
     families: Option<&'a Families>,
     wars: &'a Wars<'a>,
     links: &'a BTreeMap<u32, u32>,
-    regional: Option<BTreeMap<u32, Option<ScoutRegion>>>,
+    regional: Option<&'a BTreeMap<u32, Option<ScoutRegion>>>,
 }
 
 struct ScoutRegion {
@@ -852,29 +884,14 @@ impl<'a> ScoutTargetSources<'a> {
         links: &'a BTreeMap<u32, u32>,
         wars: &'a Wars<'a>,
         families: Option<&'a Families>,
-        region_provinces: &BTreeMap<u32, Vec<u32>>,
+        regions: &'a RegionStates,
     ) -> io::Result<Self> {
-        let regional = complete::<tables::Provinces>(frame)?.map(|provinces| {
-            let mut state_totals = BTreeMap::<u32, u64>::new();
-            for province in provinces.iter().filter(|province| province.state != 0) {
-                *state_totals.entry(province.state).or_default() += 1;
-            }
-            region_provinces
-                .iter()
-                .map(|(&region, ids)| {
-                    (
-                        region,
-                        ScoutRegion::from_provinces(ids, provinces, &state_totals),
-                    )
-                })
-                .collect()
-        });
         Ok(Self {
             states: complete::<tables::States>(frame)?,
             families,
             wars,
             links,
-            regional,
+            regional: regions.scout.as_ref(),
         })
     }
 
@@ -899,7 +916,7 @@ impl<'a> ScoutTargetSources<'a> {
     /// Any positive coverage entry qualifies; it need not be the entry for the foreign state itself.
     pub fn admit(&self, wing: &AirWingRow, region: u32, flags: u64) -> Option<bool> {
         let states = self.states?;
-        let regional = self.regional.as_ref()?.get(&region)?.as_ref()?;
+        let regional = self.regional?.get(&region)?.as_ref()?;
         if !regional.has_coverage {
             return Some(false);
         }

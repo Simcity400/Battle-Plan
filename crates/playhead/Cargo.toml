@@ -17,6 +17,7 @@ test-support = []
 
 [dependencies]
 replay-columnar.workspace = true
+replay-frame.workspace = true
 replay-data.workspace = true
 replay.workspace = true
 serde_json = { workspace = true, optional = true }

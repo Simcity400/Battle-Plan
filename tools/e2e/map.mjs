@@ -23,19 +23,23 @@ export const HOVER_CASES = [
 ];
 
 /** Map interactions, each run paused and while playing fast, and judged on the viewer's own window-thread
- * frames at 120 Hz. `where` is the Overview page's map widget or the full campaign map; `camera` a full-map
- * camera mode chosen first; `run(c)` sends the input through `c` (wheel, keys, drag, click, at the map's centre
- * by default). To add one, add an entry (the map lanes' hook). */
+ * frames at 120 Hz. `where` is the Overview page's map widget or the full campaign map; `camera` is the full
+ * map's camera the case runs in, chosen before it so no case inherits the camera the case before it left (the
+ * walking camera's frames cost several times the map camera's, so an inherited camera measures the wrong view);
+ * `moves` marks a case whose own camera movement is judged; `run(c)` sends the input through `c` (wheel, keys,
+ * drag, click, at the map's centre by default). To add one, add an entry (the map lanes' hook). */
 export const MAP_INTERACTIONS = [
   { id: 'zoom: continuous', where: 'widget', run: async c => { await c.wheel(12, 16); await c.wheel(-12, 16); } },
   { id: 'zoom: wheel bursts', where: 'widget', run: async c => {
     for (const notches of [5, -5, 5, -5]) { await c.wheel(notches, 8); await sleep(250); } } },
   { id: 'pan: arrow keys', where: 'widget', run: async c => { await c.keys(['ArrowRight'], 1500); await c.keys(['ArrowLeft'], 1500); } },
   { id: 'pan: middle drag', where: 'widget', run: async c => { await c.drag(-250, 0); await c.drag(250, 0); } },
-  { id: 'fly', where: 'campaign', camera: 'Fly', run: async c => { await c.click(); await sleep(500); await c.keys(['W'], 2000); await c.keys(['W', 'D'], 1000); await c.keys(['Escape'], 50); } },
-  { id: 'walk', where: 'campaign', camera: 'Walk', run: async c => { await c.click(); await sleep(500); await c.keys(['W'], 2000); await c.keys(['W', 'A'], 1000); await c.keys(['Escape'], 50); } },
   { id: 'playback', where: 'widget', run: async () => { await sleep(4000); } },
-  { id: 'playback', where: 'campaign', run: async () => { await sleep(4000); } },
+  // The campaign map's own camera first: the cases that move the camera run after it, so the view the
+  // owner looks at is measured from the camera the tab opens in.
+  { id: 'playback', where: 'campaign', camera: 'Map', run: async () => { await sleep(4000); } },
+  { id: 'fly', where: 'campaign', camera: 'Fly', moves: true, run: async c => { await c.click(); await sleep(500); await c.keys(['W'], 2000); await c.keys(['W', 'D'], 1000); await c.keys(['Escape'], 50); } },
+  { id: 'walk', where: 'campaign', camera: 'Walk', moves: true, run: async c => { await c.click(); await sleep(500); await c.keys(['W'], 2000); await c.keys(['W', 'A'], 1000); await c.keys(['Escape'], 50); } },
 ];
 
 /** The suite's input to the native map, one long-lived helper process. */
@@ -129,7 +133,7 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
     for (const playing of [false, true]) {
       if (playing) {
         await s.click('.header-speed');
-        await sleep(150);
+        await s.until(`document.querySelector('.playback-speed-menu:popover-open .playback-speed-presets button')`, 3000);
         await s.click('.playback-speed-menu:popover-open .playback-speed-presets button', { index: speedIndex });
         // Far enough from the end that fast playback lasts through every case.
         const line = await s.timeline();
@@ -140,9 +144,13 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
       }
       for (const entry of cases) {
         if (entry.id === 'playback' && !playing) continue;
-        const item = `interaction: ${entry.id}${where === 'campaign' && !entry.camera ? ' (campaign map)' : ''}`;
+        // The full map's own cases keep their names; a case the map camera shares with the widget says
+        // which map it ran on.
+        const item = `interaction: ${entry.id}${where === 'campaign' && !entry.moves ? ' (campaign map)' : ''}`;
         const while_ = `${label ? `${label}, ` : ''}${playing ? 'playing' : 'paused'}`;
         try {
+          // Every campaign case names its camera and is given it here, so a case never measures the
+          // camera the case before it left behind.
           if (entry.camera) { await s.click('.segmented[aria-label="Camera"] button', { text: entry.camera }); await sleep(1500); }
           await s.watch();
           const from = Date.now();
@@ -155,7 +163,7 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
               centres: new Set(states.filter(x => x.center).map(x => x.center.join())).size }; })()`);
           const reasons = [...flashed];
           const moves = entry.id.startsWith('zoom') ? 'zooms' : entry.id.startsWith('pan') ? 'centres' : null;
-          if (entry.camera) reasons.push('the full map reports no camera, so its movement is unconfirmed');
+          if (entry.moves) reasons.push('the full map reports no camera, so its movement is unconfirmed');
           else if (moves && drawn?.states === 0) reasons.push('the map acknowledged no frame during it: it was still loading or had stalled');
           else if (moves && drawn[moves] < 2) reasons.push(`the map did not ${moves === 'zooms' ? 'zoom' : 'pan'} (${drawn[moves]} ${moves === 'zooms' ? 'zoom levels' : 'camera centres'} drawn${drawn.loading ? ', while loading' : ''})`);
           const zooms = drawn?.zooms ?? null;
@@ -163,13 +171,19 @@ export async function interactions(s, input, dpr, speedIndex, { label = null, on
         } catch (error) {
           await s.fail(label ? 'mapfps' : 'map', item, while_, `could not send its input: ${error.message}`);
         } finally {
-          if (entry.camera) { await s.click('.segmented[aria-label="Camera"] button', { text: 'Map' }).catch(() => {}); await sleep(500); }
+          // The map's own camera again, so the next case starts from it; a camera that will not change
+          // is this case's failure, never a silence.
+          if (entry.moves) {
+            await s.click('.segmented[aria-label="Camera"] button', { text: 'Map' })
+              .catch(error => s.fail(label ? 'mapfps' : 'map', item, while_, `the map camera could not be chosen again after it: ${error.message}`));
+            await sleep(500);
+          }
         }
       }
       if (playing) {
         await s.click('button[aria-label="Pause playback"]');
         await s.click('.header-speed');
-        await sleep(150);
+        await s.until(`document.querySelector('.playback-speed-menu:popover-open .playback-speed-presets button')`, 3000);
         await s.click('.playback-speed-menu:popover-open .playback-speed-presets button', { index: 1 });
       }
     }

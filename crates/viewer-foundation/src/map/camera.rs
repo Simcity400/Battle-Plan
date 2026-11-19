@@ -408,6 +408,18 @@ impl Camera {
         }
     }
 
+    /// How far `other` stands from this camera when it is this one moved over the ground, and
+    /// nothing else: the same map, height, lens and direction. `None` when the view's shape
+    /// differs, which no distance covers.
+    pub fn travelled_from(&self, other: &Camera) -> Option<f32> {
+        let same = self.height == other.height
+            && self.map == other.map
+            && self.defines == other.defines
+            && self.pose == other.pose;
+        let [dx, dz] = [other.center[0] - self.center[0], other.center[1] - self.center[1]];
+        same.then(|| (dx * dx + dz * dz).sqrt())
+    }
+
     /// The look-at point: on the water plane for the game's camera, one unit ahead of a free eye.
     pub fn look_at(&self) -> [f32; 3] {
         match &self.pose {
@@ -1014,6 +1026,46 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
         [v[0] / length, v[1] / length, v[2] / length]
     } else {
         v
+    }
+}
+
+/// How far the camera travels, in world units, before everything admitted against it is
+/// admitted again. A travelling camera's admission is made with this to spare, so while it stays
+/// inside it the admission already holds everything the camera admits. What the pad admits and
+/// the camera does not is drawn off screen and thrown away by the GPU, so it is as small as
+/// holds an admission across a pan of a few frames: a drag of about two map units a frame keeps
+/// it for four.
+pub const PAD: f32 = 8.0;
+
+/// The camera a view's admitted set was chosen for, and the padding it was chosen with. A camera
+/// standing still admits exactly what it sees, so a still picture is the one an unpadded viewer
+/// draws; a travelling one admits with [`PAD`] to spare and keeps that admission while it keeps
+/// the view's shape and stays inside the pad, so nothing admitted against a camera is chosen
+/// again frame by frame under a moving one.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Hold {
+    seen: Option<(Camera, [u32; 2])>,
+    held: Option<(Camera, [u32; 2], f32)>,
+}
+
+impl Hold {
+    /// The camera this frame's view is admitted against, and the padding to admit it with.
+    pub fn at(&mut self, camera: Camera, viewport: [u32; 2]) -> (Camera, f32) {
+        let travelling = self.seen.is_some_and(|seen| seen != (camera, viewport));
+        self.seen = Some((camera, viewport));
+        if !travelling {
+            self.held = Some((camera, viewport, 0.0));
+            return (camera, 0.0);
+        }
+        if let Some((held, held_viewport, pad)) = self.held
+            && pad > 0.0
+            && held_viewport == viewport
+            && held.travelled_from(&camera).is_some_and(|travel| travel <= pad)
+        {
+            return (held, pad);
+        }
+        self.held = Some((camera, viewport, PAD));
+        (camera, PAD)
     }
 }
 

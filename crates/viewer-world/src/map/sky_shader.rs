@@ -1,4 +1,5 @@
 //! Native sky, after map text and immediately before post.
+use viewer_foundation::map::gpu_contract::Targets;
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content_core::{
     ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
@@ -106,7 +107,7 @@ impl Sky {
         &self,
         arena: &gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
+        targets: &Targets,
         frame: &[u8],
         reflection: &wgpu::TextureView,
     ) -> io::Result<()> {
@@ -121,19 +122,13 @@ impl Sky {
             .pipeline
             .bindings(arena, &buffers, &textures)
             .map_err(refuse)?;
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("compiled sky"),
-            color_attachments: &[Some(target.color)],
-            depth_stencil_attachment: Some(target.depth),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = super::scene::world_pass(encoder, targets, "compiled sky");
+        let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
         shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
-        bindings.bind(&mut pass);
+        bindings.bind(pass);
         shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         shader_pipeline::gpu::stats::draw();

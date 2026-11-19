@@ -56,20 +56,61 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 /// Each harness job runs on a map thread of the host the desktop app runs its maps on.
 pub(crate) fn dispatch(args: &[OsString]) -> Option<io::Result<()>> {
-    let job: fn(&[OsString]) -> io::Result<()> = if args.iter().any(|arg| arg == "--playhead-proof") {
-        proof::run
+    let job: fn(&[OsString], Window) -> io::Result<()> = if args.iter().any(|arg| arg == "--playhead-proof") {
+        |args, _| proof::run(args)
     } else if args.iter().any(|arg| arg == "--visual-toggle") {
-        toggle::run
+        |args, _| toggle::run(args)
     } else if args.iter().any(|arg| arg == "--playback-cost") {
         run
     } else {
         return None;
     };
+    // A windowed run's frames go out through a real swap chain: this thread owns and pumps the
+    // window the map thread draws into, as the desktop's host owns its maps' windows.
+    if args.iter().any(|arg| arg == "--windowed") {
+        let size = match window_size(args) {
+            Ok(size) => size,
+            Err(error) => return Some(Err(error)),
+        };
+        let args = args.to_vec();
+        return Some(crate::host::paced_window(size, move |window, inputs| {
+            job(&args, Window::Own(window.clone(), inputs))
+        }));
+    }
     let args = args.to_vec();
     Some(
-        crate::host::run("map (harness)", move |_| job(&args).map_err(|error| error.to_string()))
+        crate::host::run("map (harness)", move |_| job(&args, Window::None).map_err(|error| error.to_string()))
             .and_then(|ended| ended.map_err(crate::host::Ending::into_error)),
     )
+}
+
+/// The window a harness job draws into, when it has one of its own.
+pub(crate) enum Window {
+    None,
+    Own(crate::host::Window, crate::host::Inputs),
+}
+
+/// The window a `--windowed` run makes, which it names itself.
+fn window_size(args: &[OsString]) -> io::Result<[u32; 2]> {
+    let mut size = [0u32; 2];
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let slot = match arg.to_str() {
+            Some("--width") => 0,
+            Some("--height") => 1,
+            _ => continue,
+        };
+        size[slot] = args
+            .next()
+            .and_then(|value| value.to_str())
+            .and_then(|value| value.parse().ok())
+            .filter(|pixels| *pixels > 0)
+            .ok_or_else(|| invalid("--width and --height need a positive pixel count"))?;
+    }
+    if size.contains(&0) {
+        return Err(invalid("--windowed needs --width and --height"));
+    }
+    Ok(size)
 }
 
 /// Names a finished run's `cache` folder to start this run's caches from.
@@ -158,7 +199,7 @@ fn labels(snapshot: &Value) -> BTreeMap<(String, String, String), u64> {
         .collect()
 }
 
-fn run(args: &[OsString]) -> io::Result<()> {
+fn run(args: &[OsString], window: Window) -> io::Result<()> {
     if viewer_foundation::profile_writer::profiling() {
         return Err(invalid("--playback-cost requires unprofiled playback"));
     }
@@ -169,6 +210,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
         step: 1,
         pan: None,
         pngs: Vec::new(),
+        png_frames: None,
         zoom: None,
         paused: false,
         refresh_hz: 0.0,
@@ -176,15 +218,20 @@ fn run(args: &[OsString]) -> io::Result<()> {
         paced: None,
         seeks: 0,
         seek_back: None,
-        playhead: true,
-        layers_only: false,
         layers: None,
-        laid_proof: None,
         flight: None,
+        windowed: false,
+        campaign_tab: false,
+        count_pictures: None,
     };
     let mut from = false;
     let mut speed = false;
     let mut step = false;
+    // The app's frame rate limit for this run, which holds its frames below `--refresh-hz`.
+    let mut frame_limit = None;
+    // `--walk`, `--walk-keys` and `--walk-flying` in any order, joined after the loop: the
+    // placed walk is the harness's, so the window dump's own refusals never see them.
+    let (mut walk, mut walk_keys, mut walk_flying) = (None, None, false);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -257,9 +304,32 @@ fn run(args: &[OsString]) -> io::Result<()> {
                 let value = args.next().and_then(|v| v.to_str()).unwrap_or_default();
                 schedule.flight = Some(flight::Flight::parse(value)?);
             }
+            Some("--walk-flying") => walk_flying = true,
+            Some(flag @ ("--walk" | "--walk-keys")) => {
+                let value = args
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid(format!("{flag} needs a value")))?;
+                if flag == "--walk" {
+                    walk = Some(value);
+                } else {
+                    walk_keys = Some(value);
+                }
+            }
+            Some("--png-frames") => {
+                let value = args.next().and_then(|v| v.to_str()).unwrap_or_default();
+                schedule.png_frames = Some(crate::app::playback_cost::Presented::parse(value)?);
+            }
+            Some("--count-pictures") => {
+                let value = args.next().and_then(|v| v.to_str()).unwrap_or_default();
+                schedule.count_pictures =
+                    Some(crate::app::playback_cost::pictures::Counting::parse(value)?);
+            }
             Some("--paused") => schedule.paused = true,
-            Some("--no-playhead") => schedule.playhead = false,
-            Some("--layers-only" | "--today-off") => schedule.layers_only = true,
+            // Consumed here: the window was made before this job started.
+            Some("--windowed") => schedule.windowed = true,
+            Some("--campaign-tab") => schedule.campaign_tab = true,
             Some("--register") => {
                 schedule.layers = Some(
                     args.next()
@@ -283,16 +353,9 @@ fn run(args: &[OsString]) -> io::Result<()> {
                         .ok_or_else(|| invalid("--seek-back needs a game hour"))?,
                 );
             }
-            Some("--laid-proof") => {
-                schedule.laid_proof = Some(
-                    args.next()
-                        .and_then(|v| v.to_str())
-                        .and_then(|v| v.parse::<u32>().ok())
-                        .filter(|v| *v > 0)
-                        .ok_or_else(|| invalid("--laid-proof needs every how many laid-out overlays to compare"))?,
-                );
-            }
             Some("--complete-models") => schedule.complete_models = true,
+            // Before the device: the timestamps are a device feature.
+            Some("--gpu-pass-times") => viewer_foundation::map::gpu_passes::record(),
             Some("--refresh-hz") => {
                 schedule.refresh_hz = args
                     .next()
@@ -300,6 +363,21 @@ fn run(args: &[OsString]) -> io::Result<()> {
                     .and_then(|v| v.parse::<f64>().ok())
                     .filter(|v| v.is_finite() && *v > 0.0)
                     .ok_or_else(|| invalid("--refresh-hz needs a positive rate"))?;
+            }
+            Some("--frame-limit") => {
+                frame_limit = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .filter(|v| dashboard::protocol::MAP_FRAME_LIMIT_RANGE.contains(v))
+                        .ok_or_else(|| {
+                            invalid(format!(
+                                "--frame-limit needs a rate of {} to {} frames a second",
+                                dashboard::protocol::MAP_FRAME_LIMIT_RANGE.start(),
+                                dashboard::protocol::MAP_FRAME_LIMIT_RANGE.end()
+                            ))
+                        })?,
+                );
             }
             Some("--speed") => {
                 if args.next().map(|s| s.as_os_str()) != Some(std::ffi::OsStr::new("max")) {
@@ -335,24 +413,43 @@ fn run(args: &[OsString]) -> io::Result<()> {
     if schedule.refresh_hz == 0.0 {
         return Err(invalid("--playback-cost requires --refresh-hz HZ"));
     }
+    // The run's own frame clock stands for the display's refresh: the frame is budgeted for it,
+    // and it caps the rate the simulation holds. `--frame-limit` is the app's setting, which holds
+    // the maps below that rate, so the rate the run paces, budgets and reports at is what the two
+    // together leave.
+    viewer_foundation::map::frame_limit::limit_to(frame_limit);
+    viewer_foundation::map::display_refresh::pace_at(schedule.refresh_hz);
+    schedule.refresh_hz = viewer_foundation::map::display_refresh::rate();
     if !schedule.pngs.is_empty() && !schedule.complete_models {
         return Err(invalid(
             "--png-frame requires --complete-models; pixel proof runs are not timing runs",
         ));
     }
-    if schedule.laid_proof.is_some() && (schedule.paced.is_none() || !schedule.playhead) {
-        return Err(invalid("--laid-proof compares the overlay the tables' worker lays out, which only a paced run with the map's playhead installs"));
+    if schedule.campaign_tab && schedule.paced.is_none() {
+        return Err(invalid(
+            "--campaign-tab measures the frames the app's campaign map tab runs while it plays, and needs --paced S",
+        ));
+    }
+    if schedule.count_pictures.is_some() && schedule.paced.is_none() {
+        return Err(invalid(
+            "--count-pictures counts the pictures a paced run's display frames show and needs --paced S",
+        ));
+    }
+    if schedule.png_frames.is_some() && schedule.paced.is_none() {
+        return Err(invalid(
+            "--png-frames saves the pixels of consecutive display frames a paced run presented and needs --paced S",
+        ));
+    }
+    if schedule.windowed && schedule.paced.is_none() {
+        return Err(invalid("--windowed presents a paced run through a real swap chain and needs --paced S"));
     }
     if schedule.flight.is_some()
         && (schedule.paced.is_none() || schedule.pan.is_some() || schedule.zoom.is_some())
     {
         return Err(invalid("--flight flies the camera of a paced run, by each frame's due time, and replaces --pan and --zoom"));
     }
-    if schedule.layers_only && !schedule.playhead {
-        return Err(invalid("--layers-only draws the map's layers alone, which --no-playhead turns off"));
-    }
-    if schedule.seek_back.is_some() && (schedule.pan.is_some() || schedule.paused || (schedule.paced.is_some() && !schedule.playhead)) {
-        return Err(invalid("--seek-back seeks as the window does after the run's hours: not with --pan or --paused, and a paced run seeks the map's playhead, which --no-playhead turns off"));
+    if schedule.seek_back.is_some() && (schedule.pan.is_some() || schedule.paused) {
+        return Err(invalid("--seek-back seeks as the window does after the run's hours: not with --pan or --paused"));
     }
     let hours = hours.ok_or_else(|| invalid("--playback-cost requires --hours N"))?;
     if !from {
@@ -362,25 +459,42 @@ fn run(args: &[OsString]) -> io::Result<()> {
         Some(_)
             if step
                 || speed
-                || (schedule.pan.is_some() && !schedule.paused)
                 || (schedule.paused && schedule.seeks > 0)
                 || schedule.zoom.is_some()
                 || !schedule.pngs.is_empty() =>
         {
             return Err(invalid(
-                "--paced replaces --hour-step and --speed, takes --pan only with --paused (the hour held, --hours frames), no --seeks with --paused, and runs without --zoom or --png-frame",
+                "--paced replaces --hour-step and --speed, holds the hour for --hours frames with --paused, takes no --seeks with --paused, and runs without --zoom or --png-frame",
             ));
         }
         Some(_) => {}
         None if !speed => return Err(invalid("--playback-cost requires --speed max or --paced S")),
-        None if crate::hours::page_grid() => {
-            return Err(invalid(
-                "--playback-cost's step mode requires consecutive-hour playback",
-            ));
-        }
         None => {}
     }
+    let walk = match walk {
+        Some(place) => Some(
+            crate::controls::walker::Start::parse(&place, walk_keys.as_deref(), walk_flying)
+                .map_err(invalid)?,
+        ),
+        None if walk_keys.is_some() || walk_flying => {
+            return Err(invalid(
+                "--walk-keys and --walk-flying hold keys for a --walk",
+            ));
+        }
+        None => None,
+    };
+    if walk.is_some() && (schedule.paced.is_none() || schedule.flight.is_some()) {
+        return Err(invalid(
+            "--walk walks the viewing country's infantry through a paced run, by each frame's due time, and replaces --flight",
+        ));
+    }
     let mut options = Options::parse(translated.into_iter())?;
+    if walk.is_some() && options.camera.is_some() {
+        return Err(invalid(
+            "--walk places its own camera behind the figure; give it or a camera",
+        ));
+    }
+    options.walk = walk;
     options.profile_pointer = pointer;
     if options.hour_fraction != 0.0 {
         return Err(invalid("--from-hour must be a whole game hour"));
@@ -469,6 +583,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
         )));
     }
     let recording_meta = fs::metadata(&recording)?;
+    let pixel_proof = !schedule.pngs.is_empty();
     let mut report = crate::app::playback_cost::measure(
         config,
         options.clone(),
@@ -477,6 +592,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
         schedule,
         monitor,
         &output,
+        window,
     )?;
     report["setup_and_teardown_seconds"] =
         json!(setup.elapsed().as_secs_f64() - report["wall_seconds"].as_f64().unwrap());
@@ -522,7 +638,9 @@ fn run(args: &[OsString]) -> io::Result<()> {
         report["game_hours_per_wall_second"].as_f64().unwrap(),
         output.join("report.json").display()
     );
-    if report["cpu_reconciliation"]["passed"] != true {
+    // A pixel proof run is not a timing run: it settles models and art within its frames, so its
+    // threads' cycles need not account for the process's CPU. Its report keeps the figures.
+    if !pixel_proof && report["cpu_reconciliation"]["passed"] != true {
         return Err(io::Error::other(
             "Exclusive CPU scopes do not reconcile within 5%; see report.json",
         ));
@@ -614,11 +732,11 @@ pub(crate) fn accounting(
 
 pub(crate) fn distribution(mut values: Vec<f64>) -> Value {
     if values.is_empty() {
-        return json!({"p50":null,"p95":null,"p99":null,"max":null});
+        return json!({"p50":null,"p90":null,"p95":null,"p99":null,"max":null});
     }
     values.sort_by(f64::total_cmp);
     let rank = |p: f64| ((values.len() as f64 * p).ceil() as usize).saturating_sub(1);
-    json!({"p50":values[rank(0.5)],"p95":values[rank(0.95)],"p99":values[rank(0.99)],"max":values.last()})
+    json!({"p50":values[rank(0.5)],"p90":values[rank(0.9)],"p95":values[rank(0.95)],"p99":values[rank(0.99)],"max":values.last()})
 }
 
 #[cfg(test)]

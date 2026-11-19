@@ -96,6 +96,15 @@ impl Clock {
         self.asked = None;
     }
 
+    /// The head stands at `hour` from `now`, running on from there while playing.
+    pub fn place(&mut self, hour: Hour, now: Instant) {
+        self.position = f64::from(hour.clamp(self.first, self.last));
+        self.page_anchored = false;
+        if self.since.is_some() {
+            self.since = Some(now);
+        }
+    }
+
     pub fn play(&mut self, speed: f64, now: Instant) {
         self.settle(now);
         self.speed = speed;
@@ -194,6 +203,17 @@ mod tests {
         assert_eq!(clock.frame(at(2.0)), 900);
         clock.shown(1, at(2.3));
         assert_eq!(clock.head(at(3.0)), 924, "a second after the frame, not after the take");
+    }
+
+    #[test]
+    fn a_paused_clock_placed_stands_at_the_hour_placed_and_plays_on_from_it() {
+        let start = Instant::now();
+        let at = |seconds: f64| start + Duration::from_secs_f64(seconds);
+        let mut clock = Clock::new(0, 100_000, 24.0);
+        clock.place(101, at(1.0));
+        assert_eq!(clock.head(at(5.0)), 101);
+        clock.play(24.0, at(5.0));
+        assert_eq!(clock.head(at(6.0)), 125);
     }
 
     #[test]

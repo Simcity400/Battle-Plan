@@ -17,7 +17,7 @@ pub mod meshes;
 pub mod models;
 
 use super::{
-    Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, Published, Upstream, View,
+    Carried, Change, Settling, Dirty, Gpu, Inputs, Layer, List, Num, Published, Upstream, View,
     counters::{Row, Rows},
     vision::Vision as VisionLayer,
 };
@@ -108,6 +108,9 @@ pub trait Ground: Send + Sync {
     fn ships_cutoff(&self) -> f32;
     /// The map a camera placement is put on.
     fn map(&self) -> (MapSize, MapDefines);
+    /// The unit models' assets the field the install hands the scene is made against; none for a
+    /// ground that holds no model content, which stages no field and so installs none.
+    fn unit_models(&self) -> Option<&viewer_world::map::unit_models::UnitModelAssets>;
 }
 
 impl Ground for crate::document::Content {
@@ -134,6 +137,10 @@ impl Ground for crate::document::Content {
 
     fn ships_cutoff(&self) -> f32 {
         self.unit_models.gates.ships
+    }
+
+    fn unit_models(&self) -> Option<&viewer_world::map::unit_models::UnitModelAssets> {
+        Some(&self.unit_models)
     }
 
     fn map(&self) -> (MapSize, MapDefines) {
@@ -297,7 +304,8 @@ impl Seer<'_> {
 /// no land figure.
 struct Window {
     select: Arc<dyn models::Select>,
-    rows: Arc<crate::playhead_host::rows::Rows>,
+    /// The map side's view store: its makers' rows, made from the side's own mirrors in the step.
+    views: Option<crate::playhead_host::views::Views>,
     tables: Vec<TableId>,
     meshes: Vec<TableId>,
 }
@@ -370,6 +378,9 @@ pub struct Units {
     /// installed with, so that a settle that placed the same figures installs nothing.
     models_new: bool,
     uploaded: Vec<Target>,
+    /// The field the install hands the scene and the land figures it holds, made on the side's
+    /// thread ([`Layer::stage`]).
+    staged: Option<(viewer_world::map::unit_history::Field, Vec<Target>)>,
     /// It reads the vision layer registered before it; otherwise a vision is given whole.
     reading: bool,
     /// The vision given and not yet taken, flagged when new.
@@ -412,6 +423,10 @@ pub struct Units {
     camera: Option<(Placement, [u32; 2])>,
     admission: Option<Admission>,
     camera_dirty: bool,
+    /// The view draws land unit models: below the units' cutoff, in a map mode that shows them.
+    /// Its columns are declared at every height, so crossing the cutoff resets no table and
+    /// composes nothing; above it the layer holds no stack and draws no figure.
+    showing: bool,
     /// Per province id at this camera: whether admission was asked, and its answer.
     province_known: Vec<u64>,
     province_in: Vec<u64>,
@@ -430,11 +445,14 @@ pub struct Units {
     alternate: Vec<u32>,
     items: Vec<u64>,
     /// Divisions placed, and rows its `apply` read, since the layer was made: none, by the contract.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     placed: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
+
+/// Why the layer draws nothing above the units' cutoff, or in a map mode without land models.
+const NOT_DRAWN: &str = "no land unit model is drawn at this view";
 
 impl Units {
     pub fn new(ground: Arc<dyn Ground>) -> Self {
@@ -449,6 +467,7 @@ impl Units {
             to_upload: false,
             models_new: false,
             uploaded: Vec::new(),
+            staged: None,
             reading: false,
             given: Mutex::new(None),
             fresh_vision: AtomicBool::new(false),
@@ -477,6 +496,7 @@ impl Units {
             camera: None,
             admission: None,
             camera_dirty: false,
+            showing: false,
             province_known: Vec::new(),
             province_in: Vec::new(),
             deferred: Vec::new(),
@@ -489,20 +509,20 @@ impl Units {
             path: Vec::new(),
             alternate: Vec::new(),
             items: Vec::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             placed: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             applied_reads: 0,
         }
     }
 
     /// Divisions placed, and rows `apply` read, since the layer was made.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn placed(&self) -> usize {
         self.placed
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
     }
@@ -510,7 +530,7 @@ impl Units {
     /// A layer of the same content and inputs, made from scratch: one that reads the vision layer
     /// composes with it ([`Layer::compose_with`]).
     pub fn fresh(&self) -> Self {
-        let fresh = Self { reading: self.reading, columns: self.columns, camera: self.camera, camera_dirty: true, ..Self::new(Arc::clone(&self.ground)) };
+        let fresh = Self { reading: self.reading, columns: self.columns, camera: self.camera, camera_dirty: true, showing: self.showing, ..Self::new(Arc::clone(&self.ground)) };
         if let Some((choice, vision)) = &self.vision {
             fresh.set_vision(choice.clone(), Arc::clone(vision));
         }
@@ -533,9 +553,9 @@ impl Units {
     /// Drawn in the window: its figures with the meshes it chooses on its own worker over `rows`,
     /// and the ships, raid units and convoys of today's unit models made over `rows`, its vision
     /// read from the vision layer before it.
-    pub fn in_window(mut self, select: Arc<dyn models::Select>, rows: &Arc<crate::playhead_host::rows::Rows>) -> Self {
+    pub fn in_window(mut self, select: Arc<dyn models::Select>) -> Self {
         // Each declares the tables it is known to read ([`models::tables`], [`meshes::TABLES`]) and learns the rest.
-        self.window = Some(Window { select, rows: Arc::clone(rows), tables: Vec::new(), meshes: Vec::new() });
+        self.window = Some(Window { select, views: None, tables: Vec::new(), meshes: Vec::new() });
         self.reading = true;
         self
     }
@@ -581,14 +601,14 @@ impl Units {
     }
 
     /// Divisions' sights read again since the layer was made, beside those its steps placed.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn sighted(&self) -> usize {
         self.sighted
     }
 
-    /// Whether the view draws land unit models, so the layer reads anything.
+    /// Whether the view draws land unit models, so the layer holds stacks and figures.
     pub fn drawn(&self) -> bool {
-        self.columns.is_some()
+        self.showing
     }
 
     /// Why the layer draws nothing, by name; none when it draws.
@@ -731,6 +751,7 @@ impl Units {
             if self.stacks[at].admitted != admitted {
                 self.touched.push(stack);
             }
+            self.to_upload |= self.stacks[at].admitted != admitted;
             self.stacks[at].admitted = admitted;
             if let Some(figure) = &mut self.stacks[at].figure {
                 figure.admitted = admitted;
@@ -835,7 +856,10 @@ impl Units {
             self.mark_sights();
             return;
         }
-        let changed = upstream.changed::<VisionLayer>();
+        let Change::Marked(changed) = upstream.changed::<VisionLayer>() else {
+            self.mark_sights();
+            return;
+        };
         for &province in changed.of("province") {
             for &slot in self.readers.get(&(province as u32)).into_iter().flatten() {
                 if self.sights.mark(slot, self.frame) {
@@ -1010,7 +1034,7 @@ impl Units {
     /// One division's stack from its row, route and owner link; moves it between stacks when its key
     /// changed and marks the stacks it touched.
     fn place_division(&mut self, slot: u32, mirrors: &Mirrors, seer: Seer<'_>) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.placed += 1;
         }
@@ -1194,6 +1218,10 @@ impl Units {
     fn record_view(&self) {
         use viewer_foundation::view_record::{add, set};
         set("units", "stacks_admitted", self.asking.len() as u64);
+        // Why an admitted stack draws no figure: no member seen, or waiting to be placed again.
+        let figures = || self.by_key.values().filter_map(|&stack| self.stacks.get(stack as usize)).filter(|held| held.admitted).filter_map(|held| held.figure.as_ref());
+        set("units", "figures_unseen", figures().filter(|figure| matches!(figure.placed, Some(Err(Withheld::Unseen)))).count() as u64);
+        set("units", "figures_placing", figures().filter(|figure| figure.placed.is_none()).count() as u64);
         let Some(meshes) = &self.meshes else { return };
         let unready = self
             .asking
@@ -1211,7 +1239,7 @@ impl Units {
     /// The stacks a settle touched handed to the meshes' worker: a figure placed and admitted asks
     /// the mesh of its oldest member where it stands, under its selection; one that no longer does
     /// lets its oldest member go.
-    fn ask(&mut self) {
+    fn ask_meshes(&mut self) {
         let mut touched = std::mem::take(&mut self.touched);
         touched.sort_unstable();
         touched.dedup();
@@ -1224,7 +1252,7 @@ impl Units {
             // Today's models give no figure to a stack whose province has no content bounds.
             let bounded = self.ground.bounds().contains_key(&held.key.0);
             // A figure whose placing changed waits to be placed again, within a later frame's
-            // budget: it keeps what it asked, and asks again only once its new placing is made.
+            // settling: it keeps what it asked, and asks again only once its new placing is made.
             if bounded && held.admitted && held.asked.is_some() && held.figure.as_ref().is_some_and(|figure| figure.placed.is_none()) {
                 continue;
             }
@@ -1300,18 +1328,17 @@ impl Units {
         Ok((unit_models::drawn(target, &position), position))
     }
 
-    /// Recomputes what is dirty within `budget`: the links and combat sides whole, then divisions,
+    /// Recomputes what is dirty within `settling`: the links and combat sides whole, then divisions,
     /// then stacks, the rest carried.
     /// Marks made while it settles (rows resolved, groups and plans expanded) carry the frame of the
     /// steps that brought them: the frame advances once the settle is done.
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget, layer: Option<&VisionLayer>) {
-        self.settle_marks(mirrors, budget, layer);
+    fn settle_dirty(&mut self, mirrors: &Mirrors, layer: Option<&VisionLayer>) {
+        self.settle_marks(mirrors, layer);
         self.frame += 1;
     }
 
-    fn settle_marks(&mut self, mirrors: &Mirrors, budget: &mut Budget, layer: Option<&VisionLayer>) {
-        // A table back after a view that drew none returns as a reset, which composes the layer.
-        if self.columns.is_none() || TABLES.iter().any(|&table| mirrors.get(table).is_none()) {
+    fn settle_marks(&mut self, mirrors: &Mirrors, layer: Option<&VisionLayer>) {
+        if !self.showing || self.columns.is_none() || TABLES.iter().any(|&table| mirrors.get(table).is_none()) {
             return;
         }
         let mut renewed = false;
@@ -1349,27 +1376,27 @@ impl Units {
             self.combat_dirty = false;
             self.read_combat(mirrors);
         }
-        self.resolve(mirrors, budget);
+        self.resolve(mirrors);
         let mut dirty = std::mem::take(&mut self.divisions);
-        let _ = dirty.settle(budget, |slot| {
+        let _ = dirty.settle(|slot| {
             self.place_division(slot, mirrors, seer);
             Ok(())
         });
         self.divisions = dirty;
         let mut dirty = std::mem::take(&mut self.sights);
-        let _ = dirty.settle(budget, |slot| {
+        let _ = dirty.settle(|slot| {
             self.resight(slot, seer);
             Ok(())
         });
         self.sights = dirty;
         let mut dirty = std::mem::take(&mut self.dirty_stacks);
-        let _ = dirty.settle(budget, |stack| {
+        let _ = dirty.settle(|stack| {
             self.place_stack(stack, mirrors);
             Ok(())
         });
         self.dirty_stacks = dirty;
         let mut dirty = std::mem::take(&mut self.figures);
-        let _ = dirty.settle(budget, |stack| {
+        let _ = dirty.settle(|stack| {
             self.place_figure(stack);
             Ok(())
         });
@@ -1382,8 +1409,12 @@ impl Units {
             return;
         }
         let (marked, sighted) = (self.marked, self.sighted);
-        self.refused = Some("composing".into());
-        self.settle_dirty(mirrors, &mut Budget::unlimited(), layer);
+        self.refused = Some(if self.showing { "composing".into() } else { NOT_DRAWN.to_owned() });
+        // The models held are the old picture's: drawn until ones made after the reset arrive.
+        if let Some(models) = &mut self.models {
+            models.composed();
+        }
+        self.settle_dirty(mirrors, layer);
         (self.marked, self.sighted) = (marked, sighted);
     }
 
@@ -1396,10 +1427,10 @@ impl Units {
         all.into_iter().for_each(|slot| self.mark_division(slot));
     }
 
-    /// Changes the steps marked, resolved within `budget`: every division when one changed for all,
+    /// Changes the steps marked, resolved within `settling`: every division when one changed for all,
     /// the divisions the by-division rows name, and the moved divisions re-keyed where the camera
     /// admits them (the rest deferred).
-    fn resolve(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn resolve(&mut self, mirrors: &Mirrors) {
         let divisions = mirrors.get(TableId::Divisions);
         if std::mem::take(&mut self.every) {
             self.mark_every(divisions);
@@ -1413,7 +1444,7 @@ impl Units {
                 _ => &mut self.status_rows,
             };
             let mut rows = std::mem::take(held);
-            rows.settle(budget, |row| {
+            rows.settle(|row| {
                 let key = match row {
                     Row::Gone(key) => Some(key),
                     Row::At(slot) => mirror.and_then(|mirror| mirror.key(slot)),
@@ -1432,7 +1463,7 @@ impl Units {
         }
         // Counted as marked when the step marked it.
         let mut moved = std::mem::take(&mut self.moved);
-        let _ = moved.settle(budget, |slot| {
+        let _ = moved.settle(|slot| {
             if self.admission.is_none() || self.wanted(slot, divisions) {
                 self.divisions.mark(slot, self.frame);
             } else {
@@ -1501,57 +1532,148 @@ impl Units {
         (differing, first)
     }
 
-    /// Its models' worker, started once in the window.
-    fn start_models(&mut self) {
-        if let Some(window) = &self.window
-            && self.models.is_none()
-        {
-            self.models = Some(models::Models::new(Arc::clone(&window.select), &window.rows, &window.tables));
+    /// What the camera decides: where it stands, whether land figures are drawn at its height
+    /// and in this map mode, and whether the movers' models are. Above the cutoff the layer holds
+    /// no stack and its figures leave the field; below it again every division is keyed anew from
+    /// the mirrors, which are still declared, so nothing is reset and nothing composes.
+    fn place(&mut self, view: &View) {
+        let camera = view.camera.map(|camera| (camera, view.viewport));
+        if camera != self.camera {
+            self.camera = camera;
+            self.camera_dirty = true;
+        }
+        let showing = view.camera.is_none_or(|camera| camera.height < self.ground.units_cutoff()) && visibility::of(&view.map_mode).land_models;
+        // The ships, raid units and convoys of its models are drawn below the ships' cutoff too.
+        let movers = view.camera.is_none_or(|camera| camera.height < self.ground.ships_cutoff().max(self.ground.units_cutoff()));
+        if showing {
+            self.showing = true;
+            self.start_models();
+            if let Some(window) = &self.window
+                && let Some(views) = &window.views
+                && self.meshes.is_none()
+            {
+                self.meshes = Some(meshes::Meshes::start(Arc::clone(&window.select), views, &window.meshes));
+            }
+            return;
+        }
+        self.showing = false;
+        self.refused = Some(NOT_DRAWN.to_owned());
+        self.members = Vec::new();
+        self.stacks = Vec::new();
+        self.free = Vec::new();
+        self.by_key = FastMap::default();
+        self.combat = FastMap::default();
+        self.links = FastMap::default();
+        self.divisions = Dirty::default();
+        self.moved = Dirty::default();
+        (self.route_rows, self.icon_rows, self.status_rows, self.every) = (Rows::default(), Rows::default(), Rows::default(), false);
+        self.staged = None;
+        // Its models kept, their field is uploaded again without the land figures it held.
+        if movers && self.models.is_some() {
+            self.to_upload |= !self.uploaded.is_empty();
+        } else {
+            self.uploaded = Vec::new();
+        }
+        if let (Some(window), Some(meshes)) = (&mut self.window, &self.meshes) {
+            window.meshes = meshes.tables();
+        }
+        (self.meshes, self.asking, self.touched, self.asks) = (None, FastMap::default(), Vec::new(), Vec::new());
+        self.dirty_stacks = Dirty::default();
+        self.figures = Dirty::default();
+        self.sights = Dirty::default();
+        self.readers = FastMap::default();
+        self.deferred = Vec::new();
+        self.deferred_count = 0;
+        (self.province_known, self.province_in, self.statuses) = (Vec::new(), Vec::new(), HashMap::new());
+        (self.choice, self.sight_epoch) = (None, None);
+        self.admission = None;
+        if movers {
+            self.start_models();
+        } else if let (Some(window), Some(models)) = (&mut self.window, self.models.take()) {
+            window.tables = models.tables();
+            self.to_upload = false;
         }
     }
 
-    /// The land figures: the divisions' sights, stacks, figures and meshes.
-    fn settle_land(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) {
+    /// Its models' worker, started once in the window; none until the side has given it the view
+    /// store its rows are made in.
+    fn start_models(&mut self) {
+        if let Some(window) = &self.window
+            && let Some(views) = &window.views
+            && self.models.is_none()
+        {
+            self.models = Some(models::Models::new(Arc::clone(&window.select), views, &window.tables));
+        }
+    }
+
+    /// The land figures' own work: the divisions' sights, stacks and figures, and each stack whose
+    /// figure the settle touched handed on to the meshes' worker with the hour it settled.
+    fn mark_land(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) {
         let layer = upstream.get::<VisionLayer>().filter(|_| self.reading);
         if let Some(vision) = layer {
             self.take_upstream(vision, upstream, mirrors);
         }
         let before = self.marked;
-        self.settle_dirty(mirrors, budget, layer);
+        self.settle_dirty(mirrors, layer);
         self.to_upload |= self.marked != before;
-        // Each stack's mesh: the stacks the settle touched handed on with the hour it settled.
         if self.meshes.is_some() {
-            self.ask();
+            self.ask_meshes();
+            self.hand_meshes(upstream);
         } else {
             self.touched.clear();
         }
+    }
+
+    /// The viewer and the stacks the settle touched handed to the meshes' worker with the step's
+    /// apply: it waits for the rows of the step's hour itself, so its session runs beside the
+    /// step's other makers.
+    fn hand_meshes(&mut self, upstream: &Upstream<'_>) {
+        let layer = upstream.get::<VisionLayer>().filter(|_| self.reading);
         let ours = layer.and_then(VisionLayer::ours).or_else(|| self.vision.as_ref().map(|(_, vision)| vision.ours()));
-        let hour = mirrors.get(TableId::Divisions).and_then(Mirror::head);
-        if let (Some(meshes), Some(ours), Some(hour), None) = (&mut self.meshes, ours, hour, &self.refused) {
+        if let (Some(meshes), Some(ours), None) = (&mut self.meshes, ours, &self.refused) {
             let asks = std::mem::take(&mut self.asks);
-            self.to_upload |= meshes.exchange(hour, ours, asks, budget.unlimited_now());
+            meshes.ask(ours, asks);
+        }
+    }
+
+    /// The meshes of the stacks asked, joined to the step.
+    fn join_meshes(&mut self, mirrors: &Mirrors, settling: Settling) {
+        let hour = mirrors.get(TableId::Divisions).and_then(Mirror::head);
+        if let (Some(meshes), Some(hour), None) = (&mut self.meshes, hour, &self.refused) {
+            self.to_upload |= meshes.join(hour, settling);
+            crate::playhead_host::timeline::mark(meshes.maker(), crate::playhead_host::timeline::Mark::Joined);
         }
         if viewer_foundation::view_record::on() {
             self.record_view();
         }
     }
 
-    /// Today's models of the ships, raid units and convoys made on its worker, the ships layer's ships
-    /// joined while it stands in for today's.
-    fn exchange_models(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) {
+    /// What today's models of the ships, raid units and convoys are made for, told to its worker
+    /// with the step's apply: it waits for the rows of the step's hour itself, so its build runs
+    /// beside the step's other makers.
+    fn ask_models(&mut self, upstream: &Upstream<'_>) {
         let convoys = upstream.get::<crate::layers::convoys::Convoys>().filter(|convoys| convoys.refused().is_none()).map(|convoys| (convoys.product_seq(), &convoys.product().convoys[..]));
         // The ships layer's ships, while it stands in for today's, are joined to the models.
         let ships = upstream.get::<crate::layers::ships::Ships>();
         // With no land figure drawn it holds no sight: the viewer is the vision layer's.
-        let layered = upstream.get::<VisionLayer>().filter(|_| self.reading && self.columns.is_none()).map(VisionLayer::choice);
+        let layered = upstream.get::<VisionLayer>().filter(|_| self.reading && !self.showing).map(VisionLayer::choice);
         let choice = layered.or(self.vision.as_ref().map(|(choice, _)| choice)).or(self.choice.as_ref());
         if let (Some(models), Some(choice)) = (&mut self.models, choice) {
+            models.ask(choice, convoys, !ships.is_some_and(crate::layers::ships::Ships::stands_in));
+        }
+    }
+
+    /// Today's models of the ships, raid units and convoys joined to the step, the ships layer's
+    /// ships joined to them while it stands in for today's.
+    fn join_models(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) {
+        let ships = upstream.get::<crate::layers::ships::Ships>();
+        if let Some(models) = &mut self.models {
             let head = mirrors.get(TableId::Divisions).and_then(Mirror::head).or_else(|| ships.and_then(crate::layers::ships::Ships::head));
-            let whole = head.filter(|_| budget.unlimited_now());
-            let exchanged = models.exchange(choice, convoys, !ships.is_some_and(crate::layers::ships::Ships::stands_in), whole);
+            let arrived = models.join(head, settling);
             let joined = models.join_ships(ships);
-            self.models_new |= exchanged | joined;
-            self.to_upload |= exchanged | joined;
+            self.models_new |= arrived | joined;
+            self.to_upload |= arrived | joined;
+            crate::playhead_host::timeline::mark(models.maker(), crate::playhead_host::timeline::Mark::Joined);
         }
     }
 }
@@ -1561,62 +1683,25 @@ impl Layer for Units {
         "units"
     }
 
+    fn placed(&mut self, view: &View) -> Option<u64> {
+        self.place(view);
+        // Its declaration is the same at every height: a camera move never declares it again.
+        Some(0)
+    }
+
+    /// The side's view store, kept for the makers it starts when the camera first draws them.
+    fn views(&mut self, store: &crate::playhead_host::views::Store) -> io::Result<()> {
+        if let Some(window) = &mut self.window {
+            window.views = Some(store.handle());
+        }
+        Ok(())
+    }
+
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
         if self.reading {
             inputs.after("vision");
         }
-        let camera = view.camera.map(|camera| (camera, view.viewport));
-        if camera != self.camera {
-            self.camera = camera;
-            self.camera_dirty = true;
-        }
-        let drawn = view.camera.is_none_or(|camera| camera.height < self.ground.units_cutoff()) && visibility::of(&view.map_mode).land_models;
-        // The ships, raid units and convoys of its models are drawn below the ships' cutoff too.
-        let movers = view.camera.is_none_or(|camera| camera.height < self.ground.ships_cutoff().max(self.ground.units_cutoff()));
-        if !drawn {
-            self.columns = None;
-            self.refused = Some("no land unit model is drawn at this view".into());
-            self.members = Vec::new();
-            self.stacks = Vec::new();
-            self.free = Vec::new();
-            self.by_key = FastMap::default();
-            self.combat = FastMap::default();
-            self.links = FastMap::default();
-            self.divisions = Dirty::default();
-            self.moved = Dirty::default();
-            (self.route_rows, self.icon_rows, self.status_rows, self.every) = (Rows::default(), Rows::default(), Rows::default(), false);
-            // Its models kept, their field is uploaded again without the land figures it held.
-            if movers && self.models.is_some() {
-                self.to_upload |= !self.uploaded.is_empty();
-            } else {
-                self.uploaded = Vec::new();
-            }
-            if let (Some(window), Some(meshes)) = (&mut self.window, &self.meshes) {
-                window.meshes = meshes.tables().to_vec();
-            }
-            (self.meshes, self.asking, self.touched, self.asks) = (None, FastMap::default(), Vec::new(), Vec::new());
-            self.dirty_stacks = Dirty::default();
-            self.figures = Dirty::default();
-            self.sights = Dirty::default();
-            self.readers = FastMap::default();
-            self.deferred = Vec::new();
-            self.deferred_count = 0;
-            (self.province_known, self.province_in, self.statuses) = (Vec::new(), Vec::new(), HashMap::new());
-            (self.choice, self.sight_epoch) = (None, None);
-            if movers {
-                self.start_models();
-            } else if let (Some(window), Some(models)) = (&mut self.window, self.models.take()) {
-                window.tables = models.tables().to_vec();
-                self.to_upload = false;
-            }
-            return Ok(());
-        }
-        self.start_models();
-        if let Some(window) = &self.window
-            && self.meshes.is_none()
-        {
-            self.meshes = Some(meshes::Meshes::start(Arc::clone(&window.select), &window.rows, &window.meshes));
-        }
+        self.place(view);
         for table in [TableId::Divisions, TableId::DivisionMovement, TableId::ArmyIconInputs, TableId::DivisionStatus, TableId::LandCombats, TableId::CountryLinks] {
             inputs.table(table, true)?;
         }
@@ -1646,7 +1731,7 @@ impl Layer for Units {
     }
 
     fn viewed(&mut self, _view: &View, mirrors: &Mirrors) {
-        if self.columns.is_some() && self.camera_dirty && self.refused.is_none() {
+        if self.showing && self.camera_dirty && self.refused.is_none() {
             self.readmit(mirrors);
         }
     }
@@ -1657,7 +1742,7 @@ impl Layer for Units {
     }
 
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
-        let layer = upstream.get::<VisionLayer>().filter(|_| self.reading && self.columns.is_some());
+        let layer = upstream.get::<VisionLayer>().filter(|_| self.reading && self.showing);
         if let Some(vision) = layer {
             (self.choice, self.sight_epoch) = (Some(vision.choice().clone()), Some(vision.sight_epoch()));
         }
@@ -1666,10 +1751,10 @@ impl Layer for Units {
     }
 
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
-        if step.gap() || self.columns.is_none() {
+        if step.gap() || !self.showing {
             return;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let reads = crate::playhead_host::mirror::probe::reads();
         let columns = self.columns();
         let frame = self.frame;
@@ -1738,37 +1823,62 @@ impl Layer for Units {
                 _ => {}
             }
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.applied_reads += crate::playhead_host::mirror::probe::reads() - reads;
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget, None);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors, None);
         Ok(())
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
-        // A view that draws no land figure does no land work; its models go on below the ships' cutoff.
-        if self.columns.is_some() {
-            self.settle_land(mirrors, upstream, budget);
+    /// Its stacks and figures made, and the meshes they ask for handed to the worker: it chooses
+    /// them while the layers that join no maker settle. A view that draws no land figure does no
+    /// land work; its models go on below the ships' cutoff.
+    fn ask(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<bool> {
+        if self.showing {
+            self.mark_land(mirrors, upstream);
         }
-        self.exchange_models(mirrors, upstream, budget);
+        self.ask_models(upstream);
+        Ok(true)
+    }
+
+    /// The meshes and today's models join the step.
+    fn join(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
+        if self.showing {
+            self.join_meshes(mirrors, settling);
+        }
+        self.join_models(mirrors, upstream, settling);
         Ok(())
     }
 
-    fn upload(&mut self, gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
+        <Self as Layer>::ask(self, mirrors, upstream)?;
+        self.join(mirrors, upstream, settling)
+    }
+
+    /// The model field the install hands the scene, made here on the side's thread: the figures'
+    /// land targets over the models the worker made.
+    fn stage(&mut self) -> io::Result<()> {
         let Some(models) = &self.models else { return Ok(()) };
         let Some((_, prepared)) = models.prepared.as_ref().filter(|_| self.to_upload) else { return Ok(()) };
         // Placed again where they stood, with the same meshes, the figures need no new field.
         let none = HashMap::new();
         let land = self.land(self.meshes.as_ref().map_or(&none, |meshes| &meshes.meshes));
         if !self.models_new && land == self.uploaded {
-            self.to_upload = false;
+            (self.to_upload, self.staged) = (false, None);
             return Ok(());
         }
-        let field = prepared.field_with_land(&gpu.content.unit_models, land.clone());
+        let Some(assets) = self.ground.unit_models() else { return Ok(()) };
+        let field = prepared.field_with_land(assets, land.clone());
+        self.staged = Some((field, land));
+        Ok(())
+    }
+
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
+        let Some((field, land)) = self.staged.take() else { return Ok(()) };
         gpu.scene.set_unit_models(gpu.device, gpu.queue, &gpu.content.unit_models, field, false)?;
         (self.to_upload, self.models_new, self.uploaded) = (false, false, land);
         Ok(())
@@ -1784,8 +1894,8 @@ impl Layer for Units {
         match &models.prepared {
             None if models.waiting() => Published::Nothing,
             _ if self.refused.is_none() && meshes.is_some_and(meshes::Meshes::waiting) => Published::Nothing,
-            // The figures are at the head; their models and meshes are made from rows at the head
-            // on the rows worker: the hour those rows stand at is the lag, never the map's hour.
+            // The figures are at the head; their models and meshes are made on their own workers
+            // from the side's views: the hour those rows stand at is the lag, never the map's hour.
             Some((hour, _)) if self.uploaded() && self.carried().entities == 0 => {
                 let models = models.stands().unwrap_or(*hour);
                 Published::Cadence(meshes.and_then(|meshes| meshes.hour).map_or(models, |meshes| meshes.min(models)))
@@ -1797,9 +1907,7 @@ impl Layer for Units {
     fn carried(&self) -> Carried {
         // A models job out is the worker's, on the rows' cadence: counted here it froze the shown hour while playing.
         let entities = self.divisions.len() + self.rows_carried() + self.sights.len() + self.dirty_stacks.len() + self.figures.len() + usize::from(self.combat_dirty) + usize::from(self.links_dirty);
-        let rows = [&self.route_rows, &self.icon_rows, &self.status_rows].into_iter().filter_map(Rows::since);
-        let since = [self.divisions.since(), self.moved.since(), self.sights.since(), self.dirty_stacks.since(), self.figures.since()].into_iter().flatten().chain(rows).min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     fn held(&self) -> usize {
@@ -1832,7 +1940,7 @@ impl Layer for Units {
     }
 
     /// Mutably for a test only: no host call asks the units layer.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -1850,22 +1958,61 @@ impl Units {
     }
 
     /// Each admitted figure's mesh by its oldest member, as the worker last answered.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn meshes(&self) -> Option<&HashMap<u64, usize>> {
         self.meshes.as_ref().map(|meshes| &meshes.meshes)
     }
 
     /// The hour of the rows its meshes stand for.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn mesh_hour(&self) -> Option<replay_data::Hour> {
         self.meshes.as_ref().and_then(|meshes| meshes.hour)
     }
 
     /// The meshes' asks, rows and waits, and the stacks asked by oldest member, for a test's message.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn mesh_state(&self) -> String {
         let asking: BTreeMap<u64, u32> = self.asking.iter().map(|(&oldest, &(stack, _))| (oldest, stack)).collect();
         format!("{}; asking {asking:?}", self.meshes.as_ref().map_or_else(|| "no meshes".to_owned(), meshes::Meshes::state))
+    }
+}
+
+impl Units {
+    /// Whether the figures, their models and their meshes all stand at `hour`: what a frame that
+    /// is saved waits for, since the models and the meshes are made on workers at a cadence of
+    /// their own, which the frame's own settling does not gate on, and the layer owes the figures
+    /// of the stacks it has not placed yet. Every stack handed to the meshes' worker must have
+    /// been chosen too ([`meshes::Meshes::stand`]): a stack still owed draws no figure, however
+    /// late an hour the meshes' rows stand at. A refused layer stands at every hour.
+    pub fn figures_stand(&self, hour: replay_data::Hour) -> bool {
+        if self.refused.is_some() {
+            return true;
+        }
+        if self.carried().entities > 0 {
+            return false;
+        }
+        let Some(models) = self.models.as_ref().filter(|_| self.showing) else { return true };
+        if models.waiting() || self.meshes.as_ref().is_some_and(|meshes| meshes.waiting() || !meshes.stand()) {
+            return false;
+        }
+        let Some((made, _)) = &models.prepared else { return false };
+        models.stands().unwrap_or(*made) >= hour && self.meshes.as_ref().and_then(|meshes| meshes.hour).is_none_or(|meshes| meshes >= hour)
+    }
+
+    /// What the figures, models and meshes stand at, for a refusal that names it.
+    pub fn figures_state(&self) -> String {
+        let models = self.models.as_ref();
+        let meshes = self.meshes.as_ref();
+        format!(
+            "carried {}, models {:?} standing {:?} waiting {:?}, meshes {:?} waiting {:?} standing {:?}",
+            self.carried().entities,
+            models.and_then(|models| models.prepared.as_ref().map(|(made, _)| *made)),
+            models.and_then(models::Models::stands),
+            models.map(models::Models::waiting),
+            meshes.and_then(|meshes| meshes.hour),
+            meshes.map(meshes::Meshes::waiting),
+            meshes.map(meshes::Meshes::stand),
+        )
     }
 }
 

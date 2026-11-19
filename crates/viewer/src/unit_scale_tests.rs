@@ -7,8 +7,7 @@ use std::{
     io,
     path::PathBuf,
     sync::Arc,
-    thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use viewer_foundation::engagement_history::LAND;
 use viewer_foundation::engagement_history::combats;
@@ -62,28 +61,18 @@ fn unit_scale_replay_layers() {
         fog: false,
         ..Default::default()
     };
-    // The index the window starts for its perspective country
-    // (`hours::Pipeline::engaged`), timed until it covers the last hour.
-    let started = Instant::now();
-    let engaged = Arc::new(
-        EngagedIndex::start(
-            document.playback.replay_handle(),
-            perspective.country.clone(),
-        )
-        .unwrap(),
-    );
-    let last = replay
-        .index
-        .iter()
-        .filter(|block| block.branch == 1)
-        .map(|block| block.last_hour)
-        .max()
-        .unwrap();
-    while !engaged.shared.covers(1, last) {
-        thread::sleep(Duration::from_millis(1));
+    // The index folded over the hours these laps read, as the engagements layer's lanes fold it.
+    let mut folded = Vec::new();
+    for offset in 0..9 {
+        let SeekResult::Frame(frame) = replay.seek(1, first + offset).unwrap() else {
+            panic!("fixture gap")
+        };
+        folded.push(*frame);
     }
+    let started = Instant::now();
+    let engaged = Arc::new(EngagedIndex::folded(&folded, perspective.country.clone(), None));
     let ms = started.elapsed().as_secs_f64() * 1e3;
-    let hours = last - first + 1;
+    let hours = folded.len() as u32;
     println!(
         "UNIT_ENGAGED_FOLD hours={hours} ms={ms:.6} per_hour_ms={:.6}",
         ms / f64::from(hours)
@@ -211,7 +200,6 @@ fn unit_scale_replay_layers() {
                             1.0,
                             &tables,
                             &Default::default(),
-                            &Default::default(),
                         )
                     })
             });
@@ -231,64 +219,5 @@ fn unit_scale_replay_layers() {
                 hour.limitations(&perspective)
             });
         }
-        let mut pipeline = crate::hours::Pipeline::new(
-            Arc::clone(&document.content),
-            document.playback.replay_handle(),
-        )
-        .unwrap();
-        // The window carries its index into a new pipeline the same way.
-        pipeline.adopt_engaged(Arc::clone(&engaged));
-        let started = Instant::now();
-        pipeline
-            .want(crate::hours::Want {
-                branch: 1,
-                hour: first,
-                ahead: 8,
-                behind: 0,
-                playing: true,
-                perspective: perspective.clone(),
-                map_mode: Default::default(),
-                diplomatic_selected: None,
-                show_allied_plans: false,
-                units_by_layers: false,
-                plans_by_layers: false,
-                routes_by_layers: false,
-                by_layers: Default::default(),
-                parts: Default::default(),
-                counters: Default::default(),
-                counter_kinds: Default::default(),
-                view: crate::hours::View {
-                    camera,
-                    viewport: [1920, 1080],
-                    ui_scale: 1.0,
-                },
-                have: Vec::new(),
-                received: 0,
-                grid: None,
-                layered: Default::default(),
-            })
-            .unwrap();
-        let mut held = Vec::new();
-        for _ in 0..9 {
-            let built = pipeline.wait().unwrap();
-            assert!(built.layers.is_ok(), "{:?}", built.layers.as_ref().err());
-            println!(
-                "UNIT_BUILDER camera={camera_name} hour={} wall_ms={:.6}",
-                built.hour, built.wall
-            );
-            for (name, ms) in &built.laps {
-                println!(
-                    "UNIT_BUILDER_PART camera={camera_name} hour={} name={name} ms={ms:.6}",
-                    built.hour
-                );
-            }
-            held.push(built);
-        }
-        println!(
-            "UNIT_BUILDER_BATCH camera={camera_name} hours={} wall_ms={:.6}",
-            held.len(),
-            started.elapsed().as_secs_f64() * 1e3
-        );
-        std::hint::black_box(held);
     }
 }

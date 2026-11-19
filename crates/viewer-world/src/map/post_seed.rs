@@ -52,21 +52,27 @@ impl Seed {
             .map_err(refuse)
     }
 
-    pub(super) fn draw(
+    /// Bind b1 to both stages with the kept 68-byte initialized payload in an 80-byte block. The
+    /// final register padding remains unknown.
+    pub(super) fn kept(
         &self,
-        arena: &gpu::Arena,
-        encoder: &mut wgpu::CommandEncoder,
-        constants: &[f32; 17],
+        device: &wgpu::Device,
+        buffer: &wgpu::Buffer,
+        offset: u32,
+        bytes: &[u8],
         source: &wgpu::TextureView,
+    ) -> io::Result<gpu::Bindings> {
+        self.0
+            .kept(device, buffer, 1, offset, bytes, &[source])
+            .map_err(refuse)
+    }
+
+    pub(super) fn record(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-    ) -> io::Result<()> {
-        // Bind b1 to both stages with a 68-byte initialized payload in an 80-byte allocation. The final
-        // register padding remains unknown.
-        let bindings = self
-            .0
-            .bindings(arena, 1, bytemuck::cast_slice(constants), source)
-            .map_err(refuse)?;
-        self.0.draw(encoder, target, &bindings, None);
-        Ok(())
+        bindings: &gpu::Bindings,
+    ) {
+        self.0.draw(encoder, target, bindings, None);
     }
 }

@@ -144,31 +144,18 @@ pub fn seen(side: &MapSide) -> String {
 
 /// Frames until the step applying `hour` is taken; a frame takes every step built by then, so it
 /// may pass `hour` by the ring's few steps, which a campaign's events are spaced beyond.
-/// The settles held ([`MapSide::hold_settles`]) released at the hour applied, the head held there so
-/// no step comes: every layer that settles with work carried is given one unit of it a frame
-/// whatever the budget, until no layer carries any. A unit made can mark more of a later phase (a
-/// supply row its strips), so what is carried need not fall in a frame: the units given are
-/// counted instead. Returns the frames it took. Fails by name.
+/// The settles held ([`MapSide::hold_settles`]) released at the hour applied, the head held there
+/// so no step comes: the frame after settles every mark carried, to the last entity. Returns the
+/// frames it took. Fails by name.
 pub fn released_unit_by_unit(side: &mut MapSide, settles: crate::playhead_host::SettlesHeld) -> u64 {
     let carried = |side: &MapSide| side.parts().map_or(Vec::new(), |(_, layers)| layers.iter().map(|layer| layer.carried().entities).collect::<Vec<_>>());
     assert!(carried(side).iter().any(|&entities| entities > 0), "with the settles held, the steps' marks are carried: {}", seen(side));
     drop(settles);
     let hour = side.applied().expect("an hour applied");
-    let mut frames = 0;
-    while carried(side).iter().any(|&entities| entities > 0) {
-        assert!(frames < 1_000_000, "a unit a frame at hour {hour} never settled the work carried: {}", seen(side));
-        let before = carried(side);
-        let frame = side.frame(hour).unwrap();
-        assert_eq!(frame.steps, 0, "the head held at hour {hour}, the frame took no step: {}", seen(side));
-        let after = carried(side);
-        let (owed, owing) = (before.iter().sum::<usize>(), after.iter().sum::<usize>());
-        for (((part, &entities), &left), name) in frame.layers.iter().zip(&before).zip(&after).zip(side.names()) {
-            assert!(entities == 0 || part.given != Some(0) || left < entities, "released with no budget, {name} settled with {entities} carried, was given no unit and carries {left}: {}", seen(side));
-        }
-        assert!(frame.layers.iter().any(|part| part.given.is_some_and(|given| given > 0)) || owing < owed, "released with no budget, no layer was given a unit at hour {hour} ({owed} carried before, {owing} after): {}", seen(side));
-        frames += 1;
-    }
-    frames
+    let frame = side.frame(hour).unwrap();
+    assert_eq!(frame.steps, 0, "the head held at hour {hour}, the frame took no step: {}", seen(side));
+    assert!(carried(side).iter().all(|&entities| entities == 0), "one frame settles every mark carried at hour {hour}: {}", seen(side));
+    1
 }
 
 pub fn through(side: &mut MapSide, hour: i32) {

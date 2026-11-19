@@ -740,8 +740,8 @@ fn unit_models_use_native_camera_admission_at_the_edges() {
         &mut BuildingHistory::default(),
         false,
     );
-    let created: Vec<_> = frame
-        .units
+    let created: Vec<_> = history
+        .drawn(&frame.units)
         .iter()
         .map(|(_, instance)| instance.animation_seed)
         .collect();

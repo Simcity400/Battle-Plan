@@ -159,7 +159,7 @@ fn main() -> io::Result<()> {
     let held = Arc::clone(&seen);
     let sink: Sink = Box::new(move |stats: &StepStats, _: Option<Message>| held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(*stats));
     let follow = Follow::new(0);
-    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 3, speed: f64::from(options.every) * 60.0, rate: 60.0 };
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 3, speed: f64::from(options.every) * 60.0, rate: 60.0, ..Settings::default() };
     let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages)?, settings, Some(follow.hook(sink)))?);
     let reader = playhead.declare(Vec::new(), None)?;
     let mut consumer = playhead.consumer(reader);

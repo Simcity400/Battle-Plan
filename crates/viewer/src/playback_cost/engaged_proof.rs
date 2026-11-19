@@ -45,7 +45,7 @@ fn differ(a: &History, b: &History) -> (BTreeMap<&'static str, u64>, Option<Stri
         if x.players != y.players {
             note("players", format!("{:?} against {:?}", x.players, y.players));
         }
-        for (what, xs, ys) in [("sides", &x.points, &y.points), ("recording player's sides", &x.recording, &y.recording)] {
+        for (what, xs, ys) in [("sides", x.folds()[0].points(), y.folds()[0].points()), ("recording player's sides", x.folds()[1].points(), y.folds()[1].points())] {
             for (kind, (p, q)) in xs.iter().zip(ys).enumerate() {
                 for key in p.keys().chain(q.keys()).collect::<BTreeSet<_>>() {
                     entries += 1;
@@ -55,7 +55,7 @@ fn differ(a: &History, b: &History) -> (BTreeMap<&'static str, u64>, Option<Stri
                 }
             }
         }
-        for (what, xs, ys) in [("icon frames", &x.icons, &y.icons), ("recording player's icon frames", &x.recording_icons, &y.recording_icons)] {
+        for (what, xs, ys) in [("icon frames", x.folds()[0].icons(), y.folds()[0].icons()), ("recording player's icon frames", x.folds()[1].icons(), y.folds()[1].icons())] {
             for (kind, (p, q)) in xs.iter().zip(ys).enumerate() {
                 for key in p.keys().chain(q.keys()).collect::<BTreeSet<_>>() {
                     entries += 1;
@@ -73,12 +73,14 @@ fn points(history: &History) -> (usize, usize) {
     let branches = history.branches.lock().unwrap_or_else(|p| p.into_inner());
     let mut out = (0, 0);
     for covered in branches.values() {
-        for kind in covered.points.iter().chain(&covered.recording) {
-            out.0 += kind.len();
-            out.1 += kind.values().map(Vec::len).sum::<usize>();
-        }
-        for kind in covered.icons.iter().chain(&covered.recording_icons) {
-            out.1 += kind.values().map(Vec::len).sum::<usize>();
+        for fold in covered.folds() {
+            for kind in fold.points() {
+                out.0 += kind.len();
+                out.1 += kind.values().map(Vec::len).sum::<usize>();
+            }
+            for kind in fold.icons() {
+                out.1 += kind.values().map(Vec::len).sum::<usize>();
+            }
         }
     }
     out
@@ -99,7 +101,7 @@ pub(super) fn run(document: &Document, pages: &Arc<dyn Pages>, timeline: &Timeli
     let mut folded = None;
     for name in viewers.split(',') {
         let country = if name == "recorded" { Country::Recorded } else { Country::Tag(name.to_owned()) };
-        let (today, today_read, today_fold) = fold_range(replay, country.clone(), first, last);
+        let (today, today_read, today_fold, today_failed) = fold_range(replay, country.clone(), timeline, branch, first, last);
         let shared = Arc::new(History::default());
         let started = |_: usize| PieceStart { branch, load: false, restart: false };
         let mut held = Vec::new();
@@ -111,11 +113,12 @@ pub(super) fn run(document: &Document, pages: &Arc<dyn Pages>, timeline: &Timeli
         })?;
         let (counts, first_differing, entries) = differ(&shared, &today);
         let hours = spent.hours.max(1) as f64;
-        let today_hours = (last - first + 1) as f64;
+        // The same hours, piece by piece, as the lanes folded.
+        let today_hours = hours;
         results.push(json!({
             "viewer": name, "hours": spent.hours, "entries": entries, "differing": counts, "first": first_differing,
             "lanes": {"hours_a_second": hours / ((spent.read_ns + spent.fold_ns) as f64 / 1e9), "read_us_an_hour": spent.read_ns as f64 / hours / 1e3, "fold_us_an_hour": spent.fold_ns as f64 / hours / 1e3},
-            "today": {"hours_a_second": today_hours / ((today_read + today_fold) as f64 / 1e9), "read_us_an_hour": today_read as f64 / today_hours / 1e3, "fold_us_an_hour": today_fold as f64 / today_hours / 1e3},
+            "today": {"hours_a_second": today_hours / ((today_read + today_fold) as f64 / 1e9), "read_us_an_hour": today_read as f64 / today_hours / 1e3, "fold_us_an_hour": today_fold as f64 / today_hours / 1e3, "blocks_unread": today_failed},
             "held": held, "sides_and_points": points(&shared),
         }));
         eprintln!("{}", results.last().expect("pushed"));

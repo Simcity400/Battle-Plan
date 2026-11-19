@@ -29,6 +29,7 @@ fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard::protocol::Dashboard
         fraction: 0.,
         sequence: 1,
         seek_sequence: Some(1),
+        composed_at: 0.0,
         bounds,
         clip: bounds,
         visible: true,
@@ -287,7 +288,7 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
     // The player-only counters toggle keeps the viewing country's own counters on that map.
     viewers[0].picker_toggle("player_counters_toggle");
     pass(&mut viewers, &targets, &ctx, &frame, Vec::new());
-    let ours = viewers[0].overlay_tables.as_ref().unwrap().3.ours();
+    let ours = viewers[0].overlay_tables.as_ref().expect("the side made the overlay's tables").ours();
     assert_eq!(
         viewers[0].overlay_layers.counters.owners.as_deref(),
         Some(&std::collections::BTreeSet::from([ours]))

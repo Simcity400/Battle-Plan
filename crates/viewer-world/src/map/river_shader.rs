@@ -1,4 +1,5 @@
 //! River submission with resolved effects and retained render state.
+use viewer_foundation::map::gpu_contract::Targets;
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, ops::Range, sync::Arc};
 
@@ -145,7 +146,7 @@ impl River {
         &self,
         arena: &gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
+        targets: &Targets,
         inputs: Inputs<'_>,
         geometry: Geometry<'_>,
     ) -> io::Result<()> {
@@ -202,14 +203,8 @@ impl River {
                 ));
             }
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("compiled rivers"),
-            color_attachments: &[Some(target.color)],
-            depth_stencil_attachment: Some(target.depth),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = super::scene::world_pass(encoder, targets, "compiled rivers");
+        let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
         shader_pipeline::gpu::stats::state();
@@ -220,7 +215,7 @@ impl River {
         pass.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint32);
         let mut previous = None;
         for (run, bindings) in &bound {
-            bindings.bind_after(&mut pass, previous);
+            bindings.bind_after(pass, previous);
             previous = Some(bindings);
             shader_pipeline::gpu::stats::draw();
             pass.draw_indexed(run.indices.clone(), 0, 0..1);

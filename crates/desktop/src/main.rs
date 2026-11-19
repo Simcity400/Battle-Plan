@@ -16,7 +16,7 @@ mod video;
 use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
 use native::{HostStatus, NativeHost};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use tauri::{Manager, State, WebviewWindow};
 
 // Widget requests and the map's documents contend on the Windows process heap.
@@ -148,26 +148,31 @@ fn set_dashboard_maps(
     host.set_dashboard_views(&window, &views)
 }
 
-fn replay_path(path: &str) -> Result<PathBuf, String> {
+/// What a recording's path must be for a map command to carry it. The file itself is never read
+/// here: this is the thread that pumps the map's window, and the map opens the recording on its
+/// own loading thread, where it resolves the path and checks the revision the page expects.
+pub(crate) fn replay_path(path: &str) -> Result<String, String> {
+    if path.is_empty() {
+        return Err("Replay path is empty".into());
+    }
     if path.len() > 32_000 {
         return Err("Replay path is too long".into());
     }
-    let path = std::fs::canonicalize(path).map_err(|e| format!("Cannot open recording: {e}"))?;
-    if !path.is_file() {
-        return Err("Choose a replay file".into());
+    if path.contains('\0') {
+        return Err("Replay path holds a NUL character".into());
     }
-    if !path
+    if !std::path::Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
     {
         return Err("Choose a .battleplan recording".into());
     }
-    Ok(path)
+    Ok(path.to_owned())
 }
 
 #[tauri::command]
 fn open_replay(host: State<'_, NativeHost>, path: String) -> Result<(), String> {
-    host.open(replay_path(&path)?.to_string_lossy().into_owned())
+    host.open(replay_path(&path)?)
 }
 
 #[tauri::command]
@@ -179,13 +184,7 @@ fn seek_map(
     hour: i32,
     playback: Option<dashboard::protocol::MapPlayback>,
 ) -> Result<(), String> {
-    host.seek(
-        replay_path(&path)?.to_string_lossy().into_owned(),
-        revision,
-        branch,
-        hour,
-        playback,
-    )
+    host.seek(replay_path(&path)?, revision, branch, hour, playback)
 }
 
 #[cfg(not(feature = "served-ui"))]
@@ -212,6 +211,7 @@ fn playback_pressure_merges() -> u64 { dashboard_follow::lead::pressure_merges()
 
 fn main() {
     engine_heap::return_freed_memory_promptly();
+    viewer_foundation::parallel::name_shared_pool();
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!(
             "battle-plan\n\nreplay-desktop [recording.battleplan] [map options]\n\nThe map runs inside this app. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nMap options such as --branch, --hour and --camera open the campaign map\nthere. --diagnostics shows the maps' technical stats and data limitations\nfor this run; F3 or Settings > Diagnostics toggles and saves them.\n--window-dump <recording> --out <frame.png> draws one frame of the map to a\nfile and exits (the release smoke).\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
@@ -427,16 +427,18 @@ impl ExitOrder {
     }
 }
 
-/// Stops the data service and every map; true once the main map has ended, which it is given a
-/// moment to do.
+/// Stops every map and then the data service they read from; true once the main map has ended,
+/// which it is given a moment to do. The service ends last, so no map's load holds the exit on a
+/// service thread it is still using.
 fn shutdown(app: &tauri::AppHandle) -> bool {
-    app.state::<DashboardService>().shutdown();
     app.state::<popout::PopOuts>().close(app);
     let (ended, waited) = std::sync::mpsc::channel();
     app.state::<NativeHost>().shutdown(move || {
         let _ = ended.send(());
     });
-    waited.recv_timeout(std::time::Duration::from_secs(2)).is_ok()
+    let stopped = waited.recv_timeout(std::time::Duration::from_secs(2)).is_ok();
+    app.state::<DashboardService>().shutdown();
+    stopped
 }
 
 #[cfg(test)]

@@ -410,7 +410,7 @@ impl Table {
 
     /// A text cell whose string the strings no longer name, as a recording before the recorder
     /// named every string at a seek leaves one.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn unname(&mut self, column: Text, slot: u32, id: u32) {
         let (_, values, states) = self.texts.iter_mut().find(|(held, _, _)| *held == column.column).expect("a kept text column");
         (values[slot as usize], states[slot as usize]) = (id.to_le_bytes().into(), UNNAMED);

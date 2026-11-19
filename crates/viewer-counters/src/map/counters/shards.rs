@@ -68,6 +68,11 @@ impl<K: Sharded, V: Clone + PartialEq> Shards<K, V> {
         self.iter().map(|(_, value)| value)
     }
 
+    /// Its keys, in key order.
+    pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
+        self.iter().map(|(&key, _)| key)
+    }
+
     /// Sets `key` to `value`; whether it changed. An equal value copies nothing.
     pub fn insert(&mut self, key: K, value: V) -> bool {
         if self.get(&key) == Some(&value) {

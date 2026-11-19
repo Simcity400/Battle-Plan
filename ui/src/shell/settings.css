@@ -230,6 +230,9 @@ button.theme-card-mode:hover { transform: scale(1.08); }
 .global-map-settings .map-option-row { min-height: 40px; padding: 0; font-size: 0.8125rem; font-weight: 500; }
 .global-map-settings .map-graphics-grid .map-option-row { min-height: 36px; }
 .global-map-settings .map-option-row .select-trigger { width: 150px; }
+.global-map-settings .map-option-row .frame-limit-field { display: inline-flex; align-items: center; gap: 6px; }
+.global-map-settings .map-option-row .frame-limit-field input { width: 84px; height: 28px; }
+.global-map-settings .map-option-row .frame-limit-field small { color: var(--muted); font-size: 0.75rem; }
 .global-map-settings .graphics-reset { align-self: flex-start; margin: 8px 8px 4px; }
 .global-map-settings .map-visual-mods { margin: 0; padding: 8px 16px; box-shadow: 0 -1px 0 var(--line-soft); font-size: 0.8125rem; }
 .global-map-settings .map-menu-note, .global-map-settings .map-menu-error { margin: 0; padding: 8px 16px; }

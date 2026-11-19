@@ -13,7 +13,7 @@
 //! steps for it, and an interval of a seek since superseded is dropped unmade, its steps abandoned.
 
 use super::{Presented, Source, worker_tables};
-use crate::{layers::rebuilt::refusal, playhead_host::rows::Stepped};
+use crate::{layers::rebuilt::refusal, playhead_host::views::Stepped};
 use replay_data::{
     BranchId, Hour,
     rows::{TABLE_COUNT, TableId},
@@ -70,7 +70,7 @@ pub(super) struct Worker {
     generation: Arc<AtomicU64>,
     serial: u64,
     stop: Arc<AtomicBool>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     alive: Arc<AtomicBool>,
     /// Made intervals a wait received before they were taken.
     held: Vec<(u64, Presented)>,
@@ -88,7 +88,8 @@ impl Worker {
         let run = Run { source, branch, stepped, generation: Arc::clone(&generation), stop: Arc::clone(&stop), vision: Keyed::new(VISION_TABLES) };
         let living = Arc::clone(&alive);
         std::thread::Builder::new().name("map text".into()).spawn(move || {
-            viewer_foundation::worker_priority::background_priority();
+            // The step's settle joins its product: at the head's priority, never below normal.
+            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             run.run(&received, &made);
             living.store(false, Ordering::Release);
         })?;
@@ -98,7 +99,7 @@ impl Worker {
             generation,
             serial: 0,
             stop,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             alive,
             held: Vec::new(),
         })
@@ -158,7 +159,7 @@ impl Worker {
         self.held.clear();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn alive(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.alive)
     }
@@ -258,7 +259,7 @@ impl Run {
             None => {
                 let later = through.filter(|&through| through > hour)?;
                 stepped.take_through(later, epoch).filter(|&last| last >= hour)?;
-                stepped.frame(self.branch, hour)?
+                stepped.frame_past(self.branch, hour)?
             }
         };
         let mut tables = frame.tables;

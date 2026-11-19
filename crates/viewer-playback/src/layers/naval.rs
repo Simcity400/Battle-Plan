@@ -11,7 +11,7 @@ mod reads;
 #[cfg(test)]
 mod tests;
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, Upstream, View, vision::Vision};
+use super::{Carried, Settling, Dirty, Inputs, Layer, Upstream, View, vision::Vision};
 use crate::playhead_host::mirror::{Mirror, Mirrors};
 use playhead::Step;
 use reads::Columns;
@@ -485,6 +485,11 @@ impl Naval {
         self.viewer
     }
 
+    /// Whether it draws at the view: declared, at the default map mode.
+    pub fn drawn(&self) -> bool {
+        self.columns.is_some()
+    }
+
     pub fn choice(&self) -> &Choice {
         &self.choice
     }
@@ -532,11 +537,11 @@ impl Naval {
             self.groups.values_mut().for_each(|rows| rows.sort_unstable());
         }
         self.mark_all();
-        self.settle_at(mirrors, viewer, &mut Budget::unlimited());
+        self.settle_at(mirrors, viewer);
         (self.marked, self.clears, self.moved) = (marked, clears, moved);
     }
 
-    fn settle_at(&mut self, mirrors: &Mirrors, viewer: Option<u32>, budget: &mut Budget) {
+    fn settle_at(&mut self, mirrors: &Mirrors, viewer: Option<u32>) {
         let Some(columns) = self.columns else { return };
         self.frame += 1;
         let viewer = if self.gap { None } else { viewer };
@@ -608,7 +613,7 @@ impl Naval {
         let (attributes, refusals, sides) = (Arc::make_mut(&mut self.attributes), &mut self.refusals, &mut self.sides);
         let (mut changed, mut settled, before) = (false, 0, sides.len());
         let mut values = Vec::new();
-        let _ = self.regions.settle(budget, |id| {
+        let _ = self.regions.settle(|id| {
             settled += 1;
             values.clear();
             let mut failed = supremacy.clone();
@@ -743,22 +748,19 @@ impl Layer for Naval {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_at(mirrors, self.viewer, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_at(mirrors, self.viewer);
         Ok(())
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
-        self.settle_at(mirrors, upstream.get::<Vision>().and_then(Vision::ours), budget);
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
+        self.settle_at(mirrors, upstream.get::<Vision>().and_then(Vision::ours));
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.regions.len(), frames: self.regions.since().map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities: self.regions.len() }
     }
 
     fn held(&self) -> usize {

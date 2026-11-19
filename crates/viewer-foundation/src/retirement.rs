@@ -1,7 +1,7 @@
 //! Bounded background retirement shared by decode and presentation workers.
 
 use job_priority::SpawnCarried as _;
-use crate::worker_priority::background_priority;
+use crate::worker_priority::normal_priority;
 use std::{io, sync::mpsc, thread};
 
 /// Builders for the processors this process may use
@@ -15,12 +15,12 @@ pub fn builder_count() -> usize {
 /// Frees what the window let go of on a thread of its own, so a frame that
 /// swaps in a new hour does not pay for returning the last one's memory.
 ///
-/// The destructor runs at the builders' priority, so saturated builders can
-/// starve it. At most one retirement per builder waits behind the one being
-/// freed; past that the caller frees its retirement itself, spending that
-/// frame's time rather than holding an unbounded backlog of hours.
+/// Handing a retirement over never waits and never frees here: a full queue
+/// would make the frame thread free an hour, which is what this exists to
+/// avoid. The destructor runs at normal priority, above every maker, so the
+/// queue is drained whatever the builders are doing.
 pub struct Dropper {
-    bin: Option<mpsc::SyncSender<Box<dyn Send>>>,
+    bin: Option<mpsc::Sender<Box<dyn Send>>>,
 }
 
 /// Everything one frame lets go of, handed to the [`Dropper`] as a single
@@ -40,27 +40,22 @@ impl Retired {
 
 impl Dropper {
     pub fn new() -> io::Result<Self> {
-        Self::with_capacity(builder_count())
-    }
-
-    fn with_capacity(capacity: usize) -> io::Result<Self> {
-        let (bin, inbox) = mpsc::sync_channel::<Box<dyn Send>>(capacity);
+        let (bin, inbox) = mpsc::channel::<Box<dyn Send>>();
         thread::Builder::new()
-            .name("hour dropper".into())
+            .name("map retirement".into())
             .spawn_carried(move || {
                 let _cost = replay_frame::cpu::scope("display.retire", Some("other"));
-                background_priority();
+                normal_priority();
                 while inbox.recv().is_ok() {}
             })?;
         Ok(Self { bin: Some(bin) })
     }
 
-    /// Frees `value` off the frame path, or here, without waiting, when the
-    /// queue is full.
+    /// Frees `value` off the frame path, never here and never waiting.
     pub fn drop_later<T: Send + 'static>(&self, value: T) {
         if let Some(bin) = &self.bin {
-            // A full or closed queue hands the value back; it drops here.
-            let _ = bin.try_send(Box::new(value));
+            // Only a dropper whose thread has stopped hands the value back; it drops here.
+            let _ = bin.send(Box::new(value));
         }
     }
 }

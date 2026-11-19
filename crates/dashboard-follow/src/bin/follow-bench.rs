@@ -164,7 +164,7 @@ fn read_selection(pages: &WorldPages, path: &str) -> io::Result<Vec<Declared>> {
                 .map(|wanted| (0..kinds.len()).find(|&column| TableId::ALL[table].field_name(column) == Some(wanted)).ok_or_else(|| invalid(format!("No column {wanted} in {name}"))))
                 .collect::<io::Result<_>>()?,
         };
-        declared.push(Declared { table, columns: chosen, keyed: false, passing: false });
+        declared.push(Declared { table, columns: chosen, keyed: false, passing: false, hourly: false });
     }
     Ok(declared)
 }

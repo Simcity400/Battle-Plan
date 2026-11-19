@@ -66,6 +66,10 @@ impl Ground for Flat {
     fn map(&self) -> (MapSize, MapDefines) {
         (MapSize::TEST, MapDefines::test())
     }
+
+    fn unit_models(&self) -> Option<&viewer_world::map::unit_models::UnitModelAssets> {
+        None
+    }
 }
 
 const TABLES: [TableId; 6] = [TableId::Divisions, TableId::DivisionMovement, TableId::ArmyIconInputs, TableId::DivisionStatus, TableId::LandCombats, TableId::CountryLinks];
@@ -155,7 +159,7 @@ fn side_seeing(name: &str, seeing: bool) -> MapSide {
 }
 
 fn side_at(name: &str, seeing: bool, view: View) -> MapSide {
-    let entry = open(record(name), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
+    let entry = open(record(name), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Units::new(flat()))], view).unwrap();
     if seeing {
         layer(&side).set_vision(Choice::default(), Arc::new(Vision::default()));
@@ -196,11 +200,11 @@ fn a_division_changed_in_a_step_is_marked_once_and_settled_to_the_composed_value
     composed_equal(&side);
     through(&mut side, 30);
     let before = layer(&side).marked();
-    side.set_budget(Duration::ZERO);
+    let settles = side.hold_settles();
     through(&mut side, 50);
     assert_eq!(layer(&side).marked()[0] - before[0], 1, "the moved division is marked once");
-    assert_eq!(layer(&side).carried().entities, 1, "nothing settles without budget");
-    side.set_budget(Duration::from_secs(1));
+    assert_eq!(layer(&side).carried().entities, 1, "nothing settles without settling");
+    drop(settles);
     through(&mut side, 64);
     assert_eq!(layer(&side).carried().entities, 0);
     assert_eq!(oldest(&side), vec![((10, 3, None), 102), ((10, 4, None), 104), ((20, 3, None), 101), ((2000, 3, None), 106)]);
@@ -211,12 +215,10 @@ fn a_division_changed_in_a_step_is_marked_once_and_settled_to_the_composed_value
 fn a_division_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side("units-twice");
     through(&mut side, 76);
-    // Both changes (hours 100 and 101) marked before any settle; then, with no budget, a unit a frame.
-    side.set_budget(Duration::ZERO);
+    // Both changes (hours 100 and 101) marked before any settle; then, with no settling, a unit a frame.
     let settles = side.hold_settles();
     through(&mut side, 102);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
-    side.set_budget(Duration::from_secs(1));
     through(&mut side, 120);
     assert_eq!(layer(&side).carried().entities, 0);
     assert_eq!(layer(&side).figures()[&(10, 3, None)].selection.template, 960, "the newest template");
@@ -301,27 +303,38 @@ fn a_stack_that_moved_outside_the_view_gets_its_figure_when_the_camera_admits_it
     composed_equal(&side);
 }
 
+/// Above the cutoff the layer declares the same columns as below it and holds no stack, and
+/// crossing the cutoff either way resets no table and composes nothing: shown again it keys every
+/// division from the mirrors it never let go, in the settle of the frame that crossed. On the base
+/// it declared nothing above the cutoff, so its tables left the lanes and came back from the file
+/// as a reset, which composed the layer and froze the picture (48 hours passed before its stacks
+/// returned).
 #[test]
-fn a_view_that_draws_no_unit_models_declares_nothing_and_one_that_does_composes() {
+fn crossing_the_units_cutoff_declares_nothing_new_and_composes_no_reset() {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut far = Units::new(flat());
-    let mut inputs = crate::layers::Inputs::new(&kinds, "units");
-    far.inputs(&over(10, 600.0), &mut inputs).unwrap();
-    assert!(inputs.into_tables().is_empty(), "above the cutoff the layer reads nothing");
+    let mut near = Units::new(flat());
+    let declared = |layer: &mut Units, view: &View| {
+        let mut inputs = crate::layers::Inputs::new(&kinds, "units");
+        layer.inputs(view, &mut inputs).unwrap();
+        inputs.into_tables()
+    };
+    let above = declared(&mut far, &over(10, 600.0));
+    let below = declared(&mut near, &over(10, 100.0));
+    assert_eq!(above, below, "the same columns at every height");
+    assert!(!far.drawn() && near.drawn(), "no land figure is drawn above the cutoff");
     let mut side = side("units-far");
     through(&mut side, 60);
     side.set_view(over(10, 600.0)).unwrap();
     through(&mut side, 64);
     assert!(side.refusals().next().is_none());
     assert_eq!(layer(&side).stack_count(), 0, "it holds nothing");
+    assert_eq!(layer(&side).carried().entities, 0, "and carries nothing");
     side.set_view(View::default()).unwrap();
-    // Its tables left the lanes while it was hidden: shown again, they are read from the file, and
-    // it composes with its rows once they have landed (the frames give the reads their turn,
-    // `reads_landed`); the hours between show nothing of it. A layer that never composes still
-    // fails here, by name, at hour 112.
-    frames_until(&mut side, |side, frame| !side.composing() && (layer(side).stack_count() == 4 || frame.applied.is_some_and(|hour| hour >= 64 + 48)));
+    let frame = side.frame(side.entry().playhead().newest().unwrap_or(0)).unwrap();
+    assert_eq!((frame.resets, side.composing()), (0, false), "crossing the cutoff resets no table");
     side.settle_all().unwrap();
-    assert_eq!(layer(&side).stack_count(), 4, "shown again at hour 64, its stacks come back as a reset by hour {} (at {:?})", 64 + 48, side.applied());
+    assert_eq!(layer(&side).stack_count(), 4, "its stacks are keyed again from the mirrors at once (at {:?})", side.applied());
     composed_equal(&side);
 }
 
@@ -347,6 +360,10 @@ fn a_division_moved_outside_the_view_is_rekeyed_once_its_province_is_admitted() 
 
 /// The hour province 4, two provinces from the viewer's, changes hands to the viewer.
 const TAKEN: i32 = 13;
+
+/// The hour the enemy country's tag is written again: a whole part of the vision that no sight key
+/// names and no province or unit mark names, so the vision layer publishes only a whole change.
+const RENAMED: i32 = 25;
 
 /// The units layer reading the vision layer registered before it, over the vision world of the
 /// buildings' tests: countries 101 (the viewer, slot 1) and 102 (slot 2) at war, provinces 1 and 2
@@ -399,6 +416,9 @@ fn sight_world(name: &str, enemy: bool) -> (Arc<crate::playhead_host::Entry>, Ar
         if at as i32 == TAKEN {
             write(store, TableId::Provinces, 3, "controller", Cell::U32(101));
         }
+        if at as i32 == RENAMED {
+            write(store, TableId::Countries, 1, "tag", Cell::Bytes(0));
+        }
     });
     let content = {
         use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
@@ -407,7 +427,7 @@ fn sight_world(name: &str, enemy: bool) -> (Arc<crate::playhead_host::Entry>, Ar
     };
     let timeline = Timeline::whole(&*pages).unwrap();
     let recording = units::Units { name: name.to_owned(), pages, timeline, kinds: Arc::new(replay::columnar_frames::schema().unwrap()) };
-    let entry = open(recording, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
+    let entry = open(recording, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     (entry, content)
 }
 
@@ -488,29 +508,54 @@ fn a_change_of_one_provinces_sight_marks_the_divisions_that_read_it_and_no_other
     assert_eq!(sight_of(&side).province_byte(4), Some(255), "province 4 is the viewer's");
     assert!(!unseen(&side, (4, 2, None)), "seen once its province is taken");
     assert_eq!(reading(&side).marked()[1] - stacks, 1, "only the stack whose sight changed is placed again");
-    assert!((1..=2).contains(&(reading(&side).sighted() - sights)), "only division 905's sight is read again, for its byte and its controller at most");
+    // How many times its sight is read follows how the steps to the change fell into frames (each
+    // frame whose fog moved reads it once); that no other stack is placed again is the line above.
+    assert!(reading(&side).sighted() > sights, "division 905's sight is read again");
     reading_composed_equal(&side);
 }
 
 /// The same change with no division in a province whose fog moved: nothing is marked, so even
-/// without budget the layer carries nothing. On the base the renewed vision marked every division.
+/// without settling the layer carries nothing. On the base the renewed vision marked every division.
 #[test]
 fn a_vision_change_that_moves_no_divisions_sight_leaves_the_layer_carrying_nothing() {
     let mut side = sight_side("units-sight-none", false, View::default());
     held_through(&mut side, TAKEN - 4);
     settled(&mut side);
-    let (marked, sights) = (reading(&side).marked(), reading(&side).sighted());
-    side.set_budget(Duration::ZERO);
+    let marked = reading(&side).marked();
     frames_until(&mut side, |side, frame| sight_of(side).province_byte(4) == Some(255) && frame.applied.is_some_and(|hour| hour >= TAKEN + 4));
-    assert_eq!(reading(&side).carried().entities, 0, "nothing marked, nothing carried");
-    assert_eq!((reading(&side).marked(), reading(&side).sighted()), (marked, sights));
-    side.set_budget(Duration::from_secs(1));
+    // Under load the playhead may build the steps again for a new pace, which starts the vision
+    // worker over and has every sight read again: what this change must not do is place a stack
+    // or mark a division of its own.
     settled(&mut side);
+    assert_eq!(reading(&side).marked(), marked, "nothing marked");
     reading_composed_equal(&side);
 }
 
-/// Above the cutoff the layer reading the vision layer declares nothing, holds nothing and carries
-/// nothing, though the vision changes under it; shown again it composes equal, with the change.
+/// A whole vision publish with its sight key unchanged: the enemy country's tag written again moves
+/// a whole part the vision rereads (the tags its shares are keyed from), which no part of the sight
+/// key holds and no province or unit mark names, so the layer is told nothing but the whole change.
+/// Every division a stack holds reads its sight again. On the base the layer read only the provinces
+/// and units named, so it read no sight at all and every figure kept the sight it had.
+#[test]
+fn a_whole_vision_publish_with_the_sight_key_unchanged_reads_every_divisions_sight_again() {
+    let mut side = sight_side("units-sight-whole", true, View::default());
+    held_through(&mut side, RENAMED - 4);
+    settled(&mut side);
+    assert_eq!(reading(&side).refused(), None);
+    assert_eq!(reading(&side).stack_count(), 3);
+    let (epoch, sights) = (sight_of(&side).sight_epoch(), reading(&side).sighted());
+    through(&mut side, RENAMED + 4);
+    settled(&mut side);
+    assert_eq!(sight_of(&side).sight_epoch(), epoch, "no part of the sight key moved");
+    // The host keeps the change until every dependent has settled, so a settle that waits whole
+    // reads them again each pass; before the fix none was read at all.
+    assert!(reading(&side).sighted() - sights >= 3, "every division a stack holds reads its sight again, not {}", reading(&side).sighted() - sights);
+    reading_composed_equal(&side);
+}
+
+/// Above the cutoff the layer reading the vision layer holds nothing and carries nothing, though
+/// the vision changes under it; shown again it keys its stacks from the mirrors with no reset, and
+/// is equal to one composed from scratch, with the change.
 #[test]
 fn a_reading_layer_at_a_view_that_draws_no_unit_model_holds_and_carries_nothing() {
     let mut side = sight_side("units-sight-far", true, View::default());
@@ -519,9 +564,7 @@ fn a_reading_layer_at_a_view_that_draws_no_unit_model_holds_and_carries_nothing(
     assert_eq!(reading(&side).stack_count(), 3);
     side.set_view(over(10, 600.0)).unwrap();
     through(&mut side, TAKEN + 4);
-    // Hidden, the units layer no longer declares its Divisions columns: the vision layer reads that
-    // table and is drawn again once its join composes it.
-    frames_until(&mut side, |side, _| side.draws("vision") && !side.composing());
+    assert!(side.draws("vision") && !side.composing(), "its columns are declared at every height: nothing composes");
     settled(&mut side);
     assert_eq!(sight_of(&side).province_byte(4), Some(255));
     assert_eq!(reading(&side).stack_count(), 0);
@@ -529,16 +572,17 @@ fn a_reading_layer_at_a_view_that_draws_no_unit_model_holds_and_carries_nothing(
     assert_eq!(reading(&side).held(), 0, "it holds nothing");
     assert_eq!(reading(&side).perspective(), None);
     side.set_view(View::default()).unwrap();
-    frames_until(&mut side, |side, frame| !side.composing() && (reading(side).stack_count() == 3 || frame.applied.is_some_and(|hour| hour >= TAKEN + 4 + 48)));
+    let frame = side.frame(side.entry().playhead().newest().unwrap_or(0)).unwrap();
+    assert_eq!((frame.resets, side.composing()), (0, false), "crossing the cutoff resets no table");
     settled(&mut side);
-    assert_eq!(reading(&side).stack_count(), 3, "shown again, it composes its stacks once its tables have landed");
+    assert_eq!(reading(&side).stack_count(), 3, "shown again, its stacks are keyed from the mirrors at once");
     assert!(!unseen(&side, (4, 2, None)), "with the sight that changed while it was hidden");
     reading_composed_equal(&side);
 }
 
 /// Division 101 moved in three steps (hours 50, 54 and 58) and its status changed while every settle
 /// is held: `apply` reads no row (on the base it read each moved division's province to admit it,
-/// and each status row's key) and places nothing, the work is carried, and released with no budget,
+/// and each status row's key) and places nothing, the work is carried, and released with no settling,
 /// a unit a frame places the division once, from its newest values.
 #[test]
 fn steps_mark_their_divisions_reading_no_row_and_a_division_changed_in_several_is_placed_once() {
@@ -555,7 +599,7 @@ fn steps_mark_their_divisions_reading_no_row_and_a_division_changed_in_several_i
                 _ => {}
             }
         }),
-        Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 },
+        Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() },
     )
     .unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Units::new(flat()))], View::default()).unwrap();
@@ -566,7 +610,6 @@ fn steps_mark_their_divisions_reading_no_row_and_a_division_changed_in_several_i
     through(&mut side, 30);
     side.settle_all().unwrap();
     let placed = layer(&side).placed();
-    side.set_budget(Duration::ZERO);
     let settles = side.hold_settles();
     through(&mut side, 58);
     assert_eq!(layer(&side).applied_reads(), 0, "apply marks; it reads no row");
@@ -648,9 +691,8 @@ fn frames_at(side: &mut MapSide, head: Option<i32>, at: usize, what: &str, mut d
 fn a_models_job_out_is_not_carried_and_the_layer_publishes_nothing_before_its_first_models() {
     use crate::layers::Published;
     let (entry, content) = sight_world("units-models-out", false);
-    let rows = crate::playhead_host::rows::Rows::of(&entry, crate::playhead_host::rows::Recording { branch: 0 }).unwrap();
     let held = Arc::new(HeldModels::default());
-    let mut units = Units::new(flat()).in_window(Arc::clone(&held) as Arc<dyn super::models::Select>, &rows);
+    let mut units = Units::new(flat()).in_window(Arc::clone(&held) as Arc<dyn super::models::Select>);
     units.window.as_mut().expect("in the window").tables = vec![TableId::Divisions];
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(Sight::new(content)), Box::new(units)];
     let mut side = playing(&entry, layers, View::default());
@@ -679,10 +721,9 @@ fn a_models_job_out_is_not_carried_and_the_layer_publishes_nothing_before_its_fi
 /// test moves it.
 #[test]
 fn the_window_moves_a_moved_figure_from_its_own_placing_with_no_models_answered() {
-    let entry = open(record("units-movement"), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
-    let rows = crate::playhead_host::rows::Rows::of(&entry, crate::playhead_host::rows::Recording { branch: 0 }).unwrap();
+    let entry = open(record("units-movement"), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let held = Arc::new(HeldModels::default());
-    let mut units = Units::new(flat()).in_window(Arc::clone(&held) as Arc<dyn super::models::Select>, &rows);
+    let mut units = Units::new(flat()).in_window(Arc::clone(&held) as Arc<dyn super::models::Select>);
     units.reading = false;
     units.set_vision(Choice::default(), Arc::new(Vision::default()));
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(units)], View::default()).unwrap();
@@ -734,10 +775,9 @@ impl super::models::Select for CountedChoices {
 /// its own: a test opening the same name shares its playhead.
 #[test]
 fn a_step_that_changes_one_division_chooses_that_stacks_mesh_and_no_other() {
-    let entry = open(record("units-meshes"), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
-    let rows = crate::playhead_host::rows::Rows::of(&entry, crate::playhead_host::rows::Recording { branch: 0 }).unwrap();
+    let entry = open(record("units-meshes"), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let choices = Arc::new(CountedChoices::default());
-    let mut units = Units::new(flat()).in_window(Arc::clone(&choices) as Arc<dyn super::models::Select>, &rows);
+    let mut units = Units::new(flat()).in_window(Arc::clone(&choices) as Arc<dyn super::models::Select>);
     units.reading = false;
     units.set_vision(Choice::default(), Arc::new(Vision::default()));
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(units)], View::default()).unwrap();
@@ -759,10 +799,10 @@ fn a_step_that_changes_one_division_chooses_that_stacks_mesh_and_no_other() {
 }
 
 /// A figure whose placing changed waits to be placed again (`placed` none, until a later frame's
-/// budget makes its new placing): it keeps the mesh its stack asked, and asks nothing and lets
+/// settling makes its new placing): it keeps the mesh its stack asked, and asks nothing and lets
 /// nothing go meanwhile. On `d58df56587` it let its stack go while it waited and asked it again
 /// once placed, so the meshes chose it again: `a_step_that_changes_one_division_...` chose all four
-/// stacks again when a frame's budget left their new placings to the next frame.
+/// stacks again when a frame's settling left their new placings to the next frame.
 #[test]
 fn a_figure_waiting_to_be_placed_again_keeps_what_its_stack_asked() {
     let choices = Arc::new(CountedChoices::default());
@@ -774,7 +814,7 @@ fn a_figure_waiting_to_be_placed_again_keeps_what_its_stack_asked() {
     }
     units.asks.clear();
     units.touched.push(stack);
-    units.ask();
+    units.ask_meshes();
     assert_eq!(units.asks.len(), 0, "nothing let go, nothing asked again, while it waits");
     assert!(units.asking.contains_key(&101), "the stack still asks its mesh");
 }
@@ -817,9 +857,8 @@ fn a_figure_waiting_to_be_placed_again_is_drawn_where_it_was_until_it_is_placed(
 /// The window's layer over `recording`, its meshes chosen by `choices`, seeing everything, settled
 /// whole at hour 64.
 fn meshes_side(recording: units::Units, choices: &Arc<CountedChoices>) -> MapSide {
-    let entry = open(recording, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
-    let rows = crate::playhead_host::rows::Rows::of(&entry, crate::playhead_host::rows::Recording { branch: 0 }).unwrap();
-    let mut units = Units::new(flat()).in_window(Arc::clone(choices) as Arc<dyn super::models::Select>, &rows);
+    let entry = open(recording, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let mut units = Units::new(flat()).in_window(Arc::clone(choices) as Arc<dyn super::models::Select>);
     units.reading = false;
     units.set_vision(Choice::default(), Arc::new(Vision::default()));
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(units)], View::default()).unwrap();
@@ -909,7 +948,6 @@ fn a_step_applied_every_frame_starts_a_mesh_build_once_the_one_before_answers_an
     let choices = Arc::new(CountedChoices::default());
     let mut side = meshes_side(recording, &choices);
     let _ = layer(&side).take_mesh_counts();
-    crate::layers::clock::hold();
     // The head held at each hour, frames there until the meshes reach it: never past the hour the
     // end asserts at.
     for hour in [80, 100, 120, 140] {
@@ -922,7 +960,7 @@ fn a_step_applied_every_frame_starts_a_mesh_build_once_the_one_before_answers_an
         }
     }
     let counts = layer(&side).take_mesh_counts().expect("in the window");
-    assert!(counts.builds >= 4 && counts.products >= 4, "builds followed the steps with the frame's clock still: {counts:?}");
+    assert!(counts.builds >= 4 && counts.products >= 4, "builds followed the steps: {counts:?}");
     held_through(&mut side, 160);
     side.settle_all().unwrap();
     assert_eq!(layer(&side).figures()[&(10, 3, None)].selection.template, 1060);
@@ -943,8 +981,8 @@ impl super::models::Select for NoModels {
     }
 }
 
-/// Above the land cutoff and below the ships' the layer draws no land figure and reads no land
-/// table, but keeps making the models the window draws the ships, raid units and convoys with (the
+/// Above the land cutoff and below the ships' the layer draws no land figure (its tables are
+/// declared at every height), and keeps making the models the window draws the ships, raid units and convoys with (the
 /// ships layer's joined) and has their field to upload; above both it keeps nothing. On the base it
 /// let its models go above the land cutoff, and the layers alone drew no ship model there.
 /// The test advances to hour 8 before checking the prepared models.
@@ -952,22 +990,142 @@ impl super::models::Select for NoModels {
 fn a_view_above_the_land_cutoff_and_below_the_ships_draws_the_ships_and_no_land_figure() {
     let kinds = replay::columnar_frames::schema().unwrap();
     let (entry, content) = sight_world("units-ships-only", false);
-    let rows = crate::playhead_host::rows::Rows::of(&entry, crate::playhead_host::rows::Recording { branch: 0 }).unwrap();
-    let mut alone = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>, &rows);
+    let mut alone = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>);
     let mut inputs = crate::layers::Inputs::new(&kinds, "units");
     alone.inputs(&over(10, 600.0), &mut inputs).unwrap();
-    assert!(inputs.into_tables().is_empty(), "no land figure is drawn: it reads no land table");
-    assert!(alone.models.is_some(), "ship models are drawn at 600: the layer keeps the models they join");
-    let mut inputs = crate::layers::Inputs::new(&kinds, "units");
-    alone.inputs(&over(10, 900.0), &mut inputs).unwrap();
-    assert!(alone.models.is_none(), "above both cutoffs it keeps nothing");
-    drop(alone);
+    let mut land = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>);
+    let mut drawn = crate::layers::Inputs::new(&kinds, "units");
+    land.inputs(&over(10, 100.0), &mut drawn).unwrap();
+    assert_eq!(inputs.selected(), drawn.selected(), "the land tables are declared at every height: crossing the cutoff resets none");
+    drop((land, alone));
+    // Its models start once a map gives it the view store: in the map, at 600, they are made.
 
-    let mut units = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>, &rows);
+    let mut units = Units::new(flat()).in_window(Arc::new(NoModels) as Arc<dyn super::models::Select>);
     units.window.as_mut().expect("in the window").tables = vec![TableId::Divisions];
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(Sight::new(content)), Box::new(units)];
     let mut side = playing(&entry, layers, over(10, 600.0));
     frames_at(&mut side, Some(8), 1, "the models made at a view that draws ships and no land figure", |side| side.parts().is_some() && !side.composing() && reading(side).prepared().is_some());
     assert_eq!(reading(&side).stack_count(), 0, "it holds no land figure");
     assert!(!reading(&side).uploaded(), "the field the ships are drawn with is to be uploaded");
+}
+
+/// Each land stack's mesh its oldest member's id, chosen on the layer's worker; once the test arms
+/// it, a build is held there (a minute at most) so the stacks it carries stay owed. Today's unit
+/// models are made at once with nothing in them.
+#[derive(Default)]
+struct HeldMeshes {
+    armed: std::sync::atomic::AtomicBool,
+    entered: std::sync::atomic::AtomicU64,
+    open: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+impl HeldMeshes {
+    fn arm(&self) {
+        self.armed.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Builds that reached the worker while it was armed.
+    fn entered(&self) -> u64 {
+        self.entered.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.changed.notify_all();
+    }
+}
+
+impl super::models::Select for HeldMeshes {
+    fn choose_meshes(&self, _frame: &replay_frame::frame::DecodedFrame, _ours: u32, _kept: (&viewer_world::map::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), stacks: &std::collections::HashMap<u64, super::meshes::Asked>, asked: &std::collections::HashSet<u64>, _told: &viewer_world::map::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> std::io::Result<super::meshes::Chosen> {
+        if self.armed.load(std::sync::atomic::Ordering::Acquire) {
+            self.entered.fetch_add(1, std::sync::atomic::Ordering::Release);
+            let until = std::time::Instant::now() + Duration::from_secs(60);
+            let mut open = self.open.lock().unwrap();
+            while !*open {
+                let Some(left) = until.checked_duration_since(std::time::Instant::now()) else { break };
+                open = self.changed.wait_timeout(open, left).unwrap().0;
+            }
+        }
+        let mut meshes: Vec<(u64, super::meshes::Mesh)> = stacks.keys().filter(|oldest| asked.contains(oldest)).map(|&oldest| (oldest, Ok(Some(oldest as usize)))).collect();
+        meshes.sort_unstable_by_key(|&(oldest, _)| oldest);
+        let made = viewer_world::map::unit_models::Made { selections: meshes.len(), ..Default::default() };
+        Ok(super::meshes::Chosen { meshes, made })
+    }
+
+    fn prepare(&self, _frame: &replay_frame::frame::DecodedFrame, _perspective: &Choice, _convoys: Option<&[viewer_world::map::trade_routes::ConvoyLine]>, _naval: bool, _kept: &mut super::models::Kept) -> std::io::Result<viewer_world::map::unit_models::PreparedModels> {
+        Ok(viewer_world::map::unit_models::PreparedModels::drawn_by_layers())
+    }
+}
+
+/// A saved frame's unit figures are the figures of its hour, and a stack handed to the meshes'
+/// worker draws none until the worker has chosen it: with a build held there, the layer carrying
+/// nothing and the meshes' rows standing past the hour asked about, the figures do not stand; once
+/// the build answers they do. On `112ad16109` the figures stood on the meshes' rows alone, so a
+/// capture saved the frame with the figures of the stacks still owed missing from it.
+#[test]
+fn figures_do_not_stand_while_a_stack_handed_to_the_meshes_is_not_chosen() {
+    let entry = open(record("units-meshes-owed"), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let held = Arc::new(HeldMeshes::default());
+    let mut units = Units::new(flat()).in_window(Arc::clone(&held) as Arc<dyn super::models::Select>);
+    units.reading = false;
+    units.set_vision(Choice::default(), Arc::new(Vision::default()));
+    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(units)], View::default()).unwrap();
+    entry.playhead().play(4.0);
+    entry.playhead().seek(0);
+    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    held_through(&mut side, 64);
+    side.settle_all().unwrap();
+    let stood = layer(&side).mesh_hour().expect("the meshes answered");
+    assert_eq!(layer(&side).meshes().map(HashMap::len), Some(3), "the three placed figures have meshes: {}", layer(&side).mesh_state());
+    assert!(layer(&side).figures_stand(stood), "every stack handed is chosen: {}; {}", layer(&side).figures_state(), layer(&side).mesh_state());
+
+    // Division 102's template changes at hours 100 and 101: its stack is handed on, and the build
+    // carrying it is held on the worker.
+    held.arm();
+    held_through(&mut side, 104);
+    frames_at(&mut side, Some(104), 0, "a build held on the meshes' worker with nothing carried", |side| held.entered() > 0 && layer(side).carried().entities == 0);
+    assert!(layer(&side).mesh_hour().is_some_and(|hour| hour >= stood), "the meshes' rows stand past hour {stood}: {}", layer(&side).figures_state());
+    assert!(!layer(&side).figures_stand(stood), "a stack handed on is not chosen yet: {}", layer(&side).figures_state());
+
+    held.open();
+    frames_at(&mut side, Some(104), 0, "the held build answered and every stack chosen", |side| layer(side).figures_stand(stood));
+    assert_eq!(layer(&side).meshes().and_then(|meshes| meshes.get(&102).copied()), Some(102), "the newest stack's mesh");
+}
+
+/// A stack handed to the meshes' worker and withdrawn before the worker takes either ask is not
+/// waited for: its rows are no longer declared, so no frame will hold them. Division 103's stack
+/// is asked and let go in one hand-over, which the worker takes whole, as it takes two steps'
+/// asks that reach it together; the recording writes the equipment the worker reads by key. A
+/// whole join stands with nothing waiting and no mesh for 103. On `303632584d` the withdrawn ask
+/// stayed waiting, so the join spent its whole wait and the meshes never stood.
+#[test]
+fn a_stack_asked_and_withdrawn_before_the_meshes_worker_takes_them_is_not_waited_for() {
+    let recording = recorded::record("units-meshes-withdrawn", HOURS, |at, store| {
+        campaign(at, store);
+        store.status(TableId::DivisionEquipment.index(), Status::Complete, true, Some(at as i32), true).unwrap();
+        if at == 0 {
+            let mut equipment = store.table(TableId::DivisionEquipment.index()).unwrap();
+            for (slot, id) in [101_u64, 102, 103, 104, 105, 106].into_iter().enumerate() {
+                equipment.insert_at(slot as u32, u128::from(id) << 32).unwrap();
+            }
+        }
+    });
+    let choices = Arc::new(CountedChoices::default());
+    let mut side = meshes_side(recording, &choices);
+    let units = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Units>()).expect("the units layer");
+    let ours = units.vision.as_ref().map(|(_, vision)| vision.ours()).expect("a vision");
+    let (_, asked) = units.asking.get(&102).copied().expect("102's stack asks a mesh");
+    assert!(!units.asking.contains_key(&103), "103 leads no stack: its equipment rows are not declared");
+    let meshes = units.meshes.as_mut().expect("in the window");
+    assert!(meshes.stand(), "every stack handed is chosen before the test: {}", meshes.state());
+    let stood = meshes.hour.expect("the meshes answered");
+    let before = choices.asked.lock().unwrap().len();
+    meshes.ask(ours, vec![super::meshes::Ask::Stack(103, asked), super::meshes::Ask::Gone(103)]);
+    meshes.join(stood, crate::layers::Settling::Whole);
+    assert!(meshes.stand(), "the withdrawn stack is not waited for: {}", meshes.state());
+    assert_eq!(meshes.take_counts().waiting, 0, "no stack waits for its rows: {}", meshes.state());
+    assert!(!meshes.meshes.contains_key(&103) && !meshes.withheld.contains_key(&103), "no mesh for the withdrawn stack");
+    assert!(!choices.asked.lock().unwrap()[before..].contains(&103), "the withdrawn stack is never chosen");
+    assert_eq!(meshes.meshes.keys().copied().collect::<BTreeSet<u64>>(), BTreeSet::from([101, 102, 104]), "the stacks held keep their meshes");
 }

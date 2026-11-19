@@ -263,9 +263,17 @@ fn drawn<'a, T: 'static>(side: &MapSide, layers: &'a [Box<dyn Layer>], name: &st
     layers.iter().find(|layer| layer.name() == name)?.any().downcast_ref::<T>()
 }
 
+/// The raid arrows' notes the scripts layer published, for the viewing country the vision layer
+/// shows; none while the scripts are not drawn, show another country's or have published none.
+fn raid_notes(side: &MapSide) -> Option<std::sync::Arc<Vec<String>>> {
+    let layers = side.parts().map(|(_, layers)| layers)?;
+    let ours = drawn::<Vision>(side, layers, "vision").and_then(Vision::ours)?;
+    crate::layers::scripts::notes(side, ours)
+}
+
 /// The lines made at the head in today's order, without the layers' refusals: the tables' notes,
 /// then the trains', the aircraft's, the point lights', the strikes', the viewing country's, the
-/// battle plan's, the raid arrows' (`raids`, the scripts reader's), fog and sight, and the labels'.
+/// battle plan's, the raid arrows' (the scripts layer's), fog and sight, and the labels'.
 fn made(side: &MapSide, head: &Head<'_>, raids: &[String]) -> Vec<String> {
     let Some((mirrors, layers)) = side.parts() else { return table_limitations(head, &RowFacts::default()).into_lines() };
     let (facts, missing) = facts(mirrors);
@@ -314,12 +322,12 @@ fn made(side: &MapSide, head: &Head<'_>, raids: &[String]) -> Vec<String> {
     lines
 }
 
-/// The lines at the head: the tables' notes and the drawn layers' own (`raids` is the scripts
-/// reader's raid arrows), then every refused layer's reason; none before the head has reached an
-/// hour.
-pub fn lines(side: &MapSide, raids: &[String]) -> Option<Vec<String>> {
+/// The lines at the head: the tables' notes and the drawn layers' own (the raid arrows' are the
+/// scripts layer's), then every refused layer's reason; none before the head has reached an hour.
+pub fn lines(side: &MapSide) -> Option<Vec<String>> {
     let hour = side.applied()?;
-    let mut lines = made(side, &Head { side, hour, wait: Duration::ZERO }, raids);
+    let raids = raid_notes(side);
+    let mut lines = made(side, &Head { side, hour, wait: Duration::ZERO }, raids.as_deref().map_or(&[], Vec::as_slice));
     lines.extend(side.refusals().map(|(name, why)| format!("Layer {name} is refused: {why}")));
     Some(lines)
 }
@@ -471,13 +479,14 @@ fn by_text(ours: &[String], theirs: &[&String]) -> (Vec<String>, Vec<String>, u6
 
 /// The whole list at the head (every line but the layers' refusals) against `today`'s lines of the
 /// same hour, by their text, the order counted apart; `every` is today's frame of every table, for
-/// the tables counted apart; `raids` the scripts reader's raid arrow lines, none when no reader
-/// gave any. Today's lines the map cannot give (a layer it does not register, a table no drawn
-/// layer reads) are counted apart by owner. A reason's words are waited for here, off the frame
-/// thread.
-pub fn differ(side: &MapSide, every: &replay_frame::frame::DecodedFrame, today: &[String], raids: Option<&[String]>) -> Compared {
+/// the tables counted apart. The raid arrow lines are the scripts layer's, none when it draws
+/// none. Today's lines the map cannot give (a layer it does not register, a table no drawn layer
+/// reads) are counted apart by owner. A reason's words are waited for here, off the frame thread.
+pub fn differ(side: &MapSide, every: &replay_frame::frame::DecodedFrame, today: &[String]) -> Compared {
     let Some(hour) = side.applied() else { return Compared { entries: 1, differing: 1, first: Some("the head has reached no hour".into()), ..Compared::default() } };
     let head = Head { side, hour, wait: REPORT_WAIT };
+    let raids = raid_notes(side);
+    let raids = raids.as_deref().map(Vec::as_slice);
     let apart: Vec<TableId> = TableId::ALL.into_iter().filter(|&table| matches!(head.seen(table), Seen::NotRecorded(_)) && !matches!(every.seen(table), Seen::NotRecorded(_))).collect();
     let counted_apart = |line: &str| apart.iter().any(|table| line.starts_with(&format!("Table {table:?} ")));
     let (mut ours, mut not_given, mut stood) = (Vec::new(), Vec::new(), Vec::new());
@@ -495,7 +504,16 @@ pub fn differ(side: &MapSide, every: &replay_frame::frame::DecodedFrame, today: 
         stood.extend(["Field Raids (arrows):".to_owned(), "Field Raids (unit):".to_owned()]);
     }
     let raids_apart = if raids.is_none() { today.iter().filter(|line| line.starts_with("Field Raids (")).count() } else { 0 };
-    let registered = |name: &str| side.names().contains(&name);
+    // Today's list names every layer's limitations; the head's names only what the view draws, as
+    // `made` gates each one. A layer the view does not draw owes no line, so today's are not
+    // compared against it.
+    let layers = side.parts().map(|(_, layers)| layers).unwrap_or_default();
+    let registered = |name: &str| match name {
+        "units" => drawn::<Units>(side, layers, "units").is_some_and(Units::drawn),
+        "trains" => drawn::<Trains>(side, layers, "trains").is_some_and(Trains::shown),
+        "aircraft" => drawn::<Aircraft>(side, layers, "aircraft").is_some_and(Aircraft::drawn),
+        name => side.draws(name),
+    };
     let held = |table: TableId| side.parts().is_some_and(|(mirrors, _)| mirrors.get(table).is_some());
     let (theirs, not_registered) = by_registered(today.iter().filter(|line| !counted_apart(line)), &status_notes(&head), registered, held);
     let theirs: Vec<&String> = theirs.into_iter().filter(|line| !stood.iter().any(|prefix| line.starts_with(prefix.as_str()))).collect();
@@ -525,7 +543,7 @@ pub fn differ_composed(side: &MapSide) -> io::Result<(u64, u64, Option<String>)>
         } else if let Some(strikes) = layer.any().downcast_ref::<Strikes>() {
             let mut fresh = strikes.fresh();
             fresh.compose_with(mirrors, &upstream)?;
-            fresh.settle_with(mirrors, &upstream, &mut crate::layers::Budget::unlimited())?;
+            fresh.settle_with(mirrors, &upstream, crate::layers::Settling::Whole)?;
             (format!("{:?}", strikes.notes()), format!("{:?}", fresh.notes()))
         } else if let Some(labels) = layer.any().downcast_ref::<Labels>() {
             let mut fresh = labels.fresh();

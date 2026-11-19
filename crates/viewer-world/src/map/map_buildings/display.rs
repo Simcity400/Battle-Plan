@@ -333,6 +333,19 @@ impl MapBuildingAssets {
     }
 
     /// Every authored slot as the product names it, ordinary then floating, by id.
+    /// The province boxes and their slot ids as a product holds them: the content's own, made
+    /// once, so a cold install shares them with every product before it.
+    fn display_groups(&self) -> Arc<Vec<data::Group>> {
+        Arc::clone(self.display_groups.get_or_init(|| {
+            Arc::new(
+                self.groups
+                    .iter()
+                    .map(|group| data::Group { province: group.province, bounds: group.bounds, slots: group.slots.clone() })
+                    .collect(),
+            )
+        }))
+    }
+
     fn authored(&self) -> &Arc<Vec<data::AuthoredSlot>> {
         self.display_sites.get_or_init(|| {
             let ordinary = self
@@ -406,15 +419,13 @@ impl MapBuildingAssets {
 
     /// The product the scene installs from a layer: its slots handed over as `pages`, which the
     /// scene's install shares as today's display does (`with_producer`), so no slot goes to the
-    /// wire form and back. The authored slots and the groups are shared with `previous`.
-    pub fn shared_product(&self, pages: &SlotPages, previous: Option<&data::Buildings>, bank: [u8; 32], hour: WireHour) -> io::Result<data::Buildings> {
+    /// wire form and back. The authored slots and the province boxes are the content's own, shared
+    /// by every product.
+    pub fn shared_product(&self, pages: &SlotPages, bank: [u8; 32], hour: WireHour) -> io::Result<data::Buildings> {
         if *self.display_binding.get_or_init(|| bank) != bank {
             return Err(invalid("building bank was replaced without rebinding its content"));
         }
-        let groups = match previous.filter(|old| old.bank == bank) {
-            Some(old) => Arc::clone(&old.groups),
-            None => Arc::new(self.groups.iter().map(|group| data::Group { province: group.province, bounds: group.bounds, slots: group.slots.clone() }).collect()),
-        };
+        let groups = self.display_groups();
         Ok(data::Buildings {
             bank,
             branch: hour.branch,

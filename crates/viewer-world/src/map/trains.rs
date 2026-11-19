@@ -2041,12 +2041,12 @@ pub(crate) mod tests {
             (
                 TableId::CountryAppearance,
                 400,
-                "CountryAppearance is incomplete",
+                "country appearance is incomplete",
             ),
             (
                 TableId::ReservedCountryNaming,
                 0,
-                "ReservedCountryNaming is unavailable",
+                "reserved country naming is unavailable",
             ),
         ] {
             let mut frame = creator_frame(Recorded::Value(Some(b"ORG".to_vec())));
@@ -2098,7 +2098,7 @@ pub(crate) mod tests {
                     )
                     .unwrap_err();
                 assert!(reason.starts_with("variant 73 creator: "), "{reason}");
-                assert!(reason.contains("original_tag_reference"), "{reason}");
+                assert!(reason.contains("original tag reference"), "{reason}");
             }
         }
     }

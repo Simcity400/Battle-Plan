@@ -27,15 +27,101 @@ impl Packet {
     }
 }
 
+/// A draw prepared for a batch. Its blocks are shared, so a caller that keeps the packet it
+/// prepared and hands the batch a copy of it pays no copy for the keeping
+/// ([`Data::rebound`]).
 #[derive(Clone)]
 pub struct Data {
     pipeline: Arc<Pipeline>,
     program: Arc<Program>,
-    constants: Vec<(u32, Vec<u8>)>,
-    textures: Vec<super::TextureBinding>,
-    vertices: Vec<f32>,
+    constants: Arc<Vec<(u32, Vec<u8>)>>,
+    textures: Arc<Vec<super::TextureBinding>>,
+    vertices: Arc<Vec<f32>>,
     count: usize,
     source_draws: u64,
+}
+
+/// The rows block a draw of instanced rows selects with a dynamic offset, and its bytes.
+pub(super) const ROWS_BINDING: u32 = batch_shader::META_BINDING;
+pub(super) const ROWS_BYTES: usize = batch_shader::ROWS_BYTES;
+/// Where in a rows block the instanced stream's own row stands.
+pub(super) const STREAM_ROW: usize = batch_shader::STREAM_ROW;
+/// The instanced stream's words and each instance's first vertex in them.
+pub(super) const STREAM_BINDINGS: [u32; 2] = [
+    batch_shader::STREAM_BINDING,
+    batch_shader::STREAM_BASE_BINDING,
+];
+
+/// The program of a pass that draws its constant rows per instance, or none with the reason the
+/// pass draws as it is.
+pub(super) fn instanced(
+    device: &wgpu::Device,
+    compiled: &Compiled,
+    pass: &super::Pass,
+    label: &str,
+) -> Option<Arc<batch_shader::Instanced>> {
+    let mask = pass.instanced;
+    let retain = |reason: String| {
+        eprintln!("native per-draw constants retained {label}: {reason}");
+        None
+    };
+    let shader = match batch_shader::Instanced::new(compiled, mask, pass) {
+        Ok(shader) => shader,
+        Err(reason) => return retain(reason),
+    };
+    let limits = device.limits();
+    let rows = |stage: &crate::Shader| {
+        stage
+            .buffers
+            .iter()
+            .filter(|buffer| buffer.binding < u32::BITS && mask & (1 << buffer.binding) != 0)
+            .count()
+    };
+    let streams = usize::from(shader.stream.is_some()) * 2;
+    if rows(&compiled.vertex) + streams > limits.max_storage_buffers_per_shader_stage as usize
+        || rows(&compiled.pixel) > limits.max_storage_buffers_per_shader_stage as usize
+    {
+        return retain(
+            "constant buffers read per instance exceed the device's storage limits".into(),
+        );
+    }
+    if shader.pixel.is_some() && shader.varying >= limits.max_inter_stage_shader_variables {
+        return retain("carrying the instance index exceeds the device's stage interface".into());
+    }
+    Some(Arc::new(shader))
+}
+
+/// The rows block an instanced program reads: the draw's base row for each of its per-instance
+/// bindings, selected with a dynamic offset.
+pub(super) fn rows_layout() -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: batch_shader::META_BINDING,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: std::num::NonZeroU64::new(batch_shader::ROWS_BYTES as u64),
+        },
+        count: None,
+    }
+}
+
+/// The instanced stream's own words and each instance's first vertex in them, both read whole.
+pub(super) fn stream_layouts() -> [wgpu::BindGroupLayoutEntry; 2] {
+    [
+        batch_shader::STREAM_BINDING,
+        batch_shader::STREAM_BASE_BINDING,
+    ]
+    .map(|binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: std::num::NonZeroU64::new(4),
+        },
+        count: None,
+    })
 }
 
 pub(super) fn metadata_layout() -> wgpu::BindGroupLayoutEntry {
@@ -181,9 +267,9 @@ impl Pipeline {
         Ok(Packet::Batched(Data {
             pipeline: Arc::clone(self),
             program,
-            constants,
-            textures,
-            vertices: packed,
+            constants: Arc::new(constants),
+            textures: Arc::new(textures),
+            vertices: Arc::new(packed),
             count: vertices.count,
             source_draws: 1,
         }))
@@ -191,10 +277,25 @@ impl Pipeline {
 }
 
 impl Data {
+    /// Binds `bytes` at every binding of `at`, as the program reads them: a draw whose window
+    /// moved over the map binds the same blocks with a new world transform, and nothing else
+    /// about it changed ([`crate::gpu::Arena`] stages what the batch then holds).
+    pub fn rebound(&mut self, at: &[u32], bytes: &[u8]) {
+        for ((binding, held), (_, stride)) in Arc::make_mut(&mut self.constants)
+            .iter_mut()
+            .zip(&self.program.shader.buffers)
+        {
+            if at.contains(binding) {
+                held.clear();
+                held.extend_from_slice(&bytes[..bytes.len().min(*stride as usize)]);
+            }
+        }
+    }
+
     /// What the packet uploads: each binding's constants, the packed vertices and their count.
     #[cfg(any(test, feature = "test-support"))]
     pub fn proof(&self) -> (Vec<(u32, Vec<u8>)>, Vec<f32>, usize) {
-        (self.constants.clone(), self.vertices.clone(), self.count)
+        ((*self.constants).clone(), (*self.vertices).clone(), self.count)
     }
 }
 
@@ -268,7 +369,7 @@ impl Batch {
         for ((target, (_, bytes)), (_, stride)) in self
             .constants
             .iter_mut()
-            .zip(&data.constants)
+            .zip(data.constants.iter())
             .zip(&self.program.shader.buffers)
         {
             let at = target.len();
@@ -574,7 +675,7 @@ pub fn prepare(
         if bounds.is_some()
             && let Some(data) = item.packet.batched()
         {
-            for view in &data.textures {
+            for view in data.textures.iter() {
                 let result = views.reserve(arena.device(), view);
                 if let Err(reason) = result {
                     refuse(

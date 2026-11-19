@@ -15,6 +15,7 @@ use replay_columnar::{
     unit::{BLOCK, BlockPage, Encoder, PartSink, Settings as Writing, reader::Extents},
 };
 use replay_data::rows::TableId;
+use viewer_foundation::map::camera::{MapDefines, MapSize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -106,7 +107,7 @@ fn record(hours: u32, tables: &[TableId], mut hour: impl FnMut(u32, &mut Store) 
 
 /// Four hours a step.
 fn quick() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
 /// Plays from hour 0 to `last`, calling `each` with the mirrors and the layer after every frame
@@ -324,8 +325,11 @@ fn a_moving_division_and_a_province_changing_hands_refold_only_what_they_touch_a
     let mut refolded = BTreeMap::new();
     let mut published = BTreeMap::new();
     play(vision_world(), Box::new(Vision::new(vision_content())), 40, |hour, mirrors, layer| {
-        let changed = layer.changed().expect("vision publishes its changes");
-        published.insert(hour, (changed.all(), changed.of("province").to_vec()));
+        let changed = layer.changed().expect("vision publishes its changes").read();
+        published.insert(hour, match changed {
+            crate::layers::Change::Whole => (true, Vec::new()),
+            crate::layers::Change::Marked(marked) => (false, marked.of("province").to_vec()),
+        });
         let layer = layer.any().downcast_ref::<Vision>().unwrap();
         refolded.insert(hour, layer.marked()[1]);
         let mut fresh = layer.fresh();
@@ -486,7 +490,7 @@ fn snow_cells_follow_their_provinces_and_go_unknown_where_a_truncated_or_unrecor
         history.insert(at, truth.clone());
         vec![(table, status(at))]
     });
-    let content = Arc::new(snow::Content::new(cells.clone(), winter.clone()));
+    let content = Arc::new(snow::Content::new(cells.clone(), winter.clone(), MapSize { width: 64, height: 64 }, MapDefines::test()));
     let mut checked = 0;
     play(units, Box::new(Snow::new(Ok(content))), 26, |hour, mirrors, layer| {
         let layer = layer.any().downcast_ref::<Snow>().unwrap();
@@ -677,14 +681,18 @@ impl Layer for Listens {
     fn apply(&mut self, step: &playhead::Step, _mirrors: &Mirrors) {
         self.stepped = Some(step.last());
     }
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut super::Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: super::Settling) -> io::Result<()> {
         Ok(())
     }
-    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &super::Upstream<'_>, _budget: &mut super::Budget) -> io::Result<()> {
-        self.heard.push((self.stepped.take(), upstream.changed::<Vision>().of("province").to_vec()));
+    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &super::Upstream<'_>, _settling: super::Settling) -> io::Result<()> {
+        let named = match upstream.changed::<Vision>() {
+            crate::layers::Change::Whole => Vec::new(),
+            crate::layers::Change::Marked(marked) => marked.of("province").to_vec(),
+        };
+        self.heard.push((self.stepped.take(), named));
         Ok(())
     }
-    fn upload(&mut self, _gpu: &mut super::Gpu<'_>, _budget: &mut super::Budget) -> io::Result<()> {
+    fn upload(&mut self, _gpu: &mut super::Gpu<'_>) -> io::Result<()> {
         Ok(())
     }
     fn carried(&self) -> super::Carried {
@@ -764,7 +772,7 @@ fn snow_folded_ahead_shows_the_hour_applied_in_its_frame() {
     });
     play_ahead(
         units,
-        vec![Box::new(Snow::new(Ok(Arc::new(snow::Content::new(cells, winter)))))],
+        vec![Box::new(Snow::new(Ok(Arc::new(snow::Content::new(cells, winter, MapSize { width: 64, height: 64 }, MapDefines::test())))))],
         32,
         |layer, hour| layer.any().downcast_ref::<Snow>().unwrap().made_through() >= Some(hour),
         |frame, side| {
@@ -887,7 +895,7 @@ fn snow_after_a_slower_pace_starts_over_and_equals_the_composed_grid_at_each_hou
     });
     let voided = ahead_then_hourly(
         units,
-        vec![Box::new(Snow::new(Ok(Arc::new(snow::Content::new(cells, winter)))))],
+        vec![Box::new(Snow::new(Ok(Arc::new(snow::Content::new(cells, winter, MapSize { width: 64, height: 64 }, MapDefines::test())))))],
         8,
         24,
         |layer, hour| layer.any().downcast_ref::<Snow>().unwrap().made_through() >= Some(hour),

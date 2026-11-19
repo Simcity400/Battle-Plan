@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use installed_content_core::map::MapData;
+use replay_data::rows::ProvinceRow;
 
 use super::fixed::{self, Point, SCALE, Smoothing};
 
@@ -37,8 +38,24 @@ pub struct ChainWorld<'a> {
 /// Province raster and recorded controllers compared by the offset probe.
 pub struct Raster<'a> {
     pub map: &'a MapData,
-    pub controllers: &'a BTreeMap<u32, u32>,
+    pub controllers: Controllers<'a>,
     pub links: &'a BTreeMap<u32, u32>,
+}
+
+/// Each province's recorded controller, read from the hour's rows themselves: they are ascending
+/// by id, so a probe searches them instead of a map built for every plan.
+#[derive(Clone, Copy)]
+pub struct Controllers<'a>(&'a [ProvinceRow]);
+
+impl<'a> Controllers<'a> {
+    pub fn of(rows: &'a [ProvinceRow]) -> Self {
+        Self(rows)
+    }
+
+    fn get(self, province: u32) -> Option<u32> {
+        let at = self.0.binary_search_by_key(&province, |row| row.id).ok()?;
+        Some(self.0[at].controller)
+    }
 }
 
 impl Raster<'_> {
@@ -58,7 +75,7 @@ impl Raster<'_> {
         if target == 0 {
             return false;
         }
-        let (Some(&a), Some(&b)) = (self.controllers.get(&source), self.controllers.get(&target))
+        let (Some(a), Some(b)) = (self.controllers.get(source), self.controllers.get(target))
         else {
             return false;
         };
@@ -280,6 +297,11 @@ fn offset_points(
 mod tests {
     use super::*;
 
+    /// Province rows of `(id, controller)` pairs, ascending by id as the hour's rows are.
+    fn provinces(each: &[(u32, u32)]) -> Vec<ProvinceRow> {
+        each.iter().map(|&(id, controller)| ProvinceRow { id, controller, ..ProvinceRow::default() }).collect()
+    }
+
     fn map(width: u32, height: u32, ids: Vec<u32>) -> MapData {
         MapData {
             width,
@@ -395,11 +417,12 @@ mod tests {
         let mut m = map(5, 5, vec![2; 25]);
         m.province_ids[6] = 3;
         m.province_ids[7] = 3;
-        let controllers = BTreeMap::from([(1, 10), (2, 20), (3, 11)]);
+        let rows = provinces(&[(1, 10), (2, 20), (3, 11)]);
+        let controllers = Controllers::of(&rows);
         let links = BTreeMap::from([(10, 10), (11, 10)]);
         let raster = Raster {
             map: &m,
-            controllers: &controllers,
+            controllers,
             links: &links,
         };
         let kept = [[1, 1], [2, 1], [3, 1]];
@@ -419,11 +442,12 @@ mod tests {
         // Bitmap rows run downward: province 2 is the north row (z = 2),
         // province 1 the two rows below it.
         let m = map(3, 3, vec![2, 2, 2, 1, 1, 1, 1, 1, 1]);
-        let controllers = BTreeMap::new();
+        let rows = provinces(&[]);
+        let controllers = Controllers::of(&rows);
         let links = BTreeMap::new();
         let raster = Raster {
             map: &m,
-            controllers: &controllers,
+            controllers,
             links: &links,
         };
         // West (-1, 0) turns by -90 degrees to (0, 1): plus is north (the
@@ -438,11 +462,12 @@ mod tests {
     #[test]
     fn redirected_pixels_keep_the_original_target_probe_and_pair_overlap_units() {
         let m = map(3, 3, vec![3, 3, 3, 1, 1, 1, 1, 1, 1]);
-        let controllers = BTreeMap::from([(1, 10), (3, 30)]);
+        let rows = provinces(&[(1, 10), (3, 30)]);
+        let controllers = Controllers::of(&rows);
         let links = BTreeMap::new();
         let raster = Raster {
             map: &m,
-            controllers: &controllers,
+            controllers,
             links: &links,
         };
         let borders = BTreeMap::from([((1, 3), vec![[0, 1], [1, 1]])]);
@@ -476,11 +501,12 @@ mod tests {
     #[test]
     fn only_offset_chains_resubmit_and_the_extra_unit_does_not_saturate_the_pair_byte() {
         let m = map(3, 5, vec![1; 15]);
-        let controllers = BTreeMap::from([(1, 10)]);
+        let rows = provinces(&[(1, 10)]);
+        let controllers = Controllers::of(&rows);
         let links = BTreeMap::new();
         let raster = Raster {
             map: &m,
-            controllers: &controllers,
+            controllers,
             links: &links,
         };
         let borders = BTreeMap::from([((1, 2), vec![[0, 1], [1, 1], [2, 1]])]);

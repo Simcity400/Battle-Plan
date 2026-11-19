@@ -4,6 +4,7 @@ import type { MapBounds } from '../shell/api';
 import type { MapOptions } from '../shell/api';
 import type { DashboardClient, DashboardMapState, DashboardMapView, MapOptionsEvent, MapToggle } from './client';
 import { PickerOptions } from './mapPicker';
+import { viewsKey } from './mapPlayback';
 import { ShownError } from './queryError.ts';
 import type { Failure } from './queryError';
 import { perfLog } from '../shell/perf';
@@ -16,7 +17,7 @@ import type { PlaybackController, PlaybackSnapshot } from './playback';
 /** A picker toggle as its failure names it. */
 const TOGGLE_NAMES: Record<MapToggle['setting'], string> = { dayNight: 'Day/night cycle', alliedPlans: 'Allied battle plans', fog: 'Fog of war' };
 
-export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible'>;
+export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible' | 'composedAt'>;
 /** Where a surface was last measured; `onScreen` when both its body and visible part have area. */
 interface Layout { bounds: MapBounds; clip: MapBounds; onScreen: boolean }
 interface Surface { element: HTMLElement; target: (clock: PlaybackSnapshot) => MapTarget | null; layout: Layout | null; present: boolean }
@@ -334,6 +335,7 @@ export class MapViewsStore {
     if (!this.viewport || !this.active) return;
     if (this.layoutDirty) { this.layoutDirty = false; this.measure(this.viewport); }
     const clock = this.clock.getSnapshot();
+    const composedAt = this.clock.composedAt();
     const views: DashboardMapView[] = [];
     for (const [id, surface] of this.surfaces) {
       const target = surface.target(clock);
@@ -341,7 +343,7 @@ export class MapViewsStore {
       if (!target || !surface.layout) continue;
       const { bounds, clip, onScreen } = surface.layout;
       const visible = onScreen && !this.hidden && !document.hidden && !this.states.get(id)?.error;
-      const view = { id, ...target, options: this.viewOptions(id, target.options), bounds, clip, visible };
+      const view = { id, ...target, composedAt, options: this.viewOptions(id, target.options), bounds, clip, visible };
       views.push(view);
       this.lastViews.set(id, view);
     }
@@ -357,7 +359,7 @@ export class MapViewsStore {
       while (this.pending) {
         const views = this.pending;
         this.pending = null;
-        const key = JSON.stringify(views);
+        const key = viewsKey(views);
         if (key === this.applied) continue;
         try { await this.client.setMapViews(views); this.applied = key; }
         catch (cause) { this.applied = ''; this.fail(errorMessage(cause)); }

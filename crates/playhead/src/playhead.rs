@@ -61,15 +61,29 @@ pub struct Settings {
     pub ahead: u32,
     /// Steps built past the head, at most, unless a lead asks more ([`Playhead::lead`]).
     pub ring: usize,
-    /// The clock's game hours a second at the start, and frames a second: a step is
-    /// `speed / rate` hours, at least one.
+    /// The clock's game hours a second at the start, and the publications a second it starts
+    /// stepping for ([`Playhead::frame_rate`]): a step is `speed / rate` hours, at least one.
     pub speed: f64,
     pub rate: f64,
+    /// Called first on each thread the playhead starts, so the host gives it a class. The
+    /// stepper holds the ring a reader's frame takes, so it must not run below that reader.
+    pub entering: Option<fn(Thread)>,
+}
+
+/// A thread the playhead starts, as [`Settings::entering`] is told of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Thread {
+    /// Builds the steps and holds the ring while it publishes one.
+    Stepper,
+    /// Takes lanes of a step the stepper waits for.
+    Step,
+    /// Reads parts ahead; no frame waits for it.
+    Fetch,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 3, speed: 1440.0, rate: 60.0 }
+        Self { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 3, speed: 1440.0, rate: 60.0, entering: None }
     }
 }
 
@@ -148,6 +162,11 @@ pub struct Declared {
     pub columns: Vec<usize>,
     pub keyed: bool,
     pub passing: bool,
+    /// Each hour of a step that wrote the table carries its own change set beside the step's
+    /// ([`Step::hours_of`]), so a reader can date a change at the hour it happened instead of at
+    /// the interval's end. It changes nothing the lane reads or holds: the same walk of the file
+    /// fills both.
+    pub hourly: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -187,6 +206,8 @@ struct Selected {
     columns: Vec<usize>,
     keyed: bool,
     passing: bool,
+    /// Any reader asked for its hours ([`Declared::hourly`]).
+    hourly: bool,
     readings: Vec<Reading>,
 }
 
@@ -285,6 +306,8 @@ pub struct Counters {
     pub seeks: u64,
     /// Lanes sought for a table new to the lanes or whose columns changed.
     pub joins: u64,
+    /// Lanes prepared for the next piece: one a table, not one a table a declaration.
+    pub piece_prepares: u64,
     /// Tables such a lane brought, each at the hour the frames were at, paused or playing.
     pub joins_at_head: u64,
     /// Not counted since no join holds a lane or a step: kept for the reports that read it.
@@ -337,6 +360,16 @@ pub struct Counters {
     /// wake) whenever either moves, so a caller can wait for a join's read to have had its turn.
     pub joins_open: u64,
     pub ripe_checks: u64,
+    /// Piece boundaries applied as a step: the crossings made, the tables carried over by one, the
+    /// tables reset in one because no change set carries them (a log), the rows and cells the
+    /// crossings named, and the stepper's nanoseconds in them, summed and at the most.
+    pub pieces_crossed: u64,
+    pub crossed_tables: u64,
+    pub crossed_resets: u64,
+    pub crossed_rows: u64,
+    pub crossed_cells: u64,
+    pub cross_ns: u64,
+    pub cross_most_ns: u64,
     /// The newest declaration the stepper has applied ([`Playhead::declarations`]): with it equal
     /// and no join open, every table declared so far has been read and landed or was held already.
     pub declarations_applied: u64,
@@ -614,6 +647,19 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The lock, or none while another thread holds it: what a reader's frame takes. A frame asks
+/// again the next frame; tests ask once, so for them it waits.
+fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    if cfg!(any(test, feature = "test-support")) {
+        return Some(lock(mutex));
+    }
+    match mutex.try_lock() {
+        Ok(held) => Some(held),
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
 impl Control {
     /// Reader `who` stands at `head`. The head is the furthest any reader stands; asking the head
     /// it stands at is a frame that finds it standing.
@@ -630,6 +676,16 @@ impl Control {
 }
 
 impl Shared {
+    /// Wakes the stepper without waiting: a call that finds the control held leaves it to the
+    /// next one, which every frame makes ([`Consumer::advance`]).
+    fn try_nudge(&self) {
+        if let Some(mut control) = try_lock(&self.control) {
+            control.version += 1;
+            drop(control);
+            self.wake.notify_all();
+        }
+    }
+
     fn nudge(&self, change: impl FnOnce(&mut Control)) {
         let mut control = lock(&self.control);
         change(&mut control);
@@ -638,10 +694,17 @@ impl Shared {
         self.wake.notify_all();
     }
 
-    fn ask(&self, who: Option<usize>, head: Hour) {
+    /// Reader `who` stands at `head`; false while another thread holds the control, which a
+    /// reader's frame never waits for.
+    fn ask(&self, who: Option<usize>, head: Hour) -> bool {
         let head = self.timeline.clamp(head);
-        lock(&self.control).ask(who, head);
+        let Some(mut control) = try_lock(&self.control) else {
+            return false;
+        };
+        control.ask(who, head);
+        drop(control);
         self.wake.notify_all();
+        true
     }
 
     fn seek(&self, hour: Hour) {
@@ -823,6 +886,8 @@ struct Item {
     predicted: f64,
     slot: Slot,
     changes: Changes,
+    /// The step's hours of a table read hourly, filled beside `changes`.
+    hours: Option<Vec<Changes>>,
     result: io::Result<()>,
 }
 
@@ -832,7 +897,7 @@ impl Batch {
         loop {
             let Some(mut item) = lock(&self.queue).pop() else { break };
             took = true;
-            item.result = step_slot(&mut item.slot, self.to, &mut item.changes);
+            item.result = step_slot(&mut item.slot, self.to, &mut item.changes, item.hours.as_mut());
             let mut done = lock(&self.done);
             done.push(item);
             let last = self.left.fetch_sub(1, Ordering::AcqRel) == 1;
@@ -854,11 +919,12 @@ impl Batch {
     }
 }
 
-/// Steps a lane to `to`; the table is short by the hours it stops before.
-fn step_slot(slot: &mut Slot, to: Hour, changes: &mut Changes) -> io::Result<()> {
+/// Steps a lane to `to`; the table is short by the hours it stops before. With `hours` each hour
+/// of the step that wrote the table leaves its own change set there ([`Step::hours_of`]).
+fn step_slot(slot: &mut Slot, to: Hour, changes: &mut Changes, hours: Option<&mut Vec<Changes>>) -> io::Result<()> {
     let from = slot.lane.head().unwrap_or(to);
     let started = Instant::now();
-    slot.lane.step(to, changes)?;
+    slot.lane.step_hours(to, changes, hours)?;
     let ns = started.elapsed().as_nanos() as f64;
     let hours = (to - from).max(1) as f64;
     slot.cost = slot.cost * 0.75 + ns / hours * 0.25;
@@ -878,7 +944,10 @@ pub struct Playhead {
 }
 
 /// One reader's frame-side view of the steps: sees every step once, and takes the states rebuilt
-/// for its reader.
+/// for its reader. The calls a frame makes every frame ([`Self::advance`], [`Self::take`],
+/// [`Self::ahead`], [`Self::reaches`]) wait for nothing: finding the ring or the control held by
+/// another thread, they do nothing and the next frame asks again. Only a seek's reset waits, to
+/// start the clock at the hour sought before the frame draws it.
 pub struct Consumer {
     shared: Arc<Shared>,
     id: usize,
@@ -890,36 +959,52 @@ pub struct Consumer {
 impl Consumer {
     /// Appends to `out` the steps not taken yet whose last hour `head` has reached, in order: those
     /// built, and those made for this consumer alone (a table its reader declared, landed at the
-    /// hour it had taken, or [`Self::land`]), each a step of no hours. Never waits on a step; a step goes back to the ring when every holder drops it. Taking a
-    /// seek's reset starts the clock from the hour sought, whichever consumer takes it first: no
-    /// consumer's own work on the reset holds the clock for the others.
+    /// hour it had taken, or [`Self::land`]), each a step of no hours. A step goes back to the ring
+    /// when every holder drops it. Taking a seek's reset starts the clock from the hour sought,
+    /// whichever consumer takes it first: no consumer's own work on the reset holds the clock for
+    /// the others. None are taken while another thread holds the ring; they wait there for the
+    /// next call.
     pub fn take(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
         let from = out.len();
-        let taken = lock(&self.shared.ring).take(self.id, head, out);
+        let Some(mut ring) = try_lock(&self.shared.ring) else {
+            return 0;
+        };
+        let taken = ring.take(self.id, head, out);
+        drop(ring);
         if taken > 0 {
             if let Some(reset) = out[from..].iter().find(|step| step.reset) {
+                // The one wait left on this path: a seek's reset must start the clock from the
+                // hour sought before the frame draws it, and it happens once a seek.
                 let now = Instant::now();
                 lock(&self.shared.clock).shown(reset.epoch, now);
             }
-            self.shared.nudge(|_| {});
+            self.shared.try_nudge();
         }
         taken
     }
 
     /// Appends to `out` the steps built and not taken yet, in order, each with its hours: the steps
     /// ahead of the head, to read early. Looking takes none; after a seek they are the new
-    /// position's, from its reset on.
+    /// position's, from its reset on. None while another thread holds the ring.
     pub fn ahead(&self, out: &mut Vec<Arc<Step>>) {
-        lock(&self.shared.ring).ahead(self.id, out);
+        if let Some(ring) = try_lock(&self.shared.ring) {
+            ring.ahead(self.id, out);
+        }
     }
 
-    /// This reader's frame stands at `head`, as often as it likes; never waits. The stepper builds
-    /// toward the furthest head any reader stands at, so a reader whose frames are slow or held
-    /// holds no other: the steps it has not taken wait for it ([`Self::take`]).
+    /// This reader's frame stands at `head`, as often as it likes. The stepper builds toward the
+    /// furthest head any reader stands at, so a reader whose frames are slow or held holds no
+    /// other: the steps it has not taken wait for it ([`Self::take`]). A call that finds the
+    /// control or the ring held says nothing, and the next frame asks again.
     pub fn advance(&self, head: Hour) {
-        self.shared.ask(Some(self.id), head);
-        if !self.asked.swap(true, Ordering::Relaxed) {
-            lock(&self.shared.ring).asks(self.id);
+        if !self.shared.ask(Some(self.id), head) {
+            return;
+        }
+        if !self.asked.load(Ordering::Relaxed)
+            && let Some(mut ring) = try_lock(&self.shared.ring)
+        {
+            ring.asks(self.id);
+            self.asked.store(true, Ordering::Relaxed);
         }
     }
 
@@ -930,8 +1015,9 @@ impl Consumer {
     }
 
     /// Whether a step it has not taken ends at or before `head`: its next take at `head` moves it.
-    pub fn reaches(&self, head: Hour) -> bool {
-        lock(&self.shared.ring).reaches(self.id, head)
+    /// None while another thread holds the ring.
+    pub fn reaches(&self, head: Hour) -> Option<bool> {
+        try_lock(&self.shared.ring).map(|ring| ring.reaches(self.id, head))
     }
 
     /// Lands this consumer at the newest step built, never waiting: every step it has not taken is
@@ -977,7 +1063,7 @@ impl Playhead {
             return Err(invalid("A playhead needs a thread of each kind and a ring of one step"));
         }
         if !(settings.speed > 0.0 && settings.rate > 0.0) {
-            return Err(invalid("A playhead's speed and frame rate are positive"));
+            return Err(invalid("A playhead's speed and publication rate are positive"));
         }
         let (first, last) = (timeline.first(), timeline.last());
         let shared = Arc::new(Shared {
@@ -1014,20 +1100,35 @@ impl Playhead {
             lead: Mutex::new(Lead::NONE),
         });
         let mut threads = Vec::new();
+        let entering = settings.entering;
+        let entered = move |thread: Thread| {
+            if let Some(entering) = entering {
+                entering(thread);
+            }
+        };
         let spawn = |name: String, work: Box<dyn FnOnce() + Send>| std::thread::Builder::new().name(name).spawn(work);
         for at in 0..settings.fetch_threads {
             let held = Arc::clone(&shared);
-            threads.push(spawn(format!("playhead fetch {at}"), Box::new(move || fetcher(&held)))?);
+            threads.push(spawn(format!("playhead fetch {at}"), Box::new(move || {
+                entered(Thread::Fetch);
+                fetcher(&held);
+            }))?);
         }
         let mut helpers = Vec::new();
         for at in 1..settings.step_threads {
             let (send, receive) = mpsc::channel();
             helpers.push(send);
             let held = Arc::clone(&shared);
-            threads.push(spawn(format!("playhead step {at}"), Box::new(move || helper(&held, &receive)))?);
+            threads.push(spawn(format!("playhead step {at}"), Box::new(move || {
+                entered(Thread::Step);
+                helper(&held, &receive);
+            }))?);
         }
         let held = Arc::clone(&shared);
-        let stepper = std::thread::Builder::new().name("playhead stepper".into()).spawn(move || Stepper::new(held, hook, helpers).run())?;
+        let stepper = std::thread::Builder::new().name("playhead stepper".into()).spawn(move || {
+            entered(Thread::Stepper);
+            Stepper::new(held, hook, helpers).run()
+        })?;
         Ok(Self { shared, stepper: Some(stepper), threads })
     }
 
@@ -1124,6 +1225,19 @@ impl Playhead {
     /// frame that asked takes its reset; the clock runs from that frame's `now`.
     pub fn head(&self, now: Instant) -> Hour {
         lock(&self.shared.clock).frame(now)
+    }
+
+    /// The hour the head will stand at `by` from now, for a caller whose own clock stands at `at`:
+    /// the hour a publication begun now is for, so that it stands at the head's own hour by the
+    /// time it is on screen. None while the head stands still and a publication would show the
+    /// hour it already shows: paused, held at a seek, or at the recording's last hour.
+    pub fn head_from(&self, at: Hour, by: Duration) -> Option<Hour> {
+        let last = self.shared.timeline.last();
+        let clock = lock(&self.shared.clock);
+        if !clock.playing() || clock.held().is_some() || at >= last {
+            return None;
+        }
+        Some(at.saturating_add((clock.speed() * by.as_secs_f64()) as Hour).min(last))
     }
 
     /// Follows a page clock already running at `at`. Only a seek abandons the buffered steps.
@@ -1226,7 +1340,7 @@ impl Playhead {
     /// The head's game hour for a caller with no consumer, as often as it likes; never waits. A
     /// reader with a consumer says its own ([`Consumer::advance`]).
     pub fn advance(&self, head: Hour) {
-        self.shared.ask(None, head);
+        let _asked = self.shared.ask(None, head);
     }
 
     /// The frames stand at the head they last asked, as a frame asking it again does
@@ -1237,6 +1351,20 @@ impl Playhead {
         control.version += 1;
         drop(control);
         self.shared.wake.notify_all();
+    }
+
+    /// The clock stands at `hour`, keeping the steps built: a step its readers have taken past it
+    /// is theirs to reset ([`Self::seek`]). A seek under way is replaced by one at `hour`.
+    pub fn place(&self, hour: Hour) {
+        let hour = self.shared.timeline.clamp(hour);
+        let mut clock = lock(&self.shared.clock);
+        if clock.held().is_some() {
+            drop(clock);
+            return self.shared.seek(hour);
+        }
+        clock.place(hour, Instant::now());
+        drop(clock);
+        self.shared.nudge(|_| {});
     }
 
     /// Abandons every step built and every read under way; the next step taken is a reset of
@@ -1264,6 +1392,23 @@ impl Playhead {
                 return Err(error.clone());
             }
             control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Waits until `ready` holds, asked again whenever the playhead's state moves (a step built, a
+    /// seek, an ask); the error that stopped the playhead first, by name. Nothing here is a time
+    /// limit: the wait between asks only bounds a notification missed between them.
+    #[cfg(feature = "test-support")]
+    pub fn wait_for(&self, mut ready: impl FnMut() -> bool) -> Result<(), String> {
+        loop {
+            if ready() {
+                return Ok(());
+            }
+            let control = lock(&self.shared.control);
+            if let Some(error) = &control.error {
+                return Err(error.clone());
+            }
+            drop(self.shared.wake.wait_timeout(control, Duration::from_millis(50)).unwrap_or_else(std::sync::PoisonError::into_inner));
         }
     }
 
@@ -2000,9 +2145,6 @@ impl Stepper {
         }
         let selection = self.selection.clone();
         let mut abandoned: Vec<Box<Prepared>> = Vec::new();
-        if let Some(next) = self.next_piece.take() {
-            abandoned.extend(next.prepared.into_iter().map(Box::new));
-        }
         let reads = |reader: &Reader, table: &usize| selection.get(table).is_some_and(|selected| selected.readings.iter().any(|reading| reading.reader == *reader));
         self.owed.retain(|reader, tables| {
             tables.retain(|table| reads(reader, table));
@@ -2018,6 +2160,15 @@ impl Stepper {
                 (None, Some(at)) => Some(self.slots[at].lane.declared()),
                 (None, None) => None,
             };
+            // The next piece's lane of a table whose union changed was prepared for the old one.
+            if self.made.get(&table).map(|made| (made.columns.as_slice(), made.keyed, made.passing)) != Some(union)
+                && let Some(next) = &mut self.next_piece
+            {
+                next.pending.remove(&table);
+                if let Some(at) = next.prepared.iter().position(|prepared| prepared.lane.table() == table) {
+                    abandoned.push(Box::new(next.prepared.swap_remove(at)));
+                }
+            }
             if held == Some(union) {
                 // A reader keeping no state of its own reads the change sets from the next step on.
                 for reading in fresh.filter(|reading| reading.rebuild.is_some()) {
@@ -2309,7 +2460,7 @@ impl Stepper {
                 }
                 let before = self.slots[place].lane.head();
                 let mut changes = Changes::default();
-                step_slot(&mut self.slots[place], at, &mut changes)?;
+                step_slot(&mut self.slots[place], at, &mut changes, None)?;
                 moved |= self.slots[place].lane.head() != before;
                 round.push(Some(changes));
             }
@@ -2331,7 +2482,7 @@ impl Stepper {
                     continue;
                 }
                 let mut changes = Changes::default();
-                step_slot(&mut self.slots[place], span.last, &mut changes)?;
+                step_slot(&mut self.slots[place], span.last, &mut changes, None)?;
                 self.counters.stalls += u64::from(changes.stalled());
                 self.slots[place].ended(span.last, keep);
                 round.push(Some(changes));
@@ -2805,12 +2956,16 @@ impl Stepper {
 
     /// Prepares the next piece's lanes once the newest step is near its piece's end.
     fn prepare_next_piece(&mut self) {
-        let (Some(newest), None) = (self.newest, &self.next_piece) else { return };
-        let pieces = &self.shared.timeline.pieces;
+        let Some(newest) = self.newest else { return };
         let next = self.piece + 1;
-        if next >= pieces.len() {
+        if next >= self.shared.timeline.pieces.len() {
+            self.let_next_piece_go();
             return;
         }
+        if self.next_piece.as_ref().is_some_and(|held| held.piece != next) {
+            self.let_next_piece_go();
+        }
+        let pieces = &self.shared.timeline.pieces;
         let quantum = self.quantum();
         let lead = (quantum * (self.ring_size() as Hour + self.shared.settings.ahead as Hour)).max((self.pace * PREPARE_SECONDS) as Hour);
         if pieces[self.piece].last - newest > lead {
@@ -2819,11 +2974,17 @@ impl Stepper {
         let (run, hour) = (pieces[next].run, pieces[next].first);
         let through = hour + self.shared.settings.ahead as Hour * quantum;
         let held_run = &self.shared.pages.runs()[run];
-        let mut pending = BTreeMap::new();
+        // What the piece already holds or waits for stands: a declaration since let go of the
+        // tables it changed ([`Self::apply_selection`]), and those alone are prepared again.
+        let mut piece = self.next_piece.take().unwrap_or(NextPiece { piece: next, pending: BTreeMap::new(), prepared: Vec::new() });
         let mut jobs = Vec::new();
         for (&table, selected) in &self.selection {
+            if piece.pending.contains_key(&table) || piece.prepared.iter().any(|prepared| prepared.lane.table() == table) {
+                continue;
+            }
             self.generation += 1;
-            pending.insert(table, self.generation);
+            self.counters.piece_prepares += 1;
+            piece.pending.insert(table, self.generation);
             let prepare = Prepare {
                 epoch: self.epoch,
                 purpose: Purpose::Piece(next),
@@ -2841,7 +3002,16 @@ impl Stepper {
             jobs.push(((1, -seek_cost(held_run, table, hour)), Job::Prepare(prepare)));
         }
         self.shared.queue(jobs);
-        self.next_piece = Some(NextPiece { piece: next, pending, prepared: Vec::new() });
+        self.next_piece = Some(piece);
+    }
+
+    /// The next piece's prepared lanes let go: it is no longer the piece after the one stepped.
+    fn let_next_piece_go(&mut self) {
+        if let Some(held) = self.next_piece.take()
+            && !held.prepared.is_empty()
+        {
+            self.shared.free(held.prepared);
+        }
     }
 
     /// A step no consumer holds, its buffers kept, or a new one; states left in it are freed.
@@ -2852,6 +3022,7 @@ impl Stepper {
         }
         let mut step = step.unwrap_or_default();
         let held = Arc::get_mut(&mut step).expect("a reclaimed step is held once");
+        self.retire_changes(std::mem::take(&mut held.hours));
         let left = std::mem::take(&mut *lock(&held.states));
         if !left.is_empty() {
             self.shared.free(left);
@@ -3061,7 +3232,7 @@ impl Stepper {
                         continue;
                     }
                     let mut changes = Changes::default();
-                    step_slot(slot, goals[table], &mut changes)?;
+                    step_slot(slot, goals[table], &mut changes, None)?;
                     stepped |= slot.lane.head() != before;
                     tables.push(changes);
                 }
@@ -3073,7 +3244,7 @@ impl Stepper {
                         let Some(slot) = slot.as_mut() else { continue };
                         if !tables.iter().any(|changes: &Changes| changes.table() == *table) {
                             let mut changes = Changes::default();
-                            step_slot(slot, goals[table], &mut changes)?;
+                            step_slot(slot, goals[table], &mut changes, None)?;
                             tables.push(changes);
                         }
                     }
@@ -3211,10 +3382,19 @@ impl Stepper {
         }
     }
 
-    /// At a piece's first hour: its prepared lanes replace the last piece's, and the step is a
-    /// reset of every table with every reader's state; when they are not ready, nothing is built.
+    /// At a piece's first hour: its prepared lanes replace the last piece's, and the step carries
+    /// each table's crossing — the rows and the cells that differ between the two sessions' states
+    /// an hour apart ([`crate::boundary::crossed`]) — so the readers take the boundary as they take
+    /// any step. A table no change set carries over (a log, whose rows are its own run's ordinals)
+    /// is reset there alone, with its readers' states. When the lanes are not ready, nothing is built.
     fn enter_piece(&mut self, piece: usize) -> io::Result<bool> {
-        let ready = self.next_piece.as_ref().is_some_and(|next| next.piece == piece && next.pending.is_empty());
+        // Every table declared has a lane: a declaration lets go of the ones it changed, which the
+        // next loop prepares again ([`Self::prepare_next_piece`]).
+        let ready = self.next_piece.as_ref().is_some_and(|next| {
+            next.piece == piece
+                && next.pending.is_empty()
+                && self.selection.keys().all(|table| next.prepared.iter().any(|held| held.lane.table() == *table))
+        });
         if !ready {
             if !self.waiting_piece {
                 self.waiting_piece = true;
@@ -3223,7 +3403,50 @@ impl Stepper {
             return Ok(false);
         }
         self.waiting_piece = false;
-        let next = self.next_piece.take().expect("ready");
+        let mut next = self.next_piece.take().expect("ready");
+        let mut prepared = std::mem::take(&mut next.prepared);
+        prepared.sort_by_key(|held| held.lane.table());
+        let hour = self.shared.timeline.pieces[piece].first;
+        let started = Instant::now();
+        let mut step = self.fresh_step();
+        let made = Arc::get_mut(&mut step).expect("a fresh step is held once");
+        let mut buffers = std::mem::take(&mut made.tables).into_iter();
+        let mut tables = Vec::with_capacity(prepared.len());
+        let mut states = Vec::new();
+        let (mut crossed, mut resets, mut rows, mut cells) = (0, 0, 0, 0);
+        // Built from the old lanes against the new, before the old ones go.
+        for prepared in &mut prepared {
+            let table = prepared.lane.table();
+            let mut changes = buffers.next().unwrap_or_default();
+            let at = self.slots.iter().position(|slot| slot.table == table);
+            let carried = match at {
+                Some(at) => crate::boundary::crossed(&self.slots[at].lane, &mut prepared.lane, &mut changes)?,
+                None => None,
+            };
+            match carried {
+                Some(held) => {
+                    crossed += 1;
+                    rows += u64::from(held.gone) + u64::from(held.born);
+                    cells += u64::from(held.cells);
+                }
+                None => {
+                    resets += 1;
+                    prepared.lane.reset_into(&mut changes)?;
+                    self.owed.values_mut().for_each(|owed| {
+                        owed.remove(&table);
+                    });
+                }
+            }
+            // Every table's state rides in the step, as a reset's does: a reader takes the one of a
+            // table reset here, and the judge of the crossing those of the tables carried over
+            // ([`crate::boundary::crossed`] is exact, and the judge is what says so). What no reader
+            // takes is freed on a fetcher with the step the ring reclaims ([`Self::fresh_step`]).
+            for (reader, state) in std::mem::take(&mut prepared.states) {
+                states.push(Rebuilt { reader, table, state });
+            }
+            tables.push(changes);
+        }
+        self.retire_changes(buffers.collect());
         let lanes: Vec<Box<Lane>> = std::mem::take(&mut self.slots).into_iter().map(|slot| slot.lane).collect();
         if !lanes.is_empty() {
             self.shared.free(lanes);
@@ -3232,26 +3455,41 @@ impl Stepper {
         if !abandoned.is_empty() {
             self.shared.free(abandoned);
         }
-        // The piece's reset brings every reader its state of every table.
-        self.owed.clear();
-        let mut prepared = next.prepared;
-        prepared.sort_by_key(|held| held.lane.table());
-        let mut states = Vec::new();
         for held in prepared {
-            let Prepared { generation, lane, states: rebuilt, .. } = held;
-            let table = lane.table();
-            states.extend(rebuilt.into_iter().map(|(reader, state)| Rebuilt { reader, table, state }));
+            let Prepared { generation, lane, .. } = held;
             self.slots.push(Slot::new(generation, lane));
         }
         self.piece = piece;
-        let hour = self.shared.timeline.pieces[piece].first;
-        self.publish_reset(hour, Some(piece), states, Built::default())?;
+        let mut built = Built { threads: 1, ..Built::default() };
+        for table in &tables {
+            built.cells += table.cells() as u64;
+            built.rows += table.rows() as u64;
+            built.bytes += table.payload() as u64;
+        }
+        built.fetched = std::mem::take(&mut self.fetching);
+        let ns = started.elapsed().as_nanos() as u64;
+        built.ns = ns;
+        let counted = &mut self.counters;
+        counted.pieces_crossed += 1;
+        counted.crossed_tables += crossed;
+        counted.crossed_resets += resets;
+        counted.crossed_rows += rows;
+        counted.crossed_cells += cells;
+        counted.cross_ns += ns;
+        counted.cross_most_ns = counted.cross_most_ns.max(ns);
+        let keep = self.ends_kept();
+        self.slots.iter_mut().for_each(|slot| slot.ended(hour, keep));
+        made.tables = tables;
+        *lock(&made.states) = states;
+        (made.first, made.last, made.piece, made.reset, made.built) = (hour, hour, Some(piece), false, built);
+        self.publish(step)?;
+        self.slots.iter_mut().for_each(|slot| slot.lane.clear_texts());
         Ok(true)
     }
 
     /// Every lane stepped to `end`.
     fn step_to(&mut self, start: Hour, end: Hour, piece: usize) -> io::Result<()> {
-        let started = Instant::now();
+        let (started, cycles) = (Instant::now(), replay_frame::cpu::thread_cycles());
         let mut step = self.fresh_step();
         let held = Arc::get_mut(&mut step).expect("a fresh step is held once");
         let mut buffers = std::mem::take(&mut held.tables);
@@ -3260,7 +3498,8 @@ impl Stepper {
             changes.push(buffers.get_mut(at).map(std::mem::take).unwrap_or_default());
         }
         self.retire_changes(buffers.into_iter().filter(|changes| changes.bytes_held() > 0).collect());
-        let threads = self.step_lanes(end, &mut changes)?;
+        let mut hours: Vec<Option<Vec<Changes>>> = self.slots.iter().map(|slot| self.selection.get(&slot.table).is_some_and(|selected| selected.hourly).then(Vec::new)).collect();
+        let threads = self.step_lanes(end, &mut changes, &mut hours)?;
         let mut cursors = Vec::new();
         let keep = self.ends_kept();
         for slot in &mut self.slots {
@@ -3285,8 +3524,11 @@ impl Stepper {
         self.counters.stalled_steps += u64::from(built.stalled > 0);
         built.fetched = std::mem::take(&mut self.fetching);
         held.tables = changes;
+        // In table order, as the lanes are: a reader finds its table's hours by binary search.
+        held.hours = hours.into_iter().flatten().flatten().collect();
         (held.first, held.last, held.piece, held.reset) = (start, end, Some(piece), false);
         built.ns = started.elapsed().as_nanos() as u64;
+        built.cycles = replay_frame::cpu::thread_cycles().saturating_sub(cycles);
         held.built = built;
         self.publish(step)?;
         Ok(())
@@ -3294,19 +3536,28 @@ impl Stepper {
 
     /// Steps every lane, split over the stepper's threads when the step is predicted large; the
     /// threads that stepped.
-    fn step_lanes(&mut self, end: Hour, changes: &mut [Changes]) -> io::Result<u32> {
+    fn step_lanes(&mut self, end: Hour, changes: &mut [Changes], hours: &mut [Option<Vec<Changes>>]) -> io::Result<u32> {
+        // The hours of a lane covering more of them than the pace's own step are nobody's picture:
+        // a catch-up, and a table taking up the hours a stall left, pass hours no display frame's
+        // head will ever stand at, so such a step carries its whole span as one change set.
+        let quantum = self.quantum();
+        for (slot, hours) in self.slots.iter().zip(hours.iter_mut()) {
+            if slot.lane.head().is_none_or(|head| end - head > quantum) {
+                *hours = None;
+            }
+        }
         let predicted = |slot: &Slot| slot.cost * f64::from((end - slot.lane.head().unwrap_or(end)).max(0) as u32);
         let total: f64 = self.slots.iter().map(predicted).sum();
         if self.helpers.is_empty() || total < SPLIT_NS {
-            for (slot, changes) in self.slots.iter_mut().zip(changes.iter_mut()) {
-                step_slot(slot, end, changes)?;
+            for ((slot, changes), hours) in self.slots.iter_mut().zip(changes.iter_mut()).zip(hours.iter_mut()) {
+                step_slot(slot, end, changes, hours.as_mut())?;
             }
             return Ok(1);
         }
         self.counters.split_steps += 1;
         let mut items = Vec::with_capacity(self.slots.len());
-        for (index, (slot, buffer)) in std::mem::take(&mut self.slots).into_iter().zip(changes.iter_mut()).enumerate() {
-            items.push(Item { index, predicted: predicted(&slot), slot, changes: std::mem::take(buffer), result: Ok(()) });
+        for (index, ((slot, buffer), hours)) in std::mem::take(&mut self.slots).into_iter().zip(changes.iter_mut()).zip(hours.iter_mut()).enumerate() {
+            items.push(Item { index, predicted: predicted(&slot), slot, changes: std::mem::take(buffer), hours: hours.take(), result: Ok(()) });
         }
         items.sort_by(|a, b| a.predicted.total_cmp(&b.predicted));
         let wanted = ((total / SPLIT_NS).ceil() as usize).clamp(2, self.helpers.len() + 1);
@@ -3326,6 +3577,7 @@ impl Stepper {
                 failed.get_or_insert(error);
             }
             changes[item.index] = item.changes;
+            hours[item.index] = item.hours;
             slots.push(item.slot);
         }
         self.slots = slots;
@@ -3438,10 +3690,11 @@ fn union(readers: Vec<(Reader, Declaration)>) -> BTreeMap<usize, Selected> {
     let mut selection: BTreeMap<usize, Selected> = BTreeMap::new();
     for (reader, declaration) in readers {
         for (held, since) in declaration.tables.into_iter().zip(declaration.since) {
-            let entry = selection.entry(held.table).or_insert_with(|| Selected { columns: Vec::new(), keyed: false, passing: false, readings: Vec::new() });
+            let entry = selection.entry(held.table).or_insert_with(|| Selected { columns: Vec::new(), keyed: false, passing: false, hourly: false, readings: Vec::new() });
             entry.columns.extend_from_slice(&held.columns);
             entry.keyed |= held.keyed;
             entry.passing |= held.passing;
+            entry.hourly |= held.hourly;
             let mut columns = held.columns;
             columns.sort_unstable();
             columns.dedup();

@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use installed_content_core::defines::Defines;
+use viewer_foundation::map::free_icons::{Place, Track};
 
 /// The grouping defines, `NDefines.NGraphics` of the matching content.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -105,7 +106,7 @@ pub enum Level {
 }
 
 /// One icon offered to the grouping pass.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Icon {
     /// The icon's grouping layer and sub-type.
     pub kind: u32,
@@ -119,6 +120,9 @@ pub struct Icon {
     pub region: Option<u32>,
     /// The icon's own world anchor before grouping.
     pub anchor: [f32; 3],
+    /// Where the stack stands over the hours this publication covers, when it is moving
+    /// ([`viewer_foundation::map::counter_move::MovementHistory::track`]); none standing still.
+    pub track: Option<Track>,
 }
 
 /// The bounding extents the two `HUGE` defines are compared against:
@@ -288,6 +292,10 @@ pub struct Group {
     pub members: Vec<usize>,
     /// The mean of the members' anchors, which is where the group draws.
     pub anchor: [f32; 3],
+    /// Where the mean of the members' anchors stands over the hours this publication covers: the
+    /// mean of the members' own places at each hour, a member standing still contributing its
+    /// anchor. None while no member moves.
+    pub track: Option<Track>,
 }
 
 /// Rebuild from source cursor zero on a level change, then update group positions.
@@ -313,6 +321,7 @@ pub fn group(
         groups.extend((0..icons.len()).map(|index| Group {
             members: vec![index],
             anchor: [0.0; 3],
+            track: None,
         }));
         update_anchors(&mut groups, icons, levels, extents);
         return groups;
@@ -373,6 +382,7 @@ pub fn group(
             groups.push(Group {
                 members: vec![index],
                 anchor: [0.0; 3],
+                track: None,
             });
             lowest.push(at);
             by_province
@@ -407,22 +417,84 @@ pub fn update_anchors(groups: &mut [Group], icons: &[Icon], levels: &[Level], ex
         }
         icon.anchor
     };
+    // A member's own track and where it stands. A strategic-level member stands on its region's
+    // centre, which does not move with the hours, so it carries no track there either.
+    let moving = |index: usize| -> (Option<Track>, [f32; 3]) {
+        let standing = anchor(index);
+        let track = icons
+            .get(index)
+            .and_then(|icon| icon.track.clone())
+            .filter(|_| standing == icons[index].anchor);
+        (track, standing)
+    };
+    // The members in their own order, not the order they joined in: a mean summed in arrival order
+    // is not the same number twice, and a stopped picture's counters then stand a pixel apart
+    // depending on which member arrived first. The buffer is kept across the groups.
+    let mut ordered: Vec<usize> = Vec::new();
     for group in groups {
-        let count = group.members.len() as f32;
-        // Members astride the date line are unwrapped against the first
-        // member before the sum, and the mean is folded back onto the map.
-        let reference = group.members.first().map_or(0.0, |first| anchor(*first)[0]);
-        let mut sum = [0.0f32; 3];
-        for member in &group.members {
+        let count = group.members.len() as f64;
+        ordered.clear();
+        ordered.extend_from_slice(&group.members);
+        ordered.sort_unstable();
+        // Members astride the date line are unwrapped against the lowest-numbered member before
+        // the sum, and the mean is folded back onto the map.
+        let reference = ordered.first().map_or(0.0, |first| anchor(*first)[0]);
+        let mut sum = [0.0f64; 3];
+        for member in &ordered {
             let mut position = anchor(*member);
             position[0] = unwrap_x(extents.map_width, reference, position[0]);
             for axis in 0..3 {
-                sum[axis] += position[axis];
+                sum[axis] += f64::from(position[axis]);
             }
         }
-        group.anchor = sum.map(|total| total / count);
+        group.anchor = sum.map(|total| (total / count) as f32);
         group.anchor[0] = group.anchor[0].rem_euclid(extents.map_width);
+        group.track = mean_track(&ordered, &moving, extents.map_width, reference, count);
     }
+}
+
+/// Where the mean of `members`' anchors stood at the two hours one publication brackets: the mean
+/// of their own places at each of those hours, a member that is not moving contributing its anchor
+/// at both, so the mean moves exactly as the members do.
+///
+/// A member whose track stands on other hours than the group's contributes its anchor too: an
+/// hour it has no place for is never guessed at. The places are unwrapped against the same
+/// reference the anchor's mean uses and left unwrapped in the track, which folds an interpolated
+/// place onto the map once, so a group crossing the map's seam travels across it.
+///
+/// `members` are in their own order, and the sums are in double precision, so the mean is the same
+/// number whatever order the members joined in; the two hours come from the lowest-numbered member
+/// that moves, for the same reason.
+fn mean_track(
+    members: &[usize],
+    moving: &dyn Fn(usize) -> (Option<Track>, [f32; 3]),
+    width: f32,
+    reference: f32,
+    count: f64,
+) -> Option<Track> {
+    let hours = members.iter().find_map(|member| moving(*member).0)?;
+    let hours: Vec<i32> = hours.places().iter().map(|place| place.hour).collect();
+    let mut sums = vec![[0.0f64; 3]; hours.len()];
+    for member in members {
+        let (track, standing) = moving(*member);
+        // A member whose places stand on other hours than the group's contributes where it
+        // stands at every one of them: an hour it has no place for is never filled in.
+        let mine = track.filter(|track| track.places().iter().map(|place| place.hour).eq(hours.iter().copied()));
+        for (at, sum) in sums.iter_mut().enumerate() {
+            let mut place = mine.as_ref().map_or(standing, |track| track.places()[at].at);
+            place[0] = unwrap_x(width, reference, place[0]);
+            for axis in 0..3 {
+                sum[axis] += f64::from(place[axis]);
+            }
+        }
+    }
+    let places: Vec<Place> = hours
+        .iter()
+        .zip(&sums)
+        .map(|(hour, sum)| Place { hour: *hour, at: sum.map(|total| (total / count) as f32) })
+        .collect();
+    let track = Track::new(&places, width);
+    track.moves().then_some(track)
 }
 
 /// Shifts `x` by whole map widths until it is within half a width of `reference`.

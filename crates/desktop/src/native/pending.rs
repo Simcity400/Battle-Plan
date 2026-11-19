@@ -37,7 +37,9 @@ pub(super) struct Pending {
     pub(super) campaign_map: bool,
     pub(super) bounds: Option<ViewBounds>,
     pub(super) visibility: Option<bool>,
-    pub(super) open: Option<(String, String)>,
+    /// The recording to open and the revision the page expects of it; none when the user
+    /// chose the file and the map reads the revision itself.
+    pub(super) open: Option<(String, Option<String>)>,
     pub(super) seek: Option<SeekTarget>,
     pub(super) maps: Option<Vec<DashboardMapView>>,
     /// The controller message waiting for the viewer, merged with any sent after it
@@ -189,7 +191,7 @@ impl Inner {
                     })
             })
             .flatten();
-            self.pending.open = Some((path, revision));
+            self.pending.open = Some((path, Some(revision)));
             self.pending.seek = self.requested_seek.clone().or(last_position);
         }
     }

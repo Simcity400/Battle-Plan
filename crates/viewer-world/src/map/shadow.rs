@@ -19,6 +19,7 @@
 //! by the current pass. The depth texture retains authored linear sampling;
 //! unsupported FLOAT32_FILTERABLE capability is a named refusal. The casters are
 //! the figures the main camera's cull passed, as the game's are: none off screen.
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use std::cell::Cell;
 use std::io;
 use std::sync::Arc;
@@ -29,6 +30,7 @@ use eframe::wgpu;
 use viewer_foundation::map::camera::{Camera, WATER_HEIGHT};
 use viewer_foundation::map::frame::FrameConstants;
 use viewer_foundation::map::gpu_contract::extent;
+use viewer_foundation::map::textures::{Content, Sampled};
 
 /// Depth-map side length required by the receiver's fixed texel span.
 pub const DEPTH_MAP_SIZE: u32 = 2048;
@@ -301,6 +303,12 @@ struct Buffers {
     buffer_depth: wgpu::TextureView,
     scratch: wgpu::TextureView,
     size: [u32; 2],
+    /// What `buffer` holds, for the next frame's sea-bed pass, which samples it and is drawn
+    /// only while what it reads changes.
+    content: Cell<Content>,
+    /// Whether `buffer` holds [`BUFFER_CLEAR`] in every texel, so clearing it again leaves the
+    /// same bytes and the content it holds is the content it held.
+    cleared: Cell<bool>,
 }
 
 /// Matrices prepared once for native casters and screen-space receivers.
@@ -418,6 +426,8 @@ impl ShadowPass {
                 attachment,
             ),
             size,
+            content: Cell::new(Content::next()),
+            cleared: Cell::new(false),
         };
         self.buffers = Some(buffers);
     }
@@ -450,7 +460,7 @@ impl ShadowPass {
         load: wgpu::LoadOp<f32>,
     ) -> Option<wgpu::RenderPass<'a>> {
         let buffers = self.buffers.as_ref()?;
-        Some(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        Some(encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("shadow depth map"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &buffers.depth_map,
@@ -492,7 +502,7 @@ impl ShadowPass {
         load: wgpu::LoadOp<f32>,
     ) -> Option<wgpu::RenderPass<'a>> {
         let buffers = self.buffers.as_ref()?;
-        Some(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        Some(encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("shadow buffer"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &buffers.buffer,
@@ -549,7 +559,7 @@ impl ShadowPass {
                 &super::shadow_blur::constants(buffers.size[axis], height),
                 source,
             )?;
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
@@ -581,12 +591,18 @@ impl ShadowPass {
             mark(encoder, label);
         }
         self.drawn.set(true);
+        buffers.content.set(Content::next());
+        buffers.cleared.set(false);
         Ok(())
     }
 
     /// Receiver-only frames still bind the full fog target.
     pub fn finish_receivers(&self) {
         self.drawn.set(true);
+        if let Some(buffers) = &self.buffers {
+            buffers.content.set(Content::next());
+            buffers.cleared.set(false);
+        }
     }
 
     /// Clears the one-texel stand-in to the buffer's own clear value, which is
@@ -598,8 +614,15 @@ impl ShadowPass {
         if let Some(pass) = self.prepass_pass(encoder, wgpu::LoadOp::Clear(1.0)) {
             drop(pass);
         }
+        // The screen target now holds the buffer's clear value in every texel, which is what
+        // it already held if the last frame cleared it too: the same bytes are not new content.
+        if let Some(buffers) = &self.buffers
+            && !buffers.cleared.replace(true)
+        {
+            buffers.content.set(Content::next());
+        }
         encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
+            .counted_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow buffer (clear value)"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.clear_view,
@@ -629,15 +652,16 @@ impl ShadowPass {
         }
     }
 
-    /// Pre-frame binds the retained shadow-screen target regardless of the current cutoff.
+    /// Pre-frame binds the retained shadow-screen target regardless of the current cutoff, with
+    /// what it holds, so the sea-bed pass that samples it is drawn again only when it changed.
     /// Native allocation supplies no initial data. wgpu's first-frame
     /// zero initialization is not a native colour claim; dumps warm up first.
-    pub fn refraction_texture(&self) -> &wgpu::TextureView {
-        &self
-            .buffers
-            .as_ref()
-            .expect("resized before rendering")
-            .buffer
+    pub fn refraction_sampled(&self) -> Sampled<'_> {
+        let buffers = self.buffers.as_ref().expect("resized before rendering");
+        Sampled {
+            view: &buffers.buffer,
+            content: Some(buffers.content.get()),
+        }
     }
 
     /// Whether the last frame ran the chain, for reporting.

@@ -23,9 +23,6 @@ pub struct GuiAssets<'a> {
     pub flags: Option<GuiFlags<'a>>,
     pub physical_viewport: Option<[i32; 2]>,
     pub portrait_textures: Option<PortraitTextures<'a>>,
-    /// Wait for an earlier overlay owner's stateful atlas/portrait requests. Ordinary
-    /// immutable GUI reads do not wait. The caller must hold no resource/schedule lock.
-    pub before_dynamic: Option<&'a dyn Fn()>,
 }
 
 /// Flag resolution and the two atlases used by GUI text and shields.
@@ -48,9 +45,6 @@ impl native_gui::Resources for GuiAssets<'_> {
     }
 
     fn portrait_texture(&self, name: &[u8]) -> Option<Texture> {
-        if let Some(wait) = self.before_dynamic {
-            wait();
-        }
         self.portrait_textures.and_then(|resolve| resolve(name))
     }
 
@@ -83,9 +77,6 @@ impl native_gui::Resources for GuiAssets<'_> {
     }
 
     fn shield_flag(&self, small: bool, index: i32) -> Result<Option<(Texture, [f32; 4])>, String> {
-        if let Some(wait) = self.before_dynamic {
-            wait();
-        }
         match &self.flags {
             Some(flags) => native_flags::shield_flag(flags.source, small, index),
             None => Err(NO_COUNTRIES.to_owned()),
@@ -93,9 +84,6 @@ impl native_gui::Resources for GuiAssets<'_> {
     }
 
     fn text_flag(&self, tag: &str) -> Result<Option<Texture>, String> {
-        if let Some(wait) = self.before_dynamic {
-            wait();
-        }
         match &self.flags {
             Some(flags) => native_flags::text_flag(flags.source, tag),
             None => Err(NO_COUNTRIES.to_owned()),
@@ -103,9 +91,6 @@ impl native_gui::Resources for GuiAssets<'_> {
     }
 
     fn resolved_text_flag(&self, key: &[u8]) -> Result<Option<Texture>, String> {
-        if let Some(wait) = self.before_dynamic {
-            wait();
-        }
         match &self.flags {
             Some(flags) => native_flags::resolved_text_flag(flags.small, key),
             None => Err(NO_COUNTRIES.to_owned()),

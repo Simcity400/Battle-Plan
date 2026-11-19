@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use super::{Front, LandMarkers, TABLES};
 use crate::{
     layers::{
@@ -12,7 +13,6 @@ use crate::{
 use installed_content_core::movement::MovementMap;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, Opaque, TableId};
-use std::{sync::Arc, time::Duration};
 use viewer_counters::map::counters::combat_markers::{LandCombatDefines, MarkerOutcome};
 use viewer_foundation::{
     engaged::Engaged,
@@ -109,10 +109,7 @@ fn history() -> Arc<History> {
     let mut covered = Covered::new(0);
     covered.last = 399;
     covered.viewers.push((0, 0));
-    covered.points[LAND].insert((100, 0), vec![(0, Engaged::Yes)]);
-    covered.points[LAND].insert((100, 1), vec![(0, Engaged::Yes)]);
-    covered.points[LAND].insert((101, 0), vec![(0, Engaged::No)]);
-    covered.points[LAND].insert((101, 1), vec![(0, Engaged::No)]);
+    covered.fold(false).record(LAND, 0, &[((100, 0), Engaged::Yes), ((100, 1), Engaged::Yes), ((101, 0), Engaged::No), ((101, 1), Engaged::No)], &[]);
     history.branches.lock().unwrap().insert(0, covered);
     history
 }
@@ -214,8 +211,7 @@ fn a_combat_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no budget, a unit a frame to the newest.
-    side.set_budget(Duration::ZERO);
+    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
@@ -342,7 +338,7 @@ fn the_layer_declares_against_this_schema() {
     assert_eq!(inputs.into_tables().len(), TABLES.len());
 }
 
-/// Combat 100's sides and its two divisions' strength changed in three steps while the budget is
+/// Combat 100's sides and its two divisions' strength changed in three steps while the settling is
 /// spent: `apply` reads no row (on the base it read each changed division's key and every marked
 /// combat's province) and makes nothing, the work is carried, and the settle after makes the
 /// combat once, from its newest values.
@@ -361,7 +357,6 @@ fn steps_mark_their_combats_reading_no_row_and_a_combat_changed_in_several_is_ma
     reach(&mut side, 150);
     side.settle_all().unwrap();
     let made = layer(&side).made();
-    side.set_budget(Duration::ZERO);
     let settles = side.hold_settles();
     reach(&mut side, 208);
     assert_eq!(layer(&side).applied_reads(), 0, "apply marks; it reads no row");
@@ -369,5 +364,23 @@ fn steps_mark_their_combats_reading_no_row_and_a_combat_changed_in_several_is_ma
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
     assert_eq!(layer(&side).made() - made, 1, "combat 100, changed in three steps, is made once");
     assert_eq!(outcome(&side, 100).unwrap().marker.unwrap().frame, Some(1), "from the newest indicator");
+    settled_equals_composed(&mut side);
+}
+
+/// Hours alone move the layer's head: on the base every stepped hour collected and sorted every
+/// live combat, read every one's kept frame from the index and walked every made outcome against
+/// it. A stretch of hours that changes no row and no kept frame marks and makes nothing.
+#[test]
+fn hours_that_change_no_combat_mark_and_make_nothing() {
+    let units = campaign("land quiet hours", |_, _| Status::Complete, |_, _| {});
+    let mut side = side_for(units);
+    reach(&mut side, 150);
+    side.settle_all().unwrap();
+    let held = (layer(&side).made(), layer(&side).marked(), layer(&side).frames_read());
+    assert!(outcome(&side, 100).is_some(), "combat 100 is drawn before the quiet hours");
+    reach(&mut side, 260);
+    side.settle_all().unwrap();
+    let now = (layer(&side).made(), layer(&side).marked(), layer(&side).frames_read());
+    assert_eq!(now, held, "110 hours changed nothing: no frame read, nothing marked, nothing made");
     settled_equals_composed(&mut side);
 }

@@ -5,7 +5,7 @@
 //! A region the table does not hold has no kind; an unavailable, unrecorded or gap table holds
 //! no region, as today.
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, Num, View};
+use super::{Carried, Settling, Dirty, Gpu, Inputs, Layer, Num, View};
 use crate::playhead_host::mirror::{Mirror, Mirrors};
 use playhead::Step;
 use replay_columnar::manifest::Status;
@@ -39,13 +39,19 @@ pub struct Weather {
     /// was laid out for: the particles' seeds and continuity follow the hour, as today's do.
     branch: replay_data::BranchId,
     installed: Option<(replay_data::Hour, bool)>,
+    /// A settle changed a region's kind since the last install. The effects pass keeps every
+    /// particle of a region whose kind is unchanged, so an hour that turns no region's weather
+    /// needs no install at all.
+    kinds_changed: bool,
     hour: Option<replay_data::Hour>,
     view: Option<(viewer_foundation::map::camera::Placement, [u32; 2])>,
+    /// The field the install hands the effects pass, made on the side's thread ([`Layer::stage`]).
+    staged: Option<viewer_world::map::weather_effects::Field>,
 }
 
 impl Weather {
     pub fn new() -> Self {
-        Self { columns: None, kinds: Vec::new(), regions: Dirty::default(), usable: false, status: None, frame: 0, marked: 0, branch: 0, installed: None, hour: None, view: None }
+        Self { columns: None, kinds: Vec::new(), regions: Dirty::default(), usable: false, status: None, frame: 0, marked: 0, branch: 0, installed: None, hour: None, view: None, staged: None, kinds_changed: false }
     }
 
     pub fn fresh(&self) -> Self {
@@ -81,7 +87,7 @@ impl Weather {
         columns.flags.iter().position(|&flag| mirror.number(flag, slot).value().is_some_and(|value| value != 0)).map_or(NONE, |at| at as u8)
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         let mirror = mirrors.get(TableId::WeatherRegions);
         self.hour = mirror.and_then(Mirror::head).or(self.hour);
@@ -101,7 +107,7 @@ impl Weather {
             }
         }
         let mut dirty = std::mem::take(&mut self.regions);
-        let _ = dirty.settle(budget, |id| {
+        let _ = dirty.settle(|id| {
             let kind = rows.and_then(|rows| rows.slot(u128::from(id)).map(|slot| self.kind_of(rows, slot))).unwrap_or(NONE);
             let at = id as usize;
             if at >= self.kinds.len() {
@@ -110,6 +116,7 @@ impl Weather {
                 }
                 self.kinds.resize(at + 1, NONE);
             }
+            self.kinds_changed |= self.kinds[at] != kind;
             self.kinds[at] = kind;
             Ok(())
         });
@@ -152,8 +159,10 @@ impl Layer for Weather {
         self.kinds.clear();
         self.regions.clear();
         self.usable = false;
+        self.staged = None;
+        self.kinds_changed = true;
         self.status = mirrors.get(TableId::WeatherRegions).and_then(Mirror::status);
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors);
         self.marked = marked;
         Ok(())
     }
@@ -186,15 +195,23 @@ impl Layer for Weather {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         Ok(())
     }
 
-    fn upload(&mut self, gpu: &mut Gpu<'_>, budget: &mut Budget) -> io::Result<()> {
-        if self.uploaded() || !budget.left() {
+    /// Every region's kind at the hour on screen, indexed as the effects pass reads it: made here,
+    /// on the side's thread, so the install lays the particles out and writes alone.
+    fn stage(&mut self) -> io::Result<()> {
+        if self.uploaded() {
             return Ok(());
         }
+        self.staged = Some(self.field()?);
+        Ok(())
+    }
+
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
+        let Some(field) = self.staged.take() else { return Ok(()) };
         let Some((placement, viewport)) = self.view else { return Ok(()) };
         let content = gpu.content;
         let camera = viewer_foundation::map::camera::Camera {
@@ -205,19 +222,24 @@ impl Layer for Weather {
             pose: placement.pose,
         };
         let assets = &content.weather_effects;
-        let prepared = viewer_world::map::weather_effects::prepare(assets, self.field()?, camera, viewport);
+        let prepared = viewer_world::map::weather_effects::prepare(assets, field, camera, viewport);
         let continuity = if self.installed.is_some() { viewer_foundation::map::presentation::Continuity::Continue } else { viewer_foundation::map::presentation::Continuity::Reset };
         drop(gpu.scene.set_prepared_weather_effects(gpu.device, gpu.queue, Arc::clone(assets), prepared, continuity)?);
-        self.installed = self.hour.map(|hour| (hour, true));
+        (self.installed, self.kinds_changed) = (self.hour.map(|hour| (hour, true)), false);
         Ok(())
     }
 
+    /// The pass holds every region's kind and keeps the particles of a region whose kind did not
+    /// turn, so it is owed an install only once a settle has turned one: an hour that changed no
+    /// region's weather is installed again neither here nor in the pass, which compared the two
+    /// fields and gave the whole install back. Before an hour is read nothing is owed, as nothing
+    /// was before.
     fn uploaded(&self) -> bool {
-        self.view.is_none() || (self.regions.len() == 0 && self.installed.map(|(hour, _)| hour) == self.hour)
+        self.view.is_none() || self.hour.is_none() || (self.regions.len() == 0 && self.installed.is_some() && !self.kinds_changed)
     }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.regions.len(), frames: self.regions.since().map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities: self.regions.len() }
     }
 
     fn held(&self) -> usize {

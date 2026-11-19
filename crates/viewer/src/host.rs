@@ -5,7 +5,7 @@
 //! by name; a lost GPU device ends it so that its host starts it again on a new device and surface.
 //! The development harness runs its frames on a thread from the same [`spawn`].
 
-mod driver;
+pub(crate) mod driver;
 mod window;
 
 use crate::{Options, app, embedded};
@@ -202,6 +202,9 @@ pub struct Launch {
     pub inputs: Inputs,
     pub events: Events,
     pub role: Role,
+    /// The host's one data service: the map reads its sources and map settings from it, and never
+    /// makes a second.
+    pub service: Arc<dashboard::Service>,
 }
 
 /// A map running in this process. Dropping it closes the map.
@@ -291,12 +294,40 @@ pub(crate) fn dump_window(
         .map_err(Ending::into_error)
 }
 
+/// A paced measurement run draws into a window of its own, made and pumped by this thread, from a
+/// map thread as the desktop's maps do, so its frames go out through a real swap chain.
+pub(crate) fn paced_window(
+    size: [u32; 2],
+    job: impl FnOnce(&Window, Inputs) -> io::Result<()> + Send + 'static,
+) -> io::Result<()> {
+    let (window, inputs) = Window::create(None, size, "Battle Plan map (paced)")?;
+    let (sent, ended) = mpsc::sync_channel(1);
+    let closing = window.clone();
+    let drawn = window.clone();
+    spawn(
+        "map (harness)",
+        move |_lost| {
+            viewer_foundation::worker_priority::frame_priority();
+            job(&drawn, inputs).map_err(|error| error.to_string())
+        },
+        move |result| {
+            closing.destroy();
+            let _ = sent.send(result);
+        },
+    )?;
+    window::pump();
+    ended
+        .recv()
+        .map_err(|_| io::Error::other("The map's thread ended without saying how"))?
+        .map_err(Ending::into_error)
+}
+
 fn embedded_map(
     launch: Launch,
     commands: mpsc::Receiver<NativeCommand>,
     lost: &Lost,
 ) -> Result<(), String> {
-    let Launch { args, window, inputs, events, role } = launch;
+    let Launch { args, window, inputs, events, role, service } = launch;
     let options = Options::parse(args.into_iter()).map_err(|error| error.to_string())?;
     if options.compare.is_some() || options.headless_dump || options.window_dump {
         return Err(
@@ -315,7 +346,7 @@ fn embedded_map(
     if let Some(path) = &options.user_dir {
         config.user_dir = path.clone();
     }
-    let parent = embedded::Parent::new(window.clone(), commands, events);
+    let parent = embedded::Parent::new(window.clone(), commands, events, service);
     driver::run(&window, inputs, lost, move |ctx, state| {
         let _generation = installed_content_core::content::Generation::enter();
         let embedding = parent.attach(ctx).map_err(|error| format!("The map's window: {error}"))?;

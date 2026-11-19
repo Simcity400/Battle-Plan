@@ -158,6 +158,11 @@ impl<T: PartialEq> Chunked<T> {
             chunks: Arc::new(ChunkDirectory::new(values)),
         })
     }
+    /// The chunks this one holds that `previous` did not, by chunk index: what the hour touched.
+    pub(super) fn changed_chunks(&self, previous: &Self) -> io::Result<CopyIndex<usize, ()>> {
+        self.chunks.changed_pages(&previous.chunks)
+    }
+
     pub(super) fn directory(&self) -> ValueIndex<usize, Retained<Arc<[T]>>> {
         self.chunks.values.clone()
     }

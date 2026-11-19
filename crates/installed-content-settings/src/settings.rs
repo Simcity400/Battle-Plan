@@ -984,6 +984,47 @@ pub fn desktops() -> io::Result<Vec<Desktop>> {
     Err(io::Error::other("Monitor sizes are only read on Windows"))
 }
 
+/// The current mode's refresh in hertz of the display `window` is on, the default display's
+/// without one, or none when the mode names none (Windows reports 0 or 1 for a hardware default).
+#[cfg(windows)]
+pub fn display_refresh_hz(window: Option<usize>) -> Option<u32> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, MONITORINFOEXW,
+        MONITOR_DEFAULTTONEAREST, MonitorFromWindow,
+    };
+    let device = window.and_then(|window| {
+        let mut info = MONITORINFOEXW {
+            monitorInfo: windows_sys::Win32::Graphics::Gdi::MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+                ..Default::default()
+            },
+            szDevice: [0; 32],
+        };
+        // SAFETY: `window` is a window handle its holder gave us, and `info` is a writable
+        // MONITORINFOEXW whose `cbSize` covers the device name GetMonitorInfoW writes into it.
+        let found = unsafe {
+            let monitor = MonitorFromWindow(window as _, MONITOR_DEFAULTTONEAREST);
+            !monitor.is_null()
+                && GetMonitorInfoW(monitor, std::ptr::from_mut(&mut info).cast()) != 0
+        };
+        found.then_some(info.szDevice)
+    });
+    let mut mode = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+    let name = device.as_ref().map_or(std::ptr::null(), |device| device.as_ptr());
+    // SAFETY: `name` is that display's null-terminated device name, or null for the default
+    // display, and `mode` is a writable DEVMODEW whose `dmSize` is set.
+    let found = unsafe { EnumDisplaySettingsW(name, ENUM_CURRENT_SETTINGS, &mut mode) } != 0;
+    (found && mode.dmDisplayFrequency > 1).then_some(mode.dmDisplayFrequency)
+}
+
+#[cfg(not(windows))]
+pub fn display_refresh_hz(_window: Option<usize>) -> Option<u32> {
+    None
+}
+
 /// A scale below 0.5 becomes 0.5; otherwise cap at
 /// `min(width / 1280, height / 720)` truncated to tenths.
 pub fn effective_gui_scale(authored: f32, frame: [u32; 2]) -> f32 {

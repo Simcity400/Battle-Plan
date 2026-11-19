@@ -9,6 +9,7 @@ use std::{
 };
 
 mod extra_maps;
+pub(crate) mod pictures;
 pub(crate) mod toggle;
 
 /// Which hours the frames show: every `step`th hour, one hour under a camera moving `pan`
@@ -34,17 +35,56 @@ pub(crate) struct Schedule {
     /// After the run's hours, a seek to this hour as the window seeks: stepped, one more frame
     /// there; paced, playing on from it for [`SEEK_BACK_SECONDS`] or to the branch end.
     pub seek_back: Option<i32>,
-    /// The map drawn from the recording's playhead; without it, today's pipeline alone.
-    pub playhead: bool,
-    /// Today's hour pipeline stops once its first hour is on screen; only the layers move.
-    pub layers_only: bool,
     /// The layers the window registers, by name; every layer when none are named.
     pub layers: Option<Vec<String>>,
-    /// Paced: every Nth overlay the tables' worker lays out is compared with the same hour laid
-    /// out in place ([`super::laid_proof`]); the run fails on any difference.
-    pub laid_proof: Option<u32>,
     /// Paced: the camera flies this path ([`crate::playback_cost::flight`]).
     pub flight: Option<crate::playback_cost::flight::Flight>,
+    /// Paced: each frame goes out through the window's own swap chain, so the run measures the
+    /// interval a display really gives it.
+    pub windowed: bool,
+    /// Each frame is the frame the app's campaign map tab runs: the window's own frame path, with
+    /// the frame's audio presented to a silent system.
+    pub campaign_tab: bool,
+    /// Counting mode: windows of frames whose picture is compared with the frame before it
+    /// ([`pictures`]). None times the run and counts nothing.
+    pub count_pictures: Option<pictures::Counting>,
+    /// Paced: the consecutive display frames whose presented pixels are written to
+    /// `<out>/frame-<index>.png` ([`Presented`]), as the run presented them.
+    pub png_frames: Option<Presented>,
+}
+
+/// Which consecutive display frames of a paced run have their pixels saved: the frame the run
+/// starts saving at and how many follow it. The frames are saved as the run presented them —
+/// nothing is settled for them and no model is completed — so what the files hold is the picture
+/// the watcher saw at the frame's own head, which is the only place the motion between two
+/// publications can be seen.
+#[derive(Clone, Copy)]
+pub(crate) struct Presented {
+    pub first: u64,
+    pub frames: u64,
+}
+
+impl Presented {
+    /// `<first frame saved>:<how many consecutive frames>`.
+    pub(crate) fn parse(value: &str) -> io::Result<Self> {
+        value
+            .split_once(':')
+            .and_then(|(first, frames)| {
+                Some(Self { first: first.trim().parse().ok()?, frames: frames.trim().parse().ok()? })
+            })
+            .filter(|presented| presented.frames > 0)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "--png-frames needs <first frame saved>:<how many consecutive frames>",
+                )
+            })
+    }
+
+    /// Whether frame `index` is one of them.
+    pub(crate) fn saves(self, index: u64) -> bool {
+        (self.first..self.first.saturating_add(self.frames)).contains(&index)
+    }
 }
 
 /// How long a paced run sought back plays on before it ends.
@@ -64,9 +104,12 @@ fn camera_record(placement: Option<Placement>) -> Value {
     }
 }
 
-/// The camera a frame drew with: the harness's pinned one (`--camera`, `--free-camera`, a pan or a
-/// flight), else the window's own.
+/// The camera a frame drew with: the eye a placed walk walked through, the harness's pinned one
+/// (`--camera`, `--free-camera`, a pan or a flight), else the window's own.
 fn pinned_camera(viewer: &Viewer) -> Option<Placement> {
+    if viewer.walk.placed() {
+        return viewer.walk.eye();
+    }
     viewer.capture.as_ref().and_then(|capture| capture.pinned).and_then(|(_, placement)| placement).or(viewer.camera)
 }
 
@@ -208,6 +251,30 @@ fn process_cycles() -> Option<u64> {
     None
 }
 
+/// A copy of the frame's presented output, taken on the device: the frame pays one texture copy
+/// and the picture is read back once the run is over ([`Presented`]).
+fn copy_of_output(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    targets: &viewer_foundation::map::gpu_contract::Targets,
+) -> wgpu::Texture {
+    let output = targets.output();
+    let kept = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("saved display frame"),
+        size: output.size(),
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: output.format(),
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("save display frame") });
+    encoder.copy_texture_to_texture(output.as_image_copy(), kept.as_image_copy(), output.size());
+    queue.submit([encoder.finish()]);
+    kept
+}
+
 fn drain(state: &eframe::egui_wgpu::RenderState) -> io::Result<()> {
     state
         .device
@@ -219,18 +286,69 @@ fn drain(state: &eframe::egui_wgpu::RenderState) -> io::Result<()> {
         .map_err(io::Error::other)
 }
 
-/// Sleeps to a millisecond short of `due`, then spins; returns when the last sleep returned.
+/// Waits to a millisecond short of `due`, then spins; returns when the last wait returned.
+///
+/// The wait is a high-resolution timer, not `thread::sleep`: a sleep returns on the system's timer
+/// tick, which overshoots a 16.7 ms frame's due time by one to four milliseconds, and the frame then
+/// starts that late with its spin never reached, so the run reads an uneven interval the product
+/// never had.
 fn wait_until(due: Instant) -> Option<Instant> {
     let mut woke = None;
     while let Some(left) = due.checked_duration_since(Instant::now()) {
         if left > Duration::from_millis(1) {
-            std::thread::sleep(left - Duration::from_millis(1));
+            precise_wait(left - Duration::from_millis(1));
             woke = Some(Instant::now());
         } else {
             std::hint::spin_loop();
         }
     }
     woke
+}
+
+/// Blocks this thread for `left` as closely as the platform allows, leaving every other thread the
+/// core meanwhile. On Windows that is a timer of its own asked for at high resolution, which no
+/// system-wide setting is touched for; where one cannot be made, a sleep stands in.
+fn precise_wait(left: Duration) {
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        const HIGH_RESOLUTION: u32 = 0x2;
+        const TIMER_ALL_ACCESS: u32 = 0x1F_0003;
+        const INFINITE: u32 = 0xFFFF_FFFF;
+        unsafe extern "system" {
+            fn CreateWaitableTimerExW(attributes: *mut c_void, name: *const u16, flags: u32, access: u32) -> *mut c_void;
+            fn SetWaitableTimer(timer: *mut c_void, due: *const i64, period: i32, routine: *mut c_void, argument: *mut c_void, resume: i32) -> i32;
+            fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        }
+        thread_local! {
+            /// One timer a thread, kept for the run: null where the platform has no high-resolution one.
+            static TIMER: *mut c_void = {
+                // SAFETY: a nameless, uninherited timer with no attributes; the handle is kept for
+                // this thread's life and only ever set and waited on.
+                let timer = unsafe { CreateWaitableTimerExW(std::ptr::null_mut(), std::ptr::null(), HIGH_RESOLUTION, TIMER_ALL_ACCESS) };
+                timer
+            };
+        }
+        let waited = TIMER.with(|&timer| {
+            if timer.is_null() {
+                return false;
+            }
+            // A negative hundred-nanosecond count is a wait of that length from now.
+            let due = -((left.as_nanos() / 100).min(i64::MAX as u128) as i64);
+            // SAFETY: `timer` is this thread's live timer handle and `due` outlives the call.
+            unsafe {
+                if SetWaitableTimer(timer, &due, 0, std::ptr::null_mut(), std::ptr::null_mut(), 0) == 0 {
+                    return false;
+                }
+                WaitForSingleObject(timer, INFINITE);
+            }
+            true
+        });
+        if waited {
+            return;
+        }
+    }
+    std::thread::sleep(left);
 }
 
 /// A stepped run's clock: a step of the run's own length, held, so that a table a saved frame
@@ -245,8 +363,8 @@ pub(crate) fn hold_at_step(entry: &crate::playhead_host::Entry, start: replay_da
 /// drawn, the hour it shows, what it carried and whether its upload was left.
 fn warm_up_state(side: &crate::playhead_host::MapSide) -> String {
     let on = side.on_screen();
-    let shown: Vec<_> = side.layer_states().into_iter().zip(&side.last_frame().layers).map(|((name, drawn, carried, upload_left), part)| (name, drawn, part.shown, carried, upload_left)).collect();
-    format!("the head at {:?}, composing {:?}, the layer furthest behind {:?}; name, drawn, shown, carried, upload left: {shown:?}", on.as_ref().map(|on| on.head), on.as_ref().map(|on| on.composing), on.as_ref().and_then(|on| on.furthest))
+    let shown: Vec<_> = side.layer_states().into_iter().zip(&side.last_frame().layers).map(|((name, drawn, upload_left), part)| (name, drawn, part.shown, upload_left)).collect();
+    format!("the head at {:?}, composing {:?}, the layer furthest behind {:?}; name, drawn, shown, upload left: {shown:?}", on.as_ref().map(|on| on.head), on.as_ref().map(|on| on.composing), on.as_ref().and_then(|on| on.furthest))
 }
 
 #[expect(clippy::too_many_arguments, reason = "one window frame's whole input")]
@@ -259,9 +377,9 @@ fn frame_ui(
     viewer: &mut Viewer,
     state: &eframe::egui_wgpu::RenderState,
     document: &mut Document,
-) -> Result<(), String> {
+) -> Result<egui::FullOutput, String> {
     let mut result = Ok(());
-    let _ = ctx.run_ui(
+    let output = ctx.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -273,33 +391,46 @@ fn frame_ui(
             ..Default::default()
         },
         |ui| {
-            result = viewer.map_with_state(ui, state, document);
+            // `--campaign-tab`: the window's own frame, in its central panel, as the app's map tab
+            // draws it; what it could not draw it holds as the window does, in `error`.
+            result = if viewer.campaign_tab {
+                let drawn = viewer.window_frame(ui, Some(state), document);
+                match &viewer.error {
+                    Some(error) if !drawn => Err(error.clone()),
+                    _ => Ok(()),
+                }
+            } else {
+                viewer.map_with_state(ui, state, document)
+            };
         },
     );
-    result
+    result.map(|()| output)
 }
 
-/// A `dump` line on standard input prints the hour coordinator's state.
-fn watch_dump(reader: &mut Option<std::thread::JoinHandle<()>>, viewer: &Viewer) -> io::Result<()> {
-    if reader.is_none()
-        && let Some(hours) = &viewer.hours
-    {
-        let dump = hours.state_dump();
-        *reader = Some(
-            std::thread::Builder::new()
-                .name("playback cost dump".into())
-                .spawn_carried(move || {
-                    for line in io::stdin().lines() {
-                        match line {
-                            Ok(line) if line.trim() == "dump" => dump.request(),
-                            Ok(_) => {}
-                            Err(_) => return,
-                        }
-                    }
-                })?,
-        );
-    }
-    Ok(())
+/// A frame the run draws but does not present: its texture changes still reach the window's egui
+/// renderer, as `host::driver::run` sends a hidden window's. Dropped, the next frame's partial
+/// update would name a texture the renderer never allocated.
+fn absorb_textures(
+    surface: Option<&mut crate::renderer_host::WindowSurface>,
+    state: &eframe::egui_wgpu::RenderState,
+    output: egui::FullOutput,
+) -> io::Result<()> {
+    let Some(surface) = surface else {
+        return Ok(());
+    };
+    let mut textures = output.textures_delta;
+    surface
+        .paint(
+            state,
+            state.surface_config,
+            None,
+            output.pixels_per_point,
+            [0.0; 4],
+            &[],
+            &mut textures,
+        )
+        .map(|_| ())
+        .map_err(io::Error::other)
 }
 
 fn gpu_counts() -> serde_json::Map<String, Value> {
@@ -334,12 +465,61 @@ fn gpu_counts() -> serde_json::Map<String, Value> {
 
 /// The window thread's labels and every note, by "family/category": CPU and wall nanoseconds and
 /// entries, as the snapshot's main-role rows and notes give them, read without the whole snapshot.
-fn own_labels() -> std::collections::HashMap<String, [Option<u64>; 3]> {
-    cpu::own_labels()
-        .into_iter()
-        .map(|label| (format!("{}/{}", label.family, label.category), [Some(label.ns), label.wall_ns, Some(label.calls)]))
-        .chain(cpu::notes().into_iter().map(|(category, family, ns, calls)| (format!("{family}/{category}"), [Some(ns), None, Some(calls)])))
-        .collect()
+/// The run's `frames.jsonl`, written on its own thread: a frame hands its finished record over and
+/// pays nothing for serializing or writing it, which is the harness's cost and not the product's.
+struct Records {
+    records: Option<std::sync::mpsc::Sender<Value>>,
+    writer: Option<std::thread::JoinHandle<io::Result<()>>>,
+}
+
+impl Records {
+    fn open(path: &std::path::Path) -> io::Result<Self> {
+        let file = std::fs::File::create_new(path)?;
+        let (sender, records) = std::sync::mpsc::channel::<Value>();
+        let writer = std::thread::Builder::new()
+            .name("harness records".to_owned())
+            .spawn(move || {
+                let mut file = io::BufWriter::new(file);
+                for record in records {
+                    let _cost = cpu::scope("frame.record", Some("other"));
+                    serde_json::to_writer(&mut file, &record)?;
+                    io::Write::write_all(&mut file, b"\n")?;
+                }
+                io::Write::flush(&mut file)
+            })?;
+        Ok(Self {
+            records: Some(sender),
+            writer: Some(writer),
+        })
+    }
+
+    fn write(&mut self, record: Value) -> io::Result<()> {
+        if let Some(records) = &self.records
+            && records.send(record).is_ok()
+        {
+            return Ok(());
+        }
+        self.finish()?;
+        Err(io::Error::other("the run's record writer stopped"))
+    }
+
+    /// Every record written and the file flushed, with what the writer met.
+    fn finish(&mut self) -> io::Result<()> {
+        drop(self.records.take());
+        match self.writer.take() {
+            Some(writer) => writer
+                .join()
+                .map_err(|_| io::Error::other("the run's record writer panicked"))?,
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for Records {
+    fn drop(&mut self) {
+        // A run that gave up still leaves the records it handed over on disk.
+        let _ = self.finish();
+    }
 }
 
 /// The window thread's labels charged since `before`, which becomes now: each label's CPU, its
@@ -349,7 +529,7 @@ fn own_labels() -> std::collections::HashMap<String, [Option<u64>; 3]> {
 fn frame_scopes(
     before: &mut std::collections::HashMap<String, [Option<u64>; 3]>,
 ) -> (serde_json::Map<String, Value>, serde_json::Map<String, Value>, serde_json::Map<String, Value>) {
-    let after = own_labels();
+    let after = cpu::own_totals();
     let (mut scopes, mut walls, mut entered) = (serde_json::Map::new(), serde_json::Map::new(), serde_json::Map::new());
     for (label, [ns, wall, calls]) in &after {
         let [was_ns, was_wall, was_calls] = before.get(label).copied().unwrap_or([None, None, None]);
@@ -405,6 +585,20 @@ fn thread_us(before: Option<Duration>) -> Option<f64> {
         .map(|used| used.as_secs_f64() * 1e6)
 }
 
+/// The map's device and render state for `window`, with its surface, exactly as the driver makes
+/// them for a map in a window.
+fn window_state(
+    window: &crate::host::Window,
+) -> io::Result<(
+    eframe::egui_wgpu::RenderState,
+    crate::renderer_host::WindowSurface,
+)> {
+    let (state, surface) = crate::host::driver::map_device(Some(window)).map_err(io::Error::other)?;
+    let surface = surface.ok_or_else(|| io::Error::other("The map's window gave no surface"))?;
+    crate::renderer_host::bind(&state);
+    Ok((state, crate::renderer_host::WindowSurface::new(surface)))
+}
+
 /// The map's device and the window's render state, without a window.
 fn render_state() -> io::Result<eframe::egui_wgpu::RenderState> {
     pollster::block_on(async {
@@ -433,6 +627,7 @@ fn render_state() -> io::Result<eframe::egui_wgpu::RenderState> {
     })
 }
 
+#[allow(clippy::too_many_arguments, reason = "one run's inputs, as the harness parsed them")]
 pub(crate) fn measure(
     config: Config,
     mut options: Options,
@@ -441,13 +636,26 @@ pub(crate) fn measure(
     schedule: Schedule,
     mut monitor: Monitor,
     output: &std::path::Path,
+    window: crate::playback_cost::Window,
 ) -> io::Result<Value> {
     // This thread draws the harness's frames, as a map thread draws the window's own.
     viewer_foundation::worker_priority::frame_priority();
     crate::layers::count_in_view(true);
     // Before the device, so it is asked for the per-pass timestamps the record keeps.
     viewer_foundation::view_record::enable();
-    let state = render_state()?;
+    let (window, inputs) = match window {
+        crate::playback_cost::Window::Own(window, inputs) => (Some(window), Some(inputs)),
+        crate::playback_cost::Window::None => (None, None),
+    };
+    // Held for the run: the window's message pump sends its input through this channel.
+    let _inputs = inputs;
+    let (state, mut surface) = match &window {
+        Some(window) => {
+            let (state, surface) = window_state(window)?;
+            (state, Some(surface))
+        }
+        None => (render_state()?, None),
+    };
     let info = state.adapter.get_info();
     // A paced run loads icons in the background as the window does; a stepped one settles them.
     document.icons.lazy.set_background(schedule.paced.is_some());
@@ -472,9 +680,9 @@ pub(crate) fn measure(
         None,
         Some((state.device.clone(), state.queue.clone())),
     );
+    viewer.campaign_tab = schedule.campaign_tab;
     viewer.graphics.full_resolution = document.game_full_resolution;
     viewer.take_game_options(&document.game_options);
-    viewer.layers_only = schedule.layers_only;
     viewer.scene = Some(load_scene(
         &state.device,
         &state.queue,
@@ -483,16 +691,14 @@ pub(crate) fn measure(
         &Default::default(),
     )?);
     viewer.scene.as_mut().unwrap().set_graphics(viewer.graphics);
-    // The map draws its layers from the recording's playhead, sought here, unless `--no-playhead`.
+    // The map draws its layers from the recording's playhead, sought here.
     if let Some(names) = &schedule.layers {
         crate::playhead_host::register_only(names.clone());
     }
     // Held paused at the paced run's speed: the steps built ahead of the head are those it will play.
     let at = crate::playhead_host::At { branch, hour: start, playing: false, speed: schedule.paced.unwrap_or(0.0) };
-    viewer.playhead_map = if schedule.playhead { crate::playhead_host::for_document_at(&document, Some(at)) } else { None };
-    if schedule.layers_only && viewer.playhead_map.is_none() {
-        return Err(io::Error::other("--layers-only draws the map's layers alone, and the map's playhead is refused (printed above)"));
-    }
+    let side = crate::playhead_host::for_document_at(&document, Some(at)).map_err(io::Error::other)?;
+    viewer.playhead_map = Some(crate::playhead_host::side::SideThread::new(side).map_err(io::Error::other)?);
     if let Some(side) = &viewer.playhead_map {
         document.playback.read_rosters_of(side.entry());
     }
@@ -504,17 +710,18 @@ pub(crate) fn measure(
     if hovered.is_some() {
         viewer.hover_rows.time();
     }
-    viewer
-        .scene
-        .as_mut()
-        .unwrap()
-        .settle_builds(schedule.complete_models);
-    viewer.playing = schedule.pan.is_none() && !schedule.paused;
+    // A run that saves its pixels draws every frame as a capture must: its models build in
+    // place and every figure is posed on the frame that draws it, never one frame behind
+    // ([`viewer_world::map::scene::Scene::settle_poses`]).
+    let scene = viewer.scene.as_mut().unwrap();
+    scene.settle_builds(schedule.complete_models);
+    scene.settle_poses(schedule.complete_models);
+    viewer.playing = !schedule.paused;
     viewer.speed = schedule.paced.unwrap_or(1440.0);
     viewer.animation_seek = true;
-    viewer.laid_proof = schedule.laid_proof.map(super::laid_proof::LaidProof::new);
     viewer.camera_step = Some(1.0 / schedule.refresh_hz as f32);
-    viewer.last_view = Some(hours::View {
+    // The run's own frame rate is what its render scale is judged against, not the display's.
+    viewer.last_view = Some(crate::app::View {
         camera,
         viewport: pixels,
         ui_scale: options.ui_scale.unwrap_or(1.0),
@@ -535,12 +742,31 @@ pub(crate) fn measure(
     ctx.set_theme(egui::Theme::Dark);
     viewer_foundation::profiling::cpu_clock_hz();
     drain(&state)?;
+    // Before the clock starts, the map's layers compose and upload their first picture at the
+    // run's first hour, so the run's first frame is the scene's first render.
+    viewer.playhead = Some(Playhead { branch, hour: start, fraction: 0.0 });
+    let warming = Instant::now();
+    viewer.warming = true;
+    while !viewer.picture_ready() {
+        let output = frame_ui(&ctx, pixels, 0.0, false, Vec::new(), &mut viewer, &state, &mut document).map_err(io::Error::other)?;
+        absorb_textures(surface.as_mut(), &state, output)?;
+        drain(&state)?;
+        if let Some(failure) = viewer.playhead_map.as_ref().and_then(|side| side.failure()) {
+            return Err(io::Error::other(format!("The map's layers drew no first picture: {failure}")));
+        }
+        if warming.elapsed() > Duration::from_secs(300) {
+            return Err(io::Error::other(format!("The map's layers drew no first picture in five minutes: {}", viewer.playhead_map.as_ref().map_or_else(String::new, |side| side.with_side(warm_up_state)))));
+        }
+    }
+    viewer.warming = false;
+    // The counting mode's own device objects, made at its first counted frame from that frame's
+    // targets: the map makes them when it first draws into a view of this size.
+    let mut pictures = None::<pictures::Pictures>;
     drop(cpu::scope("viewer", Some("other")));
     let before = cpu::snapshot();
     let process_start =
         cpu::process_cpu_ns().ok_or_else(|| io::Error::other("Process CPU unavailable"))?;
     let cycle_start = process_cycles();
-    let counts_before = crate::hours::part_counts();
     let cycle_hz = before["tscHz"].as_f64().filter(|hz| *hz > 0.0);
     let wall = Instant::now();
     let mut frame_cpu = Vec::new();
@@ -548,9 +774,8 @@ pub(crate) fn measure(
     let mut frame_wall = Vec::new();
     let mut gpu = GpuPeaks::default();
     let mut warning_frames = 0u32;
-    let mut dump_reader = None;
-    let mut frames = io::BufWriter::new(std::fs::File::create_new(output.join("frames.jsonl"))?);
-    let mut labels_before = own_labels();
+    let mut frames = Records::open(&output.join("frames.jsonl"))?;
+    let mut labels_before = cpu::own_totals();
     let mut reads_before = cpu::cycle_reads();
     shader_pipeline::gpu::stats::mark_window_thread();
     shader_pipeline::gpu::stats::take();
@@ -571,24 +796,6 @@ pub(crate) fn measure(
     // a seek's hour until its reset is shown, and from that frame on at the run's speed.
     // A stepped run plays at its own step, so a step ends on each frame's hour but after a block
     // end, where the held frame is sought.
-    // A layers-only run never starts today's pipeline: before the clock starts, the map's
-    // layers compose and upload their first picture at the run's first hour.
-    if schedule.layers_only {
-        viewer.playhead = Some(Playhead { branch, hour: start, fraction: 0.0 });
-        let warming = Instant::now();
-        viewer.warming = true;
-        while !viewer.picture_ready() {
-            frame_ui(&ctx, pixels, 0.0, false, Vec::new(), &mut viewer, &state, &mut document).map_err(io::Error::other)?;
-            drain(&state)?;
-            if let Some(failure) = viewer.playhead_map.as_ref().and_then(|side| side.failure()) {
-                return Err(io::Error::other(format!("The map's layers drew no first picture: {failure}")));
-            }
-            if warming.elapsed() > Duration::from_secs(300) {
-                return Err(io::Error::other(format!("The map's layers drew no first picture in five minutes: {}", viewer.playhead_map.as_ref().map_or_else(String::new, warm_up_state))));
-            }
-        }
-        viewer.warming = false;
-    }
     if let Some(side) = &viewer.playhead_map {
         let rate = crate::playhead_host::settings().rate;
         match schedule.paced {
@@ -607,10 +814,15 @@ pub(crate) fn measure(
             .playback_cost_end
             .expect("the harness sets the run's end");
         let mut drawn = None::<i32>;
+        let mut previous_start_us = None::<f64>;
         let mut reached_end = false;
         // The seeks spread over the frames the run would take unsought, at least 15 frames apart.
         let seek_every = (f64::from(end - start) / speed * schedule.refresh_hz / f64::from(schedule.seeks + 1)).max(15.0) as u64;
         let t0 = Instant::now();
+        // The run's own directory: the frame's egui output takes the name `output` below.
+        let saved_to = output;
+        // The frames `--png-frames` asked for, copied on the device as they were presented.
+        let mut saved_frames: Vec<(u64, wgpu::Texture)> = Vec::new();
         for index in 0u64.. {
             let due_us = paced::due_us(index, schedule.refresh_hz);
             let reached_us = t0.elapsed().as_secs_f64() * 1e6;
@@ -624,12 +836,15 @@ pub(crate) fn measure(
             }
             let frame_start = if index == 0 { t0 } else { Instant::now() };
             let start_us = frame_start.duration_since(t0).as_secs_f64() * 1e6;
+            let interval_us = previous_start_us.replace(start_us).map(|before| start_us - before);
+            // What this loop does around the product's frame is the harness's own, not the frame's.
+            let harness_cost = cpu::scope("frame.harness", Some("other"));
             // The frame after the head reached the end seeks back, as the window seeks, and draws.
             if let Some(back) = schedule.seek_back
                 && sought_back.is_none()
                 && reached_end
             {
-                viewer.anchor_playback(Playhead { branch, hour: back, fraction: 0.0 }, true, speed, true, Instant::now(), last);
+                viewer.anchor_playback(Playhead { branch, hour: back, fraction: 0.0 }, true, speed, true, None, Instant::now(), last);
                 layered.seek(index, back, start_us);
                 sought_back = Some(paced::seek_back_end(back, speed, SEEK_BACK_SECONDS, last));
             }
@@ -678,11 +893,9 @@ pub(crate) fn measure(
             viewer.capture.as_mut().unwrap().time = Some((start_us / 1e6) as f32);
             if extras.main_hidden(index) {
                 // The map covered: not drawn, it lets its reader go; the other maps draw on.
-                let _cost = cpu::scope("frame.harness", Some("other"));
                 viewer.close_playhead();
                 let extra = extras.frame(&document, None, index, crate::playhead_host::Head::Paced(hour));
-                serde_json::to_writer(&mut frames, &json!({"frame": index, "hour": hour, "head_hour": head, "covered": true, "extra": extra}))?;
-                io::Write::write_all(&mut frames, b"\n")?;
+                frames.write(json!({"frame": index, "hour": hour, "head_hour": head, "covered": true, "extra": extra}))?;
                 continue;
             }
             if let Some(family) = hovered
@@ -691,10 +904,13 @@ pub(crate) fn measure(
                 viewer.options.profile_pointer = viewer.hover_target(family, pixels);
             }
             let process_before = process_cycles();
-            let thread_before = viewer_foundation::profiling::current_thread_cpu_time();
             crate::perf_log::frame_start();
             let perf_frame = crate::perf_log::frame_id();
-            let other_cost = cpu::scope("frame.harness", Some("other"));
+            drop(harness_cost);
+            // The product's frame alone: what work_us, thread_us and frame.product measure.
+            let thread_before = viewer_foundation::profiling::current_thread_cpu_time();
+            let product_start = Instant::now();
+            let product_cost = cpu::scope("frame.product", Some("other"));
             let result = frame_ui(
                 &ctx,
                 pixels,
@@ -706,11 +922,73 @@ pub(crate) fn measure(
                 &mut document,
             );
             let submitted = Instant::now();
-            watch_dump(&mut dump_reader, &viewer)?;
-            result.map_err(io::Error::other)?;
+            let thread = thread_us(thread_before);
+            drop(product_cost);
+            let other_cost = cpu::scope("frame.harness", Some("other"));
+            let output = result.map_err(io::Error::other)?;
             let extra = extras.frame(&document, viewer.playhead_map.as_ref(), index, crate::playhead_host::Head::Paced(hour));
-            drain(&state)?;
+            // Windowed, the frame goes out through the window's own swap chain, as a map's does:
+            // nothing drains the GPU, and the wait for a swap chain image is timed on its own.
+            let acquire_us = match (&mut surface, &window) {
+                (Some(surface), Some(window)) => {
+                    // A window's own swap chain is the product's presentation, not the harness's.
+                    let _present = cpu::scope("frame.present", Some("other"));
+                    let clear = <Viewer as eframe::App>::clear_color(
+                        &viewer,
+                        &ctx.style_of(egui::Theme::Dark).visuals,
+                    );
+                    let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+                    let mut textures = output.textures_delta;
+                    let shown = window.shown();
+                    let acquire = surface
+                        .paint(
+                            &state,
+                            state.surface_config,
+                            shown.then_some(pixels),
+                            output.pixels_per_point,
+                            clear,
+                            &primitives,
+                            &mut textures,
+                        )
+                        .map_err(io::Error::other)?;
+                    Some(f64::from(acquire) * 1e6)
+                }
+                (surface, _) => {
+                    absorb_textures(surface.as_mut(), &state, output)?;
+                    drain(&state)?;
+                    None
+                }
+            };
             let drained = Instant::now();
+            if let Some(counting) = schedule.count_pictures
+                && counting.counts(index)
+                && let Some(targets) = viewer
+                    .scene
+                    .as_ref()
+                    .and_then(viewer_world::map::scene::Scene::targets)
+            {
+                let pictures = match &mut pictures {
+                    Some(pictures) => pictures,
+                    none => none.insert(pictures::Pictures::new(
+                        &state.device,
+                        &state.queue,
+                        targets,
+                        counting,
+                    )?),
+                };
+                pictures.count(&state.device, &state.queue, targets, index);
+            }
+            // The pixels of this display frame, as it was presented: the frames of one
+            // publication's interval are the only place a mover's motion between two of them can
+            // be seen. The frame pays a copy on the device and nothing else; reading the copies
+            // back and writing them is the run's own work, after its last frame, because a
+            // readback inside the frame stops it for about a second and the head, which follows
+            // the clock, then stands 1,400 game hours from the frame before it.
+            if schedule.png_frames.is_some_and(|presented| presented.saves(index))
+                && let Some(targets) = viewer.scene.as_ref().and_then(viewer_world::map::scene::Scene::targets)
+            {
+                saved_frames.push((index, copy_of_output(&state.device, &state.queue, targets)));
+            }
             crate::perf_log::gpu_times(
                 viewer
                     .scene
@@ -722,7 +1000,6 @@ pub(crate) fn measure(
             let wall_us = drained.duration_since(frame_start).as_secs_f64() * 1e6;
             frame_wall.push(wall_us);
             frame_cpu.extend(cycles_us(process_before, cycle_hz));
-            let thread = thread_us(thread_before);
             frame_thread_cpu.extend(thread);
             gpu.sample(&state);
             warning_frames += u32::from(!viewer.map_warnings.is_empty());
@@ -738,29 +1015,52 @@ pub(crate) fn measure(
                     "Frame {index} drew nothing after hour {previous} was on screen"
                 )));
             }
-            // The overlay counts from the run's start until its first layout: none of it is on screen.
-            layered.overlay = viewer.overlay_hour().or(layered.overlay).or(Some(start));
-            let oldest = viewer.playhead_map.as_ref().map(|side| (side.last_frame().oldest, layered.overlay));
+            // None of the overlay is on screen until its first layout: its hour is none until then.
+            layered.overlay = viewer.overlay_hour().or(layered.overlay);
+            let oldest = viewer.playhead_map.as_ref().and_then(|side| side.last_frame().oldest);
+            let made = viewer.playhead_map.as_ref().map(|side| side.last_frame().made);
             let frame = paced::Frame {
                 due_us,
                 start_us,
-                work_us: submitted.duration_since(frame_start).as_secs_f64() * 1e6,
+                work_us: submitted.duration_since(product_start).as_secs_f64() * 1e6,
                 gpu_wait_us: drained.duration_since(submitted).as_secs_f64() * 1e6,
+                interval_us,
+                acquire_us,
                 thread_us: thread,
                 head_hour: head,
                 drawn_hour: now_drawn,
-                oldest_hour: now_drawn.map(|drawn| oldest.map_or(drawn, |(layers, overlay)| [Some(drawn), layers, overlay].into_iter().flatten().min().unwrap_or(drawn))),
+                oldest_hour: now_drawn.map(|drawn| oldest.unwrap_or(drawn)),
+                overlay_hour: layered.overlay,
+                made,
                 late_start: late,
                 new_hour: paced::new_hour(drawn, now_drawn),
             };
             drawn = now_drawn.or(drawn);
             let layers = viewer.playhead_map.as_ref().map(|side| {
-                if index % 30 == 0 {
-                    layered.sample_held(side);
-                }
-                let phases = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::political::Political>())).map(|political| political.phases);
+                // The record's own reads of the side, outside the frame's work: one look for all,
+                // and none at all while its thread prepares a step, which the record never holds.
+                let (models, meshes) = side
+                    .try_with_side(|side| {
+                        if index % 30 == 0 {
+                            layered.sample_held(side);
+                        }
+                        let units = crate::layers::units::of(side);
+                        (units.and_then(crate::layers::units::Units::take_model_counts), units.and_then(crate::layers::units::Units::take_mesh_counts))
+                    })
+                    .unwrap_or_default();
+                // The timed layers' installs, which the frame makes without the side: what each
+                // wrote this frame and the hour its picture stands at.
+                let phases = side.installed().find(|(name, ..)| *name == "political").map(|(_, _, wrote)| wrote.phases);
+                let installs: Vec<Value> = side
+                    .installed()
+                    .map(|(name, shown, wrote)| json!({"name": name, "shown": shown, "us": wrote.ns / 1000, "bytes": wrote.bytes, "writes": wrote.writes}))
+                    .collect();
                 layered.political = side.names().iter().position(|&name| name == "political");
                 let mut record = layered.frame(side.last_frame(), head, cycle_hz, (index, start_us + wall_us), side.entry().playhead().newest(), phases);
+                // Whether this display frame took the side at all, and what its thread was doing
+                // when it could not: a frame without the side installs nothing of its own hour.
+                record["side_missed"] = json!(side.products().missed);
+                record["installs"] = json!(installs);
                 // The playhead's own state, as last summed: steps kept, and how long its stepper sat behind the head.
                 let (kept, _, counters) = side.entry().playhead().held();
                 record["ring_steps"] = json!(kept.ring_steps);
@@ -768,17 +1068,16 @@ pub(crate) fn measure(
                 record["join_held_ms"] = json!(counters.join_held_ns as f64 / 1e6);
                 // The land meshes' worker since the last frame: builds started, products taken, stacks chosen again, selections, camouflages and country contexts made, and its time.
                 // The models' worker (ships, raid units, convoys) since the last frame: jobs answered and its time.
-                if let Some(models) = crate::layers::units::of(side).and_then(crate::layers::units::Units::take_model_counts) {
+                if let Some(models) = models {
                     let parts: serde_json::Map<String, Value> = models.parts.iter().map(|&(name, ns)| (name.to_owned(), json!(ns / 1000))).collect();
                     record["unit_models"] = json!({"jobs": models.jobs, "busy_us": models.busy_ns / 1000, "parts_us": parts});
                 }
-                if let Some(meshes) = crate::layers::units::of(side).and_then(crate::layers::units::Units::take_mesh_counts) {
+                if let Some(meshes) = meshes {
                     let parts: serde_json::Map<String, Value> = meshes.parts.iter().map(|&(name, ns)| (name.to_owned(), json!(ns / 1000))).collect();
                     record["unit_meshes"] = json!({"builds": meshes.builds, "products": meshes.products, "chosen": meshes.chosen, "selections": meshes.selections, "looked_up": meshes.looked_up, "entering": meshes.entering, "leaving": meshes.leaving, "waiting": meshes.waiting, "keys": meshes.keys, "keyed_rows": meshes.keyed_rows, "camouflages": meshes.camouflages, "contexts": meshes.contexts, "busy_us": meshes.busy_ns / 1000, "parts_us": parts});
                 }
                 record
             });
-            let record_cost = cpu::scope("frame.record", Some("other"));
             let counts = gpu_counts();
             let (scopes, scope_walls, scope_calls) = frame_scopes(&mut labels_before);
             let cycle_reads = cpu::cycle_reads() - std::mem::replace(&mut reads_before, cpu::cycle_reads());
@@ -796,40 +1095,34 @@ pub(crate) fn measure(
             }
             // The overlay this frame: what asked it to lay out or draw again (asked.*), what it
             // made (made.*), what it waited for or missed, and what it answered from what it kept.
-            let mut overlay_redraws: serde_json::Map<String, Value> = viewer_foundation::map::redraws::take()
+            let overlay_redraws: serde_json::Map<String, Value> = viewer_foundation::map::redraws::take()
                 .into_iter()
                 .map(|(name, count)| (name.to_owned(), json!(count)))
                 .collect();
-            // The tables the overlay waits for, by name, in the frame the list changes.
-            if let Some(waiting) = crate::app::head_rows::take_waiting() {
-                overlay_redraws.insert("waiting.tables.named".to_owned(), json!(waiting.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>()));
-            }
-            // The rows worker this frame: how far behind the head, its applies and the rows it made.
-            let rows_worker = crate::playhead_host::rows::counts::take(viewer.playhead_map.as_ref().and_then(|side| side.entry().map_head()));
-            serde_json::to_writer(
-                &mut frames,
-                &json!({"frame":index,"perf_frame":perf_frame,"hour":hour,"thread_us":thread,
-                    "icon_pools":icon_pools,"icon_pools_why":icon_pools_why,"overlay_redraws":overlay_redraws,"rows_worker":rows_worker,
+            frames.write(json!({"frame":index,"perf_frame":perf_frame,"hour":hour,"thread_us":thread,
+                    "icon_pools":icon_pools,"icon_pools_why":icon_pools_why,"overlay_redraws":overlay_redraws,
                     "wall_us":wall_us,
                     "camera_height":viewer.camera.map(|placement| placement.height),
                     "camera":camera_record(pinned_camera(&viewer)),
                     "flight":flying.map(|(leg, _)| leg),"view":view_record(),
                     "gpu":counts,"scopes_us":scopes,"scopes_wall_us":scope_walls,"scopes_calls":scope_calls,"cycle_reads":cycle_reads,
                     "due_us":due_us,"start_us":start_us,"work_us":frame.work_us,
+                    "interval_us":interval_us,"acquire_us":acquire_us,
                     "gpu_wait_us":frame.gpu_wait_us,"head_hour":head,"drawn_hour":now_drawn,
-                    "lag_hours":frame.lag_hours(),"lag_hours_without_cadence_layers_or_overlay":frame.clock_lag_hours(),"oldest_hour":frame.oldest_hour,"new_hour":frame.new_hour,"late_start":late,
+                    "lag_hours":frame.lag_hours(),"head_behind_the_clock_hours":frame.clock_lag_hours(),"oldest_hour":frame.oldest_hour,"overlay_hour":frame.overlay_hour,"overlay_behind_hours":frame.overlay_behind_hours(),"new_hour":frame.new_hour,"late_start":late,
                     "reached_us":reached_us,"woke_us":woke_us,"layers":layers,"extra":extra,
-                    "hover":viewer.hover_rows.take_timed()}),
-            )?;
-            io::Write::write_all(&mut frames, b"\n")?;
-            io::Write::flush(&mut frames)?;
-            drop(record_cost);
+                    "hover":viewer.hover_rows.take_timed()}))?;
             if index % 600 == 0 {
                 println!(
                     "Playback cost: frame {index}, head {head:.1}, drawn {now_drawn:?}, to {end}"
                 );
             }
             paced_frames.push(frame);
+        }
+        // The run is over: the copies it kept are read back and written here, where no frame is
+        // waiting on them.
+        for (index, kept) in saved_frames {
+            crate::render::write_texture_png(&kept, &state.device, &state.queue, &saved_to.join(format!("frame-{index}.png")))?;
         }
     }
     let stepped = if schedule.paced.is_some() { 0 } else { hours + u32::from(schedule.seek_back.is_some()) };
@@ -842,7 +1135,7 @@ pub(crate) fn measure(
         let hour = match schedule.seek_back.filter(|_| index == hours) {
             Some(back) => {
                 let speed = f64::from(schedule.step.max(1)) * crate::playhead_host::settings().rate;
-                viewer.anchor_playback(Playhead { branch, hour: back, fraction: 0.0 }, false, speed, true, Instant::now(), last);
+                viewer.anchor_playback(Playhead { branch, hour: back, fraction: 0.0 }, false, speed, true, None, Instant::now(), last);
                 back
             }
             None => i32::try_from(i64::from(start) + offset).map_err(io::Error::other)?,
@@ -892,11 +1185,10 @@ pub(crate) fn measure(
             &state,
             &mut document,
         );
-        watch_dump(&mut dump_reader, &viewer)?;
-        result.map_err(io::Error::other)?;
+        absorb_textures(surface.as_mut(), &state, result.map_err(io::Error::other)?)?;
         let extra = extras.frame(&document, viewer.playhead_map.as_ref(), u64::from(index), crate::playhead_host::Head::Stepped(hour));
         if !viewer.drew_frame || viewer.hour_on_screen(&document) != (branch, hour) {
-            let map = viewer.playhead_map.as_ref().map_or_else(|| "no playhead map".to_owned(), crate::playhead_host::MapSide::shown_states);
+            let map = viewer.playhead_map.as_ref().map_or_else(|| "no playhead map".to_owned(), |side| side.with_side(crate::playhead_host::MapSide::shown_states));
             return Err(io::Error::other(format!(
                 "Hour {hour} was not submitted; no missing hour is counted as played (drew a frame {}, on screen {:?}; {map})",
                 viewer.drew_frame,
@@ -922,7 +1214,7 @@ pub(crate) fn measure(
         if let Some(side) = &viewer.playhead_map
             && side.last_frame().drawn != Some(hour)
         {
-            return Err(io::Error::other(format!("Hour {hour} was not drawn by the map's layers (they show {:?}; name, drawn, carried, upload left: {:?})", side.last_frame().drawn, side.layer_states())));
+            return Err(io::Error::other(format!("Hour {hour} was not drawn by the map's layers (they show {:?}; name, drawn, carried, upload left: {:?})", side.last_frame().drawn, side.with_side(crate::playhead_host::MapSide::layer_states))));
         }
         if schedule.pngs.contains(&index) {
             crate::render::write_png(
@@ -935,23 +1227,22 @@ pub(crate) fn measure(
         let counts = gpu_counts();
             let (scopes, scope_walls, scope_calls) = frame_scopes(&mut labels_before);
             let cycle_reads = cpu::cycle_reads() - std::mem::replace(&mut reads_before, cpu::cycle_reads());
-        serde_json::to_writer(
-            &mut frames,
-            &json!({"frame":index,"perf_frame":perf_frame,"hour":hour,"thread_us":frame_thread_cpu.last(),
+        frames.write(json!({"frame":index,"perf_frame":perf_frame,"hour":hour,"thread_us":frame_thread_cpu.last(),
                 "wall_us":frame_wall.last(),
                 "camera_height":viewer.camera.map(|placement| placement.height),
                 "camera":camera_record(pinned_camera(&viewer)),"view":view_record(),
                 "gpu":counts,
-                "scopes_us":scopes,"scopes_wall_us":scope_walls,"scopes_calls":scope_calls,"cycle_reads":cycle_reads,"extra":extra}),
-        )?;
-        io::Write::write_all(&mut frames, b"\n")?;
-        io::Write::flush(&mut frames)?;
+                "scopes_us":scopes,"scopes_wall_us":scope_walls,"scopes_calls":scope_calls,"cycle_reads":cycle_reads,"extra":extra}))?;
         if index % 100 == 0 {
             println!("Playback cost: {}/{} hours, at {}", index + 1, hours, hour);
         }
     }
     drain(&state)?;
-    io::Write::flush(&mut frames)?;
+    frames.finish()?;
+    let counted = match pictures {
+        Some(pictures) => Some(pictures.finish(&state.device, &state.queue)?),
+        None => None,
+    };
     let seconds = wall.elapsed().as_secs_f64();
     let cycle_ns = cycle_start
         .zip(process_cycles())
@@ -965,6 +1256,25 @@ pub(crate) fn measure(
     let memory = monitor.finish();
     let mut report = crate::playback_cost::accounting(&before, &after, process_ns, cycle_ns, hours);
     report["schema"] = json!(1);
+    report["pictures"] = json!(counted);
+    // What a world unit is worth in pixels at the run's camera, so a thing that moved so many map
+    // units a frame is read in pixels. The runs that count pictures hold their camera's height, so
+    // this is one pair of numbers for the run; a flight or a walk changes it frame by frame.
+    if schedule.count_pictures.is_some() {
+        let ground = [camera.center[0], 0.0, camera.center[1]];
+        let along = |axis: usize, by: f32| {
+            let mut moved = ground;
+            moved[axis] += by;
+            camera
+                .project(moved, pixels)
+                .zip(camera.project(ground, pixels))
+                .map(|([x, y], [x0, y0])| ((x - x0).hypot(y - y0) / by.abs()) as f64)
+        };
+        report["pixels_a_world_unit"] = json!({
+            "east": along(0, 1.0), "north": along(2, 1.0),
+            "scope": "Pixels a world unit at the camera's own centre on the ground plane, by the frame's own projection: a mover's glide in world units times this is what it moved on screen there. The view's edges differ under the game's pitched camera.",
+        });
+    }
     // One read of a thread's cycle time, in wall nanoseconds: a frame's `cycle_reads` times this is
     // what the accounting itself cost that frame.
     report["cycle_read_ns"] = after["cycleReadNs"].clone();
@@ -974,15 +1284,20 @@ pub(crate) fn measure(
         "live"
     });
     report["png_frames"] = json!(schedule.pngs);
+    if let Some(presented) = schedule.png_frames {
+        report["presented_png_frames"] = json!((presented.first..presented.first + presented.frames).collect::<Vec<u64>>());
+    }
     report["seek_back"] = json!(schedule.seek_back);
-    report["playhead"] = json!(viewer.playhead_map.is_some());
-    report["today_started"] = json!(viewer.hours.is_some());
-    report["layers_only"] = json!({"on": schedule.layers_only, "today_started": viewer.hours.is_some()});
     report["extra_maps"] = extras.summary();
-    report["parts"] = parts(&report, viewer.playhead_map.as_ref(), &counts_before);
     report["hour_step"] =
         json!((schedule.pan.is_none() && schedule.paced.is_none()).then_some(schedule.step));
     report["pan_units_per_frame"] = json!(schedule.pan);
+    report["walk"] = json!(options.walk.as_ref().map(|walk| json!({
+        "start": walk.at, "facing_deg": walk.facing.to_degrees(), "scale": walk.scale, "flying": walk.flying,
+        "keys": walk.held.iter().map(|key| format!("{key:?}")).collect::<Vec<_>>(),
+        "ctrl": walk.modifiers.ctrl, "shift": walk.modifiers.shift,
+        "scope": "The viewing country's infantry figure walks from `start` on the capture clock, holding `keys` every frame; each frame's record names the eye behind it (`camera`) and every part's counts for that view (`view`).",
+    })));
     report["flight"] = json!(schedule.flight.map(|flight| json!({
         "start": flight.start, "height": flight.height, "climb_to": crate::playback_cost::flight::CLIMB_TO,
         "legs": crate::playback_cost::flight::LEGS.iter().map(|(name, seconds)| json!({"leg": name, "seconds": seconds})).collect::<Vec<_>>(),
@@ -1022,8 +1337,19 @@ pub(crate) fn measure(
         "scope":"wgpu allocator report sampled after every submitted frame, not adapter-wide residency; unsupported reports are null"});
     report["viewport"] = json!(pixels);
     report["presentation"] = json!({
-        "surface": null,
+        "surface": if schedule.windowed { json!("the window's own swap chain, present mode as the map's") } else { Value::Null },
         "vertical_sync": false,
+        // What the map asks its swap chain for, windowed: the product's own choice, so a run says
+        // what it presented through rather than what the harness believes about it.
+        "present_mode": schedule.windowed.then(|| format!("{:?}", state.surface_config.present_mode)),
+        "desired_maximum_frame_latency": schedule.windowed.then_some(state.surface_config.desired_maximum_frame_latency),
+        // The display attached, which a windowed run's presents are paced by; the harness's own
+        // --refresh-hz stands for the display in every other figure.
+        "attached_display_hz": installed_content_settings::settings::display_refresh_hz(
+            window.as_ref().map(|window| window.hwnd()),
+        ),
+        // The app's frame rate limit (`--frame-limit`), which `refresh_hz` already stands held to.
+        "frame_limit_hz": viewer_foundation::map::frame_limit::limit(),
         "scope": "The harness renders to offscreen textures with no surface, so no frame waits for vertical sync or a swap chain. gpu_wait_us is the harness's own drain after each submission, which a window does not pay: there the next frame's CPU work overlaps the GPU's, and a frame waits only when the GPU is a whole frame behind (the swap chain's queue is full). A frame's GPU work by pass is each frame's view record `gpu_passes` (microseconds, read back frames later: `frames_ago`), or `not_recorded` on an adapter without timestamps.",
     });
     report["camera"] =
@@ -1034,21 +1360,19 @@ pub(crate) fn measure(
     report["frames_with_warnings"] = json!(options.diagnostics.then_some(warning_frames));
     report["diagnostic_warnings_collected"] = json!(options.diagnostics);
     report["schedule"] = json!(if schedule.paced.is_some() {
-        "Frame k starts at k/refresh_hz s, or at once when the frame before ran past it; the head runs free from --from-hour at --paced hours a second and the run ends when it reaches --from-hour + --hours. Camera and presentation clocks are the wall clock. Each frame draws the newest hour the builders finished at or before the head, as fast play in the window does: nothing waits for an hour, its icons (loaded in the background) or its raid cycle. Same hour coordinator, projections, SceneInput and Scene::render as viewing. GPU drained each frame after submission, timed apart. CPU/wall includes pipeline startup and final GPU drain; static content/device setup is separate; game hours are hours of head travel."
+        "Frame k starts at k/refresh_hz s, or at once when the frame before ran past it; the head runs free from --from-hour at --paced hours a second and the run ends when it reaches --from-hour + --hours. Camera and presentation clocks are the wall clock. Each frame draws the newest hour the map's layers have composed at or before the head, as fast play in the window does: nothing waits for an hour or its icons (loaded in the background). Same playhead, projections, SceneInput and Scene::render as viewing. GPU drained each frame after submission, timed apart. CPU/wall includes pipeline startup and final GPU drain; static content/device setup is separate; game hours are hours of head travel."
     } else {
-        "One frame per requested game hour; camera and presentation clocks advance 1/refresh_hz s per frame. Same hour coordinator, projections, SceneInput and Scene::render as viewing. GPU drained each frame; no vsync, window, OS input, audio-device output or synthetic codec work. CPU/wall includes first-hour pipeline startup and final GPU drain; static content/device setup is separate."
+        "One frame per requested game hour; camera and presentation clocks advance 1/refresh_hz s per frame. Same playhead, projections, SceneInput and Scene::render as viewing. GPU drained each frame; no vsync, window, OS input, audio-device output or synthetic codec work. CPU/wall includes the layers' first compose and the final GPU drain; static content/device setup is separate."
     });
     if let Some(speed) = schedule.paced {
-        let mut paced = paced::summary(&paced_frames, schedule.refresh_hz, paced_end_us);
-        paced["speed_hours_per_second"] = json!(speed);
+        let mut paced = paced::summary(&paced_frames, schedule.refresh_hz, paced_end_us, speed);
         paced["refresh_hz"] = json!(schedule.refresh_hz);
-        paced["page_grid"] = json!(hours::page_grid());
         paced["head_hours"] = json!(hours);
         paced["process_cpu_us_per_head_hour"] =
             json!(process_ns as f64 / 1000.0 / f64::from(hours));
         paced["harness_wait_thread_cpu_us"] = json!(harness_wait_us);
         paced["scope"] = json!(
-            "Distributions and counts over the frames after warm-up (the frames before the first drawn hour). work_us: frame start to the return of the frame's UI pass, which submits its commands; gpu_wait_us: the drain after it; thread_us: the window thread's CPU over both. late_frames: work over one refresh interval; a late start is unexplained when the frame before finished its work and GPU wait by this frame's due time. drawn_hour is the hour presented and drawn this frame; lag_hours is head_hour minus it. Process CPU includes the harness's wait to each due time (its window-thread CPU is harness_wait_thread_cpu_us). In frames.jsonl, reached_us is when the harness came to the frame after the one before it (late when past due_us), and woke_us when its sleep returned, a millisecond short of due, before it spins (null without a sleep). scopes_us is each window-thread label's own CPU this frame and scopes_wall_us its wall time, charged the same way: a label's wall over its CPU is time off a core inside it. In the layers record, take_ms and take_cpu_ms are the frame's taking of the stepper's steps from the ring they share."
+            "Distributions and counts over the frames after warm-up (the frames before the first drawn hour). work_us: the product's frame alone, from the call of the frame's UI pass to its return, which submits its commands; the harness's own work around it (this loop's bookkeeping, the records it writes, its drain of the GPU) is charged to frame.harness and frame.record and is in neither work_us nor thread_us. gpu_wait_us: the drain after the frame; thread_us: the window thread's CPU over the product's frame. late_frames: work over one refresh interval; a late start is unexplained when the frame before finished its work and GPU wait by this frame's due time. drawn_hour is the hour the frame drew everything at, its own head (`viewer_foundation::map::frame_head`), which follows the clock and is steered to stay inside the hours published; lag_hours is head_hour minus the oldest hour the map's layers show, the overlay no part of it, so it measures the products' lateness and not the head's. overlay_hour is the hour the overlay drawn stands at and overlay_behind_hours how far that is behind the hour the layers drew; overlay_behind_hours and overlay_behind_ms (those hours at the run's speed) are their distributions, and overlay_new_hour_frames the frames in which the overlay moved. Process CPU includes the harness's wait to each due time (its window-thread CPU is harness_wait_thread_cpu_us). In frames.jsonl, reached_us is when the harness came to the frame after the one before it (late when past due_us), and woke_us when its sleep returned, a millisecond short of due, before it spins (null without a sleep). scopes_us is each window-thread label's own CPU this frame and scopes_wall_us its wall time, charged the same way: a label's wall over its CPU is time off a core inside it. In the layers record, take_ms and take_cpu_ms are the frame's taking of the stepper's steps from the ring they share, side_missed names what the side's thread was doing when this frame could not take the side at all (null when it took it), and first and applied are the first and last hour the publication drawn carries. Per publication (deduplicated by made): stage_ms and stage_cpu_ms are the side's step stage by stage, in wall milliseconds and in the side thread's own CPU (a stage whose wall stands over its CPU waited rather than worked), side_cpu_ms that CPU over the whole step, step_cpu_ms the stepper thread's own CPU in the step builds of step_ms, and waited_ms how long past its due time the publication started with, of that, what it waited for an hour the one before did not show and for the frame to release the side."
         );
         report["paced"] = paced;
         if let Some(side) = &viewer.playhead_map {
@@ -1058,48 +1382,73 @@ pub(crate) fn measure(
                 let replacing = part["layers"].as_array().cloned().unwrap_or_default();
                 part["layer_cost_a_frame"] = Value::Array(replacing.iter().filter_map(|name| costs.get(name.as_str()?).cloned()).collect());
             }
-            report["intel_icons"] = crate::layers::intel_icons::summary(side);
-            report["names"] = crate::layers::names::summary(side);
-            report["counters"] = crate::layers::counters::fed::summary(side);
-            report["aircraft"] = crate::layers::aircraft::summary(side);
-            report["buildings"] = crate::layers::buildings::summary(side);
-            report["snow"] = crate::layers::snow::summary(side);
-            report["trains"] = crate::layers::trains::summary(side);
+            side.with_side(|side| {
+                report["layers"]["standing"] = side.standing();
+                report["view_store"] = side.views().record(distribution);
+                report["intel_icons"] = crate::layers::intel_icons::summary(side);
+                report["names"] = crate::layers::names::summary(side);
+                report["counters"] = crate::layers::counters::fed::summary(side);
+                report["aircraft"] = crate::layers::aircraft::summary(side);
+                report["buildings"] = crate::layers::buildings::summary(side);
+                report["snow"] = crate::layers::snow::summary(side);
+                report["trains"] = crate::layers::trains::summary(side);
+            });
             report["scope"] = layered.scope_summary(side.names());
+            // `BATTLE_PLAN_VIEWER_CHECK_INSTALL`: the installs that trust what their maker said changed,
+            // prepared whole beside it at a bounded rate, and the differences that were named.
+            let (checked, differing) = viewer_foundation::install_check::counted();
+            report["install_checks"] = json!({"checks": checked, "differing": differing, "on": viewer_foundation::install_check::on()});
+            let (checked, differing, carried, longest) = viewer_foundation::map::frame_budget::check::counted();
+            let (judged, refused) = viewer_foundation::map::publication_check::counted();
+            report["publication_checks"] = json!({"checks": judged, "differing": refused, "on": viewer_foundation::map::publication_check::on()});
+            // `BATTLE_PLAN_VIEWER_CHECK_OVERLAY`: what the overlay's content gate looked at and compared.
+            // A run it never compared on is not a run it judged.
+            let [looked, compared, nothing_new, art_moved, rows_missed, layers_moved, no_overlay] = crate::app::overlay_checks::counted();
+            report["overlay_checks"] = json!({"looked": looked, "checks": compared, "not_compared": {"nothing_new": nothing_new,
+                "the_art_moved": art_moved, "the_rows_held_no_table_it_read": rows_missed,
+                "a_layers_product_moved": layers_moved, "no_overlay_yet": no_overlay}});
+            // `BATTLE_PLAN_VIEWER_CHECK_HOUR`: every timed layer shows its frame's own head hour.
+            let (hours_judged, hours_differing) = viewer_foundation::map::hour_check::counted();
+            report["hour_checks"] = json!({"checks": hours_judged, "differing": hours_differing, "on": viewer_foundation::map::hour_check::on()});
+            report["budget_checks"] = json!({"checks": checked, "differing": differing, "frames_carrying": carried, "longest_carry_frames": longest,
+                "on": viewer_foundation::map::frame_budget::check::on()});
         }
     }
     if let Some(side) = &viewer.playhead_map {
         let (now, peak, counters) = side.entry().playhead().held();
-        let host = side.held();
+        let (host, readers) = side.with_side(|side| (side.held(), side.readers()));
         report["stepper"] = json!({
             "steps": counters.steps, "stalls": counters.stalls, "stalled_steps": counters.stalled_steps, "piece_waits": counters.piece_waits,
+            "pieces_crossed": counters.pieces_crossed, "crossed_tables": counters.crossed_tables, "crossed_resets": counters.crossed_resets,
+            "crossed_rows": counters.crossed_rows, "crossed_cells": counters.crossed_cells,
+            "cross_ms": counters.cross_ns as f64 / 1e6, "cross_most_ms": counters.cross_most_ns as f64 / 1e6,
             "seeks": counters.seeks, "joins": counters.joins, "join_holds": counters.join_holds, "catch_ups": counters.catch_ups, "split_steps": counters.split_steps,
+            "landings": counters.landings, "landed_behind": counters.landed_behind, "landing_rebuild_ms": counters.landing_rebuild_ns as f64 / 1e6, "caught_up": counters.caught_up, "resteps": counters.resteps,
             "behind_the_head_ms": {"room": counters.room_held_ns as f64 / 1e6, "joins": counters.join_held_ns as f64 / 1e6, "scope": "Time the stepper was behind the head and built nothing: for want of ring room (the ring's size of steps no consumer had taken), and while a join it had reached waited for its lane."},
             "idle_ms": {"ring_full_ahead": counters.idle_ns[0] as f64 / 1e6, "ring_full_behind": counters.idle_ns[1] as f64 / 1e6, "fetch": counters.idle_ns[2] as f64 / 1e6, "end": counters.idle_ns[3] as f64 / 1e6, "other": counters.idle_ns[4] as f64 / 1e6, "scope": "Time the stepper waited with nothing to build, by why its last build stopped: the ring full ahead of the head (waiting for the frames to take its steps), the ring full behind it, a lane's part not fetched yet, the recording's end, anything else."},
             "playhead_bytes": {"now": now.total, "peak": peak.total, "ring_peak": peak.ring_bytes, "states_peak": peak.state_bytes, "preparing_peak": peak.preparing},
             "host_bytes": {"mirrors": host.mirrors.iter().map(|(_, bytes)| bytes).sum::<usize>(), "layers": host.layers, "pending_steps": host.pending, "states": host.states, "playhead": host.playhead, "total": host.total()},
-            "mirrors": side.readers().into_iter().map(|(table, columns, keyed, layers)| json!({"table": format!("{table:?}"), "columns": columns, "keyed": keyed, "layers": layers, "bytes": host.mirrors.iter().find(|(held, _)| *held == table).map(|(_, bytes)| *bytes)})).collect::<Vec<_>>(),
-            "scope": "The playhead's counters since it opened (steps built, table steps stalled at a part not fetched and the steps holding any, seeks, joins), its held bytes now and at their peaks, and what the map's side holds at the end. Per frame, the steps' build time is layers.step_ms and frames.jsonl's layers.step_ms.",
+            "mirrors": readers.into_iter().map(|(table, columns, keyed, layers)| json!({"table": format!("{table:?}"), "columns": columns, "keyed": keyed, "layers": layers, "bytes": host.mirrors.iter().find(|(held, _)| *held == table).map(|(_, bytes)| *bytes)})).collect::<Vec<_>>(),
+            "piece_checks": {"tables": crate::playhead_host::piece::counted().0, "differing": crate::playhead_host::piece::counted().1, "on": crate::playhead_host::piece::on()},
+            "scope": "The playhead's counters since it opened (steps built, table steps stalled at a part not fetched and the steps holding any, seeks, joins, and the landings: consumers the ring parked for holding more steps than the lanes' cells, each landed with every table whole, which the map answers by composing every layer), the piece boundaries crossed as a step with the tables they carried over, the tables reset in them because no change set carries a log over a session's handover, and the rows and cells the crossings named; the judge of those crossings (BATTLE_PLAN_VIEWER_CHECK_PIECE) compares every table's mirror after one with the mirror a rebuild of the new piece's lane makes; its held bytes now and at their peaks, and what the map's side holds at the end. Per frame, the steps' build time is layers.step_ms and frames.jsonl's layers.step_ms.",
         });
     }
-    report["rows_worker"] = crate::playhead_host::rows::counts::totals();
     {
         use viewer_foundation::worker_priority as priority;
         report["threads"] = json!({
             "entered": priority::entered().into_iter().map(|entered| json!({"name": entered.name, "class": entered.class.name(), "priority": entered.priority, "threads": entered.threads})).collect::<Vec<_>>(),
-            "scope": "Every thread of ours that named its class at its start (worker_priority::enter): its name, class, the priority read back after it was set, and how many threads of that name entered. The playhead's own threads, the pipeline builds and the driver's threads enter no class and run at normal.",
+            "scope": "Every thread of ours that named its class at its start (worker_priority::enter): its name, class, the priority read back after it was set, and how many threads of that name entered. The pipeline builds and the driver's threads enter no class and run at normal.",
         });
     }
-    if let Some(proof) = &viewer.laid_proof {
-        let (tally, failure) = proof.finish();
-        std::fs::write(output.join("laid-proof.json"), serde_json::to_vec_pretty(&tally)?)?;
-        report["laid_proof"] = tally;
-        if let Some(failure) = failure {
-            return Err(io::Error::other(failure));
-        }
+    {
+        let (calls, overlapped, contended) = engine_heap::large_blocks();
+        report["large_blocks"] = json!({
+            "calls": calls, "overlapped": overlapped, "contended": contended,
+            "scope": "Blocks past 64 KiB, which have pages of their own: the calls made, those that ran while another was running (what one list behind one lock would have made wait), and those that found their size class held and took fresh pages, or released at once, instead of waiting. No call waits.",
+        });
     }
-    if let Some(political) = viewer.playhead_map.as_ref().and_then(|side| side.parts()).and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::political::Political>())) {
-        let [whole, country, naval] = political.uploads;
+    if let Some(uploads) = viewer.playhead_map.as_ref().and_then(|side| side.installed().find(|(name, ..)| *name == "political").map(|(_, _, wrote)| wrote.writes)) {
+        let [whole, country, naval] = uploads;
         report["political_uploads"] = json!({"whole": whole, "country_by_change": country, "naval_by_change": naval});
     }
     Ok(report)
@@ -1110,19 +1459,22 @@ pub(crate) fn measure(
 #[derive(Default)]
 struct Layered {
     /// Per frame after the first reset is shown: per layer its part, the lag in hours with every
-    /// layer and the overlay counted, and the lag of the window clock's drawn hour alone.
+    /// layer counted, and the lag of the window clock's drawn hour alone.
     frames: Vec<(Vec<Part>, Option<f64>, Option<f64>)>,
-    /// The hour of the rows the overlay on screen was laid out from, as last known; none before
-    /// its first layout.
+    /// The hour the overlay on screen stands at, as last known; none before its first layout.
     overlay: Option<i32>,
     mirror_ms: Vec<f64>,
     /// The mirrors' apply by table index, summed over the frames of `mirror_ms`: wall nanoseconds
     /// and the frame thread's own cycles.
     mirror_tables: Vec<(u64, u64)>,
+    /// The apply summed over the frames of `mirror_ms`, split by whether a drawn layer or a maker
+    /// reads the table.
+    mirror_split: crate::playhead_host::mirror::Split,
     /// Per frame of `mirror_ms`: the mirrors' apply in the thread's own milliseconds.
     mirror_cpu_ms: Vec<f64>,
     /// Per frame: the build time of the steps it took, on the playhead's threads.
     step_ms: Vec<f64>,
+    side_step_ms: Vec<f64>,
     /// Per frame: the political upload's phases (naval, country fill, plans built, plans written).
     phases: Vec<[f64; 4]>,
     /// The host's mirrors, layers and whole side, held bytes at their peaks.
@@ -1149,23 +1501,21 @@ struct Layered {
 struct Part {
     /// The hours its published product is behind the head.
     lag: Option<f64>,
-    wall: [f64; 3],
-    cpu: [Option<f64>; 3],
-    carried: usize,
+    wall: [f64; 4],
+    cpu: [Option<f64>; 4],
     upload_carried: bool,
     /// GPU writes and their bytes in its upload.
     uploads: (u64, u64),
-    /// Frames since the oldest change it carries was marked.
-    late: u64,
-    /// Its settle or upload alone took more than the whole share it was given.
-    overran: bool,
+    /// Of its upload's milliseconds, those inside the queue's writes and inside buffer and bind
+    /// group creation.
+    inside: [f64; 2],
     /// Fed the steps ahead, in a frame that applied a step: its product of the applied hour was
     /// ready; and the hand-over's milliseconds on the frame thread.
     ready_at_hour: Option<bool>,
     ahead_ms: f64,
 }
 
-const SCOPES: [&str; 3] = ["apply", "settle", "upload"];
+const SCOPES: [&str; 4] = ["apply", "settle", "stage", "upload"];
 
 /// A seek while playing: the frame that asked it, the hour, and the frames that mark its way to
 /// the screen, each with the milliseconds from the start of the asking frame to the mark frame's end.
@@ -1223,7 +1573,7 @@ impl Layered {
     /// The host's held bytes now, kept at their peaks.
     fn sample_held(&mut self, side: &crate::playhead_host::MapSide) {
         let held = side.held();
-        let mirrors: usize = held.mirrors.iter().map(|(_, bytes)| bytes).sum();
+        let mirrors: usize = held.mirrors.iter().map(|(_, bytes)| bytes).sum::<usize>() + held.views.iter().map(|(_, bytes)| bytes).sum::<usize>();
         let layers: usize = held.layers.iter().map(|(_, bytes)| bytes).sum();
         self.held_peak = [self.held_peak[0].max(mirrors), self.held_peak[1].max(layers), self.held_peak[2].max(held.total())];
     }
@@ -1240,23 +1590,22 @@ impl Layered {
                 let cpu = |cycles: u64| hz.map(|hz| cycles as f64 / hz * 1e3);
                 Part {
                     lag: part.shown.map(|shown| head - f64::from(shown)),
-                    wall: [part.apply_ns, part.settle_ns, part.upload_ns].map(|ns| ns as f64 / 1e6),
-                    cpu: [part.apply_cycles, part.settle_cycles, part.upload_cycles].map(cpu),
-                    carried: part.carried,
+                    wall: [part.apply_ns, part.settle_ns, part.stage_ns, part.upload_ns].map(|ns| ns as f64 / 1e6),
+                    cpu: [part.apply_cycles, part.settle_cycles, part.stage_cycles, part.upload_cycles].map(cpu),
                     upload_carried: part.upload_carried,
                     uploads: (part.uploads, part.upload_bytes),
-                    late: part.late,
-                    overran: part.overran,
+                    inside: [part.write_ns, part.create_ns].map(|ns| ns as f64 / 1e6),
                     ready_at_hour: part.ready_at_hour,
                     ahead_ms: part.ahead_ns as f64 / 1e6,
                 }
             })
             .collect();
         let clock = frame.drawn.map(|drawn| head - f64::from(drawn));
-        let oldest = frame.drawn.and(frame.oldest.or(frame.drawn)).map(|oldest| self.overlay.map_or(oldest, |overlay| overlay.min(oldest)));
+        let oldest = frame.drawn.and(frame.oldest.or(frame.drawn));
         let lag = oldest.map(|oldest| head - f64::from(oldest));
         self.composing += u32::from(frame.composing);
         self.step_ms.push(frame.step_ns as f64 / 1e6);
+        self.side_step_ms.push(frame.side_ns as f64 / 1e6);
         self.trace.push((head, newest, frame.applied, frame.drawn));
         if let Some(seek) = self.seeks.last_mut() {
             let at = Some((index, (end_us - seek.asked_us) / 1e3));
@@ -1307,24 +1656,48 @@ impl Layered {
                     self.mirror_tables.resize(frame.mirror_tables.len(), (0, 0));
                 }
                 self.mirror_tables.iter_mut().zip(&frame.mirror_tables).for_each(|(sum, (ns, cycles))| *sum = (sum.0 + ns, sum.1 + cycles));
+                let held = &mut self.mirror_split;
+                let split = frame.mirror_split;
+                held.awake_ns += split.awake_ns;
+                held.awake_sets += split.awake_sets;
+                held.asleep_ns += split.asleep_ns;
+                held.asleep_sets += split.asleep_sets;
+                held.asleep_cells += split.asleep_cells;
+                held.asleep_rows += split.asleep_rows;
             }
         }
+        let waited = frame.waited;
+        let waited_ms: serde_json::Map<String, Value> = [("late", waited.late_ns), ("for_an_hour", waited.for_an_hour_ns), ("for_the_frame", waited.for_the_frame_ns)].into_iter().map(|(name, ns)| (name.to_owned(), json!(ns as f64 / 1e6))).collect();
+        let stages = crate::playhead_host::Stages::NAMES;
+        let stage_ms: serde_json::Map<String, Value> = stages.iter().zip(frame.stages.ns).map(|(name, ns)| ((*name).to_owned(), json!(ns as f64 / 1e6))).collect();
+        let stage_cpu_ms: serde_json::Map<String, Value> = hz.map(|hz| stages.iter().zip(frame.stages.cycles).map(|(name, cycles)| ((*name).to_owned(), json!(cycles as f64 / hz * 1e3))).collect()).unwrap_or_default();
         let named = |table: usize| format!("{:?}", replay_data::rows::TableId::ALL[table]);
         let mirror_tables: serde_json::Map<String, Value> = frame.mirror_tables.iter().enumerate().filter(|(_, (ns, _))| *ns > 0).map(|(table, &(ns, _))| (named(table), json!(ns as f64 / 1e6))).collect();
         let mirror_tables_cpu: serde_json::Map<String, Value> = hz.map(|hz| frame.mirror_tables.iter().enumerate().filter(|(_, (_, cycles))| *cycles > 0).map(|(table, &(_, cycles))| (named(table), json!(cycles as f64 / hz * 1e3))).collect()).unwrap_or_default();
-        let mut record = json!({"head": head, "newest": newest, "slice_ms": frame.slice_ns as f64 / 1e6, "upload_share_ms": frame.upload_share_ns as f64 / 1e6, "overran": frame.overran, "late": frame.layers.iter().map(|part| part.late).collect::<Vec<_>>(),
+        let mut record = json!({"head": head, "newest": newest, "made": frame.made,
             "political_upload_phases_ms": phases.map(|phases| phases.map(|ns| ns as f64 / 1e6)),
-            "steps": frame.steps, "step_ms": frame.step_ns as f64 / 1e6, "applied": frame.applied, "drawn": frame.drawn, "oldest": oldest, "overlay_hour": self.overlay, "lag_hours": lag, "lag_hours_without_cadence_layers_or_overlay": clock, "mirror_ms": frame.mirror_ns as f64 / 1e6, "mirror_cpu_ms": hz.map(|hz| frame.mirror_cycles as f64 / hz * 1e3), "take_ms": frame.take_ns as f64 / 1e6, "take_cpu_ms": hz.map(|hz| frame.take_cycles as f64 / hz * 1e3), "mirror_tables_ms": mirror_tables, "mirror_tables_cpu_ms": mirror_tables_cpu, "cells": frame.cells, "rows": frame.rows,
+            "steps": frame.steps, "step_ms": frame.step_ns as f64 / 1e6, "side_step_ms": frame.side_ns as f64 / 1e6, "first": frame.first, "applied": frame.applied, "drawn": frame.drawn, "oldest": oldest, "overlay_hour": self.overlay, "lag_hours": lag, "lag_hours_without_cadence_layers": clock, "mirror_ms": frame.mirror_ns as f64 / 1e6, "mirror_cpu_ms": hz.map(|hz| frame.mirror_cycles as f64 / hz * 1e3), "take_ms": frame.take_ns as f64 / 1e6, "take_cpu_ms": hz.map(|hz| frame.take_cycles as f64 / hz * 1e3), "mirror_tables_ms": mirror_tables, "mirror_tables_cpu_ms": mirror_tables_cpu, "cells": frame.cells, "rows": frame.rows,
             "wall_ms": parts.iter().map(|part| part.wall).collect::<Vec<_>>(), "cpu_ms": parts.iter().map(|part| part.cpu).collect::<Vec<_>>(),
-            "carried": parts.iter().map(|part| part.carried).collect::<Vec<_>>(), "upload_carried": parts.iter().map(|part| part.upload_carried).collect::<Vec<_>>(),
+            "upload_carried": parts.iter().map(|part| part.upload_carried).collect::<Vec<_>>(),
+            "layer_published": frame.layers.iter().map(|part| part.published).collect::<Vec<_>>(),
+            "reached_ms": frame.reached_ns as f64 / 1e6,
             "ready": frame.layers.iter().map(|part| part.ready).collect::<Vec<_>>(),
             "shown": frame.layers.iter().map(|part| part.shown).collect::<Vec<_>>(), "layer_lag_hours": parts.iter().map(|part| part.lag).collect::<Vec<_>>(),
             "ready_at_hour": parts.iter().map(|part| part.ready_at_hour).collect::<Vec<_>>(), "ahead_ms": parts.iter().map(|part| part.ahead_ms).collect::<Vec<_>>(),
             "composing": frame.composing, "resets": frame.resets, "swapped": frame.swapped, "superseded": frame.superseded,
             "reset_shown": frame.reset_shown, "layer_reset_shown": frame.layers.iter().map(|part| part.reset_shown).collect::<Vec<_>>(),
             "scope": frame.layers.iter().map(|part| part.scope.map(|scope| json!([scope.settled, scope.in_view]))).collect::<Vec<_>>()});
+        record["reset_tables"] = json!(frame.reset_tables.iter().map(|&table| named(table)).collect::<Vec<_>>());
+        record["reset_step"] = json!(frame.reset_step);
+        record["renumbers"] = json!(frame.renumbers.iter().map(|&(table, rows, moved)| json!([named(table), rows, moved])).collect::<Vec<_>>());
+        record["side_cpu_ms"] = json!(hz.map(|hz| frame.side_cycles as f64 / hz * 1e3));
+        record["step_cpu_ms"] = json!(hz.map(|hz| frame.step_cycles as f64 / hz * 1e3));
+        record["stage_ms"] = Value::Object(stage_ms);
+        record["stage_cpu_ms"] = Value::Object(stage_cpu_ms);
+        record["waited_ms"] = Value::Object(waited_ms);
         record["uploads"] = json!(parts.iter().map(|part| part.uploads.0).collect::<Vec<_>>());
         record["upload_bytes"] = json!(parts.iter().map(|part| part.uploads.1).collect::<Vec<_>>());
+        record["upload_inside_ms"] = json!(parts.iter().map(|part| part.inside).collect::<Vec<_>>());
         record
     }
 
@@ -1355,10 +1728,7 @@ impl Layered {
                     "lag_hours": distribution(self.frames.iter().filter_map(|(parts, ..)| parts[at].lag).collect()),
                     "wall_ms": distribution(self.frames.iter().map(|(parts, ..)| parts[at].wall.iter().sum()).collect()),
                     "cpu_ms": distribution(self.frames.iter().filter_map(|(parts, ..)| parts[at].cpu.iter().copied().sum::<Option<f64>>()).collect()),
-                    "carried": distribution(self.frames.iter().map(|(parts, ..)| parts[at].carried as f64).collect()),
                     "frames_upload_carried": self.frames.iter().filter(|(parts, ..)| parts[at].upload_carried).count(),
-                    "frames_overran": self.frames.iter().filter(|(parts, ..)| parts[at].overran).count(),
-                    "late_frames": distribution(self.frames.iter().map(|(parts, ..)| parts[at].late as f64).collect()),
                 });
                 let fed: Vec<bool> = self.frames.iter().filter_map(|(parts, ..)| parts[at].ready_at_hour).collect();
                 if !fed.is_empty() {
@@ -1374,6 +1744,11 @@ impl Layered {
                         "cpu_ms": distribution(self.frames.iter().filter_map(|(parts, ..)| parts[at].cpu[scope]).collect()),
                     });
                 }
+                layer["upload"]["queue_write_ms"] = json!(distribution(self.frames.iter().map(|(parts, ..)| parts[at].inside[0]).collect()));
+
+                layer["upload"]["created_ms"] = json!(distribution(self.frames.iter().map(|(parts, ..)| parts[at].inside[1]).collect()));
+                layer["upload"]["writes"] = json!(distribution(self.frames.iter().map(|(parts, ..)| parts[at].uploads.0 as f64).collect()));
+                layer["upload"]["written_bytes"] = json!(distribution(self.frames.iter().map(|(parts, ..)| parts[at].uploads.1 as f64).collect()));
                 layer
             })
             .collect();
@@ -1404,52 +1779,28 @@ impl Layered {
             "trace": self.trace.iter().map(|&(head, built, applied, drawn)| json!([head, built, applied, drawn])).collect::<Vec<_>>(),
             "lag_hours": distribution(self.frames.iter().filter_map(|(_, lag, _)| *lag).collect()),
             "lag_hours_outside_seeks": distribution(self.frames.iter().zip(&self.outside).filter(|(_, outside)| **outside).filter_map(|((_, lag, _), _)| *lag).collect()),
-            "lag_hours_without_cadence_layers_or_overlay": distribution(self.frames.iter().filter_map(|(.., clock)| *clock).collect()),
-            "mirror_ms": distribution(self.mirror_ms.clone()), "mirror_cpu_ms": distribution(self.mirror_cpu_ms.clone()), "step_ms": distribution(self.step_ms.clone()), "layers": layers,
+            "lag_hours_without_cadence_layers": distribution(self.frames.iter().filter_map(|(.., clock)| *clock).collect()),
+            "mirror_ms": distribution(self.mirror_ms.clone()), "mirror_cpu_ms": distribution(self.mirror_cpu_ms.clone()), "step_ms": distribution(self.step_ms.clone()), "side_step_ms": distribution(self.side_step_ms.clone()), "layers": layers,
+            "step_timeline": crate::playhead_host::timeline::report(),
+            "mirror_split": {
+                "frames": self.mirror_ms.len(),
+                "awake_ms_a_frame": self.mirror_split.awake_ns as f64 / 1e6 / self.mirror_ms.len().max(1) as f64,
+                "asleep_ms_a_frame": self.mirror_split.asleep_ns as f64 / 1e6 / self.mirror_ms.len().max(1) as f64,
+                "awake_sets_a_frame": self.mirror_split.awake_sets as f64 / self.mirror_ms.len().max(1) as f64,
+                "asleep_sets_a_frame": self.mirror_split.asleep_sets as f64 / self.mirror_ms.len().max(1) as f64,
+                "asleep_cells_a_frame": self.mirror_split.asleep_cells as f64 / self.mirror_ms.len().max(1) as f64,
+                "asleep_rows_a_frame": self.mirror_split.asleep_rows as f64 / self.mirror_ms.len().max(1) as f64,
+                "scope": "The side's apply a frame, split by whether a drawn layer or a maker reads the table: asleep is what is applied for nobody.",
+            },
             "mirror_by_table": {
                 "tables": self.mirror_by_table(),
                 "scope": "The mirrors' apply by table, the mean over the frames of mirror_ms (frames applying nothing count as zero).",
             },
             "political_upload_phases_ms": phases,
             "held_peak_bytes": {"mirrors": self.held_peak[0], "layers": self.held_peak[1], "side": self.held_peak[2], "scope": "sampled every 30 frames"},
-            "scope": "Per frame after the layers first showed the sought hour: each layer's apply, settle and upload on the window thread, apart and summed (wall, and the thread's own cycles as milliseconds), entities carried over the budget, and the content lag: the harness head minus the oldest hour on screen, every drawn layer counted (those whose product is made from rows at the head on a worker at the hour those rows stand at) and the overlay (the hour of the rows it was laid out from, overlay_hour). lag_hours_without_cadence_layers_or_overlay is the window clock's drawn hour alone, which leaves both out.",
+            "scope": "Per frame after the layers first showed the sought hour: each layer's apply and settle on the map side's thread and its upload in the frame's window, apart and summed (wall, and the thread's own cycles as milliseconds), the entities its settles carried to a later one, and the content lag: the harness head minus the oldest hour the map's layers show, every drawn layer counted (those whose product is made from rows at the head on a worker at the hour those rows stand at). The overlay is no part of it: overlay_hour is the hour the overlay drawn stands at, reported beside the layers' hours. lag_hours_without_cadence_layers is the window clock's drawn hour alone, which leaves the cadence layers out too.",
         })
     }
-}
-
-/// Per part of today's hour: who draws it (the layers that replace it whole, or today's
-/// builder), the jobs dispatched for it and the hours its layers drew instead in this run, and
-/// the CPU today's builders spent on it a head hour from the exclusive scopes.
-fn parts(report: &Value, side: Option<&crate::playhead_host::MapSide>, before: &[(&str, u64, u64)]) -> Value {
-    const FAMILIES: [(&str, &[&str]); 8] = [
-        ("political", &["territory"]),
-        ("names", &["world names", "labels"]),
-        ("overlay", &["engagement/strikes/text", "raid responses"]),
-        ("rails", &["rails"]),
-        ("buildings", &["buildings"]),
-        ("movers", &["actors/units", "air/naval source choices"]),
-        ("fog", &["fog"]),
-        ("snow", &["weather"]),
-    ];
-    let cost = |family: &str| {
-        report["exclusive_cpu"].as_array().into_iter().flatten().find(|row| row["name"] == family).and_then(|row| row["exclusive_cpu_us_per_game_hour"].as_f64())
-    };
-    let drawn: Vec<&str> = side.map(|side| side.drawn_parts().collect()).unwrap_or_default();
-    let after = crate::hours::part_counts();
-    Value::Array(
-        FAMILIES
-            .iter()
-            .map(|&(part, families)| {
-                let today: f64 = families.iter().filter_map(|family| cost(family)).sum();
-                let layers: Vec<&str> = crate::playhead_host::REPLACES.iter().find(|(held, _)| *held == part).map(|(_, layers)| layers.to_vec()).unwrap_or_default();
-                let (jobs, layered) = after.iter().zip(before).find(|((name, ..), _)| *name == part).map_or((0, 0), |(&(_, jobs, layered), &(_, jobs_before, layered_before))| (jobs - jobs_before, layered - layered_before));
-                json!({
-                    "part": part, "drawn_by": if drawn.contains(&part) { "layers" } else { "today's builder" }, "layers": if drawn.contains(&part) { layers } else { Vec::new() },
-                    "jobs_dispatched": jobs, "hours_drawn_by_layers": layered, "today_cpu_us_per_head_hour": today, "families": families,
-                })
-            })
-            .collect(),
-    )
 }
 
 /// Each registered layer's record in the paced summary (its apply, settle and upload a frame), by

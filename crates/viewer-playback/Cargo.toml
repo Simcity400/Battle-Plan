@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["replay/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-foundation/test-support", "viewer-world/test-support", "viewer-counters/test-support", "viewer-combat/test-support", "viewer-raids/test-support", "viewer-counter-products/test-support", "shader-pipeline/test-support"]
+test-support = ["playhead/test-support", "replay/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-foundation/test-support", "viewer-world/test-support", "viewer-counters/test-support", "viewer-combat/test-support", "viewer-raids/test-support", "viewer-counter-products/test-support", "shader-pipeline/test-support"]
 
 [dependencies]
 map-content.workspace = true

@@ -27,7 +27,7 @@ use super::perspective::Resolution;
 /// The core tables, named in the error a missing one produces.
 const CORE: &str = "Provinces, CountryLinks and Countries";
 
-pub use crate::table_access::{Available, rows};
+pub use crate::table_access::{Available, rows, rows_fields};
 
 /// Every row of a core table, or a named error for the whole frame.
 ///
@@ -827,7 +827,7 @@ mod tests {
             TableView::Complete(TableRows::Provinces(vec![province(1)]));
         let error = rows::<tables::Divisions>(&frame).err().unwrap().to_string();
         assert!(
-            error.contains("hour 60828478 Divisions contains another table's rows"),
+            error.contains("divisions holds rows of another kind"),
             "{error}"
         );
     }

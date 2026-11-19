@@ -1,4 +1,5 @@
 //! World submission of common battle-plan and raid ribbon draw data.
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use std::{cell::RefCell, collections::BTreeMap, io, sync::Arc};
@@ -468,7 +469,7 @@ impl OrderPass {
         for bucket in &plan.buckets {
             let draws = self.prepare_bucket(arena, native, mode, time, bucket)?;
             {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("compiled map arrows"),
                     color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
                     depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
@@ -496,7 +497,7 @@ impl OrderPass {
                 load: wgpu::LoadOp::Clear(0),
                 store: wgpu::StoreOp::Store,
             });
-            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let _clear = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("arrow definition stencil clear"),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(attachment),

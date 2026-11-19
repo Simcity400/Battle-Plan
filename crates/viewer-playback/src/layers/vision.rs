@@ -14,7 +14,7 @@ mod worker;
 
 use global::Global;
 
-use super::{Budget, Carried, Gpu, Inputs, Layer, List, Num, Text, View};
+use super::{Carried, Settling, Inputs, Layer, List, Num, Text, View};
 use crate::playhead_host::mirror::{Mirror, Mirrors};
 use playhead::Step;
 use replay_columnar::manifest::Status;
@@ -226,15 +226,60 @@ pub fn seen_made_here() -> u64 {
     MADE.with(std::cell::Cell::get)
 }
 
+/// The province bytes of the last vision made from a copy, kept by the thread that makes them: the
+/// next is made by writing only the provinces whose byte changed.
+pub struct Made {
+    present: Vec<u32>,
+    bytes: Vec<u8>,
+    values: Arc<viewer_foundation::map::perspective::values::Values<u32, u8>>,
+}
+
 impl SeenCopy {
+    /// A copy of `parts` without province bytes, for a test of what holds copies.
+    #[cfg(test)]
+    pub(crate) fn of_parts(parts: Parts) -> Self {
+        Self { bytes: None, parts }
+    }
+
     pub fn make(self) -> Seen {
+        self.make_after(None).0
+    }
+
+    /// The vision of this copy, its province bytes made from `before`'s by writing only the
+    /// provinces whose byte differs, with what the next copy is made after.
+    pub fn make_after(self, before: Option<&Made>) -> (Seen, Option<Made>) {
+        use viewer_foundation::map::perspective::values::Values;
         #[cfg(any(test, feature = "test-support"))]
         MADE.with(|made| made.set(made.get() + 1));
-        let Self { bytes, mut parts } = self;
-        if let Some((present, bytes)) = bytes {
-            parts.visibility = present.into_iter().map(|id| (id, bytes[id as usize])).collect();
-        }
-        Seen::from_parts(parts)
+        let Self { bytes, parts } = self;
+        let Some((present, bytes)) = bytes else { return (Seen::from_parts(parts), None) };
+        let values = match before {
+            Some(before) => {
+                let held = |present: &[u32], len: usize| {
+                    let mut held = vec![false; len];
+                    for &id in present {
+                        held[id as usize] = true;
+                    }
+                    held
+                };
+                let (was, now) = (held(&before.present, before.bytes.len()), held(&present, bytes.len()));
+                let mut values = (*before.values).clone();
+                for id in 0..was.len().max(now.len()) {
+                    let old = was.get(id).copied().unwrap_or(false).then(|| before.bytes[id]);
+                    let new = now.get(id).copied().unwrap_or(false).then(|| bytes[id]);
+                    match (old == new, new) {
+                        (true, _) => {}
+                        (false, Some(byte)) => values.insert(id as u32, byte),
+                        (false, None) => values.remove(&(id as u32)),
+                    }
+                }
+                values
+            }
+            None => Values::from_iter(present.iter().map(|&id| (id, bytes[id as usize]))),
+        };
+        let values = Arc::new(values);
+        let seen = Seen::from_parts(parts).with_visibility(Arc::clone(&values));
+        (seen, Some(Made { present, bytes, values }))
     }
 }
 
@@ -320,17 +365,9 @@ impl Dirty64 {
         true
     }
 
-    /// The frame the oldest key still dirty was marked at.
-    fn since(&self) -> Option<u64> {
-        self.list.first().map(|&(_, frame)| frame)
-    }
-
-    fn settle(&mut self, budget: &mut Budget, mut each: impl FnMut(u64)) {
+    fn settle(&mut self, mut each: impl FnMut(u64)) {
         let mut done = 0;
         while done < self.list.len() {
-            if done % 32 == 0 && !budget.left() {
-                break;
-            }
             let (key, _) = self.list[done];
             self.marked.remove(&key);
             done += 1;
@@ -589,11 +626,16 @@ impl Vision {
     /// What changed of a division's sight since `held` (the keys of the copy last made or
     /// changed), named by the changed lists: whole when anything but a unit's or a province's own
     /// part moved; none when nothing did.
-    pub fn sight_change(&self, changed: &crate::layers::Changed, held: &mut Option<SightKeys>) -> Option<SightChange> {
+    pub fn sight_change(&self, changed: crate::layers::Change<'_>, held: &mut Option<SightKeys>) -> Option<SightChange> {
         let keys = self.sight_keys();
-        let whole = held.as_ref() != Some(&keys) || changed.all();
-        let units: Vec<(u64, Option<i8>, Option<u32>)> = changed.of("unit").iter().map(|&unit| (unit, self.levels.get(&unit).copied(), self.fold.sight_of(unit))).collect();
-        let provinces: Vec<(u32, Option<u8>)> = changed.of("province").iter().map(|&province| (province as u32, self.fold.province_byte(province as u32))).collect();
+        let (whole, units, provinces) = match changed {
+            crate::layers::Change::Whole => (true, Vec::new(), Vec::new()),
+            crate::layers::Change::Marked(marked) => (
+                held.as_ref() != Some(&keys),
+                marked.of("unit").iter().map(|&unit| (unit, self.levels.get(&unit).copied(), self.fold.sight_of(unit))).collect(),
+                marked.of("province").iter().map(|&province| (province as u32, self.fold.province_byte(province as u32))).collect(),
+            ),
+        };
         if !whole && units.is_empty() && provinces.is_empty() {
             return None;
         }
@@ -846,16 +888,16 @@ impl Vision {
         }
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         self.take_marks(mirrors);
         let before = (self.fog_drawn(), self.global.ours);
-        self.settle_parts(mirrors, budget);
+        self.settle_parts(mirrors);
         if before != (self.fog_drawn(), self.global.ours) {
             self.fold.touch_all();
         }
         // Every part of the key moves only with a change published as everything.
-        if self.sight_key.is_none() || self.fold.changed.all() {
+        if self.sight_key.is_none() || matches!(self.fold.changed.read(), crate::layers::Change::Whole) {
             let key = self.sight_key();
             if self.sight_key.as_ref() != Some(&key) {
                 self.sight_key = Some(key);
@@ -864,8 +906,8 @@ impl Vision {
         }
     }
 
-    fn settle_parts(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
-        self.fold.exchange(budget.unlimited_now());
+    fn settle_parts(&mut self, mirrors: &Mirrors) {
+        self.fold.exchange(true);
         if self.gap {
             return;
         }
@@ -890,16 +932,10 @@ impl Vision {
             self.read_lane_targets(mirrors);
         }
         let mut units = std::mem::take(&mut self.units);
-        units.settle(budget, |unit| self.settle_unit(unit, mirrors));
+        units.settle(|unit| self.settle_unit(unit, mirrors));
         self.units = units;
     }
 
-    /// The vision the layer shows as today's type, made now (every province's byte: not a read for
-    /// every frame); loading by name while its worker has published nothing, and why the hour has
-    /// no vision otherwise.
-    pub fn shown(&self) -> Result<Seen, String> {
-        self.shown_copy().map(SeenCopy::make)
-    }
 }
 
 /// The layer while the map draws it: declared, composed and not refused. Its [`Vision::ours`] is
@@ -1146,7 +1182,7 @@ impl Layer for Vision {
         }
         let units: Vec<u64> = self.unit_rows.keys().copied().collect();
         units.into_iter().for_each(|unit| self.mark_unit(unit));
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors);
         self.marked = marked;
         Ok(())
     }
@@ -1190,20 +1226,17 @@ impl Layer for Vision {
         self.copying += started.elapsed().as_nanos() as u64;
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         [self.marked[1], self.marked[2]] = self.fold.marked();
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         // The fold's steps are its worker's: published, not carried.
         let entities = self.units.list.len() + usize::from(self.lanes_dirty) + self.intel.len() + usize::from(self.intel_all) + self.lane_slots.len();
-        Carried { entities, frames: self.units.since().map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     fn published(&self) -> crate::layers::Published {
@@ -1234,5 +1267,33 @@ impl Layer for Vision {
 
     fn clear_changed(&mut self) {
         self.fold.changed.clear();
+    }
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::SeenCopy;
+    use viewer_foundation::map::perspective::Parts;
+
+    /// The fog bytes of a copy at `bytes`, every province with a byte present.
+    fn copy(bytes: &[(u32, u8)]) -> SeenCopy {
+        let len = bytes.iter().map(|&(id, _)| id as usize + 1).max().unwrap_or(0);
+        let mut held = vec![0; len];
+        for &(id, byte) in bytes {
+            held[id as usize] = byte;
+        }
+        SeenCopy { bytes: Some((bytes.iter().map(|&(id, _)| id).collect(), held)), parts: Parts { fog: true, ..Parts::default() } }
+    }
+
+    /// A copy made after the one before writes only the provinces whose byte changed, and holds
+    /// exactly the bytes a copy made from nothing holds: a province revealed, hidden or gone.
+    #[test]
+    fn a_copy_made_after_the_one_before_equals_one_made_from_nothing() {
+        let (_, before) = copy(&[(1, 10), (2, 20), (3, 30)]).make_after(None);
+        let now = [(1, 10), (2, 25), (5, 50)];
+        let (after, _) = copy(&now).make_after(before.as_ref());
+        let (whole, _) = copy(&now).make_after(None);
+        assert_eq!(after.province_fog(), whole.province_fog());
+        assert_eq!(after.province_fog().map(|bytes| bytes.iter().map(|(&id, &byte)| (id, byte)).collect::<Vec<_>>()), Some(now.to_vec()));
     }
 }

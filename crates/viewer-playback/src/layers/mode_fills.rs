@@ -10,7 +10,6 @@
 //! before down at once: until the new mode's first product the layer has published nothing.
 
 use super::rebuilt::{Build, Seen, Whole};
-use crate::playhead_host::rows::Cadence;
 use engine_executable::executable_tables::Tables;
 use map_display_data::{
     landscape::Regions,
@@ -42,10 +41,6 @@ pub const TABLES: &[TableId] = &[
     TableId::StateFlags,
     TableId::States,
 ];
-
-/// The fill's rows while playing: at the step that changes a table it reads; at once when paused
-/// or sought.
-pub const CADENCE: Cadence = Cadence::Ready;
 
 /// One mode's picture at one hour: what today's part installs for it.
 pub struct Fill {
@@ -197,10 +192,10 @@ fn drawn(_: &Fills, view: &super::View) -> bool {
     draws(&view.map_mode)
 }
 
-/// The mode fills layer over `source`; `drive` and `timed` as [`Whole::new`].
-pub fn new(source: Arc<dyn Paint>, drive: bool, timed: bool) -> io::Result<ModeFills> {
+/// The mode fills layer over `source`; `timed` as [`Whole::new`].
+pub fn new(source: Arc<dyn Paint>, timed: bool) -> io::Result<ModeFills> {
     let fills = Fills { source, asked: Mutex::new((MapMode::default(), None)) };
-    Whole::new("mode_fills", fills, drawn, Fill::bytes, TABLES, CADENCE, drive, timed)
+    Ok(Whole::new("mode_fills", fills, drawn, Fill::bytes, TABLES, timed)?.exact())
 }
 
 #[cfg(test)]

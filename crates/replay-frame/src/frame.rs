@@ -38,7 +38,7 @@ pub use source::{
 pub mod recorded;
 pub use recorded::{FrameSource, IntoRecordedFrame, RecordedFrame, RecordedTables};
 mod undeclared;
-pub use undeclared::{NOT_DECLARED, discovering, discovering_fields, not_declared, outside_reads, undeclared_reads};
+pub use undeclared::{NOT_DECLARED, discovering, discovering_fields, not_declared, outside_reads, reading, undeclared_reads};
 mod wire;
 
 #[cfg(any(test, feature = "test-support"))]

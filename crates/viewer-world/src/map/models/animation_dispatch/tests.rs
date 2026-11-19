@@ -1,4 +1,4 @@
-use super::super::{ModelLibrary, ModelMesh, ModelPass, PaletteJoint, parallel_animation_tests};
+use super::super::{ModelLibrary, ModelMesh, ModelPass, PaletteJoint};
 use super::*;
 use std::collections::BTreeSet;
 
@@ -492,7 +492,6 @@ fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
     }
     library.alternatives.insert(0, 1);
     let mut pass = ModelPass::new(&library, "unit models");
-    let workers = parallel_animation_tests::workers();
     let mut random = 0xf0a7_13c5u32;
     let mut next = || {
         random ^= random << 13;
@@ -506,9 +505,13 @@ fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
     let mut warm = 0;
     for frame in 0..900u32 {
         let roll = next();
-        if frame == 450 {
-            pass.label = "map buildings";
-        }
+        // The retained layout serves every model pass: the same 900 frames run under a label
+        // that is neither of the two it was once restricted to.
+        pass.label = match frame {
+            ..300 => "unit models",
+            300..600 => "map buildings",
+            _ => "city sprawl",
+        };
         if frame == 180 {
             // A formerly missing rig joins a live field; palette length also changes.
             append_rig(&mut library, 6);
@@ -694,7 +697,7 @@ fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
             .layout
             .as_ref()
             .is_some_and(|layout| layout.matches(&pass.rigs, &pass.field));
-        pass.animate_with_workers(time, rectangle, offsets, &workers);
+        pass.animate(time, rectangle, offsets);
         let shown = |group: &ModelGroup| {
             offsets.iter().any(|offset| {
                 rectangle.is_none_or(|[x0, z0, x1, z1]| {

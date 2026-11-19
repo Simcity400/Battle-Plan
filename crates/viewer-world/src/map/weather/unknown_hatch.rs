@@ -34,22 +34,25 @@ pub enum Surface {
 }
 
 /// Which parts of the map hold an unknown cell, so the hatch draws only the terrain blocks over
-/// them.
+/// them: the unknown cells of each [`TILE`]-pixel square counted, so one cell's flag turning is
+/// one square's count and no pass over the grid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Coverage {
-    /// One flag per [`TILE`]-pixel square, rows counted up from the map's bottom like the cells.
-    tiles: Vec<bool>,
+    /// Unknown cells per [`TILE`]-pixel square, rows counted up from the map's bottom like the
+    /// cells.
+    tiles: Vec<u32>,
     columns: u32,
+    grid: [u32; 2],
+    /// Squares holding one: none draws no hatch.
+    covered: usize,
 }
 
 impl Coverage {
-    /// `unknown` is [`super::Presentation::unknown`] over a grid of `grid` cells; none when no cell
-    /// is unknown.
-    pub fn new(unknown: &[u8], grid: [u32; 2]) -> Option<Self> {
+    /// `unknown` is [`super::Presentation::unknown`] over a grid of `grid` cells.
+    pub fn new(unknown: &[u8], grid: [u32; 2]) -> Self {
         let per_tile = TILE / CELL;
         let columns = grid[0].div_ceil(per_tile);
-        let mut tiles = vec![false; columns as usize * grid[1].div_ceil(per_tile) as usize];
-        let mut any = false;
+        let mut tiles = vec![0; columns as usize * grid[1].div_ceil(per_tile) as usize];
         let cells = grid[0] as usize * grid[1] as usize;
         for (cell, _) in unknown
             .iter()
@@ -58,10 +61,39 @@ impl Coverage {
             .filter(|(_, flag)| **flag != 0)
         {
             let [x, z] = [cell as u32 % grid[0], cell as u32 / grid[0]];
-            tiles[((z / per_tile) * columns + x / per_tile) as usize] = true;
-            any = true;
+            tiles[((z / per_tile) * columns + x / per_tile) as usize] += 1;
         }
-        any.then_some(Self { tiles, columns })
+        let covered = tiles.iter().filter(|&&count| count != 0).count();
+        Self { tiles, columns, grid, covered }
+    }
+
+    /// Whether `grid` is the grid this coverage counts.
+    pub fn counts(&self, grid: [u32; 2]) -> bool {
+        self.grid == grid
+    }
+
+    /// Whether any square holds an unknown cell; none skips the hatch.
+    pub fn covered(&self) -> bool {
+        self.covered != 0
+    }
+
+    /// `cell`'s flag turned on or off, its square's count with it.
+    pub fn patch(&mut self, cell: u32, unknown: bool) {
+        let per_tile = TILE / CELL;
+        let [x, z] = [cell % self.grid[0], cell / self.grid[0]];
+        let Some(count) = self
+            .tiles
+            .get_mut(((z / per_tile) * self.columns + x / per_tile) as usize)
+        else {
+            return;
+        };
+        if unknown {
+            *count += 1;
+            self.covered += usize::from(*count == 1);
+        } else {
+            *count -= 1;
+            self.covered -= usize::from(*count == 0);
+        }
     }
 
     /// The blocks of `drawn` over an unknown cell, as the shader's instances: origin, step, and
@@ -75,7 +107,7 @@ impl Coverage {
                 let span = (SIDE * block.step).div_ceil(TILE);
                 (z..(z + span).min(rows)).any(|row| {
                     (x..(x + span).min(self.columns))
-                        .any(|column| self.tiles[(row * self.columns + column) as usize])
+                        .any(|column| self.tiles[(row * self.columns + column) as usize] != 0)
                 })
             })
             .map(|block| {
@@ -368,14 +400,8 @@ impl UnknownHatch {
         shader_pipeline::gpu::stats::write_buffer(queue, blocks_buffer, first, bytes);
         ring.used += length;
         ring.slot += 1;
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("unknown snow/mud hatch"),
-            color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
-            depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = crate::map::scene::world_pass(encoder, targets, "unknown snow/mud hatch");
+        let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline);
         shader_pipeline::gpu::stats::bind();
@@ -542,9 +568,10 @@ mod tests {
         // 256 by 128 pixels: 64 by 32 cells, 4 by 2 tiles.
         let grid = [64, 32];
         let mut unknown = vec![0; 64 * 32];
-        assert_eq!(Coverage::new(&unknown, grid), None);
+        assert!(!Coverage::new(&unknown, grid).covered());
         unknown[3 * 64 + 17] = 255;
-        let coverage = Coverage::new(&unknown, grid).unwrap();
+        let coverage = Coverage::new(&unknown, grid);
+        assert!(coverage.covered());
         let block = |origin: [u32; 2], step: u32, snap: [bool; 4]| Block {
             origin,
             step,
@@ -561,6 +588,37 @@ mod tests {
             coverage.instances(&drawn),
             [[64, 0, 1, 0b1001], [0, 0, 2, 0b0010]]
         );
+    }
+
+    #[test]
+    fn a_patched_coverage_counts_what_a_rebuilt_one_counts() {
+        let grid = [64, 32];
+        let mut unknown = vec![0u8; 64 * 32];
+        for cell in [0, 17, 3 * 64 + 17, 3 * 64 + 20, 31 * 64 + 63] {
+            unknown[cell] = 255;
+        }
+        let mut coverage = Coverage::new(&unknown, grid);
+        assert!(coverage.counts(grid));
+        // Both cells of one square go, then come back; the square's flag follows its last cell.
+        for (cell, now) in [
+            (3 * 64 + 17, false),
+            (3 * 64 + 20, false),
+            (0, false),
+            (3 * 64 + 20, true),
+            (5 * 64 + 1, true),
+        ] {
+            unknown[cell] = u8::from(now) * 255;
+            coverage.patch(cell as u32, now);
+            assert_eq!(coverage, Coverage::new(&unknown, grid), "after cell {cell}");
+        }
+        for cell in 0..64 * 32 {
+            if unknown[cell] != 0 {
+                unknown[cell] = 0;
+                coverage.patch(cell as u32, false);
+            }
+        }
+        assert!(!coverage.covered());
+        assert_eq!(coverage, Coverage::new(&unknown, grid));
     }
 
     #[test]

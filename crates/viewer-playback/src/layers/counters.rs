@@ -13,7 +13,7 @@
 //! off. The viewing country's divisions also carry their action ([`action`]).
 
 use super::{
-    Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, Text, Upstream, View,
+    Carried, Change, Settling, Dirty, Gpu, Inputs, Layer, List, Num, Text, Upstream, View,
     relations::{self, Relations},
     vision::{SightCopy, Vision as VisionLayer},
 };
@@ -66,7 +66,7 @@ impl Content {
 
     /// No anchors, no movement map and no map: every route stands still or in its combat
     /// stand-off, and every province is admitted.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn bare() -> Self {
         Self { counters: None, movement: None, map: None, tables: engine_executable::executable_tables::current() }
     }
@@ -189,7 +189,7 @@ pub const TABLES: [TableId; 15] = [
 ];
 
 /// Every table the layer declares where it draws.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn declared() -> impl Iterator<Item = TableId> {
     TABLES.into_iter().chain(action::TABLES)
 }
@@ -232,13 +232,13 @@ impl Rows {
         }
     }
 
-    /// The deleted rows, then the changed slots while `budget` lasts.
-    pub(super) fn settle(&mut self, budget: &mut Budget, mut each: impl FnMut(Row)) {
+    /// The deleted rows, then every changed slot.
+    pub(super) fn settle(&mut self, mut each: impl FnMut(Row)) {
         for key in std::mem::take(&mut self.gone) {
             each(Row::Gone(key));
         }
         self.gone_since = None;
-        let _ = self.slots.settle(budget, |slot| {
+        let _ = self.slots.settle(|slot| {
             each(Row::At(slot));
             Ok(())
         });
@@ -246,10 +246,6 @@ impl Rows {
 
     pub(super) fn len(&self) -> usize {
         self.slots.len() + self.gone.len()
-    }
-
-    pub(super) fn since(&self) -> Option<u64> {
-        [self.slots.since(), self.gone_since].into_iter().flatten().min()
     }
 
     pub(super) fn clear(&mut self) {
@@ -365,7 +361,7 @@ pub struct Counters {
     relations: Option<Arc<type_tint::Index>>,
     relations_new: bool,
     /// Relations given, not read from a layer: the tests' world.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     given: bool,
     statuses: HashMap<usize, Status>,
     frame: u64,
@@ -410,10 +406,10 @@ pub struct Counters {
     wars: Option<Arc<relations::Facts>>,
     wars_new: bool,
     /// Rows its `apply` read since the layer was made: none, by the host's contract.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
     /// Strategic-layout validations with the executable tables in scope, and without.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     validated: [std::sync::atomic::AtomicUsize; 2],
 }
 
@@ -541,13 +537,13 @@ impl<'a> Sees<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static MADE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Members made (whole or in part) on this thread so far: the tests' count of the frame thread's.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn made_here() -> u64 {
     MADE.with(std::cell::Cell::get)
 }
@@ -774,7 +770,7 @@ impl Counters {
             read_at: Vec::new(),
             relations: None,
             relations_new: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             given: false,
             statuses: HashMap::new(),
             frame: 0,
@@ -800,21 +796,21 @@ impl Counters {
             standing: HashSet::new(),
             wars: None,
             wars_new: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             applied_reads: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             validated: Default::default(),
         }
     }
 
     /// Strategic-layout validations so far with the executable tables in scope, and without.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn validated(&self) -> [usize; 2] {
         self.validated.each_ref().map(|count| count.load(Ordering::Relaxed))
     }
 
     /// Rows its `apply` read since the layer was made.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
     }
@@ -836,7 +832,7 @@ impl Counters {
         if let Some((choice, vision)) = self.perspective() {
             fresh.set_vision(choice, vision);
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let fresh = Self { given: self.given, ..fresh };
         Self { relations: self.relations.clone(), wars: self.wars.clone(), ..fresh }
     }
@@ -866,7 +862,7 @@ impl Counters {
     }
 
     /// The type-icon relations when no relations layer is read: the tests' world.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_relations(mut self, relations: Arc<type_tint::Index>) -> Self {
         self.relate(relations);
         self.given = true;
@@ -897,7 +893,7 @@ impl Counters {
     /// Whether the strategic-redeployment fixed layout validates against the definitions the
     /// mirrors hold at the head, as today validates it against the hour's frame.
     fn strategic_layout_at(&self, mirrors: &Mirrors) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.validated[usize::from(!engine_executable::executable_tables::is_initialized())].fetch_add(1, Ordering::Relaxed);
         let columns = self.columns();
         let (definitions, tokens) = (mirrors.get(TableId::ModifierDefinitions), mirrors.get(TableId::LexicalTokens));
@@ -932,7 +928,7 @@ impl Counters {
     /// its view, camera admission, the relations layer's index and wars, vision and counters kept.
     fn release(&mut self) {
         let empty = Self {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             given: self.given,
             ..Self::new(Arc::clone(&self.content))
         };
@@ -941,7 +937,7 @@ impl Counters {
         (self.camera, self.camera_dirty, self.admits) = (kept.camera, kept.camera_dirty, kept.admits);
         (self.vision, self.vision_new, self.relations, self.relations_new, self.wars, self.wars_new) = (kept.vision, kept.vision_new, kept.relations, kept.relations_new, kept.wars, kept.wars_new);
         self.reads_layer = kept.reads_layer;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             (self.applied_reads, self.validated) = (kept.applied_reads, kept.validated);
         }
@@ -952,17 +948,20 @@ impl Counters {
     /// or another whole part of sight did.
     fn take_vision(&mut self, upstream: &Upstream<'_>, mirrors: &Mirrors) {
         let Some(vision) = upstream.get::<VisionLayer>() else { return };
-        let changed = upstream.changed::<VisionLayer>();
-        self.take_sight(Sees::Layer(vision).taken(), changed.of("province").iter().copied(), changed.of("unit").iter().copied(), mirrors);
+        let taken = Sees::Layer(vision).taken();
+        match upstream.changed::<VisionLayer>() {
+            Change::Whole => self.take_sight(taken, true, [].into_iter(), [].into_iter(), mirrors),
+            Change::Marked(changed) => self.take_sight(taken, false, changed.of("province").iter().copied(), changed.of("unit").iter().copied(), mirrors),
+        }
     }
 
-    /// The vision's changes as `taken` (its perspective and sight epoch) and the provinces and
-    /// units it named.
-    pub(super) fn take_sight(&mut self, taken: (Choice, u64), provinces: impl Iterator<Item = u64>, units: impl Iterator<Item = u64>, mirrors: &Mirrors) {
+    /// The vision's changes as `taken` (its perspective and sight epoch), whether it changed as a
+    /// whole, and the provinces and units it named.
+    pub(super) fn take_sight(&mut self, taken: (Choice, u64), whole: bool, provinces: impl Iterator<Item = u64>, units: impl Iterator<Item = u64>, mirrors: &Mirrors) {
         if !self.reads_layer || self.hidden || self.refused.is_some() {
             return;
         }
-        if self.sight.as_ref() != Some(&taken) {
+        if whole || self.sight.as_ref() != Some(&taken) {
             self.sight = Some(taken);
             self.vision_new.store(true, Ordering::Release);
             return;
@@ -997,13 +996,13 @@ impl Counters {
     }
 
     /// Every source with its members, sources in order, members in ordinal then id order.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn sources(&self) -> impl Iterator<Item = (Source, impl Iterator<Item = &Member> + '_)> + '_ {
         self.sources.iter().map(|(&source, slots)| (source, slots.iter().map(|&slot| &self.members[slot as usize].as_ref().expect("a source's member").1)))
     }
 
     /// Divisions the steps have marked since the layer was made.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn marked(&self) -> usize {
         self.marked
     }
@@ -1018,7 +1017,7 @@ impl Counters {
     }
 
     /// Whether the view admits `province`, without the cache: the tests' comparisons.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn admitted(&self, province: u32) -> bool {
         self.admits.as_ref().is_none_or(|admits| admits(province))
     }
@@ -1056,19 +1055,19 @@ impl Counters {
     }
 
     /// Admits only the provinces `admits` names from the next compose: the tests' camera.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn admit_only(&mut self, admits: impl Fn(u32) -> bool + Send + Sync + 'static) {
         self.admits = Some(Arc::new(admits));
     }
 
     /// Divisions that changed outside the view, kept marked.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn outside(&self) -> usize {
         self.outside
     }
 
     /// Entities taken and nanoseconds spent by settle phase since the layer was made.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn phases(&self) -> impl Iterator<Item = (&'static str, u64, u64)> + '_ {
         PHASES.iter().zip(&self.phases).map(|(&name, &(entities, ns))| (name, entities, ns))
     }
@@ -1197,7 +1196,7 @@ impl Counters {
     /// Everything dropped; the indexes made again from the mirrors and every division marked.
     fn recompose(&mut self, mirrors: &Mirrors) {
         let columns = self.columns();
-        self.touched.extend(self.published.keys());
+        self.touched.extend(self.published.keys().collect::<Vec<_>>());
         self.members.clear();
         self.sources.clear();
         self.actions.clear();
@@ -1348,7 +1347,7 @@ impl Counters {
     }
 
     /// Every source with its members and their actions, as [`Counters::sources`].
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn sources_acting(&self) -> impl Iterator<Item = (Source, impl Iterator<Item = (&Member, Action)> + '_)> + '_ {
         self.sources.iter().map(|(&source, slots)| (source, slots.iter().map(|&slot| (&self.members[slot as usize].as_ref().expect("a source's member").1, self.action_of(slot)))))
     }
@@ -1469,7 +1468,7 @@ impl Counters {
         if self.members.len() <= at {
             self.members.resize(at + 1, None);
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         MADE.with(|made| made.set(made.get() + 1));
         let cause = self.causes.get_mut(at).map_or(FULL, std::mem::take);
         if cause & FULL == 0 && cause != 0 && self.settle_parts(tables, seen, acting, slot, cause) {
@@ -1525,21 +1524,21 @@ impl Counters {
     pub(super) fn compose_reading(&mut self, mirrors: &Mirrors, layer: Option<Sees<'_>>) -> io::Result<()> {
         let (marked, phases) = (self.marked, self.phases);
         self.all = true;
-        self.settle_dirty(mirrors, &mut Budget::unlimited(), layer);
+        self.settle_dirty(mirrors, layer);
         (self.marked, self.phases) = (marked, phases);
         Ok(())
     }
 
     /// Recomputes what is dirty: the order indexes and occupant arrays whole, then divisions within
-    /// `budget`, the rest carried.
+    /// `settling`, the rest carried.
     /// Marks made while it settles (rows resolved, groups and plans expanded) carry the frame of the
     /// steps that brought them: the frame advances once the settle is done.
-    pub(super) fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget, layer: Option<Sees<'_>>) {
-        self.settle_marks(mirrors, budget, layer);
+    pub(super) fn settle_dirty(&mut self, mirrors: &Mirrors, layer: Option<Sees<'_>>) {
+        self.settle_marks(mirrors, layer);
         self.frame += 1;
     }
 
-    fn settle_marks(&mut self, mirrors: &Mirrors, budget: &mut Budget, layer: Option<Sees<'_>>) {
+    fn settle_marks(&mut self, mirrors: &Mirrors, layer: Option<Sees<'_>>) {
         let refused = if self.hidden { Err("not drawn at this view".to_owned()) } else { self.core(mirrors, layer) };
         let (given, relations) = match refused {
             Ok(seen) => seen,
@@ -1586,13 +1585,13 @@ impl Counters {
         let columns = self.columns();
         let began = std::time::Instant::now();
         let taken = self.rows_carried() as u64;
-        self.resolve(mirrors, budget);
+        self.resolve(mirrors);
         self.spent(10, taken.saturating_sub(self.rows_carried() as u64), began);
         let began = std::time::Instant::now();
         let mut dirty = std::mem::take(&mut self.group_slots);
         let taken = dirty.len() as u64;
         let groups = held(mirrors.get(TableId::OrdersGroups));
-        let _ = dirty.settle(&mut Budget::unlimited(), |slot| {
+        let _ = dirty.settle(|slot| {
             let before = self.group_rows.get(slot as usize).copied().unwrap_or([0; 3]);
             self.group_row(groups, slot, columns);
             let after = self.group_rows[slot as usize];
@@ -1609,7 +1608,7 @@ impl Counters {
         let mut dirty = std::mem::take(&mut self.area_slots);
         let taken = dirty.len() as u64;
         let orders = held(mirrors.get(TableId::ArmyOrders));
-        let _ = dirty.settle(&mut Budget::unlimited(), |slot| {
+        let _ = dirty.settle(|slot| {
             let before = self.area_rows.get(slot as usize).map_or(0, |row| row.0);
             self.area_row(orders, slot, columns);
             let after = orders.and_then(|orders| orders.key(slot)).map_or(0, |key| (key >> 32) as u64);
@@ -1631,7 +1630,7 @@ impl Counters {
         let tables = Tables::of(mirrors);
         let mut dirty = std::mem::take(&mut self.provinces);
         let taken = dirty.len() as u64;
-        let _ = dirty.settle(budget, |province| {
+        let _ = dirty.settle(|province| {
             if self.admits(province) {
                 self.reorder(&tables, mirrors, province, columns);
             } else {
@@ -1656,7 +1655,7 @@ impl Counters {
         let began = std::time::Instant::now();
         let mut dirty = std::mem::take(&mut self.divisions);
         let taken = dirty.len() as u64;
-        let _ = dirty.settle(budget, |slot| {
+        let _ = dirty.settle(|slot| {
             if self.inside(tables.divisions, slot) {
                 self.settle_division(&tables, (vision, &relations), &acting, slot);
             } else {
@@ -1676,16 +1675,16 @@ impl Counters {
             + usize::from(self.standing_new)
     }
 
-    /// The rows the steps changed resolved to what they mark, within `budget`: the divisions a
+    /// The rows the steps changed resolved to what they mark, within `settling`: the divisions a
     /// division-keyed row names, the provinces whose arrays changed, the groups whose plans or
     /// inputs changed, and the actions a destination, a transfer or a combat read.
-    fn resolve(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn resolve(&mut self, mirrors: &Mirrors) {
         let divisions = mirrors.get(TableId::Divisions);
         for (which, table) in BY_DIVISION.into_iter().enumerate() {
             let cause = if matches!(table, TableId::DivisionStatus | TableId::DivisionPanelStats) { STRENGTH } else { FULL };
             let mirror = mirrors.get(table);
             let mut rows = std::mem::take(&mut self.division_rows[which]);
-            rows.settle(budget, |row| match (row, mirror, divisions) {
+            rows.settle(|row| match (row, mirror, divisions) {
                 (Row::Gone(key), _, _) => self.mark_division_key(mirrors, key, cause),
                 (Row::At(slot), Some(mirror), Some(divisions)) => {
                     if let Some(division) = self.division_of(which, mirror, divisions, slot) {
@@ -1698,7 +1697,7 @@ impl Counters {
         }
         let mut rows = std::mem::take(&mut self.order_rows);
         let order = mirrors.get(TableId::ProvinceUnitOrder);
-        rows.settle(budget, |row| {
+        rows.settle(|row| {
             if let Some(key) = key_of(order, row) {
                 self.mark_province(key as u32);
             }
@@ -1707,7 +1706,7 @@ impl Counters {
         for (which, table) in [TableId::OrdersGroupPlans, TableId::ArmyOrderPlans].into_iter().enumerate() {
             let mirror = mirrors.get(table);
             let mut rows = std::mem::take(&mut self.plan_rows[which]);
-            rows.settle(budget, |row| {
+            rows.settle(|row| {
                 if let Some(key) = key_of(mirror, row) {
                     self.plans.insert(if which == 0 { key as u64 } else { (key >> 32) as u64 });
                 }
@@ -1716,7 +1715,7 @@ impl Counters {
         }
         let mut rows = std::mem::take(&mut self.input_rows);
         let inputs = mirrors.get(TableId::OrdersGroupCounterInputs);
-        rows.settle(budget, |row| {
+        rows.settle(|row| {
             if let Some(key) = key_of(inputs, row) {
                 self.mark_group(key as u64, ORDERS);
             }
@@ -1724,7 +1723,7 @@ impl Counters {
         self.input_rows = rows;
         let mut rows = std::mem::take(&mut self.destination_rows);
         let provinces = mirrors.get(TableId::Provinces);
-        rows.settle(budget, |row| {
+        rows.settle(|row| {
             let Some(key) = key_of(provinces, row) else { return };
             let mut slots = std::mem::take(&mut self.scratch);
             slots.clear();
@@ -1793,14 +1792,13 @@ impl Counters {
     }
 
     /// The sources touched since the last made published: those whose members or actions differ
-    /// from what is published, within `budget`.
-    pub(super) fn publish(&mut self, budget: &mut Budget) {
+    /// from what is published.
+    pub(super) fn publish(&mut self) {
         if self.touched.is_empty() {
             return;
         }
         // A source made again to what it was is not a change: the layout keeps the version it has.
         let mut changed: Vec<(Source, Option<Arc<[(Member, Action)]>>)> = Vec::new();
-        let mut taken = 0u32;
         while let Some(source) = self.touched.pop_first() {
             let now: Option<Vec<(Member, Action)>> = self.sources.get(&source).map(|slots| {
                 slots.iter().map(|&slot| (self.members[slot as usize].as_ref().expect("a source's member").1.clone(), self.action_of(slot))).collect()
@@ -1813,13 +1811,11 @@ impl Counters {
             if !same {
                 changed.push((source, now.map(Arc::from)));
             }
-            taken += 1;
-            if taken.is_multiple_of(32) && !budget.left() {
-                break;
-            }
         }
         // A product whose content changed is a new allocation, whoever holds the one before: the
-        // window tells a new product by its address. A source not changed keeps its members' own.
+        // window tells a new product by its address. The sources are held in shards, so only the
+        // shards the changed sources stand in are copied; every other one is shared with the
+        // product before, members and all.
         if !changed.is_empty() {
             let mut stacks = LandStacks::clone(&self.published);
             for (source, members) in changed {
@@ -1833,7 +1829,7 @@ impl Counters {
     }
 
     /// Entries of `self` that differ from `other`'s, and the first described.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         let mut differing = 0;
         let mut first = None;
@@ -1894,6 +1890,7 @@ impl Layer for Counters {
         for table in TABLES {
             inputs.table(table, true)?;
         }
+        inputs.hourly(TableId::Divisions)?;
         use TableId as T;
         self.columns = Some(Columns {
             roster_owner: inputs.number(T::Divisions, "roster_owner")?,
@@ -1957,11 +1954,18 @@ impl Layer for Counters {
         content.scoped(|| self.compose_reading(mirrors, None))
     }
 
+    fn moved_at(&self, step: &Step, mirrors: &Mirrors, into: &mut viewer_foundation::map::counter_move::MovedHours) {
+        // Its own columns and the camera's gate alone: what it has composed is the worker's, and
+        // the hours are read from the step and the mirrors.
+        let Some(columns) = self.columns.filter(|_| !self.hidden) else { return };
+        super::moved_provinces(step, mirrors, TableId::Divisions, columns.province.column, viewer_foundation::unit_handle::Unit::Division, into);
+    }
+
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         if step.gap() || self.columns.is_none() || self.hidden || self.refused.is_some() {
             return;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let reads = crate::playhead_host::mirror::probe::reads();
         let columns = self.columns();
         for changes in step.tables() {
@@ -1975,7 +1979,7 @@ impl Layer for Counters {
             }
             self.apply_table(table, changes, columns);
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.applied_reads += crate::playhead_host::mirror::probe::reads() - reads;
         }
@@ -1987,11 +1991,11 @@ impl Layer for Counters {
         content.scoped(|| self.compose_reading(mirrors, upstream.get::<VisionLayer>().map(Sees::Layer)))
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
         self.take_relations(upstream);
         self.take_vision(upstream, mirrors);
         let content = Arc::clone(&self.content);
-        content.scoped(|| self.settle_dirty(mirrors, budget, upstream.get::<VisionLayer>().map(Sees::Layer)));
+        content.scoped(|| self.settle_dirty(mirrors, upstream.get::<VisionLayer>().map(Sees::Layer)));
         Ok(())
     }
 
@@ -2001,14 +2005,14 @@ impl Layer for Counters {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         let content = Arc::clone(&self.content);
-        content.scoped(|| self.settle_dirty(mirrors, budget, None));
+        content.scoped(|| self.settle_dirty(mirrors, None));
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, budget: &mut Budget) -> io::Result<()> {
-        self.publish(budget);
+    fn upload(&mut self, _gpu: &mut Gpu<'_>) -> io::Result<()> {
+        self.publish();
         Ok(())
     }
 
@@ -2018,9 +2022,7 @@ impl Layer for Counters {
 
     fn carried(&self) -> Carried {
         let entities = self.divisions.len() + self.provinces.len() + self.group_slots.len() + self.area_slots.len() + self.plans.len() + self.rows_carried() + usize::from(self.all) + usize::from(self.layout_new);
-        let rows = self.division_rows.iter().chain(&self.plan_rows).chain([&self.order_rows, &self.input_rows, &self.destination_rows]).filter_map(Rows::since);
-        let since = [self.divisions.since(), self.provinces.since(), self.group_slots.since(), self.area_slots.since()].into_iter().flatten().chain(rows).min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     fn held(&self) -> usize {

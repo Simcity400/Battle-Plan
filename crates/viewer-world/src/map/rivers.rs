@@ -6,6 +6,7 @@
 //! carry per-point widths. Traces shorter than three points are diagnosed and
 //! dropped; meeting an already-traced river diagnoses a circular path and
 //! stops the walk. Both bulk background indices are excluded.
+use viewer_foundation::map::gpu_contract::Targets;
 use std::{cell::RefCell, collections::BTreeMap, io, sync::Arc};
 use viewer_foundation::map::textures::load_uploadable;
 
@@ -783,7 +784,7 @@ impl RiverPass {
         &self,
         arena: &shader_pipeline::gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
+        targets: &Targets,
         inputs: super::river_shader::Inputs<'_>,
         high: bool,
     ) -> io::Result<()> {
@@ -795,7 +796,7 @@ impl RiverPass {
         viewer_foundation::map::gpu_contract::compiled(&compiled[&high])?.draw(
             arena,
             encoder,
-            target,
+            targets,
             inputs,
             super::river_shader::Geometry {
                 vertices,

@@ -79,18 +79,12 @@ impl PointLightMaps {
         use self::{DATA_WIDTH, INDEX_SIZE};
         let [indices, data] = self.written.take(tiles);
         if indices {
-            write_data(
-                queue,
-                &self.indices.texture,
-                [INDEX_SIZE, INDEX_SIZE],
-                4,
-                &tiles.indices,
-            );
+            self.indices
+                .write(queue, [INDEX_SIZE, INDEX_SIZE], 4, &tiles.indices);
         }
         if data {
-            write_data(
+            self.data.write(
                 queue,
-                &self.data.texture,
                 [DATA_WIDTH, 1],
                 16,
                 bytemuck::cast_slice(&tiles.data),
@@ -104,7 +98,7 @@ use std::io;
 use viewer_foundation::map::camera::Camera;
 #[cfg(test)]
 use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::textures::{Bound, data_texture, write_data};
+use viewer_foundation::map::textures::{Bound, data_texture};
 
 pub const INDEX_SIZE: u32 = 64;
 pub const DATA_WIDTH: u32 = 128;
@@ -112,7 +106,7 @@ const CELL: f32 = 8.0;
 const MAX_LIGHTS: usize = 64;
 
 /// Evaluated entity-light output, after its animation and attachment transform.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Light {
     pub position: [f32; 3],
     pub radius: f32,
@@ -127,6 +121,10 @@ pub struct Tiles {
     pub indices: Vec<u8>,
     pub data: [[f32; 4]; DATA_WIDTH as usize],
     pub count: usize,
+    /// The tile the grid's origin stands at and the lights laid into it: the camera moves by
+    /// whole cells, so a camera that has not left its cell with the same lights has the grid it
+    /// already holds.
+    laid: Option<([i32; 2], Vec<Light>)>,
 }
 
 impl Default for Tiles {
@@ -136,6 +134,7 @@ impl Default for Tiles {
             indices: vec![255; (INDEX_SIZE * INDEX_SIZE * 4) as usize],
             data: [[0.0; 4]; DATA_WIDTH as usize],
             count: 0,
+            laid: None,
         }
     }
 }
@@ -160,6 +159,10 @@ impl Tiles {
     }
 
     fn rebuild_at(&mut self, origin: [i32; 2], lights: &[Light]) {
+        if self.laid.as_ref().is_some_and(|(laid, was)| *laid == origin && was == lights) {
+            return;
+        }
+        self.laid = Some((origin, lights.to_vec()));
         self.grid = [
             origin[0] as f32 * CELL,
             origin[1] as f32 * CELL,
@@ -247,6 +250,20 @@ mod tests {
         assert_eq!(tiles.count, 5);
         assert_eq!(tiles.data[8], [20.0, 10.0, 20.0, 3.0]);
         assert_eq!(tiles.data[9], [2.0, 0.6, 0.2, 2.0]);
+    }
+
+    #[test]
+    fn a_camera_inside_its_cell_with_the_same_lights_lays_the_grid_once() {
+        let mut tiles = Tiles::default();
+        tiles.rebuild_at([0, 0], &[light(4.0, 4.0)]);
+        tiles.indices[400] = 7;
+        tiles.rebuild_at([0, 0], &[light(4.0, 4.0)]);
+        assert_eq!(tiles.indices[400], 7, "the same cell and the same lights lay nothing again");
+        tiles.rebuild_at([0, 0], &[light(5.0, 4.0)]);
+        assert_eq!(tiles.indices[400], 255, "a light that moved lays the grid again");
+        tiles.indices[400] = 7;
+        tiles.rebuild_at([1, 0], &[light(5.0, 4.0)]);
+        assert_eq!(tiles.indices[400], 255, "a camera that left its cell lays the grid again");
     }
 
     #[test]

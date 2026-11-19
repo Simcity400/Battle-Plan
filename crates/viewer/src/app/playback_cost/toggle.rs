@@ -77,10 +77,10 @@ fn viewer(
         Some((state.device.clone(), state.queue.clone())),
     );
     // The host's shared workers, as an embedded viewer makes them.
-    let resources = crate::hours::Resources::new()?;
-    viewer.dropper = Some(Arc::clone(resources.pool().dropper()));
-    viewer.worker_pool = Some(Arc::clone(resources.pool()));
-    viewer.shared_resources = Some(resources);
+    let pool = crate::worker_pool::WorkerPool::new()?;
+    viewer.dropper = Some(Arc::clone(pool.dropper()));
+    viewer.worker_pool = Some(Arc::clone(&pool));
+    viewer.shared_pool = Some(pool);
     viewer.harness_service = Some(Arc::clone(service));
     viewer.playing = false;
     viewer.capture = Some(Capture {
@@ -171,7 +171,7 @@ fn waiting(viewer: &Viewer) -> String {
     let layers = viewer
         .playhead_map
         .as_ref()
-        .map(|side| format!("{:?}", side.layer_states()));
+        .map(|side| format!("{:?}", side.with_side(crate::playhead_host::MapSide::layer_states)));
     format!(
         "loading {}, document {}, drew {}, head {:?}, layers (name, drawn, carried, upload left) {layers:?}, error {:?}",
         viewer.loading.is_some(),
@@ -189,11 +189,11 @@ fn layers_seen(viewer: &Viewer) -> Value {
         return Value::Null;
     };
     let frame = side.last_frame();
-    side.layer_states()
+    side.with_side(crate::playhead_host::MapSide::layer_states)
         .iter()
         .zip(&frame.layers)
-        .map(|((name, drawn, carried, _), part)| {
-            json!({"layer": name, "drawn": drawn, "shown": part.shown, "ready": part.ready, "carried": carried})
+        .map(|((name, drawn, _), part)| {
+            json!({"layer": name, "drawn": drawn, "shown": part.shown, "ready": part.ready, "dirty": part.dirty})
         })
         .collect()
 }

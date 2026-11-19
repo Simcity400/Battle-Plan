@@ -83,37 +83,28 @@ pub fn render_images(
     for quad in &mut changed.quads {
         quad.color[0] = 0.25;
     }
-    // Returning to the old snapshot after motion must still rebuild: the last submissions
-    // belong to the resettable caller arena, even when their inputs happen to match again.
-    for (index, (moving, frame_batch)) in [
-        (true, batch),
-        (true, &changed),
-        (false, batch),
-        (false, batch),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    // A batch that changes and comes back draws what a whole rebuild of it draws, and the
+    // private arena is reset only by the uploads that rebuild.
+    for (index, frame_batch) in [batch, &changed, batch, batch].into_iter().enumerate() {
         let private_frame = pass.uploads.as_ref().unwrap().frame();
         arena.reset();
         arena.vertices(&[0xff; 4096]).unwrap();
-        pass.set_camera_moving(moving);
         pass.upload(device, queue, &arena, frame_batch, [16, 16], 1.0);
         arena.flush(queue);
-        assert_eq!(pass.retained_valid, !moving);
+        assert!(pass.retained_valid);
         assert_eq!(
             pass.uploads.as_ref().unwrap().frame(),
-            private_frame + u64::from(index == 2),
-            "only the first stationary frame touches the private arena"
+            private_frame + u64::from(index < 3),
+            "an upload that retains everything leaves the private arena alone"
         );
-        assert!(
-            pass.retained
-                .as_ref()
-                .unwrap()
-                .matches(batch, [16, 16], 1.0, pass.synced)
-        );
+        assert!(pass.retained.as_ref().unwrap().matches(
+            frame_batch,
+            [16, 16],
+            1.0,
+            pass.synced
+        ));
         reference_arena.reset();
-        reference.upload_changed(device, queue, &reference_arena, frame_batch, [16, 16], 1.0);
+        reference.upload_changed(device, queue, &reference_arena, frame_batch, [16, 16], 1.0, None);
         reference_arena.flush(queue);
         let actual = crate::map::test_support::gpu::render_with(device, queue, |render| {
             pass.draw_runs(render, [16, 16])
@@ -121,11 +112,11 @@ pub fn render_images(
         let expected = crate::map::test_support::gpu::render_with(device, queue, |render| {
             reference.draw_runs(render, [16, 16])
         });
-        assert_eq!(actual, expected, "motion frame {index}");
+        assert_eq!(actual, expected, "frame {index}");
         assert_eq!(pass.native_refusals, reference.native_refusals);
         assert_eq!(arena.refusals(), reference_arena.refusals());
         if index >= 2 {
-            assert_eq!(actual, pixels, "stationary frame {index}");
+            assert_eq!(actual, pixels, "frame {index}");
             assert_eq!(pass.native_refusals, expected_refusals);
         }
     }

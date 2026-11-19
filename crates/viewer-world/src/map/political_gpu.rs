@@ -1923,31 +1923,36 @@ impl PoliticalGpu {
         if !self.pending || self.recorded {
             return false;
         }
-        let dispatch = |encoder: &mut wgpu::CommandEncoder, pipeline: usize, indirect: bool| {
+        // One pass for the whole update: its dispatches run in order and each reads what the one
+        // before wrote, and a pass of its own for each would cost the display frame's thread the
+        // driver's work of opening one for every step of the distance search.
+        {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("political fill"),
                 timestamp_writes: None,
             });
-            shader_pipeline::gpu::stats::pipeline();
-            pass.set_pipeline(&self.kernel.pipelines[pipeline]);
             shader_pipeline::gpu::stats::bind();
             pass.set_bind_group(0, &self.group, &[]);
-            if indirect {
-                pass.dispatch_workgroups_indirect(&self.indirect, 0);
-            } else {
-                pass.dispatch_workgroups(
-                    self.params.columns.div_ceil(8),
-                    self.params.rows.div_ceil(8),
-                    1,
-                );
+            let mut dispatch = |pipeline: usize, indirect: bool| {
+                shader_pipeline::gpu::stats::pipeline();
+                pass.set_pipeline(&self.kernel.pipelines[pipeline]);
+                if indirect {
+                    pass.dispatch_workgroups_indirect(&self.indirect, 0);
+                } else {
+                    pass.dispatch_workgroups(
+                        self.params.columns.div_ceil(8),
+                        self.params.rows.div_ceil(8),
+                        1,
+                    );
+                }
+            };
+            dispatch(0, true);
+            dispatch(1, false);
+            for step in 0..self.params.distance_cap - 1 {
+                dispatch(if step % 2 == 0 { 2 } else { 3 }, false);
             }
-        };
-        dispatch(encoder, 0, true);
-        dispatch(encoder, 1, false);
-        for step in 0..self.params.distance_cap - 1 {
-            dispatch(encoder, if step % 2 == 0 { 2 } else { 3 }, false);
+            dispatch(4, true);
         }
-        dispatch(encoder, 4, true);
         self.recorded = true;
         true
     }

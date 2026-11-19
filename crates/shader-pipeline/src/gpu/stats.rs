@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 #[repr(usize)]
 pub enum Count {
     Draws,
+    /// Render passes begun ([`CountedPasses`]).
+    Passes,
     Pipelines,
     BindGroups,
     /// Vertex, index and blend-constant sets.
@@ -18,10 +20,9 @@ pub enum Count {
     Builds,
     /// Of those, the ones the window thread made.
     WindowBuilds,
-    /// GUI batches whose first draw of an unforeseen pipeline waited for its build.
+    /// GUI batches a draw of an unforeseen pipeline left incomplete, which the next frame
+    /// prepares again.
     GuiJoins,
-    /// Microseconds those batches waited.
-    GuiJoinMicros,
     /// Compiled GUI draws an upload prepared.
     GuiPrepared,
     /// Writes and bytes staged for the GPU, counted where they are staged (they reach the GPU
@@ -32,10 +33,16 @@ pub enum Count {
     GuiHanded,
     /// Compiled GUI draws prepared to a native packet (not batched).
     GuiNative,
+    /// Nanoseconds inside the queue's write calls: what an install spends handing bytes to wgpu,
+    /// as against preparing them.
+    WriteNs,
+    /// Nanoseconds inside buffer and bind group creation.
+    CreateNs,
 }
 
-pub const NAMES: [&str; 17] = [
+pub const NAMES: [&str; 19] = [
     "draws",
+    "render_passes",
     "pipelines",
     "bind_groups",
     "states",
@@ -46,12 +53,13 @@ pub const NAMES: [&str; 17] = [
     "builds",
     "window_builds",
     "gui_joins",
-    "gui_join_us",
     "gui_prepared",
     "staged",
     "staged_bytes",
     "gui_handed",
     "gui_native",
+    "write_ns",
+    "create_ns",
 ];
 
 static COUNTS: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
@@ -93,6 +101,36 @@ pub fn add(count: Count, n: u64) {
 #[inline]
 pub fn draw() {
     add(Count::Draws, 1);
+}
+
+/// A render pass begun; [`CountedPasses::counted_render_pass`] is the only caller.
+#[inline]
+pub fn pass() {
+    add(Count::Passes, 1);
+}
+
+pub fn passes() -> u64 {
+    COUNTS[Count::Passes as usize].load(Relaxed)
+}
+
+/// `begin_render_pass`, counted. Every pass of a map frame is begun through this, so a frame's
+/// passes are a number the harness reports beside its draws.
+pub trait CountedPasses {
+    fn counted_render_pass<'a>(
+        &'a mut self,
+        descriptor: &wgpu::RenderPassDescriptor<'_>,
+    ) -> wgpu::RenderPass<'a>;
+}
+
+impl CountedPasses for wgpu::CommandEncoder {
+    #[inline]
+    fn counted_render_pass<'a>(
+        &'a mut self,
+        descriptor: &wgpu::RenderPassDescriptor<'_>,
+    ) -> wgpu::RenderPass<'a> {
+        pass();
+        self.begin_render_pass(descriptor)
+    }
 }
 
 pub fn draws() -> u64 {
@@ -149,7 +187,18 @@ pub fn take() -> [u64; NAMES.len()] {
 
 pub fn write_buffer(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
     upload(bytes.len());
+    let started = std::time::Instant::now();
     queue.write_buffer(buffer, offset, bytes);
+    add(Count::WriteNs, started.elapsed().as_nanos() as u64);
+}
+
+/// A buffer made with no contents, counted as one created.
+pub fn create_buffer(device: &wgpu::Device, descriptor: &wgpu::BufferDescriptor<'_>) -> wgpu::Buffer {
+    created_buffer();
+    let started = std::time::Instant::now();
+    let buffer = device.create_buffer(descriptor);
+    add(Count::CreateNs, started.elapsed().as_nanos() as u64);
+    buffer
 }
 
 pub fn write_texture(
@@ -160,7 +209,9 @@ pub fn write_texture(
     size: wgpu::Extent3d,
 ) {
     upload(bytes.len());
+    let started = std::time::Instant::now();
     queue.write_texture(texture, bytes, layout, size);
+    add(Count::WriteNs, started.elapsed().as_nanos() as u64);
 }
 
 pub fn create_buffer_init(
@@ -170,7 +221,10 @@ pub fn create_buffer_init(
     use wgpu::util::DeviceExt as _;
     upload(descriptor.contents.len());
     created_buffer();
-    device.create_buffer_init(descriptor)
+    let started = std::time::Instant::now();
+    let buffer = device.create_buffer_init(descriptor);
+    add(Count::CreateNs, started.elapsed().as_nanos() as u64);
+    buffer
 }
 
 pub fn create_bind_group(
@@ -178,5 +232,8 @@ pub fn create_bind_group(
     descriptor: &wgpu::BindGroupDescriptor<'_>,
 ) -> wgpu::BindGroup {
     created_bind_group();
-    device.create_bind_group(descriptor)
+    let started = std::time::Instant::now();
+    let group = device.create_bind_group(descriptor);
+    add(Count::CreateNs, started.elapsed().as_nanos() as u64);
+    group
 }

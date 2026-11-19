@@ -7,7 +7,7 @@
 use super::{Fill, ModeFills, Paint, TABLES};
 use crate::{
     layers::{Layer, Published, View, recorded},
-    playhead_host::{MapSide, open, rows::Recording, units::Units},
+    playhead_host::{MapSide, open, views::Recording, units::Units},
 };
 use engine_executable::executable_tables::Tables;
 use map_display_data::{
@@ -127,8 +127,8 @@ fn view(mode: Stock) -> View {
 
 /// The layer as the window makes it, alone on the map, at `at`, given its first reset.
 fn side_of(units: Units, painter: Painter, at: View) -> MapSide {
-    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
-    let layer = super::new(Arc::new(painter), false, false).unwrap().in_window(Arc::clone(&entry), Recording { branch: 1 }).unwrap();
+    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let layer = super::new(Arc::new(painter), false).unwrap().in_window(Arc::clone(&entry), Recording { branch: 1 }).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(layer)], at).unwrap();
     assert!(side.refusals().next().is_none());
     entry.playhead().play(4.0);
@@ -182,7 +182,7 @@ fn a_mode_fill_shows_its_own_modes_picture_from_its_first_product_and_nothing_at
     let built = fills(&side).rebuilt().wait(hour, LIMIT).unwrap();
     assert_eq!(built.product.as_ref().map(|fill| fill.mode.clone()).ok(), Some(air.map_mode.clone()), "built for the view's mode: {:?}", built.product.as_ref().err());
     side.settle_all().unwrap();
-    assert_eq!(fills(&side).published(), Published::Cadence(hour), "once built it shows the hour of its rows");
+    assert_eq!(fills(&side).published(), Published::Current, "once built it stands at the hour applied: its picture is the hour's");
     assert_eq!(shown_mode(&side), Some(air.map_mode.clone()));
     let tables = fills(&side).rebuilt().tables();
     assert!(TABLES.iter().all(|table| tables.contains(table)), "it declares the tables the painter reads: {tables:?}");
@@ -201,11 +201,12 @@ fn a_mode_fill_shows_its_own_modes_picture_from_its_first_product_and_nothing_at
     }
     assert_eq!(shown_mode(&side), Some(resources.map_mode.clone()), "the first picture after the change is the new mode's, never the old one's");
 
-    // The default mode is the political layer's: it declares, holds and carries nothing there.
+    // The default mode is the political layer's: it holds and carries nothing there. (What it
+    // declares is no longer the side's mirrors: those hold every table of the recording for the
+    // makers, whatever a layer reads.)
     side.set_view(View::default()).unwrap();
     side.frame(hour).unwrap();
-    assert!(side.parts().unwrap().0.get(TableId::Clock).is_none(), "at the default mode it declares no table");
-    assert!(fills(&side).product().is_none(), "nor holds a picture");
+    assert!(fills(&side).product().is_none(), "at the default mode it holds no picture");
     assert_eq!(fills(&side).held(), 0);
     assert_eq!(fills(&side).carried().entities, 0);
     assert_eq!(fills(&side).published(), Published::Current, "drawing nothing, it holds no hour back");

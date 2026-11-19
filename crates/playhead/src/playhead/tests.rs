@@ -128,7 +128,7 @@ fn recording_of(writing: Writing, tables: usize, runs: &[(i32, u32)], hour: impl
 
 /// A step a day, one frame a second, two steps read ahead.
 fn settings() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 24.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 24.0, rate: 1.0, ..Settings::default() }
 }
 
 /// A reader's state of one table: its columns of every live row by slot, kept from change sets.
@@ -188,7 +188,7 @@ fn kept(tag: u64, log: &Log) -> Rebuild {
 }
 
 fn every(tables: &[usize]) -> Vec<Declared> {
-    tables.iter().map(|&table| Declared { table, columns: (0..KINDS.len()).collect(), keyed: true, passing: false }).collect()
+    tables.iter().map(|&table| Declared { table, columns: (0..KINDS.len()).collect(), keyed: true, passing: false, hourly: false }).collect()
 }
 
 /// A step taken, with the states its consumer took from it.
@@ -461,7 +461,7 @@ fn a_seek_runs_each_readers_rebuild_once_for_each_table_it_declared() {
     let log = Log::default();
     let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap();
     let a = playhead.declare(every(&[0, 1]), Some(kept(0, &log))).unwrap();
-    let b = playhead.declare(vec![Declared { table: 1, columns: vec![2, 0], keyed: true, passing: false }], Some(kept(1, &log))).unwrap();
+    let b = playhead.declare(vec![Declared { table: 1, columns: vec![2, 0], keyed: true, passing: false, hourly: false }], Some(kept(1, &log))).unwrap();
     playhead.declare(every(&[0, 2]), None).unwrap();
     let (mut first, mut second) = (playhead.consumer(a), playhead.consumer(b));
     for (seek, hour) in [(1, 300), (2, 1000)] {
@@ -528,8 +528,8 @@ fn a_reader_adding_columns_gets_its_table_at_once_and_another_reader_of_it_sees_
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK)]);
     let log = Log::default();
     let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), whole_ahead(), None).unwrap();
-    let keeper = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false }, Declared { table: 1, columns: vec![0, 1, 2, 3], keyed: true, passing: false }], Some(kept(0, &log))).unwrap();
-    let changer = playhead.declare(vec![Declared { table: 0, columns: vec![0], keyed: true, passing: false }], Some(kept(1, &log))).unwrap();
+    let keeper = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false, hourly: false }, Declared { table: 1, columns: vec![0, 1, 2, 3], keyed: true, passing: false, hourly: false }], Some(kept(0, &log))).unwrap();
+    let changer = playhead.declare(vec![Declared { table: 0, columns: vec![0], keyed: true, passing: false, hourly: false }], Some(kept(1, &log))).unwrap();
     let (mut kept_side, mut changed_side) = (Side::new(&playhead, keeper), Side::new(&playhead, changer));
     playhead.play(24.0);
     playhead.seek(0);
@@ -538,7 +538,7 @@ fn a_reader_adding_columns_gets_its_table_at_once_and_another_reader_of_it_sees_
     let shown = kept_side.taken.last().unwrap().last();
     log.lock().unwrap().clear();
     let before = changed_side.taken.len();
-    playhead.redeclare(changer, vec![Declared { table: 0, columns: vec![0, 2, 3], keyed: true, passing: false }]).unwrap();
+    playhead.redeclare(changer, vec![Declared { table: 0, columns: vec![0, 2, 3], keyed: true, passing: false, hourly: false }]).unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
     playhead.wait_until(|| {
         assert!(Instant::now() < deadline, "the columns declared at hour {shown} did not arrive with the head standing there");
@@ -567,11 +567,12 @@ fn a_reader_adding_columns_gets_its_table_at_once_and_another_reader_of_it_sees_
 }
 
 /// Two runs as two pieces with hours between them: steps follow each other hour by hour, the
-/// hours between are gap steps holding no table, the second piece starts with a reset of every
-/// table for which each reader's rebuild runs once more for each table it declared, and a mirror
-/// kept from the steps equals the recorder's state of the piece it is in.
+/// hours between are gap steps holding no table, and the second piece starts with a step of its
+/// first hour carrying each table's crossing — the rows gone, the rows new and the cells that
+/// differ between the two sessions' states — no reset, no reader's state, with a mirror kept from
+/// the steps alone equal to the recorder's state of the piece it is in on both sides of it.
 #[test]
-fn two_pieces_join_with_a_reset_and_report_the_gap_between() {
+fn two_pieces_join_with_a_crossing_and_report_the_gap_between() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK), (1000, BLOCK + 50)]);
     let log = Log::default();
     let (playhead, mut consumer) = start(&pages, settings(), &[0, 1], &log);
@@ -591,9 +592,13 @@ fn two_pieces_join_with_a_reset_and_report_the_gap_between() {
     assert_eq!((gaps.first().unwrap().first(), gaps.last().unwrap().last()), (720, 999));
     assert!(gaps.iter().all(|step| step.tables().is_empty()));
     let joined = taken.iter().find(|step| step.first() == 1000).unwrap();
-    assert!(joined.reset() && joined.last() == 1000 && joined.piece() == Some(1));
-    assert!(joined.tables().iter().all(Changes::reset) && no_rows(joined));
-    assert_eq!(joined.states.keys().copied().collect::<Vec<_>>(), vec![0, 1]);
+    assert!(!joined.reset() && joined.last() == 1000 && joined.piece() == Some(1), "the boundary is a step of its first hour");
+    assert!(joined.tables().iter().all(|changes| !changes.reset()), "and no table of it is reset: none is a log");
+    assert!(joined.states.is_empty(), "so every reader keeps the state it has");
+    assert!(joined.tables().iter().all(|changes| changes.head() == Some(1000)), "every table stands at the piece's first hour");
+    assert!(joined.tables().iter().any(|changes| changes.rows() > 0 || changes.cells() > 0), "and the crossing names what differs");
+    let counters = playhead.held().2;
+    assert_eq!((counters.pieces_crossed, counters.crossed_tables, counters.crossed_resets), (1, 2, 0));
     mirrors(&taken, |step, held| {
         for table in 0..2 {
             let Some(at) = step.table(table).map(|changes| changes.head().unwrap()) else { continue };
@@ -602,6 +607,79 @@ fn two_pieces_join_with_a_reset_and_report_the_gap_between() {
         }
     });
     assert_eq!(taken.last().unwrap().last(), playhead.timeline().last());
+}
+
+/// A text cell that stands across a boundary with the same string id is written by the crossing,
+/// with the next run's spelling of it: each run numbers its strings anew, so the same id may spell
+/// another text. Before, the cell was left as it stood and readers kept the old run's text.
+#[test]
+fn a_crossing_writes_a_text_cell_whose_id_the_next_run_spells_anew() {
+    let named = |at: u32, _: usize, changes: &mut TableChanges<'_>| {
+        busy(at, changes);
+        if at == 0 {
+            for slot in 0..8 {
+                changes.write(slot, 3, Cell::Bytes(0)).unwrap();
+            }
+        }
+    };
+    let (pages, _) = recording_of(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK), (1000, BLOCK + 50)], named);
+    let log = Log::default();
+    let (playhead, mut consumer) = start(&pages, settings(), &[0], &log);
+    let mut taken = Vec::new();
+    play(&playhead, &mut consumer, 0, 400, 24, &mut taken);
+    play(&playhead, &mut consumer, 900, 1024, 24, &mut taken);
+    let joined = taken.iter().find(|step| step.first() == 1000).expect("the boundary's step");
+    let changes = joined.table(0).expect("the table crosses");
+    let written: usize = changes.columns().iter().filter(|written| written.column() == 3).map(|written| written.slots().len()).sum();
+    assert_eq!(written, 8, "every text cell is written, though its id is the same in both runs");
+    assert!(changes.texts().iter().any(|(id, text)| id == 0 && text == &b"text 1000/0"[..]), "and named as the run after it spells it");
+}
+
+/// A seek is still a jump, wherever it lands: inside a piece, on a boundary's first hour, or back
+/// in the piece before one already crossed, its first step is a whole reset of every table with
+/// every reader's state, and that state is the recorder's of the hour sought. The hours after a
+/// seek backwards cross the boundary again as a step, and a state kept from the steps alone stands
+/// at the recorder's at the boundary's own first hour (what a pause there shows). A pause's own
+/// exactness is the seek it asks for
+/// ([`kept_exact_a_pause_past_the_steps_built_resets_at_the_head_and_builds_nothing_past_it`]).
+#[test]
+fn a_seek_across_a_boundary_resets_whole_and_the_hours_after_it_cross_again() {
+    let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK), (1000, BLOCK + 50)]);
+    let log = Log::default();
+    let (playhead, mut consumer) = start(&pages, settings(), &[0, 1], &log);
+    let mut taken = Vec::new();
+    play(&playhead, &mut consumer, 0, 96, 24, &mut taken);
+    let at = |hour: i32| if hour < 1000 { (0, hour as usize) } else { (1, (hour - 1000) as usize) };
+    for sought in [1000, 1024, 300] {
+        taken.clear();
+        playhead.seek(sought);
+        playhead.advance(sought);
+        playhead.wait_until(|| {
+            take(&mut consumer, sought, &mut taken);
+            taken.iter().any(|step| step.reset() && step.last() == sought)
+        });
+        let reset = taken.iter().find(|step| step.reset() && step.last() == sought).unwrap();
+        assert!(reset.tables().iter().all(Changes::reset) && no_rows(reset), "a seek's first picture is a whole reset");
+        assert_eq!(reset.states.keys().copied().collect::<Vec<_>>(), vec![0, 1], "with every reader's state");
+        let (run, hour) = at(sought);
+        for table in 0..2 {
+            assert!(reset.states[&table].holds(&states[run][table][hour]), "table {table} sought to {sought}");
+        }
+    }
+    play(&playhead, &mut consumer, 300, 1024, 24, &mut taken);
+    let crossed = taken.iter().find(|step| step.first() == 1000).expect("the boundary crossed again after the seek back");
+    assert!(!crossed.reset() && crossed.states.is_empty(), "as a step, with no state of its own");
+    let mut at_boundary = 0;
+    mirrors(&taken, |step, held| {
+        for table in 0..2 {
+            let Some(head) = step.table(table).map(|changes| changes.head().unwrap()) else { continue };
+            let (run, hour) = at(head);
+            assert!(held[&table].holds(&states[run][table][hour]), "table {table} at {head}");
+            at_boundary += usize::from(head == 1000);
+        }
+    });
+    assert_eq!(at_boundary, 2, "both tables stand at the recorder's state of the boundary's first hour");
+    assert_eq!(playhead.held().2.pieces_crossed, 1, "the hours after the seek back crossed the boundary; no seek of them did");
 }
 
 /// What a state holds when dropped: the thread it was dropped on.
@@ -680,6 +758,38 @@ fn the_clock_holds_at_a_seek_until_its_reset_is_taken_and_a_newer_seek_replaces_
     let head = playhead.head(ten);
     let slack = (after - before).as_secs_f64() * 24.0;
     assert!(head >= 900 + 240 - 1 && f64::from(head) <= 900.0 + 240.0 + slack + 1.0, "runs from the moment its reset is taken: {head}");
+}
+
+/// What a publication is prepared for: the hour the head will stand at by the time it is drawn.
+/// Playing, that is the making ahead of the head and follows the speed asked for; a pause, a
+/// speed change, a seek and a seek backwards (a reversal) are answered at once, because nothing
+/// is prepared past a head that stands still.
+#[test]
+fn a_publication_is_prepared_for_the_hour_the_head_will_reach_and_for_nothing_past_a_still_head() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 2 * BLOCK)]);
+    let log = Log::default();
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap();
+    let reader = playhead.declare(every(&[0]), Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    let making = Duration::from_millis(10);
+    playhead.play(1440.0);
+    playhead.seek(300);
+    assert_eq!(playhead.head_from(300, making), None, "held at a seek, the hour sought is the hour prepared");
+    playhead.advance(300);
+    playhead.wait_until(|| playhead.ring_len() >= 1);
+    let mut steps = Vec::new();
+    consumer.take(300, &mut steps);
+    assert!(steps[0].reset());
+    assert_eq!(playhead.head_from(300, making), Some(314), "at 1,440 hours a second ten milliseconds is fourteen hours");
+    assert_eq!(playhead.head_from(300, Duration::ZERO), Some(300), "a publication that reaches the screen at once looks nowhere ahead");
+    playhead.play(24.0);
+    assert_eq!(playhead.head_from(300, making), Some(300), "the speed asked for at once: at 24 hours a second ten milliseconds is no hour");
+    playhead.pause();
+    assert_eq!(playhead.head_from(300, making), None, "paused, nothing is prepared past the hour shown");
+    playhead.play(1440.0);
+    playhead.seek(100);
+    assert_eq!(playhead.head_from(100, making), None, "sought backwards, nothing of the hours it was playing is prepared");
+    assert_eq!(playhead.head_from(playhead.timeline().last(), making), None, "nothing past the recording's last hour");
 }
 
 /// The clock runs from the frame that shows a seek's reset: a frame that asks the head for its
@@ -833,7 +943,7 @@ fn the_hook_sees_every_step_with_the_lanes_at_its_end() {
         held.lock().unwrap().push((step.first(), step.last(), step.reset(), lane.head(), step.table(0).and_then(Changes::head)));
     });
     let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), Some(hook)).unwrap();
-    let reader = playhead.declare(vec![Declared { table: 0, columns: vec![0], keyed: false, passing: false }], None).unwrap();
+    let reader = playhead.declare(vec![Declared { table: 0, columns: vec![0], keyed: false, passing: false, hourly: false }], None).unwrap();
     let mut consumer = playhead.consumer(reader);
     playhead.seek(0);
     let mut taken = Vec::new();
@@ -857,7 +967,7 @@ fn log_recording() -> Arc<Runs> {
 }
 
 fn log_declared(passing: bool) -> Vec<Declared> {
-    vec![Declared { table: 0, columns: (0..LOG.len()).collect(), keyed: true, passing }]
+    vec![Declared { table: 0, columns: (0..LOG.len()).collect(), keyed: true, passing, hourly: false }]
 }
 
 /// Plays frames `every` hours apart from `from` to `to`, each waiting until the playhead has built
@@ -1219,16 +1329,16 @@ fn several_tables_declared_at_once_while_paused_arrive_together_and_a_keeper_kee
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 3, &[(0, 2 * BLOCK)]);
     let log = Log::default();
     let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), whole_ahead(), None).unwrap();
-    let a = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false }], Some(kept(0, &log))).unwrap();
+    let a = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false, hourly: false }], Some(kept(0, &log))).unwrap();
     let mut keeper = Side::new(&playhead, a);
     playhead.seek(0);
     frames(&playhead, &mut [&mut keeper], 0, 300);
     playhead.wait_until(|| playhead.ring_len() == 3);
     let shown = keeper.taken.last().unwrap().last();
     let declared = vec![
-        Declared { table: 0, columns: vec![2, 3], keyed: true, passing: false },
-        Declared { table: 1, columns: vec![0, 2], keyed: true, passing: false },
-        Declared { table: 2, columns: vec![0, 1, 2, 3], keyed: true, passing: false },
+        Declared { table: 0, columns: vec![2, 3], keyed: true, passing: false, hourly: false },
+        Declared { table: 1, columns: vec![0, 2], keyed: true, passing: false, hourly: false },
+        Declared { table: 2, columns: vec![0, 1, 2, 3], keyed: true, passing: false, hourly: false },
     ];
     let b = playhead.declare(declared, Some(kept(1, &log))).unwrap();
     let mut changer = Side::new(&playhead, b);
@@ -1352,7 +1462,7 @@ fn a_consumer_late_to_take_holds_neither_the_stepper_nor_another_consumer_and_co
         playhead.wait_until(|| {
             let built = playhead.newest().is_some_and(|newest| newest >= head);
             early.take(head, seen);
-            built && !early.reaches(head)
+            built && early.reaches(head) == Some(false)
         });
     };
     let joins = playhead.held().2.joins;
@@ -1425,7 +1535,7 @@ fn a_log_reader_far_behind_is_caught_up_from_the_file_with_every_row_it_skipped(
         playhead.wait_until(|| {
             let built = playhead.newest().is_some_and(|newest| newest >= head);
             early.take(head, seen);
-            built && !early.reaches(head)
+            built && early.reaches(head) == Some(false)
         });
     };
     let mut head = 0;
@@ -1508,7 +1618,7 @@ fn caught_up_where_its_lane_stood_short(built_past: bool) {
         playhead.wait_until(|| {
             let built = playhead.newest().is_some_and(|newest| newest >= head);
             early.take(head, seen);
-            built && !early.reaches(head)
+            built && early.reaches(head) == Some(false)
         });
     };
     let stand = 144;
@@ -1593,7 +1703,7 @@ fn a_seek_prepares_its_tables_on_threads_lent_to_it() {
 fn a_head_held_past_the_newest_step_is_reached_by_the_next_step() {
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, BLOCK)]);
     let log = Log::default();
-    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: 1, speed: 1.0, rate: 1.0 };
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: 1, speed: 1.0, rate: 1.0, ..Settings::default() };
     let (playhead, mut consumer) = start(&pages, settings, &[0], &log);
     let mut taken = Vec::new();
     playhead.advance(0);
@@ -1632,7 +1742,7 @@ fn a_table_declared_while_the_clock_is_held_joins_where_the_frames_are_not_where
         ahead.taken.last().is_some_and(|step| step.last() == 120)
     });
     assert_eq!(playhead.head(Instant::now()), 0, "the clock is held where it was sought");
-    assert!(behind.consumer.reaches(120) && !ahead.consumer.reaches(120), "the side behind has a step to take at the head, the one ahead none");
+    assert!(behind.consumer.reaches(120) == Some(true) && ahead.consumer.reaches(120) == Some(false), "the side behind has a step to take at the head, the one ahead none");
     let b = playhead.declare(every(&[1]), Some(kept(1, &log))).unwrap();
     let mut late = Side::new(&playhead, b);
     let until = Instant::now() + Duration::from_secs(5);
@@ -1673,7 +1783,7 @@ fn a_table_declared_again_while_playing_arrives_at_the_hour_its_consumer_has() {
         }
     });
     let playhead = Arc::new(Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), whole_ahead(), Some(hook)).unwrap());
-    let keeper = playhead.declare(vec![Declared { table: 0, columns: vec![0], keyed: true, passing: false }], Some(kept(0, &log))).unwrap();
+    let keeper = playhead.declare(vec![Declared { table: 0, columns: vec![0], keyed: true, passing: false, hourly: false }], Some(kept(0, &log))).unwrap();
     let reader = playhead.declare(every(&[0, 1]), Some(kept(1, &log))).unwrap();
     let (mut kept_side, mut side) = (Side::new(&playhead, keeper), Side::new(&playhead, reader));
     playhead.play(24.0);
@@ -1796,7 +1906,7 @@ fn a_table_retired_and_declared_again_whole_while_the_head_moves_lands_at_the_co
     let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 1, &[(0, 4 * BLOCK)]);
     let log = Log::default();
     let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), whole_ahead(), None).unwrap();
-    let keeper = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false }], Some(kept(0, &log))).unwrap();
+    let keeper = playhead.declare(vec![Declared { table: 0, columns: vec![0, 1], keyed: true, passing: false, hourly: false }], Some(kept(0, &log))).unwrap();
     let reader = playhead.declare(every(&[0]), Some(kept(1, &log))).unwrap();
     let (mut kept_side, mut side) = (Side::new(&playhead, keeper), Side::new(&playhead, reader));
     playhead.play(24.0);
@@ -2428,24 +2538,22 @@ fn a_hundred_tables_declared_together_are_read_at_once_and_arrive_together_at_th
     assert_eq!(first.taken.last().unwrap().last(), shown, "the head stood still");
 }
 
-/// A 24-hour step a frame at 1,440 hours a second (60 frames a second), eight steps built ahead,
-/// the whole file read ahead.
+/// A 24-hour step a publication at 1,440 hours a second (60 publications a second), eight steps
+/// built ahead, the whole file read ahead.
 fn fast() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: 8, speed: 1440.0, rate: 60.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: 8, speed: 1440.0, rate: 60.0, ..Settings::default() }
 }
 
 /// Moves the head an hour at a time from `from` to `to`, each side taking what each head reaches.
+/// The head moves to an hour only once the steps are built through it: a stepper behind the head
+/// builds a step to the head of its own, and the steps after it end on other hours.
 fn hour_by_hour(playhead: &Playhead, sides: &mut [&mut Side], from: i32, to: i32) {
     for head in from..=to {
+        playhead.wait_until(|| playhead.newest().is_some_and(|newest| newest >= head));
         playhead.advance(head);
-        playhead.wait_until(|| {
-            // Built through the head before the takes, so each takes the step that reaches it.
-            let built = playhead.newest().is_some_and(|newest| newest >= head);
-            for side in sides.iter_mut() {
-                take(&mut side.consumer, head, &mut side.taken);
-            }
-            built
-        });
+        for side in sides.iter_mut() {
+            take(&mut side.consumer, head, &mut side.taken);
+        }
     }
     playhead.wait_until(|| {
         for side in sides.iter_mut() {
@@ -2463,6 +2571,39 @@ fn every_hour_once(taken: &[Taken], who: &str) {
         assert_eq!(step.first(), at + 1, "{who}: the step after hour {at}");
         at = step.last();
     }
+}
+
+/// A step is the hours of one publication at the rate its host holds: 24 hours at 1,440 hours a
+/// second published 60 times a second, 10 at 144. A rate the playhead already has changes nothing.
+#[test]
+fn a_step_is_the_hours_of_one_publication_at_the_rate_the_host_holds() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, 2 * BLOCK)]);
+    let log = Log::default();
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), fast(), None).unwrap();
+    let declared = playhead.declare(every(&[0, 1]), Some(kept(0, &log))).unwrap();
+    let mut side = Side::new(&playhead, declared);
+    playhead.play(1440.0);
+    playhead.seek(0);
+    frames(&playhead, &mut [&mut side], 0, 96);
+    let lengths = |taken: &[Taken], from: usize| {
+        taken[from..].iter().filter(|step| step.first() <= step.last()).map(|step| step.last() - step.first() + 1).collect::<Vec<_>>()
+    };
+    assert!(lengths(&side.taken, 1).iter().all(|&hours| hours == 24), "60 publications a second: {:?}", lengths(&side.taken, 1));
+    // The ring full past 96 first: a new rate builds again the steps built ahead, and there are some.
+    playhead.wait_until(|| playhead.ring_len() == fast().ring);
+    let resteps = playhead.held().2.resteps;
+    playhead.frame_rate(fast().rate);
+    assert_eq!(playhead.held().2.resteps, resteps, "the rate it already has builds no step again");
+    playhead.frame_rate(144.0);
+    playhead.wait_until(|| playhead.held().2.resteps > resteps);
+    // The ring is filled again at the new size before the head moves on, so the stepper is never
+    // behind it and builds no catch-up step to the head of its own.
+    playhead.wait_until(|| playhead.ring_len() == fast().ring);
+    let from = side.taken.len();
+    // Ten hours a step from 97 ends one at 196; a take hands no step that ends past the head.
+    hour_by_hour(&playhead, &mut [&mut side], 97, 196);
+    assert!(lengths(&side.taken, from).iter().all(|&hours| hours == 10), "144 publications a second: {:?}", lengths(&side.taken, from));
+    every_hour_once(&side.taken, "the only consumer");
 }
 
 /// When the pace falls from 1,440 to 24 hours a second, a step of 24 hours becomes a step of one,
@@ -2545,6 +2686,96 @@ fn paused_a_new_pace_builds_the_steps_ahead_again_and_each_hour_shows_that_hour(
         let at = step.table(0).unwrap().head().unwrap();
         assert!(held[&0].holds(&states[0][0][at as usize]), "table 0 at {at}");
     });
+}
+
+/// A declaration keeps the next piece's lanes for every table whose union it leaves alone: only
+/// what it changed is prepared again. Letting the whole piece go on each declaration had a reader
+/// that declares as it opens prepare the piece over and over, which starved the joins that same
+/// reader was waiting for.
+#[test]
+fn a_declaration_keeps_the_next_pieces_lanes_for_the_tables_it_leaves_alone() {
+    let (pages, _) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK), (1000, BLOCK + 50)]);
+    let log = Log::default();
+    let (playhead, mut consumer) = start(&pages, settings(), &[0, 1], &log);
+    let mut taken = Vec::new();
+    play(&playhead, &mut consumer, 0, 700, 24, &mut taken);
+    playhead.wait_until(|| playhead.held().2.piece_prepares > 0);
+    let prepared = playhead.held().2.piece_prepares;
+    assert_eq!(prepared, 2, "one lane a table");
+    for _ in 0..5 {
+        let seen = playhead.held().2.declarations_applied;
+        let another = playhead.declare(every(&[0, 1]), None).unwrap();
+        playhead.wait_until(|| playhead.held().2.declarations_applied > seen);
+        drop(playhead.consumer(another));
+    }
+    assert_eq!(playhead.held().2.piece_prepares, prepared, "the piece's lanes stood");
+}
+
+/// A table read hourly carries each hour of a step that wrote it, and only a table read hourly
+/// does. A step that is not a fold of hours carries none and stands for its whole interval as
+/// before: a seek's reset and a piece's crossing. A mirror kept from the hours alone — the resets
+/// and the crossing taken whole — holds the recorder's state at every step on both sides of the
+/// boundary and after a seek back across it.
+#[test]
+fn a_table_read_hourly_carries_its_hours_and_a_reset_or_a_crossing_carries_none() {
+    let (pages, states) = recording(Writing { cap: 256, ..Writing::at(3) }, 2, &[(0, BLOCK), (1000, BLOCK + 50)]);
+    let log = Log::default();
+    let playhead = Playhead::new(Arc::clone(&pages) as Arc<dyn Pages>, Timeline::whole(&*pages).unwrap(), settings(), None).unwrap();
+    let declared = vec![
+        Declared { table: 0, columns: (0..KINDS.len()).collect(), keyed: true, passing: false, hourly: true },
+        Declared { table: 1, columns: (0..KINDS.len()).collect(), keyed: true, passing: false, hourly: false },
+    ];
+    let reader = playhead.declare(declared, Some(kept(0, &log))).unwrap();
+    let mut consumer = playhead.consumer(reader);
+    playhead.seek(0);
+    let mut taken = Vec::new();
+    play(&playhead, &mut consumer, 0, 400, 24, &mut taken);
+    play(&playhead, &mut consumer, 900, 1000 + BLOCK as i32 + 49, 24, &mut taken);
+    playhead.seek(300);
+    playhead.advance(300);
+    playhead.wait_until(|| {
+        take(&mut consumer, 300, &mut taken);
+        taken.iter().any(|step| step.reset() && step.last() == 300)
+    });
+    play(&playhead, &mut consumer, 300, 1024, 24, &mut taken);
+    let mut held: BTreeMap<usize, Kept> = BTreeMap::new();
+    let (mut dated, mut whole) = (0, 0);
+    for step in &taken {
+        held.extend(step.states.clone());
+        assert!(step.hours_of(1).is_empty(), "a table read at the step's own grain carries no hour");
+        let hours = step.hours_of(0);
+        // A reset, a crossing, and a lane covering more hours than the pace's own step (24 here)
+        // — a catch-up, or a table taking up the hours a stall left — carry no hour.
+        let covered = step.last() - held.get(&0).and_then(|kept| kept.head).unwrap_or(step.last());
+        let coarse = step.reset() || step.first() == 1000 || covered > 24;
+        assert_eq!(hours.is_empty(), coarse || step.table(0).is_none_or(|changes| changes.rows() == 0 && changes.cells() == 0), "step {}..={} reset {} covering {covered}", step.first(), step.last(), step.reset());
+        let mut last = step.last() - covered;
+        for set in hours {
+            let hour = set.head().expect("an hour's set stands at its hour");
+            assert!(hour > last && hour <= step.last() && set.table() == 0, "hour {hour} of {}..={}", step.first(), step.last());
+            last = hour;
+        }
+        for changes in step.tables() {
+            let Some(kept) = held.get_mut(&changes.table()) else { continue };
+            match (changes.table() == 0, coarse) {
+                (true, false) => {
+                    dated += hours.len();
+                    hours.iter().for_each(|set| kept.apply(set));
+                    kept.head = changes.head();
+                }
+                _ => {
+                    whole += usize::from(changes.table() == 0);
+                    kept.apply(changes);
+                }
+            }
+        }
+        for table in 0..2 {
+            let Some(at) = step.table(table).map(|changes| changes.head().expect("a stepped table has a head")) else { continue };
+            let (run, hour) = if at < 1000 { (0, at) } else { (1, at - 1000) };
+            assert!(held[&table].holds(&states[run][table][hour as usize]), "table {table} at {at} from its hours");
+        }
+    }
+    assert!(dated > 100 && whole > 2, "{dated} hours dated and {whole} intervals taken whole");
 }
 
 #[test]

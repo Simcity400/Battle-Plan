@@ -2,6 +2,8 @@
 // seeks on every page, pictures at a fixed hour, the map, playback, every catalogue view and every control case.
 // usage: node tools/e2e/sweep.mjs --port <port> --out <dir> --work <dir> --session <name> --desktop <name> --app-pid <pid> --input <address>
 //   [--phases pages,seeks,visual,map,mapfps,playback,catalogue,controls,pages-at,glance] [--cases id,...] [--pages page,...] [--pages-at <fraction>]
+// `--cases` names the control cases to run, and in the map phases the map interactions to run, the rest of the map
+// phase (modes, hover, the pop-out) being left out then.
 //   [--tier full|quick] [--history <file>] [--pin all|product] [--record-replies <file.jsonl.gz>] [--app-revision <commit>]
 // One app session: its results go to sweep-<session>.json, its pictures to visual/manifest-<session>.json. The quick tier
 // glances at every page at mid-recording, plays its heaviest pages at 1,440 h/s under the trace, adds the catalogue's
@@ -44,6 +46,8 @@ const history = historyFile && existsSync(historyFile) ? readHistory(JSON.parse(
 if (!history) log('no failure history: every case runs, none is left out as a repeat');
 const pin = flag('--pin', 'all');
 if (!PINS.includes(pin)) throw new Error(`--pin takes ${PINS.join(' or ')}, not ${pin}`);
+/** `--cases` names the control cases to run; in the map phases, the map interactions (`MAP_INTERACTIONS` ids),
+ * whose modes, hover and pop-out are left out then, so one interaction can be measured on its own. */
 const only = flag('--cases')?.split(',') ?? null;
 /** The pages a control case visits (`--pages`): all by default, so a long controls phase can run in parts. */
 const onlyPages = flag('--pages')?.split(',') ?? null;
@@ -324,10 +328,11 @@ await phase('map', async () => {
   await s.openPage('Overview');
   const native = new NativeInput(desktop, appPid, input);
   try {
-    await mapModes(s, meta.viewport.dpr);
-    await interactions(s, native, meta.viewport.dpr, PRESETS.indexOf(SPEEDS.at(-1)));
-    await hover(s, native, meta.viewport.dpr);
+    if (only === null) await mapModes(s, meta.viewport.dpr);
+    await interactions(s, native, meta.viewport.dpr, PRESETS.indexOf(SPEEDS.at(-1)), { only });
+    if (only === null) await hover(s, native, meta.viewport.dpr);
   } finally { native.close(); }
+  if (only !== null) return;
   // The pop-out is the campaign map's, from its own Map settings on the Campaign map tab. Opening or closing it
   // closes the menu once done; the menu, opened again, shows which state it reached.
   await s.click('#tab-map');
@@ -362,7 +367,7 @@ await phase('map', async () => {
 
 await phase('mapfps', async () => {
   const native = new NativeInput(desktop, appPid, input);
-  try { await interactions(s, native, meta.viewport.dpr, PRESETS.indexOf(SPEEDS.at(-1)), { label: 'uncapped' }); } finally { native.close(); }
+  try { await interactions(s, native, meta.viewport.dpr, PRESETS.indexOf(SPEEDS.at(-1)), { label: 'uncapped', only }); } finally { native.close(); }
 });
 
 /** `page` played under the browser's trace (`trace.mjs`): its summary is recorded, the raw trace kept beside the results

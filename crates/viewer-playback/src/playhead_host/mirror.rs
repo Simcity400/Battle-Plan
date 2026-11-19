@@ -198,8 +198,9 @@ impl Cells {
         }
     }
 
-    /// Slots `first` on take their old slots' cells; the rows before `first` kept theirs.
-    fn renumber(&mut self, old: &[u32], first: usize) {
+    /// Slots `first` on take their old slots' cells; the rows before `first` kept theirs. `lists`,
+    /// the bytes its list cells hold, loses the cells the packing drops.
+    fn renumber(&mut self, old: &[u32], first: usize, lists: &mut usize) {
         fn moved<T: Copy>(cells: &mut Vec<T>, old: &[u32], first: usize) {
             for (new, &from) in old.iter().enumerate().skip(first) {
                 cells[new] = cells[from as usize];
@@ -215,18 +216,65 @@ impl Cells {
                 for (new, &from) in old.iter().enumerate().skip(first) {
                     cells.swap(new, from as usize);
                 }
+                if let Some(dropped) = cells.get(old.len()..) {
+                    *lists -= dropped.iter().map(Vec::capacity).sum::<usize>();
+                }
                 cells.truncate(old.len());
             }
         }
     }
 
+    /// The bytes the cells themselves hold; a list cell's own bytes are counted as they are
+    /// written ([`Column::lists`]).
     fn bytes(&self) -> usize {
         match self {
             Self::W1(cells) => cells.capacity(),
             Self::W2(cells) => cells.capacity() * 2,
             Self::W4(cells) => cells.capacity() * 4,
             Self::W8(cells) => cells.capacity() * 8,
-            Self::Lists(cells) => cells.capacity() * 24 + cells.iter().map(Vec::capacity).sum::<usize>(),
+            Self::Lists(cells) => cells.capacity() * 24,
+        }
+    }
+}
+
+/// One column of a mirror looked up once ([`Mirror::resolve`]); none when the mirror does not hold
+/// it, which reads as not recorded.
+#[derive(Clone, Copy, Debug)]
+pub struct Resolved<'m>(Option<&'m Column>);
+
+impl<'m> Resolved<'m> {
+    /// The cell's bits as held: a number at its width, a text id, missing or not recorded.
+    #[inline]
+    pub fn bits(&self, slot: u32) -> Cell<u64> {
+        #[cfg(any(test, feature = "test-support"))]
+        probe::read();
+        let Some(held) = self.0 else { return Cell::Unrecorded };
+        let slot = slot as usize;
+        if slot >= held.cells.len() {
+            return Cell::Unrecorded;
+        }
+        match held.standing(slot) {
+            Some(Cell::Missing) => Cell::Missing,
+            Some(_) => Cell::Unrecorded,
+            None => Cell::Value(held.cells.raw(slot)),
+        }
+    }
+
+    /// A list or opaque cell's bytes.
+    #[inline]
+    pub fn list(&self, slot: u32) -> Cell<&'m [u8]> {
+        #[cfg(any(test, feature = "test-support"))]
+        probe::read();
+        let Some(held) = self.0 else { return Cell::Unrecorded };
+        if let Some(standing) = held.standing(slot as usize) {
+            return match standing {
+                Cell::Missing => Cell::Missing,
+                _ => Cell::Unrecorded,
+            };
+        }
+        match &held.cells {
+            Cells::Lists(cells) => Cell::Value(cells.get(slot as usize).map_or(&[][..], |cell| &cell[..])),
+            _ => Cell::Unrecorded,
         }
     }
 }
@@ -237,6 +285,9 @@ struct Column {
     cells: Cells,
     missing: Option<Bits>,
     unrecorded: Option<Bits>,
+    /// The bytes its list cells hold, kept as they are written: a mirror's bytes are asked for
+    /// every wake of a worker, and walking every cell for them is the table's own size.
+    lists: usize,
 }
 
 impl Column {
@@ -253,8 +304,10 @@ impl Column {
             }
             Value::List(bytes) => {
                 if let Cells::Lists(cells) = &mut self.cells {
+                    self.lists -= cells[slot].capacity();
                     cells[slot].clear();
                     cells[slot].extend_from_slice(bytes);
+                    self.lists += cells[slot].capacity();
                 }
                 (false, false)
             }
@@ -269,7 +322,7 @@ impl Column {
     /// the held one; then the missing and unrecorded bits, touched only when held or written.
     fn write(&mut self, written: &playhead::changes::Written) {
         let slots = written.slots();
-        let Self { cells, missing, unrecorded, .. } = self;
+        let Self { cells, missing, unrecorded, lists, .. } = self;
         match (cells, written.raw()) {
             (Cells::W1(cells), Raw::Numbers { width, signed, bytes }) => scatter(cells, slots, width, signed, bytes, |bits| bits as u8),
             (Cells::W2(cells), Raw::Numbers { width, signed, bytes }) => scatter(cells, slots, width, signed, bytes, |bits| bits as u16),
@@ -280,8 +333,10 @@ impl Column {
                 let mut start = 0;
                 for (&slot, &end) in slots.iter().zip(ends) {
                     let cell = &mut cells[slot as usize];
+                    *lists -= cell.capacity();
                     cell.clear();
                     cell.extend_from_slice(&bytes[start..end as usize]);
+                    *lists += cell.capacity();
                     start = end as usize;
                 }
             }
@@ -316,14 +371,14 @@ impl Column {
     }
 
     fn renumber(&mut self, old: &[u32], first: usize) {
-        self.cells.renumber(old, first);
+        self.cells.renumber(old, first, &mut self.lists);
         for bits in [&mut self.missing, &mut self.unrecorded].into_iter().flatten() {
             bits.renumber(old, first);
         }
     }
 
     fn bytes(&self) -> usize {
-        self.cells.bytes() + self.missing.as_ref().map_or(0, Bits::bytes) + self.unrecorded.as_ref().map_or(0, Bits::bytes)
+        self.cells.bytes() + self.lists + self.missing.as_ref().map_or(0, Bits::bytes) + self.unrecorded.as_ref().map_or(0, Bits::bytes)
     }
 }
 
@@ -379,6 +434,8 @@ pub struct Mirror {
     /// Whether it holds a text column, so it keeps the table's strings.
     text: bool,
     texts: HashMap<u32, Box<[u8]>>,
+    /// The bytes `texts` holds, kept as strings are named ([`Column::lists`] for why).
+    texts_bytes: usize,
     status: (Status, Option<Hour>),
     /// An unavailable status's reason: its string id and text.
     reason: Option<(u32, Box<str>)>,
@@ -404,7 +461,7 @@ impl Mirror {
         let mut held = Vec::with_capacity(columns.len());
         for (at, &index) in columns.iter().enumerate() {
             position[index] = at as u16;
-            held.push(Column { index, cells: Cells::new(kinds[index]), missing: None, unrecorded: None });
+            held.push(Column { index, cells: Cells::new(kinds[index]), missing: None, unrecorded: None, lists: 0 });
         }
         let slots = cells.slots() as usize;
         let live: Vec<u32> = cells.rows().collect();
@@ -427,7 +484,8 @@ impl Mirror {
             }
         }
         let text = columns.iter().any(|&index| kinds[index] == Kind::Bytes);
-        let texts = if text { lane.texts().iter().map(|(id, text)| (id, text.into())).collect() } else { HashMap::new() };
+        let texts: HashMap<u32, Box<[u8]>> = if text { lane.texts().iter().map(|(id, text)| (id, text.into())).collect() } else { HashMap::new() };
+        let texts_bytes = texts.values().map(|text| text.len() + 40).sum();
         let reason = match lane.status().0 {
             Status::Unavailable { reason } => Some((reason, lane.texts().iter().find(|&(id, _)| id == reason).map_or_else(|| unnamed(reason), |(_, text)| String::from_utf8_lossy(text).into()))),
             _ => None,
@@ -442,6 +500,7 @@ impl Mirror {
             index,
             text,
             texts,
+            texts_bytes,
             status: lane.status(),
             reason,
             capture: None,
@@ -451,6 +510,14 @@ impl Mirror {
             #[cfg(any(test, feature = "test-support"))]
             moved: 0,
             listed,
+        }
+    }
+
+    /// Names string `id` to the mirror, keeping the bytes its strings hold.
+    fn name(&mut self, id: u32, text: &[u8]) {
+        self.texts_bytes += text.len() + 40;
+        if let Some(held) = self.texts.insert(id, text.into()) {
+            self.texts_bytes -= held.len() + 40;
         }
     }
 
@@ -480,7 +547,7 @@ impl Mirror {
         }
         if self.text {
             for (id, text) in rows.texts().iter() {
-                self.texts.insert(id, text.into());
+                self.name(id, text);
             }
         }
     }
@@ -575,18 +642,24 @@ impl Mirror {
         }
         if self.text {
             for (id, text) in changes.texts().iter() {
-                self.texts.insert(id, text.into());
+                self.name(id, text);
             }
         }
         if let Some(status) = changes.status() {
             self.status = status;
-            match status.0 {
-                Status::Unavailable { reason } if self.reason.as_ref().is_none_or(|(id, _)| *id != reason) => {
-                    self.reason = Some((reason, reason_words(reason, changes, self.texts.get(&reason).map(|text| &text[..]))));
+            // Read in the dictionary of the run the change set is of: a new run numbers its strings
+            // anew, so an equal id may spell another reason. A change set naming no text for it (a
+            // seek's reset of a table holding no text) keeps the reason its rebuild read.
+            self.reason = match status.0 {
+                Status::Unavailable { reason } => {
+                    let named = changes.texts().iter().any(|(id, _)| id == reason) || self.texts.contains_key(&reason);
+                    match self.reason.take() {
+                        Some(held) if held.0 == reason && !named => Some(held),
+                        _ => Some((reason, reason_words(reason, changes, self.texts.get(&reason).map(|text| &text[..])))),
+                    }
                 }
-                Status::Unavailable { .. } => {}
-                _ => self.reason = None,
-            }
+                _ => None,
+            };
         }
         self.advance_head(changes);
     }
@@ -700,36 +773,20 @@ impl Mirror {
     }
 
     pub fn list(&self, column: List, slot: u32) -> Cell<&[u8]> {
-        #[cfg(any(test, feature = "test-support"))]
-        probe::read();
         debug_assert_eq!(column.table.index(), self.table, "a column of another table");
-        let Some(held) = self.column(column.column) else { return Cell::Unrecorded };
-        if let Some(standing) = held.standing(slot as usize) {
-            return match standing {
-                Cell::Missing => Cell::Missing,
-                _ => Cell::Unrecorded,
-            };
-        }
-        match &held.cells {
-            Cells::Lists(cells) => Cell::Value(cells.get(slot as usize).map_or(&[][..], |cell| &cell[..])),
-            _ => Cell::Unrecorded,
-        }
+        self.resolve(column.column).list(slot)
+    }
+
+    /// `column` resolved once, for a run of reads over many rows: every row's cell of one column
+    /// of a view costs the same lookup, which a maker of rows does once instead.
+    #[inline]
+    pub fn resolve(&self, column: usize) -> Resolved<'_> {
+        Resolved(self.column(column))
     }
 
     #[inline]
     fn raw(&self, column: usize, slot: u32) -> Cell<u64> {
-        #[cfg(any(test, feature = "test-support"))]
-        probe::read();
-        let Some(held) = self.column(column) else { return Cell::Unrecorded };
-        let slot = slot as usize;
-        if slot >= held.cells.len() {
-            return Cell::Unrecorded;
-        }
-        match held.standing(slot) {
-            Some(Cell::Missing) => Cell::Missing,
-            Some(_) => Cell::Unrecorded,
-            None => Cell::Value(held.cells.raw(slot)),
-        }
+        self.resolve(column).bits(slot)
     }
 
     #[inline]
@@ -765,22 +822,7 @@ impl Mirror {
 
     /// A list cell's bytes by column index, for the same copies.
     pub fn list_cell(&self, column: usize, slot: u32) -> Cell<&[u8]> {
-        let Some(held) = self.column(column) else { return Cell::Unrecorded };
-        if let Some(standing) = held.standing(slot as usize) {
-            return match standing {
-                Cell::Missing => Cell::Missing,
-                _ => Cell::Unrecorded,
-            };
-        }
-        match &held.cells {
-            Cells::Lists(cells) => Cell::Value(cells.get(slot as usize).map_or(&[][..], |cell| &cell[..])),
-            _ => Cell::Unrecorded,
-        }
-    }
-
-    /// A number or text cell of `column` as held, at any width.
-    pub fn bits(&self, column: usize, slot: u32) -> Cell<u64> {
-        self.raw(column, slot)
+        self.resolve(column).list(slot)
     }
 
     /// The hour its table was last sampled at.
@@ -791,6 +833,58 @@ impl Mirror {
     /// Whether it holds `column`.
     pub fn holds(&self, column: usize) -> bool {
         self.column(column).is_some()
+    }
+
+    /// The columns its table has in the recording, which a lane older than the schema has fewer
+    /// of: a column past them is recorded nowhere, and every read of it says so.
+    pub fn width(&self) -> usize {
+        self.position.len()
+    }
+
+    /// Where a layer could tell this mirror from `other`, in words; none where it could not. The
+    /// judge of a piece's crossing (`BATTLE_PLAN_VIEWER_CHECK_PIECE`) reads the mirror the crossing's
+    /// change sets left against the one a rebuild of the new piece's lane made: the status, the
+    /// head, the live rows and their keys, and every held column's cell of every live row, a text
+    /// cell by the string each mirror names its id with.
+    pub fn differs(&self, other: &Self, kinds: &[Kind]) -> Option<String> {
+        if self.status != other.status {
+            return Some(format!("its status reads {:?} against {:?}", self.status, other.status));
+        }
+        if self.head != other.head {
+            return Some(format!("its head stands at {:?} against {:?}", self.head, other.head));
+        }
+        let (mine, theirs): (Vec<u32>, Vec<u32>) = (self.rows().collect(), other.rows().collect());
+        if mine != theirs {
+            let differing = mine.iter().zip(&theirs).position(|(mine, theirs)| mine != theirs);
+            return Some(format!("it holds {} live rows against {}, differing at place {differing:?}", mine.len(), theirs.len()));
+        }
+        for &slot in &mine {
+            if self.key(slot) != other.key(slot) {
+                return Some(format!("slot {slot}'s key reads {:?} against {:?}", self.key(slot), other.key(slot)));
+            }
+            for held in &other.columns {
+                let column = held.index;
+                if !self.holds(column) {
+                    return Some(format!("it holds no column {column}"));
+                }
+                if self.cell(column, slot) != other.cell(column, slot) {
+                    return Some(format!("slot {slot}'s column {column} reads {:?} against {:?}", self.cell(column, slot), other.cell(column, slot)));
+                }
+                if self.list_cell(column, slot) != other.list_cell(column, slot) {
+                    return Some(format!("slot {slot}'s list column {column} differs"));
+                }
+                if kinds.get(column) == Some(&Kind::Bytes)
+                    && let Cell::Value(id) = self.cell(column, slot)
+                    && self.string(id as u32) != other.string(id as u32)
+                {
+                    return Some(format!("slot {slot}'s column {column} names string {id} {:?} against {:?}", self.string(id as u32).map(String::from_utf8_lossy), other.string(id as u32).map(String::from_utf8_lossy)));
+                }
+            }
+        }
+        if self.columns.len() != other.columns.len() {
+            return Some(format!("it holds {} columns against {}", self.columns.len(), other.columns.len()));
+        }
+        None
     }
 
     /// The table's status and sample hour; during a gap nothing is recorded, whatever it held.
@@ -857,6 +951,11 @@ impl Mirror {
     }
 
     /// The last game hour its cells are at.
+    /// Whether the last step left it in a gap: no hour of it stands.
+    pub fn in_gap(&self) -> bool {
+        self.gap
+    }
+
     pub fn head(&self) -> Option<Hour> {
         self.head
     }
@@ -865,15 +964,70 @@ impl Mirror {
         self.refused
     }
 
+    /// [`Self::bytes`] walked cell by cell instead of kept as the cells are written: what the
+    /// kept sums must equal.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bytes_walked(&self) -> usize {
+        let columns: usize = self
+            .columns
+            .iter()
+            .map(|column| {
+                let cells = match &column.cells {
+                    Cells::Lists(cells) => cells.capacity() * 24 + cells.iter().map(Vec::capacity).sum::<usize>(),
+                    held => held.bytes(),
+                };
+                cells + column.missing.as_ref().map_or(0, Bits::bytes) + column.unrecorded.as_ref().map_or(0, Bits::bytes)
+            })
+            .sum();
+        self.live.bytes()
+            + self.keys.as_ref().map_or(0, |keys| keys.capacity() * 16)
+            + self.index.as_ref().map_or(0, |index| index.capacity() * 24)
+            + columns
+            + self.position.capacity() * 2
+            + self.texts.values().map(|text| text.len() + 40).sum::<usize>()
+            + self.listed.as_ref().map_or(0, |listed| listed.capacity() * 16)
+    }
+
     pub fn bytes(&self) -> usize {
         self.live.bytes()
             + self.keys.as_ref().map_or(0, |keys| keys.capacity() * 16)
             + self.index.as_ref().map_or(0, |index| index.capacity() * 24)
             + self.columns.iter().map(Column::bytes).sum::<usize>()
             + self.position.capacity() * 2
-            + self.texts.iter().map(|(_, text)| text.len() + 40).sum::<usize>()
+            + self.texts_bytes
             + self.listed.as_ref().map_or(0, |listed| listed.capacity() * 16)
     }
+}
+
+/// Told what each of a step's change sets did to a mirror, so a store of views made from these
+/// mirrors knows which of its rows to make again ([`super::views::Noting`]).
+pub trait Notes {
+    /// A gap step: every table holds nothing until the next step that names it.
+    fn gap(&mut self);
+    /// `changes` was applied to `table`'s mirror, `moved` when its status moved with it.
+    fn applied(&mut self, table: usize, changes: &Changes, moved: bool);
+    /// Whether a drawn layer or a maker reads `table`: a mirror no one reads sleeps.
+    fn awake(&self, table: usize) -> bool;
+}
+
+/// Nothing is noted: a mirror set no view store reads, and none of it sleeps.
+impl Notes for () {
+    fn gap(&mut self) {}
+    fn applied(&mut self, _table: usize, _changes: &Changes, _moved: bool) {}
+    fn awake(&self, _table: usize) -> bool {
+        true
+    }
+}
+
+/// What a step's apply cost, split by whether a drawn layer or a maker reads the table.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Split {
+    pub awake_ns: u64,
+    pub awake_sets: u64,
+    pub asleep_ns: u64,
+    pub asleep_sets: u64,
+    pub asleep_cells: u64,
+    pub asleep_rows: u64,
 }
 
 /// The mirrors of every table the map reads, by table.
@@ -910,24 +1064,21 @@ impl Mirrors {
     /// The step's change sets, each to its table's mirror; a gap step marks every table as not
     /// recorded until the next step that names it.
     pub fn apply(&mut self, step: &Step) {
-        self.epoch = step.epoch();
-        if step.gap() {
-            self.tables.iter_mut().flatten().for_each(|mirror| mirror.gap = true);
-            return;
-        }
-        for changes in step.tables() {
-            if let Some(Some(mirror)) = self.tables.get_mut(changes.table()) {
-                mirror.apply(changes);
-            }
-        }
+        self.applying(step, None, &mut ());
     }
 
     /// [`Self::apply`], each table's wall nanoseconds and the thread's own cycles in it added to
     /// `spent` by table index: a wall time far over the cycles is the thread waiting, not working.
-    pub fn apply_timed(&mut self, step: &Step, spent: &mut Vec<(u64, u64)>) {
+    /// What each change set did is told to `notes`, for a store of views made from these mirrors.
+    pub fn apply_timed(&mut self, step: &Step, spent: &mut Vec<(u64, u64)>, split: &mut Split, notes: &mut dyn Notes) {
+        self.applying(step, Some((spent, split)), notes);
+    }
+
+    fn applying(&mut self, step: &Step, mut spent: Option<(&mut Vec<(u64, u64)>, &mut Split)>, notes: &mut dyn Notes) {
         self.epoch = step.epoch();
         if step.gap() {
-            self.apply(step);
+            self.tables.iter_mut().flatten().for_each(|mirror| mirror.gap = true);
+            notes.gap();
             return;
         }
         // Read once between tables: each runs from the read before.
@@ -935,14 +1086,30 @@ impl Mirrors {
         for changes in step.tables() {
             if let Some(Some(mirror)) = self.tables.get_mut(changes.table()) {
                 let started = std::time::Instant::now();
+                let before = (mirror.status(), mirror.gap, changes.status().and_then(|_| mirror.reason.clone()));
+                let awake = notes.awake(changes.table());
                 mirror.apply(changes);
-                if spent.len() <= changes.table() {
-                    spent.resize(changes.table() + 1, (0, 0));
+                // A gap left behind moves the status as a status written does, and so does a
+                // reason spelled anew: each makes every row of a view of this table again.
+                let moved = before != (mirror.status(), false, changes.status().and_then(|_| mirror.reason.clone()));
+                notes.applied(changes.table(), changes, moved);
+                if let Some((spent, split)) = spent.as_mut() {
+                    if spent.len() <= changes.table() {
+                        spent.resize(changes.table() + 1, (0, 0));
+                    }
+                    let now = replay_frame::cpu::thread_cycles();
+                    let took = started.elapsed().as_nanos() as u64;
+                    let held = &mut spent[changes.table()];
+                    held.0 += took;
+                    held.1 += now.saturating_sub(std::mem::replace(&mut mark, now));
+                    if awake {
+                        (split.awake_ns, split.awake_sets) = (split.awake_ns + took, split.awake_sets + 1);
+                    } else {
+                        (split.asleep_ns, split.asleep_sets) = (split.asleep_ns + took, split.asleep_sets + 1);
+                        split.asleep_cells += changes.columns().iter().map(|written| written.slots().len() as u64).sum::<u64>();
+                        split.asleep_rows += (changes.inserted().slots().len() + changes.deleted().slots().len()) as u64;
+                    }
                 }
-                let now = replay_frame::cpu::thread_cycles();
-                let held = &mut spent[changes.table()];
-                held.0 += started.elapsed().as_nanos() as u64;
-                held.1 += now.saturating_sub(std::mem::replace(&mut mark, now));
             }
         }
     }

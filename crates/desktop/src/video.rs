@@ -32,6 +32,11 @@ pub struct VideoSettings {
     /// either: only [`set_map_muted`] changes it.
     #[serde(default)]
     pub map_muted: bool,
+    /// Frames a second every map presents at most; `None` (the default) draws as the display and
+    /// VSync allow. The game has no frame rate limit of its own to read, so this is the app's own
+    /// choice and inheriting the game's display settings keeps it.
+    #[serde(default)]
+    pub map_frame_limit: Option<f64>,
 }
 impl Default for VideoSettings {
     fn default() -> Self {
@@ -42,6 +47,7 @@ impl Default for VideoSettings {
             map_ui_scale: None,
             map_diagnostics: false,
             map_muted: false,
+            map_frame_limit: None,
         }
     }
 }
@@ -57,12 +63,24 @@ impl VideoSettings {
         }) {
             return Err("Invalid map UI scale".into());
         }
+        if self
+            .map_frame_limit
+            .is_some_and(|hz| !dashboard::protocol::MAP_FRAME_LIMIT_RANGE.contains(&hz))
+        {
+            return Err("Invalid map frame rate limit".into());
+        }
         Ok(())
     }
     /// The viewer's map action for the map interface scale.
     fn map_ui_scale_action(&self) -> dashboard::protocol::MapAction {
         dashboard::protocol::MapAction::UiScale {
             scale: self.map_ui_scale.map(|percent| (percent / 100.0) as f32),
+        }
+    }
+    /// The viewer's map action for the frame rate limit.
+    fn map_frame_limit_action(&self) -> dashboard::protocol::MapAction {
+        dashboard::protocol::MapAction::FrameLimit {
+            hz: self.map_frame_limit,
         }
     }
 }
@@ -155,7 +173,8 @@ fn commit(
     }
     Ok(())
 }
-/// Diagnostics and mute are absent from the display form and must stay as saved.
+/// Diagnostics and mute are absent from the display form and must stay as saved; the frame rate
+/// limit the form carries, so it comes from the form.
 fn with_display(saved: &mut VideoSettings, form: &VideoSettings) {
     *saved = VideoSettings {
         map_diagnostics: saved.map_diagnostics,
@@ -224,13 +243,16 @@ fn parse_game_display(
         map_ui_scale: None,
         map_diagnostics: false,
         map_muted: false,
+        map_frame_limit: None,
     };
     settings.validate()?;
     Ok(settings)
 }
 fn reply(settings: VideoSettings) -> VideoReply {
+    // What reverting to the game's display settings would give: the game's own, with the choices
+    // the game does not have (the maps' switches and the frame rate limit) kept.
     let (game_settings, game_settings_error) = match game_settings() {
-        Ok(settings) => (Some(settings), None),
+        Ok(game) => (Some(inherit_game(&settings, game)), None),
         Err(error) => (None, Some(error)),
     };
     VideoReply {
@@ -242,10 +264,10 @@ fn reply(settings: VideoSettings) -> VideoReply {
     }
 }
 /// Resolve at process launch too, including after the user configured folders:
-/// the vsync and map interface scale actions a new viewer starts with.
+/// the vsync, map interface scale and frame rate limit actions a new viewer starts with.
 pub fn launch_actions(
     window: &WebviewWindow,
-) -> Result<[dashboard::protocol::MapAction; 2], String> {
+) -> Result<[dashboard::protocol::MapAction; 3], String> {
     let settings = window
         .state::<VideoState>()
         .0
@@ -260,16 +282,18 @@ pub fn launch_actions(
     } else {
         settings.vsync
     };
-    // Using the game's settings also matches its interface scale.
+    // Using the game's settings also matches its interface scale; the game has no frame rate
+    // limit, so the app's own choice stands either way.
     let map_ui_scale = if settings.use_game_settings {
         VideoSettings::default()
     } else {
-        settings
+        settings.clone()
     }
     .map_ui_scale_action();
     Ok([
         dashboard::protocol::MapAction::Vsync { enabled: vsync },
         map_ui_scale,
+        settings.map_frame_limit_action(),
     ])
 }
 fn apply_scale(window: &WebviewWindow, settings: &VideoSettings) -> Result<(), String> {
@@ -348,6 +372,13 @@ pub fn set_video_settings(
         Ok(stored) => stored.map_muted,
         Err(_) => load().is_ok_and(|saved| saved.map_muted),
     };
+    // The game has no frame rate limit to inherit, so taking its display settings keeps the app's.
+    if settings.use_game_settings {
+        settings.map_frame_limit = match &*stored {
+            Ok(stored) => stored.map_frame_limit,
+            Err(_) => load().ok().and_then(|saved| saved.map_frame_limit),
+        };
+    }
     let result = (|| {
         if stored.is_err() || settings.ui_scale != previous.ui_scale {
             apply_scale(&window, &settings)?;
@@ -357,6 +388,7 @@ pub fn set_video_settings(
             enabled: settings.vsync,
         });
         host.set_display(settings.map_ui_scale_action());
+        host.set_display(settings.map_frame_limit_action());
         update(&path()?, Some(&settings), |saved| {
             with_display(saved, &settings)
         })?;
@@ -365,6 +397,7 @@ pub fn set_video_settings(
             enabled: settings.vsync,
         });
         popouts.mirror(&settings.map_ui_scale_action());
+        popouts.mirror(&settings.map_frame_limit_action());
         Ok(())
     })();
     if let Err(error) = result {
@@ -373,6 +406,7 @@ pub fn set_video_settings(
             enabled: previous.vsync,
         });
         host.set_display(previous.map_ui_scale_action());
+        host.set_display(previous.map_frame_limit_action());
         return Err(error);
     }
     *stored = Ok(settings.clone());
@@ -385,6 +419,7 @@ fn inherit_game(current: &VideoSettings, game: VideoSettings) -> VideoSettings {
     VideoSettings {
         map_diagnostics: current.map_diagnostics,
         map_muted: current.map_muted,
+        map_frame_limit: current.map_frame_limit,
         ..game
     }
 }
@@ -636,11 +671,14 @@ mod tests {
         let form = VideoSettings {
             use_game_settings: false,
             ui_scale: 110.0,
+            map_frame_limit: Some(60.0),
             ..VideoSettings::default()
         };
         update(&path, Some(&form), |saved| with_display(saved, &form)).unwrap();
         let saved = load_from(&path).unwrap();
         assert!(saved.map_muted && saved.map_diagnostics && saved.ui_scale == 110.0);
+        // The form carries the frame rate limit, so saving the form saves it.
+        assert_eq!(saved.map_frame_limit, Some(60.0));
         let mut lost = Err("zoom failed".to_owned());
         commit(&path, &mut lost, |settings| settings.map_muted = false).unwrap();
         let lost = lost.unwrap();
@@ -664,6 +702,46 @@ mod tests {
             ..VideoSettings::default()
         };
         assert!(inherit_game(&current, game_like(125.0)).map_muted);
+    }
+
+    /// Off by default and absent from every recognised saved file; it is the app's own choice, so
+    /// taking the game's display settings keeps it, and a rate no map could draw is refused.
+    #[test]
+    fn the_frame_rate_limit_is_off_by_default_survives_game_settings_and_refuses_a_rate_no_map_draws()
+    {
+        assert_eq!(VideoSettings::default().map_frame_limit, None);
+        let saved: VideoSettings =
+            serde_json::from_str(r#"{"uiScale":100,"vsync":true}"#).unwrap();
+        assert_eq!(saved.map_frame_limit, None);
+        let limited = VideoSettings {
+            use_game_settings: false,
+            map_frame_limit: Some(60.0),
+            ..VideoSettings::default()
+        };
+        limited.validate().unwrap();
+        assert_eq!(
+            inherit_game(&limited, game_like(125.0)).map_frame_limit,
+            Some(60.0)
+        );
+        assert!(matches!(
+            limited.map_frame_limit_action(),
+            dashboard::protocol::MapAction::FrameLimit { hz: Some(60.0) }
+        ));
+        assert!(matches!(
+            VideoSettings::default().map_frame_limit_action(),
+            dashboard::protocol::MapAction::FrameLimit { hz: None }
+        ));
+        for bad in [0.0, -60.0, 0.5, 1_000.1, f64::NAN] {
+            let invalid = VideoSettings {
+                map_frame_limit: Some(bad),
+                ..VideoSettings::default()
+            };
+            assert_eq!(
+                invalid.validate().unwrap_err(),
+                "Invalid map frame rate limit",
+                "{bad}"
+            );
+        }
     }
 
     fn game_like(ui_scale: f64) -> VideoSettings {

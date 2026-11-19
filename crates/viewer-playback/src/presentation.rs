@@ -1,59 +1,8 @@
-use crate::hours;
+//! The lines a map's layers give for the warnings its window shows.
 
-pub fn exact_capture_wait(remaining: Option<u32>, profiling: bool) -> bool {
-    remaining.is_some_and(|remaining| !profiling || remaining == 0)
-}
-
-pub fn grid_activation(
-    switch: bool,
-    playing: bool,
-    dashboard_map: bool,
-    scripted: bool,
-    capture: bool,
-    exact_wait: bool,
-    wall_sweep: bool,
-    speed: f64,
-) -> Result<u32, &'static str> {
-    if !switch && !dashboard_map {
-        return Err("switch-off");
-    }
-    if !playing {
-        return Err("paused");
-    }
-    if scripted {
-        return Err("scripted-map-mode");
-    }
-    if exact_wait || (capture && !wall_sweep) {
-        return Err("capture");
-    }
-    hours::grid_stride(speed).ok_or("below-finest-stride")
-}
-
-/// Hours the clock passes while a target is built, from the measured build
-/// latency; nothing is assumed before the first hour is measured.
-pub fn build_lead(speed: f64, latency_ms: Option<f64>) -> u32 {
-    let hours = speed * latency_ms.unwrap_or(0.0) / 1000.0;
-    if hours.is_finite() && hours > 0.0 {
-        hours.ceil().min(f64::from(u32::MAX)) as u32
-    } else {
-        0
-    }
-}
-
-/// The build latency estimate after one more measured hour.
-pub fn next_latency(estimate: Option<f64>, wall_ms: f64) -> Option<f64> {
-    if !wall_ms.is_finite() || wall_ms <= 0.0 {
-        return estimate;
-    }
-    // A quarter weight follows a change in load within a few hours.
-    Some(estimate.map_or(wall_ms, |old| old + (wall_ms - old) * 0.25))
-}
-
-/// The political part's limitation lines: with the playhead's map open, the political, naval and
-/// mode fills layers' own while the political layer draws (its refusal is the map's own line
-/// otherwise); without it, `today`'s.
-pub fn political_lines(side: Option<&crate::playhead_host::MapSide>, today: &[String]) -> Vec<String> {
-    let Some(side) = side else { return today.to_vec() };
+/// The political fill's limitation lines: the political, naval and mode fills layers' own while
+/// the political layer draws (its refusal is the map's own line otherwise).
+pub fn political_lines(side: &crate::playhead_host::MapSide) -> Vec<String> {
     match side.parts().filter(|_| side.draws("political")) {
         Some((_, layers)) => {
             let political = layers.iter().filter_map(|layer| layer.any().downcast_ref::<crate::layers::political::Political>()).flat_map(|layer| layer.warnings());
@@ -64,3 +13,36 @@ pub fn political_lines(side: Option<&crate::playhead_host::MapSide>, today: &[St
         None => Vec::new(),
     }
 }
+
+/// The lines the playhead's map gives: its limitation lines (the tables' notes, the drawn layers'
+/// own, the scripts layer's raid arrows, and each refused layer), and the battle plan's, the map
+/// buildings' and the unit models' own reports, each from its layer while it draws (the ships'
+/// within the units layer's while that draws).
+pub fn map_lines(side: &crate::playhead_host::MapSide) -> [Vec<String>; 2] {
+    let limitations = crate::playhead_host::limitations::lines(side).unwrap_or_else(|| vec![MAP_LINES_LOADING.to_owned()]);
+    let mut lines = Vec::new();
+    if let Some((_, layers)) = side.parts() {
+        let layer = |name: &str| layers.iter().find(|layer| layer.name() == name && side.draws(name));
+        if let Some(orders) = layer("orders").and_then(|layer| layer.any().downcast_ref::<crate::layers::orders::Orders>()) {
+            lines.extend(orders.warnings());
+        }
+        if let Some(buildings) = layer("buildings").and_then(|layer| layer.any().downcast_ref::<crate::layers::buildings::BuildingsFed>()) {
+            lines.extend_from_slice(buildings.warnings());
+        }
+        match layer("units").and_then(|layer| layer.any().downcast_ref::<crate::layers::units::Units>()) {
+            Some(units) => lines.extend(units.warnings()),
+            None => {
+                if let Some(ships) = layer("ships").and_then(|layer| layer.any().downcast_ref::<crate::layers::ships::Ships>()) {
+                    lines.extend_from_slice(ships.warnings());
+                }
+            }
+        }
+        if let Some(aircraft) = layer("aircraft").and_then(|layer| layer.any().downcast_ref::<crate::layers::aircraft::Aircraft>()) {
+            lines.extend(aircraft.warning());
+        }
+    }
+    [limitations, lines]
+}
+
+/// The map's limitation line while its head has reached no hour.
+pub const MAP_LINES_LOADING: &str = "Map limitations: loading, the playback head has reached no hour yet";

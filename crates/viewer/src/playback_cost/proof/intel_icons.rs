@@ -9,7 +9,7 @@ use crate::{
         Layer,
         intel_icons::{Evaluate, Icons},
     },
-    playhead_host::{MapSide, mirror::Mirrors, rows::Cadence},
+    playhead_host::{MapSide, mirror::Mirrors, views::Pace},
 };
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde_json::{Value, json};
@@ -17,22 +17,12 @@ use std::{io, sync::Arc};
 use viewer_raids::map::intel_icons::{self, IntelIcons};
 
 pub(super) fn make(document: &Document) -> Box<dyn Layer> {
-    let mut layer = Icons::new(Arc::clone(&document.content) as Arc<dyn Evaluate>, None, Cadence::PerSecond(4));
-    layer.drive();
+    let layer = Icons::new(Arc::clone(&document.content) as Arc<dyn Evaluate>, Pace::Ready);
     Box::new(layer)
 }
 
 fn of(layer: &dyn Layer) -> &Icons {
     layer.any().downcast_ref::<Icons>().expect("the intel icons line's layer")
-}
-
-/// The proof's playhead, which the layer reads rows of; given before every comparison.
-pub(super) fn give_head(side: &MapSide, document: &Document) {
-    for layer in side.parts().map_or(&[][..], |(_, layers)| layers) {
-        if let Some(icons) = layer.any().downcast_ref::<Icons>() {
-            icons.set_head(side.entry(), crate::playhead_host::rows::Recording { branch: document.playback.branch() });
-        }
-    }
 }
 
 pub(super) fn marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {

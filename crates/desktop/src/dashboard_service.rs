@@ -398,13 +398,17 @@ pub async fn dashboard_open_source(
     request_id: String,
 ) -> Result<Response, QueryError> {
     let path = crate::replay_path(&path)?;
-    // Upgraded before its revision is read, so the open names the recording as it now is.
+    // Upgraded before its revision is read, so the open names the recording as it now is. Both
+    // touch the file, so both run off the thread that pumps the map's window.
     let runtime = service.runtime(window.app_handle())?;
-    let upgraded = path.clone();
-    tauri::async_runtime::spawn_blocking(move || runtime.upgrade_recording(&upgraded))
-        .await
-        .map_err(|error| error.to_string())?;
-    let revision = replay_revision(&path).map_err(|error| error.to_string())?;
+    let read = path.clone();
+    let revision = tauri::async_runtime::spawn_blocking(move || {
+        runtime.upgrade_recording(std::path::Path::new(&read));
+        replay_revision(&read)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
     request(
         &window,
         &host,
@@ -412,7 +416,7 @@ pub async fn dashboard_open_source(
         request_id.clone(),
         DataCommand::Open {
             id: request_id,
-            path: path.to_string_lossy().into_owned(),
+            path,
             revision,
         },
     )

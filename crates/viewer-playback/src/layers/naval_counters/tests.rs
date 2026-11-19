@@ -1,3 +1,4 @@
+use std::{collections::HashSet, sync::Arc};
 use super::{Admits, NavalCounters, TABLES, Waters};
 use crate::{
     layers::{Layer, View, recorded::{column, frames_until, record}},
@@ -6,7 +7,6 @@ use crate::{
 use playhead::Settings;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, Opaque, ShipCounterInputs, TableId};
-use std::{collections::HashSet, sync::Arc, time::Duration};
 use viewer_counters::map::counters::{NavalMember, Port, Sea, type_tint};
 use viewer_foundation::map::{
     camera::Placement,
@@ -144,7 +144,7 @@ fn campaign(name: &str, status: impl Fn(u32, TableId) -> Status, mut hour: impl 
 }
 
 fn quick() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
 fn layer_seeing_all() -> NavalCounters {
@@ -244,8 +244,7 @@ fn a_task_force_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no budget, a unit a frame to the newest.
-    side.set_budget(Duration::ZERO);
+    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);

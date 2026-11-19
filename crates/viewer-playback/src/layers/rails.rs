@@ -7,10 +7,10 @@
 //! NavalBases not wholly recorded draws no railway at all, as today.
 //!
 //! The strips stay in one vertex buffer the layer keeps: an upload writes only the strips a settle
-//! redrew, one a piece its budget can stop between, and draws them in province order as today's
+//! redrew, one a piece its settling can stop between, and draws them in province order as today's
 //! whole mesh does. The bridges are placed again only when one changed.
 
-use super::{Budget, Carried, Changed, Dirty, Gpu, Inputs, Layer, Num, Number, View};
+use super::{Carried, Settling, Changed, Dirty, Gpu, Inputs, Layer, Num, Number, View};
 use crate::{
     document::Content,
     playhead_host::mirror::{Mirror, Mirrors},
@@ -120,10 +120,110 @@ impl Placed {
 /// Coalesced writes before they reach the queue: at most this many vertices a write.
 const STAGED: usize = 16 * 1024;
 
-/// The scene's railway pass and bridges, and the layer's strip buffer.
+/// Index lists laid out, for the judge's rate.
+static CHECKED_STRIPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The index list the strips are drawn by ([`viewer_world::map::railways::strip_indices`]), as the
+/// layer's buffer holds it: `sent` entries of `held` stand in a buffer of `capacity` entries, and
+/// a publish writes only the span where the list it draws differs from them. `placed` is the runs
+/// the entries were laid out for, so a run that stands where it stood is not read again.
+#[derive(Default)]
+struct Strips {
+    buffer: Option<wgpu::Buffer>,
+    held: Vec<u32>,
+    placed: Vec<Range<u32>>,
+    sent: usize,
+    capacity: u32,
+}
+
+impl Strips {
+    /// The index list laid out for `runs`: its length, and the span of entries the buffer does not
+    /// hold (none: it holds them all). A run the list was last laid out for, with no run before it
+    /// of another length, holds the entries it holds: it is stepped over, not read, so a publish
+    /// reads the runs rather than every index of every live strip.
+    fn laid(&mut self, runs: &[Range<u32>]) -> io::Result<(usize, Option<Range<usize>>)> {
+        let length = runs.iter().map(|run| run.len() + 1).sum::<usize>();
+        if self.held.len() < length {
+            self.held.try_reserve(length - self.held.len()).map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            self.held.resize(length, u32::MAX);
+        }
+        let (mut first, mut last, sent) = (length, 0, self.sent);
+        let (mut at, mut moved) = (0, false);
+        for (index, run) in runs.iter().enumerate() {
+            let laid = self.placed.get(index);
+            if !moved && laid == Some(run) && at + run.len() + 1 <= sent {
+                at += run.len() + 1;
+                continue;
+            }
+            moved |= laid.is_none_or(|laid| laid.len() != run.len());
+            for want in run.clone().chain(std::iter::once(u32::MAX)) {
+                if at >= sent || self.held[at] != want {
+                    self.held[at] = want;
+                    (first, last) = (first.min(at), at);
+                }
+                at += 1;
+            }
+        }
+        self.placed.clear();
+        self.placed.try_reserve(runs.len().saturating_sub(self.placed.capacity())).map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        self.placed.extend_from_slice(runs);
+        if viewer_foundation::install_check::due(&CHECKED_STRIPS) {
+            let whole: Vec<u32> = runs.iter().flat_map(|run| run.clone().chain(std::iter::once(u32::MAX))).collect();
+            if let Some(at) = (0..length).find(|&at| self.held[at] != whole[at]) {
+                viewer_foundation::install_check::found(
+                    "rail strip indices",
+                    format_args!("entry {at} of {length} holds {} where the list laid out whole holds {}", self.held[at], whole[at]),
+                );
+            }
+        }
+        Ok((length, (first < length).then_some(first..last + 1)))
+    }
+
+    /// The index buffer drawing `runs` and its length: the span that differs written, the buffer
+    /// made anew and written whole only when the list no longer fits it.
+    fn of(&mut self, gpu: &Gpu<'_>, runs: &[Range<u32>]) -> io::Result<Option<(wgpu::Buffer, u32)>> {
+        let (length, owed) = self.laid(runs)?;
+        if length == 0 {
+            *self = Self::default();
+            return Ok(None);
+        }
+        let count = u32::try_from(length).map_err(|_| io::Error::other("rail strip indices exceed u32"))?;
+        let buffer = match self.buffer.as_ref().filter(|_| self.capacity >= count) {
+            Some(buffer) => {
+                if let Some(owed) = owed {
+                    shader_pipeline::gpu::stats::write_buffer(gpu.queue, buffer, owed.start as u64 * 4, bytemuck::cast_slice(&self.held[owed]));
+                }
+                self.sent = self.sent.max(length);
+                buffer.clone()
+            }
+            None => {
+                // Room for a quarter more, so a growing network makes a buffer a few times a session.
+                self.capacity = count.saturating_add(count / 4);
+                let buffer = shader_pipeline::gpu::stats::create_buffer(gpu.device, &wgpu::BufferDescriptor {
+                    label: Some("rails layer strip indices"),
+                    size: u64::from(self.capacity) * 4,
+                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                shader_pipeline::gpu::stats::write_buffer(gpu.queue, &buffer, 0, bytemuck::cast_slice(&self.held[..length]));
+                self.sent = length;
+                self.buffer = Some(buffer.clone());
+                buffer
+            }
+        };
+        Ok(Some((buffer, count)))
+    }
+
+    fn bytes(&self) -> usize {
+        self.held.capacity() * 4 + self.placed.capacity() * 8
+    }
+}
+
+/// The scene's railway pass and bridges, and the layer's strip and index buffers.
 struct OnGpu<'g, 'a> {
     gpu: &'g mut Gpu<'a>,
     buffer: &'g mut Option<wgpu::Buffer>,
+    strips: &'g mut Strips,
     staged: Vec<[f32; 6]>,
     at: u32,
 }
@@ -133,7 +233,7 @@ impl OnGpu<'_, '_> {
         if let Some(buffer) = self.buffer.as_ref()
             && !self.staged.is_empty()
         {
-            self.gpu.queue.write_buffer(buffer, u64::from(self.at) * VERTEX, bytemuck::cast_slice(&self.staged));
+            shader_pipeline::gpu::stats::write_buffer(self.gpu.queue, buffer, u64::from(self.at) * VERTEX, bytemuck::cast_slice(&self.staged));
         }
         self.staged.clear();
     }
@@ -142,7 +242,7 @@ impl OnGpu<'_, '_> {
 impl Target for OnGpu<'_, '_> {
     fn reserve(&mut self, vertices: u32, kept: u32) -> io::Result<()> {
         self.flush();
-        let grown = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        let grown = shader_pipeline::gpu::stats::create_buffer(self.gpu.device, &wgpu::BufferDescriptor {
             label: Some("rails layer strips"),
             size: u64::from(vertices) * VERTEX,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
@@ -172,7 +272,8 @@ impl Target for OnGpu<'_, '_> {
         if runs.is_empty() {
             *self.buffer = None;
         }
-        let geometry = PreparedRailGeometry::kept(self.gpu.device, self.buffer.clone(), runs.to_vec())?;
+        let strips = self.strips.of(self.gpu, runs)?;
+        let geometry = PreparedRailGeometry::held(self.buffer.clone(), strips);
         drop(self.gpu.scene.set_prepared_railways(self.gpu.device, self.gpu.queue, &self.gpu.content.rail_assets, Arc::new(geometry))?);
         Ok(())
     }
@@ -287,6 +388,7 @@ pub struct Rails {
     /// The strips in the scene: where each lies in `buffer`.
     placed: Placed,
     buffer: Option<wgpu::Buffer>,
+    strips_drawn: Strips,
     /// RailEdges keys (from, to) a step touched, each once.
     edge_keys: Vec<u64>,
     edge_marked: HashSet<u64>,
@@ -323,6 +425,7 @@ impl Rails {
             unpublished: true,
             placed: Placed::default(),
             buffer: None,
+            strips_drawn: Strips::default(),
             edge_keys: Vec::new(),
             edge_marked: HashSet::new(),
             supply: Dirty::default(),
@@ -598,7 +701,7 @@ impl Rails {
     }
 
     /// Edges, sources and harbours first, then the strips and bridges they marked, the rest carried.
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
+    fn settle_dirty(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         self.frame += 1;
         if !self.shown {
             if self.held.is_some() {
@@ -613,9 +716,6 @@ impl Rails {
         }
         let mut done = 0;
         while done < self.edge_keys.len() {
-            if done % 32 == 0 && !budget.left() {
-                break;
-            }
             let key = self.edge_keys[done];
             self.edge_marked.remove(&key);
             done += 1;
@@ -630,7 +730,7 @@ impl Rails {
             self.settle_supply(province, source);
         }
         let mut dirty = std::mem::take(&mut self.supply);
-        dirty.settle(budget, |slot| {
+        dirty.settle(|slot| {
             if let Some((province, source)) = self.supply_slot(mirrors, slot) {
                 self.settle_supply(province, source);
             }
@@ -638,21 +738,16 @@ impl Rails {
         })?;
         self.supply = dirty;
         let mut dirty = std::mem::take(&mut self.ports);
-        dirty.settle(budget, |province| {
+        dirty.settle(|province| {
             self.settle_port(mirrors, province);
             Ok(())
         })?;
         self.ports = dirty;
         let mut dirty = std::mem::take(&mut self.strips);
-        let settled = dirty.settle(budget, |province| self.settle_strip(province));
+        let settled = dirty.settle(|province| self.settle_strip(province));
         self.strips = dirty;
         settled?;
-        let mut done = 0;
         while let Some(&key) = self.pairs.first() {
-            if done % 32 == 0 && !budget.left() {
-                break;
-            }
-            done += 1;
             self.pairs.remove(&key);
             self.settle_pair(key);
         }
@@ -735,17 +830,14 @@ impl Rails {
         }
     }
 
-    /// What the settles changed into `target`, a piece at a time while `budget` lasts, the first
-    /// piece whatever it says (the caller was given it): the bridges whole, then one strip a piece.
-    fn push(&mut self, target: &mut dyn Target, budget: &mut Budget) -> io::Result<()> {
-        let mut first = true;
-        let mut go = || std::mem::take(&mut first) || budget.left();
-        if self.bridges_stale && go() {
+    /// What the settles changed into `target`: the bridges whole, then every strip.
+    fn push(&mut self, target: &mut dyn Target) -> io::Result<()> {
+        if self.bridges_stale {
             target.bridges(&self.bridges)?;
             self.bridges_stale = false;
         }
         let mut moved = std::mem::take(&mut self.unpublished);
-        while !self.unsent.is_empty() && go() {
+        while !self.unsent.is_empty() {
             let Some(province) = self.unsent.pop_first() else { break };
             moved = true;
             match self.runs.get(&province).filter(|run| !run.vertices.is_empty()) {
@@ -838,7 +930,7 @@ impl Layer for Rails {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         let marked = self.marked;
         self.held = None;
-        self.settle_dirty(mirrors, &mut Budget::unlimited())?;
+        self.settle_dirty(mirrors)?;
         self.marked = marked;
         Ok(())
     }
@@ -860,19 +952,20 @@ impl Layer for Rails {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget)
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors)
     }
 
     /// The strips the settles redrew and the bridges once one changed into the scene's passes
-    /// (hidden, none), carried past the budget.
-    fn upload(&mut self, gpu: &mut Gpu<'_>, budget: &mut Budget) -> io::Result<()> {
-        if self.uploaded() || !budget.left() {
+    /// (hidden, none).
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
+        if self.uploaded() {
             return Ok(());
         }
         let mut buffer = self.buffer.take();
-        let pushed = self.push(&mut OnGpu { gpu, buffer: &mut buffer, staged: Vec::new(), at: 0 }, budget);
-        self.buffer = buffer;
+        let mut strips = std::mem::take(&mut self.strips_drawn);
+        let pushed = self.push(&mut OnGpu { gpu, buffer: &mut buffer, strips: &mut strips, staged: Vec::new(), at: 0 });
+        (self.buffer, self.strips_drawn) = (buffer, strips);
         pushed
     }
 
@@ -882,8 +975,7 @@ impl Layer for Rails {
 
     fn carried(&self) -> Carried {
         let entities = self.edge_keys.len() + self.supply.len() + self.supply_gone.len() + self.ports.len() + self.strips.len() + self.pairs.len();
-        let since = [self.edges_since, self.supply.since(), self.ports.since(), self.strips.since(), self.pairs_since].into_iter().flatten().min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     fn held(&self) -> usize {
@@ -904,6 +996,7 @@ impl Layer for Rails {
             + self.pairs.len() * 24
             + self.unsent.len() * 24
             + self.placed.bytes()
+            + self.strips_drawn.bytes()
     }
 
     fn any(&self) -> &dyn std::any::Any {

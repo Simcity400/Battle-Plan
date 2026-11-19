@@ -13,8 +13,6 @@ use std::{
 pub enum Class {
     /// Draws the map: above normal, before every other thread of ours that is ready.
     Frame,
-    /// Does the frame's own work while the frame waits for it: normal.
-    FrameWork,
     /// Makes a product the frame takes when it is ready: below normal.
     Worker,
     /// Refines what is already shown: lowest.
@@ -30,7 +28,6 @@ impl Class {
     pub fn name(self) -> &'static str {
         match self {
             Self::Frame => "frame",
-            Self::FrameWork => "frame work",
             Self::Worker => "worker",
             Self::Refining => "refining",
             Self::Normal => "normal",
@@ -46,7 +43,7 @@ impl Class {
         const ABOVE_NORMAL: i32 = 1;
         match self {
             Self::Frame => ABOVE_NORMAL,
-            Self::FrameWork | Self::Kept | Self::Normal => NORMAL,
+            Self::Kept | Self::Normal => NORMAL,
             Self::Worker => BELOW_NORMAL,
             Self::Refining => LOWEST,
         }
@@ -82,6 +79,11 @@ pub fn entered() -> Vec<Entered> {
 }
 
 fn set(priority: i32) {
+    // A test waits on its workers by asking again at normal priority; with every core busy
+    // running tests, a worker below it would never be given one.
+    if cfg!(feature = "test-support") {
+        return;
+    }
     #[cfg(windows)]
     {
         unsafe extern "system" {
@@ -124,6 +126,13 @@ pub fn current_priority() -> Option<i32> {
     }
     #[cfg(not(windows))]
     None
+}
+
+/// A wake a worker sends the window. It takes the window's own lock, which the thread that
+/// draws the map takes every frame, so the sender holds it at [`Class::Kept`] and never below
+/// the frame's other threads.
+pub fn waking(wake: impl Fn() + Send + Sync + 'static) -> impl Fn() + Send + Sync + 'static {
+    move || at_least(Some(Class::Kept.level()), || wake())
 }
 
 /// Runs `work` on the calling thread at `priority` when that is higher than
@@ -183,7 +192,7 @@ mod tests {
     /// Every class keeps the priority its threads had before classes.
     #[test]
     fn each_class_keeps_todays_priority() {
-        let today = [(Class::Frame, 1), (Class::FrameWork, 0), (Class::Worker, -1), (Class::Refining, -2), (Class::Normal, 0), (Class::Kept, 0)];
+        let today = [(Class::Frame, 1), (Class::Worker, -1), (Class::Refining, -2), (Class::Normal, 0), (Class::Kept, 0)];
         for (class, level) in today {
             assert_eq!(class.level(), level, "{class:?}");
         }

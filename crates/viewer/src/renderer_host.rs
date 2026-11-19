@@ -1,3 +1,4 @@
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use eframe::{egui, egui_wgpu, wgpu};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
@@ -182,6 +183,12 @@ impl WindowSurface {
         if self.configured != Some((size, config)) {
             self.configure(state, size, config)?;
         }
+        // Everything this frame needs is staged before the swap chain image is asked for, so the
+        // wait for it is the last thing the frame thread does.
+        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point };
+        let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map frame") });
+        update_textures(state, textures_delta);
+        let user = state.renderer.write().update_buffers(&state.device, &state.queue, &mut encoder, clipped_primitives, &screen);
         let waiting = std::time::Instant::now();
         let texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -200,8 +207,10 @@ impl WindowSurface {
         };
         let acquire = waiting.elapsed().as_secs_f32();
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        draw(state, &view, size, pixels_per_point, clear_color, clipped_primitives, textures_delta);
+        encode(state, encoder, user, &view, &screen, clear_color, clipped_primitives);
+        free_textures(state, textures_delta);
         state.queue.present(texture);
+        crate::screen_count::readout::presented();
         Ok(acquire)
     }
 }
@@ -236,9 +245,23 @@ fn draw(
     let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map frame") });
     update_textures(state, textures_delta);
     let user = state.renderer.write().update_buffers(&state.device, &state.queue, &mut encoder, clipped_primitives, &screen);
+    encode(state, encoder, user, view, &screen, clear_color, clipped_primitives);
+    free_textures(state, textures_delta);
+}
+
+/// The staged frame drawn into `view` and submitted.
+fn encode(
+    state: &egui_wgpu::RenderState,
+    mut encoder: wgpu::CommandEncoder,
+    user: Vec<wgpu::CommandBuffer>,
+    view: &wgpu::TextureView,
+    screen: &egui_wgpu::ScreenDescriptor,
+    clear_color: [f32; 4],
+    clipped_primitives: &[egui::ClippedPrimitive],
+) {
     {
         let renderer = state.renderer.read();
-        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("map frame"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
@@ -259,10 +282,9 @@ fn draw(
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        renderer.render(&mut pass.forget_lifetime(), clipped_primitives, &screen);
+        renderer.render(&mut pass.forget_lifetime(), clipped_primitives, screen);
     }
     state.queue.submit(user.into_iter().chain([encoder.finish()]));
-    free_textures(state, textures_delta);
 }
 
 /// Measurement only (`BATTLE_PLAN_PERF_SKIP_MAP_PRESENT`): every frame is drawn as usual but into a

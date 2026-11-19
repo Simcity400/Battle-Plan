@@ -5,6 +5,12 @@ use crate::movement_timing::MovementContent;
 use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
 
 const W: f32 = 5632.0;
+
+/// One place of a publication's own hour, which is what a layout hands for a mover whose hours did
+/// not move it inside the interval.
+fn at_hour(hour: i32, at: [f32; 3]) -> crate::map::free_icons::Place {
+    crate::map::free_icons::Place { hour, at }
+}
 /// The height [`Motion::new`]'s flat field samples.
 const FLOOR: f32 = WATER_HEIGHT;
 
@@ -860,6 +866,8 @@ fn movement_frame(time: f32, hour: i32, speed: f32) -> MovementFrame {
     MovementFrame {
         time,
         hour,
+        head: crate::map::anchored::Head { hour, fraction: 0.0 },
+        overlay_hour: hour,
         clock_speed: Some(0),
         speeds: [speed; 2],
         steady: false,
@@ -932,6 +940,33 @@ fn arrivals_keep_the_old_route_and_move_each_frame_without_advancing_twice() {
         assert!((previous - 11.0).abs() < 1e-4);
         assert_eq!(history.sample(unit, &next), None);
         assert!(!history.running());
+    }
+}
+
+/// What moves is placed at the frame's own head, not at the publication's: between two
+/// publications the hour stands still and the counter is still advanced every display frame, and
+/// the same frames leave it in the same place whether the publication before it covered 6 game
+/// hours or 24. So the simulation's rate never places anything that moves.
+#[test]
+fn a_gliding_counter_is_placed_at_every_display_frame_between_two_publications() {
+    for unit in [Unit::Division(7), Unit::TaskForce(7)] {
+        // Four display frames to one publication, each covering `hours` of the clock.
+        let placed = |hours: i32| {
+            let old = live_position(1, &[2, 3], 0.0, false);
+            let next = live_position(2, &[3], 10.0, false);
+            let mut history = settled_on(&old, &[unit]);
+            (1..=12)
+                .map(|frame| {
+                    next_frame(&mut history, frame, 100 + hours * ((frame + 3) / 4), 2.0);
+                    drawn(&mut history, unit, &next)[0]
+                })
+                .collect::<Vec<_>>()
+        };
+        let six = placed(6);
+        for (at, pair) in six.windows(2).enumerate() {
+            assert!(pair[1] > pair[0], "{unit:?} stood still over frame {}: {six:?}", at + 2);
+        }
+        assert_eq!(placed(24), six, "{unit:?}: the hours a publication covers do not place it");
     }
 }
 
@@ -1162,4 +1197,252 @@ fn a_new_animator_starts_at_its_anchor_as_the_naval_one_does() {
     }
     next_frame(&mut history, 6, 100, 2.0);
     assert_eq!(history.sample(unit, &old), None);
+}
+
+/// A mover is placed from the recording's own rows, never from a prediction: its publication
+/// carries where this hour's rows put it and where the publication before read it, and the display
+/// frame interpolates between the two at its own head. The first publication to place a unit
+/// carries no pair, so its counter stands exactly where its rows put it until the next one lands.
+///
+/// The places a route and its recorded estimate predict stand 14.87 world units from the next
+/// publication's own placement at the top speed, 227 pixels at the stress test's camera. So the
+/// places are read, not computed.
+#[test]
+fn a_mover_carries_the_two_publications_own_places_and_no_prediction() {
+    let unit = Unit::Division(7);
+    let mut history = MovementHistory::default();
+    next_frame(&mut history, 0, 100, 2.0);
+    assert_eq!(
+        history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0),
+        None,
+        "the first publication to place it has nothing to move it from"
+    );
+    // The same publication's layout made again (the art it was waiting for arrived) is the same
+    // hour's placement, not a second one.
+    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
+    let track = history
+        .track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0)
+        .expect("two publications' places");
+    assert_eq!(track.places().len(), 2);
+    assert_eq!((track.places()[0].hour, track.places()[0].at), (100, [10.0, 0.0, 0.0]));
+    assert_eq!((track.places()[1].hour, track.places()[1].at), (148, [58.0, 0.0, 0.0]));
+    // Every display frame of the interval stands between the two, by its own hour.
+    let at = |hour, fraction| track.at(crate::map::anchored::Head { hour, fraction })[0];
+    assert_eq!([at(100, 0.0), at(124, 0.0), at(148, 0.0)], [10.0, 34.0, 58.0]);
+    assert!((at(100, 0.5) - 10.5).abs() < 1e-3, "{}", at(100, 0.5));
+    // The layout of the publication before is still asked for while the frame draws it.
+    let held = history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0);
+    assert_eq!(held, None, "hour 100 has only hour 100's own place before it");
+    // A third publication carries all three places, so a head anywhere among them has a pair.
+    let longer = history.track(unit, &[at_hour(196, [106.0, 0.0, 0.0])], 196, 0.0).expect("three places");
+    assert_eq!(longer.places().len(), 3);
+    assert_eq!(longer.at(crate::map::anchored::Head { hour: 124, fraction: 0.0 })[0], 34.0);
+}
+
+/// A mover's places are the hours its own rows moved it at, so a display frame stands it where the
+/// recording had it at that frame's hour. The publication's own rows give one place for the
+/// interval's end: on them alone a unit that crossed a province in the middle of an interval is
+/// glided evenly across the whole of it, and a frame at any hour inside it stands the unit
+/// somewhere the recording never put it.
+#[test]
+fn a_movers_places_are_the_hours_it_moved_at_and_not_the_intervals_ends() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let (first, second) = ([10.0, 0.0, 0.0], [58.0, 0.0, 0.0]);
+    let at = |history: &mut MovementHistory, places: &[crate::map::free_icons::Place], hour| {
+        history.track(unit, places, hour, 0.0)
+    };
+    let mut hourly = MovementHistory::default();
+    next_frame(&mut hourly, 0, 100, 2.0);
+    at(&mut hourly, &[at_hour(100, first)], 100);
+    // The recording moved it into its new province at hour 130, a third of the way through the
+    // interval the publication of hour 148 covers, and left it there.
+    let track = at(&mut hourly, &[at_hour(130, second), at_hour(148, second)], 148).expect("the hours' places");
+    let place = |hour, fraction| track.at(Head { hour, fraction })[0];
+    assert_eq!(place(100, 0.0), first[0], "the hour it was read in its old province");
+    assert_eq!(place(115, 0.0), 34.0, "half the hours from 100 to 130 is half the way");
+    assert_eq!(place(130, 0.0), second[0], "the hour it crossed");
+    assert_eq!(place(140, 0.0), second[0], "the hours the recording left it there");
+    assert!(track.held_still(Head { hour: 140, fraction: 0.0 }), "standing there is the recording's own");
+    assert!(!track.held_still(Head { hour: 115, fraction: 0.0 }), "the hours move it there");
+
+    // The same two publications without the hours: every hour of the interval is a place the
+    // recording never read, and the unit is still moving at hour 140, where it had arrived.
+    let mut coarse = MovementHistory::default();
+    next_frame(&mut coarse, 0, 100, 2.0);
+    at(&mut coarse, &[at_hour(100, first)], 100);
+    let whole = at(&mut coarse, &[at_hour(148, second)], 148).expect("the publications' places");
+    let evenly = |hour| whole.at(Head { hour, fraction: 0.0 })[0];
+    assert_eq!(evenly(124), 34.0, "the interval's middle, not the hour it crossed");
+    assert!(evenly(140) < second[0], "still gliding at an hour it had arrived at");
+}
+
+/// A publication whose steps carried no hours — a seek's reset, a piece's crossing, a catch-up —
+/// places its movers at its own hour and nothing is invented for the hours between.
+#[test]
+fn a_publication_without_hours_places_its_movers_at_its_own_hour_alone() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let mut history = MovementHistory::default();
+    next_frame(&mut history, 0, 100, 2.0);
+    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
+    let track = history
+        .track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0)
+        .expect("the two publications' own places");
+    assert_eq!(track.places().len(), 2, "the hours gave nothing to add");
+    assert_eq!(track.at(Head { hour: 100, fraction: 0.0 })[0], 10.0);
+    assert_eq!(track.at(Head { hour: 148, fraction: 0.0 })[0], 58.0);
+}
+
+/// A seek starts a chain of its own: the hour before the seek and the hour after it are two
+/// histories, and pairing them would carry a counter across whatever lies between. The mover
+/// stands exactly where the hour sought puts it until the next publication lands.
+#[test]
+fn a_seek_backwards_starts_the_places_afresh_instead_of_pairing_two_histories() {
+    let unit = Unit::Division(7);
+    let mut history = MovementHistory::default();
+    next_frame(&mut history, 0, 100, 2.0);
+    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
+    history.track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0).expect("two places");
+    assert_eq!(history.track(unit, &[at_hour(40, [900.0, 0.0, 0.0])], 40, 0.0), None, "the hour sought");
+    let track = history.track(unit, &[at_hour(42, [902.0, 0.0, 0.0])], 42, 0.0).expect("the seek's own two places");
+    assert_eq!((track.places().len(), track.places()[0].hour, track.places()[1].hour), (2, 40, 42));
+}
+
+/// A figure's root is its counter's: both are the place the recording's own rows put the unit at
+/// the display frame's own head, read from one chain of places cut at the publication the frame
+/// draws. So a figure advances on every display frame of an interval instead of standing until a
+/// publication re-slots it (which left 71 to 75% of frames moving no figure's root).
+#[test]
+fn a_figure_stands_where_its_counters_track_puts_it_at_the_frames_own_head() {
+    use crate::map::anchored::Head;
+    use crate::map::free_icons::{IconAnchor, IconFamily};
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
+    next_frame(&mut history, 2, 148, 2.0);
+    let track = history
+        .track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0)
+        .expect("two publications' places");
+    let counter = IconAnchor {
+        world: moving.at(),
+        cutoff: 0.0,
+        family: IconFamily::Columns,
+        moves: Some(1),
+    };
+    let mut walked = Vec::new();
+    for (frame, hour, fraction) in [(3, 100, 0.0), (4, 112, 0.5), (5, 124, 0.0), (6, 160, 0.0)] {
+        let head = Head { hour, fraction };
+        history.begin_frame(
+            MovementFrame { head, ..movement_frame(frame as f32 / 10.0, 148, 2.0) },
+            SEEN,
+        );
+        let figure = history.at_head(unit, &moving).expect("the hours place it");
+        assert_eq!(figure.at, counter.at(Some(&track), head), "head {hour}");
+        // Two publications' places say nothing of the facing: it stays the hour's own.
+        assert_eq!(figure.heading, None, "head {hour}");
+        walked.push(figure.at[0]);
+    }
+    // The places are a game hour of travel apart, so each head inside them stands further along
+    // than the one before, and a head past the newest holds at it rather than running on.
+    let wanted = [10.0, 22.5, 34.0, 58.0];
+    assert!(
+        walked.iter().zip(wanted).all(|(walked, wanted)| (walked - wanted).abs() < 1e-3),
+        "{walked:?}"
+    );
+}
+
+/// Where a figure stands is a function of the places and the head alone: a frame that has just
+/// sought to an hour draws every figure where the frames that walked to it draw it.
+#[test]
+fn a_cold_seek_places_every_figure_where_the_walk_to_the_same_hour_does() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let head = Head { hour: 124, fraction: 0.25 };
+    let place = |history: &mut MovementHistory, frame: i32| {
+        history.begin_frame(
+            MovementFrame { head, ..movement_frame(frame as f32 / 10.0, 148, 2.0) },
+            SEEN,
+        );
+        history.at_head(unit, &moving).expect("the hours place it").at
+    };
+    let walked = {
+        let mut history = settled_on(&moving, &[unit]);
+        next_frame(&mut history, 1, 100, 2.0);
+        history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0);
+        next_frame(&mut history, 2, 148, 2.0);
+        history.track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0);
+        for frame in 3..8 {
+            place(&mut history, frame);
+        }
+        place(&mut history, 8)
+    };
+    let sought = {
+        let mut history = MovementHistory::default();
+        next_frame(&mut history, 1, 148, 2.0);
+        history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0);
+        history.track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0);
+        place(&mut history, 2)
+    };
+    assert_eq!(walked, sought);
+}
+
+/// A window dump draws every unit settled at one hour, so no figure is carried off the placement
+/// its own rows give: a stopped picture is exact.
+#[test]
+fn a_steady_frame_leaves_every_figure_on_its_hours_placement() {
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0);
+    next_frame(&mut history, 2, 148, 2.0);
+    history
+        .track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0)
+        .expect("two publications' places");
+    history.begin_frame(
+        MovementFrame { steady: true, ..movement_frame(0.3, 148, 2.0) },
+        SEEN,
+    );
+    assert_eq!(history.at_head(unit, &moving), None);
+}
+
+/// A display frame draws one publication's layout while the maker lays the next one out, so a
+/// figure stands on the track that layout was handed for its unit — not on a newer one, and not on
+/// a chain of places the counters on screen never saw. A unit that layout left where its rows put
+/// it stands there, which is where its counter stands.
+#[test]
+fn a_figure_stands_on_the_track_of_the_layout_its_frame_draws() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    assert_eq!(history.track(unit, &[at_hour(100, [10.0, 0.0, 0.0])], 100, 0.0), None);
+    next_frame(&mut history, 2, 148, 2.0);
+    let older = history.track(unit, &[at_hour(148, [58.0, 0.0, 0.0])], 148, 0.0).expect("two places");
+    next_frame(&mut history, 3, 196, 2.0);
+    let newer = history.track(unit, &[at_hour(196, [130.0, 0.0, 0.0])], 196, 0.0).expect("three places");
+    let head = Head { hour: 160, fraction: 0.0 };
+    let at = |history: &mut MovementHistory, frame: i32, drawn: i32| {
+        history.begin_frame(
+            MovementFrame {
+                head,
+                overlay_hour: drawn,
+                ..movement_frame(frame as f32 / 10.0, 196, 2.0)
+            },
+            SEEN,
+        );
+        history.at_head(unit, &moving).expect("the hours place it").at
+    };
+    assert_eq!(at(&mut history, 4, 148), older.at(head));
+    assert_eq!(at(&mut history, 5, 196), newer.at(head));
+    assert_ne!(older.at(head), newer.at(head), "the two layouts place it apart");
+    // A layout no track was handed for leaves the figure where its own animator draws it.
+    let standing = at(&mut history, 6, 60);
+    let drawn = history.sample(unit, &moving).expect("its animator draws it");
+    assert_eq!(standing, drawn.motion.position());
 }

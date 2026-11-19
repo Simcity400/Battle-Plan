@@ -1,3 +1,4 @@
+use std::{collections::BTreeSet, sync::Arc};
 use super::{Buildings, BuildingsFed, Catalogue};
 use crate::{
     layers::{
@@ -14,7 +15,6 @@ use installed_content_core::{
 use playhead::{Settings, Timeline};
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::TableId;
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use viewer_foundation::map::perspective::{Choice, VISION_TABLES, Vision};
 use viewer_world::map::map_buildings::{CityTerrain, Defines, MapBuildingAssets};
 
@@ -35,6 +35,10 @@ impl Catalogue for Stub {
 
     fn city(&self) -> CityTerrain<'_> {
         CityTerrain { width: 1, height: 1, spawn_city: &self.city }
+    }
+
+    fn sprawl_cutoff(&self) -> f32 {
+        viewer_foundation::map::camera::MapDefines::test().sprawl_cutoff
     }
 }
 
@@ -228,7 +232,7 @@ fn buildings_settled_every_step_equal_composed_and_follow_rows_tokens_gates_visi
         }
         let (mirrors, _) = side.parts().unwrap();
         let layer = buildings(side);
-        assert_eq!(layer.carried().entities, 0, "a 3 ms budget settles a step of this world");
+        assert_eq!(layer.carried().entities, 0, "a 3 ms settling settles a step of this world");
         assert_eq!(layer.refused(), None);
         let mut fresh = layer.fresh();
         fresh.compose(mirrors).unwrap();
@@ -257,7 +261,7 @@ fn buildings_settled_every_step_equal_composed_and_follow_rows_tokens_gates_visi
         }
         if (20..24).contains(&hour) {
             assert_eq!(&drawn[2..4], [false, false], "the complex is deleted at hour {hour}");
-            assert_eq!(layer.city_refused(), Some("token 6 is not in LexicalTokens"), "an unnamed token refuses the city damage at hour {hour}");
+            assert_eq!(layer.city_refused(), Some("token 6 is not in lexical tokens"), "an unnamed token refuses the city damage at hour {hour}");
         }
         if hour < 32 {
             assert!(drawn[5], "the floating harbour is deployed at hour {hour}");
@@ -278,22 +282,6 @@ fn buildings_settled_every_step_equal_composed_and_follow_rows_tokens_gates_visi
     });
     assert!(seen.iter().any(|hour| GAP.contains(hour)) && seen.iter().any(|&hour| hour >= FOGGED), "{seen:?}");
     assert_eq!(buildings(&side).applied_reads(), 0, "its applies only mark: every row written, gone or come is read at the settle");
-}
-
-#[test]
-fn buildings_out_of_budget_carry_and_settle_late_to_the_newest_values() {
-    let mut side = side("buildings-budget");
-    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
-    // Held, the steps' marks are carried and the host counts the frames (an entity is 0 frames late on
-    // the frame that marks it); released with no budget, a unit a frame settles them.
-    side.set_budget(Duration::ZERO);
-    let settles = side.hold_settles();
-    frames_until(&mut side, |side, frame| frame.applied.is_some_and(|hour| hour >= 24) && buildings(side).carried().entities > 0 && frame.layers[0].late >= 1);
-    crate::layers::recorded::released_unit_by_unit(&mut side, settles);
-    let (mirrors, _) = side.parts().unwrap();
-    let mut fresh = buildings(&side).fresh();
-    fresh.compose(mirrors).unwrap();
-    assert_eq!(buildings(&side).differ(&fresh), (0, None), "settled late, with the newest values");
 }
 
 /// A layer given no vision refuses by name and draws once it is given one.
@@ -384,7 +372,7 @@ fn vision_side(layer: impl Layer + 'static, name: &str) -> MapSide {
     };
     let timeline = Timeline::whole(&*pages).unwrap();
     let units = Units { name: name.to_owned(), pages, timeline, kinds: Arc::new(replay::columnar_frames::schema().unwrap()) };
-    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 };
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() };
     let entry = open(units, settings).unwrap();
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(Sight::new(content)), Box::new(layer)];
     let side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
@@ -511,6 +499,8 @@ fn hidden() -> View {
 
 /// A view that hides buildings and city sprawl declares nothing; either switch on declares every
 /// table read. (Hidden, then shown, its tables return as a reset: the host's rule and test.)
+/// A camera above the height the game creates and updates both figures at declares nothing either,
+/// and the height a zoom is sending the camera to declares them again during its ease.
 #[test]
 fn buildings_hidden_by_the_view_declare_nothing_and_either_switch_declares_every_table() {
     let kinds = replay::columnar_frames::schema().unwrap();
@@ -524,6 +514,22 @@ fn buildings_hidden_by_the_view_declare_nothing_and_either_switch_declares_every
         let mut inputs = Inputs::new(&kinds, "buildings");
         layer.inputs(&view, &mut inputs).unwrap();
         assert_eq!(inputs.into_tables().len(), 10, "buildings {buildings}, city sprawl {sprawl}: every table read is declared");
+    }
+    // The camera's own height: 110 draws both figures, the fit camera neither (the stub's
+    // MAP_BUILDINGS_SHRINK_DISTANCE is 180 and CITY_SPRAWL_SHRINK_DISTANCE 220).
+    let placed = |height: f32, target: Option<f32>| {
+        let mut view = hidden();
+        (view.graphics.buildings, view.graphics.city_sprawl) = (true, true);
+        view.camera_height = height;
+        view.camera = Some(viewer_foundation::map::camera::Placement::map([0.0, 0.0], height));
+        view.target = target.map(|height| viewer_foundation::map::camera::Placement::map([0.0, 0.0], height));
+        view
+    };
+    for (height, target, tables) in [(110.0, None, 10), (2844.0, None, 0), (2844.0, Some(110.0), 10), (200.0, None, 10), (300.0, None, 0)] {
+        let mut inputs = Inputs::new(&kinds, "buildings");
+        layer.inputs(&placed(height, target), &mut inputs).unwrap();
+        assert_eq!(inputs.into_tables().len(), tables, "at height {height} towards {target:?}");
+        assert_eq!(layer.placed(&placed(height, target)), Some(u64::from(tables > 0)), "the camera decides the declaration at {height}");
     }
 }
 

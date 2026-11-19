@@ -1,4 +1,5 @@
 //! Water technique selection and compiled pipeline cache.
+use viewer_foundation::map::gpu_contract::Targets;
 use eframe::wgpu;
 use std::{cell::RefCell, io, sync::Arc};
 use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
@@ -63,7 +64,7 @@ impl WaterPass {
         &self,
         arena: &shader_pipeline::gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
+        targets: &Targets,
         inputs: super::water_shader::Inputs<'_>,
         high: bool,
         refractions: bool,
@@ -76,6 +77,6 @@ impl WaterPass {
         viewer_foundation::map::gpu_contract::compiled(
             &compiled.as_ref().expect("compiled above").1,
         )?
-        .draw(arena, encoder, target, inputs)
+        .draw(arena, encoder, targets, inputs)
     }
 }

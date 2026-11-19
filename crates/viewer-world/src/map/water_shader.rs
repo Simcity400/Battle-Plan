@@ -1,4 +1,5 @@
 //! Water draw ; registration and strip allocation.
+use viewer_foundation::map::gpu_contract::Targets;
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content_core::{
     ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
@@ -170,7 +171,7 @@ impl Water {
         &self,
         arena: &gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
+        targets: &Targets,
         inputs: Inputs<'_>,
     ) -> io::Result<()> {
         inputs
@@ -225,14 +226,8 @@ impl Water {
                     .map_err(refuse)?,
             );
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("compiled water"),
-            color_attachments: &[Some(target.color)],
-            depth_stencil_attachment: Some(target.depth),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = super::scene::world_pass(encoder, targets, "compiled water");
+        let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
         shader_pipeline::gpu::stats::state();
@@ -241,7 +236,7 @@ impl Water {
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         let mut previous = None;
         for bindings in &bound {
-            bindings.bind_after(&mut pass, previous);
+            bindings.bind_after(pass, previous);
             previous = Some(bindings);
             shader_pipeline::gpu::stats::draw();
             pass.draw(0..4, 0..1);

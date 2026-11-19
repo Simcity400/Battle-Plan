@@ -3,8 +3,6 @@
 //! This is not an old-vs-new renderer oracle; the removed split oracle is archived externally.
 #[path = "scene_render_sprites.rs"]
 mod sprites;
-#[path = "scene_render_workers.rs"]
-mod workers;
 use super::scene_failure_tests::Fixture;
 use std::io;
 use viewer_foundation::map::{
@@ -162,10 +160,6 @@ fn scene_immediate_multiframe_bytes_state_and_pixels_are_deterministic() -> io::
             fixture.scene_with_samples(samples)?,
             fixture.scene_with_samples(samples)?,
         ];
-        for scene in &mut scenes {
-            workers::install(scene);
-        }
-        let mut saw_parallel = false;
         for frame in 0..24 {
             let mut request = fixture.request(if frame < 12 { [256, 144] } else { [257, 145] });
             request.animation_time = frame as f32 / 60.;
@@ -196,17 +190,12 @@ fn scene_immediate_multiframe_bytes_state_and_pixels_are_deterministic() -> io::
                 });
             }
             render(&fixture, &mut scenes, &sprites, request);
-            saw_parallel |= workers::saw_parallel(&scenes[0]);
             compare(
                 &fixture,
                 &scenes,
                 &format!("samples {samples}, frame {frame}"),
             )?;
         }
-        assert!(
-            saw_parallel || viewer_foundation::parallel::usable_processors() == 1,
-            "fixture must exercise genuinely admitted native slices"
-        );
     }
     Ok(())
 }
@@ -221,9 +210,6 @@ fn scene_immediate_later_fatal_refusals_and_recovery() -> io::Result<()> {
             fixture.scene_with_samples(samples)?,
             fixture.scene_with_samples(samples)?,
         ];
-        for scene in &mut scenes {
-            workers::install(scene);
-        }
         let base = fixture.request([256, 144]);
         render(&fixture, &mut scenes, &sprites, base);
         compare(&fixture, &scenes, "control")?;

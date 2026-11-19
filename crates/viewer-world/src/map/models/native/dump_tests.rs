@@ -54,6 +54,7 @@ fn draw(
             },
             offsets: &[0., 0.],
             visible: None,
+            seen: None,
             alpha: 1.,
         },
         Inputs {
@@ -681,6 +682,7 @@ fn successful_native_programs_keep_multiframe_constants_refusals_and_descriptor_
             camera,
             offsets: &[0., 0.5],
             visible: None,
+            seen: None,
             alpha: 0.5,
         };
         for kind in [
@@ -881,6 +883,7 @@ fn successful_native_programs_keep_multiframe_constants_refusals_and_descriptor_
         camera,
         offsets: &[0.],
         visible: None,
+        seen: None,
         alpha: 1.,
     };
     let mut errors = Vec::new();
@@ -999,6 +1002,7 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
                 });
                 draws.record(&mut pass);
             }
+            targets.resolve_scene(&mut encoder);
             queue.submit([encoder.finish()]);
             read_texture(&device, &queue, targets.scene_texture(), 8).unwrap()
         }
@@ -1086,6 +1090,7 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
                 camera,
                 offsets: &[0., 0.5],
                 visible: (frame % 5 == 1).then_some([-2., -2., 3., 3.]),
+                seen: (frame % 5 == 1).then_some([-2., -2., 3., 3.]),
                 alpha: 0.75,
             };
             for kind in [Queue::Regular, Queue::Alternate, Queue::Caster] {
@@ -1252,7 +1257,7 @@ fn native_plan_tail_keeps_independent_late_fatal_prefix_and_recovery() {
                 let frames = [&[frame as u8; 416][..]];
                 objects[arm].begin();
                 results.push(model.prepare_native(
-                    &arenas[arm], ModelFrame { camera, offsets: &[0.], visible: None, alpha: 0.75 },
+                    &arenas[arm], ModelFrame { camera, offsets: &[0.], visible: None, seen: None, alpha: 0.75 },
                     Inputs { samples, frames: &frames, grid: &[0; 16], textures: [globals; 10] },
                     Queue::Regular, &mut objects[arm],
                 ));
@@ -1300,25 +1305,47 @@ fn native_plan_tail_keeps_independent_late_fatal_prefix_and_recovery() {
     }
 }
 
-/// A kept list's draws equal a fresh walk's draw for draw: the same pipeline, groups and ranges,
-/// and the bytes the fresh walk staged where each kept draw reads them in the list now.
-fn same_draws(kept: &DrawList, bytes: &[u8], fresh: &DrawList) {
-    assert_eq!(kept.draws.len(), fresh.draws.len());
-    assert!(!kept.draws.is_empty());
-    for (kept, fresh) in kept.draws.iter().zip(&fresh.draws) {
-        let (staged, _) = fresh.bindings.preparation_proof();
-        let (reads, offsets) = kept.bindings.preparation_proof();
-        assert_eq!(staged.len(), offsets.len());
-        for (((binding, staged), (read, _)), offset) in staged.iter().zip(reads).zip(offsets) {
-            assert_eq!(binding, read);
-            let at = *offset as usize;
-            assert_eq!(&bytes[at..at + staged.len()], &staged[..], "binding {binding}");
-        }
-        assert!(kept.bindings.same_resources(&fresh.bindings));
-        let draw = |draw: &RecordedDraw| {
+/// A kept list's draws cover a fresh walk's: one instanced draw for each part the walk drew,
+/// over the instances its draws of that part became, with the same pipeline, resources and
+/// range. Each instance's rows hold the bytes the fresh walk staged for its own draw, and a
+/// block the list shares stands where its draw reads it.
+fn same_draws(kept: &DrawList, list: &kept::Kept, fresh: &DrawList) {
+    let bytes = list.bytes();
+    let same = |a: &RecordedDraw, b: &RecordedDraw| {
+        let range = |draw: &RecordedDraw| {
             (draw.reference, draw.vertices, draw.indices, draw.first, draw.count, draw.base)
         };
-        assert_eq!(draw(kept), draw(fresh));
+        range(a) == range(b) && a.bindings.same_resources(&b.bindings)
+    };
+    // The fresh walk's draws of one part, in its order, which one kept draw stands for.
+    let mut grouped: Vec<Vec<&RecordedDraw>> = Vec::new();
+    for draw in &fresh.draws {
+        match grouped.iter_mut().find(|held| same(held[0], draw)) {
+            Some(held) => held.push(draw),
+            None => grouped.push(vec![draw]),
+        }
+    }
+    assert!(!kept.draws.is_empty());
+    assert_eq!(kept.draws.len(), grouped.len(), "one draw a part the walk drew");
+    for (at, (keep, drawn)) in kept.draws.iter().zip(&grouped).enumerate() {
+        assert!(same(keep, drawn[0]), "the same pipeline, resources and range");
+        assert_eq!(keep.instances as usize, drawn.len(), "one instance a draw of the walk");
+        for (slot, fresh) in drawn.iter().enumerate() {
+            let rows = list.rows_at(at, slot);
+            let (staged, _) = fresh.bindings.preparation_proof();
+            let (reads, offsets) = keep.bindings.preparation_proof();
+            let mut shared = offsets.iter();
+            for ((binding, staged), (read, _)) in staged.iter().zip(reads) {
+                assert_eq!(binding, read);
+                let at = match kept::supply_of(*binding, list.reads()) {
+                    Some(supply) => {
+                        rows.iter().find(|(held, _)| *held == supply).expect("a row of its own").1
+                    }
+                    None => *shared.next().expect("a shared block binds at its own offset") as usize,
+                };
+                assert_eq!(&bytes[at..at + staged.len()], &staged[..], "binding {binding}");
+            }
+        }
     }
 }
 
@@ -1369,7 +1396,7 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
             .unwrap();
         let renderer = model.native.borrow();
         let list = &renderer.as_ref().unwrap().casters;
-        same_draws(&list.draws, list.bytes(), &fresh);
+        same_draws(&list.draws, list, &fresh);
         let counts = list.counts();
         drop(renderer);
         model.recycle_native(fresh);
@@ -1389,6 +1416,7 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
             camera,
             offsets: &[0.],
             visible: None,
+            seen: None,
             alpha: 1.,
         };
         model.prepare_casters(&arena, frame, inputs).unwrap();
@@ -1475,6 +1503,7 @@ fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() 
             camera,
             offsets: &[0.],
             visible: None,
+            seen: None,
             alpha: 1.,
         };
         let (mut kept_state, mut fresh_state) = (ObjectConstants::default(), ObjectConstants::default());
@@ -1483,7 +1512,7 @@ fn a_kept_lit_list_equals_a_fresh_lit_walk_and_leaves_the_same_constant_state() 
         let counts = {
             let renderer = model.native.borrow();
             let list = &renderer.as_ref().unwrap().lit[0][0];
-            same_draws(&kept, list.bytes(), &fresh);
+            same_draws(&kept, list, &fresh);
             list.counts()
         };
         assert_eq!(kept_state.bytes, fresh_state.bytes, "the next pass starts from the same block");
@@ -1552,6 +1581,7 @@ fn a_pass_with_no_content_stack_and_nothing_placed_draws_nothing_and_needs_no_re
         },
         offsets: &[0.],
         visible: Some([0., 0., 100., 100.]),
+        seen: Some([0., 0., 100., 100.]),
         alpha: 1.,
     };
     let mut object = ObjectConstants::default();

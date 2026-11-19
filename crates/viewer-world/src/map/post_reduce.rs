@@ -101,21 +101,11 @@ impl Reductions {
         ]))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn draw(
-        &self,
-        arena: &gpu::Arena,
-        encoder: &mut wgpu::CommandEncoder,
-        index: usize,
-        viewport: [u32; 2],
-        uv_scale: [f32; 2],
-        source: &wgpu::TextureView,
-        target: &wgpu::TextureView,
-    ) -> io::Result<()> {
-        // Upload 40 initialized bytes into the shared 48-byte b2:
-        // inverse viewport float2 + zero float2, UVScale float2 + zero float2,
-        // zero float2. Only the final register's padding is not an operand.
-        let constants = [
+    /// 40 initialized bytes of the shared 48-byte b2: inverse viewport float2 + zero float2,
+    /// UVScale float2 + zero float2, zero float2. Only the final register's padding is not an
+    /// operand.
+    pub(super) fn constants(viewport: [u32; 2], uv_scale: [f32; 2]) -> [f32; 10] {
+        [
             1.0 / viewport[0] as f32,
             1.0 / viewport[1] as f32,
             0.0,
@@ -126,12 +116,33 @@ impl Reductions {
             0.0,
             0.0,
             0.0,
-        ];
-        let pass = &self.0[usize::from(index != 0)];
-        let bindings = pass
-            .bindings(arena, 2, bytemuck::cast_slice(&constants), source)
-            .map_err(refuse)?;
-        pass.draw(encoder, target, &bindings, Some(viewport));
-        Ok(())
+        ]
+    }
+
+    /// The reduction at `index` reads one block of the chain's kept constants and one source,
+    /// neither of which changes while the chain stands.
+    pub(super) fn kept(
+        &self,
+        device: &wgpu::Device,
+        buffer: &wgpu::Buffer,
+        index: usize,
+        offset: u32,
+        bytes: &[u8],
+        source: &wgpu::TextureView,
+    ) -> io::Result<gpu::Bindings> {
+        self.0[usize::from(index != 0)]
+            .kept(device, buffer, 2, offset, bytes, &[source])
+            .map_err(refuse)
+    }
+
+    pub(super) fn record(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        index: usize,
+        viewport: [u32; 2],
+        target: &wgpu::TextureView,
+        bindings: &gpu::Bindings,
+    ) {
+        self.0[usize::from(index != 0)].draw(encoder, target, bindings, Some(viewport));
     }
 }

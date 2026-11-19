@@ -9,7 +9,6 @@ use {
 
 fn key() -> Key {
     Key {
-        epoch: 1,
         branch: 1,
         hour: 2,
         perspective: Default::default(),
@@ -160,7 +159,6 @@ fn a_failed_upload_does_not_mark_the_hover_installed() {
 fn hover_results_are_rejected_after_hour_perspective_border_or_selection_changes() {
     let dropper = Dropper::new().unwrap();
     for changed in [
-        Key { epoch: 9, ..key() },
         Key { branch: 9, ..key() },
         Key { hour: 9, ..key() },
         Key {

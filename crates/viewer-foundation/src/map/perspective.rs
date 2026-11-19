@@ -373,6 +373,13 @@ pub fn saturate(current: u8, term: i32) -> u8 {
 pub use replay_derive::visibility::{active_war, intel_fraction, map_intel_subject};
 
 impl Vision {
+    /// This vision with `visibility` as its province bytes: values a copy made by writing only the
+    /// provinces that changed since the one before ([`Values::insert`] shares the rest).
+    pub fn with_visibility(mut self, visibility: Arc<Values<u32, u8>>) -> Self {
+        self.visibility = visibility;
+        self
+    }
+
     pub fn from_parts(parts: Parts) -> Self {
         Self {
             ours: parts.ours,

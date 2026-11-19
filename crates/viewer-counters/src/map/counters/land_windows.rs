@@ -244,7 +244,13 @@ impl PreparedCombats {
             let anchor = placed[&drawn.owner].anchor;
             batch.at_anchor(anchor);
             let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, &resources, batch);
-            match painted.paint(drawn.owner, generation, key, anchor, batch, draw) {
+            match painted.paint(
+                viewer_foundation::map::sprites::WindowKey::new(
+                    viewer_foundation::map::sprites::WindowPool::LandCombat,
+                    0,
+                    drawn.owner,
+                ),
+                drawn.owner, generation, drawn.origin, key, anchor, batch, draw) {
                 Ok(()) => {
                     if let Some(root) = root
                         && let Some(button) = root.find(native::Kind::Button, "bg_btn")

@@ -1,45 +1,60 @@
-//! The map's script-driven readers at the playback head: the raid layer's offer cycle and music
-//! chances, evaluated through the content's trigger evaluator over rows at the head
-//! ([`crate::playhead_host::rows`]) on a worker of their own, never on the frame thread.
+//! The map's script-driven readers at the head as a layer of the map's side: the raid lane's offer
+//! cycle and the viewing country's music chances, evaluated through the content's trigger evaluator
+//! over rows at the head ([`crate::playhead_host::views`]) on a worker of their own, never on the
+//! frame thread.
 //!
-//! One reader of rows per map view; its tables are those the scripts read, learned by discovery.
-//! Rows come at the step that changes a table the scripts read while playing, and at once when
-//! paused, after a seek or when a table arrives. Each new frame evaluates the viewing country's music chances and one
-//! batch of the raid offer cycle; a frame published while a batch runs is replaced by the next
-//! one (counted as skipped), never queued. The cycle is the layer's own state: it carries from
-//! frame to frame and starts again at a playhead reset (a seek, a piece's first hour), a new
-//! viewing country, new content or a step back. Paused, it evaluates one batch per frame the
-//! window draws until every target is current, as the game's player cache does.
+//! The layer asks its worker at the step's apply and joins what it published inside the same step
+//! ([`Layer::ask`], [`Layer::join`]), so the picture the side publishes carries the raid icons of
+//! its own hour and a publication the head stands still for and a whole settle (a saved frame, a
+//! seek's first picture, the proof) wait for the icons of exactly the hour they show, with the
+//! offer cycle complete, as a paused frame did.
+//!
+//! The raid offer cycle is evaluated at the publication's rate, as it was: its icons are on screen
+//! and an icon may not appear later than one publication after its hour. The **music chances** have
+//! no picture at all and a track is chosen minutes apart, so they are evaluated at most
+//! [`MUSIC_RATE`] times a second, from the newest rows. The cycle is the layer's own state: it
+//! carries from evaluation to
+//! evaluation and starts again at a playhead reset (a seek, a piece's first hour), a new viewing
+//! country, new content or a step back. A table read undeclared is learned and the evaluation that
+//! read it published nothing, as the other readers of rows at the head do.
 
+use super::{Carried, Inputs, Layer, Published, Rate, Settling, View};
 use crate::{
     document::Content,
     playhead_host::{
-        Entry,
-        rows::{Cadence, Need, Newest, Recording, RowReader, Rows},
+        MapSide,
+        mirror::Mirrors,
+        views::{Need, Pace, Reader as ViewReader, Views},
     },
 };
 use dashboard_text::triggers::World;
+use playhead::Step;
 use replay_data::{
     Hour,
     rows::{TableId, tables},
 };
 use replay_frame::frame::{DecodedFrame, discovering_fields};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     io,
-    sync::{Arc, Condvar, Mutex, MutexGuard, Weak},
-    thread::JoinHandle,
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 use viewer_foundation::map::{perspective, tables::core};
 use viewer_foundation::trigger_content::TriggerContent;
 use viewer_raids::map::raids::{HourLayer, IconCache, RaidAssets, RaidIcons, RaidReport, cycle::Cycle, paths::HourPaths};
 
-/// How often the worker looks again when nothing wakes it: a frame at 60 Hz.
-const TICK: Duration = Duration::from_micros(16_667);
+pub const NAME: &str = "scripts at the head";
 
-/// Rows the scripts read four times a second while playing.
-const CADENCE: Cadence = Cadence::Ready;
+/// How often the viewing country's music chances are evaluated while the hours run. Their result
+/// is never on screen and a track is chosen minutes apart, so this is the one rated product here;
+/// the raid cycle, whose icons are drawn, is evaluated at the publication's rate.
+pub const MUSIC_RATE: Rate = Rate::a_second(4);
+
+/// How long a settle that waits (a stopped picture's, a whole settle's) waits for the icons of the
+/// hour applied.
+const CATCH_UP: Duration = Duration::from_secs(120);
 
 /// The core of the trigger evaluator, declared by its keys before any script runs: the columns
 /// come from the reads, as every other table's do.
@@ -47,6 +62,51 @@ const CORE: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::
 
 /// What was read undeclared: each table with the fields it was read for.
 type Missed = Vec<(TableId, u64)>;
+
+/// The clock the music chances' rate is read against ([`MUSIC_RATE`]). The viewer reads the
+/// machine's, from when the layer was made; a test hands in one of its own and steps it, so what
+/// the rate withholds is decided by the test's steps and never by how long the test took.
+pub enum Clock {
+    Machine(Instant),
+    #[cfg(any(test, feature = "test-support"))]
+    Stepped(Duration),
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        Self::Machine(Instant::now())
+    }
+}
+
+impl Clock {
+    /// How long the layer has been drawn, as the rate reads it.
+    fn now(&self) -> Duration {
+        match self {
+            Self::Machine(from) => from.elapsed(),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Stepped(at) => *at,
+        }
+    }
+
+    /// Moves a stepped clock on.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn step(&mut self, by: Duration) {
+        match self {
+            Self::Machine(_) => panic!("the machine's clock is not stepped"),
+            Self::Stepped(at) => *at += by,
+        }
+    }
+}
+
+/// The needs the layer declares from the start, when a tool names them (the proof's
+/// `--scripts on@tables.txt`, whose head holds still at every comparison, where a table learned
+/// would arrive only later).
+static PRIMED: std::sync::OnceLock<Vec<Need>> = std::sync::OnceLock::new();
+
+/// Every scripts layer made from now on declares `needs` from the start.
+pub fn prime(needs: Vec<Need>) {
+    let _ = PRIMED.set(needs);
+}
 
 /// `needs` with `missed` joined in: a table once, with the union of the fields read of it.
 fn joined(needs: &mut Vec<Need>, missed: impl IntoIterator<Item = (TableId, u64)>) {
@@ -61,22 +121,8 @@ fn joined(needs: &mut Vec<Need>, missed: impl IntoIterator<Item = (TableId, u64)
 
 /// What the scripts evaluate with: the content's raid assets, its trigger facts for music, its
 /// music and the executable tables its work reads.
-#[derive(Clone, Copy)]
-pub struct Sources<'a> {
-    pub raids: &'a Arc<RaidAssets>,
-    pub triggers: &'a Arc<TriggerContent>,
-    pub audio: Option<&'a Arc<viewer_audio::Content>>,
-    pub tables: Option<engine_executable::executable_tables::Tables>,
-}
-
-impl<'a> Sources<'a> {
-    pub fn of(content: &'a Content) -> Self {
-        Self { raids: &content.icons.raids, triggers: &content.products.triggers, audio: content.products.audio.as_ref(), tables: content.tables }
-    }
-}
-
 #[derive(Clone)]
-struct Held {
+pub struct Held {
     raids: Arc<RaidAssets>,
     triggers: Arc<TriggerContent>,
     audio: Option<Arc<viewer_audio::Content>>,
@@ -84,258 +130,65 @@ struct Held {
 }
 
 impl Held {
-    fn is(&self, sources: &Sources<'_>) -> bool {
-        Arc::ptr_eq(&self.raids, sources.raids) && Arc::ptr_eq(&self.triggers, sources.triggers) && self.audio.as_ref().map(Arc::as_ptr) == sources.audio.map(Arc::as_ptr)
-    }
-
-    fn same(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.raids, &other.raids) && Arc::ptr_eq(&self.triggers, &other.triggers) && self.audio.as_ref().map(Arc::as_ptr) == other.audio.as_ref().map(Arc::as_ptr)
+    pub fn of(content: &Content) -> Self {
+        Self {
+            raids: Arc::clone(&content.icons.raids),
+            triggers: Arc::clone(&content.products.triggers),
+            audio: content.products.audio.clone(),
+            tables: content.tables,
+        }
     }
 }
 
-/// What the window shows this frame, as the scripts need it.
-pub struct Ask<'a> {
-    pub entry: &'a Arc<Entry>,
-    pub recording: Recording,
-    pub sources: Sources<'a>,
-    pub perspective: &'a perspective::Choice,
-    pub playing: bool,
-    /// Raid icons are drawn.
-    pub raids: bool,
-    /// This map plays music.
-    pub music: bool,
-}
-
+/// What the scripts published for one frame of rows.
 #[derive(Clone)]
-struct Wanted {
-    entry: Arc<Entry>,
-    recording: Recording,
+pub struct Product {
+    /// The raid icons, with the branch, hour and canonical viewing country they were built for.
+    pub raids: Option<Arc<RaidIcons>>,
+    /// The raid arrows' limitation notes in today's words, with the canonical viewing country
+    /// they are for.
+    pub notes: Option<(u32, Arc<Vec<String>>)>,
+    /// The music chances with the hour of the rows they were evaluated over.
+    pub music: Option<(Hour, Arc<viewer_audio::Chances>)>,
+    /// The hour of the rows it was evaluated over.
+    pub hour: Hour,
+    /// Every target of the offer cycle has been evaluated at this hour.
+    pub complete: bool,
+}
+
+/// One evaluation asked of the worker.
+struct Job {
+    frame: Arc<DecodedFrame>,
+    choice: perspective::Choice,
     content: Held,
-    perspective: perspective::Choice,
-    playing: bool,
     raids: bool,
     music: bool,
+    /// The offer cycle run to its end before it answers: a stopped picture's.
+    whole: bool,
+    epoch: u64,
+    /// The seek its rows were made at: a cycle of an older one starts again.
+    resets: u64,
 }
 
-impl Wanted {
-    fn is(&self, ask: &Ask<'_>) -> bool {
-        Arc::ptr_eq(&self.entry, ask.entry)
-            && self.recording == ask.recording
-            && self.content.is(&ask.sources)
-            && self.perspective == *ask.perspective
-            && (self.playing, self.raids, self.music) == (ask.playing, ask.raids, ask.music)
-    }
-
-    /// What decides an evaluation's result, beside the frame.
-    fn evaluates_like(&self, other: &Self) -> bool {
-        self.content.same(&other.content) && self.perspective == other.perspective && (self.raids, self.music) == (other.raids, other.music)
-    }
+/// What the worker is handed: an evaluation, or something to free off the side's thread (old rows
+/// can be the last reference to megabytes of row structs).
+enum Work {
+    Evaluate(Box<Job>),
+    Free(Box<dyn Send>),
 }
 
-/// What the worker measured, while timing is on.
-#[derive(Clone, Debug, Default)]
-pub struct Timings {
-    /// Per frame evaluated: its hour, the raid batch's and the music's nanoseconds.
-    pub frames: Vec<(Hour, Option<u64>, Option<u64>)>,
-    /// Each further batch of a paused cycle, nanoseconds.
-    pub paused: Vec<u64>,
-    /// Frames replaced by a newer one before they were evaluated.
-    pub skipped: u64,
-    /// Evaluations dropped because they read a table not declared yet, which was then declared.
-    pub learned: u64,
-    /// Times the cycle started again.
-    pub restarts: u64,
-    /// The thread the scripts ran on.
-    pub ran_on: Option<String>,
-}
-
-#[derive(Default)]
-struct State {
-    wanted: Option<Wanted>,
-    /// Paused frames the window drew: each lets a paused cycle evaluate one batch.
-    drawn: u64,
-    stop: bool,
-    raids: Option<Arc<RaidIcons>>,
-    /// The raid arrows' limitation notes of the rows the newest raid icons were built from, with
-    /// the canonical viewing country they are for.
-    raid_notes: Option<(u32, Arc<Vec<String>>)>,
-    /// The music chances and the hour of the rows they were evaluated over.
-    music: Option<(Hour, Arc<viewer_audio::Chances>)>,
-    /// The tables the reader declares, each with the fields its reads named.
-    needs: Vec<Need>,
-    wake: Option<Arc<dyn Fn() + Send + Sync>>,
-    timings: Option<Timings>,
-    /// Bumped by every publish, evaluation, table learned and close.
-    rounds: u64,
-}
-
-type Shared = Arc<(Mutex<State>, Condvar)>;
-
-fn lock(shared: &Shared) -> MutexGuard<'_, State> {
-    shared.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// One map view's script-driven readers at the head; a worker started on the first frame that asks.
-#[derive(Default)]
-pub struct Scripts {
-    shared: Shared,
-    worker: Option<JoinHandle<()>>,
-    asked: bool,
-}
-
-impl Scripts {
-    /// Readers that declare `needs` from the start (the keys of a table, or the fields an earlier
-    /// run's reads recorded), so their lanes have joined when the reads come: for the proof tool,
-    /// whose head holds still at every comparison, where a table learned would arrive only later.
-    pub fn primed(needs: &[Need]) -> Self {
-        let scripts = Self::default();
-        lock(&scripts.shared).needs = needs.to_vec();
-        scripts
-    }
-
-    /// What the window shows this frame; a paused frame lets the cycle evaluate one batch. `wake`
-    /// repaints the window when new results arrive.
-    pub fn show(&mut self, ask: Ask<'_>, wake: impl Fn() + Send + Sync + 'static) {
-        self.asked = true;
-        if self.worker.is_none() {
-            let shared = Arc::clone(&self.shared);
-            self.worker = std::thread::Builder::new()
-                .name("scripts at the head".into())
-                .spawn(move || {
-                    viewer_foundation::worker_priority::background_priority();
-                    Worker::new(shared).run()
-                })
-                .map_err(|error| eprintln!("The map's scripts at the head are refused: {error}"))
-                .ok();
-        }
-        let mut state = lock(&self.shared);
-        let changed = !state.wanted.as_ref().is_some_and(|wanted| wanted.is(&ask));
-        if changed {
-            state.wanted = Some(Wanted {
-                entry: Arc::clone(ask.entry),
-                recording: ask.recording,
-                content: Held { raids: Arc::clone(ask.sources.raids), triggers: Arc::clone(ask.sources.triggers), audio: ask.sources.audio.cloned(), tables: ask.sources.tables },
-                perspective: ask.perspective.clone(),
-                playing: ask.playing,
-                raids: ask.raids,
-                music: ask.music,
-            });
-        }
-        if !ask.playing {
-            state.drawn += 1;
-        }
-        if state.wake.is_none() {
-            state.wake = Some(Arc::new(wake));
-        }
-        drop(state);
-        if changed || !ask.playing {
-            self.shared.1.notify_all();
-        }
-    }
-
-    /// Closes the readers unless a frame asked since the last call: their tables are retired and
-    /// nothing is held.
-    pub fn end_frame(&mut self) {
-        if std::mem::take(&mut self.asked) {
-            return;
-        }
-        let mut state = lock(&self.shared);
-        if state.wanted.take().is_some() {
-            state.raids = None;
-            state.raid_notes = None;
-            state.music = None;
-            drop(state);
-            self.shared.1.notify_all();
-        }
-    }
-
-    /// The newest raid icons built at the head for `branch` and canonical viewing country `ours`,
-    /// at whatever hour the head was; none while loading or for another country.
-    pub fn raids(&self, branch: replay_data::BranchId, ours: u32) -> Option<Arc<RaidIcons>> {
-        lock(&self.shared).raids.clone().filter(|icons| match icons.built_for {
-            Some((built, _, country)) => (built, country) == (branch, ours),
-            None => icons.report.worker_failed,
-        })
-    }
-
-    /// The raid arrows' limitation notes in today's words, of the rows the newest raid icons were
-    /// built from, for canonical viewing country `ours`; none while loading, for another country,
-    /// or while raid icons are not drawn.
-    pub fn raid_notes(&self, ours: u32) -> Option<Arc<Vec<String>>> {
-        lock(&self.shared).raid_notes.as_ref().filter(|(country, _)| *country == ours).map(|(_, notes)| Arc::clone(notes))
-    }
-
-    /// The newest music chances at the head; none while loading or when music is not asked.
-    pub fn music(&self) -> Option<Arc<viewer_audio::Chances>> {
-        lock(&self.shared).music.as_ref().map(|(_, music)| Arc::clone(music))
-    }
-
-    /// The newest music chances with the hour they were evaluated at.
-    pub fn music_at(&self) -> Option<(Hour, Arc<viewer_audio::Chances>)> {
-        lock(&self.shared).music.clone()
-    }
-
-    /// The hour of the rows the newest raid icons were built from.
-    pub fn newest_hour(&self) -> Option<Hour> {
-        lock(&self.shared).raids.as_ref().and_then(|icons| icons.built_for).map(|(_, hour, _)| hour)
-    }
-
-    /// Times the worker's evaluations from now on ([`Self::timings`]).
-    pub fn time(&self) {
-        lock(&self.shared).timings.get_or_insert_with(Timings::default);
-    }
-
-    pub fn timings(&self) -> Option<Timings> {
-        lock(&self.shared).timings.clone()
-    }
-
-    /// The tables the reader declares now.
-    pub fn tables(&self) -> Vec<TableId> {
-        lock(&self.shared).needs.iter().map(|need| need.table).collect()
-    }
-
-    /// The tables the reader declares now, each with the fields its reads named.
-    pub fn needs(&self) -> Vec<Need> {
-        lock(&self.shared).needs.clone()
-    }
-
-    /// The worker's rounds so far ([`Self::wait_round`]).
-    #[cfg(test)]
-    pub fn rounds(&self) -> u64 {
-        lock(&self.shared).rounds
-    }
-
-    /// Waits up to `limit` for a round after the `after`th: a publish, an evaluation, a table
-    /// learned or a close; the rounds then.
-    #[cfg(test)]
-    pub fn wait_round(&self, after: u64, limit: Duration) -> u64 {
-        let until = Instant::now() + limit;
-        let mut state = lock(&self.shared);
-        while state.rounds <= after {
-            let now = Instant::now();
-            if now >= until {
-                break;
-            }
-            state = self.shared.1.wait_timeout(state, until - now).unwrap_or_else(std::sync::PoisonError::into_inner).0;
-        }
-        state.rounds
-    }
-}
-
-impl Drop for Scripts {
-    fn drop(&mut self) {
-        lock(&self.shared).stop = true;
-        self.shared.1.notify_all();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
+struct Done {
+    /// None when the evaluation read a table not declared yet, named in `missed`.
+    product: Option<Product>,
+    missed: Missed,
+    ns: u64,
+    epoch: u64,
 }
 
 /// The offer cycle since its last start, and what started it.
 struct Chain {
     resets: u64,
-    content: Weak<RaidAssets>,
+    content: std::sync::Weak<RaidAssets>,
     country: perspective::Country,
     /// The hour of the frame it last evaluated.
     hour: Hour,
@@ -343,20 +196,81 @@ struct Chain {
     icons: IconCache,
 }
 
-struct Worker {
-    shared: Shared,
-    reader: Option<(Weak<Entry>, RowReader)>,
-    needs: Vec<Need>,
-    /// The publish count of the frame last evaluated, and what it was evaluated for.
-    seen: u64,
-    evaluated: Option<Wanted>,
-    chain: Option<Chain>,
-    /// A reset whose batch panicked: nothing more is evaluated until the next.
-    failed: Option<u64>,
-    memo: map_products::music_inputs::Memo,
-    kept: Option<map_products::music_inputs::Kept>,
-    /// The paused frames drawn when a paused cycle last went on: once per drawn frame.
-    resumed: u64,
+/// The reader of the view store and the worker, while the scripts are drawn.
+struct Open {
+    reader: ViewReader,
+    jobs: mpsc::Sender<Work>,
+    done: mpsc::Receiver<Done>,
+    /// An evaluation is running.
+    busy: bool,
+    /// The newest rows seen, whether they were handed to the worker, and whether that job was to
+    /// run the offer cycle to its end: rows handed for one batch are handed again, once, for a
+    /// picture that waits for the whole cycle.
+    seen: Option<Arc<DecodedFrame>>,
+    handed: bool,
+    handed_whole: bool,
+    /// The hour of the rows the worker is reading now; none while it reads none.
+    evaluating: Option<Hour>,
+}
+
+impl Open {
+    fn new(views: &Views, needs: &[Need]) -> io::Result<Self> {
+        // Its sets are made for the steps it asks for them at, which is its rate: the evaluator
+        // is slower than a step, so a step it will never read makes it nothing.
+        let reader = views.reader_at(NAME, needs, Pace::Ready);
+        let (jobs, receive) = mpsc::channel::<Work>();
+        let (send, done) = mpsc::channel();
+        // Not joined: closing drops the sender, and the thread ends after the job it holds.
+        std::thread::Builder::new().name(NAME.into()).spawn(move || {
+            // The step's join takes its product: at the head's priority, never below normal.
+            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            let mut evaluating = Evaluating::default();
+            for work in receive {
+                let job = match work {
+                    Work::Evaluate(job) => job,
+                    Work::Free(held) => {
+                        drop(held);
+                        continue;
+                    }
+                };
+                let started = Instant::now();
+                let mut missed = Missed::new();
+                let tables = job.content.tables;
+                let product = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    engine_executable::executable_tables::scope(tables, || evaluating.evaluate(&job, &mut missed))
+                }));
+                let product = product.unwrap_or_else(|_| {
+                    evaluating.failed(&job);
+                    missed.clear();
+                    Some(Product {
+                        raids: Some(Arc::new(RaidIcons { report: RaidReport { worker_failed: true, ..Default::default() }, ..Default::default() })),
+                        notes: None,
+                        music: None,
+                        hour: job.frame.hour,
+                        complete: true,
+                    })
+                });
+                let (epoch, ns) = (job.epoch, started.elapsed().as_nanos() as u64);
+                drop(job);
+                if send.send(Done { product, missed, ns, epoch }).is_err() {
+                    return;
+                }
+            }
+        })?;
+        Ok(Self { reader, jobs, done, busy: false, seen: None, handed: false, handed_whole: false, evaluating: None })
+    }
+
+    /// Frees `held` on the worker.
+    fn free(&self, held: impl Send + 'static) {
+        let _ = self.jobs.send(Work::Free(Box::new(held)));
+    }
+
+    /// The newest rows seen from now on; the ones before are freed on the worker.
+    fn see(&mut self, frame: Option<Arc<DecodedFrame>>) {
+        if let Some(old) = std::mem::replace(&mut self.seen, frame) {
+            self.free(old);
+        }
+    }
 }
 
 /// `read`, the tables it read undeclared, with the fields it read, added to `missed`.
@@ -366,7 +280,6 @@ fn learning<T>(missed: &mut Missed, read: impl FnOnce() -> T) -> T {
     value
 }
 
-/// The canonical slot `choice` views the map as at `frame`'s hour.
 /// The raid arrows' limitation notes of canonical viewing country `ours` at `frame`, in today's
 /// words: stated from a wholly recorded raid census only.
 fn raid_notes(frame: &DecodedFrame, ours: u32) -> Vec<String> {
@@ -378,242 +291,102 @@ fn raid_notes(frame: &DecodedFrame, ours: u32) -> Vec<String> {
     out.into_lines()
 }
 
+/// The canonical slot `choice` views the map as at `frame`'s hour.
 fn ours(frame: &DecodedFrame, choice: &perspective::Choice) -> io::Result<u32> {
     let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?.iter().map(|link| (link.id, link.canonical_slot)).collect();
     let tags: BTreeMap<u32, String> = core::<tables::Countries>(frame)?.iter().map(|country| (country.canonical_slot, String::from_utf8_lossy(&country.tag).into_owned())).collect();
     perspective::viewer(frame, &links, &tags, &choice.country).map(|(slot, _)| slot)
 }
 
-impl Worker {
-    fn new(shared: Shared) -> Self {
-        let mut needs = lock(&shared).needs.clone();
-        joined(&mut needs, CORE.iter().map(|&table| (table, 0)));
-        // The scripts compare dates: their rows come at every step.
-        joined(&mut needs, [(TableId::Clock, u64::MAX)]);
-        Self { shared, reader: None, needs, seen: 0, evaluated: None, chain: None, failed: None, memo: map_products::music_inputs::Memo::by_identity(), kept: None, resumed: 0 }
-    }
+/// What the worker keeps between evaluations: the offer cycle and the music memo.
+#[derive(Default)]
+struct Evaluating {
+    chain: Option<Chain>,
+    memo: Memo,
+    kept: Option<map_products::music_inputs::Kept>,
+    /// A seek whose evaluation panicked: nothing more is evaluated for it.
+    failed: Option<u64>,
+}
 
-    fn run(mut self) {
-        loop {
-            let (wanted, drawn) = {
-                let state = lock(&self.shared);
-                if state.stop {
-                    return;
-                }
-                (state.wanted.clone().filter(|wanted| wanted.raids || wanted.music), state.drawn)
-            };
-            let Some(wanted) = wanted else {
-                self.close();
-                let mut state = lock(&self.shared);
-                while !state.stop && !state.wanted.as_ref().is_some_and(|wanted| wanted.raids || wanted.music) {
-                    state = self.shared.1.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                continue;
-            };
-            if !self.open(&wanted) {
-                let state = lock(&self.shared);
-                drop(self.shared.1.wait_timeout(state, TICK));
-                continue;
-            }
-            let newest = self.reader.as_ref().and_then(|(_, reader)| reader.newest());
-            match newest {
-                Some(newest) if newest.published != self.seen || !self.evaluated.as_ref().is_some_and(|before| before.evaluates_like(&wanted)) => {
-                    let skipped = newest.published.saturating_sub(self.seen + 1);
-                    self.seen = newest.published;
-                    self.evaluated = Some(wanted.clone());
-                    if let Some(timings) = &mut lock(&self.shared).timings {
-                        timings.skipped += skipped;
-                    }
-                    self.evaluate(&wanted, &newest, true);
-                }
-                // Paused on a frame evaluated while playing: its cycle goes on until complete.
-                Some(newest) if !wanted.playing && wanted.raids && self.resumed != drawn && self.failed != Some(newest.resets) && self.chain.as_ref().is_some_and(|chain| !chain.cycle.complete() && chain.hour == newest.frame.hour) => {
-                    self.resumed = drawn;
-                    self.evaluate(&wanted, &newest, false);
-                }
-                _ => {
-                    if let Some((_, reader)) = &self.reader {
-                        reader.ready();
-                        let _ = reader.wait_newer(self.seen, TICK);
-                    }
-                }
-            }
-        }
-    }
+/// The music memo, made by identity as the window's was.
+struct Memo(map_products::music_inputs::Memo);
 
-    /// Whether the reader on `wanted`'s playhead is open, opening it when it is not.
-    fn open(&mut self, wanted: &Wanted) -> bool {
-        if !self.reader.as_ref().is_some_and(|(held, _)| std::ptr::eq(held.as_ptr(), Arc::as_ptr(&wanted.entry))) {
-            self.close();
-            match Rows::of(&wanted.entry, wanted.recording) {
-                Ok(rows) => self.reader = Some((Arc::downgrade(&wanted.entry), rows.reader_of(&self.needs, CADENCE))),
-                Err(error) => {
-                    eprintln!("The map's scripts at the head are refused: {error}");
-                    return false;
-                }
-            }
-            lock(&self.shared).needs.clone_from(&self.needs);
-        }
-        true
+impl Default for Memo {
+    fn default() -> Self {
+        Self(map_products::music_inputs::Memo::by_identity())
     }
+}
 
-    /// Lets go of the reader and the cycle; the tables learned are kept for the next open.
-    fn close(&mut self) {
-        self.reader = None;
+impl Evaluating {
+    /// A panicked evaluation: its cycle is dropped and the seek is left alone.
+    fn failed(&mut self, job: &Job) {
         self.chain = None;
         self.kept = None;
-        self.evaluated = None;
-        self.seen = 0;
-        let mut state = lock(&self.shared);
-        state.raids = None;
-        state.raid_notes = None;
-        state.music = None;
-        state.rounds += 1;
-        drop(state);
-        self.shared.1.notify_all();
+        self.failed = Some(job.resets);
     }
 
-    /// Declares `missed` too; its rows arrive off the frame and the next frame is evaluated.
-    fn learn(&mut self, missed: Missed) {
-        joined(&mut self.needs, missed);
-        if let Some((_, reader)) = &self.reader {
-            reader.declare_needs(&self.needs);
-        }
-        let mut state = lock(&self.shared);
-        state.needs.clone_from(&self.needs);
-        state.rounds += 1;
-        if let Some(timings) = &mut state.timings {
-            timings.learned += 1;
-        }
-        drop(state);
-        self.shared.1.notify_all();
-    }
-
-    fn publish(&self, raids: Option<Option<Arc<RaidIcons>>>, music: Option<Option<(Hour, Arc<viewer_audio::Chances>)>>) {
-        self.publish_with(raids, music, None);
-    }
-
-    /// [`Self::publish`], with the raid arrows' notes of the icons published (none when no icons
-    /// of a cycle are).
-    fn publish_with(&self, raids: Option<Option<Arc<RaidIcons>>>, music: Option<Option<(Hour, Arc<viewer_audio::Chances>)>>, notes: Option<(u32, Arc<Vec<String>>)>) {
-        let mut state = lock(&self.shared);
-        if let Some(raids) = raids {
-            state.raids = raids;
-            state.raid_notes = notes;
-        }
-        if let Some(music) = music {
-            state.music = music;
-        }
-        state.rounds += 1;
-        let wake = state.wake.clone();
-        drop(state);
-        self.shared.1.notify_all();
-        if let Some(wake) = wake {
-            wake();
-        }
-    }
-
-    /// Music (unless `again`: the same frame as before) and the raid cycle at `newest`'s frame.
-    fn evaluate(&mut self, wanted: &Wanted, newest: &Newest, again: bool) {
-        let frame: &DecodedFrame = &newest.frame;
-        let mut missed = Vec::new();
-        // A round that reads a table not declared yet goes on to the end, so it learns every table
-        // it reaches at once, and publishes nothing.
-        let ours = learning(&mut missed, || ours(frame, &wanted.perspective)).map_err(|error| error.to_string());
-        let music = if again {
-            let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine_executable::executable_tables::scope(wanted.content.tables, || self.music(wanted, frame, ours.clone(), &mut missed))));
-            evaluated.unwrap_or_else(|_| {
-                self.kept = None;
-                self.publish(None, Some(None));
-                None
-            })
-        } else {
-            None
-        };
-        let raids = if wanted.raids {
-            let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine_executable::executable_tables::scope(wanted.content.tables, || self.raids(wanted, newest, ours, &mut missed))));
-            evaluated.unwrap_or_else(|_| {
-                self.chain = None;
-                self.failed = Some(newest.resets);
-                self.publish(Some(Some(Arc::new(RaidIcons { report: RaidReport { worker_failed: true, ..Default::default() }, ..Default::default() }))), None);
-                None
-            })
+    /// The music chances and the offer cycle at `job`'s rows; none while a table it read is being
+    /// learned.
+    fn evaluate(&mut self, job: &Job, missed: &mut Missed) -> Option<Product> {
+        let frame: &DecodedFrame = &job.frame;
+        let ours = learning(missed, || ours(frame, &job.choice)).map_err(|error| error.to_string());
+        let music = if job.music { self.music(job, ours.clone(), missed) } else { None };
+        let (raids, notes, complete) = if job.raids {
+            self.raids(job, ours, missed)
         } else {
             self.chain = None;
-            self.publish(Some(None), None);
-            None
+            (None, None, true)
         };
         if !missed.is_empty() {
-            self.learn(missed);
+            return None;
         }
-        let mut state = lock(&self.shared);
-        state.rounds += 1;
-        if let Some(timings) = &mut state.timings {
-            timings.frames.push((frame.hour, raids, music));
-            timings.ran_on = std::thread::current().name().map(str::to_owned);
-        }
-        drop(state);
-        self.shared.1.notify_all();
+        Some(Product { raids, notes, music, hour: frame.hour, complete })
     }
 
-    /// The music chances of the viewing country at `frame`; the nanoseconds they took.
-    fn music(&mut self, wanted: &Wanted, frame: &DecodedFrame, ours: Result<u32, String>, missed: &mut Missed) -> Option<u64> {
-        let audio = wanted.content.audio.as_ref().filter(|audio| wanted.music && !audio.music.songs.is_empty());
+    /// The music chances of the viewing country at `job`'s rows, with the hour the memo kept them
+    /// for.
+    fn music(&mut self, job: &Job, ours: Result<u32, String>, missed: &mut Missed) -> Option<(Hour, Arc<viewer_audio::Chances>)> {
+        let frame: &DecodedFrame = &job.frame;
+        let audio = job.content.audio.as_ref().filter(|audio| !audio.music.songs.is_empty());
         let (Some(audio), Ok(ours)) = (audio, ours) else {
-            if missed.is_empty() {
-                self.kept = None;
-                self.publish(None, Some(None));
-            }
+            self.kept = None;
             return None;
         };
-        let started = Instant::now();
         let (chances, kept) = learning(missed, || {
-            let world = World::read(frame, wanted.content.triggers.facts());
-            self.memo.chances_kept(frame, audio, ours, &world)
+            let world = World::read(frame, job.content.triggers.facts());
+            self.memo.0.chances_kept(frame, audio, ours, &world)
         });
-        if missed.is_empty() {
-            self.publish(None, Some(Some((kept.hour(), Arc::new(chances)))));
-            self.kept = Some(kept);
+        if !missed.is_empty() {
+            return None;
         }
-        Some(started.elapsed().as_nanos() as u64)
+        let at = kept.hour();
+        self.kept = Some(kept);
+        Some((at, Arc::new(chances)))
     }
 
-    /// One batch of the offer cycle at `newest`'s frame, from the cycle after the frame before;
-    /// paused, a batch more per frame the window draws until every target is current. The first
-    /// batch's nanoseconds.
-    fn raids(&mut self, wanted: &Wanted, newest: &Newest, ours: Result<u32, String>, missed: &mut Missed) -> Option<u64> {
-        let frame: &DecodedFrame = &newest.frame;
-        let assets = &wanted.content.raids;
+    /// The offer cycle at `job`'s rows: one batch from the cycle the evaluation before left, or
+    /// every batch until each target is current for a stopped picture. The icons, the raid arrows'
+    /// notes, and whether the cycle is complete.
+    fn raids(&mut self, job: &Job, ours: Result<u32, String>, missed: &mut Missed) -> (Option<Arc<RaidIcons>>, Option<(u32, Arc<Vec<String>>)>, bool) {
+        let frame: &DecodedFrame = &job.frame;
+        let assets = &job.content.raids;
+        let unavailable = |why: String| (Some(Arc::new(RaidIcons::unavailable(frame, 0, why))), None, true);
         let ours = match ours {
             Ok(ours) => ours,
-            Err(error) => {
-                if missed.is_empty() {
-                    self.publish(Some(Some(Arc::new(RaidIcons::unavailable(frame, 0, error)))), None);
-                }
-                return None;
-            }
+            Err(error) => return unavailable(error),
         };
+        if self.failed == Some(job.resets) {
+            return (None, None, true);
+        }
         let restart = self.chain.as_ref().is_none_or(|chain| {
-            chain.resets != newest.resets || !std::ptr::eq(chain.content.as_ptr(), Arc::as_ptr(&wanted.content.raids)) || chain.country != wanted.perspective.country || frame.hour < chain.hour
+            chain.resets != job.resets || !std::ptr::eq(chain.content.as_ptr(), Arc::as_ptr(assets)) || chain.country != job.choice.country || frame.hour < chain.hour
         });
         if restart {
-            self.chain = Some(Chain { resets: newest.resets, content: Arc::downgrade(&wanted.content.raids), country: wanted.perspective.country.clone(), hour: frame.hour, cycle: Cycle::new(frame.branch, ours), icons: IconCache::default() });
-            if let Some(timings) = &mut lock(&self.shared).timings {
-                timings.restarts += 1;
-            }
+            self.chain = Some(Chain { resets: job.resets, content: Arc::downgrade(assets), country: job.choice.country.clone(), hour: frame.hour, cycle: Cycle::new(frame.branch, ours), icons: IconCache::default() });
         }
-        if self.failed == Some(newest.resets) {
-            return None;
-        }
-        let started = Instant::now();
         let world = match learning(missed, || World::new(frame, assets.trigger_content.facts())) {
             Ok(world) => world,
-            Err(reason) => {
-                if missed.is_empty() {
-                    self.publish(Some(Some(Arc::new(RaidIcons::unavailable(frame, ours, reason.to_string())))), None);
-                }
-                return None;
-            }
+            Err(reason) => return unavailable(reason.to_string()),
         };
         let paths = learning(missed, || HourPaths::new(assets, frame));
         let layer = learning(missed, || HourLayer::new(assets, &world, ours, &paths));
@@ -629,60 +402,511 @@ impl Worker {
                 let _ = cycle.begin(assets, &layer.sweep);
             }
             cycle.step(&layer.sweep);
+            // A stopped picture shows every target evaluated, as a paused frame did; a batch that
+            // evaluates none (a mod whose batch is zero) ends the round rather than spinning.
+            while job.whole && !cycle.complete() {
+                let before = cycle.progress();
+                cycle.step(&layer.sweep);
+                if cycle.progress() == before {
+                    break;
+                }
+            }
             layer.icons(&cycle, &mut chain.icons)
         });
         let notes = learning(missed, || raid_notes(frame, ours));
         if !missed.is_empty() {
             chain.icons = IconCache::default();
-            return None;
+            return (None, None, false);
         }
-        let first = started.elapsed().as_nanos() as u64;
+        let complete = cycle.complete();
         chain.cycle = cycle;
         chain.hour = frame.hour;
-        let notes = Arc::new(notes);
-        self.publish_with(Some(Some(Arc::new(icons))), None, Some((ours, Arc::clone(&notes))));
-        let mut drawn = lock(&self.shared).drawn;
-        while !wanted.playing {
-            if self.chain.as_ref().is_none_or(|chain| chain.cycle.complete()) || !self.still(wanted, &mut drawn) {
-                break;
-            }
-            let chain = self.chain.as_mut().expect("checked above");
-            let began = Instant::now();
-            let mut cycle = chain.cycle.clone();
-            let icons = learning(missed, || {
-                cycle.step(&layer.sweep);
-                layer.icons(&cycle, &mut chain.icons)
-            });
-            if !missed.is_empty() {
-                chain.icons = IconCache::default();
-                break;
-            }
-            chain.cycle = cycle;
-            self.publish_with(Some(Some(Arc::new(icons))), None, Some((ours, Arc::clone(&notes))));
-            if let Some(timings) = &mut lock(&self.shared).timings {
-                timings.paused.push(began.elapsed().as_nanos() as u64);
-            }
-        }
-        Some(first)
+        (Some(Arc::new(icons)), Some((ours, Arc::new(notes))), complete)
+    }
+}
+
+/// What the layer measured while drawn, each bounded by the values it takes, not by hours played.
+#[derive(Clone, Debug, Default)]
+pub struct Stats {
+    /// Evaluations by milliseconds, a tenth wide.
+    pub evaluations: BTreeMap<u32, u64>,
+    /// Evaluations of the whole cycle (a stopped picture's), by milliseconds, a tenth wide.
+    pub whole: BTreeMap<u32, u64>,
+    /// Evaluations the music chances' rate left the chances out of.
+    pub rated: u64,
+    /// Settles that waited and found the rows of the hour shown not made yet.
+    pub rows_behind: u64,
+    /// Rows passed over: newer rows came before the worker was free for them.
+    pub skipped: u64,
+    /// Evaluations discarded because they read a table not declared yet.
+    pub learning: u64,
+    /// Results dropped because a reset or a new perspective came after their job.
+    pub stale: u64,
+    /// Settles that waited for the icons of the hour applied, and those the wait ran out on.
+    pub waited: u64,
+    pub ran_out: u64,
+    pub opened: u64,
+    pub closed: u64,
+}
+
+impl Stats {
+    pub fn summary(&self) -> Value {
+        let spread = |held: &BTreeMap<u32, u64>| {
+            let total: u64 = held.values().sum();
+            let at = |share: f64| {
+                let wanted = (share * total as f64).ceil().max(1.0) as u64;
+                let mut seen = 0;
+                held.iter().find(|(_, count)| {
+                    seen += **count;
+                    seen >= wanted
+                }).map(|(tenths, _)| f64::from(*tenths) / 10.0)
+            };
+            json!({"count": total, "ms_p50": at(0.5), "ms_p99": at(0.99), "ms_worst": held.keys().next_back().map(|tenths| f64::from(*tenths) / 10.0)})
+        };
+        json!({
+            "evaluations": spread(&self.evaluations), "whole_cycle_evaluations": spread(&self.whole),
+            "music_withheld_by_its_rate": self.rated, "rows_behind_a_waiting_settle": self.rows_behind, "rows_skipped": self.skipped, "discarded_learning": self.learning,
+            "dropped_stale": self.stale, "settles_that_waited": self.waited, "waits_that_ran_out": self.ran_out,
+            "opened": self.opened, "closed": self.closed,
+        })
+    }
+}
+
+/// The map's scripts at the head.
+pub struct Scripts {
+    content: Held,
+    /// The map side's view store, given as the side is made; nothing is read before it.
+    views: Option<Views>,
+    /// Raid icons are drawn, and this map plays music.
+    shown: (bool, bool),
+    choice: perspective::Choice,
+    /// Learned by discovery; kept when closed, so it opens with them.
+    needs: Vec<Need>,
+    open: Option<Open>,
+    product: Option<Product>,
+    applied: Option<Hour>,
+    /// When the music chances were last read, on [`Self::clock`].
+    asked_at: Option<Duration>,
+    /// The clock their rate is held to.
+    pub clock: Clock,
+    /// Bumped by a reset and a new perspective: results of earlier jobs are dropped.
+    epoch: u64,
+    stats: Stats,
+}
+
+impl Scripts {
+    pub fn new(content: &Content) -> Self {
+        Self::with(Held::of(content), PRIMED.get().cloned().unwrap_or_default())
     }
 
-    /// Waits for the window to draw another paused frame; false when the view changed, a newer
-    /// frame was published or the worker stops, so the paused cycle ends here.
-    fn still(&self, wanted: &Wanted, drawn: &mut u64) -> bool {
-        let mut state = lock(&self.shared);
-        loop {
-            let current = !state.stop && state.wanted.as_ref().is_some_and(|now| now.evaluates_like(wanted) && !now.playing && Arc::ptr_eq(&now.entry, &wanted.entry));
-            let newer = self.reader.as_ref().and_then(|(_, reader)| reader.newest()).is_some_and(|newest| newest.published != self.seen);
-            if !current || newer {
-                return false;
+    /// The layer over `content`, declaring `needs` from the start beside the evaluator's core.
+    pub fn with(content: Held, mut needs: Vec<Need>) -> Self {
+        joined(&mut needs, CORE.iter().map(|&table| (table, 0)));
+        // The scripts compare dates: their rows come with every hour the clock moves.
+        joined(&mut needs, [(TableId::Clock, u64::MAX)]);
+        Self { content, views: None, shown: (false, false), choice: perspective::Choice::default(), needs, open: None, product: None, applied: None, asked_at: None, clock: Clock::default(), epoch: 0, stats: Stats::default() }
+    }
+
+    /// What it published: the raid icons, their notes and the music chances of one hour's rows;
+    /// none while loading or while neither is asked for.
+    pub fn product(&self) -> Option<&Product> {
+        self.product.as_ref()
+    }
+
+    /// The newest raid icons for `branch` and canonical viewing country `ours`; none while loading
+    /// or for another country.
+    pub fn raids(&self, branch: replay_data::BranchId, ours: u32) -> Option<Arc<RaidIcons>> {
+        self.product.as_ref()?.raids.clone().filter(|icons| match icons.built_for {
+            Some((built, _, country)) => (built, country) == (branch, ours),
+            None => icons.report.worker_failed,
+        })
+    }
+
+    /// The raid arrows' limitation notes in today's words for canonical viewing country `ours`;
+    /// none while loading, for another country, or while raid icons are not drawn.
+    pub fn notes(&self, ours: u32) -> Option<Arc<Vec<String>>> {
+        self.product.as_ref()?.notes.as_ref().filter(|(country, _)| *country == ours).map(|(_, notes)| Arc::clone(notes))
+    }
+
+    /// The newest music chances with the hour they were evaluated at.
+    pub fn music_at(&self) -> Option<(Hour, Arc<viewer_audio::Chances>)> {
+        self.product.as_ref()?.music.clone()
+    }
+
+    pub fn stats(&self) -> &Stats {
+        &self.stats
+    }
+
+    /// The tables the reader declares now, each with the fields its reads named.
+    pub fn needs(&self) -> &[Need] {
+        &self.needs
+    }
+
+    /// Lets the reader and the worker go, on a thread of their own. The thread that frees them
+    /// is handed back, so a caller that must see the rows let go (a test) waits for that
+    /// hand-over itself; the viewer drops it and never waits.
+    fn close(&mut self) -> Option<std::thread::JoinHandle<()>> {
+        let product = self.product.take();
+        let closing = self.open.take().and_then(|open| {
+            self.stats.closed += 1;
+            // The last reader of a playhead's rows joins their worker when dropped: never here.
+            std::thread::Builder::new().name("scripts closing".into()).spawn(move || {
+                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+                drop((open, product));
+            }).ok()
+        });
+        self.asked_at = None;
+        self.epoch += 1;
+        closing
+    }
+
+    /// Sets what is published; what was there is freed on the worker.
+    fn show(&mut self, product: Option<Product>) {
+        if let Some(old) = std::mem::replace(&mut self.product, product) {
+            match &self.open {
+                Some(open) => open.free(old),
+                None => drop(old),
             }
-            if state.drawn != *drawn {
-                *drawn = state.drawn;
-                return true;
-            }
-            state = self.shared.1.wait_timeout(state, TICK).unwrap_or_else(std::sync::PoisonError::into_inner).0;
         }
     }
+
+    /// Opens the reader and the worker when drawn and the store is given; a refusal is printed.
+    fn ensure_open(&mut self) {
+        if self.open.is_some() || self.shown == (false, false) {
+            return;
+        }
+        let Some(views) = &self.views else { return };
+        match Open::new(views, &self.needs) {
+            Ok(open) => {
+                self.open = Some(open);
+                self.stats.opened += 1;
+            }
+            Err(error) => eprintln!("The map's scripts at the head are refused: {error}"),
+        }
+    }
+
+    /// Takes the worker's finished evaluations; never waits.
+    fn receive(&mut self) {
+        while let Some(done) = self.open.as_ref().and_then(|open| open.done.try_recv().ok()) {
+            let _ = self.take(done);
+        }
+    }
+
+    /// Whether it was discarded to learn a table.
+    fn take(&mut self, done: Done) -> bool {
+        let Some(open) = &mut self.open else { return false };
+        (open.busy, open.evaluating) = (false, None);
+        if done.epoch != self.epoch {
+            self.stats.stale += 1;
+            return false;
+        }
+        let tenths = (done.ns / 100_000) as u32;
+        match done.product {
+            Some(product) => {
+                *self.stats.evaluations.entry(tenths).or_default() += 1;
+                self.show(Some(product));
+            }
+            None => {
+                *self.stats.evaluations.entry(tenths).or_default() += 1;
+                self.stats.learning += 1;
+                joined(&mut self.needs, done.missed);
+                open.reader.declare_only_needs(&self.needs);
+                open.see(None);
+                (open.handed, open.handed_whole) = (false, false);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Asks the view store for rows of the hour the side has applied: its reader's sets are made
+    /// at the steps it asks at, and the raid cycle is evaluated at every publication, so it asks
+    /// at every one.
+    fn ask_rows(&mut self) {
+        if let Some(open) = &self.open {
+            open.reader.ready();
+        }
+    }
+
+    /// Whether this evaluation reads the music chances: they are rated, and the rate holds here
+    /// alone ([`MUSIC_RATE`]). A picture that is waited for reads them whatever the rate, so a
+    /// stopped picture's chances are its own hour's.
+    fn music_due(&mut self, whole: bool) -> bool {
+        if !self.shown.1 {
+            return false;
+        }
+        let now = self.clock.now();
+        if !whole && self.asked_at.is_some_and(|asked| now.saturating_sub(asked) < MUSIC_RATE.interval()) {
+            self.stats.rated += 1;
+            return false;
+        }
+        self.asked_at = Some(now);
+        true
+    }
+
+    /// Hands the newest rows to the worker when it is free; rows a newer frame replaces before
+    /// that are counted as passed over. `whole`: the offer cycle run to its end, for a picture
+    /// that is waited for.
+    fn offer(&mut self, whole: bool) {
+        let Some(open) = self.open.as_mut() else { return };
+        if let Some((frame, _, _)) = open.reader.newest_seek()
+            && !open.seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, &frame))
+        {
+            if open.seen.is_some() && !open.handed {
+                self.stats.skipped += 1;
+            }
+            open.see(Some(frame));
+            (open.handed, open.handed_whole) = (false, false);
+        }
+        if open.busy || (open.handed && (!whole || open.handed_whole)) {
+            return;
+        }
+        let Some((frame, _, resets)) = open.reader.newest_seek() else { return };
+        let music = self.music_due(whole);
+        let open = self.open.as_mut().expect("held above");
+        let job = Job { frame, choice: self.choice.clone(), content: self.content.clone(), raids: self.shown.0, music, whole, epoch: self.epoch, resets };
+        if open.jobs.send(Work::Evaluate(Box::new(job))).is_ok() {
+            (open.busy, open.handed, open.handed_whole) = (true, true, whole);
+            open.evaluating = open.seen.as_ref().map(|frame| frame.hour);
+        }
+    }
+
+    /// Waits for what is published to be of the hour applied, with the offer cycle complete: a
+    /// publication the head stands still for, a saved frame, the proof. It waits for its own
+    /// worker, never for its rows: the rows of an hour are made by the step that asks for them and
+    /// this runs inside that step, so when they are not there yet it asks for them and the
+    /// publication after shows them (a stepped frame takes its whole settle again until its
+    /// picture stands whole). A whole settle names the hour its worker never answered for.
+    fn catch_up(&mut self, settling: Settling) -> io::Result<()> {
+        let Some(hour) = self.applied else { return Ok(()) };
+        if self.shown == (false, false) {
+            return Ok(());
+        }
+        self.stats.waited += 1;
+        let until = Instant::now() + settling.waiting(CATCH_UP);
+        // Out of the step's budget, what it has stands and the publication after makes the hour's.
+        let ran_out = |why: String, stats: &mut Stats| {
+            stats.ran_out += 1;
+            if settling.strict() { Err(io::Error::other(why)) } else { Ok(()) }
+        };
+        // The hour's product is whole when its offer cycle is complete and, where music plays, it
+        // carries that hour's chances: an evaluation the rate let go without them is not.
+        let music = self.shown.1;
+        loop {
+            let whole = self.product.as_ref().is_some_and(|product| {
+                product.hour == hour && product.complete && (!music || product.music.as_ref().is_some_and(|(at, _)| *at == hour))
+            });
+            if whole && !self.open.as_ref().is_some_and(|open| open.busy) {
+                return Ok(());
+            }
+            let Some(open) = &mut self.open else { return Ok(()) };
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return ran_out(format!("The {NAME} layer did not reach hour {hour} in {CATCH_UP:?}"), &mut self.stats);
+            }
+            if open.busy {
+                let Ok(done) = open.done.recv_timeout(left) else {
+                    return ran_out(format!("The {NAME} layer's worker did not answer for hour {hour}"), &mut self.stats);
+                };
+                if self.take(done) {
+                    // A table learned joins at a step past this head, which never comes while it is held.
+                    return Ok(());
+                }
+                continue;
+            }
+            let Some(frame) = open.reader.frame() else {
+                // Its tables are arriving in the side's mirrors.
+                self.ask_rows();
+                return Ok(());
+            };
+            if frame.hour != hour {
+                // The rows of the hour shown are not made yet, or the head has moved past it:
+                // asked for here, and the publication after this one waits for the evaluation.
+                self.stats.rows_behind += 1;
+                self.ask_rows();
+                return Ok(());
+            }
+            self.offer(true);
+            if !self.open.as_ref().is_some_and(|open| open.busy) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+impl Layer for Scripts {
+    fn name(&self) -> &'static str {
+        NAME
+    }
+
+    fn placed(&mut self, _view: &View) -> Option<u64> {
+        Some(0)
+    }
+
+    /// Drawn while the map draws raid icons or plays music; nothing otherwise. Countries' keys, so
+    /// a reset tells it the hour: its own tables come through rows at the head.
+    fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
+        let shown = (view.graphics.counter(view.graphics.raid_icons), view.sound);
+        if shown != (false, false) && view.perspective != self.choice {
+            self.choice = view.perspective.clone();
+            self.show(None);
+            self.epoch += 1;
+            if let Some(open) = &mut self.open {
+                (open.handed, open.handed_whole) = (false, false);
+            }
+        }
+        if shown != self.shown {
+            self.shown = shown;
+            self.show(None);
+        }
+        if shown == (false, false) {
+            drop(self.close());
+            return Ok(());
+        }
+        inputs.table(TableId::Countries, true)
+    }
+
+    fn views(&mut self, store: &crate::playhead_host::views::Store) -> io::Result<()> {
+        self.views = Some(store.handle());
+        Ok(())
+    }
+
+    fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
+        self.applied = mirrors.get(TableId::Countries).and_then(|mirror| mirror.head()).or(self.applied);
+        self.show(None);
+        self.epoch += 1;
+        self.asked_at = None;
+        if let Some(open) = &mut self.open {
+            (open.handed, open.handed_whole) = (false, false);
+        }
+        Ok(())
+    }
+
+    fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
+        self.applied = Some(step.last());
+    }
+
+    /// A saved frame, the proof and a publication the head stands still for wait for the icons of
+    /// the hour they show ([`Self::catch_up`]); there is nothing to wait for while neither the
+    /// icons nor the music are asked for.
+    fn made_at(&self, head: Hour) -> bool {
+        self.shown == (false, false) || self.product.as_ref().is_some_and(|product| product.hour == head && product.complete)
+    }
+
+    /// The rows it reads are made by the step that asks for them, so its evaluation of a
+    /// publication's hour lands in the publication after it: one publication behind is its own
+    /// pace, and the step waits for it only past that.
+    fn behind_bound(&self) -> u32 {
+        Rate::a_publication().behind()
+    }
+
+    /// The worker asked for the newest rows at the apply, so its evaluation runs while the layers
+    /// of the step settle.
+    fn ask(&mut self, _mirrors: &Mirrors, _upstream: &super::Upstream<'_>) -> io::Result<bool> {
+        if self.shown == (false, false) {
+            return Ok(false);
+        }
+        self.ensure_open();
+        self.receive();
+        self.offer(false);
+        // The rows the step after this one makes, at the rate: its sets are made where it asks.
+        self.ask_rows();
+        Ok(true)
+    }
+
+    fn join(&mut self, _mirrors: &Mirrors, _upstream: &super::Upstream<'_>, settling: Settling) -> io::Result<()> {
+        if self.shown == (false, false) {
+            return Ok(());
+        }
+        self.ensure_open();
+        self.receive();
+        if settling.waits() {
+            self.offer(true);
+            self.catch_up(settling)?;
+            // The hours stand still: the publication after this one is given the hour's rows.
+            self.ask_rows();
+        }
+        Ok(())
+    }
+
+    /// Asked and joined ([`Self::ask`]); a whole settle asks and joins in one.
+    fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        let upstream = super::Upstream::new(&[]);
+        self.ask(mirrors, &upstream)?;
+        self.join(mirrors, &upstream, settling)
+    }
+
+    /// Nothing: its evaluation is published, not carried.
+    fn carried(&self) -> Carried {
+        Carried::default()
+    }
+
+    /// The hour its icons stand at, and what the picture's own hour owes it. The rows it reads are
+    /// made by the step that asks for them and its evaluation is longer than a step, so an hour's
+    /// icons land one publication after it: that is this product's own pace, and at it the picture
+    /// owes nothing and says [`Published::Current`], which is a claim about the step and not about
+    /// an hour, so the hour a watcher reads off the map stays the fills' and the counters'. Further
+    /// behind than its pace — the rows have moved on and no evaluation of the newest is running —
+    /// it says the hour it stands at, so its lateness is counted and the bound can see it.
+    fn published(&self) -> Published {
+        let Some(open) = &self.open else {
+            return self.product.as_ref().map_or(Published::Nothing, |product| Published::Cadence(product.hour));
+        };
+        let seen = open.seen.as_ref().map(|frame| frame.hour);
+        match (&self.product, seen) {
+            (Some(product), Some(seen)) if product.hour >= seen => Published::Current,
+            (Some(_), Some(seen)) if open.busy && open.evaluating == Some(seen) => Published::Current,
+            (Some(product), _) => Published::Cadence(product.hour),
+            (None, _) => Published::Nothing,
+        }
+    }
+
+    fn held(&self) -> usize {
+        self.needs.capacity() * std::mem::size_of::<Need>()
+            + self.product.as_ref().map_or(0, |product| {
+                product.raids.as_ref().map_or(0, |icons| icons.icons.capacity() * 256)
+                    + product.notes.as_ref().map_or(0, |(_, notes)| notes.iter().map(String::capacity).sum::<usize>())
+                    + product.music.as_ref().map_or(0, |(_, music)| music.weights.capacity() * 16 + music.refusals.iter().map(String::capacity).sum::<usize>())
+            })
+    }
+
+    fn any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// The layer while it draws.
+pub fn drawn(side: &MapSide) -> Option<&Scripts> {
+    super::drawn_layer::<Scripts>(side, NAME)
+}
+
+/// The raid icons the map's scripts built for `branch` and canonical viewing country `ours`.
+pub fn raids(side: &MapSide, branch: replay_data::BranchId, ours: u32) -> Option<Arc<RaidIcons>> {
+    drawn(side)?.raids(branch, ours)
+}
+
+/// The raid arrows' limitation notes for canonical viewing country `ours`.
+pub fn notes(side: &MapSide, ours: u32) -> Option<Arc<Vec<String>>> {
+    drawn(side)?.notes(ours)
+}
+
+/// The music chances at the head.
+pub fn music(side: &MapSide) -> Option<Arc<viewer_audio::Chances>> {
+    drawn(side)?.music_at().map(|(_, music)| music)
+}
+
+/// The layer's figures for a report: what it measured, and the tables its reads declare.
+pub fn summary(side: &MapSide) -> Value {
+    let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Scripts>())) else { return Value::Null };
+    json!({
+        "stats": layer.stats().summary(),
+        "music_rate_a_second": MUSIC_RATE.makings_a_second(),
+        "music_hour": layer.product().and_then(|product| product.music.as_ref().map(|(hour, _)| *hour)),
+        "tables": layer.needs().iter().map(|need| format!("{:?}", need.table)).collect::<Vec<_>>(),
+        "hour": layer.product().map(|product| product.hour),
+        "cycle_complete": layer.product().map(|product| product.complete),
+        "held": Layer::held(layer),
+    })
 }
 
 pub mod proof;

@@ -366,8 +366,8 @@ fn music_inputs_missing_country_counts_and_known_null_targets_match_original() {
     // Missing owned-state counts refuse the tag operand: t4's chance is unknown.
     assert_eq!(reference.weights[4], None);
     assert!(reference.refusals.iter().any(|why| {
-        why.starts_with("song t4:") && why.contains("CountryCounterInputs.owned_state_count")
-    }));
+        why.starts_with("song t4:") && why.contains("the owned state count of country BBB is not recorded")
+    }), "{:?}", reference.refusals);
     // Known-absent saved target has no store, so its variable is zero: apply t5.
     assert_eq!(
         reference.weights[5].map(f64::to_bits),
@@ -541,9 +541,9 @@ fn music_inputs_recheck_has_war_end_hours_and_unresolved_unrelated_endpoints() {
                 );
                 let refusals = if active && unresolved {
                     vec![
-                        "song t0: trigger has_war = yes: WarRelations second country is unresolved"
+                        "song t0: trigger has_war = yes: war relations second country is unresolved"
                             .to_owned(),
-                        "song t1: trigger has_war = no: WarRelations second country is unresolved"
+                        "song t1: trigger has_war = no: war relations second country is unresolved"
                             .to_owned(),
                     ]
                 } else {

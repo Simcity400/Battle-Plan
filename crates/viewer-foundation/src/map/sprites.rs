@@ -4,6 +4,7 @@
 //! geometry, constants, sampler states and scissors. Layer keys preserve icon-child ordering
 //! while grouping compatible glyphs by texture. The pass draws after the world without depth.
 
+use shader_pipeline::gpu::stats::CountedPasses as _;
 #[cfg(test)]
 use crate::map::test_support::test_tga_rgba8;
 use std::collections::BTreeMap;
@@ -20,7 +21,7 @@ use installed_content_gfx::gfx;
 use installed_content_image::{dds, native::Decode};
 
 use super::{
-    free_icons::{IconAnchor, Present},
+    free_icons::{IconAnchor, Present, Track},
     gpu_contract::{Targets, sampler_entry, texture_entry},
     lazy_icons::{DYNAMIC_BASE, LazyTextures},
     text,
@@ -29,9 +30,10 @@ use super::{
 
 mod fade;
 mod packets;
+mod resident;
 mod retained;
 
-pub use retained::CameraFrame;
+pub use resident::failures as overlay_check_failures;
 
 /// One frame-animated sprite: a horizontal strip of equal-width frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -273,10 +275,91 @@ pub const fn icon_offset(icons: u32) -> u64 {
     icons as u64 * CHILD_SLOTS as u64
 }
 
+/// A producer of map-icon windows, one value per kind of pool, so a batch window and a check's
+/// refusal name the window they mean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WindowPool {
+    Base,
+    FactionPing,
+    LandCombat,
+    LandCounter,
+    Label,
+    Raid,
+    AdjacencyIcon,
+}
+
+/// One drawn map-icon window in a batch: the pool that holds it, which of that producer's pools,
+/// and the owner the window is held for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WindowKey {
+    pub pool: WindowPool,
+    pub part: u32,
+    pub owner: u64,
+}
+
+impl WindowKey {
+    pub fn new(pool: WindowPool, part: u32, owner: impl Into<u64>) -> Self {
+        Self {
+            pool,
+            part,
+            owner: owner.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for WindowKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} {} of owner {}", self.pool, self.part, self.owner)
+    }
+}
+
+/// Everything a window's quads in a batch are a function of: the painting they came from
+/// ([`next_painting`]) and what the batch did to them as it took them (their sort key, the anchor
+/// they stand on, the opacity they are drawn at). Equal stamps mean equal quads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WindowStamp {
+    pub painting: u64,
+    pub taken: u64,
+}
+
+/// A window's quads where they stand in a batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatchWindow {
+    pub key: WindowKey,
+    pub stamp: WindowStamp,
+    pub first: u32,
+    pub count: u32,
+    /// How far these quads stand from where the painting named by the stamp drew them: the
+    /// composition took a window it kept and placed elsewhere
+    /// ([`Batch::at_window_standing`]), the camera moved over the map and its anchor went with
+    /// it, or both ([`crate::map::anchored`]). Its quads are its painting's quads moved by this,
+    /// so an upload that holds the painting still has to write them again when it changes, and
+    /// nothing else about the window did.
+    pub shift: [i32; 2],
+}
+
+impl BatchWindow {
+    pub fn quads(&self) -> std::ops::Range<usize> {
+        self.first as usize..(self.first + self.count) as usize
+    }
+}
+
+/// A fresh value for every painting of a window, so a kept painting is recognised by value and
+/// no two paintings of one window are ever confused.
+pub fn next_painting() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A frame's worth of screen-space quads, in the order the caller pushed them.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Batch {
     pub quads: Vec<Quad>,
+    /// The windows whose quads this batch holds, in push order. Quads outside one belong to no
+    /// window and are compared quad for quad.
+    windows: Vec<BatchWindow>,
+    /// The window later pushes belong to, and the quad it starts at.
+    open: Option<(WindowKey, WindowStamp, u32, [i32; 2])>,
     // counters
     /// The layer subsequent pushes are tagged with.
     layer: u64,
@@ -287,20 +370,188 @@ pub struct Batch {
     part_anchor: Option<(String, IconAnchor)>,
     /// What the current part's pushes take ([`Batch::at_part`]).
     current: Option<IconAnchor>,
+    /// A fresh value for every painting of the batch ([`Batch::clear`], which every composition
+    /// begins with): the quads of one painting stand where that painting put them, so anything
+    /// holding where they have been moved to ([`crate::map::anchored::Shifts`]) can tell a
+    /// painting it has moved from one it has not.
+    painting: u64,
+    /// Where each mover this batch holds stands over the hours its publication covers, by the
+    /// serial its anchors carry ([`IconAnchor::moves`]). The display frame reads them to place
+    /// every mover at its own head ([`crate::map::anchored`]).
+    tracks: Vec<(u32, Track)>,
+}
+
+impl Default for Batch {
+    /// Every batch is a painting of its own ([`Batch::painting`]), so no two are confused.
+    fn default() -> Self {
+        Self {
+            quads: Vec::new(),
+            windows: Vec::new(),
+            open: None,
+            layer: 0,
+            anchor: None,
+            part_anchor: None,
+            current: None,
+            painting: next_painting(),
+            tracks: Vec::new(),
+        }
+    }
 }
 
 impl Batch {
+    /// A batch of `quads` belonging to no window.
+    pub fn loose(quads: Vec<Quad>) -> Self {
+        Self {
+            quads,
+            ..Self::default()
+        }
+    }
+
+    /// A batch of `quads`, all of them `key`'s window drawing what `stamp` says.
+    pub fn of_window(key: WindowKey, stamp: WindowStamp, quads: Vec<Quad>) -> Self {
+        let count = quads.len() as u32;
+        Self {
+            quads,
+            windows: (count > 0)
+                .then_some(BatchWindow { key, stamp, first: 0, count, shift: [0; 2] })
+                .into_iter()
+                .collect(),
+            ..Self::default()
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.quads.is_empty()
     }
 
-    /// Empties the batch as [`Batch::default`] does, keeping its storage.
+    /// The painting the batch's quads belong to: a new value after every [`Batch::clear`], so no
+    /// two paintings are confused. Zero for a batch nothing has been painted into.
+    pub fn painting(&self) -> u64 {
+        self.painting
+    }
+
+    /// Empties the batch as [`Batch::default`] does, keeping its storage. What it holds next is a
+    /// painting of its own ([`Batch::painting`]).
     pub fn clear(&mut self) {
+        self.painting = next_painting();
+        self.tracks.clear();
         self.quads.clear();
+        self.windows.clear();
+        self.open = None;
         self.layer = 0;
         self.anchor = None;
         self.part_anchor = None;
         self.current = None;
+    }
+
+    /// Later pushes are `key`'s window, drawing what `stamp` says. Closes any window open.
+    pub fn at_window(&mut self, key: WindowKey, stamp: WindowStamp) {
+        self.at_window_standing(key, stamp, [0; 2]);
+    }
+
+    /// [`Self::at_window`] for a window whose quads are the quads `stamp`'s painting drew already
+    /// offset by `from` whole interface pixels: a window the composition kept and placed
+    /// elsewhere ([`crate::map::icon_windows::Painted::paint`]), which draws what it drew.
+    pub fn at_window_standing(&mut self, key: WindowKey, stamp: WindowStamp, from: [i32; 2]) {
+        self.no_window();
+        self.open = Some((key, stamp, self.quads.len() as u32, from));
+    }
+
+    /// Takes `track` into the batch and gives the serial an anchor carries to stand on it.
+    pub fn add_track(&mut self, track: Track) -> u32 {
+        let serial = super::free_icons::next_track();
+        self.tracks.push((serial, track));
+        serial
+    }
+
+    /// The track `anchor` stands on, when it carries one.
+    pub fn track_of(&self, anchor: &IconAnchor) -> Option<&Track> {
+        self.track(anchor.moves?)
+    }
+
+    /// The track `serial` names, as the anchors standing on it carry it.
+    pub fn track(&self, serial: u32) -> Option<&Track> {
+        self.tracks
+            .iter()
+            .rev()
+            .find_map(|(at, track)| (*at == serial).then_some(track))
+    }
+
+    /// Whether any anchor of this batch carries a track, so the display frame has movers to place
+    /// at its own head.
+    pub fn moves(&self) -> bool {
+        !self.tracks.is_empty()
+    }
+
+    /// Later pushes belong to no window.
+    pub fn no_window(&mut self) {
+        if let Some((key, stamp, first, shift)) = self.open.take()
+            && self.quads.len() as u32 > first
+        {
+            self.windows.push(BatchWindow {
+                key,
+                stamp,
+                first,
+                count: self.quads.len() as u32 - first,
+                shift,
+            });
+        }
+    }
+
+    /// The windows this batch holds, to be told where they now stand when the camera moved them
+    /// ([`crate::map::anchored::Shifts::move_to`]); the batch has no window open while they are.
+    pub fn standing_windows(&mut self) -> &mut [BatchWindow] {
+        self.no_window();
+        &mut self.windows
+    }
+
+    /// Every window whose quads this batch holds, in push order.
+    pub fn windows(&self) -> impl Iterator<Item = BatchWindow> + '_ {
+        let open = self.open.and_then(|(key, stamp, first, shift)| {
+            (self.quads.len() as u32 > first).then_some(BatchWindow {
+                key,
+                stamp,
+                first,
+                count: self.quads.len() as u32 - first,
+                shift,
+            })
+        });
+        self.windows.iter().copied().chain(open)
+    }
+
+    /// Appends `other`'s quads and the windows they belong to, where they now stand.
+    pub fn append(&mut self, other: &Batch) {
+        self.no_window();
+        self.tracks.extend_from_slice(&other.tracks);
+        let shift = self.quads.len() as u32;
+        self.quads.extend_from_slice(&other.quads);
+        self.windows.extend(other.windows().map(|window| BatchWindow {
+            first: window.first + shift,
+            ..window
+        }));
+    }
+
+    /// Replaces the quads at `range`, and the windows standing among them, with `other`'s, moving
+    /// the windows after them to where they now stand. Where `other`'s quads now are.
+    pub fn splice(&mut self, range: std::ops::Range<usize>, other: &Batch) -> std::ops::Range<usize> {
+        self.no_window();
+        self.tracks.extend_from_slice(&other.tracks);
+        let (first, last) = (range.start as u32, range.end as u32);
+        let after = self.windows.iter().filter(|window| window.first >= last).count();
+        self.windows.retain(|window| window.first < first || window.first >= last);
+        let at = self.windows.len() - after;
+        let shift = other.quads.len() as i64 - range.len() as i64;
+        for window in &mut self.windows[at..] {
+            window.first = (i64::from(window.first) + shift) as u32;
+        }
+        let taken: Vec<_> = other
+            .windows()
+            .map(|window| BatchWindow { first: window.first + first, ..window })
+            .collect();
+        self.windows.splice(at..at, taken);
+        let start = range.start;
+        self.quads.splice(range, other.quads.iter().cloned());
+        start..start + other.quads.len()
     }
 
     // counters
@@ -669,8 +920,11 @@ pub struct SpritePass {
     uploads: Option<shader_pipeline::gpu::Arena>,
     retained: Option<retained::Upload>,
     retained_valid: bool,
+    /// The compiled GUI draw the last emission prepared of each quad of the batch, by its place
+    /// in it: a batch whose windows only stand somewhere else binds the same blocks with a new
+    /// world transform, and prepares none of them again ([`SpritePass::upload`]).
+    prepared_packets: Vec<Option<shader_pipeline::gpu::batch::Data>>,
     retained_diagnostics: installed_content_core::content::diagnostics::Diagnostics,
-    camera_moving: bool,
     packets: packets::Cache,
     packet_views: Vec<(u32, View)>,
     bake_views: Vec<(u32, View)>,
@@ -682,6 +936,9 @@ pub struct SpritePass {
     native_format: wgpu::TextureFormat,
     native_samples: u32,
     bakes: Vec<CachedBake>,
+    /// Text bakes recorded this frame, for the frame's one submission ahead of the draws that
+    /// sample them ([`SpritePass::bake_buffers`]).
+    bake_buffers: Vec<wgpu::CommandBuffer>,
     bake_stream: super::native_shader::stream::Stream,
     /// Refusals of the most recent frame, by effect/path/compiler reason.
     pub native_refusals: BTreeMap<String, u64>,
@@ -701,8 +958,7 @@ pub struct SpritePass {
     dynamic: HashMap<usize, DynamicPage>,
     /// Lazy textures the device refused, at the revision it refused.
     failed: HashMap<usize, u64>,
-    vertices: wgpu::Buffer,
-    capacity: u64,
+    vertices: Stream,
     runs: Vec<Run>,
     count: u32,
     /// Fade pages: the composite program, the pages and the snapped program drawing into them.
@@ -713,10 +969,8 @@ pub struct SpritePass {
     fade_draws: Vec<super::native_shader::stream::Submission>,
     /// Each fade page's runs, in draw order, by page; cleared every upload, storage kept.
     fade_runs: Vec<Vec<Run>>,
-    fade_vertices: wgpu::Buffer,
-    fade_capacity: u64,
-    composite_vertices: wgpu::Buffer,
-    composite_capacity: u64,
+    fade_vertices: Stream,
+    composite_vertices: Stream,
     /// Fade pages the last upload filled.
     fade_pages: usize,
     /// The vertex lists an upload fills, kept between frames for their storage.
@@ -732,6 +986,21 @@ pub struct SpritePass {
     logged: HashSet<String>,
     /// Made at load, so a lazy texture uploaded during a frame crops with it.
     unpack: Arc<wgpu::ComputePipeline>,
+    /// Bytes the last upload wrote to the GPU: the vertex streams' and the arena's. An upload
+    /// that retained everything wrote none.
+    written: u64,
+    /// Compiled GUI draws the last upload prepared as their own native packet, and as a row of a
+    /// batched one. The split decides what per-window GPU residency can keep.
+    prepared: [u64; 2],
+    /// What the last upload left resident, while the overlay check records it
+    /// ([`resident`]).
+    resident: resident::Record,
+    /// Whether this upload is recording what it leaves resident.
+    recording: bool,
+    /// The window the quad being emitted belongs to, for the record.
+    window: Option<WindowKey>,
+    /// Uploads since the pass was made, which paces the check.
+    uploaded: u64,
 }
 
 /// One upload's lists: the frame's snapped quads, the fade pages' and the composites' vertices,
@@ -915,8 +1184,8 @@ impl SpritePass {
             uploads: Some(shader_pipeline::gpu::Arena::new(device)),
             retained: None,
             retained_valid: false,
+            prepared_packets: Vec::new(),
             retained_diagnostics: Default::default(),
-            camera_moving: false,
             packets: Default::default(),
             packet_views: Vec::new(),
             bake_views: Vec::new(),
@@ -925,6 +1194,7 @@ impl SpritePass {
             fade_packets: Vec::new(),
             array_views: Default::default(),
             bakes: Vec::new(),
+            bake_buffers: Vec::new(),
             bake_stream: super::native_shader::stream::Stream::gui(),
             native_format: format,
             native_samples: samples,
@@ -940,8 +1210,7 @@ impl SpritePass {
             synced: None,
             dynamic: HashMap::new(),
             failed: HashMap::new(),
-            vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<Vertex>()),
-            capacity: INITIAL_VERTICES,
+            vertices: Stream::new::<Vertex>(device),
             runs: Vec::new(),
             count: 0,
             fade: fade::Pages::new(device, format, samples),
@@ -949,14 +1218,8 @@ impl SpritePass {
             fade_stream: super::native_shader::stream::Stream::gui(),
             fade_draws: Vec::new(),
             fade_runs: Vec::new(),
-            fade_vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<Vertex>()),
-            fade_capacity: INITIAL_VERTICES,
-            composite_vertices: buffer(
-                device,
-                INITIAL_VERTICES,
-                std::mem::size_of::<fade::CompositeVertex>(),
-            ),
-            composite_capacity: INITIAL_VERTICES,
+            fade_vertices: Stream::new::<Vertex>(device),
+            composite_vertices: Stream::new::<fade::CompositeVertex>(device),
             fade_pages: 0,
             scratch: Scratch::default(),
             layer: false,
@@ -964,6 +1227,12 @@ impl SpritePass {
             waited: false,
             logged: HashSet::new(),
             unpack: Arc::clone(&textures.unpack),
+            written: 0,
+            prepared: [0; 2],
+            resident: Default::default(),
+            recording: false,
+            window: None,
+            uploaded: 0,
         })
     }
 
@@ -1141,13 +1410,6 @@ impl SpritePass {
         })
     }
 
-    /// Decline retention for the next upload while the drawn camera changes. A moving
-    /// frame uses the caller's arena; one stationary frame repopulates the retained uploads.
-    /// This hint can only give up a hit, never admit one without the complete upload key.
-    pub fn set_camera_moving(&mut self, moving: bool) {
-        self.camera_moving = moving;
-    }
-
     /// Turns changed quads into vertices, grouped by texture. Compiled GUI draws keep their
     /// own upload arena until the batch, viewport, scale or resident artwork changes. The
     /// scene's frame `arena` receives the same refusal names, including on retained frames.
@@ -1156,7 +1418,6 @@ impl SpritePass {
     /// interface pixel; see [`device_corners`] for the snapping and
     /// [`filter_mode`] for the sampling. [`Exact`] quads are not snapped, keep their push
     /// order within their layer and are cut by their scissor.
-    #[allow(clippy::too_many_arguments)]
     pub fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -1215,23 +1476,11 @@ impl SpritePass {
                 .filter(|texture| *texture >= DYNAMIC_BASE)
                 .collect::<BTreeSet<_>>(),
         );
-        let moving = std::mem::take(&mut self.camera_moving);
-        if moving {
-            // Keep snapshot storage, but its submissions are no longer the current ones.
-            self.retained_valid = false;
-            self.waited = false;
-            self.logged.clear();
-            let mut joined = None;
-            loop {
-                let started = shader_pipeline::gpu::builds_started();
-                self.upload_changed(device, queue, arena, batch, size, ui_scale);
-                if !self.join_builds(arena, started, &mut joined) {
-                    break;
-                }
-            }
-            record_join(joined);
-            return;
-        }
+        self.written = 0;
+        self.uploaded += 1;
+        // The check compares the standing record with a whole rebuild, so every upload that
+        // changes what is resident records it.
+        self.recording = resident::every().is_some();
         let uploads = self
             .uploads
             .take()
@@ -1250,25 +1499,38 @@ impl SpritePass {
                 retained.matches_in_order(batch, &self.scratch.order, size, ui_scale, self.synced)
             })
         };
+        // A batch whose windows only stand somewhere else draws the compiled draws it drew,
+        // bound to the world transforms their new places give them: those are prepared again by
+        // binding the blocks alone, and nothing else about the emission changes.
+        let moved = (!same && !reordered && current)
+            .then(|| {
+                let _span = crate::profiling::span("sprite_moved_windows");
+                self.retained
+                    .as_ref()
+                    .and_then(|retained| retained.moved_windows(batch, size, ui_scale, self.synced))
+            })
+            .flatten()
+            .filter(|windows| !windows.is_empty());
+        let keeps = self.keeps_packets(batch, moved.as_deref());
         if same || reordered {
             self.retained_diagnostics.credit();
-            if reordered && let Some(retained) = self.retained.as_mut() {
-                retained.update(batch, &self.scratch.order, size, ui_scale, self.synced);
+            if reordered {
+                // The windows stand at other places in the batch, so the packet the emission
+                // prepared of each of its quads no longer names the same quad.
+                self.prepared_packets.clear();
+                if let Some(retained) = self.retained.as_mut() {
+                    retained.update(batch, &self.scratch.order, size, ui_scale, self.synced);
+                }
             }
         } else {
             self.waited = false;
             self.logged.clear();
-            let mut joined = None;
-            loop {
-                uploads.reset();
-                let started = shader_pipeline::gpu::builds_started();
-                self.upload_changed(device, queue, &uploads, batch, size, ui_scale);
-                if !self.join_builds(arena, started, &mut joined) {
-                    break;
-                }
-            }
-            record_join(joined);
+            uploads.reset();
+            let before = uploads.written_bytes();
+            self.upload_changed(device, queue, &uploads, batch, size, ui_scale, keeps);
+            self.note_waiting(arena);
             uploads.flush(queue);
+            self.written += uploads.written_bytes() - before;
             let order = &self.scratch.order;
             match self.retained.as_mut() {
                 Some(retained) => retained.update(batch, order, size, ui_scale, self.synced),
@@ -1287,9 +1549,102 @@ impl SpritePass {
         for reason in uploads.refusals() {
             arena.refuse(&reason);
         }
+        crate::map::redraws::note("sprite.written_bytes", self.written);
+        self.check_resident(
+            device,
+            queue,
+            &uploads,
+            batch,
+            size,
+            ui_scale,
+            same || reordered,
+        );
         self.uploads = Some(uploads);
     }
 
+    /// The overlay's resident-bytes check ([`resident`]): on a frame in which nothing the batch
+    /// draws changed, nothing may have been written; and every Nth upload, what is resident must
+    /// be what a whole rebuild of this frame's batch leaves. The rebuild goes through the same
+    /// arena and leaves the frame drawing it, so a run with the check on is a run for it alone.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the upload's own inputs, which the rebuild is made with"
+    )]
+    fn check_resident(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        arena: &shader_pipeline::gpu::Arena,
+        batch: &Batch,
+        size: [u32; 2],
+        ui_scale: f32,
+        quiet: bool,
+    ) {
+        let Some(every) = resident::every() else {
+            return;
+        };
+        if quiet {
+            resident::check_quiet(self.written);
+        }
+        if self.uploaded % every != 0 {
+            return;
+        }
+        crate::map::redraws::note("sprite.checked", 1);
+        let held = std::mem::take(&mut self.resident);
+        self.waited = false;
+        self.logged.clear();
+        // The rebuild is this batch emitted whole, from the same cursor a frame of its own would
+        // stage from, so a checked run's arena grows no further than one frame's uploads.
+        arena.reset();
+        self.upload_changed(device, queue, arena, batch, size, ui_scale, None);
+        self.note_waiting(arena);
+        arena.flush(queue);
+        resident::check(&held, &self.resident, self.written);
+        self.retained_valid = true;
+        if let Some(retained) = self.retained.as_mut() {
+            retained.update(batch, &self.scratch.order, size, ui_scale, self.synced);
+        } else {
+            self.retained = Some(retained::Upload::new(
+                batch,
+                &self.scratch.order,
+                size,
+                ui_scale,
+                self.synced,
+            ));
+        }
+    }
+
+    /// Which quads of `batch` draw the compiled draw the last emission prepared of them, when
+    /// `moved` names the windows that only stand somewhere else: `None` when any of them does
+    /// not, because a draw prepared afresh among kept ones would inherit none of the binds the
+    /// draws before it leave ([`super::native_shader::stream::Stream`]).
+    fn keeps_packets(&self, batch: &Batch, moved: Option<&[usize]>) -> Option<Vec<bool>> {
+        let moved = moved?;
+        let retained = self.retained.as_ref()?;
+        if self.prepared_packets.len() != batch.quads.len() {
+            crate::map::redraws::note("sprite.keeps_refused_no_packets", 1);
+            return None;
+        }
+        for (quad, prepared) in batch.quads.iter().zip(&self.prepared_packets) {
+            if quad.exact.is_some() && prepared.is_none() {
+                crate::map::redraws::note("sprite.keeps_refused_a_draw", 1);
+                return None;
+            }
+        }
+        let mut stands = vec![false; batch.quads.len()];
+        for window in moved {
+            for quad in retained.window(*window).quads() {
+                stands[quad] = true;
+            }
+        }
+        Some(stands)
+    }
+
+    /// `keeps` names, by quad, the windows that only stand somewhere else: their compiled draws
+    /// are bound again and prepared no further, and every other quad of the batch draws the
+    /// packet it drew. An emission that keeps them prepares none, so the label and text-bake
+    /// caches keep what they hold.
+    #[allow(clippy::too_many_arguments, reason = "the upload's inputs and what it keeps")]
     fn upload_changed(
         &mut self,
         device: &wgpu::Device,
@@ -1298,8 +1653,11 @@ impl SpritePass {
         batch: &Batch,
         size: [u32; 2],
         ui_scale: f32,
+        keeps: Option<Vec<bool>>,
     ) {
-        self.packets.begin();
+        if keeps.is_none() {
+            self.packets.begin();
+        }
         self.array_views.begin();
         self.native_packets.clear();
         self.fade_packets.clear();
@@ -1311,21 +1669,36 @@ impl SpritePass {
             runs.clear();
         }
         self.fade_pages = 0;
-        for bake in &mut self.bakes {
-            bake.used = false;
+        if keeps.is_none() {
+            for bake in &mut self.bakes {
+                bake.used = false;
+            }
         }
         self.native_refusals.clear();
         self.native.refused.clear();
+        if self.recording {
+            self.resident.clear();
+        }
         self.reset_stream();
         self.take_waiting();
         self.count = 0;
         if batch.is_empty() || size[0] == 0 || size[1] == 0 {
+            self.prepared_packets.clear();
             self.bakes.clear();
             self.array_views.finish();
             self.fade.fit(device, &[]);
             self.packets.finish();
             return;
         }
+        let mut prepared = std::mem::take(&mut self.prepared_packets);
+        match &keeps {
+            Some(_) => crate::map::redraws::note("sprite.packets_kept", 1),
+            None => {
+                prepared.clear();
+                prepared.resize(batch.quads.len(), None);
+            }
+        }
+        let keeping = keeps.as_deref();
         let Scratch {
             mut order,
             mut frame,
@@ -1338,6 +1711,10 @@ impl SpritePass {
             sort_order(batch, &mut order);
         }
         let emit = crate::profiling::span("sprite_emit");
+        let owners = self
+            .recording
+            .then(|| resident::owners(&batch.windows().collect::<Vec<_>>(), batch.quads.len()))
+            .unwrap_or_default();
         frame.clear();
         pages.clear();
         composites.clear();
@@ -1433,6 +1810,12 @@ impl SpritePass {
                         scissor: None,
                         range: start..composites.len() as u32,
                     });
+                    if self.recording {
+                        self.resident.draws.push(resident::Draw::Composite {
+                            page,
+                            vertices: bytemuck::cast_slice(&composites[start as usize..]).to_vec(),
+                        });
+                    }
                     (
                         fade::Placement {
                             shift: [corner[0] as f32 - x as f32, corner[1] as f32 - y as f32],
@@ -1445,30 +1828,55 @@ impl SpritePass {
                 None => (icon.placement, Target::Frame),
             };
             for &index in &order[icon.quads.clone()] {
+                self.window = owners.get(index).copied().flatten();
                 self.emit(
                     (device, queue, arena),
-                    &batch.quads[index],
+                    (index, &batch.quads[index]),
                     placement,
                     target,
                     ui_scale,
                     (&mut frame, &mut pages),
+                    (keeping, &mut prepared),
                 );
             }
         }
         // The screen interface follows, where it was laid out.
         for &index in &order[screen..] {
+            self.window = owners.get(index).copied().flatten();
             self.emit(
                 (device, queue, arena),
-                &batch.quads[index],
+                (index, &batch.quads[index]),
                 fade::Placement::identity(size),
                 Target::Frame,
                 ui_scale,
                 (&mut frame, &mut pages),
+                (keeping, &mut prepared),
             );
         }
+        self.window = None;
 
         drop(emit);
+        {
+            use crate::map::redraws::note;
+            let mut native = 0;
+            let mut plain = 0;
+            let mut exact_no_native = 0;
+            for quad in &batch.quads {
+                match &quad.exact {
+                    None => plain += 1,
+                    Some(exact) if exact.native.is_some() => native += 1,
+                    Some(_) => exact_no_native += 1,
+                }
+            }
+            note("sprite.quads_plain", plain);
+            note("sprite.quads_native", native);
+            note("sprite.quads_exact_no_native", exact_no_native);
+            note("sprite.packets_native", self.prepared[0]);
+            note("sprite.packets_batched", self.prepared[1]);
+            self.prepared = [0; 2];
+        }
         let batching = crate::profiling::span("sprite_batch");
+        self.prepared_packets = prepared;
         self.runs = batch_runs(
             std::mem::take(&mut self.runs),
             &mut self.native_packets,
@@ -1490,32 +1898,36 @@ impl SpritePass {
             );
         }
         self.array_views.finish();
-        self.bakes.retain(|bake| bake.used);
-        self.packets.finish();
+        if keeps.is_none() {
+            self.bakes.retain(|bake| bake.used);
+            self.packets.finish();
+        }
+        if self.recording {
+            let run = |run: &Run| resident::Run {
+                native: match run.pipe {
+                    Pipe::Native(index) => Some(index),
+                    _ => None,
+                },
+                composite: match run.pipe {
+                    Pipe::Composite(page) => Some(page),
+                    _ => None,
+                },
+                texture: run.texture,
+                scissor: run.scissor,
+                range: run.range.clone(),
+            };
+            self.resident.runs = self.runs.iter().map(run).collect();
+            self.resident.pages = (0..self.fade_pages)
+                .map(|page| self.fade_runs[page].iter().map(run).collect())
+                .collect();
+            self.resident.extents = (0..self.fade_pages).map(|page| self.fade.size(page)).collect();
+        }
         drop(batching);
         let _write = crate::profiling::span("sprite_write");
         self.count = frame.len() as u32;
-        write_vertices(
-            device,
-            queue,
-            &mut self.vertices,
-            &mut self.capacity,
-            &frame,
-        );
-        write_vertices(
-            device,
-            queue,
-            &mut self.fade_vertices,
-            &mut self.fade_capacity,
-            &pages,
-        );
-        write_vertices(
-            device,
-            queue,
-            &mut self.composite_vertices,
-            &mut self.composite_capacity,
-            &composites,
-        );
+        self.written += self.vertices.write(device, queue, &frame)
+            + self.fade_vertices.write(device, queue, &pages)
+            + self.composite_vertices.write(device, queue, &composites);
         self.scratch = Scratch {
             order,
             frame,
@@ -1523,19 +1935,30 @@ impl SpritePass {
             composites,
             icons,
         };
+        {
+            use crate::map::redraws::note;
+            note("sprite.runs", self.runs.len() as u64);
+            note("sprite.submissions", self.native_draws.len() as u64);
+            note("sprite.legacy_vertices", u64::from(self.count));
+        }
     }
 
     /// Draws `quad` at `placement` onto `target`: snapped quads become vertices in `frame` or
     /// `pages`, compiled draws become submissions. A draw into a fade page takes the frame
     /// stream's binds at this point and leaves its own behind, as drawing it on the frame would.
+    #[allow(clippy::too_many_arguments, reason = "one quad's own inputs and what it may keep")]
     fn emit(
         &mut self,
         (device, queue, arena): (&wgpu::Device, &wgpu::Queue, &shader_pipeline::gpu::Arena),
-        quad: &Quad,
+        (index, quad): (usize, &Quad),
         placement: fade::Placement,
         target: Target,
         ui_scale: f32,
         (frame, pages): (&mut Vec<Vertex>, &mut Vec<Vertex>),
+        (keeping, prepared_packets): (
+            Option<&[bool]>,
+            &mut [Option<shader_pipeline::gpu::batch::Data>],
+        ),
     ) {
         let size = placement.size;
         let within = match target {
@@ -1561,8 +1984,30 @@ impl SpritePass {
             let clip = (!placement.is_identity()).then(|| placement.clip());
             use shader_pipeline::gpu::stats::{Count, add};
             add(Count::GuiHanded, 1);
-            let prepared = self.prepare_target((device, queue, arena), native, (size, ui_scale, clip), target);
-            add(Count::GuiPrepared, 1);
+            // A window that only stands somewhere else draws the draw it drew, bound to the
+            // world transform its new place gives it.
+            let kept = keeping.and_then(|stands| {
+                let held = prepared_packets[index].as_mut()?;
+                if stands[index] {
+                    let viewport = super::native_shader::draw::gui_viewport(size, ui_scale);
+                    let constants = buffer_zero(native, viewport, clip);
+                    held.rebound(&*TRANSFORM_BINDINGS, bytemuck::cast_slice(&constants));
+                }
+                Some(held.clone())
+            });
+            let prepared = match kept {
+                Some(data) => Ok(shader_pipeline::gpu::batch::Packet::Batched(data)),
+                None => {
+                    let prepared = self
+                        .prepare_target((device, queue, arena), native, (size, ui_scale, clip), target);
+                    add(Count::GuiPrepared, 1);
+                    prepared_packets[index] = match &prepared {
+                        Ok(shader_pipeline::gpu::batch::Packet::Batched(data)) => Some(data.clone()),
+                        _ => None,
+                    };
+                    prepared
+                }
+            };
             if matches!(prepared, Ok(shader_pipeline::gpu::batch::Packet::Native { .. })) {
                 add(Count::GuiNative, 1);
             }
@@ -1577,6 +2022,33 @@ impl SpritePass {
                         },
                         None => cell_scissor,
                     };
+                    if self.recording {
+                        let viewport = super::native_shader::draw::gui_viewport(size, ui_scale);
+                        let constants = buffer_zero(native, viewport, clip);
+                        self.resident.draws.push(resident::Draw::Native {
+                            window: self.window,
+                            page: match target {
+                                Target::Frame => None,
+                                Target::Page { page, .. } => Some(page),
+                            },
+                            path: native.path.clone(),
+                            constants: bytemuck::cast_slice(&constants).to_vec(),
+                            extra: native
+                                .extra_constants
+                                .iter()
+                                .map(|(slot, values, _)| {
+                                    (*slot, bytemuck::cast_slice(values).to_vec())
+                                })
+                                .collect(),
+                            vertices: native.vertices.clone(),
+                            textures: native.textures.clone(),
+                            scissor,
+                            batched: !matches!(
+                                submission,
+                                shader_pipeline::gpu::batch::Packet::Native { .. }
+                            ),
+                        });
+                    }
                     let run = |index| Run {
                         pipe: Pipe::Native(index),
                         texture: NO_TEXTURE,
@@ -1617,45 +2089,7 @@ impl SpritePass {
         if self.group(quad.texture).is_none() {
             return;
         }
-        let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
-        // counters: a rotated quad turns about its own centre, with `y`
-        // down, so a positive angle is clockwise on screen.
-        let spin = (quad.rotation != 0.0).then(|| {
-            let (sin, cos) = quad.rotation.sin_cos();
-            ([(x0 + x1) * 0.5, (y0 + y1) * 0.5], sin, cos)
-        });
-        let filter = filter_mode(ui_scale * placement.scale);
-        let [out_width, out_height] = placement.out.map(|v| v as f32);
-        let corner = |x: f32, y: f32, u: f32, v: f32| {
-            let (x, y) = match spin {
-                Some((centre, sin, cos)) => {
-                    let (dx, dy) = (x - centre[0], y - centre[1]);
-                    (
-                        centre[0] + dx * cos - dy * sin,
-                        centre[1] + dx * sin + dy * cos,
-                    )
-                }
-                None => (x, y),
-            };
-            let [x, y] = placement.point([x, y]);
-            Vertex {
-                position: [x / out_width * 2.0 - 1.0, 1.0 - y / out_height * 2.0],
-                uv: [u, v],
-                color: quad.color,
-                cell: quad.uv,
-                filter,
-                shade: quad.shade,
-            }
-        };
-        let [u0, v0, u1, v1] = quad.uv;
-        let corners = [
-            corner(x0, y0, u0, v0),
-            corner(x1, y0, u1, v0),
-            corner(x1, y1, u1, v1),
-            corner(x0, y0, u0, v0),
-            corner(x1, y1, u1, v1),
-            corner(x0, y1, u0, v1),
-        ];
+        let corners = plain_corners(quad, placement, ui_scale);
         let (vertices, runs): (&mut Vec<Vertex>, Option<usize>) = match target {
             Target::Frame => (frame, None),
             Target::Page { page, .. } => (pages, Some(page)),
@@ -1663,6 +2097,18 @@ impl SpritePass {
         let start = vertices.len() as u32;
         vertices.extend(corners);
         let end = vertices.len() as u32;
+        if self.recording {
+            self.resident.draws.push(resident::Draw::Plain {
+                window: self.window,
+                page: match target {
+                    Target::Frame => None,
+                    Target::Page { page, .. } => Some(page),
+                },
+                texture: quad.texture,
+                scissor: cell_scissor,
+                vertices: bytemuck::cast_slice(&vertices[start as usize..end as usize]).to_vec(),
+            });
+        }
         let fresh = Run {
             pipe: Pipe::Legacy,
             texture: quad.texture,
@@ -1734,12 +2180,18 @@ impl SpritePass {
 
     /// Draws the uploaded quads over whatever the target already holds, after drawing the
     /// fading icons into their fade pages.
+    /// The text bakes recorded since the last call, which the caller submits before the draws
+    /// that sample them. A frame that fails submits them alone: a bake is rendered once.
+    pub fn bake_buffers(&mut self) -> Vec<wgpu::CommandBuffer> {
+        std::mem::take(&mut self.bake_buffers)
+    }
+
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, targets: &Targets) {
         if self.runs.is_empty() {
             return;
         }
         self.draw_pages(encoder);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("sprites"),
             color_attachments: &[Some(targets.output_attachment(wgpu::LoadOp::Load))],
             depth_stencil_attachment: None,
@@ -1755,7 +2207,7 @@ impl SpritePass {
     /// composite runs then read.
     fn draw_pages(&self, encoder: &mut wgpu::CommandEncoder) {
         for (index, page) in self.fade.pages.iter().take(self.fade_pages).enumerate() {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("sprite fade page"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &page.view,
@@ -1800,7 +2252,7 @@ impl SpritePass {
                             shader_pipeline::gpu::stats::pipeline();
                             pass.set_pipeline(&self.fade_legacy);
                             shader_pipeline::gpu::stats::state();
-                            pass.set_vertex_buffer(0, self.fade_vertices.slice(..));
+                            pass.set_vertex_buffer(0, self.fade_vertices.slice());
                             bound = true;
                         }
                         shader_pipeline::gpu::stats::bind();
@@ -1839,7 +2291,7 @@ impl SpritePass {
                     shader_pipeline::gpu::stats::pipeline();
                     pass.set_pipeline(&self.fade.composite);
                     shader_pipeline::gpu::stats::state();
-                    pass.set_vertex_buffer(0, self.composite_vertices.slice(..));
+                    pass.set_vertex_buffer(0, self.composite_vertices.slice());
                     bound = Some(Pipe::Composite(0));
                 }
                 shader_pipeline::gpu::stats::bind();
@@ -1854,7 +2306,7 @@ impl SpritePass {
                         shader_pipeline::gpu::stats::pipeline();
                         pass.set_pipeline(&self.pipeline);
                         shader_pipeline::gpu::stats::state();
-                        pass.set_vertex_buffer(0, self.vertices.slice(..));
+                        pass.set_vertex_buffer(0, self.vertices.slice());
                     }
                     Pipe::Native(_) | Pipe::Composite(_) => unreachable!(),
                 }
@@ -1897,7 +2349,7 @@ impl SpritePass {
             return Err("a layer holds a quad without a compiled effect".into());
         }
         self.draw_pages(encoder);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("sprite layer"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
@@ -1925,6 +2377,12 @@ impl SpritePass {
     /// Fade pages the last upload drew fading icons into, for reporting and checks.
     pub fn fade_pages(&self) -> usize {
         self.fade_pages
+    }
+
+    /// Bytes the last upload wrote to the GPU: none when nothing it draws changed. An upload on
+    /// the caller's arena counts only its vertex streams, the arena being flushed by the caller.
+    pub fn written_bytes(&self) -> u64 {
+        self.written
     }
 
     /// Prepares `draw` for the frame of `size`, or for a fade page (`page`, the page format) on
@@ -1993,34 +2451,31 @@ impl SpritePass {
         };
         views.clear();
         self.packet_views = views;
+        match &prepared {
+            Ok(shader_pipeline::gpu::batch::Packet::Native { .. }) => self.prepared[0] += 1,
+            Ok(_) => self.prepared[1] += 1,
+            Err(_) => {}
+        }
         prepared
     }
 
-    /// Whether the batch just prepared met pipelines no warm-up foresaw (a draw sampling a slot
+    /// The batch just prepared may have met pipelines no warm-up foresaw (a draw sampling a slot
     /// it does not bind takes the preceding draw's sampler, and a pipeline can reveal its texture
-    /// variant only once built): their builds are waited for, adding to `joined`, so the batch is
-    /// prepared again until it draws whole. A wait no build answers is refused by name.
-    fn join_builds(
-        &mut self,
-        arena: &shader_pipeline::gpu::Arena,
-        started: u64,
-        joined: &mut Option<std::time::Duration>,
-    ) -> bool {
-        if !std::mem::take(&mut self.waited) {
-            return false;
+    /// variant only once built). The frame draws what is ready and names the rest; `waited` makes
+    /// the next frame prepare the batch again, which picks the pipeline up once it is built.
+    fn note_waiting(&mut self, arena: &shader_pipeline::gpu::Arena) {
+        if !self.waited {
+            return;
         }
-        if shader_pipeline::gpu::builds_started() == started
-            && shader_pipeline::gpu::builds_under_way() == 0
-        {
-            let reason = "a GUI draw waited for a pipeline no build was making".to_string();
-            *self.native_refusals.entry(reason.clone()).or_default() += 1;
-            arena.refuse(&reason);
-            return false;
+        let reason = if shader_pipeline::gpu::builds_under_way() == 0 {
+            "a GUI draw waited for a pipeline no build was making"
+        } else {
+            "a GUI draw's pipeline was still being built"
         }
-        let waiting = std::time::Instant::now();
-        shader_pipeline::gpu::wait_for_builds();
-        *joined = Some(joined.unwrap_or_default() + waiting.elapsed());
-        true
+        .to_string();
+        *self.native_refusals.entry(reason.clone()).or_default() += 1;
+        arena.refuse(&reason);
+        shader_pipeline::gpu::stats::add(shader_pipeline::gpu::stats::Count::GuiJoins, 1);
     }
 
     /// Whether a stream's draw waited for its pipeline since the last call.
@@ -2155,7 +2610,7 @@ impl SpritePass {
         );
         let mut encoder = device.create_command_encoder(&Default::default());
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("text background then alpha MAX glyphs"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -2181,9 +2636,10 @@ impl SpritePass {
                 previous = Some(&submission.draw);
             }
         }
-        // The bake is submitted before the frame: its uploads are written first.
+        // The bake's uploads are written here, and its commands go out with the frame's own,
+        // ahead of the draws that sample it: a frame submits once.
         arena.flush(queue);
-        queue.submit([encoder.finish()]);
+        self.bake_buffers.push(encoder.finish());
         self.bakes.push(CachedBake {
             source: bake.clone(),
             revision,
@@ -2270,21 +2726,6 @@ fn batch_runs(
     }
     flush(&mut pending, &mut output, draws, array_views);
     output
-}
-
-/// Counts and logs a frame's wait for GUI builds no warm-up foresaw.
-fn record_join(joined: Option<std::time::Duration>) {
-    let Some(waited) = joined else {
-        return;
-    };
-    use shader_pipeline::gpu::stats::{Count, add};
-    add(Count::GuiJoins, 1);
-    add(Count::GuiJoinMicros, waited.as_micros() as u64);
-    crate::profiling::record_lap("gui_build_join", waited);
-    eprintln!(
-        "Map GUI: a batch waited {:.2} ms for pipelines no warm-up foresaw",
-        waited.as_secs_f64() * 1000.0
-    );
 }
 
 /// What text sprites bake into.
@@ -2566,23 +3007,130 @@ fn plan_sync(
     SyncPlan { drop, upload }
 }
 
-/// Uploads `vertices` into `target`, growing it to the next power of two when it is too small.
-fn write_vertices<T: bytemuck::Pod>(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    target: &mut wgpu::Buffer,
-    capacity: &mut u64,
-    vertices: &[T],
-) {
-    if vertices.is_empty() {
-        return;
+/// A vertex buffer the pass keeps between uploads, written only where its bytes changed: an
+/// upload that lays out what the last one laid out writes nothing.
+struct Stream {
+    buffer: wgpu::Buffer,
+    /// Elements the buffer has room for.
+    capacity: u64,
+    /// What the buffer holds, as far as it has ever been written.
+    held: Vec<u8>,
+    stride: usize,
+}
+
+impl Stream {
+    fn new<T>(device: &wgpu::Device) -> Self {
+        let stride = std::mem::size_of::<T>();
+        Self {
+            buffer: buffer(device, INITIAL_VERTICES, stride),
+            capacity: INITIAL_VERTICES,
+            held: Vec::new(),
+            stride,
+        }
     }
-    let count = vertices.len() as u64;
-    if count > *capacity {
-        *capacity = count.next_power_of_two();
-        *target = buffer(device, *capacity, std::mem::size_of::<T>());
+
+    fn slice(&self) -> wgpu::BufferSlice<'_> {
+        self.buffer.slice(..)
     }
-    shader_pipeline::gpu::stats::write_buffer(&queue, target, 0, bytemuck::cast_slice(vertices));
+
+    /// Writes `vertices`, growing the buffer to the next power of two when it is too small;
+    /// the bytes written.
+    fn write<T: bytemuck::Pod>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vertices: &[T],
+    ) -> u64 {
+        if vertices.is_empty() {
+            return 0;
+        }
+        let count = vertices.len() as u64;
+        if count > self.capacity {
+            self.capacity = count.next_power_of_two();
+            self.buffer = buffer(device, self.capacity, self.stride);
+            // A fresh buffer holds nothing.
+            self.held.clear();
+        }
+        let fresh: &[u8] = bytemuck::cast_slice(vertices);
+        let known = self.held.len().min(fresh.len());
+        let mut written = 0;
+        // Only the written blocks are copied back: the rest the buffer already holds.
+        for span in shader_pipeline::gpu::unheld(0, &fresh[..known], &self.held[..known]) {
+            written += (span.end - span.start) as u64;
+            shader_pipeline::gpu::stats::write_buffer(
+                &queue,
+                &self.buffer,
+                span.start as u64,
+                &fresh[span.clone()],
+            );
+            self.held[span.clone()].copy_from_slice(&fresh[span]);
+        }
+        if fresh.len() > known {
+            written += (fresh.len() - known) as u64;
+            shader_pipeline::gpu::stats::write_buffer(
+                &queue,
+                &self.buffer,
+                known as u64,
+                &fresh[known..],
+            );
+            self.held.resize(fresh.len(), 0);
+            self.held[known..].copy_from_slice(&fresh[known..]);
+        }
+        written
+    }
+}
+
+/// Where a compiled GUI draw binds its world transform, in each stage: the block
+/// [`buffer_zero`] makes, which is all a window standing somewhere else changes.
+static TRANSFORM_BINDINGS: std::sync::LazyLock<[u32; 2]> = std::sync::LazyLock::new(|| {
+    use installed_content_core::pdxshader::program::Stage;
+    [
+        shader_pipeline::binding(0, Stage::Vertex),
+        shader_pipeline::binding(0, Stage::Pixel),
+    ]
+});
+
+/// The six vertices a snapped quad draws, placed and in clip space.
+fn plain_corners(quad: &Quad, placement: fade::Placement, ui_scale: f32) -> [Vertex; 6] {
+    let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
+    // counters: a rotated quad turns about its own centre, with `y`
+    // down, so a positive angle is clockwise on screen.
+    let spin = (quad.rotation != 0.0).then(|| {
+        let (sin, cos) = quad.rotation.sin_cos();
+        ([(x0 + x1) * 0.5, (y0 + y1) * 0.5], sin, cos)
+    });
+    let filter = filter_mode(ui_scale * placement.scale);
+    let [out_width, out_height] = placement.out.map(|v| v as f32);
+    let corner = |x: f32, y: f32, u: f32, v: f32| {
+        let (x, y) = match spin {
+            Some((centre, sin, cos)) => {
+                let (dx, dy) = (x - centre[0], y - centre[1]);
+                (
+                    centre[0] + dx * cos - dy * sin,
+                    centre[1] + dx * sin + dy * cos,
+                )
+            }
+            None => (x, y),
+        };
+        let [x, y] = placement.point([x, y]);
+        Vertex {
+            position: [x / out_width * 2.0 - 1.0, 1.0 - y / out_height * 2.0],
+            uv: [u, v],
+            color: quad.color,
+            cell: quad.uv,
+            filter,
+            shade: quad.shade,
+        }
+    };
+    let [u0, v0, u1, v1] = quad.uv;
+    [
+        corner(x0, y0, u0, v0),
+        corner(x1, y0, u1, v0),
+        corner(x1, y1, u1, v1),
+        corner(x0, y0, u0, v0),
+        corner(x1, y1, u1, v1),
+        corner(x0, y1, u0, v1),
+    ]
 }
 
 /// The device pixels `[x0, y0, x1, y1]` a quad covers as laid out, on a target of `size` at
@@ -2782,10 +3330,6 @@ mod tests {
     fn sprite_pass_draws() {
         let (_serial, device, queue) = crate::map::test_support::gpu::device();
         a_gui_draw_refused_before_the_stream_is_recorded(device.clone(), queue.clone());
-        moving_sprite_upload_matches_original_across_retention_transitions(
-            device.clone(),
-            queue.clone(),
-        );
         a_fading_icon_blends_in_as_one_image_scaled_about_its_anchor(device.clone(), queue.clone());
         an_icon_wider_than_a_default_fade_page_still_fades_whole(device.clone(), queue.clone());
         each_fade_page_draws_this_upload_s_icons_alone(device.clone(), queue.clone());
@@ -2851,46 +3395,6 @@ mod tests {
         pass.upload(&device, &queue, &next_frame, &batch, [16, 16], 1.0);
         assert_eq!(next_frame.refusals(), arena.refusals());
         assert_eq!(pass.native_refusals.values().sum::<u64>(), 1);
-    }
-
-    fn moving_sprite_upload_matches_original_across_retention_transitions(
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-    ) {
-        let mut batch = Batch::default();
-        batch.scaled(
-            &SpriteSheet {
-                name: "synthetic motion".into(),
-                texture: 0,
-                frames: 1,
-                size: [4, 4],
-            },
-            0,
-            [2.0, 3.0],
-            [7.0, 8.0],
-            [0.75, 0.5, 0.25, 1.0],
-        );
-        // A refused native quad stays refused on moving, rebuild and retained frames alike.
-        let mut refused = batch.quads[0].clone();
-        refused.exact = Some(Exact {
-            native: None,
-            corners: [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
-            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-            scissor: None,
-            technique: 0,
-            blend: super::super::native_effects::Blend::Off,
-            samplers: 0,
-            lod_bias: [0.0; 3],
-            second: None,
-            masking: None,
-            offsets: [0.0; 4],
-            inputs: [0.0; 4],
-            second_color: [0.0; 4],
-        });
-        batch.quads.push(refused);
-        let (pixels, refusals, _) = oracle::render_batch(&device, &queue, &batch);
-        assert!(pixels.iter().any(|byte| *byte != 0));
-        assert_eq!(refusals.values().sum::<u64>(), 1);
     }
 
     #[test]
@@ -3282,12 +3786,14 @@ mod tests {
         pass.fade.side = 20;
         let arena = shader_pipeline::gpu::Arena::new(&device);
         // One upload and draw on the same pass: its pixels, fade pages and runs on each page.
+        let at = std::cell::Cell::new(0);
         let frame = |pass: &mut SpritePass, quads: Vec<Quad>| {
             let batch = Batch {
                 quads,
                 ..Batch::default()
             };
             arena.reset();
+            at.set(at.get() + 1);
             pass.upload(&device, &queue, &arena, &batch, [16, 16], 1.);
             arena.flush(&queue);
             let mut encoder = device.create_command_encoder(&Default::default());
@@ -3372,12 +3878,14 @@ mod tests {
     fn fade_pages_follow_each_upload_s_demand(device: wgpu::Device, queue: wgpu::Queue) {
         let mut pass = red_and_green(&device, &queue);
         let arena = shader_pipeline::gpu::Arena::new(&device);
+        let at = std::cell::Cell::new(0);
         let sizes = |pass: &mut SpritePass, quads: Vec<Quad>, size: [u32; 2]| {
             let batch = Batch {
                 quads,
                 ..Batch::default()
             };
             arena.reset();
+            at.set(at.get() + 1);
             pass.upload(&device, &queue, &arena, &batch, size, 1.);
             pass.fade
                 .pages

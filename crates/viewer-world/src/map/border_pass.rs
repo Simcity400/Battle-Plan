@@ -5,6 +5,7 @@
 //! land edges initially use [`BorderClass::Province`]. Each hour,
 //! [`BorderPass::set_classes`] rebuilds index buffers over the shared vertices
 //! as canonical ownership and state boundaries change.
+use viewer_foundation::map::gpu_contract::Targets;
 use std::{
     collections::{BTreeMap, HashSet},
     io,
@@ -1111,7 +1112,7 @@ impl BorderPass {
         &self,
         arena: &shader_pipeline::gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
+        targets: &Targets,
         inputs: super::border_shader::Inputs<'_>,
         frame: BorderFrame,
     ) -> io::Result<super::shader_constants::WorldPixelConstants> {
@@ -1152,7 +1153,7 @@ impl BorderPass {
         viewer_foundation::map::gpu_contract::compiled(&self.compiled)?.draw(
             arena,
             encoder,
-            target,
+            targets,
             inputs,
             &batches,
             frame.visible,

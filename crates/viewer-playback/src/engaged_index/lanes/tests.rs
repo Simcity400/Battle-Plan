@@ -173,10 +173,8 @@ fn covered(history: &History) -> Vec<(u64, String)> {
 }
 
 fn describe(covered: &Covered) -> String {
-    format!(
-        "{}..{} points {:?} recording {:?} icons {:?} recording icons {:?} viewers {:?} players {:?}",
-        covered.first, covered.last, covered.points, covered.recording, covered.icons, covered.recording_icons, covered.viewers, covered.players
-    )
+    let [perspective, recording] = covered.folds();
+    format!("{}..{} folded {perspective:?} recording {recording:?} viewers {:?} players {:?}", covered.first, covered.last, covered.viewers, covered.players)
 }
 
 fn by_frames(country: Country) -> Arc<History> {

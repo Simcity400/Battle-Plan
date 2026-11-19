@@ -10,7 +10,7 @@
 //! native task-force operands (supply, status, port tooltip, pride) and its ideology frame are not
 //! this layer's yet.
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, View};
+use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, View};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
@@ -536,12 +536,12 @@ impl NavalCounters {
     }
 
     /// Admits only the provinces `admits` names from the next compose: the tests' camera.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn admit_only(&mut self, admits: impl Fn(u32) -> bool + Send + Sync + 'static) {
         self.admits = Some(Arc::new(admits));
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn outside(&self) -> usize {
         self.outside
     }
@@ -826,7 +826,7 @@ impl NavalCounters {
         })
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         let core = if self.hidden { Err("not drawn at this view".to_owned()) } else { self.core(mirrors) };
         let (vision, relations) = match core {
@@ -858,7 +858,7 @@ impl NavalCounters {
         let columns = self.columns();
         let mut dirty = std::mem::take(&mut self.ship_slots);
         let ships = held(mirrors.get(TableId::Ships));
-        let _ = dirty.settle(&mut Budget::unlimited(), |slot| {
+        let _ = dirty.settle(|slot| {
             let row = match ships.filter(|ships| ships.live(slot)) {
                 Some(ships) => (ships.key(slot).map_or(0, |key| key as u64), ships.number(columns.ship_force, slot).value().unwrap_or(0)),
                 None => (0, 0),
@@ -878,7 +878,7 @@ impl NavalCounters {
             }
         }
         let mut dirty = std::mem::take(&mut self.fleet_slots);
-        let _ = dirty.settle(&mut Budget::unlimited(), |slot| {
+        let _ = dirty.settle(|slot| {
             self.settle_fleet(mirrors, slot);
             Ok(())
         });
@@ -888,7 +888,7 @@ impl NavalCounters {
         }
         let tables = Tables::of(mirrors);
         let mut dirty = std::mem::take(&mut self.forces);
-        let _ = dirty.settle(budget, |slot| {
+        let _ = dirty.settle(|slot| {
             self.settle_force(&tables, (&vision, &relations), slot);
             Ok(())
         });
@@ -1062,7 +1062,7 @@ impl Layer for NavalCounters {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         let marked = self.marked;
         self.all = true;
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors);
         self.marked = marked;
         Ok(())
     }
@@ -1087,19 +1087,15 @@ impl Layer for NavalCounters {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         let entities = self.forces.len() + self.ship_slots.len() + self.fleet_slots.len() + usize::from(self.all);
-        let since = [self.forces.since(), self.ship_slots.since(), self.fleet_slots.since()].into_iter().flatten().min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     fn held(&self) -> usize {

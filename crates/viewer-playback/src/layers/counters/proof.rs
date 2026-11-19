@@ -9,7 +9,7 @@ use super::{Counters, PHASES, Source, fed::Fed};
 const PHASE_NS: [&str; PHASES.len()] = ["ns groups", "ns orders", "ns plans", "ns arrays", "ns members", "ns whole members", "ns strength", "ns orders only", "ns outside", "ns memberships", "ns rows"];
 use crate::{
     document::Document,
-    layers::{Budget, Layer},
+    layers::{Settling, Layer},
     comparison::Compared,
     playhead_host::mirror::Mirrors,
 };
@@ -120,8 +120,8 @@ pub fn fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &crate::layers::Ups
     let layer = counters(layer);
     let mut fresh = layer.fresh();
     fresh.compose_with(mirrors, upstream)?;
-    fresh.settle_with(mirrors, upstream, &mut Budget::unlimited())?;
-    fresh.publish(&mut Budget::unlimited());
+    fresh.settle_with(mirrors, upstream, Settling::Whole)?;
+    fresh.publish();
     let mut compared = Compared::default();
     if layer.refused() != fresh.refused() {
         compared.entries = 1;
@@ -130,9 +130,9 @@ pub fn fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &crate::layers::Ups
         return Ok(compared);
     }
     let product = layer.stacks().cloned().unwrap_or_default();
-    let sources: std::collections::BTreeSet<&Source> = product.keys().chain(fresh.published.keys()).filter(|source| layer.admitted(source.0)).collect();
+    let sources: std::collections::BTreeSet<Source> = product.keys().chain(fresh.published.keys()).filter(|source| layer.admitted(source.0)).collect();
     for source in sources {
-        let (mine, theirs) = (product.get(source), fresh.published.get(source));
+        let (mine, theirs) = (product.get(&source), fresh.published.get(&source));
         compared.entries += 1 + mine.map_or(0, |members| members.len()).max(theirs.map_or(0, |members| members.len())) as u64;
         if mine.map(|members| &members[..]) != theirs.map(|members| &members[..]) {
             compared.differing += 1;

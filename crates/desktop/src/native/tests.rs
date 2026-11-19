@@ -6,7 +6,7 @@ use super::*;
 fn resized_commands_coalesce_and_close_takes_priority() {
     let mut pending = Pending {
         visibility: Some(true),
-        open: Some(("x".into(), "v1".into())),
+        open: Some(("x".into(), Some("v1".into()))),
         close: true,
         ..Default::default()
     };
@@ -53,6 +53,7 @@ fn restart_restores_unacknowledged_open_and_seek() {
             seek_sequence: 7,
             fraction: 0.375,
             hours_per_second: 1440.0,
+            composed_at: 0.0,
         }),
     };
     let mut inner = Inner {
@@ -73,7 +74,7 @@ fn restart_restores_unacknowledged_open_and_seek() {
     inner.restore_commands();
     assert_eq!(
         inner.pending.open,
-        Some(("new.battleplan".into(), "new-version".into()))
+        Some(("new.battleplan".into(), Some("new-version".into())))
     );
     assert_eq!(inner.pending.seek, Some(requested));
     inner.requested_path = None;
@@ -82,7 +83,7 @@ fn restart_restores_unacknowledged_open_and_seek() {
     inner.restore_commands();
     assert_eq!(
         inner.pending.open,
-        Some(("old.battleplan".into(), "old-version".into()))
+        Some(("old.battleplan".into(), Some("old-version".into())))
     );
     assert_eq!(
         inner.pending.seek,
@@ -122,7 +123,7 @@ fn seek_acknowledgement_requires_the_same_recording_and_revision() {
 #[test]
 fn hidden_map_defers_document_work_without_spinning() {
     let mut pending = Pending {
-        open: Some(("next.battleplan".into(), "v2".into())),
+        open: Some(("next.battleplan".into(), Some("v2".into()))),
         seek: Some(SeekTarget {
             path: "next.battleplan".into(),
             revision: "v2".into(),
@@ -186,6 +187,8 @@ fn display_choices_sent_while_no_viewer_runs_are_kept_for_one_starting() {
     host.set_display(MapAction::Vsync { enabled: true });
     host.set_display(MapAction::Vsync { enabled: false });
     host.set_display(MapAction::UiScale { scale: Some(1.5) });
+    host.set_display(MapAction::FrameLimit { hz: Some(120.0) });
+    host.set_display(MapAction::FrameLimit { hz: Some(60.0) });
     let inner = host.shared.lock().unwrap();
     // Nothing runs yet, so nothing is queued; the latest of each kind is kept, numbered, instead.
     assert!(inner.pending.actions.is_empty());
@@ -195,7 +198,8 @@ fn display_choices_sent_while_no_viewer_runs_are_kept_for_one_starting() {
             "{:?}",
             [
                 (2, MapAction::Vsync { enabled: false }),
-                (3, MapAction::UiScale { scale: Some(1.5) })
+                (3, MapAction::UiScale { scale: Some(1.5) }),
+                (5, MapAction::FrameLimit { hz: Some(60.0) })
             ]
         )
     );
@@ -243,23 +247,27 @@ fn only_a_display_choice_sent_while_a_viewer_starts_replaces_its_launch_read() {
     let read = vec![
         MapAction::Vsync { enabled: true },
         MapAction::UiScale { scale: None },
+        MapAction::FrameLimit { hz: None },
     ];
     // Sent before this launch began, so its read has them or the game's newer settings.
     host.set_display(MapAction::Vsync { enabled: false });
     host.set_display(MapAction::UiScale { scale: Some(1.5) });
+    host.set_display(MapAction::FrameLimit { hz: Some(60.0) });
     let since = host.shared.lock().unwrap().display_sent;
     let launch = || {
         let inner = host.shared.lock().unwrap();
         debug(&launch_display(read.clone(), &inner.display, since))
     };
     assert_eq!(launch(), debug(&read));
-    // VSync changed after the read, before the child was installed.
+    // VSync and the frame rate limit changed after the read, before the child was installed.
     host.set_display(MapAction::Vsync { enabled: false });
+    host.set_display(MapAction::FrameLimit { hz: Some(120.0) });
     assert_eq!(
         launch(),
         debug(&[
             MapAction::UiScale { scale: None },
-            MapAction::Vsync { enabled: false }
+            MapAction::Vsync { enabled: false },
+            MapAction::FrameLimit { hz: Some(120.0) }
         ])
     );
 }

@@ -13,7 +13,7 @@
 //! Vision, the type-icon relations and the destination hostility of moving guns are other
 //! layers' products; until they can be read, they are inputs set from outside.
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, Text, View, owned::opaque};
+use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Text, View, owned::opaque};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
@@ -65,7 +65,7 @@ impl Content {
 
     /// No anchors and no movement map: every route stands still or in its combat stand-off, on
     /// the provinces `land` names land.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn bare(subunits: TokenKeys, land: impl Fn(u32) -> bool + Send + Sync + 'static) -> Self {
         Self { counters: None, land: Box::new(land), movement: None, subunits: Ok(subunits) }
     }
@@ -417,7 +417,7 @@ impl GunCounters {
     }
 
     /// Guns standing on a rail row at their last settle.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn on_rail(&self) -> usize {
         self.on_rail.iter().map(|word| word.count_ones() as usize).sum()
     }
@@ -604,8 +604,8 @@ impl GunCounters {
         self.guns[at] = Some((fields.id, gun));
     }
 
-    /// Recomputes what is dirty within `budget`, the rest carried.
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    /// Recomputes what is dirty within `settling`, the rest carried.
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         let refused = if self.hidden { Err("not drawn at this view".to_owned()) } else { self.core(mirrors) };
         let (vision, relations, hostility) = match refused {
@@ -660,7 +660,7 @@ impl GunCounters {
         let mut dirty = std::mem::take(&mut self.dirty);
         let taken = dirty.len() as u64;
         let mut paths = [Vec::new(), Vec::new()];
-        let _ = dirty.settle(budget, |slot| {
+        let _ = dirty.settle(|slot| {
             self.settle_gun(&tables, (&vision, &relations, &hostility), slot, &mut paths);
             Ok(())
         });
@@ -799,7 +799,7 @@ impl Layer for GunCounters {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         let (marked, phases) = (self.marked, self.phases);
         self.all = true;
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors);
         self.publish();
         (self.marked, self.phases) = (marked, phases);
         Ok(())
@@ -819,18 +819,15 @@ impl Layer for GunCounters {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         self.publish();
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.dirty.len() + usize::from(self.all), frames: self.dirty.since().map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities: self.dirty.len() + usize::from(self.all) }
     }
 
     fn held(&self) -> usize {

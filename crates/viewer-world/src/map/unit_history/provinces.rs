@@ -14,7 +14,43 @@ pub(super) struct Record {
     pub id: u32,
     pub province: Province,
     pub targets: Option<Arc<ProvinceTargets>>,
+    /// The targets the province's last visit applied. Holding the table keeps its address its
+    /// own, so one pointer says whether the hour changed anything this province reads.
+    pub applied: Option<Arc<ProvinceTargets>>,
     pub has_candidates: bool,
+}
+
+impl Record {
+    /// Whether the hour's targets are the ones this province's last visit applied.
+    pub fn applied_hour(&self) -> bool {
+        match (&self.targets, &self.applied) {
+            (Some(hour), Some(applied)) => Arc::ptr_eq(hour, applied),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    /// Takes `next` as the hour's targets, keeping the table already held when the hour built an
+    /// equal one: a province whose targets did not change is then one pointer from being left
+    /// alone ([`Self::applied_hour`]).
+    fn install(&mut self, next: Option<&Arc<ProvinceTargets>>) {
+        let kept = match (&self.targets, next) {
+            (Some(held), Some(next)) => Arc::ptr_eq(held, next) || **held == **next,
+            (None, None) => return,
+            _ => false,
+        };
+        if crate::map::actor_check::every().is_some() {
+            let name = if kept {
+                "hour_targets_kept"
+            } else {
+                "hour_targets_changed"
+            };
+            viewer_foundation::view_record::add("unit walk", name, 1);
+        }
+        if !kept {
+            self.targets = next.cloned();
+        }
+    }
 }
 
 /// Record indices, one bit each, iterated in ascending order.
@@ -158,9 +194,8 @@ impl Provinces {
                 (Some(&a), Some(&(&b, _))) => a.min(b),
             };
             let was = old.next_if_eq(&id).is_some();
-            let lands = new
-                .next_if(|&(&key, _)| key == id)
-                .map(|(_, prepared)| Arc::clone(&prepared.lands));
+            let next = new.next_if(|&(&key, _)| key == id).map(|(_, prepared)| prepared);
+            let lands = next.map(|prepared| Arc::clone(&prepared.lands));
             at = self.locate(at, id);
             // The full walk's lookup refuses a province without a record the same way.
             let index = if self.records.get(at).is_some_and(|record| record.id == id) {
@@ -199,9 +234,7 @@ impl Provinces {
         for record in &mut self.records {
             let id = record.id;
             while prepared.next_if(|&(&key, _)| key < id).is_some() {}
-            record.targets = prepared
-                .next_if(|&(&key, _)| key == id)
-                .map(|(_, joined)| Arc::clone(joined));
+            record.install(prepared.next_if(|&(&key, _)| key == id).map(|(_, joined)| joined));
             while candidates.next_if(|&key| key < id).is_some() {}
             record.has_candidates = candidates.next_if_eq(&id).is_some();
         }
@@ -236,9 +269,7 @@ impl Provinces {
                 break;
             };
             while prepared.next_if(|&(&key, _)| key < id).is_some() {}
-            record.targets = prepared
-                .next_if(|&(&key, _)| key == id)
-                .map(|(_, joined)| Arc::clone(joined));
+            record.install(prepared.next_if(|&(&key, _)| key == id).map(|(_, joined)| joined));
             while current.next_if(|&key| key < id).is_some() {}
             record.has_candidates = current.next_if_eq(&id).is_some();
         }
@@ -251,7 +282,8 @@ impl Provinces {
     #[cfg(test)]
     fn join_by_lookup(&mut self, targets: &Targets, naval: &naval::History) {
         for record in &mut self.records {
-            record.targets = targets.0.provinces.get(&record.id).map(Arc::clone);
+            let next = targets.0.provinces.get(&record.id);
+            record.install(next);
             record.has_candidates = naval.has_candidates(record.id);
         }
     }
@@ -285,26 +317,35 @@ impl Provinces {
                     lands: std::mem::take(&mut record.province.lands),
                     ..Default::default()
                 };
+                record.applied = None;
                 self.populated.remove(&at);
             }
         }
     }
 
-    /// Every entity's placed parts, `movement` (sorted by slot) carrying the moving ones.
-    pub(super) fn placed(&self, movement: &[(Slot, MovementDelta)]) -> Vec<(usize, ModelInstance)> {
-        self.populated
-            .iter()
-            .flat_map(|at| self.records[at].province.entities.iter())
-            .flat_map(|(slot, entity)| {
+    /// Every entity's parts where their hours placed them, appended to `into`, with the parts of
+    /// the slots `movement` (sorted by slot) moves named in `moving` by their ordinal in `into`
+    /// and the delta that carries them.
+    pub(super) fn standing(
+        &self,
+        into: &mut Vec<(usize, ModelInstance)>,
+        moving: &mut Vec<(usize, MovementDelta)>,
+        movement: &[(Slot, MovementDelta)],
+    ) {
+        for at in self.populated.iter() {
+            for (slot, entity) in &self.records[at].province.entities {
                 let delta = movement
                     .binary_search_by_key(slot, |entry| entry.0)
                     .ok()
                     .map(|index| movement[index].1);
-                entity.placed().map(move |(mesh, instance)| {
-                    (mesh, delta.map_or(instance, |delta| delta.apply(instance)))
-                })
-            })
-            .collect()
+                for part in entity.placed() {
+                    if let Some(delta) = delta {
+                        moving.push((into.len(), delta));
+                    }
+                    into.push(part);
+                }
+            }
+        }
     }
 
     #[cfg(test)]

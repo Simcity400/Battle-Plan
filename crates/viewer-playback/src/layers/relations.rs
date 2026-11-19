@@ -9,7 +9,7 @@
 //! the viewer's recorded `CountryCounterInputs` packets, as today; a viewer at slot zero reads
 //! packets this layer does not decode and is refused by name.
 
-use super::{Budget, Carried, Changed, Gpu, Inputs, Layer, List, Num, Upstream, View, vision};
+use super::{Carried, Settling, Changed, Inputs, Keys, Layer, List, Num, Upstream, View, vision};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
 use playhead::Step;
 use replay_columnar::manifest::Status;
@@ -19,7 +19,7 @@ use viewer_foundation::map::{
     visibility::{Families, forward_zero_shared_of},
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     sync::Arc,
 };
@@ -195,11 +195,14 @@ pub struct Relations {
     /// Raw references (kind `"country"`) whose relation changed since the host last cleared it.
     changed: Changed,
     /// The index is to be made again at the next settle: the parts of its facts to read again,
-    /// and the countries to decide again (`all`, or those `raws` names).
+    /// and the countries to decide again (`all` marks every one it holds, else those `owed` names).
     dirty: bool,
     parts: u8,
     all: bool,
-    raws: BTreeSet<u32>,
+    owed: Keys,
+    /// The viewer's volunteer hosts are read again: a change of them decides every country again,
+    /// since each is tested against the list.
+    hosts_new: bool,
     /// The viewer's volunteer hosts as last read.
     hosts: Result<Vec<(u32, u32)>, String>,
     ours: Option<u32>,
@@ -208,10 +211,12 @@ pub struct Relations {
     statuses: HashMap<usize, Status>,
     /// Index recomputes since the layer was made.
     recomputes: u64,
+    /// Countries decided since the layer was made: the work its settles did.
+    decided: u64,
     /// The values the index was last made from, which `at_war` asks.
     facts: Option<Arc<Facts>>,
     /// The viewer when no vision layer is read: the tests' world.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     viewer: Option<u32>,
 }
 
@@ -230,14 +235,16 @@ impl Relations {
             dirty: true,
             parts: EVERY_PART,
             all: true,
-            raws: BTreeSet::new(),
+            owed: Keys::default(),
+            hosts_new: false,
             hosts: Ok(Vec::new()),
             ours: None,
             sent: HashSet::new(),
             statuses: HashMap::new(),
             recomputes: 0,
+            decided: 0,
             facts: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             viewer: None,
         }
     }
@@ -259,7 +266,7 @@ impl Relations {
     }
 
     /// The viewer's slot when no vision layer is read: the tests' world.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn viewed_as(mut self, ours: u32) -> Self {
         self.viewer = Some(ours);
         self
@@ -268,6 +275,12 @@ impl Relations {
     /// Recomputes since the layer was made.
     pub fn recomputes(&self) -> u64 {
         self.recomputes
+    }
+
+    /// Countries decided since the layer was made.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn decided(&self) -> u64 {
+        self.decided
     }
 
     fn columns(&self) -> Columns {
@@ -281,11 +294,25 @@ impl Relations {
         self.all = true;
     }
 
+    /// Every country the index holds and every link marked, which `all` stands for until a settle
+    /// reaches it.
+    fn mark_all(&mut self, links: &BTreeMap<u32, u32>) {
+        self.all = false;
+        let frame = self.recomputes;
+        let raws: Vec<u32> = links.keys().copied().chain([0]).chain(self.index.countries()).collect();
+        for raw in raws {
+            self.owed.mark(u64::from(raw), frame);
+        }
+    }
+
     /// `part` of the facts to be read again, and the countries `raws` names decided again.
     fn mark(&mut self, part: u8, raws: impl IntoIterator<Item = u32>) {
         self.dirty = true;
         self.parts |= part;
-        self.raws.extend(raws);
+        let frame = self.recomputes;
+        for raw in raws {
+            self.owed.mark(u64::from(raw), frame);
+        }
     }
 
     /// The raw references of canonical slot `slot` (country zero for zero), from the last facts.
@@ -322,14 +349,19 @@ impl Relations {
             Some(_) if self.parts & LINKS == 0 => (self.parts, self.all),
             _ => (EVERY_PART, true),
         };
-        let raws = std::mem::take(&mut self.raws);
-        (self.parts, self.all) = (0, false);
+        self.all = all;
+        self.parts = 0;
         let links = match (&old, parts & LINKS) {
             (Some(old), 0) => Arc::clone(&old.links),
             _ => match complete(mirrors, TableId::CountryLinks) {
                 Err(why) => {
                     let index = Index::unavailable_for(why);
-                    self.publish(index, None);
+                    for raw in index.changed_from(&self.index) {
+                        self.changed.mark("country", u64::from(raw));
+                    }
+                    (self.index, self.facts) = (Arc::new(index), None);
+                    self.owed.clear();
+                    self.all = false;
                     return;
                 }
                 Ok(links) => Arc::new(links.rows().filter_map(|slot| Some((links.key(slot)? as u32, links.number(columns.link_slot, slot).value()?))).collect()),
@@ -359,27 +391,26 @@ impl Relations {
             Some(old) if old.zero.0 == ours => old.zero.clone(),
             _ => (ours, zero_shared(mirrors, &links, ours, columns)),
         };
-        if old.is_none() || parts & HOSTS != 0 {
-            self.hosts = self.read_hosts(mirrors, &links, ours, columns);
+        if old.is_none() || parts & HOSTS != 0 || std::mem::take(&mut self.hosts_new) {
+            let read = self.read_hosts(mirrors, &links, ours, columns);
+            // Each country is tested against the list, so a list that moved decides every one again.
+            self.all |= std::mem::replace(&mut self.hosts, read) != self.hosts;
         }
         let facts = Facts { links, countries, wars, families, zero };
+        if self.all {
+            self.mark_all(&facts.links);
+        }
         let hosts = self.hosts.as_deref().map_err(Clone::clone);
-        if !all && raws.is_empty() && self.index.len() > 0 && hosts.as_ref().err() == self.index.volunteer_problem() {
+        if self.owed.len() == 0 && self.index.len() > 0 && hosts.as_ref().err() == self.index.volunteer_problem() {
             self.facts = Some(Arc::new(facts));
             return;
         }
-        let index = if all || self.index.len() == 0 { Index::compute(&facts, &facts.links, ours, hosts) } else { self.index.remake(&facts, &facts.links, ours, hosts, &raws) };
-        self.publish(index, Some(Arc::new(facts)));
-    }
-
-    /// `index` and the `facts` it was made from become the layer's; the countries whose relation
-    /// changed are listed.
-    fn publish(&mut self, index: Index, facts: Option<Arc<Facts>>) {
-        for raw in index.changed_from(&self.index) {
-            self.changed.mark("country", u64::from(raw));
-        }
-        self.index = Arc::new(index);
-        self.facts = facts;
+        let decided = self.owed.take();
+        self.decided += decided.len() as u64;
+        let mut index = self.index.clone_shared();
+        let mut changed = std::mem::take(&mut self.changed);
+        index.remake_in_place(&facts, &facts.links, ours, hosts, decided.into_iter().map(|raw| raw as u32), &mut |raw| changed.mark("country", u64::from(raw)));
+        (self.changed, self.index, self.facts) = (changed, Arc::new(index), Some(Arc::new(facts)));
     }
 
     /// The viewer's volunteer hosts, and the divisions its list names.
@@ -527,7 +558,7 @@ impl Layer for Relations {
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
         self.statuses = mirrors.iter().filter_map(|mirror| mirror.status().map(|status| (mirror.table().index(), status))).collect();
         self.everything();
-        self.settle_with(mirrors, upstream, &mut Budget::unlimited())
+        self.settle_with(mirrors, upstream, Settling::Whole)
     }
 
     fn apply(&mut self, step: &Step, mirrors: &Mirrors) {
@@ -581,7 +612,6 @@ impl Layer for Relations {
                 let written = changes.columns().iter().filter(|written| written.column() == columns.logical_owner.column).flat_map(|written| written.slots()).filter_map(|&slot| divisions.key(slot)).map(|key| key as u64);
                 if keys.chain(written).any(|division| self.sent.contains(&division)) {
                     self.mark(HOSTS, []);
-                    self.all = true;
                 }
                 continue;
             }
@@ -608,34 +638,46 @@ impl Layer for Relations {
                 }
                 TableId::CountryCounterInputs | TableId::ReservedCountryNaming => self.mark(ZERO, [0]),
                 TableId::Countries => {
+                    // A row decides the receivers of its own canonical slot; the viewing country's
+                    // decides every one, since each is read against it.
+                    let mirror = mirrors.get(table);
+                    let written = changes.columns().iter().flat_map(|written| written.slots()).filter_map(|&slot| mirror.and_then(|rows| rows.key(slot)));
+                    let countries: Vec<u32> = keys.iter().copied().chain(written).map(|key| key as u32).collect();
                     self.mark(COUNTRIES, []);
-                    self.all = true;
+                    for raw in countries {
+                        match (self.facts.as_ref().and_then(|facts| if raw == 0 { Some(0) } else { facts.links.get(&raw).copied() }), self.ours) {
+                            (Some(slot), Some(our)) if slot != our => {
+                                let mut raws = self.raws_of(slot);
+                                raws.push(raw);
+                                self.mark(COUNTRIES, raws);
+                            }
+                            _ => self.all = true,
+                        }
+                    }
                 }
-                TableId::SentVolunteers => {
-                    self.mark(HOSTS, []);
-                    self.all = true;
-                }
+                // The hosts are read again; only a list that moved decides every country again.
+                TableId::SentVolunteers => self.mark(HOSTS, []),
                 _ => self.everything(),
             }
         }
     }
 
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
         if self.columns.is_none() {
             return Ok(());
         }
         let ours = upstream.get::<vision::Vision>().and_then(vision::Vision::ours);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let ours = ours.or(self.viewer);
         if ours != self.ours {
             self.ours = ours;
             self.everything();
         }
-        if !self.dirty {
+        if !self.dirty && self.owed.len() == 0 {
             return Ok(());
         }
         self.dirty = false;
@@ -647,21 +689,21 @@ impl Layer for Relations {
                     self.changed.mark("country", u64::from(raw));
                 }
                 self.index = Arc::new(index);
+                self.owed.clear();
             }
         }
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
+    /// The countries whose relation it still owes, a whole mark counting every one it holds.
     fn carried(&self) -> Carried {
-        Carried { entities: usize::from(self.dirty), frames: 0 }
+        let marked = if self.all { self.index.len().max(1) } else { 0 };
+        Carried { entities: self.owed.len() + marked + usize::from(self.dirty) }
     }
 
     fn held(&self) -> usize {
-        self.index.len() * 96 + self.changed.of("country").len() * 8 + self.sent.capacity() * 16
+        self.index.len() * 96 + self.changed.bytes() + self.sent.capacity() * 16 + self.owed.bytes()
     }
 
     fn any(&self) -> &dyn std::any::Any {

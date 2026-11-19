@@ -3,7 +3,6 @@
 //! budgeted settle takes them. A written slot is read then, not at its step: a slot a later step
 //! reuses names the later row, and that step's gone and come rows are marks of their own.
 
-use super::Budget;
 use crate::playhead_host::mirror::Mirrors;
 use playhead::changes::Changes;
 use replay_data::rows::TableId;
@@ -78,15 +77,11 @@ impl Touched {
         }
     }
 
-    /// Takes the marks in order while `budget` lasts, looking at it every 32: each with its row's
-    /// key (a written slot's as its table's mirror holds it now; one the mirror names no key for is
-    /// dropped). Whether every mark was taken.
-    pub fn take(&mut self, mirrors: &Mirrors, budget: &mut Budget, mut each: impl FnMut(TableId, Touch, u128)) -> bool {
+    /// Takes every mark in order, each with its row's key (a written slot's as its table's mirror
+    /// holds it now; one the mirror names no key for is dropped).
+    pub fn take(&mut self, mirrors: &Mirrors, mut each: impl FnMut(TableId, Touch, u128)) {
         let mut done = 0;
         while done < self.marks.len() {
-            if done % 32 == 0 && !budget.left() {
-                break;
-            }
             let Mark { table, touch, key } = self.marks[done];
             done += 1;
             let table = TableId::ALL[usize::from(table)];
@@ -102,7 +97,6 @@ impl Touched {
         if self.marks.is_empty() {
             self.since = None;
         }
-        self.marks.is_empty()
     }
 
     pub fn len(&self) -> usize {
@@ -111,11 +105,6 @@ impl Touched {
 
     pub fn is_empty(&self) -> bool {
         self.marks.is_empty()
-    }
-
-    /// The frame the oldest mark not taken was noted at.
-    pub fn since(&self) -> Option<u64> {
-        self.since
     }
 
     pub fn clear(&mut self) {

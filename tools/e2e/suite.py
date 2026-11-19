@@ -718,7 +718,7 @@ def parse(argv):
                              help="which earlier failures keep a case from being left out as a repeat: all, or only the product's")
     run_command.add_argument("--stages", default=",".join(STAGES))
     run_command.add_argument("--phases", help="sweep phases to run, all by default")
-    run_command.add_argument("--cases", help="control case ids to run, all by default")
+    run_command.add_argument("--cases", help="control case ids to run, all by default; in the map phases, the map interactions to run")
     run_command.add_argument("--pages", help="pages the control cases visit, all by default (a long controls phase in parts)")
     run_command.add_argument("--pages-at", type=float, help="share of the timeline (0 to 1) the pages-at phase visits every page at")
     args = parser.parse_args(argv)

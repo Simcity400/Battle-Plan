@@ -38,13 +38,25 @@ pub(crate) struct Frame {
     pub start_us: f64,
     pub work_us: f64,
     pub gpu_wait_us: f64,
+    /// Between this frame's start and the one before it; none for the first.
+    pub interval_us: Option<f64>,
+    /// Waiting for a swap chain image; none without a window.
+    pub acquire_us: Option<f64>,
     pub thread_us: Option<f64>,
     pub head_hour: f64,
-    /// The hour the window clock shows drawn.
+    /// The hour the frame drew everything at: its own head
+    /// ([`viewer_foundation::map::frame_head`]).
     pub drawn_hour: Option<i32>,
-    /// The oldest hour on screen, every layer and the overlay counted; with no map of layers, the
-    /// drawn hour.
+    /// The oldest hour the map's layers show, every layer counted; with no map of layers, the
+    /// hour drawn. Never the frame's own head, which stands wherever the hours it has reached put
+    /// it: this is what the products' lateness is measured from. The overlay is not one of them:
+    /// playing, the layers alone are the picture's hour, and how far the overlay stands behind
+    /// them is reported on its own ([`Self::overlay_behind_hours`]).
     pub oldest_hour: Option<i32>,
+    /// The hour the overlay drawn stands at; none until the frame holds one.
+    pub overlay_hour: Option<i32>,
+    /// The publication the frame drew ([`crate::playhead_host::Frame::made`]); none without a map.
+    pub made: Option<u64>,
     pub late_start: bool,
     pub new_hour: bool,
 }
@@ -56,17 +68,33 @@ impl Frame {
             .map(|oldest| self.head_hour - f64::from(oldest))
     }
 
-    /// The head less the window clock's drawn hour, which leaves out the layers whose product is
-    /// made on a worker from rows at the head, and the overlay.
+    /// The clock's head less the hour the frame drew at: the head's own delay, which the steering
+    /// takes on while a publication is late and gives back after ([`viewer_foundation::map::frame_head`]).
     pub(crate) fn clock_lag_hours(&self) -> Option<f64> {
         self.drawn_hour
             .map(|drawn| self.head_hour - f64::from(drawn))
+    }
+
+    /// The hours the overlay drawn stands behind the hour the layers drew; none before the frame
+    /// holds an overlay or draws an hour. Negative never: the overlay shown is never of a later
+    /// hour than the layers while playing, and the figure says so when it is.
+    /// How late the state on screen is: the hours it stands behind the head, in milliseconds of
+    /// the run's playback. Negative while a publication prepared ahead of the head is drawn
+    /// before the head reaches its hour.
+    pub(crate) fn late_ms(&self, speed: f64) -> Option<f64> {
+        self.lag_hours().filter(|_| speed > 0.0).map(|hours| hours / speed * 1e3)
+    }
+
+    pub(crate) fn overlay_behind_hours(&self) -> Option<f64> {
+        self.drawn_hour
+            .zip(self.overlay_hour)
+            .map(|(drawn, overlay)| f64::from(drawn) - f64::from(overlay))
     }
 }
 
 /// The paced run over the frames after warm-up (those before the first drawn hour). `end_us`
 /// is when the head reached the run's end.
-pub(crate) fn summary(frames: &[Frame], refresh_hz: f64, end_us: f64) -> Value {
+pub(crate) fn summary(frames: &[Frame], refresh_hz: f64, end_us: f64, speed: f64) -> Value {
     let interval = 1e6 / refresh_hz;
     let warmup = frames
         .iter()
@@ -87,6 +115,26 @@ pub(crate) fn summary(frames: &[Frame], refresh_hz: f64, end_us: f64) -> Value {
             let before = &frames[k - 1];
             before.start_us + before.work_us + before.gpu_wait_us <= frames[k].due_us
         })
+        .count();
+    let behind: Vec<f64> = measured.iter().filter_map(Frame::overlay_behind_hours).collect();
+    let behind_ms = if speed > 0.0 { behind.iter().map(|hours| hours / speed * 1e3).collect() } else { Vec::new() };
+    let overlay_moved = measured
+        .windows(2)
+        .filter(|pair| pair[0].overlay_hour.is_some() && pair[1].overlay_hour.is_some())
+        .filter(|pair| pair[0].overlay_hour != pair[1].overlay_hour)
+        .count();
+    // One entry a publication the measured frames drew, in order: which it was and the oldest hour
+    // it put on screen. A publication no frame drew is not one a watcher saw.
+    let mut publications: Vec<(u64, Option<i32>)> = Vec::new();
+    for frame in measured.iter() {
+        match frame.made {
+            Some(made) if publications.last().is_none_or(|(last, _)| *last != made) => publications.push((made, frame.oldest_hour)),
+            _ => {}
+        }
+    }
+    let with_a_new_hour = publications
+        .windows(2)
+        .filter(|pair| pair[1].1.is_some() && pair[1].1 != pair[0].1)
         .count();
     let mut shown = measured
         .iter()
@@ -116,11 +164,23 @@ pub(crate) fn summary(frames: &[Frame], refresh_hz: f64, end_us: f64) -> Value {
         "work_us": distribution(measured.iter().map(|frame| frame.work_us).collect()),
         "thread_us": distribution(thread),
         "gpu_wait_us": distribution(measured.iter().map(|frame| frame.gpu_wait_us).collect()),
+        "interval_us": distribution(measured.iter().filter_map(|frame| frame.interval_us).collect()),
+        "acquire_us": distribution(measured.iter().filter_map(|frame| frame.acquire_us).collect()),
+        "intervals_over_one_and_a_half_frames": measured.iter().filter_map(|frame| frame.interval_us).filter(|us| *us > interval * 1.5).count(),
         "late_frames": measured.iter().filter(|frame| frame.work_us > interval).count(),
         "late_starts": late_starts.count(),
         "late_starts_unexplained": unexplained,
+        "speed_hours_per_second": speed,
         "lag_hours": distribution(measured.iter().filter_map(Frame::lag_hours).collect()),
-        "lag_hours_without_cadence_layers_or_overlay": distribution(measured.iter().filter_map(Frame::clock_lag_hours).collect()),
+        "late_ms": distribution(measured.iter().filter_map(|frame| frame.late_ms(speed)).collect()),
+        "publications": publications.len(),
+        "publications_per_second": seconds.filter(|s| *s > 0.0).map(|s| publications.len() as f64 / s),
+        "publications_with_a_new_hour": with_a_new_hour,
+        "publications_with_a_new_hour_per_second": seconds.filter(|s| *s > 0.0).map(|s| with_a_new_hour as f64 / s),
+        "head_behind_the_clock_hours": distribution(measured.iter().filter_map(Frame::clock_lag_hours).collect()),
+        "overlay_behind_hours": distribution(behind),
+        "overlay_behind_ms": distribution(behind_ms),
+        "overlay_new_hour_frames": overlay_moved,
         "drawn_past_head_frames": measured.iter().filter(|frame| frame.lag_hours().is_some_and(|lag| lag < 0.0)).count(),
         "shown_hours": shown.len(),
         "new_hour_frames": measured.iter().filter(|frame| frame.new_hour).count(),
@@ -139,10 +199,14 @@ mod tests {
             start_us,
             work_us,
             gpu_wait_us: 0.0,
+            interval_us: None,
+            acquire_us: None,
             thread_us: Some(work_us / 2.0),
             head_hour: head,
             drawn_hour: drawn,
             oldest_hour: drawn,
+            overlay_hour: drawn,
+            made: drawn.map(|hour| hour as u64),
             late_start: false,
             new_hour: false,
         }
@@ -221,7 +285,7 @@ mod tests {
         frames[4].start_us = 72_000.0;
         frames[4].late_start = true;
         mark_new(&mut frames);
-        let report = summary(&frames, 60.0, 100_000.0);
+        let report = summary(&frames, 60.0, 100_000.0, 1.0);
         assert_eq!(report["frames"], 6);
         assert_eq!(report["warmup_frames"], 2);
         assert_eq!(report["warmup_ms"], 33.333);
@@ -231,6 +295,9 @@ mod tests {
         assert_eq!(report["late_starts_unexplained"], 1);
         assert_eq!(report["shown_hours"], 3);
         assert_eq!(report["new_hour_frames"], 3);
+        assert_eq!(report["publications"], 3, "the frames drew three publications, one of them twice");
+        assert_eq!(report["publications_with_a_new_hour"], 2);
+        assert_eq!(report["late_ms"]["max"], 82_000.0, "the lag in milliseconds of playback at one hour a second");
         assert_eq!(report["drawn_past_head_frames"], 0);
         assert_eq!(report["lag_hours"]["max"], 82.0);
         assert_eq!(report["lag_hours"]["p50"], 38.0);
@@ -242,17 +309,24 @@ mod tests {
         assert!((per_second - 3.0 / 0.066_667).abs() < 1e-6);
     }
 
-    /// The lag is the head less the oldest hour on screen, every layer and the overlay counted; the
-    /// window clock's lag, which leaves them out, is kept beside it.
+    /// The lag is the head less the oldest hour the layers show, every layer counted; the window
+    /// clock's lag, which leaves them out, is kept beside it. How far the overlay stands behind the
+    /// hour the layers drew is its own figure, in hours and in milliseconds at the run's speed, and
+    /// is no part of the lag: playing, the layers alone are the picture's hour.
     #[test]
-    fn the_lag_counts_the_oldest_hour_on_screen_and_keeps_the_window_clocks_beside_it() {
+    fn the_lag_counts_the_layers_and_the_overlays_hours_behind_them_are_reported_apart() {
         let mut frames = vec![frame(0.0, 1.0, Some(100), 110.0), frame(16_667.0, 1.0, Some(110), 120.0)];
         frames[0].oldest_hour = Some(96);
         frames[1].oldest_hour = Some(101);
+        frames[0].overlay_hour = Some(40);
+        frames[1].overlay_hour = Some(50);
         mark_new(&mut frames);
-        let report = summary(&frames, 60.0, 33_333.0);
-        assert_eq!(report["lag_hours"]["max"], 19.0);
-        assert_eq!(report["lag_hours_without_cadence_layers_or_overlay"]["max"], 10.0);
+        let report = summary(&frames, 60.0, 33_333.0, 24.0);
+        assert_eq!(report["lag_hours"]["max"], 19.0, "the overlay's hour is no part of the lag");
+        assert_eq!(report["head_behind_the_clock_hours"]["max"], 10.0);
+        assert_eq!(report["overlay_behind_hours"]["max"], 60.0);
+        assert_eq!(report["overlay_behind_ms"]["max"], 2500.0);
+        assert_eq!(report["overlay_new_hour_frames"], 1);
     }
 
     #[test]
@@ -260,12 +334,12 @@ mod tests {
         let mut frames = vec![frame(0.0, 1.0, Some(1), 1.0), frame(1.0, 1.0, Some(1), 1.0)];
         frames[1].thread_us = None;
         mark_new(&mut frames);
-        assert_eq!(summary(&frames, 60.0, 2.0)["thread_us"]["p50"], Value::Null);
+        assert_eq!(summary(&frames, 60.0, 2.0, 1.0)["thread_us"]["p50"], Value::Null);
     }
 
     #[test]
     fn an_empty_run_reports_nothing_measured() {
-        let report = summary(&[], 60.0, 0.0);
+        let report = summary(&[], 60.0, 0.0, 1.0);
         assert_eq!(report["frames"], 0);
         assert_eq!(report["warmup_frames"], 0);
         assert_eq!(report["warmup_ms"], Value::Null);
@@ -290,7 +364,7 @@ mod tests {
             .collect::<Vec<_>>();
         frames[2].late_start = true;
         mark_new(&mut frames);
-        let report = summary(&frames, 60.0, 70_000.0);
+        let report = summary(&frames, 60.0, 70_000.0, 1.0);
         assert_eq!(report["frames"], 4);
         assert_eq!(report["warmup_frames"], 4);
         assert_eq!(report["measured_frames"], 0);

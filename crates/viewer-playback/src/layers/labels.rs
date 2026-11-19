@@ -7,7 +7,7 @@
 //! state's star. The viewing country is an input (act 1: set from today's vision; the vision layer
 //! gives it later). Provinces, CountryLinks and Countries not wholly recorded draw no labels.
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, Text, Upstream, View};
+use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Text, Upstream, View};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
 use installed_content_localisation::localisation::Localisation;
 use map_display_data::landscape::{LabelCandidate, LabelName, Labels as Display};
@@ -663,7 +663,7 @@ impl Labels {
         }
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
+    fn settle_dirty(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         self.frame += 1;
         if !self.shown {
             if !self.candidates.is_empty() || !self.allegiances.is_empty() {
@@ -696,7 +696,7 @@ impl Labels {
             }
         }
         let mut dirty = std::mem::take(&mut self.moved);
-        dirty.settle(&mut Budget::unlimited(), |id| {
+        dirty.settle(|id| {
             self.settle_moved(mirrors, id);
             Ok(())
         })?;
@@ -740,7 +740,7 @@ impl Labels {
         }
         self.hour = head;
         let mut dirty = std::mem::take(&mut self.renamed_states);
-        dirty.settle(budget, |state| {
+        dirty.settle(|state| {
             let members: Vec<u32> = self.state_provinces.get(&state).into_iter().flatten().copied().filter(|id| self.candidates.contains_key(id)).collect();
             members.into_iter().for_each(|id| {
                 self.provinces.mark(id, self.frame);
@@ -749,7 +749,7 @@ impl Labels {
         })?;
         self.renamed_states = dirty;
         let mut dirty = std::mem::take(&mut self.provinces);
-        dirty.settle(budget, |id| {
+        dirty.settle(|id| {
             self.settle_province(mirrors, id);
             Ok(())
         })?;
@@ -835,7 +835,7 @@ impl Layer for Labels {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         let marked = self.marked;
         self.refused = Some("composing".into());
-        self.settle_dirty(mirrors, &mut Budget::unlimited())?;
+        self.settle_dirty(mirrors)?;
         self.marked = marked;
         Ok(())
     }
@@ -907,8 +907,8 @@ impl Layer for Labels {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget)
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors)
     }
 
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
@@ -917,16 +917,18 @@ impl Layer for Labels {
     }
 
     /// The viewing slot decides only the perspective's tag and the sides: a change reads the wars again.
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
         if self.take_ours(upstream) {
             self.wars_dirty = true;
         }
-        self.settle(mirrors, budget)
+        self.settle(mirrors, settling)
     }
 
-    /// The labels the window lays out, made again once a candidate, side or the perspective changed.
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, budget: &mut Budget) -> io::Result<()> {
-        if !self.drawn_stale || !budget.left() {
+    /// The labels the window lays out, made again once a candidate, side or the perspective
+    /// changed. Made here, on the side's thread: the layer writes nothing to the GPU, so this is
+    /// its whole install.
+    fn stage(&mut self) -> io::Result<()> {
+        if !self.drawn_stale {
             return Ok(());
         }
         self.drawn = Arc::new(self.display());
@@ -942,8 +944,7 @@ impl Layer for Labels {
         let flags = [self.every, self.refusals_dirty, self.wars_dirty].into_iter().filter(|&flag| flag).count();
         let sets = self.link_raws.len() + self.country_natives.len() + self.tag_slots.len() + self.capital_slots.len() + self.star_states.len() + self.pointed.len() + self.renamed.len();
         let entities = self.provinces.len() + self.moved.len() + self.renamed_states.len() + flags + sets;
-        let since = [self.provinces.since(), self.moved.since(), self.renamed_states.since()].into_iter().flatten().min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     fn held(&self) -> usize {

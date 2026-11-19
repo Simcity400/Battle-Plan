@@ -595,6 +595,24 @@ pub fn own_labels() -> Vec<OwnLabel> {
     .unwrap_or_default()
 }
 
+/// This thread's labels and every thread's notes, keyed `family/category` as a frame record names
+/// them: each one's CPU nanoseconds, its wall nanoseconds (a label's only; a note has none) and
+/// how many times it was entered.
+pub fn own_totals() -> HashMap<String, [Option<u64>; 3]> {
+    own_labels()
+        .into_iter()
+        .map(|label| {
+            (
+                format!("{}/{}", label.family, label.category),
+                [Some(label.ns), label.wall_ns, Some(label.calls)],
+            )
+        })
+        .chain(notes().into_iter().map(|(category, family, ns, calls)| {
+            (format!("{family}/{category}"), [Some(ns), None, Some(calls)])
+        }))
+        .collect()
+}
+
 /// Every note so far ([`note`]): category, family, nanoseconds and how many.
 pub fn notes() -> Vec<(&'static str, &'static str, u64, u64)> {
     let hz = *TSC_HZ.get_or_init(calibrate);

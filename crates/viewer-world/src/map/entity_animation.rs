@@ -309,7 +309,7 @@ impl KeptLife {
 }
 
 #[derive(Clone, Copy)]
-struct NativeSample {
+pub(crate) struct NativeSample {
     clip: usize,
     age: f32,
     time: f32,
@@ -854,6 +854,31 @@ impl Player {
         self.native_actors_held(rig).0
     }
 
+    /// A number that changes when this play's samples do, which is what a figure's limbs are
+    /// made from: the picture count reads it to say whether a figure posed again.
+    pub(super) fn sample_bits(&self) -> u64 {
+        let mut bits = 0xcbf2_9ce4_8422_2325_u64;
+        let mut eat = |value: u64| bits = (bits ^ value).wrapping_mul(0x100_0000_01b3);
+        for sample in &self.native_samples {
+            match sample {
+                None => eat(1),
+                Some(sample) => {
+                    eat(sample.clip as u64 + 2);
+                    eat(u64::from(sample.age.to_bits()));
+                    match sample.previous {
+                        None => eat(3),
+                        Some((clip, age, weight)) => {
+                            eat(clip as u64 + 4);
+                            eat(u64::from(age.to_bits()));
+                            eat(u64::from(weight.to_bits()));
+                        }
+                    }
+                }
+            }
+        }
+        bits
+    }
+
     /// [`Self::native_actors`], and whether they were held from an earlier frame (this frame's
     /// samples draw the same) rather than evaluated.
     pub(super) fn native_actors_held(&self, rig: &Rig) -> (Arc<[super::mesh_pose::Actor]>, bool) {
@@ -939,6 +964,25 @@ impl Player {
     ) -> std::io::Result<Option<super::mesh_pose::Locals>> {
         locals_of(&self.native_samples, rig, index)
     }
+
+    /// The samples this play left: the whole of what a pose is made from beside its rig, so a
+    /// pose can be made away from the player ([`crate::map::poses`]).
+    pub(super) fn samples(&self) -> &[Option<NativeSample>] {
+        &self.native_samples
+    }
+}
+
+/// [`Player::native_locals`] from samples alone, for a pose made away from its player. Samples
+/// of another rig play nothing, as a player that has not reached this node does.
+pub(super) fn locals_at(
+    samples: &[Option<NativeSample>],
+    rig: &Rig,
+    index: usize,
+) -> std::io::Result<Option<super::mesh_pose::Locals>> {
+    if index >= samples.len() {
+        return Ok(None);
+    }
+    locals_of(samples, rig, index)
 }
 
 /// The local poses node `index` of `rig` plays at `samples`' sample, as a player's own.
@@ -1865,25 +1909,6 @@ impl StateTiming {
     pub fn reaches(self, threshold: f32) -> Option<f32> {
         self.reads_at_least(threshold).map(|(from, _)| from)
     }
-}
-
-/// Evaluates `player` for a root request at `time` and names the state its
-/// root node then plays.
-#[cfg(any(test, feature = "test-support"))]
-pub fn root_state(player: &mut Player, rig: &Rig, animation: u32, time: f32) -> String {
-    let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
-    let instance = ModelInstance {
-        animation,
-        animation_seed: 7,
-        scale: 1.0,
-        ..ModelInstance::default()
-    };
-    player.evaluate(rig, instance, time, &mut palette, &mut Vec::new());
-    player.nodes[0]
-        .as_ref()
-        .map_or_else(String::new, |playing| {
-            rig.nodes[0].clips[playing.clip].state.name.clone()
-        })
 }
 
 #[cfg(test)]

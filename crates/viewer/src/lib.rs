@@ -24,40 +24,38 @@ mod counter_integration_tests;
 mod dashboard_maps;
 use viewer_playback::document;
 mod dump_head;
-#[cfg(test)]
-mod raid_integration_tests;
 use viewer_foundation::errors::invalid;
 mod embedded;
 use viewer_playback::engaged_index;
 pub mod host;
-use viewer_playback::hours;
 use viewer_playback::lane_rows;
 use viewer_playback::layers;
 mod map;
 use viewer_playback::map_assets;
 use viewer_playback::map_views;
+mod page_clock;
 use viewer_playback::perf_log;
 use viewer_playback::playback;
 mod playback_cost;
 mod playhead_host {
     pub use viewer_playback::playhead_host::*;
-    pub mod rows {
-        pub use viewer_playback::playhead_host::rows::*;
+    pub mod views {
+        pub use viewer_playback::playhead_host::views::*;
         pub mod combat;
         pub mod proof;
         pub mod roster;
         pub mod window;
         #[cfg(test)]
         pub mod tests {
-            pub use viewer_playback::playhead_host::rows::tests::*;
+            pub use viewer_playback::playhead_host::views::tests::*;
             mod combat;
             mod hover;
         }
     }
 }
-use viewer_playback::raid_lane;
 use viewer_playback::render;
 mod renderer_host;
+mod screen_count;
 mod suite_input;
 #[cfg(test)]
 mod unit_scale_tests;
@@ -93,6 +91,13 @@ const USAGE: &str = "viewer is the development harness and tooling around Battle
 app (replay-desktop.exe) shows maps itself. It runs:
 viewer --playback-cost <replay> --from-hour H --hours N --speed max --out <directory>
          with --paced S, --flight <x,z[,height]> flies the camera: tilted, east, a turn, a climb
+         with --paced S, --walk <x,z,heading[,scale]> walks the viewing country's infantry, with
+         --walk-keys <keys> held every frame and --walk-flying starting in the air
+         with --paced S, --campaign-tab runs each frame as the app's campaign map tab runs it
+         --frame-limit HZ sets the app's frame rate limit: the run paces, budgets and reports at
+         whatever it and --refresh-hz leave, as a limited map presents at
+         --gpu-pass-times records each group of passes' GPU microseconds, for a run measuring the
+         GPU; their timestamp commands cost the frame thread CPU, so a CPU timing run omits them
 viewer --visual-toggle <replay> --hour H --out <directory> [--mod-a <mod>]... [--mod-b <mod>]...
          [--toggles N] [--refresh-hz HZ] [--settle-frames N] [--timeout S] [--no-fresh]
          toggles visual mods through the app's path; a mod by its listed name or its id
@@ -1676,9 +1681,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<String>()
             };
             let [x, y] = point;
-            match dump_overlay
-                .prepared()
-                .intel_at(point, dump_overlay.looks())
+            match dump_overlay.prepared().intel_at(|hit| {
+                // A dump lays its overlay out for the camera it draws, so no window is offset.
+                crate::app::map_hits::local(
+                    None,
+                    dump_overlay.looks(),
+                    viewer_foundation::map::free_icons::IconFamily::Intel,
+                    hit.layer,
+                    point,
+                )
+            })
             {
                 None => println!("Intel hover at {x},{y}: no intel entry takes the point"),
                 Some(hit) => {
@@ -1855,9 +1867,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             options.map_time
         );
         println!(
-            "Terrain grid: {} quads at step {}; render {:.1} ms (cpu {:.1}, gpu {:.1})",
+            "Terrain blocks: {} blocks holding {} quads; render {:.1} ms (cpu {:.1}, gpu {:.1})",
+            report.blocks,
             report.quads,
-            report.step,
             report.render_seconds * 1000.0,
             report.cpu_seconds * 1000.0,
             (report.render_seconds - report.cpu_seconds) * 1000.0
@@ -2379,6 +2391,7 @@ pub(crate) fn background_window(value: Option<&std::ffi::OsStr>) -> bool {
 /// The `viewer` binary: the development harness and tooling.
 pub fn cli() -> std::process::ExitCode {
     engine_heap::return_freed_memory_promptly();
+    viewer_foundation::parallel::name_shared_pool();
     viewer_foundation::frame_writer::initialize(Instant::now());
     let result = run();
     viewer_foundation::frame_writer::flush();

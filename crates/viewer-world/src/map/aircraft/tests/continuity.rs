@@ -1,6 +1,11 @@
 use super::*;
 use viewer_foundation::map::presentation::Continuity;
 
+/// A launch clip's length from its seed, for the fixtures.
+fn lifetime(_: usize, seed: u32) -> f32 {
+    3.0 + (seed % 3) as f32
+}
+
 #[test]
 fn hourly_aircraft_refreshes_match_an_uninterrupted_early_ending_scenario() {
     let defines = FlightDefines::for_tests();
@@ -17,10 +22,7 @@ fn hourly_aircraft_refreshes_match_an_uninterrupted_early_ending_scenario() {
         let time = frame as f32 / 30.0;
         if frame % 7 == 0 {
             let mut next = source.clone();
-            next.carry_presentation(&mut refreshed, Continuity::Continue, &|_, _| {
-                panic!("no launch in this fixture")
-            })
-            .unwrap();
+            next.carry_presentation(&mut refreshed, Continuity::Continue).unwrap();
             refreshed = next;
         }
         let played = |_: (usize, u32, u32)| Some(Some((0.6, 2.0)));
@@ -52,6 +54,7 @@ fn reordering_or_removing_scenarios_keeps_surviving_actor_keys_and_ground_state(
     let mut run = previous.runs[0].clone();
     run.flights = 1..2;
     previous.runs.push(run);
+    previous.assign_seeds(&lifetime);
     let source = previous.clone();
     previous.ran_at = Some(2.7);
     previous.runs[0].initialized = true;
@@ -63,11 +66,10 @@ fn reordering_or_removing_scenarios_keeps_surviving_actor_keys_and_ground_state(
 
     let mut next = source.clone();
     next.flights.swap(0, 1);
-    next.carry_presentation(&mut previous, Continuity::Continue, &|_, _| {
-        panic!("no launch in this fixture")
-    })
-    .unwrap();
-    assert_eq!((next.flight_seed(0), next.flight_seed(1)), (1, 0));
+    next.assign_seeds(&lifetime);
+    next.carry_presentation(&mut previous, Continuity::Continue).unwrap();
+    // Each flight's player follows its own identity, so swapping them swaps their seeds.
+    assert_eq!((next.flight_seed(0), next.flight_seed(1)), (previous.flight_seed(1), previous.flight_seed(0)));
     assert_eq!(next.runs[0].grounds, [Ground::Hidden]);
     assert_eq!((next.runs[0].cycle, next.runs[1].cycle), (4, 1));
     assert_eq!(next.runs[1].start, 2.7);
@@ -75,19 +77,22 @@ fn reordering_or_removing_scenarios_keeps_surviving_actor_keys_and_ground_state(
     let mut final_plan = source;
     final_plan.flights.remove(0);
     final_plan.runs.truncate(1);
+    final_plan.assign_seeds(&lifetime);
     final_plan
-        .carry_presentation(&mut next, Continuity::Continue, &|_, _| {
-            panic!("no launch in this fixture")
-        })
+        .carry_presentation(&mut next, Continuity::Continue)
         .unwrap();
-    assert_eq!(final_plan.flight_seed(0), 1);
+    assert_eq!(final_plan.flight_seed(0), next.flight_seed(0));
     assert_eq!(final_plan.runs[0].cycle, 4);
     assert_eq!(final_plan.runs[0].grounds, [Ground::Hidden]);
 }
 
+/// A run whose flights are not the ones the plan before it ran keeps none of that run's clock:
+/// it is counted in `restarts` and takes its cycle from the clock at its next frame, which is a
+/// new animation epoch for its actors.
 #[test]
-fn changed_scenarios_get_fresh_players_and_explicit_resets_keep_no_runtime() {
+fn changed_scenarios_start_their_run_anew_and_explicit_resets_keep_no_runtime() {
     let (mut previous, _) = one_run(vec![height(3.0); 4], 1.0, false, false, Explode::Plays);
+    previous.assign_seeds(&lifetime);
     previous.ran_at = Some(3.0);
     previous.runs[0].initialized = true;
     previous.runs[0].cycle = 4;
@@ -97,19 +102,15 @@ fn changed_scenarios_get_fresh_players_and_explicit_resets_keep_no_runtime() {
     changed.runs[0].initialized = false;
     changed.runs[0].cycle = 0;
     changed
-        .carry_presentation(&mut previous, Continuity::Continue, &|_, _| {
-            panic!("no launch in this fixture")
-        })
+        .carry_presentation(&mut previous, Continuity::Continue)
         .unwrap();
-    assert_ne!(changed.flight_seed(0), previous.flight_seed(0));
+    assert_eq!(changed.restarts(), 1);
     assert!(!changed.runs[0].initialized);
     assert_eq!(changed.runs[0].cycle, 0);
 
     let (mut reset, _) = one_run(vec![height(3.0); 4], 1.0, false, false, Explode::Plays);
     reset
-        .carry_presentation(&mut previous, Continuity::Reset, &|_, _| {
-            panic!("reset keeps its built lifetimes")
-        })
+        .carry_presentation(&mut previous, Continuity::Reset)
         .unwrap();
     assert!(!reset.runs[0].initialized);
     assert_eq!(reset.ran_at, None);
@@ -131,21 +132,16 @@ fn launch_effects_keep_their_actor_key_when_other_launches_change_order() {
         launches: vec![launch(1), launch(2)],
         ..Default::default()
     };
+    previous.assign_seeds(&lifetime);
     let before = previous.launched(0.75)[1];
     let mut next = AircraftPlan {
         launches: vec![launch(2), launch(3)],
         ..Default::default()
     };
-    next.launches[0].length = 19.0;
-    next.carry_presentation(&mut previous, Continuity::Continue, &|_, seed| {
-        3.0 + (seed % 3) as f32
-    })
-    .unwrap();
+    next.assign_seeds(&lifetime);
+    next.carry_presentation(&mut previous, Continuity::Continue).unwrap();
     let after = next.launched(0.75);
-    assert_eq!(
-        next.launches[1].length,
-        3.0 + (next.launch_seed(1) % 3) as f32
-    );
+    assert_eq!(next.launches[1].length, lifetime(0, next.launch_seed(1)));
     assert_eq!(after[0], before);
     assert_ne!(after[1].1.animation_key(), before.1.animation_key());
     assert_ne!(after[1].1.animation_seed, previous.launch_seed(0));
@@ -154,15 +150,14 @@ fn launch_effects_keep_their_actor_key_when_other_launches_change_order() {
 #[test]
 fn repeated_hour_installs_without_a_frame_never_reuse_an_unretired_actor_key() {
     let (mut previous, _) = one_run(vec![height(3.0); 4], 1.0, false, false, Explode::Plays);
+    previous.assign_seeds(&lifetime);
     let source = previous.clone();
     let mut seen = BTreeSet::from([previous.flight_seed(0)]);
     for wing in 2..=100 {
         let mut next = source.clone();
         next.flights[0].wing = wing;
-        next.carry_presentation(&mut previous, Continuity::Continue, &|_, _| {
-            panic!("no launch in this fixture")
-        })
-        .unwrap();
+        next.assign_seeds(&lifetime);
+        next.carry_presentation(&mut previous, Continuity::Continue).unwrap();
         assert!(seen.insert(next.flight_seed(0)));
         previous = next;
     }
@@ -181,6 +176,7 @@ fn a_plan_that_changes_one_wings_flights_starts_that_run_anew() {
     let mut run = previous.runs[0].clone();
     run.flights = 1..2;
     previous.runs.push(run);
+    previous.assign_seeds(&lifetime);
     let source = previous.clone();
     let played = |_: (usize, u32, u32)| Some(Some((0.6, 2.0)));
     let at = 1.5;
@@ -192,10 +188,62 @@ fn a_plan_that_changes_one_wings_flights_starts_that_run_anew() {
     let drawn = previous.clone().eased_runs(&rigs, &defines, at);
     let mut restarted = source.clone();
     restarted.flights[1].origin = [6.0, 10.0, 6.0];
-    restarted.carry_presentation(&mut previous.clone(), Continuity::Continue, &|_, _| panic!("no launch in this fixture")).unwrap();
+    restarted.assign_seeds(&lifetime);
+    restarted.carry_presentation(&mut previous.clone(), Continuity::Continue).unwrap();
     restarted.advance(&rigs, &defines, Some(BAND), at, &played);
     assert_eq!(restarted.restarts(), 1, "the changed run starts anew");
     assert_ne!(restarted.flight_seed(1), previous.flight_seed(1), "with fresh players");
     let unchanged = restarted.eased_runs(&rigs, &defines, at);
     assert_eq!(unchanged[0], drawn[0], "the other run's flight is where it was");
+}
+
+/// A plan's animation seeds are its own flights' and launches', not a count of the plans that
+/// came before: a viewer that played to the hour through other plans and one that opened at it
+/// hold the same seeds, so they draw the same aircraft.
+#[test]
+fn a_plans_seeds_do_not_depend_on_the_plans_before_it() {
+    let (source, _) = one_run(vec![height(3.0); 4], 1.0, false, false, Explode::Plays);
+    let built = |wing| {
+        let mut plan = source.clone();
+        plan.flights[0].wing = wing;
+        plan.launches.push(launches::Launch { mesh: 0, wing, position: [1.0, 2.0, 3.0], spawn: 0.5, length: 0.0, seed: 4, explosions: None });
+        plan.assign_seeds(&lifetime);
+        plan
+    };
+    let opened = built(1);
+    let mut played = built(2);
+    for wing in 3..=40 {
+        let mut next = built(if wing == 40 { 1 } else { wing });
+        next.carry_presentation(&mut played, Continuity::Continue).unwrap();
+        played = next;
+    }
+    assert_eq!(played.flight_seeds, opened.flight_seeds);
+    assert_eq!(played.launch_seeds, opened.launch_seeds);
+    assert_eq!(played.launches[0].length, opened.launches[0].length);
+}
+
+/// A run takes its cycle from the clock, so a plan advanced straight to a time stands where one
+/// installed and advanced frame by frame to it stands: a seek into the middle of a flight draws
+/// it where playing to that hour draws it.
+#[test]
+fn a_run_advanced_straight_to_a_time_stands_where_playing_to_it_stands() {
+    let defines = FlightDefines::for_tests();
+    let (source, rigs) = one_run(vec![height(3.0); 4], 1.0, false, false, Explode::Plays);
+    let stand = |_: (usize, u32, u32)| Some(Some((0.6, 2.0)));
+    let at = 240.0 / 30.0;
+    let mut played = source.clone();
+    played.assign_seeds(&lifetime);
+    for frame in 0..=240 {
+        let mut next = source.clone();
+        next.assign_seeds(&lifetime);
+        next.carry_presentation(&mut played, Continuity::Continue).unwrap();
+        played = next;
+        played.advance(&rigs, &defines, None, frame as f32 / 30.0, &stand);
+    }
+    let mut sought = source.clone();
+    sought.assign_seeds(&lifetime);
+    sought.advance(&rigs, &defines, None, at, &stand);
+    assert!(played.runs[0].cycle > 0, "the fixture passes a cycle");
+    assert_eq!((sought.runs[0].cycle, sought.runs[0].start), (played.runs[0].cycle, played.runs[0].start));
+    assert_eq!(sought.placed_runs(&rigs, &defines, at), played.placed_runs(&rigs, &defines, at));
 }

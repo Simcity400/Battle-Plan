@@ -207,8 +207,8 @@ type ForceInput<'a> = Result<(&'a replay_data::rows::TaskForceRow, i32), String>
 
 /// The side whose primary list holds the viewer (attacker first) shows the HQ
 /// frame when any live ship in its forward groups belongs to a viewer-owned task
-/// force with attached naval headquarters. `members` are the combat's
-/// [`grid::ForwardMembers`]. The game collects all forward members' task forces
+/// force with attached naval headquarters. `members` are the combat's forward members
+/// ([`grid::forward_members`]). The game collects all forward members' task forces
 /// before testing them, so their order cannot change the positive result.
 /// A known qualifying force decides it; otherwise unresolved members leave it
 /// undecided, named by the first such member's cause.
@@ -394,8 +394,8 @@ pub(super) struct NavalMarkerTables {
     combats: Option<CombatTables>,
     /// The hour's retained results.
     results: Arc<ResultTables>,
-    /// Each province's combat vector by `NavalProvinceCombats` row.
-    vectors: BTreeMap<u32, usize>,
+    /// Each province whose `NavalProvinceCombats` row lists a combat vector.
+    vectors: BTreeSet<u32>,
     direct_complete: bool,
     /// Every combat the hour holds.
     live: BTreeSet<u64>,
@@ -417,8 +417,6 @@ struct Icon {
     rotates: bool,
     /// The combat's own province.
     home: u32,
-    /// The combat's `NavalCombatDetails` row.
-    detail: usize,
     /// The bound province's `Standstill` unit-stack anchor.
     anchor: [f32; 3],
     /// Its place in its province's icon stack.
@@ -455,9 +453,6 @@ struct CombatTables {
     /// Missing live-combat details leave icon existence undecided. Retain the
     /// known distinction between erased icons and icons awaiting their next update.
     undecided: Vec<Omitted>,
-    /// Each combat's forward members, which the HQ frames and the grids walk; `None` while the
-    /// member census is incomplete.
-    forward: Option<grid::ForwardMembers>,
     /// Every combat's naval-HQ frame ([`hq_frame`]), which an icon the hour no longer places
     /// still takes.
     hq: HqFrames,
@@ -505,7 +500,6 @@ impl NavalMarkerTables {
             })
             .collect();
         let details: BTreeMap<u64, DetailFacts> = details_table.rows().iter().map(|row| (row.combat, DetailFacts::of(row))).collect();
-        let detail_index: BTreeMap<u64, usize> = details_table.rows().iter().enumerate().map(|(index, row)| (row.combat, index)).collect();
         let transfers = rows::<tables::NavalCombatTransfers>(frame)?;
         let units = rows::<tables::NavalTransferUnits>(frame)?;
         let transfer_refs: Vec<Transfers> = transfers
@@ -584,7 +578,6 @@ impl NavalMarkerTables {
             present: &present,
             results_complete: results.is_complete() && result_members.is_complete() && result_countries.is_complete(),
         });
-        let forward = whole(&members, "NavalCombatShips").is_none().then(|| grid::ForwardMembers::read(members.rows()));
         Ok(Self {
             combats: values.combats.map(|combats| CombatTables {
                 icons: combats
@@ -596,7 +589,6 @@ impl NavalMarkerTables {
                             province: icon.province,
                             rotates: icon.rotates,
                             home: icon.home,
-                            detail: detail_index[&icon.combat],
                             anchor: icon.anchor,
                             ordinal: icon.ordinal,
                             decision: icon.decision,
@@ -607,17 +599,11 @@ impl NavalMarkerTables {
                 placement: combats.placement,
                 unplaced: combats.unplaced,
                 undecided: combats.undecided,
-                forward,
                 hq: combats.hq,
                 provenance: combats.provenance,
             }),
             results: Arc::new(values.results),
-            vectors: direct
-                .rows()
-                .iter()
-                .enumerate()
-                .map(|(index, row)| (row.province, index))
-                .collect(),
+            vectors: direct.rows().iter().map(|row| row.province).collect(),
             direct_complete: direct.is_complete(),
             live: values.live,
             live_undecided: values.live_undecided,
@@ -630,7 +616,7 @@ impl NavalMarkerTables {
         Self {
             combats: None,
             results: Arc::new(ResultTables { provinces: BTreeMap::new(), facts: BTreeMap::new(), undecided: None }),
-            vectors: BTreeMap::new(),
+            vectors: BTreeSet::new(),
             direct_complete: false,
             live: BTreeSet::new(),
             live_undecided: None,
@@ -639,52 +625,37 @@ impl NavalMarkerTables {
     }
 
     /// The naval markers layer's decisions laid out over `frame`, the hour on screen, whose rows
-    /// the draw reads (each icon's `NavalCombatDetails` row, the province vectors, the forward
-    /// members). An icon whose combat that hour holds no details row is omitted and named.
+    /// the draw reads (each icon's `NavalCombatDetails` row and the province vectors). An icon
+    /// whose combat that hour holds no details row is omitted and named.
     pub(super) fn of_values(values: &NavalMarkerValues, frame: &DecodedFrame) -> io::Result<Self> {
         let direct = rows::<tables::NavalProvinceCombats>(frame)?;
-        let details = rows::<tables::NavalCombatDetails>(frame)?;
-        let members = rows::<tables::NavalCombatShips>(frame)?;
-        let detail_index: BTreeMap<u64, usize> = details.rows().iter().enumerate().map(|(index, row)| (row.combat, index)).collect();
-        let forward = whole(&members, "NavalCombatShips").is_none().then(|| grid::ForwardMembers::read(members.rows()));
         Ok(Self {
             combats: values.combats.as_ref().map(|combats| CombatTables {
                 icons: combats
                     .icons
                     .iter()
                     .map(|icon| match icon {
-                        Ok(icon) => match detail_index.get(&icon.combat) {
-                            Some(&detail) => Ok(Icon {
-                                combat: icon.combat,
-                                province: icon.province,
-                                rotates: icon.rotates,
-                                home: icon.home,
-                                detail,
-                                anchor: icon.anchor,
-                                ordinal: icon.ordinal,
-                                decision: icon.decision,
-                                hq: icon.hq.clone(),
-                            }),
-                            None => Err(Omitted {
-                                combat: icon.combat,
-                                province: icon.province,
-                                rotates: icon.rotates,
-                                place: Some((icon.anchor, icon.ordinal)),
-                                cause: "icon omitted: the hour on screen holds no NavalCombatDetails row for the combat the naval markers layer placed".into(),
-                            }),
-                        },
+                        Ok(icon) => Ok(Icon {
+                            combat: icon.combat,
+                            province: icon.province,
+                            rotates: icon.rotates,
+                            home: icon.home,
+                            anchor: icon.anchor,
+                            ordinal: icon.ordinal,
+                            decision: icon.decision,
+                            hq: icon.hq.clone(),
+                        }),
                         Err(omitted) => Err(omitted.clone()),
                     })
                     .collect(),
                 placement: combats.placement.clone(),
                 unplaced: combats.unplaced,
                 undecided: combats.undecided.clone(),
-                forward,
                 hq: combats.hq.clone(),
                 provenance: combats.provenance,
             }),
             results: Arc::new(values.results.clone()),
-            vectors: direct.rows().iter().enumerate().map(|(index, row)| (row.province, index)).collect(),
+            vectors: direct.rows().iter().map(|row| row.province).collect(),
             direct_complete: direct.is_complete(),
             live: values.live.clone(),
             live_undecided: values.live_undecided.clone(),
@@ -1185,6 +1156,10 @@ fn combat_icons(
     let height = window_frame.size[1] as f32;
     let details = rows::<tables::NavalCombatDetails>(frame)?.rows();
     let direct = rows::<tables::NavalProvinceCombats>(frame)?.rows();
+    // The rows of the hour drawn, by handle: an icon decided for another hour names its combat and
+    // its province, and is joined to this hour's rows by them, never by that hour's row positions.
+    let details_of: BTreeMap<u64, &NavalCombatDetailsRow> = details.iter().map(|row| (row.combat, row)).collect();
+    let vector_of: BTreeMap<u32, &NavalProvinceCombatRow> = direct.iter().map(|row| (row.province, row)).collect();
     // The rosters the grids read, indexed the first time a large icon needs its grids, then
     // shared by every combat.
     let members = rows::<tables::NavalCombatShips>(frame)?;
@@ -1223,10 +1198,16 @@ fn combat_icons(
             ));
             continue;
         }
+        let Some(detail) = details_of.get(&icon.combat).copied() else {
+            let cause = "icon omitted: the hour on screen holds no NavalCombatDetails row for the combat the naval markers layer placed";
+            out.report.unavailable_naval_combats += 1;
+            naval_gap(&mut out.report, cause.into(), [icon.combat]);
+            pass.icons.push(naval_windows::CombatIcon::omitted((icon.province, icon.combat), Some((icon.anchor, icon.ordinal)), icon.rotates, cause));
+            continue;
+        };
         // A rotating icon of an engaged combat fills its progress: the small one when the
         // camera is coarse or two engaged combats share the combat province's vector, the large
         // one otherwise.
-        let detail = &details[icon.detail];
         let engaged = icon.rotates && icon.decision.progress;
         let small = if !engaged || coarse(inputs) {
             Ok(true)
@@ -1234,7 +1215,7 @@ fn combat_icons(
             two_engaged(
                 context.flags,
                 icon.home,
-                tables.vectors.get(&icon.home).map(|&index| &direct[index]),
+                vector_of.get(&icon.home).copied(),
                 tables.direct_complete,
             )
         };
@@ -1282,11 +1263,9 @@ fn combat_icons(
                 };
                 let index = grid_index.get_or_insert_with(|| {
                     grid::Index::new(grid::Sources {
-                        // The forward members grouped once per hour with the HQ frames.
-                        combat_ships: members
-                            .is_complete()
-                            .then(|| members.rows())
-                            .zip(combats.forward.as_ref()),
+                        // The rows of the hour drawn: the grids group their forward members from
+                        // them, never from another hour's.
+                        combat_ships: members.is_complete().then(|| members.rows()),
                         // The census the naval context indexed for this hour, not another.
                         ships: ships.is_complete().then(|| grid::ShipCensus {
                             task_forces: Cow::Borrowed(&naval.ship_task_forces),
@@ -1878,7 +1857,7 @@ fn result_pass(inputs: &CounterInputs<'_>, tables: &NavalMarkerTables, out: &mut
     };
     out.naval.results = Some(naval_windows::ResultPass {
         tables: Arc::clone(&tables.results),
-        raised: tables.vectors.keys().copied().collect(),
+        raised: tables.vectors.iter().copied().collect(),
         vectors_whole: tables.direct_complete,
         size,
     });

@@ -36,6 +36,7 @@ fn anchored(world: [f32; 3], cutoff: f32, layer: u64, rect: [f32; 4]) -> Quad {
             world,
             cutoff,
             family: IconFamily::Columns,
+            moves: None,
         }),
         present: None,
     }
@@ -90,7 +91,7 @@ fn the_game_s_camera_keeps_every_quad_as_laid_out() {
         ),
     ]);
     let mut out = Batch::default();
-    let looks = present(&camera, VIEWPORT, 1.0, None, &laid_out, &mut out);
+    let looks = present(&camera, VIEWPORT, 1.0, None, &laid_out, Head::default(), &mut out);
     assert!(looks.is_empty());
     assert_eq!(out.quads, laid_out.quads);
     // The map camera's icon distance is its height.
@@ -118,7 +119,7 @@ fn a_free_eye_ranks_icons_farthest_first_and_drops_what_it_cannot_show() {
         anchored(beyond, 900.0, layer(10, 1, 0), [40.0, 40.0, 5.0, 5.0]),
     ]);
     let mut out = Batch::default();
-    let looks = present(&camera, VIEWPORT, 1.0, None, &laid_out, &mut out);
+    let looks = present(&camera, VIEWPORT, 1.0, None, &laid_out, Head::default(), &mut out);
     let ranks: Vec<_> = out
         .quads
         .iter()
@@ -228,7 +229,7 @@ fn terrain_hiding_the_anchor_fades_the_whole_icon() {
         anchored(hidden, 900.0, layer(10, 1, 0), [0.0, 0.0, 5.0, 5.0]),
     ]);
     let mut out = Batch::default();
-    let looks = present(&camera, VIEWPORT, 1.0, Some(&ground), &laid_out, &mut out);
+    let looks = present(&camera, VIEWPORT, 1.0, Some(&ground), &laid_out, Head::default(), &mut out);
     assert_eq!(out.quads.len(), 1);
     assert_eq!(
         looks
@@ -240,4 +241,76 @@ fn terrain_hiding_the_anchor_fades_the_whole_icon() {
     // From high above, the ridge hides nothing.
     let high = [1200.0, 300.0, 1000.0];
     assert_eq!(sight_alpha(&ground, high, hidden, 316.0), 1.0);
+}
+
+/// A replay hour is about sixty million, and between 2^25 and 2^26 neighbouring `f32` values are
+/// four hours apart: an absolute hour cast to one loses the head's fraction, and a mover could
+/// only stand on every fourth hour. The hours are differenced as integers
+/// before anything is cast, so heads a quarter of an hour apart are four different places.
+#[test]
+fn heads_a_quarter_of_an_hour_apart_place_a_mover_four_different_places_at_sixty_million() {
+    const HOUR: i32 = 60_800_000;
+    let track = Track::new(&[Place { hour: HOUR, at: [0.0, 0.0, 0.0] }, Place { hour: HOUR + 48, at: [48.0, 0.0, 0.0] }], 0.0);
+    let places: Vec<f32> = [0.0, 0.25, 0.5, 0.75]
+        .into_iter()
+        .map(|fraction| track.at(Head { hour: HOUR, fraction })[0])
+        .collect();
+    assert_eq!(places, vec![0.0, 0.25, 0.5, 0.75]);
+    // And an hour later is an hour further along, not four.
+    assert_eq!(track.at(Head { hour: HOUR + 1, fraction: 0.0 })[0], 1.0);
+}
+
+/// A mover crossing the map's seam travels the short way across it: its places are unwrapped
+/// against each other and the interpolated place is folded onto the map once, so the counter does
+/// not travel through the middle of the world halfway between them.
+#[test]
+fn a_mover_crossing_the_map_s_seam_travels_across_it_and_not_through_the_world() {
+    const WIDTH: f32 = 1000.0;
+    let track = Track::new(&[Place { hour: 100, at: [WIDTH - 1.0, 0.0, 5.0] }, Place { hour: 102, at: [1.0, 0.0, 5.0] }], WIDTH);
+    let halfway = track.at(Head { hour: 101, fraction: 0.0 });
+    assert_eq!(halfway, [0.0, 0.0, 5.0], "the seam itself, not {}", WIDTH / 2.0);
+    assert_eq!(track.at(Head { hour: 100, fraction: 0.5 })[0], WIDTH - 0.5);
+    assert_eq!(track.at(Head { hour: 101, fraction: 0.5 })[0], 0.5);
+    // A track reaching more than half the map from its newest place still takes each segment the
+    // short way. Before, every place was unwrapped against the newest and the first segment went
+    // the long way round.
+    let places: Vec<Place> = [0.0, 200.0, 400.0, 600.0].iter().zip(100..).map(|(&x, hour)| Place { hour, at: [x, 0.0, 0.0] }).collect();
+    let track = Track::new(&places, WIDTH);
+    assert_eq!(track.at(Head { hour: 100, fraction: 0.5 })[0], 100.0);
+}
+
+/// A head before the first place or past the last holds the mover at that end, and says so: those
+/// are the frames the publications gave nothing to move it on.
+#[test]
+fn a_head_outside_the_two_hours_holds_the_mover_at_an_end() {
+    let track = Track::new(&[Place { hour: 100, at: [10.0, 0.0, 0.0] }, Place { hour: 148, at: [58.0, 0.0, 0.0] }], 0.0);
+    assert_eq!(track.at(Head { hour: 90, fraction: 0.0 }), [10.0, 0.0, 0.0]);
+    assert_eq!(track.at(Head { hour: 200, fraction: 0.0 }), [58.0, 0.0, 0.0]);
+    assert_eq!(
+        [
+            track.outside(Head { hour: 90, fraction: 0.0 }),
+            track.outside(Head { hour: 124, fraction: 0.0 }),
+            track.outside(Head { hour: 200, fraction: 0.0 }),
+        ],
+        [-1, 0, 1]
+    );
+}
+
+/// A publication's rows stand up to one and a half intervals ahead of the heads of the frames that
+/// draw it, so the pair bracketing a frame's own hour is two or three publications back: the track
+/// carries the chain and a frame reads the two places that bracket it.
+#[test]
+fn a_head_behind_the_newest_places_reads_the_pair_that_brackets_it() {
+    let places: Vec<Place> = (0..4)
+        .map(|at| Place { hour: 60_800_000 + at * 48, at: [at as f32 * 48.0, 0.0, 0.0] })
+        .collect();
+    let track = Track::new(&places, 0.0);
+    // The head stands between the first two places: one interval and a half behind the newest.
+    let at = |hour, fraction| track.at(Head { hour, fraction })[0];
+    assert_eq!(at(60_800_000, 0.0), 0.0);
+    assert_eq!(at(60_800_024, 0.0), 24.0);
+    assert_eq!(at(60_800_048, 0.0), 48.0);
+    assert_eq!(at(60_800_120, 0.0), 120.0, "between the third and the fourth");
+    assert_eq!(track.outside(Head { hour: 60_800_060, fraction: 0.0 }), 0);
+    assert_eq!(track.outside(Head { hour: 60_800_200, fraction: 0.0 }), 1);
 }

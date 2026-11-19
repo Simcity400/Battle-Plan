@@ -26,6 +26,7 @@ pub(super) fn target(fixture: &Fixture) -> dashboard::protocol::DashboardMapView
         fraction: 0.,
         sequence: 1,
         seek_sequence: Some(1),
+        composed_at: 0.0,
         bounds,
         clip: bounds,
         visible: true,
@@ -266,74 +267,6 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     assert_eq!(state.hour, Some(target.hour));
     assert_eq!(state.sequence, state.requested_sequence);
 
-    // Keep the seek epoch so the window consumes injected failed hours instead of rebuilding them.
-    let (_, last) = fixture
-        .document
-        .playback
-        .range(fixture.input.branch)
-        .expect("the fixture's branch is in its recording");
-    assert!(
-        target.hour + 2 <= last,
-        "the fixture's hour {} needs two following hours in its branch (last {last})",
-        target.hour
-    );
-    for (index, gap) in [false, true].into_iter().enumerate() {
-        let reason = if gap {
-            "synthetic recorded allocation gap"
-        } else {
-            "synthetic unavailable hour operands"
-        };
-        target.hour += 1;
-        target.sequence += 1;
-        let current = if gap {
-            crate::playback::Current::Gap {
-                branch: fixture.input.branch,
-                hour: target.hour,
-                reason: reason.into(),
-            }
-        } else {
-            let mut playback =
-                crate::playback::Playback::shared(fixture.document.playback.replay_handle())?;
-            playback.seek(fixture.input.branch, target.hour)?;
-            playback.current().clone()
-        };
-        viewer.ready.insert(
-            (fixture.input.branch, target.hour),
-            hours::Built {
-                epoch: viewer.epoch,
-                branch: fixture.input.branch,
-                hour: target.hour,
-                view: hours::View {
-                    camera: request.camera,
-                    viewport: [257, 145],
-                    ui_scale: 1.,
-                },
-                current,
-                layers: Err(reason.into()),
-                viewing: None,
-                laps: Vec::new(),
-                child_laps: Vec::new(),
-                wall: 0.,
-                waits: Default::default(),
-                trace: Default::default(),
-            },
-        );
-        let failed_path = fixture.output.join(format!("failed-hour-{index}.png"));
-        arm(&mut viewer, failed_path.clone(), request.camera);
-        let submissions = viewer.scene.as_ref().unwrap().test_faults.submissions.get();
-        until(&mut viewer, &ctx, &frame, &target, |v| {
-            v.map_error.is_some()
-        });
-        let state = viewer.map_state(&target);
-        assert_eq!(state.error.as_deref(), Some(reason));
-        assert!(state.hour.is_none() && state.branch_id.is_none());
-        assert_ne!(state.sequence, state.requested_sequence);
-        assert!(!failed_path.exists());
-        assert_eq!(
-            viewer.scene.as_ref().unwrap().test_faults.submissions.get(),
-            submissions
-        );
-    }
     // Recover to the real decided hour, then refuse an unwritable output in the
     // existing capture path. A rendered frame is not an export success.
     target.hour = fixture.input.hour;

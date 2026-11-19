@@ -763,7 +763,14 @@ impl Presentation {
             }
             placed.push((city.mesh, instance));
         }
+        if viewer_foundation::view_record::on() {
+            use viewer_foundation::view_record::add;
+            add("city sprawl", "history_groups", self.groups.len() as u64);
+            add("city sprawl", "history_active", self.active.len() as u64);
+            add("city sprawl", "history_walked", 1);
+        }
         if self.placed.as_ref() == Some(&placed) {
+            viewer_foundation::view_record::add("city sprawl", "field_same_placement", 1);
             return None;
         }
         self.placed = Some(placed.clone());
@@ -773,6 +780,8 @@ impl Presentation {
     /// Source-ordered clocks, rebuilt only when admission, damage or actor requests change.
     pub fn clock_records(&mut self) -> &Arc<[ClockRecord]> {
         if std::mem::take(&mut self.clocks_changed) {
+            let _span = viewer_foundation::profiling::span("city_clock_records");
+            viewer_foundation::view_record::add("city sprawl", "clock_records_rebuilt", 1);
             self.clock_records = self
                 .active
                 .iter()

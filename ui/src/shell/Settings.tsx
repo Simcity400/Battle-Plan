@@ -56,7 +56,7 @@ const searchItems: SettingsTarget[] = [
   ...(/mac|iphone|ipad|ipod/i.test(navigator.platform) ? [{ section: 'appearance' as const, title: 'Font smoothing', id: 'appearance-font-smoothing', keywords: 'typography antialias grayscale advanced' }] : []),
   { section: 'appearance', title: 'Word wrapping', id: 'appearance-word-wrap', keywords: 'tables text lines wrap' },
   ...[...MAP_OPTION_LABELS.slice(0, 2), ...VIDEO_OPTION_LABELS, ...MAP_OPTION_LABELS.slice(2)]
-    .map(title => ({ section: 'graphics' as const, title, keywords: title === MAP_OPTION_LABELS[0] ? 'msaa' : title === VIDEO_OPTION_LABELS[1] ? 'zoom ui size' : title === VIDEO_OPTION_LABELS[2] ? 'counters icons labels size gui_scale' : 'map graphics' })),
+    .map(title => ({ section: 'graphics' as const, title, keywords: title === MAP_OPTION_LABELS[0] ? 'msaa' : title === VIDEO_OPTION_LABELS[1] ? 'fps cap limit frames a second battery' : title === VIDEO_OPTION_LABELS[2] ? 'zoom ui size' : title === VIDEO_OPTION_LABELS[3] ? 'counters icons labels size gui_scale' : 'map graphics' })),
   { section: 'graphics', title: 'Visual mods', keywords: 'mods artwork' },
   { section: 'updates', title: 'Check for updates', id: 'updates-version', keywords: 'version update upgrade download install restart' },
   { section: 'updates', title: 'Update channel', id: 'updates-channel', keywords: 'stable nightly channel track beta' },

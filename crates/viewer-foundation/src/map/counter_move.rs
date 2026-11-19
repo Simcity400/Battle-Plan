@@ -1210,6 +1210,77 @@ fn scale_fraction(next_arc: f32) -> f32 {
     }
 }
 
+/// The hours inside one publication at which the recording moved a mover, and the province each
+/// hour left it in: what gives a mover a place for each hour its own rows moved it, where the
+/// publication's rows alone give one place for the interval's end, 48 game hours from the one
+/// before it at the top speed.
+///
+/// The hour of a province change is the hour of the place ([`Movement::place_in`]), so these are
+/// the two tables' `province` columns read hour by hour ([`crate::map::free_icons::Place`]). A
+/// publication whose steps carried no hours — a seek's reset, a piece's crossing, a catch-up — has
+/// none of a mover here, and that mover stands on its hour's placement with nothing invented.
+#[derive(Clone, Debug, Default)]
+pub struct MovedHours {
+    /// By division handle, a railway gun's among them: the hours it changed province at, oldest
+    /// first, with the province each left it in.
+    pub divisions: BTreeMap<u64, Vec<(i32, u32)>>,
+    /// By task force handle, the same.
+    pub task_forces: BTreeMap<u64, Vec<(i32, u32)>>,
+}
+
+/// No hours at all: what a layout made outside a publication's step reads, which places each
+/// mover at its publication's own hour alone.
+pub static NO_MOVED_HOURS: MovedHours = MovedHours { divisions: BTreeMap::new(), task_forces: BTreeMap::new() };
+
+impl MovedHours {
+    /// The hours `unit` changed province at, oldest first; empty for a mover the publication's
+    /// hours did not move.
+    pub fn of(&self, unit: Unit) -> &[(i32, u32)] {
+        let held = match unit {
+            Unit::Division(id) | Unit::RailwayGun(id) => self.divisions.get(&id),
+            Unit::TaskForce(id) => self.task_forces.get(&id),
+        };
+        held.map_or(&[][..], Vec::as_slice)
+    }
+
+    /// Takes `hour` as the hour `unit` moved into `province`.
+    pub fn note(&mut self, unit: Unit, hour: i32, province: u32) {
+        let held = match unit {
+            Unit::Division(id) | Unit::RailwayGun(id) => self.divisions.entry(id),
+            Unit::TaskForce(id) => self.task_forces.entry(id),
+        };
+        held.or_default().push((hour, province));
+    }
+
+    /// `newer`'s hours appended after this one's, in place.
+    pub fn extend(&mut self, newer: &Self) {
+        for (held, more) in [(&mut self.divisions, &newer.divisions), (&mut self.task_forces, &newer.task_forces)] {
+            for (id, hours) in more {
+                held.entry(*id).or_default().extend_from_slice(hours);
+            }
+        }
+    }
+
+    /// The moves after `hour` alone: what a layout made over rows at `hour` has not drawn.
+    pub fn after(&self, hour: i32) -> Self {
+        let keep = |held: &BTreeMap<u64, Vec<(i32, u32)>>| -> BTreeMap<u64, Vec<(i32, u32)>> {
+            held.iter()
+                .filter_map(|(&id, hours)| {
+                    let later: Vec<(i32, u32)> = hours.iter().copied().filter(|&(at, _)| at > hour).collect();
+                    (!later.is_empty()).then_some((id, later))
+                })
+                .collect()
+        };
+        Self { divisions: keep(&self.divisions), task_forces: keep(&self.task_forces) }
+    }
+
+    /// How many movers and hours it holds, for the flight record.
+    pub fn counts(&self) -> (usize, usize) {
+        let hours = self.divisions.values().chain(self.task_forces.values()).map(Vec::len).sum();
+        (self.divisions.len() + self.task_forces.len(), hours)
+    }
+}
+
 ///// An anchored stack: where the hour places it, and the route its presentation glides along.
 #[derive(Clone, Debug)]
 pub struct Position {
@@ -1318,6 +1389,31 @@ impl Movement {
         (!self.snapped).then(|| self.at(SETTLED_ARC)).flatten()
     }
 
+    /// Where this unit stood in `province`, on the route this publication read for it: the same
+    /// route walked from there and settled as the counter is. The route is the publication's and
+    /// the province the hour's, because a unit's place at an hour is its province's anchor at that
+    /// hour and where along its route it stands; the route columns only bend the path between the
+    /// anchors. `None` where the content cannot place it there.
+    pub fn place_in(
+        &self,
+        province: u32,
+        world: &RouteWorld<'_>,
+        anchor: &dyn Fn(u32, u32) -> Option<[f32; 3]>,
+    ) -> Option<[f32; 3]> {
+        let land = |id: u32| world.map.terrain(id).is_some_and(|terrain| terrain.flags & 1 != 0);
+        let class = self.class;
+        let there = Self::build(
+            province,
+            &self.path,
+            class,
+            self.combat,
+            self.snapped,
+            &|id| anchor(id, class.standstill(land(id))),
+            world,
+        )?;
+        Some(there.settled().map_or(there.anchors[0], |motion| motion.at))
+    }
+
     fn at(&self, arc: f32) -> Option<Motion> {
         let index = segment(&self.samples, self.next, arc)?;
         Some(Motion {
@@ -1336,6 +1432,9 @@ impl Movement {
         };
         (self.scales[1] - self.scales[0]) * fraction + self.scales[0]
     }
+
+
+
 
     fn drawn(&self, arc: f32) -> Option<Drawn> {
         Some(Drawn {
@@ -1379,6 +1478,13 @@ pub struct MovementFrame {
     pub time: f32,
     /// The presented replay hour.
     pub hour: i32,
+    /// Where the display frame itself stands in the replay: the clock's head, which is where
+    /// every mover of the frame is placed ([`crate::map::anchored::Head`]).
+    pub head: crate::map::anchored::Head,
+    /// The hour of the overlay publication this frame draws: the cut the tracks its counters
+    /// stand on were made at ([`MovementHistory::track`]), so a figure reading the same places
+    /// reads the same ones its counter does, and not one the maker has since laid out.
+    pub overlay_hour: i32,
     /// The recorded game-speed index; without it every unit stays settled.
     pub clock_speed: Option<i32>,
     /// `LAND_UNIT_MOVEMENT_SPEED` and `NAVAL_UNIT_MOVEMENT_SPEED`.
@@ -1431,8 +1537,117 @@ pub struct MovementHistory {
     /// The provinces this frame updates in view, one bit per province id.
     in_view: Vec<u64>,
     units: BTreeMap<Unit, Moving>,
+    /// Where the recording's own rows put each unit at the hours the last publications stand at:
+    /// what a display frame between two of them interpolates ([`MovementHistory::track`]).
+    placed: BTreeMap<Unit, Placements>,
     /// The largest glide of a unit this frame, while the flight record is kept ([`note_glide`]).
     largest_glide: f32,
+}
+
+/// The places the recording's own rows gave one unit, oldest first: one for each hour it wrote the
+/// unit's province at, over the hours the frames still to come can stand at ([`Placements::keep`]).
+#[derive(Debug, Default)]
+struct Placements {
+    held: Vec<crate::map::free_icons::Place>,
+    /// What the last two layouts were answered for this unit, oldest first: the hour each stood
+    /// at and the track it was handed, or none where it was refused one. The display frame draws
+    /// one of those two layouts (the maker lays the next one out while it does), and its figures
+    /// stand on the very track its counters stand on.
+    handed: [Option<Handed>; 2],
+    /// Where the frame before this one stood the unit's figure, and that frame, while the flight
+    /// record is kept ([`note_figure`]).
+    figured: Option<([f32; 3], u64)>,
+}
+
+impl Placements {
+    /// Takes `place` as the placement of its hour, in the chain's own order: the same hour again is
+    /// that hour's (a layout made again for the art that arrived reads the same rows, and a
+    /// publication reads the hour of a change its own rows end at).
+    fn note(&mut self, place: crate::map::free_icons::Place) {
+        match self.held.binary_search_by_key(&place.hour, |held| held.hour) {
+            Ok(at) => self.held[at] = place,
+            Err(at) => self.held.insert(at, place),
+        }
+    }
+
+    /// Starts the chain afresh for a publication of `hour` standing before every place held: that
+    /// is a seek backwards, and pairing the two would carry a counter across whatever lies between
+    /// them. A publication the chain still holds places for is a layout asked for again while the
+    /// frame draws it, not a seek.
+    fn after_a_seek(&mut self, hour: i32) {
+        if self.held.first().is_some_and(|oldest| oldest.hour > hour) {
+            self.held.clear();
+            self.handed = [None, None];
+        }
+    }
+
+    /// Drops the places no frame will read again: a display frame's head only moves forward and a
+    /// seek starts the chain afresh, so the oldest place any later frame can stand between is the
+    /// newest one at or below this frame's head. Everything below that is dropped, and everything
+    /// above it kept, so the chain reaches exactly as far as the hours the frames can stand at and
+    /// no further. Two places are always left: a head standing above every place a seek has given
+    /// the unit so far still has a pair to stand between.
+    fn keep(&mut self, head: i32) {
+        let below = self.held.partition_point(|place| place.hour <= head);
+        let drop = below.saturating_sub(1).min(self.held.len().saturating_sub(2));
+        self.held.drain(..drop);
+    }
+
+    /// Whether the layout of `hour` placed this unit, which is what noting its place is.
+    fn placed_at(&self, hour: i32) -> bool {
+        self.held.iter().any(|place| place.hour == hour)
+    }
+
+    fn newest(&self) -> Option<crate::map::free_icons::Place> {
+        self.held.last().copied()
+    }
+
+    /// The track over the placements up to and including `hour`, oldest first: what the display
+    /// frames of that publication's interval interpolate between, whichever two of them bracket
+    /// each frame's own hour. Refused by name while this publication is the first to place the
+    /// unit, or where the places all stand at one point, which leaves the mover where its own rows
+    /// put it.
+    fn track(&self, hour: i32, width: f32) -> Result<crate::map::free_icons::Track, &'static str> {
+        let upto = self.held.partition_point(|place| place.hour <= hour);
+        if upto < 2 {
+            return Err("no publication before this one placed it");
+        }
+        let track = crate::map::free_icons::Track::new(&self.held[..upto], width);
+        if !track.moves() {
+            return Err("the recording left it where it was");
+        }
+        Ok(track)
+    }
+
+    /// Keeps what a layout of `hour` was answered, over the older of the two held.
+    fn hand(&mut self, hour: i32, track: Option<crate::map::free_icons::Track>) {
+        let handed = Some(Handed { hour, track });
+        if self.handed[1].as_ref().is_some_and(|held| held.hour == hour) {
+            self.handed[1] = handed;
+            return;
+        }
+        self.handed = [self.handed[1].take(), handed];
+    }
+
+    /// What the layout of `hour` was answered for this unit: the track its counter on screen
+    /// stands on, or `Some(None)` where that layout was refused one and its counter stands where
+    /// its own rows put it. The outer `None` is a layout neither of the two held answers — the
+    /// frame is drawing one older than the maker has laid out since, which is the figures' judge's
+    /// own gate ([`judge_the_layout`]).
+    fn handed_at(&self, hour: i32) -> Option<Option<crate::map::free_icons::Track>> {
+        self.handed
+            .iter()
+            .flatten()
+            .find(|held| held.hour == hour)
+            .map(|held| held.track.clone())
+    }
+}
+
+/// What one layout was answered for one unit ([`Placements::handed`]).
+#[derive(Clone, Debug)]
+struct Handed {
+    hour: i32,
+    track: Option<crate::map::free_icons::Track>,
 }
 
 #[derive(Debug)]
@@ -1454,6 +1669,10 @@ struct Moving {
     checked: u64,
     /// The game rebuilt it onto its route since that frame: a snap of the game's own.
     rebuilt: bool,
+    /// The track last read for it and the publication hour it was made at, while the flight
+    /// record is kept: what the next publication's own places are compared with
+    /// ([`note_prediction`]).
+    predicted: Option<(crate::map::free_icons::Track, i32)>,
 }
 
 impl Moving {
@@ -1470,6 +1689,7 @@ impl Moving {
             drawn_at: None,
             checked: 0,
             rebuilt: false,
+            predicted: None,
         }
     }
 
@@ -1548,6 +1768,40 @@ fn note_glide(state: &mut Moving, now: [f32; 3], step: f32, largest: &mut f32) {
 /// Float rounding of a drawn point, in world units.
 const GLIDE_SLACK: f32 = 1e-3;
 
+/// The flight record's check of a track against the publication that followed it, taken at the
+/// hour the display frames are actually at (`head`, the clock's own): where the track in hand had
+/// carried the mover by that hour from its own last place, where the new publication's places put
+/// it at the same hour, and
+/// how far apart the two left it — the snap a watcher sees on the frame a publication lands
+/// (`track free` and `track combat`, in thousandths of a world unit). A mover placed from the
+/// recording's own successive placements answers the first two the same and the third zero; a
+/// track predicted from the route and the recorded estimate of the hours to come answered 14.87
+/// world units apart at the top speed, which is 227 pixels at the stress test's camera.
+fn note_prediction(state: &mut Moving, head: crate::map::anchored::Head, hour: i32, fresh: &crate::map::free_icons::Track) {
+    use crate::view_record::add;
+    let Some((held, was)) = state.predicted.clone() else {
+        return;
+    };
+    if was == hour {
+        return;
+    }
+    let from = held.places().last().map_or([0.0; 3], |place| place.at);
+    let (there, here) = (held.at(head), fresh.at(head));
+    let scope = if state.current.combat { "track combat" } else { "track free" };
+    add(scope, "publications", 1);
+    add(scope, "hours", u64::from(hour.saturating_sub(was).unsigned_abs()));
+    add(scope, "behind_hours", u64::from(hour.saturating_sub(head.hour).max(0).unsigned_abs()));
+    add(scope, "said_milli", (distance(from, there) * 1000.0) as u64);
+    add(scope, "moved_milli", (distance(from, here) * 1000.0) as u64);
+    add(scope, "apart_milli", (distance(there, here) * 1000.0) as u64);
+}
+
+/// How many game hours back a unit's placements are kept for: five publications at the top speed
+/// (1,440 game hours a second, 30 publications a second). Past that the unit is out of view, and
+/// its next placement starts a chain of its own rather than pairing two hours with nothing between
+/// them.
+const KEPT_HOURS: i32 = 240;
+
 /// The game's zero-based day of a replay hour.
 fn game_day(hour: i32) -> i64 {
     (i64::from(hour) - 43_800_000) / 24
@@ -1556,6 +1810,7 @@ fn game_day(hour: i32) -> i64 {
 impl MovementHistory {
     pub fn clear(&mut self) {
         self.units.clear();
+        self.placed.clear();
     }
 
     /// Starts a frame whose province updates reach `in_view` in view.
@@ -1578,9 +1833,14 @@ impl MovementHistory {
             || previous.is_some_and(|previous| frame.time < previous.time)
         {
             self.units.clear();
+            self.placed.clear();
         } else if let Some(previous) = previous.filter(|previous| previous.hour != frame.hour) {
             // A unit no layer placed in the previous hour has left the view.
             self.units.retain(|_, state| state.hour == previous.hour);
+            // A unit no recent publication placed is out of view or gone: its places would pair
+            // two histories across the hours in between.
+            self.placed
+                .retain(|_, places| places.newest().is_some_and(|place| (frame.hour - place.hour).abs() <= KEPT_HOURS));
         }
     }
 
@@ -1634,6 +1894,124 @@ impl MovementHistory {
         (Some(drawn) != settled).then_some(drawn)
     }
 
+    /// Where `unit` stood at each hour of this publication the recording moved it at, oldest
+    /// first, and at the hours of the publications before it: places the recording's own rows
+    /// gave, which the display frame interpolates between at its own head
+    /// ([`crate::map::free_icons::Track`]). So a moving counter is placed at the frame's hour on
+    /// every display frame, travels exactly as far as the hours carry it, holds still over the
+    /// hours the recording held it still, and is never painted again for its motion.
+    ///
+    /// `places` are this publication's own, oldest first and ending at `hour`: the place the hour
+    /// of each province change gives and the place the publication's own rows give at `hour`.
+    ///
+    /// Nothing here is predicted. A route and the recorded estimate of the hours to come do not
+    /// say where the next publication puts a unit at the top speed — over two game days a route is
+    /// re-issued, the unit arrives, retreats or fights — and a mover placed along them slid out and
+    /// was snapped back by every publication (14.87 world units apart, 227 pixels at the stress
+    /// test's camera). None for a unit this publication is the first to place, or one the recording
+    /// left where it was.
+    pub fn track(&mut self, unit: Unit, places: &[crate::map::free_icons::Place], hour: i32, width: f32) -> Option<crate::map::free_icons::Track> {
+        // Why a mover carries no places, when the count asks
+        // ([`crate::map::overlay_count::counting`]): a counter the publication moves with no track
+        // hops at the publication instead of advancing with the frame's own hour.
+        let refused = |why: &'static str| {
+            if crate::map::overlay_count::counting() {
+                crate::view_record::add("track refused", why, 1);
+            }
+            None
+        };
+        // A window dump draws every unit settled, at one hour: nothing moves between its frames.
+        let Some(frame) = self.frame.filter(|frame| !frame.steady) else {
+            return refused("the frame is steady or none");
+        };
+        let held = self.placed.entry(unit).or_default();
+        held.after_a_seek(hour);
+        for place in places {
+            held.note(*place);
+        }
+        held.keep(frame.head.hour);
+        if crate::view_record::on() {
+            crate::view_record::add("places", "noted", places.len() as u64);
+            crate::view_record::add("places", "held", held.held.len() as u64);
+            crate::view_record::add("places", "movers", 1);
+        }
+        let made = held.track(hour, width);
+        held.hand(hour, made.clone().ok());
+        let track = match made {
+            Ok(track) => track,
+            Err(why) => return refused(why),
+        };
+        // What this track and the one it replaces say at the hour the display frames are at.
+        if crate::view_record::on()
+            && let Some(state) = self.units.get_mut(&unit)
+        {
+            note_prediction(state, frame.head, hour, &track);
+            state.predicted = Some((track.clone(), hour));
+        }
+        Some(track)
+    }
+
+    /// Where a unit's figure stands on this display frame, which is where its counter stands: the
+    /// place the recording's own rows put it at the frame's own head, read from the very track the
+    /// layout this frame draws was handed for it ([`Self::track`]), facing the way the two places
+    /// it stands between run. A unit that layout left where its rows put it keeps its animator's
+    /// drawn point, as its counter does; `None` leaves it on the hour's placement.
+    ///
+    /// This is the figures' only read of the history: it offers the unit this hour's route and
+    /// advances its animator as any layer's first read does ([`Self::sample`]), then stands it on
+    /// the counters' own track.
+    pub fn at_head(&mut self, unit: Unit, position: &Position) -> Option<AtHead> {
+        let drawn = self.sample(unit, position);
+        let standing = || {
+            drawn.map(|drawn| {
+                let (at, heading) = drawn.motion.position_heading();
+                AtHead { at, heading: Some(heading), scale: Some(drawn.scale) }
+            })
+        };
+        let frame = self.frame.filter(|frame| !frame.steady)?;
+        frame.clock_speed?;
+        let frames = self.frames;
+        let on_the_hour = |places: Option<&mut Placements>| {
+            if crate::view_record::on() {
+                crate::view_record::add("figures", "on_the_hour", 1);
+            }
+            if let Some(places) = places {
+                places.figured = None;
+            }
+        };
+        let Some(places) = self.placed.get_mut(&unit) else {
+            on_the_hour(None);
+            return standing();
+        };
+        let Some(track) = places.handed_at(frame.overlay_hour) else {
+            // The layout this frame draws placed the unit, and what it was answered is no longer
+            // held: its counter travels on a track nothing holds any more, so its figure cannot
+            // share it. A layout that never placed the unit shows no counter for it, and its
+            // figure standing where its rows put it is right.
+            if judging() && places.placed_at(frame.overlay_hour) {
+                judge_the_layout(unit, frame.overlay_hour, places.handed[1].as_ref().map(|held| held.hour));
+            }
+            on_the_hour(Some(places));
+            return standing();
+        };
+        // That layout was refused a track: its counter stands where its own rows put it, and so
+        // does its figure.
+        let Some(track) = track else {
+            on_the_hour(Some(places));
+            return standing();
+        };
+        let at = track.at(frame.head);
+        if crate::view_record::on() {
+            note_figure(places, frames, at, track.outside(frame.head), track.held_still(frame.head));
+        }
+        if judging()
+            && let Ok(fresh) = places.track(frame.overlay_hour, track.width)
+        {
+            judge_one_point(unit, fresh.at(frame.head), at);
+        }
+        Some(AtHead { at, heading: None, scale: drawn.map(|drawn| drawn.scale) })
+    }
+
     /// This frame's map render delta, which every animator of the view advances by.
     pub fn delta(&self) -> Option<f32> {
         self.frame.filter(|frame| !frame.steady).map(|_| self.delta)
@@ -1656,6 +2034,92 @@ impl MovementHistory {
                 && (state.arriving || (state.shown.moves() && state.arc < SETTLED_ARC))
         })
     }
+}
+
+/// The flight record's check that every figure moves on every frame (section `figures`):
+/// how many figures of the frame stand on the places their hours give them and how many on the
+/// hour's own placement for want of a pair, how many of the placed ones the frame left **standing**
+/// though their hours moved them, how far a placed figure travelled (in thousandths of a world
+/// unit), and where the head stood against the places (`before` the oldest, `past` the newest),
+/// which is where a figure holds at an end and then steps when the data arrives.
+fn note_figure(places: &mut Placements, frames: u64, at: [f32; 3], outside: i8, held_still: bool) {
+    use crate::view_record::add;
+    add("figures", "on_places", 1);
+    match outside {
+        -1 => add("figures", "before_the_oldest", 1),
+        1 => add("figures", "past_the_newest", 1),
+        _ => {}
+    }
+    if let Some((was, frame)) = places.figured.replace((at, frames))
+        && frame + 1 == frames
+    {
+        let moved = distance(was, at);
+        add("figures", if moved > 0.0 { "moved" } else { "stood" }, 1);
+        // A figure standing between two places of one point stands because the recording left it
+        // there over those hours; one standing between two places of different points is the
+        // defect, and there is no such reading once every place is an hour's own.
+        if moved == 0.0 {
+            add("figures", if held_still { "stood_held_still" } else { "stood_though_moved" }, 1);
+        }
+        add("figures", "moved_milli", (moved * 1000.0) as u64);
+    }
+}
+
+/// Where a figure's root stands this display frame, and the way it faces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AtHead {
+    pub at: [f32; 3],
+    /// The way its animator draws it facing; `None` keeps the facing its hour placed it with,
+    /// which is the recording's own. The places two publications apart say nothing finer: a
+    /// chord of them swung two radians on one move in seven, which a watcher sees as a spin.
+    pub heading: Option<f32>,
+    /// The drawn stack scale along its route; `None` keeps the hour's own.
+    pub scale: Option<f32>,
+}
+
+/// Whether the figures' judge runs (`BATTLE_PLAN_VIEWER_CHECK_ACTORS`, the actors' own gate, which lives
+/// in the world crate: the same variable, read once).
+fn judging() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_ACTORS").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ACTORS"))
+            .and_then(|value| value.to_str().map(|value| value.trim().to_owned()))
+            .is_some_and(|value| !value.is_empty() && value != "0")
+    })
+}
+
+/// How far apart a figure and its counter may stand, in world units: one interface pixel at the
+/// zoom a watcher reads counters at (15.3 pixels a world unit on the stress test's camera).
+const JUDGE_SLACK: f32 = 0.065;
+
+/// The figures' judge, where a figure stands on its counter's own track: that the places the
+/// history holds for the unit still say what that track says at this frame's head. The two part
+/// when the chain has moved on from the layout the frame draws, and a figure would then travel
+/// where its counter does not. The unit and the distance are named, and the frame runs on.
+fn judge_one_point(unit: Unit, places: [f32; 3], figure: [f32; 3]) {
+    use crate::view_record::{add, add_named};
+    add("actors check", "checks", 1);
+    add_named("actors check", "checked: one point", 1);
+    let apart = distance(places, figure);
+    if !(apart <= JUDGE_SLACK) {
+        eprintln!(
+            "CHECK one point DIFFERS at {unit:?}: a figure and its counter's own places stand {apart:.4} world units apart, where {JUDGE_SLACK} is allowed"
+        );
+        add("actors check", "differs", 1);
+        add_named("actors check", "differs: one point", 1);
+    }
+}
+
+/// The same judge's other half: a unit whose counters were laid out with a track this frame cannot
+/// find — the maker laid two layouts out while the frame drew one — has its figure left on the
+/// hour's placement while its counter travels. Named by the unit and the two hours.
+fn judge_the_layout(unit: Unit, drawn: i32, handed: Option<i32>) {
+    use crate::view_record::{add, add_named};
+    eprintln!(
+        "CHECK one track DIFFERS at {unit:?}: the layout this frame draws stands at hour {drawn}, and the newest track handed for it was cut at {handed:?}"
+    );
+    add("actors check", "differs", 1);
+    add_named("actors check", "differs: one track", 1);
 }
 
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {

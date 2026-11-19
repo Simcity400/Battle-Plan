@@ -617,8 +617,9 @@ fn land_scout_uses_state_controller_and_directional_attache() {
     let admit = |frame: &DecodedFrame| {
         let wars = Wars::read(frame, &links).unwrap();
         let families = fog_families(frame, &links);
+        let states = RegionStates::read(frame, &regions).unwrap();
         let sources =
-            ScoutTargetSources::read(frame, &links, &wars, families.as_ref(), &regions).unwrap();
+            ScoutTargetSources::read(frame, &links, &wars, families.as_ref(), &states).unwrap();
         sources.admit(&wing, 7, 0)
     };
     let mut frame = scout_frame(12);
@@ -662,8 +663,9 @@ fn land_scout_air_role_accepts_foreign_neutral_but_not_same_state() {
     let admit = |frame: &DecodedFrame, flags| {
         let wars = Wars::read(frame, &links).unwrap();
         let families = fog_families(frame, &links);
+        let states = RegionStates::read(frame, &regions).unwrap();
         let sources =
-            ScoutTargetSources::read(frame, &links, &wars, families.as_ref(), &regions).unwrap();
+            ScoutTargetSources::read(frame, &links, &wars, families.as_ref(), &states).unwrap();
         sources.admit(&wing, 7, flags)
     };
     let frame = scout_frame(2);
@@ -691,11 +693,11 @@ fn land_scout_missing_relations_and_native_zero_coverage_remain_distinct() {
     truncate::<tables::FactionMembers>(&mut frame);
     let wars = Wars::read(&frame, &links).unwrap();
     let families = fog_families(&frame, &links);
-    let regions = BTreeMap::from([(7, vec![100])]);
+    let regions = RegionStates::read(&frame, &BTreeMap::from([(7, vec![100])])).unwrap();
     let sources =
         ScoutTargetSources::read(&frame, &links, &wars, families.as_ref(), &regions).unwrap();
     assert_eq!(sources.admit(&wing, 7, 1 << 18), None);
-    let empty = BTreeMap::from([(7, Vec::new())]);
+    let empty = RegionStates::read(&frame, &BTreeMap::from([(7, Vec::new())])).unwrap();
     let sources =
         ScoutTargetSources::read(&frame, &links, &wars, families.as_ref(), &empty).unwrap();
     assert_eq!(sources.admit(&wing, 7, 1 << 18), Some(false));
@@ -1238,7 +1240,8 @@ fn strategic_witness_uses_full_region_states_and_active_building_vectors() {
     let full = |frame: &DecodedFrame, reached: &[u32]| {
         let mission = MissionCountrySources::read(frame, &links, &registry).unwrap();
         let wars = Wars::read(frame, &links).unwrap();
-        let sources = StrategicTargetSources::read(frame, &wars, &regions).unwrap();
+        let states = RegionStates::read(frame, &regions).unwrap();
+        let sources = StrategicTargetSources::read(frame, &wars, &states).unwrap();
         sources.admit(mission.resolve(&wing).unwrap(), 7, reached)
     };
     let admit = |frame: &DecodedFrame, reached: &[u32]| full(frame, reached).found;
@@ -1422,7 +1425,7 @@ fn category_priority_matches_native_target_branches() {
 #[test]
 fn projected_air_definition_bits_preserve_native_map_predicates() {
     let mask = AIR_MISSION_MAP_FLAGS;
-    assert_eq!(mask, 0x1e_0005_0000);
+    assert_eq!(mask, 0x1f_0025_fc00, "the map's flags and the air menu's");
     for raw in [0, u64::MAX, mask, !mask]
         .into_iter()
         .chain((0..64).map(|bit| 1_u64 << bit))

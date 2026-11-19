@@ -42,7 +42,7 @@ impl Sources {
         let mut targets = Vec::new();
         let mut epoch = 0;
         for province in provinces {
-            for formation in history.representatives(province, frame) {
+            for formation in history.representatives(province, frame).0 {
                 let mut entity = Entity {
                     kind: Kind::Ship,
                     scale: 1.0,
@@ -232,7 +232,6 @@ pub(super) struct History {
     arcs: BTreeMap<Unit, ArcState>,
     selected: BTreeSet<Unit>,
     representatives: [usize; 0x26],
-    combat: Option<(u64, u64)>,
 }
 
 impl Default for History {
@@ -244,7 +243,6 @@ impl Default for History {
             arcs: BTreeMap::new(),
             selected: BTreeSet::new(),
             representatives: [0; 0x26],
-            combat: None,
         }
     }
 }
@@ -351,7 +349,6 @@ impl History {
         assert_eq!(self.arcs, other.arcs);
         assert_eq!(self.selected, other.selected);
         assert_eq!(self.representatives, other.representatives);
-        assert_eq!(self.combat, other.combat);
     }
 
     #[cfg(test)]
@@ -371,11 +368,6 @@ impl History {
     #[cfg(test)]
     pub(super) fn empty_candidates_for_test(&mut self, province: u32) {
         self.candidates.insert(province, Vec::new());
-    }
-
-    /// An empty representative walk leaves the shared combat scratch clear.
-    pub(super) fn clear_combat_selection(&mut self) {
-        self.combat = None;
     }
 
     /// Viewer selection is read on each frame, independent of hourly sources.
@@ -436,11 +428,14 @@ impl History {
     /// The game chooses ONE representative per visual slot, including land
     /// occupants in the same bucket. Its pointer and priority can diverge:
     /// an eligible foreign candidate keeps an own pointer but writes priority.
+    /// The formations a province's visual slots offer, and the combat its chosen slot names
+    /// ([`Self::combat`]). The combat is returned rather than kept, so a frame that leaves a
+    /// province alone leaves nothing of another province's behind.
     pub(super) fn representatives(
         &mut self,
         province: u32,
         frame: Frame,
-    ) -> impl Clone + Iterator<Item = &Formation> {
+    ) -> (impl Clone + Iterator<Item = &Formation>, Option<(u64, u64)>) {
         // 0x26 visual slots. Counts and the
         // reusable output are bounded by the native slots, not unit counts.
         let mut slots: [Option<(usize, u8)>; 0x26] = [None; 0x26];
@@ -501,7 +496,7 @@ impl History {
         } else {
             9
         };
-        self.combat = slots[combat_slot].and_then(|(index, _)| {
+        let combat = slots[combat_slot].and_then(|(index, _)| {
             let candidate = &self.sources.candidates[index];
             candidate
                 .naval()
@@ -529,13 +524,21 @@ impl History {
             }
         }
         let formations = &self.sources.formations;
-        self.representatives[..count]
-            .iter()
-            .map(move |&i| &formations[i])
+        (
+            self.representatives[..count]
+                .iter()
+                .map(move |&i| &formations[i]),
+            combat,
+        )
     }
 
-    pub(super) fn combat(&self, province: u32) -> Option<super::naval_combat::Selection<'_>> {
-        let (id, first) = self.combat?;
+    /// The combat actor `selected` names in `province`, as its representative walk chose it.
+    pub(super) fn combat(
+        &self,
+        province: u32,
+        selected: Option<(u64, u64)>,
+    ) -> Option<super::naval_combat::Selection<'_>> {
+        let (id, first) = selected?;
         let battle = self.sources.combats.battles.get(&id)?;
         let geometry = self.sources.combats.roots.get(&province)?;
         Some(super::naval_combat::Selection {
@@ -605,24 +608,21 @@ mod tests {
 
     fn selected(history: &mut History, delta: f32) -> Vec<u64> {
         history
-            .representatives(9206, frame(delta))
+            .representatives(9206, frame(delta)).0
             .map(|f| f.identity)
             .collect()
     }
 
     #[test]
-    fn empty_representative_shortcut_keeps_the_full_walk_scratch() {
-        let make = || History {
+    fn a_province_with_no_candidate_offers_no_formation_and_names_no_combat() {
+        let mut history = History {
             representatives: [27; 0x26],
-            combat: Some((17, 29)),
             ..Default::default()
         };
-        let mut skipped = make();
-        let mut walked = make();
-        assert!(!skipped.has_candidates(42));
-        skipped.clear_combat_selection();
-        assert_eq!(walked.representatives(42, frame(0.25)).count(), 0);
-        skipped.assert_same_state(&walked);
+        assert!(!history.has_candidates(42));
+        let (formations, combat) = history.representatives(42, frame(0.25));
+        assert_eq!(formations.count(), 0);
+        assert_eq!(combat, None);
     }
 
     #[test]
@@ -705,7 +705,7 @@ mod tests {
         closed.shown[Kind::Land as usize] = false;
         assert_eq!(
             history
-                .representatives(9206, closed)
+                .representatives(9206, closed).0
                 .next()
                 .unwrap()
                 .identity,
@@ -831,7 +831,7 @@ mod tests {
         for _ in 0..3 {
             let mut previous = None;
             let mut count = 0;
-            for formation in history.representatives(9206, frame(0.1)) {
+            for formation in history.representatives(9206, frame(0.1)).0 {
                 assert!(previous.is_none_or(|slot| slot < formation.slot));
                 assert!(!matches!(formation.slot, 9 | 10 | 19));
                 previous = Some(formation.slot);
@@ -880,7 +880,7 @@ mod tests {
         assert_eq!(history.arcs[&Unit::TaskForce(2)].route.as_ptr(), old_route);
         let winner = |history: &mut History, delta| {
             history
-                .representatives(1434, frame(delta))
+                .representatives(1434, frame(delta)).0
                 .next()
                 .unwrap()
                 .identity
@@ -907,7 +907,7 @@ mod tests {
         assert_eq!(history.arcs[&Unit::TaskForce(2)].sample_count, 8);
         assert_eq!(
             history
-                .representatives(1660, frame(1.0))
+                .representatives(1660, frame(1.0)).0
                 .next()
                 .unwrap()
                 .identity,
@@ -936,7 +936,7 @@ mod tests {
             moving.province = 1434;
             moving.route = vec![1660];
             history.install(sources(vec![moving.clone()]));
-            history.representatives(1434, frame(0.0)).count();
+            history.representatives(1434, frame(0.0)).0.count();
             assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.5);
             moving.day = day;
             moving.arrival_allowed = allowed;
@@ -959,7 +959,7 @@ mod tests {
         history.install(sources(vec![candidate(1, 3, true)]));
         let mut closed = frame(0.0);
         closed.shown[1] = false;
-        assert!(history.representatives(9206, closed).next().is_none());
+        assert!(history.representatives(9206, closed).0.next().is_none());
     }
 
     #[test]
@@ -979,7 +979,7 @@ mod tests {
             frame.shown = [height < 120.0, height < 240.0];
             assert_eq!(
                 history
-                    .representatives(9206, frame)
+                    .representatives(9206, frame).0
                     .map(|f| f.identity)
                     .collect::<Vec<_>>(),
                 [escort_id],
@@ -1010,7 +1010,7 @@ mod tests {
         above_land.shown[Kind::Land as usize] = false;
         assert_eq!(
             history
-                .representatives(9206, above_land)
+                .representatives(9206, above_land).0
                 .next()
                 .unwrap()
                 .identity,

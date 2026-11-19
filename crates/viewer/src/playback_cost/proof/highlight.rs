@@ -34,7 +34,7 @@ fn cycle_hz() -> f64 {
 const POINTED: usize = 20;
 
 pub(super) fn make(document: &Document) -> Box<dyn Layer> {
-    Box::new(Political::new(Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), &document.border_meshes))))
+    Box::new(Political::new(Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)))))
 }
 
 /// The three plans a highlight of `provinces` installs, as the scene's highlight makes them.
@@ -50,6 +50,13 @@ fn plans(meshes: &viewer_world::map::borders::BorderMeshes, regions: &Regions, z
 pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer: &Political = political(layer);
     let mut compared = Compared::default();
+    // The picture these plans highlight is the political layer's, which only the default map mode
+    // draws: at another mode the layer draws nothing and there is no highlight to compare.
+    if !layer.drawn() {
+        compared.entries = 1;
+        compared.notes = json!({"drawn": false});
+        return Ok(compared);
+    }
     let note = |compared: &mut Compared, what: String| {
         compared.differing += 1;
         compared.first.get_or_insert(what);

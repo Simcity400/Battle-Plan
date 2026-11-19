@@ -51,8 +51,9 @@ fn a_map_mode_style_sets_each_regions_opacity_pulse_and_band() {
     // Region 1's own opacity and pulse, region 2's opacity alone.
     assert_eq!(sample(&map, &regions, &grid, 20, 16).1, [0, 38, 255, 0]);
     assert_eq!(sample(&map, &regions, &grid, 50, 16).1, [0, 200, 0, 0]);
-    // The fixed thickness replaces the area rule, and the fill factor widens the band.
-    let plain = field_alpha(3.0, 12.0, FieldDefines::TEST.center);
+    // The fixed thickness replaces the area rule and leaves the centre band at zero, and the fill
+    // factor widens the band.
+    let plain = field_alpha(3.0, 12.0, 0.0);
     assert_eq!(
         sample(&map, &regions, &grid, 28, 16).0[3],
         filled_alpha(plain, 1.5)

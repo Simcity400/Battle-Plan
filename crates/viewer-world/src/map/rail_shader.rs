@@ -1,4 +1,5 @@
 //! Railway submission with resolved effects and retained render state.
+use viewer_foundation::map::gpu_contract::Targets;
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
 
@@ -142,7 +143,7 @@ impl Rail {
         &self,
         arena: &gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
+        targets: &Targets,
         inputs: Inputs<'_>,
         geometry: Geometry<'_>,
     ) -> io::Result<()> {
@@ -195,14 +196,8 @@ impl Rail {
                     .map_err(refuse)?,
             );
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("compiled railways"),
-            color_attachments: &[Some(target.color)],
-            depth_stencil_attachment: Some(target.depth),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = super::scene::world_pass(encoder, targets, "compiled railways");
+        let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
         pass.set_stencil_reference(self.stencil_reference);
@@ -216,7 +211,7 @@ impl Rail {
         }
         let mut previous = None;
         for bindings in &bound {
-            bindings.bind_after(&mut pass, previous);
+            bindings.bind_after(pass, previous);
             previous = Some(bindings);
             if let Some((_, count)) = geometry.strips {
                 shader_pipeline::gpu::stats::draw();

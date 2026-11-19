@@ -10,11 +10,11 @@
 #[cfg(test)]
 mod tests;
 
-use super::{Budget, Carried, Gpu, Inputs, Layer, Published, View};
+use super::{Carried, Settling, Inputs, Layer, Published, View};
 use crate::playhead_host::{
-    Entry, MapSide,
+    MapSide,
     mirror::Mirrors,
-    rows::{Cadence, Recording, RowReader, Rows, Stands},
+    views::{Need, Pace, Reader as ViewReader, Stands, Views},
 };
 use playhead::Step;
 use replay_data::{
@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     io,
-    sync::{Arc, OnceLock, mpsc},
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 use viewer_foundation::map::{perspective, tables::core};
@@ -96,8 +96,7 @@ struct Done {
 
 /// The reader and the worker, while the icons are drawn.
 struct Open {
-    rows: Arc<Rows>,
-    reader: RowReader,
+    reader: ViewReader,
     jobs: mpsc::Sender<Work>,
     done: mpsc::Receiver<Done>,
     /// An evaluation is running.
@@ -108,15 +107,15 @@ struct Open {
 }
 
 impl Open {
-    fn new(entry: &Arc<Entry>, recording: Recording, tables: &[TableId], cadence: Cadence, evaluate: &Arc<dyn Evaluate>) -> io::Result<Self> {
-        let rows = Rows::of(entry, recording)?;
-        let reader = rows.reader(tables, cadence);
+    fn new(views: &Views, tables: &[TableId], pace: Pace, evaluate: &Arc<dyn Evaluate>) -> io::Result<Self> {
+        let reader = views.reader_at(NAME, &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), pace);
         let (jobs, receive) = mpsc::channel::<Work>();
         let (send, done) = mpsc::channel();
         let evaluate = Arc::clone(evaluate);
         // Not joined: closing drops the sender, and the thread ends after the job it holds.
         std::thread::Builder::new().name("intel icons".into()).spawn(move || {
-            viewer_foundation::worker_priority::background_priority();
+            // The step's settle joins its product: at the head's priority, never below normal.
+            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             for work in receive {
                 let job = match work {
                     Work::Evaluate(job) => job,
@@ -135,7 +134,7 @@ impl Open {
                 }
             }
         })?;
-        Ok(Self { rows, reader, jobs, done, busy: false, seen: None, handed: false })
+        Ok(Self { reader, jobs, done, busy: false, seen: None, handed: false })
     }
 
     /// Frees `held` on the worker.
@@ -219,10 +218,9 @@ impl Installs {
 /// The intel icons at the head.
 pub struct Icons {
     evaluate: Arc<dyn Evaluate>,
-    head: OnceLock<(Arc<Entry>, Recording)>,
-    cadence: Cadence,
-    /// The proof and the tests play the playhead themselves: rows follow the hour applied.
-    drive: bool,
+    /// The map side's view store, given as the side is made; nothing is read before it.
+    views: Option<Views>,
+    pace: Pace,
     shown: bool,
     choice: perspective::Choice,
     /// Learned by discovery; kept when closed, so it opens with them.
@@ -240,25 +238,9 @@ pub struct Icons {
 }
 
 impl Icons {
-    /// The icons of `evaluate`'s content, over rows at the head of `head`'s playhead (or the one
-    /// [`Self::set_head`] gives).
-    pub fn new(evaluate: Arc<dyn Evaluate>, head: Option<(Arc<Entry>, Recording)>, cadence: Cadence) -> Self {
-        let held = OnceLock::new();
-        if let Some(head) = head {
-            let _ = held.set(head);
-        }
-        Self { evaluate, head: held, cadence, drive: false, shown: false, choice: perspective::Choice::default(), tables: CORE.to_vec(), open: None, icons: None, stands: None, epoch: 0, applied: None, stats: Stats::default(), installs: Installs::default() }
-    }
-
-    /// The playhead it reads rows of, for a caller that makes the layer before the playhead; the
-    /// first given stands.
-    pub fn set_head(&self, entry: &Arc<Entry>, recording: Recording) {
-        let _ = self.head.set((Arc::clone(entry), recording));
-    }
-
-    /// Rows follow the hour the map applied, for a caller that plays the playhead itself.
-    pub fn drive(&mut self) {
-        self.drive = true;
+    /// The icons of `evaluate`'s content, over the views the map side makes of its own mirrors.
+    pub fn new(evaluate: Arc<dyn Evaluate>, pace: Pace) -> Self {
+        Self { evaluate, views: None, pace, shown: false, choice: perspective::Choice::default(), tables: CORE.to_vec(), open: None, icons: None, stands: None, epoch: 0, applied: None, stats: Stats::default(), installs: Installs::default() }
     }
 
     /// The newest icons and the hour of the rows they are of; none while loading or not drawn.
@@ -268,10 +250,6 @@ impl Icons {
 
     pub fn tables(&self) -> &[TableId] {
         &self.tables
-    }
-
-    pub fn rows(&self) -> Option<&Arc<Rows>> {
-        self.open.as_ref().map(|open| &open.rows)
     }
 
     pub fn stats(&self) -> &Stats {
@@ -300,7 +278,8 @@ impl Icons {
             self.stats.closed += 1;
             // The last reader of a playhead's rows joins their worker when dropped: never here.
             let _ = std::thread::Builder::new().name("intel icons closing".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                // The step's settle joins its product: at the head's priority, never below normal.
+                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
                 drop((open, icons));
             });
         }
@@ -322,14 +301,9 @@ impl Icons {
         if self.open.is_some() || !self.shown {
             return;
         }
-        let Some((entry, recording)) = self.head.get() else { return };
-        match Open::new(entry, *recording, &self.tables, self.cadence, &self.evaluate) {
+        let Some(views) = &self.views else { return };
+        match Open::new(views, &self.tables, self.pace, &self.evaluate) {
             Ok(open) => {
-                if self.drive
-                    && let Some(hour) = self.applied
-                {
-                    open.rows.drive(hour);
-                }
                 self.open = Some(open);
                 self.stats.opened += 1;
             }
@@ -363,7 +337,7 @@ impl Icons {
                 self.tables.extend(done.missed);
                 self.tables.sort_unstable_by_key(|table| table.index());
                 self.tables.dedup();
-                open.reader.declare(&self.tables);
+                open.reader.declare_only(&self.tables);
                 open.see(None);
                 return true;
             }
@@ -397,9 +371,11 @@ impl Icons {
     /// Waits until the icons are of the hour applied: an unlimited settle (the proof's, the tests').
     /// Gives up when the rows are already past that hour, and when a table was just learned: it
     /// joins at a step past the head, which never comes while the head is held.
-    fn catch_up(&mut self) -> io::Result<()> {
+    fn catch_up(&mut self, settling: Settling) -> io::Result<()> {
         let Some(hour) = self.applied else { return Ok(()) };
-        let until = Instant::now() + CATCH_UP;
+        let until = Instant::now() + settling.waiting(CATCH_UP);
+        // Out of the step's budget, the icons it holds stand and the step after joins the hour's.
+        let ran_out = |why: String| if settling.strict() { Err(io::Error::other(why)) } else { Ok(()) };
         loop {
             if self.icons.as_ref().is_some_and(|(_, at)| *at == hour) && !self.open.as_ref().is_some_and(|open| open.busy) {
                 return Ok(());
@@ -407,36 +383,40 @@ impl Icons {
             let Some(open) = &mut self.open else { return Ok(()) };
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(io::Error::other(format!("The {NAME} layer did not reach hour {hour} in {CATCH_UP:?}")));
+                return ran_out(format!("The {NAME} layer did not reach hour {hour} in {CATCH_UP:?}"));
             }
             if open.busy {
                 let Ok(done) = open.done.recv_timeout(left) else {
-                    return Err(io::Error::other(format!("The {NAME} layer's worker did not answer for hour {hour}")));
+                    return ran_out(format!("The {NAME} layer's worker did not answer for hour {hour}"));
                 };
                 if self.take(done) {
                     return Ok(());
                 }
                 continue;
             }
-            if self.drive {
-                open.rows.drive(hour);
-            }
-            if open.reader.frame().is_none() {
-                // Its tables are joining, at a step past the head.
+            let Some(frame) = open.reader.frame() else {
+                // Its tables are arriving in the side's mirrors.
                 return Ok(());
-            }
-            // No evaluation running: it has finished with the rows it took, so the hour's come.
-            open.reader.ready();
-            let frame = match open.reader.wait_through(hour, left) {
-                Ok(frame) => frame,
-                Err(error) => return Err(io::Error::other(format!("The {NAME} layer's rows: {error}"))),
             };
-            // Rows past the hour, or the rows seen standing at it.
-            if frame.hour > hour || open.seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, &frame)) {
+            // The store's views stand at the hour the side applied, so the hour's rows are the
+            // next frame made for this reader: nothing drives a head here.
+            if frame.hour < hour {
+                let seen = open.reader.published();
+                if open.reader.wait_newer(seen, left) == seen {
+                    return ran_out(format!("The {NAME} layer's rows stand at {}, not {hour}", frame.hour));
+                }
+                continue;
+            }
+            // Rows past the hour, or the rows standing at it already handed to the worker. Rows seen
+            // while it was busy were never handed: they are handed now.
+            let seen = open.seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, &frame));
+            if frame.hour > hour || (seen && open.handed) {
                 return Ok(());
             }
-            open.see(Some(frame));
-            open.handed = false;
+            if !seen {
+                open.see(Some(frame));
+                open.handed = false;
+            }
             self.offer();
         }
     }
@@ -491,44 +471,38 @@ impl Layer for Icons {
         inputs.table(TableId::Countries, true)
     }
 
+    fn views(&mut self, store: &crate::playhead_host::views::Store) -> io::Result<()> {
+        self.views = Some(store.handle());
+        Ok(())
+    }
+
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         self.applied = mirrors.get(TableId::Countries).and_then(|mirror| mirror.head()).or(self.applied);
         self.icons = None;
         self.epoch += 1;
         if let Some(open) = &mut self.open {
             open.handed = false;
-            if self.drive
-                && let Some(hour) = self.applied
-            {
-                open.rows.drive(hour);
-            }
         }
         Ok(())
     }
 
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         self.applied = Some(step.last());
-        if self.drive
-            && let Some(open) = &self.open
-        {
-            open.rows.drive(step.last());
-        }
     }
 
-    fn settle(&mut self, _mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
         if !self.shown {
             return Ok(());
         }
         self.ensure_open();
         self.receive();
         self.offer();
-        // No evaluation running: it has finished with the rows it took.
+        // No evaluation running: it has finished with the rows it took, so the step may make its
+        // views again.
         if let Some(open) = self.open.as_ref().filter(|open| !open.busy) {
             open.reader.ready();
         }
-        if budget.unlimited_now() {
-            self.catch_up()?;
-        }
+        self.catch_up(settling)?;
         if let Some(open) = &self.open {
             if let Some(stands) = &mut self.stands {
                 stands.look(|frame| open.reader.through(frame));
@@ -542,9 +516,6 @@ impl Layer for Icons {
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     /// Nothing: the icons are a step of rows or more behind by design, and their age is measured
     /// on its own ([`Stats::ages`]) rather than holding the map's drawn hour back.
@@ -574,24 +545,14 @@ pub fn drawn(side: &MapSide) -> Option<Arc<IntelIcons>> {
     layer.icons().map(|(icons, _)| Arc::clone(icons))
 }
 
-/// The window laid the layer's icons out in place of the hour's, in `spent`.
-pub fn installed(side: &MapSide, spent: Duration) {
-    if let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Icons>())) {
-        *layer.installs.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry((spent.as_micros() / 10) as u32).or_default() += 1;
-    }
-}
-
 /// The layer's figures for a report: what it measured, and what its rows hold.
 pub fn summary(side: &MapSide) -> Value {
     let Some(layer) = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<Icons>())) else { return Value::Null };
-    let held = layer.rows().map(|rows| rows.held());
     json!({
         "stats": layer.stats().summary(),
         "installs": layer.installs.summary(),
         "tables": layer.tables().iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(),
         "icons_bytes": layer.held(),
-        "rows_mirrors_bytes": held.as_ref().map(|held| held.mirrors.iter().map(|(_, bytes)| bytes).sum::<usize>()),
-        "rows_bytes": held.as_ref().map(|held| held.rows.iter().map(|(_, bytes)| bytes).sum::<usize>()),
         "open": layer.is_open(),
     })
 }

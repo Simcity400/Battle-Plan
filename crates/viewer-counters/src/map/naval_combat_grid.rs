@@ -21,47 +21,27 @@ use {
 /// walk.
 use viewer_foundation::map::unit_rules::PAIRED_ONLY_GROUP;
 
-/// Forward-group members grouped once per hour as stored NavalCombatShips indices. PAIRED_ONLY_GROUP
-/// excludes opponent-only groups. HQ frames and combat grids use the same members.
-pub struct ForwardMembers {
-    by_combat: BTreeMap<u64, Vec<usize>>,
-}
-
-impl ForwardMembers {
-    pub fn read(rows: &[NavalCombatShipRow]) -> Self {
-        let mut by_combat: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
-        for (index, row) in rows.iter().enumerate() {
-            if row.member_source == 0 && row.group_index != PAIRED_ONLY_GROUP {
-                by_combat.entry(row.combat).or_default().push(index);
-            }
+/// Each combat's forward-group members, in `(group, member)` order, borrowed from `rows`.
+/// PAIRED_ONLY_GROUP excludes opponent-only groups. HQ frames and combat grids walk the same
+/// members. Grouped from the rows it is walked with, so no two hours' rows are joined by position.
+pub fn forward_members(rows: &[NavalCombatShipRow]) -> BTreeMap<u64, Vec<&NavalCombatShipRow>> {
+    let mut by_combat: BTreeMap<u64, Vec<&NavalCombatShipRow>> = BTreeMap::new();
+    for row in rows {
+        if row.member_source == 0 && row.group_index != PAIRED_ONLY_GROUP {
+            by_combat.entry(row.combat).or_default().push(row);
         }
-        Self { by_combat }
     }
-
-    /// Every combat's forward members, as indices into the rows this was read from.
-    pub fn indices(&self) -> impl Iterator<Item = usize> + '_ {
-        self.by_combat.values().flatten().copied()
+    for members in by_combat.values_mut() {
+        members.sort_by_key(|row| (row.group_index, row.member_index));
     }
-
-    /// `combat`'s forward members in stored order, from the rows this was read from.
-    pub fn of<'a>(
-        &'a self,
-        combat: u64,
-        rows: &'a [NavalCombatShipRow],
-    ) -> impl Iterator<Item = &'a NavalCombatShipRow> + 'a {
-        self.by_combat
-            .get(&combat)
-            .into_iter()
-            .flatten()
-            .map(move |&index| &rows[index])
-    }
+    by_combat
 }
 
 /// A complete table is passed as `Some(rows)`; `None` is unavailable or
 /// truncated. The caller cannot silently treat an incomplete table as empty.
 pub struct Sources<'a> {
-    /// The member census and its forward members, grouped once per hour.
-    pub combat_ships: Option<(&'a [NavalCombatShipRow], &'a ForwardMembers)>,
+    /// The member census the grids read: the rows of the hour they are drawn over.
+    pub combat_ships: Option<&'a [NavalCombatShipRow]>,
     pub ships: Option<ShipCensus<'a>>,
     pub task_forces: Option<&'a [TaskForceRow]>,
     pub counter_inputs: Option<&'a [TaskForceCounterInputRow]>,
@@ -117,20 +97,7 @@ impl<'a> Index<'a> {
         let members = source
             .combat_ships
             .ok_or("naval combat ship census is incomplete")
-            .map(|(rows, forward)| {
-                // A copy per combat in `(group, member)` order; the HQ frame walks them in
-                // stored order.
-                forward
-                    .by_combat
-                    .iter()
-                    .map(|(&combat, indices)| {
-                        let mut members: Vec<&NavalCombatShipRow> =
-                            indices.iter().map(|&index| &rows[index]).collect();
-                        members.sort_by_key(|row| (row.group_index, row.member_index));
-                        (combat, members)
-                    })
-                    .collect()
-            });
+            .map(forward_members);
         let ships = source
             .ships
             .ok_or("ship census is incomplete")

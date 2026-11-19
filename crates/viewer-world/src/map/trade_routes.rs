@@ -465,8 +465,40 @@ pub struct Line<'a, R = TradeRouteRow> {
     pub reverse: bool,
     /// The convoys assigned to the line's client; none on market lines.
     pub convoys_assigned: i32,
+    /// Which row of which table the line's convoys assigned is read from, so the hour's convoys
+    /// are made again from the lines kept when that column alone moved ([`Sailing`]).
+    pub assigned: Assigned,
     /// The client handle joining native exchange ordinals.
     pub client: u32,
+}
+
+/// Where a line's convoys assigned is read: a row of `ResourceOrigins`, a row of `ConvoyClients`,
+/// or nowhere (a grouped market contract carries none).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Assigned {
+    None,
+    Origin(usize),
+    Client(usize),
+}
+
+impl Assigned {
+    /// The convoys assigned now, from each table's column in row order.
+    pub fn of(self, origins: &[i32], clients: &[i32]) -> i32 {
+        match self {
+            Self::None => 0,
+            Self::Origin(at) => origins.get(at).copied().unwrap_or_default(),
+            Self::Client(at) => clients.get(at).copied().unwrap_or_default(),
+        }
+    }
+}
+
+/// One convoy-carrying line that drew, kept so the hour's convoys are made again without its
+/// geometry: where its count is read and the controls its convoys sail.
+#[derive(Clone, Debug)]
+pub struct Sailing {
+    pub assigned: Assigned,
+    pub points: Vec<[f32; 2]>,
+    pub map_width: f32,
 }
 
 /// What one hour's trade-route lines came to.
@@ -546,6 +578,7 @@ fn push_line<'a, R: RouteFields>(
     bad: bool,
     reverse: bool,
     convoys_assigned: i32,
+    assigned: Assigned,
     client: u32,
 ) {
     report.lines[layer.index()] += 1;
@@ -566,6 +599,7 @@ fn push_line<'a, R: RouteFields>(
         bad,
         reverse,
         convoys_assigned,
+        assigned,
         client,
     });
 }
@@ -583,14 +617,15 @@ pub fn lines<'a, O: OriginFields, C: ClientFields, R: RouteFields, G>(
         .map(|route| ((route.country(), route.class(), route.other()), route))
         .collect();
     let mut out = Vec::new();
-    let mut origins: Vec<_> = tables
+    let mut origins: Vec<(usize, &O)> = tables
         .origins
         .iter()
-        .filter(|row| row.list() == OWN_ORIGINS)
+        .enumerate()
+        .filter(|(_, row)| row.list() == OWN_ORIGINS)
         .collect();
-    origins.sort_by_key(|row| row.ordinal());
+    origins.sort_by_key(|(_, row)| row.ordinal());
     // Only the viewed list participates; other countries may have the same ordinals.
-    origins.retain(|row| match countries.viewed(row.country()) {
+    origins.retain(|(_, row)| match countries.viewed(row.country()) {
         Ok(viewed) => viewed,
         Err(reason) => {
             report.refuse(format!("a resource origin's country: {reason}"));
@@ -599,12 +634,12 @@ pub fn lines<'a, O: OriginFields, C: ClientFields, R: RouteFields, G>(
     });
     if origins
         .windows(2)
-        .any(|pair| pair[0].ordinal() == pair[1].ordinal())
+        .any(|pair| pair[0].1.ordinal() == pair[1].1.ordinal())
     {
         report.refuse("production native origin list positions are duplicated");
         origins.clear();
     }
-    for origin in origins {
+    for (at, origin) in origins {
         if origin.list() != OWN_ORIGINS {
             continue;
         }
@@ -618,18 +653,19 @@ pub fn lines<'a, O: OriginFields, C: ClientFields, R: RouteFields, G>(
                 origin.bad(),
                 false,
                 origin.convoys_assigned(),
+                Assigned::Origin(at),
                 0,
             ),
             Ok(false) => {}
             Err(reason) => report.refuse(format!("a resource origin's country: {reason}")),
         }
     }
-    let mut by_layer: [Vec<&C>; 8] = std::array::from_fn(|_| Vec::new());
-    for client in tables.clients {
+    let mut by_layer: [Vec<(usize, &C)>; 8] = std::array::from_fn(|_| Vec::new());
+    for (at, client) in tables.clients.iter().enumerate() {
         match client_layers(client, countries) {
             Ok(layers) => {
                 for layer in layers {
-                    by_layer[layer.index()].push(client);
+                    by_layer[layer.index()].push((at, client));
                 }
             }
             Err(reason) => report.refuse(format!("a convoy client: {reason}")),
@@ -643,7 +679,7 @@ pub fn lines<'a, O: OriginFields, C: ClientFields, R: RouteFields, G>(
                 Layer::LendLeaseReceived | Layer::MarketBought => row.other_ordinal(),
                 _ => row.owner_ordinal(),
             };
-            clients.retain(|row| {
+            clients.retain(|(_, row)| {
                 if position(row).is_some() {
                     true
                 } else {
@@ -654,10 +690,10 @@ pub fn lines<'a, O: OriginFields, C: ClientFields, R: RouteFields, G>(
                     false
                 }
             });
-            clients.sort_by_key(|row| position(row).unwrap());
+            clients.sort_by_key(|(_, row)| position(row).unwrap());
             if clients
                 .windows(2)
-                .any(|pair| position(pair[0]) == position(pair[1]))
+                .any(|pair| position(pair[0].1) == position(pair[1].1))
             {
                 report.refuse(format!(
                     "{} native directional list positions are duplicated",
@@ -671,7 +707,7 @@ pub fn lines<'a, O: OriginFields, C: ClientFields, R: RouteFields, G>(
             // Keep the first native occurrence and combine every equivalent contract's colour.
             let mut index: BTreeMap<(u8, u32, u32), usize> = BTreeMap::new();
             let mut groups: Vec<(RouteKey, bool)> = Vec::new();
-            for client in clients.iter() {
+            for (_, client) in clients.iter() {
                 let key = route_of(*client);
                 let Some(&route) = routes.get(&key) else {
                     report.lines[layer.index()] += 1;
@@ -706,11 +742,11 @@ pub fn lines<'a, O: OriginFields, C: ClientFields, R: RouteFields, G>(
                 }
             }
             for (key, bad) in groups {
-                push_line(&routes, &mut out, report, layer, key, bad, false, 0, 0);
+                push_line(&routes, &mut out, report, layer, key, bad, false, 0, Assigned::None, 0);
             }
             continue;
         }
-        for client in clients.iter() {
+        for &(at, client) in clients.iter() {
             // Membership names the lend-lease giver, but its native convoy client names
             // the receiver for direction. Imports already name their importer in owner.
             let direction_country = match client.category() {
@@ -734,10 +770,11 @@ pub fn lines<'a, O: OriginFields, C: ClientFields, R: RouteFields, G>(
                 &mut out,
                 report,
                 layer,
-                route_of(*client),
+                route_of(client),
                 client.bad(),
                 reverse,
                 client.convoys_assigned(),
+                Assigned::Client(at),
                 client.handle(),
             );
         }
@@ -817,7 +854,74 @@ pub struct Inputs<'a> {
 pub struct TradeRoutes {
     pub field: OrderField,
     pub convoys: Vec<ConvoyLine>,
+    /// Every convoy-carrying line that drew, in the order the convoys are numbered in, whatever
+    /// its count: what [`sailed`] makes the convoys again from.
+    pub sailing: Vec<Sailing>,
+    /// The entity every convoy of the hour draws, resolved from the viewed country's graphical
+    /// culture while a line's count asked for it; none when none did or it was refused.
+    pub convoy_entity: Option<String>,
     pub report: TradeRouteReport,
+}
+
+/// The convoys of lines already built, with the counts `origins` and `clients` (each table's
+/// convoys assigned, in row order) give them now: the lines, their geometry and their order are
+/// the hour's as long as nothing but those columns moved. None when a line that carries convoys
+/// now drew none when it was built, so its entity was never resolved and the lines are built whole.
+pub fn sailed(kept: &TradeRoutes, defines: &ConvoyDefines, origins: &[i32], clients: &[i32]) -> Option<Vec<ConvoyLine>> {
+    let mut out: Vec<ConvoyLine> = Vec::new();
+    for line in &kept.sailing {
+        let count = convoy_count(line.assigned.of(origins, clients), defines);
+        if count == 0 {
+            continue;
+        }
+        out.push(ConvoyLine {
+            entity: kept.convoy_entity.clone()?,
+            seed: out.len() as u32,
+            map_width: line.map_width,
+            points: line.points.clone(),
+            count,
+        });
+    }
+    Some(out)
+}
+
+/// What a route's stops are searched from, kept from one hour's lines to the next's: a route's
+/// stops are an A* over the content's province graph, and the rows deciding them move in few
+/// hours, while the lines are built again in most ([`geometry::directed_stops`]).
+#[derive(Default)]
+pub struct KeptStops {
+    before: BTreeMap<(RouteKey, bool), (RouteRead, Option<Stops>)>,
+    now: BTreeMap<(RouteKey, bool), (RouteRead, Option<Stops>)>,
+}
+
+/// What a route's stops read of its row.
+type RouteRead = (u8, u32, u32, Vec<u32>);
+
+impl KeptStops {
+    /// A build begins: what the build before kept is what this one may keep, and what it does not
+    /// ask for is let go with it.
+    pub fn begin(&mut self) {
+        self.before = std::mem::take(&mut self.now);
+    }
+
+    /// `route`'s stops, searched only when its own row is not the one they were searched from. A
+    /// route whose search is refused is searched again, so its refusal is reported every build.
+    pub fn of<R: RouteFields>(&mut self, route: &R, reverse: bool, content: &RouteContent<'_>) -> Result<Option<Stops>, String> {
+        let key = ((route.country(), route.class(), route.other()), reverse);
+        let read: RouteRead = (route.kind(), route.from(), route.to(), route.path().to_vec());
+        if let Some((held, stops)) = self.now.get(&key).or_else(|| self.before.get(&key))
+            && *held == read
+        {
+            let stops = stops.clone();
+            self.now.insert(key, (read, stops.clone()));
+            viewer_foundation::view_record::add("trade routes", "stops kept", 1);
+            return Ok(stops);
+        }
+        viewer_foundation::view_record::add("trade routes", "stops searched", 1);
+        let stops = geometry::directed_stops(route, content, reverse)?;
+        self.now.insert(key, (read, stops.clone()));
+        Ok(stops)
+    }
 }
 
 /// Whether a map mode shows the lines.
@@ -826,9 +930,11 @@ pub fn shown(visibility: &Visibility) -> bool {
 }
 
 /// The viewed country's lines and convoys of the hour.
-pub fn build(inputs: &Inputs<'_>, frame: &DecodedFrame) -> TradeRoutes {
+/// The viewed country's lines and convoys of the hour; `stops` keeps each route's stops from the
+/// build before, where its caller has one to keep them in.
+pub fn build(inputs: &Inputs<'_>, frame: &DecodedFrame, stops: Option<&mut KeptStops>) -> TradeRoutes {
     let mut out = TradeRoutes::default();
-    if let Err(reason) = build_into(inputs, frame, &mut out) {
+    if let Err(reason) = build_into(inputs, frame, stops, &mut out) {
         out.report.unavailable = Some(reason);
     }
     out
@@ -837,6 +943,7 @@ pub fn build(inputs: &Inputs<'_>, frame: &DecodedFrame) -> TradeRoutes {
 fn build_into(
     inputs: &Inputs<'_>,
     frame: &DecodedFrame,
+    mut kept: Option<&mut KeptStops>,
     out: &mut TradeRoutes,
 ) -> Result<(), String> {
     inputs
@@ -876,13 +983,17 @@ fn build_into(
                 .collect()
         })
         .unwrap_or_default();
+    let mut stops = move |route: &TradeRouteRow, reverse| match kept.as_deref_mut() {
+        Some(kept) => kept.of(route, reverse, inputs.content),
+        None => geometry::directed_stops(route, inputs.content, reverse),
+    };
     build_lines(
         inputs,
         &tables,
         &countries,
         &exchange_order,
         &|countries| convoys::viewed_culture(frame, countries),
-        &mut |route, reverse| geometry::directed_stops(route, inputs.content, reverse),
+        &mut stops,
         &mut geometry::emit,
         out,
     )
@@ -1013,12 +1124,16 @@ pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: Regional
         if shaped.variants.iter().any(|&variant| variant != 0) {
             report.hotspots += 1;
         }
-        let count = if line.layer.carries_convoys() {
-            convoy_count(line.convoys_assigned, &defines.convoys)
-        } else {
-            0
-        };
+        if !line.layer.carries_convoys() {
+            continue;
+        }
+        let count = convoy_count(line.convoys_assigned, &defines.convoys);
+        let points: Vec<[f32; 2]> = shaped.controls.iter().copied().map(viewer_foundation::map::ribbon_fixed::to_world).collect();
+        // The entity is resolved for the first line whose convoys ask for it, and never for an
+        // hour that sails none; a line that drew none keeps its controls, so the hour the count
+        // moves makes its convoys from them ([`sailed`]).
         if count == 0 {
+            out.sailing.push(Sailing { assigned: line.assigned, points, map_width: width });
             continue;
         }
         let entity = entity.get_or_insert_with(|| {
@@ -1028,20 +1143,12 @@ pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: Regional
             Ok(entity) => {
                 report.convoy_lines += 1;
                 report.convoys += count as usize;
-                out.convoys.push(ConvoyLine {
-                    entity: entity.clone(),
-                    seed: out.convoys.len() as u32,
-                    map_width: width,
-                    points: shaped
-                        .controls
-                        .iter()
-                        .copied()
-                        .map(viewer_foundation::map::ribbon_fixed::to_world)
-                        .collect(),
-                    count,
-                });
+                out.convoys.push(ConvoyLine { entity: entity.clone(), seed: out.convoys.len() as u32, map_width: width, points: points.clone(), count });
+                out.convoy_entity = Some(entity.clone());
+                out.sailing.push(Sailing { assigned: line.assigned, points, map_width: width });
             }
             Err(reason) => {
+                out.sailing.push(Sailing { assigned: line.assigned, points, map_width: width });
                 report.refuse(format!("convoys of a {} line: {reason}", line.layer.name()))
             }
         }

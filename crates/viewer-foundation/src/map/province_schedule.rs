@@ -108,6 +108,17 @@ pub struct Schedule {
     /// The presentation clock of the last advance the view's counters made themselves
     /// ([`Self::present`]).
     presented: Option<f32>,
+    /// The provinces that could come into view: those a camera held while the real one travels
+    /// inside the padding admits with that padding to spare, so a pan tests all the boxes only
+    /// when it leaves the pad. The boxes are named by the generation their owner rebuilt them at.
+    candidates: Ids,
+    admitted_against: super::camera::Hold,
+    candidates_for: Option<(Camera, [u32; 2], u64, u32)>,
+    /// Of those, the ones this camera admits, and the camera they were tested against: the pad
+    /// narrows what a moved camera tests, and the camera itself still decides, so the set is the
+    /// one an untested camera would give.
+    admitted: Ids,
+    admitted_for: Option<(Camera, [u32; 2], u64)>,
     /// Provinces containing this viewer's selected units, admitted while their selection count is positive.
     selected: BTreeSet<u32>,
     /// Selection counts rise to 2 on selection and decrease only when an update reaches the province.
@@ -213,17 +224,36 @@ impl Schedule {
         camera: Camera,
         viewport: [u32; 2],
         steady: bool,
+        boxes: u64,
     ) {
         if self.pending {
             return;
         }
-        let admission = Admission::new(camera, viewport);
-        self.advance_admitted(
-            provinces
-                .iter()
-                .map(|&(id, bounds)| (id, bounds.is_some_and(|bounds| admission.admits(bounds)))),
-            steady,
-        );
+        let (against, pad) = self.admitted_against.at(camera, viewport);
+        if self.candidates_for != Some((against, viewport, boxes, pad.to_bits())) {
+            let admission = Admission::padded(against, viewport, pad);
+            self.candidates.clear();
+            for &(id, bounds) in provinces {
+                if bounds.is_some_and(|bounds| admission.admits(bounds)) {
+                    self.candidates.insert(id);
+                }
+            }
+            self.candidates_for = Some((against, viewport, boxes, pad.to_bits()));
+            self.admitted_for = None;
+        }
+        if self.admitted_for != Some((camera, viewport, boxes)) {
+            let admission = Admission::new(camera, viewport);
+            self.admitted.clear();
+            for &(id, bounds) in provinces {
+                if self.candidates.contains(&id) && bounds.is_some_and(|bounds| admission.admits(bounds)) {
+                    self.admitted.insert(id);
+                }
+            }
+            self.admitted_for = Some((camera, viewport, boxes));
+        }
+        let admitted = std::mem::take(&mut self.admitted);
+        self.advance_admitted(provinces.iter().map(|&(id, _)| (id, admitted.contains(&id))), steady);
+        self.admitted = admitted;
     }
 
     fn advance_admitted(&mut self, provinces: impl IntoIterator<Item = (u32, bool)>, steady: bool) {
@@ -443,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_boxes_match_tree_admission_across_selection_reset_and_pending_frames() {
+    fn retained_boxes_match_tree_admission_across_selection_reset_and_pending_frames_and_repeated_cameras() {
         use crate::map::camera::{MapDefines, MapSize, Placement};
         let bounds = super::super::province_admission::edge_boxes();
         let mut boxes: Vec<_> = bounds
@@ -475,7 +505,10 @@ mod tests {
                 }
             }
             let steady = frame % 29 == 0;
-            retained.advance_frame_boxes(&boxes, camera, [1024, 768], steady);
+            // The camera returns to a placement it held 30 frames ago: the retained schedule then
+            // reuses the admission it kept rather than testing every box, and must still advance
+            // exactly as the tree does.
+            retained.advance_frame_boxes(&boxes, camera, [1024, 768], steady, 0);
             tree.advance_frame(
                 &bounds,
                 boxes.iter().map(|&(id, _)| id),
@@ -498,6 +531,33 @@ mod tests {
                 assert_eq!(retained.take_pending(), tree.take_pending());
             }
         }
+    }
+
+    /// The kept admission belongs to a camera, a viewport and a set of boxes: a window resized at
+    /// one camera, and boxes rebuilt under one camera and viewport, are both tested again.
+    #[test]
+    fn a_resize_or_rebuilt_boxes_test_the_admission_again() {
+        use crate::map::camera::{MapDefines, MapSize, Placement};
+        let camera = Placement { center: [3000., 1000.], height: 50., pose: Pose::Map }.on(MapSize::TEST, MapDefines::test());
+        let bounds = super::super::province_admission::edge_boxes();
+        let wide: Vec<_> = bounds.iter().map(|(&id, &bounds)| (id, Some(bounds))).collect();
+        // The same provinces with no box at all: admitted under no camera.
+        let boxless: Vec<_> = wide.iter().map(|&(id, _)| (id, None)).collect();
+        let admitted = |schedule: &Schedule| wide.iter().filter(|&&(id, _)| schedule.update(id) == Some(Update::InView)).count();
+        let mut schedule = Schedule::default();
+        schedule.advance_frame_boxes(&wide, camera, [1024, 768], false, 0);
+        let (seen, narrow) = (admitted(&schedule), {
+            schedule.take_pending();
+            schedule.advance_frame_boxes(&wide, camera, [64, 64], false, 0);
+            admitted(&schedule)
+        });
+        assert!(seen > 0 && narrow < seen, "a narrower viewport admits fewer of the {seen} provinces, not the same ones ({narrow})");
+        schedule.take_pending();
+        schedule.advance_frame_boxes(&boxless, camera, [64, 64], false, 1);
+        assert_eq!(admitted(&schedule), 0, "boxes rebuilt without any box admit nothing");
+        schedule.take_pending();
+        schedule.advance_frame_boxes(&wide, camera, [1024, 768], false, 0);
+        assert_eq!(admitted(&schedule), seen, "the first camera, viewport and boxes again admit what they did");
     }
 
     #[test]

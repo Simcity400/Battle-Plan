@@ -29,7 +29,7 @@ use replay_frame::frame::{DecodedFrame, kept};
 
 use crate::map::unit_models::ModelStatus;
 
-use viewer_foundation::map::tables::{Available, core, rows};
+use viewer_foundation::map::tables::{Available, core, rows, rows_fields};
 use viewer_foundation::table_access::{TokenKeys, TokenNames};
 
 /// The only condition that is not a terrain name.
@@ -310,7 +310,8 @@ impl<'a> Context<'a> {
     /// matching province definitions.
     pub fn read(frame: &'a DecodedFrame, terrain: &'a BTreeMap<u32, String>) -> io::Result<Self> {
         let provinces = core::<tables::Provinces>(frame)?;
-        let weather = rows::<tables::WeatherProvinces>(frame)?;
+        // Named: the rows at the head hold the snow columns alone for this reader.
+        let weather = rows_fields::<tables::WeatherProvinces>(frame, fields().snow)?;
         let weather_count = match &weather {
             Available::Complete(rows) => Some(rows.len()),
             Available::Truncated { rows, missing } => Some(
@@ -496,7 +497,7 @@ mod tests {
                 .suffix(&status(&[(9, 90)], 100), tokens(), 1, &[], snowy)
                 .unwrap_err()
                 .to_string(),
-            "acclimatization category: token 9 is not in LexicalTokens"
+            "acclimatization category: token 9 is not in lexical tokens"
         );
         // Two authored categories equal under the fold are refused by name.
         let ambiguous = Content::parse(

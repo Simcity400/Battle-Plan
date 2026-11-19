@@ -127,10 +127,9 @@ impl ProvinceColors {
             },
         );
         Ok(Self {
-            bound: Bound {
-                view_format: texture.format(),
-                texture,
-                view,
+            bound: {
+                let format = texture.format();
+                Bound::with_view(texture, view, format)
             },
             colors,
             palette,
@@ -240,6 +239,7 @@ impl ProvinceColors {
     /// The encoder [`Self::encode`] recorded into was submitted: its tiles are drawn.
     pub(crate) fn submitted(&mut self) {
         self.pending = false;
+        self.bound.written();
         let columns = self.params[0].div_ceil(GRID_CELL);
         for [x, y] in self.dirty_tiles.drain(..) {
             self.dirty[(y * columns + x) as usize] = false;

@@ -33,6 +33,8 @@ enum Request {
         caster: bool,
         forced: bool,
         samples: u32,
+        /// The constant bindings its draws read one block of per instance.
+        instanced: u32,
     },
 }
 
@@ -163,7 +165,7 @@ impl Builds {
         library: usize,
         part: &Part,
         (caster, forced): (bool, bool),
-        samples: u32,
+        (samples, instanced): (u32, u32),
         settled: bool,
     ) -> bool {
         let mut state = lock(&self.state);
@@ -180,7 +182,7 @@ impl Builds {
                 library,
                 part,
                 (caster, forced),
-                samples,
+                (samples, instanced),
             );
             lock(&self.state)
                 .parts
@@ -195,6 +197,7 @@ impl Builds {
             caster,
             forced,
             samples,
+            instanced,
         });
         false
     }
@@ -209,6 +212,7 @@ impl Builds {
         library: usize,
         lods: &[Vec<Part>],
         (forced, samples): (bool, u32),
+        instanced: [u32; 2],
     ) {
         let shared = (&*self.libraries, &*self.cache, device);
         if !lock(&self.state).flags.contains_key(&(mesh, node)) {
@@ -232,8 +236,14 @@ impl Builds {
                     if lock(&self.state).parts.contains_key(&key) {
                         continue;
                     }
-                    let built =
-                        build(shared, library, source, (caster, forced), samples).map_err(failure);
+                    let built = build(
+                        shared,
+                        library,
+                        source,
+                        (caster, forced),
+                        (samples, instanced[usize::from(caster)]),
+                    )
+                    .map_err(failure);
                     lock(&self.state).parts.entry(key).or_insert(Some(built));
                 }
             }
@@ -249,6 +259,7 @@ impl Builds {
         device: &wgpu::Device,
         nodes: Vec<(NodeKey, usize, Vec<Vec<Part>>)>,
         (forced, samples): (bool, u32),
+        instanced: [u32; 2],
     ) {
         if nodes.is_empty() {
             return;
@@ -290,8 +301,14 @@ impl Builds {
                     }
                     let source = &lods[lod][part];
                     let built = caught(|| {
-                        build((&libraries, &cache, &device), library, source, (caster, forced), samples)
-                            .map_err(failure)
+                        build(
+                            (&libraries, &cache, &device),
+                            library,
+                            source,
+                            (caster, forced),
+                            (samples, instanced[usize::from(caster)]),
+                        )
+                        .map_err(failure)
                     });
                     fill(&mut lock(&state).parts, part_key, built);
                 }
@@ -439,9 +456,11 @@ fn run(request: Request, shared: Shared<'_>, state: &Mutex<State>) {
             caster,
             forced,
             samples,
+            instanced,
         } => {
             let built = caught(|| {
-                build(shared, library, &part, (caster, forced), samples).map_err(failure)
+                build(shared, library, &part, (caster, forced), (samples, instanced))
+                    .map_err(failure)
             });
             if let Some(slot @ None) = lock(state).parts.get_mut(&key) {
                 *slot = Some(built);
@@ -523,7 +542,7 @@ fn build(
     library: usize,
     part: &Part,
     (caster, forced): (bool, bool),
-    samples: u32,
+    (samples, instanced): (u32, u32),
 ) -> io::Result<Built> {
     let selection = if forced && !caster {
         select_alpha_shared(libraries, library, part)?
@@ -541,6 +560,7 @@ fn build(
             &part.geometry,
             DEPTH_MAP_FORMAT,
             DEPTH_FORMAT,
+            instanced,
         )?
     } else {
         mesh_shader::Pass::new(
@@ -551,6 +571,7 @@ fn build(
             SCENE_FORMAT,
             DEPTH_FORMAT,
             samples,
+            instanced,
         )?
     };
     Ok(Built { lit, shadow, pass })

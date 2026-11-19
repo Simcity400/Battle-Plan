@@ -1182,7 +1182,7 @@ impl std::fmt::Debug for Read {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Drawn {
     air_controls: Vec<(String, air_menu::Action)>,
     air_details_rect: Option<[f32; 4]>,
@@ -1212,6 +1212,16 @@ impl Drawn {
     /// it.
     pub fn add_hovers(&mut self, other: &Drawn) {
         self.tooltips.extend(other.tooltips.iter().cloned());
+    }
+
+    /// This picture to draw again, with the sounds and clicks of the frame that made it spent:
+    /// what a window draws while nothing it shows changes.
+    fn again(&self) -> Self {
+        Self {
+            sounds: Vec::new(),
+            clicks: Vec::new(),
+            ..self.clone()
+        }
     }
 }
 

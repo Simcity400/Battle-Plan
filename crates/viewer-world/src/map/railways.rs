@@ -7,6 +7,7 @@
 //! Static crossings use province boundary pixels and smoothed river points rather than authored
 //! starting railway paths.
 
+use viewer_foundation::map::gpu_contract::Targets;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use installed_content_core::{
@@ -1617,18 +1618,13 @@ impl PreparedRailGeometry {
         Ok(Self { native_vertices, strips })
     }
 
-    /// Strips a caller keeps in its own buffer, drawn in the order of `runs`; their joined index
-    /// list is made here, with the runs.
-    pub fn kept(
-        device: &wgpu::Device,
-        vertices: Option<wgpu::Buffer>,
-        runs: Vec<Range<u32>>,
-    ) -> io::Result<Self> {
-        let strips = match &vertices {
-            Some(_) => strips(device, &runs)?,
-            None => None,
-        };
-        Ok(Self { native_vertices: vertices, strips })
+    /// Strips a caller keeps in its own buffers: the vertices, and the index list drawing them
+    /// with its length ([`strip_indices`]), which the caller writes itself.
+    pub fn held(vertices: Option<wgpu::Buffer>, strips: Option<(wgpu::Buffer, u32)>) -> Self {
+        Self {
+            strips: strips.filter(|_| vertices.is_some()),
+            native_vertices: vertices,
+        }
     }
 
     /// CPU-only hour builders can defer preparation until a device is available.
@@ -1742,7 +1738,7 @@ impl RailPass {
         &self,
         arena: &shader_pipeline::gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
+        targets: &Targets,
         inputs: super::rail_shader::Inputs<'_>,
     ) -> io::Result<()> {
         let device = arena.device();
@@ -1759,7 +1755,7 @@ impl RailPass {
             .draw(
                 arena,
                 encoder,
-                target,
+                targets,
                 inputs,
                 super::rail_shader::Geometry {
                     vertices,

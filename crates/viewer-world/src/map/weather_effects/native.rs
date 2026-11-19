@@ -1,5 +1,6 @@
 //! Candidate packets from the existing presentation simulator. Shader bytes,
 //! declarations and constants are native; historical simulation/order is separate.
+use shader_pipeline::gpu::stats::CountedPasses as _;
 #[path = "native/packing.rs"]
 mod packing;
 
@@ -47,10 +48,6 @@ impl ViewMask {
             Self::All => true,
             Self::Some(views) => views.get(view).copied().unwrap_or(false),
         }
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        matches!(self, Self::Some(views) if !views.contains(&true))
     }
 }
 
@@ -179,28 +176,21 @@ impl EntitySimulations {
         self.0.clear();
     }
 
-    #[cfg(test)]
+    /// Register observations in event order, then advance each privately seeded runtime.
+    /// No random stream or particle storage is shared.
     pub fn prepare(
         &mut self,
         entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
         events: &[crate::map::entity_animation::Event],
     ) -> io::Result<()> {
-        self.prepare_with_workers(entities, events, &Default::default())
-    }
-
-    /// Register observations in event order, then advance independent, privately seeded
-    /// runtimes on borrowed turns. No random stream or particle storage is shared.
-    pub fn prepare_with_workers(
-        &mut self,
-        entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
-        events: &[crate::map::entity_animation::Event],
-        workers: &viewer_foundation::parallel::Workers,
-    ) -> io::Result<()> {
+        let reset_span = viewer_foundation::profiling::span("entity_reset");
         for runtimes in self.0.values_mut() {
             for runtime in runtimes.values_mut() {
                 runtime.seen = None;
             }
         }
+        drop(reset_span);
+        let register_span = viewer_foundation::profiling::span("entity_register");
         let mut failure = None;
         'events: for (at, event) in events.iter().enumerate() {
             let Some(name) = &event.definition.particle else {
@@ -238,47 +228,89 @@ impl EntitySimulations {
                 runtime.seen = Some(at);
             }
         }
+        drop(register_span);
+        let advance_span = viewer_foundation::profiling::span("entity_advance");
         {
-            let tasks: Vec<_> = self
-                .0
-                .iter_mut()
-                .filter_map(|(name, runtimes)| entities.get(name).map(|asset| (runtimes, asset)))
-                .flat_map(|(runtimes, (scale, emitters))| {
-                    runtimes
-                        .iter_mut()
-                        .filter_map(move |((_, ordinal), runtime)| {
-                            let event = &events[runtime.seen?];
-                            Some(Mutex::new((
-                                &mut runtime.simulation,
-                                &emitters[*ordinal],
-                                *scale,
-                                event,
-                            )))
-                        })
-                })
-                .collect();
-            workers.run(tasks.len(), &|at| {
-                let mut task = tasks[at].lock().unwrap_or_else(|error| error.into_inner());
-                let (sim, emitter, scale, event) = &mut *task;
-                let space = Some(super::motion::Space::new(
-                    emitter.local_space,
-                    emitter.system_local_space,
-                    *scale,
-                    event.transform,
-                ));
-                sim.advance_event(emitter, event.age, event.emission_end, space);
-            });
+            // One event's emitters are one particle system: they update together, sharing
+            // its turbulence fields.
+            for (name, runtimes) in self.0.iter_mut() {
+                let Some((scale, emitters)) = entities.get(name) else {
+                    continue;
+                };
+                let mut seen = Vec::new();
+                let mut members = Vec::new();
+                for ((_, ordinal), runtime) in runtimes.iter_mut() {
+                    let Some(at) = runtime.seen else {
+                        continue;
+                    };
+                    let emitter = &emitters[*ordinal];
+                    seen.push(at);
+                    members.push(super::Member {
+                        sim: &mut runtime.simulation,
+                        emitter,
+                        space: Some(super::motion::Space::new(
+                            emitter.local_space,
+                            emitter.system_local_space,
+                            *scale,
+                            events[at].transform,
+                        )),
+                    });
+                }
+                let mut start = 0;
+                while start < members.len() {
+                    let at = seen[start];
+                    let end = start + seen[start..].iter().take_while(|&&other| other == at).count();
+                    let event = &events[at];
+                    super::advance_event_system(&mut members[start..end], event.age, event.emission_end);
+                    start = end;
+                }
+            }
+        }
+        drop(advance_span);
+        if viewer_foundation::view_record::on() {
+            use viewer_foundation::view_record::add;
+            let [mut runtimes, mut particles, mut advanced, mut advanced_particles] = [0; 4];
+            for held in self.0.values() {
+                runtimes += held.len() as u64;
+                for runtime in held.values() {
+                    let held = runtime.simulation.particles.len() as u64;
+                    particles += held;
+                    if runtime.seen.is_some() {
+                        advanced += 1;
+                        advanced_particles += held;
+                    }
+                }
+            }
+            add("entity effects", "events", events.len() as u64);
+            add(
+                "entity effects",
+                "events_hidden",
+                events.iter().filter(|event| event.hidden).count() as u64,
+            );
+            add("entity effects", "runtimes", runtimes);
+            add("entity effects", "particles", particles);
+            add("entity effects", "advanced", advanced);
+            add("entity effects", "advanced_particles", advanced_particles);
         }
         // A duplicate refuses after advancing the preceding observations, just as the
         // serial walk did, without retiring runtimes after an incomplete observation list.
         if let Some(error) = failure {
             return Err(error);
         }
+        let _retire_span = viewer_foundation::profiling::span("entity_retire");
+        let alive = |runtime: &EntityRuntime| {
+            runtime.seen.is_some()
+                && (runtime.simulation.emitting || !runtime.simulation.particles.is_empty())
+        };
         self.0.retain(|_, runtimes| {
-            runtimes.retain(|_, runtime| {
-                runtime.seen.is_some()
-                    && (runtime.simulation.emitting || !runtime.simulation.particles.is_empty())
-            });
+            // An event's emitters are one system on one clock: all stay while any lives, and
+            // retire together.
+            let held: std::collections::BTreeSet<_> = runtimes
+                .iter()
+                .filter(|(_, runtime)| alive(runtime))
+                .map(|((key, _), _)| key.clone())
+                .collect();
+            runtimes.retain(|(key, _), runtime| runtime.seen.is_some() && held.contains(key));
             !runtimes.is_empty()
         });
         Ok(())
@@ -301,6 +333,13 @@ impl EntitySimulations {
         }).collect()
     }
 
+    /// The frame's sort pass over every held runtime, hidden ones included.
+    pub(super) fn sort(&mut self, eye: super::sort::Eye) {
+        for runtime in self.0.values_mut().flat_map(BTreeMap::values_mut) {
+            runtime.simulation.sort(eye);
+        }
+    }
+
     pub fn living(&self, event: &crate::map::entity_animation::Event) -> bool {
         let Some(name) = &event.definition.particle else {
             return false;
@@ -312,22 +351,11 @@ impl EntitySimulations {
         })
     }
 
-    #[cfg(test)]
     pub(super) fn packets(
         &self,
         entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
         events: &[crate::map::entity_animation::Event],
         packets: &mut Vec<DrawPacket>,
-    ) {
-        self.packets_with_workers(entities, events, packets, &Default::default());
-    }
-
-    pub(super) fn packets_with_workers(
-        &self,
-        entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
-        events: &[crate::map::entity_animation::Event],
-        packets: &mut Vec<DrawPacket>,
-        workers: &viewer_foundation::parallel::Workers,
     ) {
         // A hidden event's runtime keeps simulating; only its particles are not submitted.
         let tasks: Vec<_> = events
@@ -340,26 +368,17 @@ impl EntitySimulations {
                 let name = event.definition.particle.as_ref()?;
                 let (scale, emitters) = entities.get(name)?;
                 let runtimes = self.0.get(name)?;
-                Some((
-                    actor,
-                    event,
-                    *scale,
-                    emitters,
-                    runtimes,
-                    Mutex::new(Vec::new()),
-                ))
+                Some((actor, event, *scale, emitters, runtimes))
             })
             .collect();
-        workers.run(tasks.len(), &|at| {
-            let (actor, event, scale, emitters, runtimes, out) = &tasks[at];
-            let mut packets = out.lock().unwrap_or_else(|error| error.into_inner());
+        for (actor, event, scale, emitters, runtimes) in tasks {
             for (ordinal, emitter) in emitters.iter().enumerate() {
                 let Some(runtime) = runtimes.get(&(event.key.clone(), ordinal)) else {
                     continue;
                 };
                 let sim = &runtime.simulation;
-                let mut packet = DrawPacket::entity(emitter, *scale, event);
-                packet.actor = [1, *actor, 0, 0];
+                let mut packet = DrawPacket::entity(emitter, scale, event);
+                packet.actor = [1, actor, 0, 0];
                 packet.constants.time = sim.age;
                 packet.instances.reserve(sim.particles.len());
                 for particle in &sim.particles {
@@ -385,10 +404,6 @@ impl EntitySimulations {
                 }
                 packets.push(packet);
             }
-        });
-        // Worker completion order never changes event, emitter or particle order.
-        for (_, _, _, _, _, out) in tasks {
-            packets.extend(out.into_inner().unwrap_or_else(|error| error.into_inner()));
         }
     }
 }
@@ -411,6 +426,13 @@ fn submission_order(packets: &[DrawPacket], view: usize) -> Vec<&DrawPacket> {
     ordered.sort_by_key(|packet| order_key(packet));
     ordered
 }
+
+/// Bytes of the trail allocation per particle slot, its largest per slot.
+const TRAIL_STRIDE: usize = 56 * 28;
+
+/// The most particles one system may hold for the trail allocation to stay within a signed
+/// 32-bit byte size.
+pub(super) const MAX_PARTICLES: usize = i32::MAX as usize / TRAIL_STRIDE;
 
 /// Physical bytes of a native vertex allocation of `capacity` records.
 fn allocation_size(capacity: usize, stride: usize) -> io::Result<u64> {
@@ -964,7 +986,7 @@ impl Renderer {
         planned_uploads.clear_view();
         let mut applied = Applied::default();
         self.retained.inherit(inputs.retained);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compiled particles"),
             color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
             depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
@@ -977,10 +999,24 @@ impl Renderer {
             .iter()
             .filter(|packet| packet.views.contains(view))
             .collect();
+        if viewer_foundation::view_record::on() {
+            use viewer_foundation::view_record::add;
+            let [mut empty, mut instances, mut trails] = [0; 3];
+            for packet in &ordered {
+                empty += u64::from(packet.instances.is_empty());
+                instances += packet.instances.len() as u64;
+                trails += u64::from(packet.descriptor.trail);
+            }
+            add("weather draw", "views", 1);
+            add("weather draw", "packets", ordered.len() as u64);
+            add("weather draw", "packets_empty", empty);
+            add("weather draw", "instances", instances);
+            add("weather draw", "trails", trails);
+        }
         let mut actor = None;
         let mut ordinary_offset = 0;
         let mut ring = InstanceRing::new(allocation_size(self.max_particles, 48)?);
-        let trail_size = allocation_size(self.max_particles, 56 * 28)?;
+        let trail_size = allocation_size(self.max_particles, TRAIL_STRIDE)?;
         let depth = particle_depth();
         let [list, strip] = [
             particle_pass(self.samples, wgpu::PrimitiveTopology::TriangleList),
@@ -1009,6 +1045,8 @@ impl Renderer {
         }
         let quad = &self.quad;
         let mut previous: Option<PreviousDraw> = None;
+        let mut bound: Vec<Option<gpu::Slice>> = Vec::new();
+        let mut drawn = 0u64;
         let mut uploads = OrdinaryUploads::default();
         shader_pipeline::gpu::stats::state();
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
@@ -1047,6 +1085,7 @@ impl Renderer {
             } else {
                 None
             };
+            drawn += 1;
             let cached = self.techniques.get(&self.effect, &packet.descriptor)?;
             let named = &mut self.techniques.programs[cached];
             let (name, program, native_cache) = (
@@ -1221,8 +1260,22 @@ impl Renderer {
             }
             submission.pass.bindings.bind_after(&mut pass, same);
             for (slot, buffer) in submission.vertices.iter().enumerate() {
+                // The quad is the same allocation for every ordinary packet, and a buffer already
+                // bound in this pass is bound: wgpu encodes a repeated bind in full.
+                let held = bound.get(slot).and_then(Option::as_ref);
+                if held.is_some_and(|held: &gpu::Slice| {
+                    held.buffer == buffer.buffer
+                        && held.offset == buffer.offset
+                        && held.size == buffer.size
+                }) {
+                    continue;
+                }
                 shader_pipeline::gpu::stats::state();
                 pass.set_vertex_buffer(slot as u32, buffer.slice());
+                if bound.len() <= slot {
+                    bound.resize(slot + 1, None);
+                }
+                bound[slot] = Some(buffer.clone());
             }
             if trail.is_some() {
                 shader_pipeline::gpu::stats::draw();
@@ -1245,6 +1298,7 @@ impl Renderer {
         // Vector capacities (including the shared byte scratch) are the only mutable reuse.
         planned_uploads.clear_view();
         self.packing = planned_uploads;
+        viewer_foundation::view_record::add("weather draw", "packets_drawn", drawn);
         Ok(())
     }
 }
@@ -1252,37 +1306,6 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn workers() -> viewer_foundation::parallel::Workers {
-        struct Pool(Mutex<std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>>);
-        impl viewer_foundation::parallel::Spawn for Pool {
-            fn try_spawn(
-                &self,
-                job: Box<dyn FnOnce() + Send>,
-            ) -> Result<(), Box<dyn FnOnce() + Send>> {
-                self.0.lock().unwrap().send(job).map_err(|error| error.0)
-            }
-            fn threads(&self) -> usize {
-                3
-            }
-        }
-        let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
-        let rx = Arc::new(Mutex::new(rx));
-        for _ in 0..3 {
-            let rx = Arc::clone(&rx);
-            std::thread::spawn(move || {
-                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Normal);
-                loop {
-                    let job = rx.lock().unwrap().recv();
-                    match job {
-                        Ok(job) => job(),
-                        Err(_) => return,
-                    }
-                }
-            });
-        }
-        viewer_foundation::parallel::Workers::new(Arc::new(Pool(Mutex::new(tx))))
-    }
 
     fn assert_packets_equal(a: &[DrawPacket], b: &[DrawPacket]) {
         assert_eq!(a.len(), b.len());
@@ -1365,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_entity_ticks_and_packets_preserve_runtime_and_submission_order() {
+    fn entity_ticks_and_packets_preserve_runtime_and_submission_order() {
         use crate::map::{entity_animation, models};
         let rig = entity_animation::pose_tests::rig(1., false, true);
         let mut player = entity_animation::Player::new(&rig);
@@ -1403,9 +1426,7 @@ mod tests {
                 )
             })
             .collect();
-        let workers = workers();
-        let (mut serial, mut borrowed) =
-            (EntitySimulations::default(), EntitySimulations::default());
+        let mut simulations = EntitySimulations::default();
         for (frame, age) in [0., 0.13, 0.4, 0.4, 1.3, 4., 0.2, 0.5]
             .into_iter()
             .enumerate()
@@ -1429,30 +1450,21 @@ mod tests {
             if frame == 3 {
                 events.push(events[2].clone());
             }
-            let a = serial
+            let prepared = simulations
                 .prepare(&entities, &events)
                 .map_err(|error| error.to_string());
-            let b = borrowed
-                .prepare_with_workers(&entities, &events, &workers)
-                .map_err(|error| error.to_string());
-            assert_eq!(a, b, "duplicate refusals retain the original first failure");
-            assert_eq!(serial.presentation_state(), borrowed.presentation_state());
-            for event in &events {
-                assert_eq!(serial.living(event), borrowed.living(event));
-            }
-            if a.is_err() {
+            if prepared.is_err() {
+                assert_eq!(frame, 3, "only the duplicated event refuses");
                 continue;
             }
-            let (mut a, mut b) = (Vec::new(), Vec::new());
-            serial.packets(&entities, &events, &mut a);
-            borrowed.packets_with_workers(&entities, &events, &mut b, &workers);
-            assert_packets_equal(&a, &b);
+            let mut a = Vec::new();
+            simulations.packets(&entities, &events, &mut a);
             let expected: Vec<_> = events
                 .iter()
                 .enumerate()
                 .filter(|(_, event)| !event.hidden)
                 .flat_map(|(actor, event)| {
-                    let runtimes = &serial.0[event.definition.particle.as_ref().unwrap()];
+                    let runtimes = &simulations.0[event.definition.particle.as_ref().unwrap()];
                     (0..3).filter_map(move |ordinal| {
                         runtimes
                             .contains_key(&(event.key.clone(), ordinal))
@@ -1466,22 +1478,93 @@ mod tests {
                     .collect::<Vec<_>>(),
                 expected
             );
-            order(&mut a);
-            order(&mut b);
-            assert_packets_equal(&a, &b);
         }
         // Changing the supplied catalogue retires missing names without a lookup panic.
-        borrowed
-            .prepare_with_workers(&BTreeMap::new(), &[], &workers)
-            .unwrap();
-        assert!(borrowed.0.is_empty());
+        simulations.prepare(&BTreeMap::new(), &[]).unwrap();
+        assert!(simulations.0.is_empty());
     }
 
     #[test]
-    fn borrowed_weather_packets_match_source_order_reference_across_admission_changes() {
+    fn a_depth_sorted_runtime_submits_its_storage_after_one_pass_and_an_unsorted_one_as_held() {
+        use crate::map::{entity_animation, models};
+        use installed_content_core::particles::Sort;
+        use viewer_foundation::map::camera::{Camera, MapDefines, MapSize, Pose};
+        let rig = entity_animation::pose_tests::rig(1., false, true);
+        let mut player = entity_animation::Player::new(&rig);
+        let mut events = Vec::new();
+        player.evaluate(
+            &rig,
+            models::ModelInstance {
+                scale: 1.,
+                animation_seed: 7,
+                ..Default::default()
+            },
+            1.,
+            &mut [],
+            &mut events,
+        );
+        events.truncate(1);
+        events[0].definition.particle = Some("storm".into());
+        events[0].hidden = false;
+        let emitters = [Sort::Depth, Sort::None]
+            .map(|sort| {
+                let mut e = super::super::tests::activation_test_emitter();
+                e.render.sort = sort;
+                e
+            })
+            .into();
+        let entities = BTreeMap::from([("storm".to_owned(), (1., emitters))]);
+        let mut simulations = EntitySimulations::default();
+        simulations.prepare(&entities, &events).unwrap();
+        // Higher stands nearer the map camera, which looks down.
+        let heights = [50., 40., 30., 20., 10.];
+        for runtime in simulations.0.get_mut("storm").unwrap().values_mut() {
+            runtime.simulation.particles = heights
+                .map(|y| super::super::LiveParticle {
+                    age: 0.,
+                    life: 10.,
+                    mass: 1.,
+                    position: [0., y, 0.],
+                    velocity: [0.; 3],
+                    size: 1.,
+                    rotation: [0.; 3],
+                    spin: [0.; 3],
+                    color: [255.; 4],
+                    tile: [0; 4],
+                })
+                .into();
+        }
+        let eye = super::super::sort::Eye::of(Camera {
+            center: [0., 0.],
+            height: 100.,
+            map: MapSize::TEST,
+            defines: MapDefines::test(),
+            pose: Pose::Map,
+        });
+        // The first pass is gap 4, which five particles cannot fill; the second is gap 1.
+        for sorted in [heights.to_vec(), vec![40., 20., 50., 30., 10.]] {
+            simulations.sort(eye);
+            let mut packets = Vec::new();
+            simulations.packets(&entities, &events, &mut packets);
+            assert_eq!(
+                packets
+                    .iter()
+                    .map(|packet| packet
+                        .instances
+                        .iter()
+                        .map(|instance| instance.position_size[1])
+                        .collect::<Vec<_>>())
+                    .collect::<Vec<_>>(),
+                [sorted, heights.to_vec()]
+            );
+        }
+    }
+
+    #[test]
+    fn weather_packets_match_source_order_reference_across_admission_changes() {
         use super::super::{
             Anchor, Assets, Field, Presentation, Simulation, Simulations, WeatherPair, gates,
-            motion, visible_emitters, weather_packets,
+            motion, weather_packets,
         };
         use viewer_foundation::map::{
             camera::{Camera, MapDefines, MapSize, Pose},
@@ -1504,6 +1587,7 @@ mod tests {
             effect: Effect::from_compiled(Arc::new(Default::default()), Vec::new(), Vec::new()),
             max_particles: 100,
             anchors_by_region: BTreeMap::from([(7, (0..20).collect())]),
+            region_provinces: Default::default(),
             graphics: super::super::tests::reference_defines(),
             anchors: (0..20)
                 .map(|index| Anchor {
@@ -1522,7 +1606,7 @@ mod tests {
             )]),
             pages: Vec::new(),
             entities: BTreeMap::new(),
-            unresolved: Vec::new(),
+            withheld: Vec::new(),
             lights: Default::default(),
         };
         let field = Field {
@@ -1539,15 +1623,16 @@ mod tests {
             defines: MapDefines::test(),
             pose: Pose::Map,
         };
-        for retained in [BTreeSet::new(), BTreeSet::from([7])] {
+        // Prepared for the regions whose held kind is not the wanted one.
+        for held in [Presentation::default(), presentation.clone()] {
             let views = super::super::parent_views(
                 &super::super::province_admission_views(camera, [1280, 720]),
                 [1280, 720],
             );
             let expected: BTreeMap<_, _> =
-                visible_emitters(&assets, &field, &presentation, camera, &views)
+                super::super::visible_emitters_at(&assets, &presentation, camera, &views, 0..assets.anchors.len())
                     .into_iter()
-                    .filter(|visible| !retained.contains(&assets.anchors[visible.key.0].region))
+                    .filter(|visible| !held.0.contains_key(&assets.anchors[visible.key.0].region))
                     .map(|visible| {
                         let mut simulation =
                             Simulation::cold(visible.emitter, visible.seed, visible.anchor, 0.0);
@@ -1557,11 +1642,10 @@ mod tests {
                     .collect();
             let actual = super::super::prepare_changed(
                 &assets,
-                &field,
                 &presentation,
+                &held,
                 camera,
                 [1280, 720],
-                &retained,
             );
             assert_eq!(
                 actual.keys().collect::<Vec<_>>(),
@@ -1576,8 +1660,7 @@ mod tests {
                 assert!(value.particles.is_empty());
             }
         }
-        let (mut serial, mut borrowed) = (Simulations::new(), Simulations::new());
-        let workers = workers();
+        let (mut serial, mut made) = (Simulations::new(), Simulations::new());
         for (frame, time) in [0., 0.13, 0.4, 0.4, 1.3, 4., 0.2, 0.5]
             .into_iter()
             .enumerate()
@@ -1596,7 +1679,7 @@ mod tests {
                 ),
                 ([0.; 3], [OPEN; 6]),
             ];
-            let seen = visible_emitters(&assets, &field, &presentation, camera, &views);
+            let seen = super::super::visible_emitters_at(&assets, &presentation, camera, &views, 0..assets.anchors.len());
             let visible: BTreeSet<_> = seen.iter().map(|v| v.key).collect();
             let mut expected = Vec::new();
             for v in seen {
@@ -1629,21 +1712,24 @@ mod tests {
                 }
             }
             let mut actual = Vec::new();
+            let mut drawn = super::super::Drawn::default();
+            // Pairs created this frame, as the reference above admits them.
+            let mut fades = super::super::fade::Fades::default();
+            fades.produce([7], camera.height, &assets.graphics, |_| true);
             weather_packets(
                 &assets,
-                &field,
-                &presentation,
+                drawn.for_field(&assets.anchors, &assets.systems, &field, &presentation, 1),
                 (camera, &views, time),
-                &mut borrowed,
+                &fades,
+                &mut made,
                 &mut actual,
-                &workers,
             );
             assert_eq!(
                 serial.keys().collect::<Vec<_>>(),
-                borrowed.keys().collect::<Vec<_>>()
+                made.keys().collect::<Vec<_>>()
             );
             for (key, sim) in &serial {
-                super::super::tests::assert_same_state(sim, &borrowed[key]);
+                super::super::tests::assert_same_state(sim, &made[key]);
             }
             assert_packets_equal(&expected, &actual);
             order(&mut expected);
@@ -1993,9 +2079,9 @@ mod tests {
         views[9..].fill(true);
         let mask = ViewMask::Some(views);
         assert!(!mask.contains(8) && mask.contains(9) && mask.contains(11));
-        assert!(!mask.contains(12) && !mask.is_empty());
-        assert!(ViewMask::Some(vec![false; 3]).is_empty() && ViewMask::Some(Vec::new()).is_empty());
-        assert!(ViewMask::All.contains(1_000) && !ViewMask::All.is_empty());
+        assert!(!mask.contains(12));
+        assert!(!ViewMask::Some(vec![false; 3]).contains(0) && !ViewMask::Some(Vec::new()).contains(0));
+        assert!(ViewMask::All.contains(1_000));
         let emitter = super::super::tests::activation_test_emitter();
         let mut packet = DrawPacket::new(&emitter, 1., Transform::IDENTITY, 1.);
         packet.views = mask;
@@ -2039,5 +2125,7 @@ fn particle_pass(samples: u32, topology: wgpu::PrimitiveTopology) -> gpu::Pass {
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         })],
+        instanced: 0,
+        stream: None,
     }
 }

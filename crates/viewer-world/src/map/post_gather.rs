@@ -88,22 +88,15 @@ impl Gather {
         Ok(Self(pass))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn draw(
-        &self,
-        arena: &gpu::Arena,
-        encoder: &mut wgpu::CommandEncoder,
+    /// The 48-byte b2 block is bound to both stages. Offset 12 is unknown padding checked against
+    /// compiled reads at construction; bytes 40 through 47 are initialized zeros.
+    pub(super) fn constants(
         gather: [u32; 2],
         backing: [u32; 2],
         tau_delta: f32,
         hdr: [f32; 2],
-        source: &wgpu::TextureView,
-        previous: &wgpu::TextureView,
-        target: &wgpu::TextureView,
-    ) -> io::Result<()> {
-        // The 48-byte b2 allocation is bound to both stages. Offset 12 is unknown padding checked against
-        // compiled reads at construction; bytes 40 through 47 are initialized zeros.
-        let constants = [
+    ) -> [f32; 12] {
+        [
             1.0,
             1.0,
             tau_delta,
@@ -116,17 +109,31 @@ impl Gather {
             hdr[1],
             0.0,
             0.0,
-        ];
-        let bindings = self
-            .0
-            .bind_textures(
-                arena,
-                2,
-                bytemuck::cast_slice(&constants),
-                &[source, previous],
-            )
-            .map_err(refuse)?;
-        self.0.draw(encoder, target, &bindings, None);
-        Ok(())
+        ]
+    }
+
+    /// The adaptation's bindings for one parity of the exposure history: only the block's τ
+    /// changes a frame, and it changes in the buffer these bindings keep.
+    pub(super) fn kept(
+        &self,
+        device: &wgpu::Device,
+        buffer: &wgpu::Buffer,
+        offset: u32,
+        bytes: &[u8],
+        source: &wgpu::TextureView,
+        previous: &wgpu::TextureView,
+    ) -> io::Result<gpu::Bindings> {
+        self.0
+            .kept(device, buffer, 2, offset, bytes, &[source, previous])
+            .map_err(refuse)
+    }
+
+    pub(super) fn record(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        bindings: &gpu::Bindings,
+    ) {
+        self.0.draw(encoder, target, bindings, None);
     }
 }

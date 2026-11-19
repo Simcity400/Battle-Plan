@@ -1,4 +1,5 @@
 //! Controlled scene fault and shader probes, available only to test-support consumers.
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use super::scene::passes;
 use eframe::wgpu;
 use std::{
@@ -19,9 +20,6 @@ pub enum Point {
     Post,
 }
 
-/// A deterministic fixture may wait for its independent pool here; production never does.
-pub type NativeAdmissionProbe = dyn Fn(&viewer_foundation::parallel::Admitted) + Send + Sync;
-
 #[derive(Default)]
 pub struct Faults {
     pub isolated: Option<(passes::Pass, String)>,
@@ -30,29 +28,12 @@ pub struct Faults {
     pub attempted: RefCell<Vec<passes::Pass>>,
     pub reached: RefCell<Vec<Point>>,
     pub sentinel: bool,
-    pub native_admission: Option<Arc<NativeAdmissionProbe>>,
-    /// Capacity and completed buffer count, or None when preparation failed in this batch.
-    pub native_batches: RefCell<Vec<(usize, Option<usize>)>>,
 }
 
 impl Faults {
     pub fn begin_frame(&self) {
         self.attempted.borrow_mut().clear();
         self.reached.borrow_mut().clear();
-        self.native_batches.borrow_mut().clear();
-    }
-
-    pub fn begin_native(&self, admitted: &viewer_foundation::parallel::Admitted) {
-        if let Some(probe) = &self.native_admission {
-            probe(admitted);
-        }
-        self.native_batches.borrow_mut().push((admitted.capacity(), None));
-    }
-
-    pub fn finish_native(&self, buffers: usize) {
-        let mut batches = self.native_batches.borrow_mut();
-        let batch = batches.last_mut().expect("native admission precedes recording");
-        assert!(batch.1.replace(buffers).is_none(), "native batch recorded twice");
     }
 
     pub fn preflight(&self, pass: passes::Pass) -> io::Result<()> {
@@ -66,12 +47,6 @@ impl Faults {
     }
 
     pub fn after(&self, point: Point) -> io::Result<()> {
-        if point == Point::Models {
-            assert!(
-                self.native_batches.borrow().last().is_some_and(|batch| batch.1.is_none()),
-                "native admission must precede preparation"
-            );
-        }
         self.reached.borrow_mut().push(point);
         if self.fatal == Some(point) {
             return Err(io::Error::other(format!(
@@ -137,7 +112,7 @@ impl Faults {
             multiview_mask: None,
             cache: None,
         });
-        let mut render = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut render = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Scene failure sentinel"),
             color_attachments: &[Some(targets.output_attachment(wgpu::LoadOp::Load))],
             ..Default::default()
@@ -302,7 +277,7 @@ impl Probe {
         let targets = Targets::new(device, [8, 8], [8, 8], 1);
         let mut encoder = device.create_command_encoder(&Default::default());
         {
-            let mut render = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut render = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[Some(
                     targets.output_attachment(wgpu::LoadOp::Clear(wgpu::Color::BLACK)),
                 )],

@@ -8,8 +8,9 @@ use viewer_foundation::map::counter_inputs::OrderFacts;
 use installed_content_core::movement::MovementMap;
 
 /// Every land source's division members with their actions, each source's in ordinal then id
-/// order: what a layer keeping the members hands the layout ([`Preparation::set_layered`]).
-pub type LandStacks = BTreeMap<(u32, u32), Arc<[(Member, counter_action::Action)]>>;
+/// order: what a layer keeping the members hands the layout ([`Preparation::set_layered`]). Held
+/// in shards, so a product that changed one source copies that shard and shares the rest.
+pub type LandStacks = super::Shards<(u32, u32), Arc<[(Member, counter_action::Action)]>>;
 
 /// One `Divisions` row's values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

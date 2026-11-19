@@ -11,7 +11,7 @@
 //! be read.
 
 use super::{
-    Budget, Carried, Gpu, Inputs, Layer, List, Num, Text, Upstream, View,
+    Carried, Change, Settling, Inputs, KeptAt, Keys, Layer, List, Num, Text, Upstream, View,
     engagements::{Engagements, Index},
     land_markers::{bytes_of, held, held_as, opaque, u64s},
 };
@@ -149,8 +149,17 @@ pub struct NavalMarkers {
     values: Option<Arc<NavalMarkerValues>>,
     /// The units, ships and task forces the last make read: a change of theirs remakes it.
     watched: HashSet<u64>,
-    /// The frames the last make read for each live combat.
-    kept_used: BTreeMap<u64, Kept>,
+    /// Each live combat's kept frame as the index keeps it at the head, and where that stands.
+    kept: BTreeMap<u64, Kept>,
+    kept_at: KeptAt,
+    /// Combats whose row a step changed: their kept frame is read again.
+    kept_owed: Keys,
+    /// Per read table, the columns the product reads: a write to another changes nothing it draws.
+    reads: BTreeMap<usize, Vec<usize>>,
+    /// Combats the last make read, which the next one reads again.
+    read: usize,
+    /// Combats whose kept frame was read, since the layer was made.
+    frames_read: usize,
     /// The engagement layer's naval flags and provenance, as last taken.
     flags: Option<(BTreeMap<u64, Engaged>, Provenance)>,
     dirty: bool,
@@ -175,7 +184,12 @@ impl NavalMarkers {
             refused: Some("not composed yet".into()),
             values: None,
             watched: HashSet::new(),
-            kept_used: BTreeMap::new(),
+            kept: BTreeMap::new(),
+            kept_at: KeptAt::Unread,
+            kept_owed: Keys::default(),
+            reads: BTreeMap::new(),
+            read: 0,
+            frames_read: 0,
             flags: None,
             dirty: true,
             since: None,
@@ -193,7 +207,7 @@ impl NavalMarkers {
     /// A layer of the same content, inputs and view, made from scratch.
     pub fn fresh(&self) -> Self {
         let index = self.index.as_ref().map(|index| Index { history: Arc::clone(&index.history), branch: index.branch });
-        let fresh = Self { columns: self.columns, hidden: self.hidden, flags: self.flags.clone(), ..Self::new(Arc::clone(&self.shore), index) };
+        let fresh = Self { columns: self.columns, hidden: self.hidden, flags: self.flags.clone(), reads: self.reads.clone(), ..Self::new(Arc::clone(&self.shore), index) };
         if let Some((choice, vision)) = self.perspective() {
             fresh.set_vision(choice, vision);
         }
@@ -234,6 +248,12 @@ impl NavalMarkers {
         self.made
     }
 
+    /// Combats whose kept frame was read from the index, since the layer was made.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn frames_read(&self) -> usize {
+        self.frames_read
+    }
+
     fn columns(&self) -> Columns {
         self.columns.expect("the naval markers layer is declared before it composes")
     }
@@ -244,7 +264,7 @@ impl NavalMarkers {
         let empty = Self::new(Arc::clone(&self.shore), None);
         let kept = std::mem::replace(self, empty);
         (self.index, self.columns, self.hidden, self.flags, self.frame, self.made) = (kept.index, kept.columns, kept.hidden, kept.flags, kept.frame, kept.made);
-        (self.vision, self.vision_new) = (kept.vision, kept.vision_new);
+        (self.vision, self.vision_new, self.reads) = (kept.vision, kept.vision_new, kept.reads);
     }
 
     /// Refused for `why`: nothing held, marked or carried until it draws again, whole.
@@ -269,19 +289,58 @@ impl NavalMarkers {
         Ok(vision)
     }
 
-    /// Each live combat's kept frame at the head, as the index keeps it.
-    fn kept(&self, mirrors: &Mirrors, vision: &Vision) -> BTreeMap<u64, Kept> {
-        let combats = held(mirrors.get(TableId::NavalCombats));
-        let mut live: Vec<u64> = combats.map(|combats| combats.rows().filter_map(|slot| combats.key(slot)).map(|key| key as u64).collect()).unwrap_or_default();
-        live.sort_unstable();
+    /// The kept frames of `combats` at the head, as the index keeps them.
+    fn kept_of(&self, mirrors: &Mirrors, vision: &Vision, combats: &[u64]) -> BTreeMap<u64, Kept> {
         let head = mirrors.get(TableId::NavalCombats).and_then(Mirror::head);
         let found = match (&self.index, head) {
-            (Some(index), Some(head)) if !live.is_empty() => index.history.lookup_icons(NAVAL_ICON, index.branch, head, vision.ours(), &live).ok(),
+            (Some(index), Some(head)) if !combats.is_empty() => index.history.lookup_icons(NAVAL_ICON, index.branch, head, vision.ours(), combats).ok(),
             _ => None,
         };
         match found {
             Some(found) => found,
-            None => live.into_iter().map(|combat| (combat, Kept::Unindexed)).collect(),
+            None => combats.iter().map(|&combat| (combat, Kept::Unindexed)).collect(),
+        }
+    }
+
+    /// The kept frames brought to the head: the hours the steps moved through name the icons the
+    /// index changed and the steps' own rows the combats that began or ended, while a change of
+    /// where the index answers from reads every live combat's again. A frame that moved remakes
+    /// the product, which draws it.
+    fn take_kept(&mut self, mirrors: &Mirrors, vision: &Vision) {
+        let index = self.index.as_ref().map(|index| (&index.history, index.branch));
+        let now = KeptAt::of(index, mirrors.get(TableId::NavalCombats).and_then(Mirror::head), vision.ours());
+        let advanced = self.kept_at.advance(now, index, NAVAL_ICON, vision.ours());
+        self.kept_at = now;
+        let mut owed = std::mem::take(&mut self.kept_owed);
+        let mut combats: Vec<u64> = match advanced {
+            Some(changed) => owed.take().into_iter().chain(changed).collect(),
+            None => {
+                self.kept.clear();
+                owed.clear();
+                let rows = held(mirrors.get(TableId::NavalCombats));
+                self.dirty = true;
+                rows.map(|rows| rows.rows().filter_map(|slot| rows.key(slot)).map(|key| key as u64).collect()).unwrap_or_default()
+            }
+        };
+        self.kept_owed = owed;
+        combats.sort_unstable();
+        combats.dedup();
+        let rows = mirrors.get(TableId::NavalCombats);
+        let live = |combat: u64| held(rows).is_some_and(|rows| rows.slot(u128::from(combat)).is_some());
+        let (asked, gone): (Vec<u64>, Vec<u64>) = combats.into_iter().partition(|&combat| live(combat));
+        let found = self.kept_of(mirrors, vision, &asked);
+        self.frames_read += asked.len();
+        for combat in gone {
+            self.dirty |= self.kept.remove(&combat).is_some();
+        }
+        for combat in asked {
+            let was = self.kept.get(&combat).copied();
+            let now = found.get(&combat).copied();
+            match now {
+                Some(kept) => self.kept.insert(combat, kept),
+                None => self.kept.remove(&combat),
+            };
+            self.dirty |= was != now;
         }
     }
 
@@ -447,11 +506,11 @@ impl NavalMarkers {
         });
         self.values = Some(Arc::new(values));
         self.watched = watched;
-        self.kept_used = kept.clone();
+        self.read = combats.len();
         self.made += 1;
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, upstream: Option<(&Engagements, bool)>, budget: &mut Budget) {
+    fn settle_dirty(&mut self, mirrors: &Mirrors, upstream: Option<(&Engagements, bool)>) {
         self.frame += 1;
         // Hidden, it holds not even the engagement layer's flags: shown again, it takes them anew.
         if self.hidden {
@@ -480,27 +539,34 @@ impl NavalMarkers {
         if self.vision_new.swap(false, Ordering::AcqRel) {
             self.dirty = true;
         }
-        let kept = if self.dirty || std::mem::take(&mut self.stepped) { Some(self.kept(mirrors, &vision)) } else { None };
-        if let Some(kept) = &kept
-            && *kept != self.kept_used
-        {
-            self.dirty = true;
+        if self.dirty || std::mem::take(&mut self.stepped) || self.kept_owed.len() > 0 {
+            self.take_kept(mirrors, &vision);
         }
-        if self.dirty && budget.left() {
+        if self.dirty {
             let (flags, provenance) = self.flags.take().expect("checked above");
-            let kept = kept.unwrap_or_else(|| self.kept(mirrors, &vision));
+            let kept = std::mem::take(&mut self.kept);
             self.make(mirrors, &vision, &flags, provenance, &kept);
-            self.flags = Some((flags, provenance));
+            (self.kept, self.flags) = (kept, Some((flags, provenance)));
             self.dirty = false;
             self.since = None;
-        } else if self.dirty {
-            self.since.get_or_insert(self.frame);
         }
+    }
+
+    /// Whether the product reads `column` of `table`, as the layer declared it.
+    fn reads(&self, table: TableId, column: usize) -> bool {
+        self.reads.get(&table.index()).is_some_and(|columns| columns.binary_search(&column).is_ok())
     }
 
     fn apply_table(&mut self, table: TableId, changes: &Changes, mirrors: &Mirrors) {
         if NAVAL_TABLES.contains(&table) {
-            self.dirty |= !changes.deleted().is_empty() || !changes.inserted().is_empty() || changes.columns().iter().any(|written| !written.is_empty());
+            let rows = !changes.deleted().is_empty() || !changes.inserted().is_empty();
+            self.dirty |= rows || changes.columns().iter().any(|written| !written.is_empty() && self.reads(table, written.column()));
+            if table == TableId::NavalCombats {
+                let frame = self.frame;
+                for &key in changes.deleted().keys().unwrap_or_default().iter().chain(changes.inserted().keys().unwrap_or_default()) {
+                    self.kept_owed.mark(key as u64, frame);
+                }
+            }
             return;
         }
         if !WATCHED.contains(&table) {
@@ -569,6 +635,7 @@ impl Layer for NavalMarkers {
             country_ordinal: inputs.number(T::NavalResultCountries, "ordinal")?,
             link_slot: inputs.number(T::CountryLinks, "canonical_slot")?,
         });
+        self.reads = inputs.selected();
         if std::mem::take(&mut self.hidden) {
             self.all = true;
         }
@@ -582,7 +649,7 @@ impl Layer for NavalMarkers {
     fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
         let made = self.made;
         self.all = true;
-        self.settle_dirty(mirrors, upstream.get::<Engagements>().map(|layer| (layer, true)), &mut Budget::unlimited());
+        self.settle_dirty(mirrors, upstream.get::<Engagements>().map(|layer| (layer, true)));
         self.made = made;
         Ok(())
     }
@@ -601,23 +668,26 @@ impl Layer for NavalMarkers {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_with(mirrors, &Upstream::new(&[]), budget)
+    fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        self.settle_with(mirrors, &Upstream::new(&[]), settling)
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
-        let changed = upstream.changed::<Engagements>();
-        let naval = changed.all() || !changed.of("naval").is_empty();
-        self.settle_dirty(mirrors, upstream.get::<Engagements>().map(|layer| (layer, naval)), budget);
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
+        let naval = match upstream.changed::<Engagements>() {
+            Change::Whole => true,
+            Change::Marked(changed) => !changed.of("naval").is_empty(),
+        };
+        self.settle_dirty(mirrors, upstream.get::<Engagements>().map(|layer| (layer, naval)));
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
+    /// A remake reads every naval combat: what it owes is that many, as the last make read them,
+    /// never one unit for a walk of them all. A combat is counted once for the frames it waits.
     fn carried(&self) -> Carried {
-        Carried { entities: usize::from(self.dirty) + usize::from(self.all), frames: self.since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        let remake = self.dirty || self.all;
+        let entities = if remake { self.read.max(self.kept.len()).max(1) } else { 0 };
+        Carried { entities: entities + self.kept_owed.len() }
     }
 
     fn held(&self) -> usize {
@@ -627,7 +697,7 @@ impl Layer for NavalMarkers {
                 + values.results.provinces.values().map(|results| results.capacity() * 8 + 40).sum::<usize>()
                 + (values.live.len() + values.gated.len()) * 24
         });
-        values + self.watched.capacity() * 16 + self.kept_used.len() * 32 + self.flags.as_ref().map_or(0, |(flags, _)| flags.len() * 32)
+        values + self.watched.capacity() * 16 + self.kept.len() * 32 + self.kept_owed.bytes() + self.flags.as_ref().map_or(0, |(flags, _)| flags.len() * 32)
     }
 
     fn any(&self) -> &dyn std::any::Any {

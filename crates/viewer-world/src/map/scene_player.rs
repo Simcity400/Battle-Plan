@@ -60,8 +60,11 @@ impl Player {
             .as_ref()
             .is_none_or(|player| player.label != model.label)
         {
+            // The player's lit queues draw straight into a pass of their own.
+            let mut pass = ModelPass::new(model.library, model.label);
+            pass.drawn_directly();
             *slot = Some(Self {
-                pass: ModelPass::new(model.library, model.label),
+                pass,
                 label: model.label,
                 placed: None,
                 field: ModelField::default(),

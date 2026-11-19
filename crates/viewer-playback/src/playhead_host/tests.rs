@@ -1,5 +1,5 @@
 use super::{MapSide, Units, mirror::Mirror, open};
-use crate::layers::{Budget, Carried, Dirty, Gpu, Inputs, Layer, Num, View};
+use crate::layers::{Carried, Settling, Dirty, Inputs, Layer, Num, View};
 use crate::playhead_host::mirror::{Cell as Read, Mirrors};
 use playhead::{
     Piece, Settings, Step, Timeline,
@@ -223,6 +223,7 @@ fn a_mirror_from_a_reset_equals_the_lane_and_stays_equal_over_steps() {
             let head = lane.step(to, &mut changes).unwrap();
             mirror.apply(&changes);
             assert_eq!(differ(&mirror, lane.cells(), columns), None, "after the step to hour {head}");
+            assert_eq!(mirror.bytes(), mirror.bytes_walked(), "the bytes kept as the cells are written, after the step to hour {head}");
             assert_eq!(mirror.head(), Some(head));
             assert_eq!(mirror.status(), Some(lane.status().0));
             if mirror.status() == Some(Status::NotRecorded) {
@@ -266,18 +267,36 @@ struct Sum {
     gate: Option<Arc<Mutex<mpsc::Receiver<()>>>>,
     /// Told when a compose begins, before it waits for the gate.
     entered: Option<mpsc::Sender<()>>,
+    /// Held in its first settle until the test releases it, telling it when that settle began.
+    settle_gate: Option<Arc<Mutex<mpsc::Receiver<()>>>>,
+    settling: Option<mpsc::Sender<()>>,
+    /// Its settle stops the side by name once released.
+    settle_stops: bool,
     frame: u64,
 }
 
 impl Sum {
     fn new(composes: &Arc<Mutex<u32>>) -> Self {
-        Self { column: None, second: false, refuse_high: false, hide_high: false, read: Vec::new(), viewed: Vec::new(), values: Vec::new(), dirty: Dirty::default(), composes: Arc::clone(composes), gate: None, entered: None, frame: 0 }
+        Self { column: None, second: false, refuse_high: false, hide_high: false, read: Vec::new(), viewed: Vec::new(), values: Vec::new(), dirty: Dirty::default(), composes: Arc::clone(composes), gate: None, entered: None, settle_gate: None, settling: None, settle_stops: false, frame: 0 }
     }
 
     /// Composes only when the test sends on the gate it returns.
     fn gated(composes: &Arc<Mutex<u32>>) -> (Self, mpsc::Sender<()>) {
         let (release, gate) = mpsc::channel();
         (Self { gate: Some(Arc::new(Mutex::new(gate))), ..Self::new(composes) }, release)
+    }
+
+    /// Settles only while the test lets it: its first settle says it began and waits to be released.
+    fn held_settle(composes: &Arc<Mutex<u32>>) -> (Self, mpsc::Sender<()>, mpsc::Receiver<()>) {
+        let (release, gate) = mpsc::channel();
+        let (settling, began) = mpsc::channel();
+        (Self { settle_gate: Some(Arc::new(Mutex::new(gate))), settling: Some(settling), ..Self::new(composes) }, release, began)
+    }
+
+    /// Its settle says it began, waits to be released and then refuses: the side stops in its step.
+    fn settle_stops(composes: &Arc<Mutex<u32>>) -> (Self, mpsc::Sender<()>, mpsc::Receiver<()>) {
+        let (layer, release, began) = Self::held_settle(composes);
+        (Self { settle_stops: true, ..layer }, release, began)
     }
 
     fn total(&self) -> i64 {
@@ -341,13 +360,22 @@ impl Layer for Sum {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        if let Some(settling) = &self.settling {
+            let _ = settling.send(());
+        }
+        if let Some(gate) = self.settle_gate.take() {
+            gate.lock().unwrap().recv().unwrap();
+        }
+        if self.settle_stops {
+            return Err(io::Error::other("the test layer settles no further"));
+        }
         self.frame += 1;
         let Some(column) = self.column else { return Ok(()) };
         let mirror = mirrors.get(column.table).unwrap();
         self.read.push(mirror.head());
         let values = &mut self.values;
-        self.dirty.settle(budget, |slot| {
+        self.dirty.settle(|slot| {
             if values.len() <= slot as usize {
                 values.resize(slot as usize + 1, None);
             }
@@ -356,12 +384,9 @@ impl Layer for Sum {
         })
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.dirty.len(), frames: self.dirty.since().map_or(0, |since| self.frame - since) }
+        Carried { entities: self.dirty.len() }
     }
 
     fn held(&self) -> usize {
@@ -445,7 +470,7 @@ fn callers_asking_for_one_recordings_units_at_once_share_one_build() {
 
 /// Four hours a step, a frame a second.
 fn quick() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
 /// Frames at the newest step built until `done` holds, yielding between frames that take nothing.
@@ -516,33 +541,6 @@ fn a_reset_swaps_mirrors_and_composed_arrays_together_and_applies_the_steps_take
 }
 
 #[test]
-fn a_layer_out_of_budget_keeps_its_dirty_entities_and_settles_them_with_the_newest_values() {
-    let (recording, _) = record(1, BLOCK, busy);
-    let entry = open(units(recording, "budget"), quick()).unwrap();
-    let composes = Arc::new(Mutex::new(0));
-    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
-    entry.playhead().play(4.0);
-    entry.playhead().seek(0);
-    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
-    // Each step marks all 40 rows; with no budget one unit goes a frame (32 rows: the clock is read
-    // every 32), the rest carried.
-    side.set_budget(Duration::ZERO);
-    frames_until(&mut side, |_, frame| frame.steps > 0 && frame.layers[0].carried > 0);
-    let (before, mut late) = (sum_layer(&side, 0).total(), 0);
-    frames_until(&mut side, |_, frame| {
-        late = frame.layers[0].late;
-        frame.steps > 0
-    });
-    assert_eq!(sum_layer(&side, 0).carried().entities, 40 - 32, "one unit made, the rest carried");
-    assert!(late >= 1, "the carry-over is counted in frames");
-    assert_ne!(sum_layer(&side, 0).total(), before, "the unit made shows its rows' newest values");
-    side.set_budget(Duration::from_secs(1));
-    frames_until(&mut side, |_, frame| frame.steps > 0 && frame.layers[0].carried == 0);
-    let mirror = side.parts().unwrap().0.get(table(0)).unwrap();
-    assert_eq!(sum_layer(&side, 0).total(), sum_of(mirror, Num::of(table(0), 0)), "settled late, with the newest values");
-}
-
-#[test]
 fn changed_inputs_redeclare_and_reset_only_the_tables_whose_columns_changed() {
     let (recording, _) = record(2, BLOCK, busy);
     let entry = open(units(recording, "redeclare"), quick()).unwrap();
@@ -555,11 +553,10 @@ fn changed_inputs_redeclare_and_reset_only_the_tables_whose_columns_changed() {
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     assert_eq!((*first.lock().unwrap(), *second.lock().unwrap()), (1, 1));
     let kept = side.parts().unwrap().0.get(table(0)).unwrap() as *const Mirror;
-    assert!(!side.parts().unwrap().0.get(table(1)).unwrap().holds(1));
     side.set_view(View { camera_height: 2.0, ..View::default() }).unwrap();
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let mirrors = side.parts().unwrap().0;
-    assert!(mirrors.get(table(1)).unwrap().holds(1), "the table with a new column arrived reset");
+    assert!(mirrors.get(table(1)).unwrap().holds(1), "the table with a new column is held");
     assert!(std::ptr::eq(mirrors.get(table(0)).unwrap(), kept), "the other table's mirror is kept");
     assert_eq!((*first.lock().unwrap(), *second.lock().unwrap()), (1, 2), "only the layer reading the reset table composed");
 }
@@ -612,6 +609,7 @@ fn a_renumber_at_a_packed_block_end_remaps_the_mirror() {
         if at < 100 {
             changes.insert_at(at, u128::from(at) + 1000).unwrap();
             changes.write(at, 0, Cell::I32(at as i32)).unwrap();
+            changes.write(at, 2, Cell::U32List(&[at, at + 1])).unwrap();
             changes.write(at, 3, Cell::Bytes(at)).unwrap();
         } else if at < 190 {
             changes.delete(at - 100).unwrap();
@@ -623,7 +621,7 @@ fn a_renumber_at_a_packed_block_end_remaps_the_mirror() {
     });
     assert!(recording.runs[0].pages[0].tables[0].packed, "the fixture packs its first block's end");
     let pages: Arc<dyn Pages> = recording;
-    let columns = [0, 1, 3];
+    let columns = [0, 1, 2, 3];
     let mut lane = Lane::new(Arc::clone(&pages), 0, 0, &columns, true).unwrap();
     lane.seek(0).unwrap();
     let mut mirror = Mirror::rebuild(&lane, &columns);
@@ -634,6 +632,7 @@ fn a_renumber_at_a_packed_block_end_remaps_the_mirror() {
         let head = lane.step(to, &mut changes).unwrap();
         mirror.apply(&changes);
         assert_eq!(differ(&mirror, lane.cells(), &columns), None, "after the step to hour {head}");
+        assert_eq!(mirror.bytes(), mirror.bytes_walked(), "the bytes kept as the cells are written, after the step to hour {head}");
         if changes.renumber().is_some() {
             renumbered += 1;
             assert_eq!(mirror.rows().collect::<Vec<_>>(), (0..10).collect::<Vec<u32>>());
@@ -767,12 +766,12 @@ fn a_dependent_layer_follows_its_upstream_and_equals_composed() {
                 }
             }
         }
-        fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
+        fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
             self.frame += 1;
             let mirror = mirrors.get(table(0)).unwrap();
             let column = self.column.unwrap();
             let (values, changed) = (&mut self.values, &mut self.changed);
-            self.dirty.settle(budget, |slot| {
+            self.dirty.settle(|slot| {
                 let value = mirror.live(slot).then(|| mirror.number(column, slot).value().map(|value| 2 * i64::from(value))).flatten();
                 if values.len() <= slot as usize {
                     values.resize(slot as usize + 1, None);
@@ -784,11 +783,8 @@ fn a_dependent_layer_follows_its_upstream_and_equals_composed() {
                 Ok(())
             })
         }
-        fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-            Ok(())
-        }
         fn carried(&self) -> Carried {
-            Carried { entities: self.dirty.len(), frames: 0 }
+            Carried { entities: self.dirty.len() }
         }
         fn held(&self) -> usize {
             0
@@ -826,21 +822,23 @@ fn a_dependent_layer_follows_its_upstream_and_equals_composed() {
         }
         fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
         fn apply_with(&mut self, _step: &Step, _mirrors: &Mirrors, upstream: &super::Upstream<'_>) {
-            for slot in upstream.changed::<Twice>().of("row").iter().map(|&id| id as u32) {
-                self.dirty.mark(slot, self.frame);
+            if let crate::layers::Change::Marked(marked) = upstream.changed::<Twice>() {
+                for slot in marked.of("row").iter().map(|&id| id as u32) {
+                    self.dirty.mark(slot, self.frame);
+                }
             }
         }
-        fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+        fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
             unreachable!("a dependent settles with its upstream")
         }
-        fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &super::Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+        fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &super::Upstream<'_>, _settling: Settling) -> io::Result<()> {
             self.frame += 1;
             let twice = upstream.get::<Twice>().unwrap();
             if twice.dirty.len() > 0 {
                 self.settled_from_half += 1;
             }
             let values = &mut self.values;
-            self.dirty.settle(budget, |slot| {
+            self.dirty.settle(|slot| {
                 if values.len() <= slot as usize {
                     values.resize(slot as usize + 1, None);
                 }
@@ -848,11 +846,8 @@ fn a_dependent_layer_follows_its_upstream_and_equals_composed() {
                 Ok(())
             })
         }
-        fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-            Ok(())
-        }
         fn carried(&self) -> Carried {
-            Carried { entities: self.dirty.len(), frames: 0 }
+            Carried { entities: self.dirty.len() }
         }
         fn held(&self) -> usize {
             0
@@ -875,20 +870,15 @@ fn a_dependent_layer_follows_its_upstream_and_equals_composed() {
         assert_eq!(plus.settled_from_half, 0, "the dependent never settles from a half-settled upstream");
         (twice.dirty.len() == 0 && plus.dirty.len() == 0).then(|| assert_eq!(plus.values, Plus::from(twice), "stepwise equals composed"))
     };
-    let (mut starved, mut whole) = (0, 0);
-    for round in 0..12 {
-        side.set_budget(if round % 3 == 0 { Duration::from_secs(1) } else { Duration::ZERO });
+    // A settle runs to its last entity, so a frame that applies a step leaves both layers whole:
+    // every one of these frames is checked, and none is allowed to be half settled.
+    for _ in 0..12 {
         frames_until(&mut side, |side, frame| frame.steps > 0 && !side.composing());
-        match check(&side) {
-            Some(()) => whole += 1,
-            None => starved += 1,
-        }
+        assert!(check(&side).is_some(), "the frame that applied a step left both layers whole");
     }
-    assert!(starved > 0 && whole > 0, "starved {starved}, whole {whole}");
-    side.set_budget(Duration::from_secs(1));
-    frames_until(&mut side, |side, frame| frame.steps > 0 && check(side).is_some());
 }
 
+/// A slower page anchor is a seek at the current head, and the steps after it are an hour each.
 #[test]
 fn a_slower_page_anchor_publishes_fine_steps_from_the_current_head() {
     use dashboard_follow::registry::Anchor;
@@ -899,12 +889,13 @@ fn a_slower_page_anchor_publishes_fine_steps_from_the_current_head() {
     let anchor = Anchor { hour: 0, position: 0., timestamps: None, playing: true, speed: 1440., frame_rate: 60., seek: 1, sought: true };
     entry.follow_anchor(anchor);
     while rx.recv().unwrap().1 < 24 {}
+    // The follow host's playhead is its own, never the map's: the page clock alone paces it.
     let epoch = entry.playhead().epoch();
-    entry.anchor(5, true, 60., false);
-    let slower = entry.playhead().epoch();
-    assert!(slower > epoch, "the map can deliver the new pace before the dashboard");
     entry.follow_anchor(Anchor { hour: 5, position: 5., speed: 60., sought: false, ..anchor });
-    assert_eq!(entry.playhead().epoch(), slower);
+    let slower = entry.playhead().epoch();
+    assert!(slower > epoch, "a slower pace is a seek at the current head");
+    entry.follow_anchor(Anchor { hour: 5, position: 5., speed: 60., sought: false, ..anchor });
+    assert_eq!(entry.playhead().epoch(), slower, "the same pace again seeks nothing");
     while rx.recv().unwrap() != (true, 5) {}
     assert_eq!(rx.recv().unwrap(), (false, 6));
     entry.follow_anchor(Anchor { position: 7., hour: 7, sought: false, ..anchor });
@@ -914,6 +905,9 @@ fn a_slower_page_anchor_publishes_fine_steps_from_the_current_head() {
     assert_eq!(rx.recv().unwrap(), (false, 9));
 }
 
+/// A second anchor of an hour makes no second seek; and the clock answers a pause, a speed and a
+/// seek the moment the frame anchors them, no step taken at all, so the rate the simulation holds
+/// never delays the clock's own answer.
 #[test]
 fn two_anchors_of_the_same_hour_make_one_seek() {
     let (recording, _) = record(1, BLOCK, busy);
@@ -928,6 +922,9 @@ fn two_anchors_of_the_same_hour_make_one_seek() {
     entry.anchor(200, false, 4.0, false);
     entry.anchor(200, false, 4.0, true);
     assert_eq!(entry.playhead().holding(), Some(second), "paused at the hour it is seeking to: dropped");
+    assert!(entry.paused(), "the pause is the clock's the moment it is anchored, with no step taken");
+    entry.anchor(200, true, 1440.0, false);
+    assert!(!entry.paused(), "and so is playing on at the top speed");
 }
 
 #[test]
@@ -974,9 +971,9 @@ fn a_camera_move_reaches_the_layers_without_a_redeclare_or_a_compose() {
 }
 
 #[test]
-fn a_map_and_follow_on_one_recording_make_one_seek() {
+fn two_anchors_of_one_hour_on_one_playhead_make_one_seek() {
     let (recording, _) = record(1, BLOCK, busy);
-    let entry = open(units(recording, "map and follow"), quick()).unwrap();
+    let entry = open(units(recording, "anchored twice"), quick()).unwrap();
     assert!(!entry.drawn(), "no map draws yet");
     let composes = Arc::new(Mutex::new(0));
     let side = MapSide::new(Arc::clone(&entry), vec![Box::new(Sum::new(&composes))], View::default()).unwrap();
@@ -984,7 +981,7 @@ fn a_map_and_follow_on_one_recording_make_one_seek() {
     side.anchor(300, true, 4.0, true);
     let epoch = entry.playhead().holding().expect("held at the seek");
     entry.anchor(300, true, 4.0, true);
-    assert_eq!(entry.playhead().holding(), Some(epoch), "follow's anchor of the same hour makes no second seek");
+    assert_eq!(entry.playhead().holding(), Some(epoch), "a second anchor of the same hour makes no second seek");
     drop(side);
     assert!(!entry.drawn(), "the map gone, none draws");
 }
@@ -1006,7 +1003,9 @@ fn a_layer_shown_again_never_reads_a_mirror_its_tables_left() {
         stepped += frame.steps;
         stepped >= 6
     });
-    assert!(side.parts().unwrap().0.get(table(0)).is_none(), "a table no drawn layer declares leaves the mirrors");
+    // The side's mirrors hold every table of the recording for its makers, so a table no drawn
+    // layer declares stays there; what the layer must not do is read it before it composes again,
+    // which the reads below are the test of.
     let shown = entry.playhead().newest().unwrap();
     let before = sum_layer(&side, 0).read.len();
     side.set_view(View::default()).unwrap();
@@ -1090,16 +1089,13 @@ fn a_held_dependent_sees_every_change_published_while_it_was_held() {
             Ok(())
         }
         fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-        fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+        fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
             self.frame += 1;
             self.changed.mark("frame", self.frame);
             Ok(())
         }
-        fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-            Ok(())
-        }
         fn carried(&self) -> Carried {
-            Carried { entities: usize::from(self.frame < 5), frames: 0 }
+            Carried { entities: usize::from(self.frame < 5) }
         }
         fn held(&self) -> usize {
             0
@@ -1126,14 +1122,13 @@ fn a_held_dependent_sees_every_change_published_while_it_was_held() {
             Ok(())
         }
         fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-        fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+        fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
             Ok(())
         }
-        fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &super::Upstream<'_>, _budget: &mut Budget) -> io::Result<()> {
-            self.seen.extend_from_slice(upstream.changed::<Publisher>().of("frame"));
-            Ok(())
-        }
-        fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+        fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &super::Upstream<'_>, _settling: Settling) -> io::Result<()> {
+            if let crate::layers::Change::Marked(marked) = upstream.changed::<Publisher>() {
+                self.seen.extend_from_slice(marked.of("frame"));
+            }
             Ok(())
         }
         fn carried(&self) -> Carried {
@@ -1291,556 +1286,6 @@ fn real_key_shapes_do_not_collide_into_long_chains() {
 }
 
 
-/// Two maps of one recording on one frame thread, each with more settle work than the frame has:
-/// the frame's settle across both stays within its one budget, and neither starves. A map left
-/// holding more than the lanes' state untaken is landed (parked, its layer composed at the hour on
-/// its worker, outside the budget): a landing is its progress, and its count is read once home.
-/// The budget's clock is the test's: each entity settled costs `COST` of it, so the test counts work.
-#[test]
-fn two_maps_share_one_frame_budget_and_neither_starves() {
-    const COST: Duration = Duration::from_micros(8);
-    struct Costly {
-        dirty: Dirty,
-        frame: u64,
-        settled: u64,
-        composed: u64,
-    }
-    impl Layer for Costly {
-        fn name(&self) -> &'static str {
-            "costly"
-        }
-        fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-            inputs.table(table(0), false)?;
-            inputs.index(table(0), 0)
-        }
-        fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
-            self.composed += 1;
-            Ok(())
-        }
-        fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
-            let Some(changes) = step.table(0) else { return };
-            for &slot in changes.columns().iter().filter(|written| written.column() == 0).flat_map(|written| written.slots()) {
-                self.dirty.mark(slot, self.frame);
-            }
-        }
-        fn settle(&mut self, _mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-            self.frame += 1;
-            let settled = &mut self.settled;
-            self.dirty.settle(budget, |_| {
-                crate::layers::clock::advance(COST);
-                *settled += 1;
-                Ok(())
-            })
-        }
-        fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-            Ok(())
-        }
-        fn carried(&self) -> Carried {
-            Carried { entities: self.dirty.len(), frames: self.dirty.since().map_or(0, |since| self.frame - since) }
-        }
-        fn held(&self) -> usize {
-            0
-        }
-        fn any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-    // Each hour rewrites 40 of the 2,000 rows, turning over: a map a swap frame and a few steps behind
-    // holds well under the lanes' state, so landings stay rare and both maps settle side by side.
-    let (recording, _) = record(1, 2 * BLOCK, |at, table, store| {
-        store.status(table, Status::Complete, true, Some(at as i32), true).unwrap();
-        let mut changes = store.table(table).unwrap();
-        if at == 0 {
-            for slot in 0..2_000 {
-                changes.insert_at(slot, u128::from(slot) + 1).unwrap();
-            }
-        }
-        for slot in (0..40).map(|row| (at * 40 + row) % 2_000) {
-            changes.write(slot, 0, Cell::I32(at as i32 + slot as i32)).unwrap();
-        }
-    });
-    crate::layers::clock::hold();
-    let entry = open(units(recording, "two maps"), quick()).unwrap();
-    let budget = Duration::from_millis(2);
-    let mut maps: Vec<MapSide> = (0..2)
-        .map(|_| {
-            let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Costly { dirty: Dirty::default(), frame: 0, settled: 0, composed: 0 })], View::default()).unwrap();
-            side.set_budget(budget);
-            side
-        })
-        .collect();
-    entry.playhead().play(4.0);
-    entry.playhead().seek(0);
-    // (settled, composed), or none while the layer is away composing.
-    let costly = |side: &MapSide| {
-        side.parts().map(|(_, layers)| {
-            let layer = layers[0].any().downcast_ref::<Costly>().unwrap();
-            (layer.settled, layer.composed)
-        })
-    };
-    // Each compose under way brought home, settling nothing meanwhile, and each map's counts read.
-    let home = |maps: &mut [MapSide]| -> Vec<(u64, u64)> {
-        let held: Vec<_> = maps.iter().map(MapSide::hold_settles).collect();
-        for _ in 0..50_000_000u64 {
-            if maps.iter().all(|side| !side.composing()) {
-                break;
-            }
-            let head = entry.playhead().newest().unwrap();
-            maps.iter_mut().filter(|side| side.composing()).for_each(|side| drop(side.frame(head).unwrap()));
-            std::thread::yield_now();
-        }
-        drop(held);
-        maps.iter().map(|side| costly(side).expect("every compose came home")).collect()
-    };
-    // Both maps' first composes come home at the seek's hour before the clock is followed: a loaded
-    // worker composing spends no hours of the recording.
-    for _ in 0..50_000_000u64 {
-        if maps.iter().all(|side| costly(side).is_some_and(|(_, composed)| composed > 0)) {
-            break;
-        }
-        maps.iter_mut().for_each(|side| drop(side.frame(0).unwrap()));
-        std::thread::yield_now();
-    }
-    let (mut frames, mut over) = (0, Vec::new());
-    for _ in 0..5_000_000u64 {
-        let head = entry.playhead().newest().unwrap_or(0);
-        let parts: Vec<super::Frame> = maps.iter_mut().map(|side| side.frame(head).unwrap()).collect();
-        let settling = parts.iter().all(|frame| !frame.composing && frame.swapped.is_none()) && maps.iter().all(|side| costly(side).is_some_and(|(settled, _)| settled > 0));
-        if settling {
-            let ns: u64 = parts.iter().map(|frame| frame.layers[0].settle_ns).sum();
-            // Each map may pass the budget by what it settles between two of its checks (32 entities).
-            if Duration::from_nanos(ns) > budget + 2 * 32 * COST {
-                over.push(ns);
-            }
-            frames += 1;
-        }
-        if frames >= 40 {
-            break;
-        }
-        if parts.iter().all(|frame| frame.steps == 0 && frame.swapped.is_none()) {
-            std::thread::yield_now();
-        }
-    }
-    assert_eq!(frames, 40, "the maps settled for 40 frames: at hours {:?}", maps.iter().map(MapSide::applied).collect::<Vec<_>>());
-    assert!(over.is_empty(), "frames whose settle across both maps overran one budget: {over:?}");
-    // Each of these frames brings both maps a step's work, so each has work and a share for it: a
-    // step past both maps' hours is waited for, as a loaded machine can leave one behind the other.
-    let before = home(&mut maps);
-    for _ in 0..20 {
-        let past = |maps: &[MapSide]| maps.iter().all(|side| entry.playhead().newest() > side.applied());
-        for _ in 0..50_000_000u64 {
-            if past(&maps) {
-                break;
-            }
-            std::thread::yield_now();
-        }
-        assert!(past(&maps), "a step past both maps: newest {:?}, maps at {:?}", entry.playhead().newest(), maps.iter().map(MapSide::applied).collect::<Vec<_>>());
-        let head = entry.playhead().newest().unwrap();
-        maps.iter_mut().for_each(|side| drop(side.frame(head).unwrap()));
-    }
-    let after = home(&mut maps);
-    assert!(
-        after.iter().zip(&before).all(|(after, before)| after.0 > before.0 || after.1 > before.1),
-        "both maps kept settling or were landed: (settled, composed) {before:?} to {after:?}"
-    );
-}
-
-/// One map, two independent layers, each given more settle work every step than the frame's budget
-/// holds: the layers take the budget oldest dirty work first, so the one registered second is not
-/// starved by the first.
-#[test]
-fn a_layer_registered_later_is_not_starved_by_one_before_it() {
-    struct Busy {
-        name: &'static str,
-        table: usize,
-        dirty: Dirty,
-        frame: u64,
-        settled: u64,
-    }
-    impl Layer for Busy {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-        fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-            inputs.table(table(self.table), false)?;
-            inputs.index(table(self.table), 0)
-        }
-        fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
-            Ok(())
-        }
-        fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
-            let Some(changes) = step.table(self.table) else { return };
-            for &slot in changes.columns().iter().filter(|written| written.column() == 0).flat_map(|written| written.slots()) {
-                self.dirty.mark(slot, self.frame);
-            }
-        }
-        fn settle(&mut self, _mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-            self.frame += 1;
-            let settled = &mut self.settled;
-            self.dirty.settle(budget, |_| {
-                crate::layers::clock::advance(Duration::from_micros(3));
-                *settled += 1;
-                Ok(())
-            })
-        }
-        fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-            Ok(())
-        }
-        fn carried(&self) -> Carried {
-            Carried { entities: self.dirty.len(), frames: self.dirty.since().map_or(0, |since| self.frame - since) }
-        }
-        fn held(&self) -> usize {
-            0
-        }
-        fn any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-    let (recording, _) = record(2, BLOCK, |at, table, store| {
-        store.status(table, Status::Complete, true, Some(at as i32), true).unwrap();
-        let mut changes = store.table(table).unwrap();
-        if at == 0 {
-            for slot in 0..2_000 {
-                changes.insert_at(slot, u128::from(slot) + 1).unwrap();
-            }
-        }
-        for slot in 0..2_000 {
-            changes.write(slot, 0, Cell::I32(at as i32 + slot as i32)).unwrap();
-        }
-    });
-    crate::layers::clock::hold();
-    let entry = open(units(recording, "starved"), quick()).unwrap();
-    let busy = |name, table| Box::new(Busy { name, table, dirty: Dirty::default(), frame: 0, settled: 0 }) as Box<dyn Layer>;
-    let mut side = MapSide::new(Arc::clone(&entry), vec![busy("first", 0), busy("second", 1)], View::default()).unwrap();
-    side.set_budget(Duration::from_millis(2));
-    entry.playhead().play(4.0);
-    entry.playhead().seek(0);
-    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
-    let settled = |side: &MapSide, at: usize| side.parts().unwrap().1[at].any().downcast_ref::<Busy>().unwrap().settled;
-    // A frame only when a step is built, as at 1,440 hours a second a step is due every frame.
-    for _ in 0..40 {
-        for _ in 0..50_000_000u64 {
-            if entry.playhead().newest() > side.applied() {
-                break;
-            }
-            std::thread::yield_now();
-        }
-        side.frame(entry.playhead().newest().unwrap()).unwrap();
-    }
-    assert!(settled(&side, 0) > 0 && settled(&side, 1) > 0, "both layers settled: first {}, second {}", settled(&side, 0), settled(&side, 1));
-}
-
-/// With no budget at all, a layer made whole in one unit of work, dirty at every step, still
-/// settles in every frame that took a step, and the layer that reads it (held while it carries
-/// work) settles too. A frame takes every step due, so the frames that took one are counted.
-/// Before, a spent budget left it dirty in every frame and its reader held for good, as the
-/// engagements and the markers reading them stood at 1,440 hours a second.
-#[test]
-fn with_the_budget_spent_every_layer_makes_one_unit_of_progress_a_frame_and_its_readers_are_not_held() {
-    struct Whole {
-        dirty: bool,
-        settled: u64,
-    }
-    impl Layer for Whole {
-        fn name(&self) -> &'static str {
-            "whole"
-        }
-        fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-            inputs.table(table(0), false)?;
-            inputs.index(table(0), 0)
-        }
-        fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
-            Ok(())
-        }
-        fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
-            self.dirty |= step.table(0).is_some_and(|changes| changes.columns().iter().any(|written| !written.is_empty()));
-        }
-        fn settle(&mut self, _mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-            if self.dirty && budget.left() {
-                (self.dirty, self.settled) = (false, self.settled + 1);
-            }
-            Ok(())
-        }
-        fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-            Ok(())
-        }
-        fn carried(&self) -> Carried {
-            Carried { entities: usize::from(self.dirty), frames: 0 }
-        }
-        fn held(&self) -> usize {
-            0
-        }
-        fn any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-    struct Reader {
-        settled: u64,
-    }
-    impl Layer for Reader {
-        fn name(&self) -> &'static str {
-            "reader"
-        }
-        fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-            inputs.after("whole");
-            Ok(())
-        }
-        fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
-            Ok(())
-        }
-        fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-        fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-            self.settled += 1;
-            Ok(())
-        }
-        fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-            Ok(())
-        }
-        fn carried(&self) -> Carried {
-            Carried::default()
-        }
-        fn held(&self) -> usize {
-            0
-        }
-        fn any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-    let (recording, _) = record(1, BLOCK, |at, table, store| {
-        store.status(table, Status::Complete, true, Some(at as i32), true).unwrap();
-        let mut changes = store.table(table).unwrap();
-        if at == 0 {
-            changes.insert_at(0, 1).unwrap();
-        }
-        changes.write(0, 0, Cell::I32(at as i32)).unwrap();
-    });
-    crate::layers::clock::hold();
-    let entry = open(units(recording, "spent budget"), quick()).unwrap();
-    let layers: Vec<Box<dyn Layer>> = vec![Box::new(Whole { dirty: false, settled: 0 }), Box::new(Reader { settled: 0 })];
-    let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
-    entry.playhead().play(4.0);
-    entry.playhead().seek(0);
-    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
-    side.set_budget(Duration::ZERO);
-    let settled = |side: &MapSide| {
-        let layers = side.parts().unwrap().1;
-        (layers[0].any().downcast_ref::<Whole>().unwrap().settled, layers[1].any().downcast_ref::<Reader>().unwrap().settled)
-    };
-    let before = settled(&side);
-    let mut stepped = 0;
-    frames_until(&mut side, |side, frame| {
-        stepped += u64::from(frame.steps > 0);
-        let whole = side.parts().unwrap().1[0].any().downcast_ref::<Whole>().unwrap();
-        assert!(frame.steps == 0 || !whole.dirty, "a frame that took a step left the whole layer dirty: its one unit did not go");
-        stepped >= 10
-    });
-    let after = settled(&side);
-    assert!(after.0 - before.0 >= stepped && after.1 - before.1 >= stepped, "both settled in every frame that took a step, with no budget: whole {:?}, reader {:?} over {stepped} frames that took a step", (before.0, after.0), (before.1, after.1));
-}
-
-/// The uploads' share is what they cost, at least a third of the map's slice and at most half.
-#[test]
-fn the_uploads_share_is_their_cost_between_a_third_and_half_the_slice() {
-    let ms = Duration::from_millis;
-    assert_eq!(super::upload_share(ms(3), &[]), ms(1), "a third at least");
-    assert_eq!(super::upload_share(ms(3), &[Duration::from_micros(600), Duration::from_micros(700)]), Duration::from_micros(1_300));
-    assert_eq!(super::upload_share(ms(3), &[ms(1), ms(2)]), Duration::from_micros(1_500), "at most half");
-}
-
-/// A layer passed over last frame with work waiting (the budget was spent before its turn) goes
-/// before one whose work is older but that had its turn; with both having had it, oldest work first.
-#[test]
-fn a_layer_passed_over_last_frame_goes_before_older_work() {
-    let none = vec![Vec::new(), Vec::new()];
-    assert_eq!(super::oldest_first(&[50, 3], &[9, 6], &none, 10), vec![1, 0]);
-    assert_eq!(super::oldest_first(&[50, 3], &[9, 9], &none, 10), vec![0, 1]);
-}
-
-/// A layer whose settle alone spends more than the whole slice in every frame, on the test's clock.
-struct Hog;
-
-impl Layer for Hog {
-    fn name(&self) -> &'static str {
-        "hog"
-    }
-    fn inputs(&mut self, _view: &View, _inputs: &mut Inputs<'_>) -> io::Result<()> {
-        Ok(())
-    }
-    fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
-        Ok(())
-    }
-    fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-        crate::layers::clock::advance(Duration::from_millis(5));
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn carried(&self) -> Carried {
-        Carried::default()
-    }
-    fn held(&self) -> usize {
-        0
-    }
-    fn any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-/// A layer with uploads to make, as many as the test puts in `work`, each costing `cost` of the
-/// test's clock and logged by name when made.
-struct Pusher {
-    name: &'static str,
-    work: Arc<AtomicU32>,
-    cost: Duration,
-    log: Arc<Mutex<Vec<&'static str>>>,
-}
-
-impl Pusher {
-    fn boxed(name: &'static str, work: &Arc<AtomicU32>, cost: Duration, log: &Arc<Mutex<Vec<&'static str>>>) -> Box<dyn Layer> {
-        Box::new(Self { name, work: Arc::clone(work), cost, log: Arc::clone(log) })
-    }
-
-    fn push(&mut self, budget: &mut Budget) -> io::Result<()> {
-        while self.work.load(Ordering::Relaxed) > 0 && budget.left() {
-            crate::layers::clock::advance(self.cost);
-            self.work.fetch_sub(1, Ordering::Relaxed);
-            self.log.lock().unwrap().push(self.name);
-        }
-        Ok(())
-    }
-}
-
-impl Layer for Pusher {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-    fn inputs(&mut self, _view: &View, _inputs: &mut Inputs<'_>) -> io::Result<()> {
-        Ok(())
-    }
-    fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
-        Ok(())
-    }
-    fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn uploaded(&self) -> bool {
-        self.work.load(Ordering::Relaxed) == 0
-    }
-    fn carried(&self) -> Carried {
-        Carried::default()
-    }
-    fn held(&self) -> usize {
-        0
-    }
-    fn any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-}
-
-/// A map with a table-reading layer and `layers` after it, on the test's clock, played to its
-/// first reset and composed.
-fn drawn_on_held_clock(name: &str, layers: Vec<Box<dyn Layer>>) -> MapSide {
-    crate::layers::clock::hold();
-    let (recording, _) = record(1, BLOCK, busy);
-    let entry = open(units(recording, name), quick()).unwrap();
-    let mut all: Vec<Box<dyn Layer>> = vec![Box::new(Sum::new(&Arc::new(Mutex::new(0))))];
-    all.extend(layers);
-    let mut side = MapSide::new(Arc::clone(&entry), all, View::default()).unwrap();
-    entry.playhead().play(4.0);
-    entry.playhead().seek(0);
-    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
-    side
-}
-
-/// The upload pass with each pusher making its uploads.
-fn push_uploads(side: &mut MapSide) {
-    side.upload_with(false, |layer, budget| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Pusher>()) {
-        Some(pusher) => pusher.push(budget),
-        None => Ok(()),
-    })
-    .unwrap();
-}
-
-/// A layer whose settle alone spends more than the whole slice in every frame, beside a layer with
-/// uploads to make in every frame: they are made in every frame all the same. Before, the uploads
-/// had what the settles left of the slice, which was nothing, in every frame.
-#[test]
-fn an_overrunning_settle_leaves_another_layer_its_uploads_every_frame() {
-    let (work, log) = (Arc::new(AtomicU32::new(0)), Arc::default());
-    let mut side = drawn_on_held_clock("overrun", vec![Box::new(Hog), Pusher::boxed("late", &work, Duration::from_micros(100), &log)]);
-    let head = side.applied().unwrap();
-    for frame in 0..20 {
-        work.store(3, Ordering::Relaxed);
-        side.frame(head).unwrap();
-        push_uploads(&mut side);
-        assert_eq!(work.load(Ordering::Relaxed), 0, "frame {frame}: the uploads were made beside the overrunning settle");
-        assert!(!side.last_frame().layers[2].upload_carried, "frame {frame}: nothing carried");
-    }
-}
-
-/// Two layers with uploads carried: the one carried longer goes first. Each upload costs more than
-/// the slice, so a frame makes only the one the first layer visited is always given. Before, the
-/// layers uploaded in registration order: the second's last two waited for all of the first's.
-#[test]
-fn the_upload_carried_longer_goes_first() {
-    let (first, second, log) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)), Arc::new(Mutex::new(Vec::new())));
-    let cost = Duration::from_millis(4);
-    let mut side = drawn_on_held_clock("oldest upload", vec![Pusher::boxed("first", &first, cost, &log), Pusher::boxed("second", &second, cost, &log)]);
-    let head = side.applied().unwrap();
-    second.store(3, Ordering::Relaxed);
-    side.frame(head).unwrap();
-    push_uploads(&mut side);
-    first.store(3, Ordering::Relaxed);
-    for _ in 0..5 {
-        side.frame(head).unwrap();
-        push_uploads(&mut side);
-    }
-    assert_eq!(*log.lock().unwrap(), ["second", "second", "second", "first", "first", "first"]);
-}
-
-/// After a stretch of frames with a settle spending more than the whole slice and no uploads to
-/// make, the uploads are still given at least their floor, a third of the slice: a layer with more
-/// upload work than that makes at least that much of it in the next frame. Before, the uploads'
-/// measured cost decayed over the stretch and they were left what the settle left: nothing.
-#[test]
-fn after_a_starved_stretch_the_uploads_share_is_not_below_its_floor() {
-    let (work, log) = (Arc::new(AtomicU32::new(0)), Arc::default());
-    let cost = Duration::from_micros(10);
-    let mut side = drawn_on_held_clock("floor", vec![Box::new(Hog), Pusher::boxed("late", &work, cost, &log)]);
-    let head = side.applied().unwrap();
-    for _ in 0..30 {
-        side.frame(head).unwrap();
-        push_uploads(&mut side);
-    }
-    work.store(1_000_000, Ordering::Relaxed);
-    let frame = side.frame(head).unwrap();
-    push_uploads(&mut side);
-    let made = 1_000_000 - work.load(Ordering::Relaxed);
-    let floor = super::BUDGET / 3;
-    assert!(Duration::from_nanos(frame.upload_share_ns) >= floor, "the share reserved is {} ns", frame.upload_share_ns);
-    assert!(cost * made >= floor, "{made} uploads of {cost:?} made, under the floor of {floor:?}");
-}
-
-/// The layer whose settle alone takes more than the settles' whole share is named in the frame's
-/// record, and only it.
-#[test]
-fn a_layer_whose_settle_overruns_the_whole_share_is_named_in_the_frame() {
-    let mut side = drawn_on_held_clock("named", vec![Box::new(Hog), Box::new(Tableless { composed: 0 })]);
-    let head = side.applied().unwrap();
-    let frame = side.frame(head).unwrap();
-    assert_eq!(frame.overran, ["hog"]);
-    assert_eq!(frame.layers.iter().map(|part| part.overran).collect::<Vec<_>>(), [false, true, false]);
-}
-
 /// A layer that declares no table (it reads rows of its own, or only layers before it).
 struct Tableless {
     composed: u32,
@@ -1858,10 +1303,7 @@ impl Layer for Tableless {
         Ok(())
     }
     fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
     fn carried(&self) -> Carried {
@@ -1941,41 +1383,6 @@ fn a_map_composing_does_not_hold_the_steps_of_another_map() {
     assert!(reached >= from + 100, "the first map stepped from {from} only to {reached} while the second composed");
 }
 
-/// Two maps on one frame thread; the first composes through the second frame, asking no share.
-/// Every map's frame begins the frame thread's frame, so in the third frame the two maps' shares
-/// are one budget. Were the frame begun only by a map asking for its share, the second map would
-/// begin it in the second frame, and in the third the first map's share (what that frame left)
-/// and the second's (a new frame's, weighted by its lateness) would be 2.25 ms of a 2 ms budget.
-#[test]
-fn a_map_composing_through_a_frame_leaves_the_frame_thread_one_budget_a_frame() {
-    use super::share;
-    let total = Duration::from_millis(2);
-    let (first, second) = (share::join(), share::join());
-    // Frame 1: both draw; the second's oldest work has waited 5 frames.
-    share::begin(first);
-    let spent = share::slice(first, total);
-    share::spent(first, spent, 0, true);
-    share::begin(second);
-    let spent = share::slice(second, total);
-    share::spent(second, spent, 5, true);
-    // Frame 2: the first composes (it settles nothing and asks no share); the second's has waited 50.
-    share::begin(first);
-    share::spent(first, Duration::ZERO, 0, true);
-    share::begin(second);
-    let spent = share::slice(second, total);
-    share::spent(second, spent, 50, true);
-    // Frame 3: both draw.
-    share::begin(first);
-    let one = share::slice(first, total);
-    share::spent(first, one, 0, true);
-    share::begin(second);
-    let other = share::slice(second, total);
-    share::spent(second, other, 50, true);
-    assert!(one + other <= total + Duration::from_micros(1), "the third frame's shares are {one:?} and {other:?} of one {total:?}");
-    share::leave(first);
-    share::leave(second);
-}
-
 /// A layer whose worker makes the product of a step one settle after it is handed it (a worker
 /// that keeps up): it carries nothing on the frame thread and says the hour its product shows.
 struct Worked {
@@ -1999,14 +1406,11 @@ impl Layer for Worked {
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         self.next = Some(step.last());
     }
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         if let Some(sent) = self.sent.take() {
             self.published = Some(sent);
         }
         self.sent = self.next.take();
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
         Ok(())
     }
     fn carried(&self) -> Carried {
@@ -2029,17 +1433,6 @@ impl Layer for Worked {
 
 fn worked(side: &MapSide) -> &Worked {
     side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<Worked>()).unwrap()
-}
-
-/// Frames only when a step is built, as at 1,440 hours a second a step is due every frame.
-fn paced_frame(side: &mut MapSide, entry: &super::Entry) -> super::Frame {
-    for _ in 0..50_000_000u64 {
-        if entry.playhead().newest() > side.applied() {
-            break;
-        }
-        std::thread::yield_now();
-    }
-    side.frame(entry.playhead().newest().unwrap()).unwrap()
 }
 
 /// Playing, a layer whose worker holds the newest step: the map is drawn at the hour the worker's
@@ -2096,10 +1489,7 @@ impl Layer for Made {
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         self.applied = Some(step.last());
     }
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
     fn carried(&self) -> Carried {
@@ -2145,6 +1535,119 @@ fn the_oldest_hour_on_screen_counts_a_layer_of_rows_at_the_head_while_it_is_behi
     }
 }
 
+/// A layer whose product is made from rows at the head: its settle joins the product of the hour
+/// applied while the settling still has budget, and keeps the one it has when it has none.
+struct Joined {
+    applied: Option<i32>,
+    made: Option<i32>,
+    /// Settles that found no budget left.
+    ran_out: u32,
+}
+
+impl Layer for Joined {
+    fn name(&self) -> &'static str {
+        "joined"
+    }
+    fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
+        inputs.table(table(0), false)?;
+        inputs.index(table(0), 0)
+    }
+    fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
+        self.applied = mirrors.get(table(0)).and_then(|mirror| mirror.head());
+        self.made = self.applied;
+        Ok(())
+    }
+    fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
+        self.applied = Some(step.last());
+    }
+    fn settle(&mut self, _mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        if settling.waiting(std::time::Duration::from_secs(60)).is_zero() {
+            self.ran_out += 1;
+        } else {
+            self.made = self.applied;
+        }
+        Ok(())
+    }
+    fn carried(&self) -> Carried {
+        Carried::default()
+    }
+    fn published(&self) -> crate::layers::Published {
+        self.made.map_or(crate::layers::Published::Nothing, crate::layers::Published::Cadence)
+    }
+    fn held(&self) -> usize {
+        0
+    }
+    fn any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+fn joined(side: &MapSide) -> &Joined {
+    side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<Joined>()).unwrap()
+}
+
+/// A step the head stands still for joins the products made from rows at the head: the picture it
+/// leaves stands whole at the hour applied, and the rows follow that hour rather than the head the
+/// step was given. Steps merged into one leave the same picture as the steps taken one by one.
+#[test]
+fn a_step_joins_the_products_made_from_rows_at_the_head_and_stands_whole_at_its_hour() {
+    let made = |name: &str| {
+        let (recording, _) = record(1, BLOCK, busy);
+        let entry = open(units(recording, name), quick()).unwrap();
+        let layers: Vec<Box<dyn Layer>> = vec![Box::new(Sum::new(&Arc::new(Mutex::new(0)))), Box::new(Joined { applied: None, made: None, ran_out: 0 })];
+        let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
+        entry.playhead().play(4.0);
+        entry.playhead().seek(0);
+        frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+        (side, entry)
+    };
+    // The frame that takes, one the head stands still for: it waits for the products its layers
+    // owe (a playing frame waits for none, and its picture may stand a publication behind).
+    let taking = |side: &mut MapSide, head: replay_data::Hour| {
+        for _ in 0..50_000_000u64 {
+            let frame = side.frame_still(head).unwrap();
+            if frame.steps > 0 {
+                return frame;
+            }
+            std::thread::yield_now();
+        }
+        panic!("no frame took the steps built to hour {head}");
+    };
+    let (mut side, entry) = made("joined one by one");
+    // The frames that brought it to its first picture play, and wait for nothing.
+    let ran_out = joined(&side).ran_out;
+    let mut one_by_one = Vec::new();
+    for _ in 0..8 {
+        let head = side.applied().unwrap() + 4;
+        for _ in 0..50_000_000u64 {
+            if entry.playhead().newest().is_some_and(|newest| newest >= head) {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let frame = taking(&mut side, head);
+        assert_eq!((frame.applied, frame.steps), (Some(head), 1), "one step a frame");
+        assert_eq!(frame.oldest, frame.applied, "the step's picture is whole at the hour applied");
+        one_by_one.push((frame.drawn, frame.oldest, sum_of(side.parts().unwrap().0.get(table(0)).unwrap(), Num::of(table(0), 0))));
+    }
+    assert_eq!(joined(&side).ran_out, ran_out, "every step the head stood still for waited for the product of its hour");
+
+    // The ring holds three steps: a frame whose head they all reached takes them as one.
+    let (mut merged, entry) = made("joined merged");
+    let head = merged.applied().unwrap() + 12;
+    for _ in 0..50_000_000u64 {
+        if entry.playhead().newest().is_some_and(|newest| newest >= head) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let frame = taking(&mut merged, head);
+    assert_eq!((frame.applied, frame.steps), (Some(head), 3), "the steps the head reached are merged into one");
+    let last = one_by_one[2];
+    assert_eq!((frame.drawn, frame.oldest), (last.0, last.1), "merged steps leave the picture the steps one by one leave");
+    assert_eq!(sum_of(merged.parts().unwrap().0.get(table(0)).unwrap(), Num::of(table(0), 0)), last.2, "and the same mirror");
+}
+
 /// A dependent of a layer whose worker holds work in every frame settles every frame: the worker's
 /// work is not carried, so the dependent reads the upstream's published product.
 #[test]
@@ -2164,11 +1667,8 @@ fn a_dependent_settles_every_frame_while_its_upstream_worker_holds_work() {
             Ok(())
         }
         fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-        fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+        fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
             self.settles += 1;
-            Ok(())
-        }
-        fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
             Ok(())
         }
         fn carried(&self) -> Carried {
@@ -2188,12 +1688,18 @@ fn a_dependent_settles_every_frame_while_its_upstream_worker_holds_work() {
     entry.playhead().seek(0);
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let follower = |side: &MapSide| side.parts().unwrap().1[1].any().downcast_ref::<Follower>().unwrap().settles;
-    let before = follower(&side);
+    // Each frame that applies a step, whatever the steps the playhead has built by then: the
+    // upstream hands that step to its worker and the dependent settles in the same frame.
     for _ in 0..20 {
-        paced_frame(&mut side, &entry);
+        let before = follower(&side);
+        let mut frames = 0;
+        frames_until(&mut side, |_, frame| {
+            frames += 1;
+            frame.steps > 0
+        });
         assert!(worked(&side).sent.is_some(), "the upstream's worker holds work");
+        assert_eq!(follower(&side) - before, frames, "the dependent settled in every frame, the one that applied the step included");
     }
-    assert_eq!(follower(&side) - before, 20, "the dependent settled in every frame");
 }
 
 /// Held at an hour, the map is drawn at it only once every layer shows it: a worker layer still
@@ -2261,10 +1767,7 @@ impl Layer for Meeting {
         Ok(())
     }
     fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
     fn carried(&self) -> Carried {
@@ -2350,94 +1853,7 @@ fn a_second_seek_during_a_compose_discards_the_first() {
     assert_eq!(differ(mirror, &states[0][head as usize], &[0]), None);
 }
 
-/// A layer whose compose leaves one whole upload, made when given budget at a cost of 4 ms of the
-/// test's clock (more than the slice) and logged by name.
-struct Whole {
-    name: &'static str,
-    owed: bool,
-    log: Arc<Mutex<Vec<&'static str>>>,
-}
-
-impl Whole {
-    fn boxed(name: &'static str, log: &Arc<Mutex<Vec<&'static str>>>) -> Box<dyn Layer> {
-        Box::new(Self { name, owed: false, log: Arc::clone(log) })
-    }
-
-    fn push(&mut self, budget: &mut Budget) -> io::Result<()> {
-        if self.owed && budget.left() {
-            crate::layers::clock::advance(Duration::from_millis(4));
-            self.owed = false;
-            self.log.lock().unwrap().push(self.name);
-        }
-        Ok(())
-    }
-}
-
-impl Layer for Whole {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-    fn inputs(&mut self, _view: &View, _inputs: &mut Inputs<'_>) -> io::Result<()> {
-        Ok(())
-    }
-    fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
-        self.owed = true;
-        Ok(())
-    }
-    fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn uploaded(&self) -> bool {
-        !self.owed
-    }
-    fn carried(&self) -> Carried {
-        Carried::default()
-    }
-    fn held(&self) -> usize {
-        0
-    }
-    fn any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-}
-
-/// The upload pass with each whole layer making its upload.
-fn whole_uploads(side: &mut MapSide) {
-    side.upload_with(false, |layer, budget| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Whole>()) {
-        Some(whole) => whole.push(budget),
-        None => Ok(()),
-    })
-    .unwrap();
-}
-
-/// After a swap every layer owes its whole upload, each more than the slice: the swap frame makes
-/// the political layer's, the one the user looks at first, and carries the rest to the next
-/// frames; the political layer shows the picture made since the swap, the map not yet. Before,
-/// the uploads went in registration order, so the layer registered before it went first.
-#[test]
-fn the_swap_frame_uploads_the_political_layer_first_and_carries_the_rest() {
-    let log = Arc::new(Mutex::new(Vec::new()));
-    let mut side = drawn_on_held_clock("seen first", vec![Whole::boxed("buildings", &log), Whole::boxed("political", &log)]);
-    whole_uploads(&mut side);
-    assert_eq!(*log.lock().unwrap(), ["political"]);
-    let last = side.last_frame();
-    assert!(last.layers[1].upload_carried && !last.layers[2].upload_carried, "the rest are carried");
-    assert!(last.layers[2].reset_shown && !last.reset_shown, "the political picture is the new one, the map's not yet");
-    let head = side.applied().unwrap();
-    side.frame(head).unwrap();
-    whole_uploads(&mut side);
-    assert_eq!(*log.lock().unwrap(), ["political", "buildings"]);
-    assert!(side.last_frame().reset_shown, "every layer shows the picture made since the swap");
-}
-
-/// A reader that draws nothing, as the rows worker's: it declares no table and takes the steps.
+/// A reader that draws nothing: it declares no table and takes the steps.
 fn bare_consumer(entry: &super::Entry) -> playhead::Consumer {
     let reader = entry.playhead().declare(Vec::new(), None).unwrap();
     entry.playhead().consumer(reader)
@@ -2485,7 +1901,7 @@ fn a_map_that_never_uploads_holds_no_clock_while_it_composes() {
 }
 
 /// A map that is never drawn (a hidden window, a map widget scrolled out of view) beside a reader
-/// that draws nothing (the rows worker's): the reader's take of the reset starts the clock. Before,
+/// that draws nothing (a dashboard's): the reader's take of the reset starts the clock. Before,
 /// the hidden map's consumer held the clock until a frame of its own showed the reset, which never
 /// came.
 #[test]
@@ -2755,14 +2171,11 @@ impl Layer for Ahead {
         }
     }
 
-    fn settle(&mut self, _mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.exchange(budget.unlimited_now());
+    fn settle(&mut self, _mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        self.exchange(settling.strict());
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         Carried::default()
@@ -2810,14 +2223,15 @@ impl Layer for Hears {
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         self.stepped = Some(step.last());
     }
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
-    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &super::Upstream<'_>, _budget: &mut Budget) -> io::Result<()> {
-        self.heard.push((self.stepped.take(), upstream.changed::<Ahead>().of("hour").to_vec()));
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &super::Upstream<'_>, _settling: Settling) -> io::Result<()> {
+        let named = match upstream.changed::<Ahead>() {
+            crate::layers::Change::Whole => Vec::new(),
+            crate::layers::Change::Marked(marked) => marked.of("hour").to_vec(),
+        };
+        self.heard.push((self.stepped.take(), named));
         Ok(())
     }
     fn carried(&self) -> Carried {
@@ -2932,6 +2346,37 @@ fn a_held_worker_leaves_the_layer_at_the_newest_hour_it_made_and_never_shows_one
     assert_eq!(ahead(&side).shown.map(|(_, hour, sum)| (hour, sum)), Some((Some(from + 12), mirrored(&side))));
 }
 
+/// What the proof tool samples: a layer whose worker holds a newer step than the product it has
+/// published is named as behind at the hour asked, whatever its settles carry, and is named no
+/// longer once its product of that hour arrives. Sampling it before then compares the layer's
+/// arrays of an older hour with today's of this one.
+#[test]
+fn a_layer_whose_product_is_older_than_the_hour_is_named_behind_for_a_sample() {
+    let (mut side, entry, permits) = ahead_side("ahead behind", Some(1));
+    let from = side.applied().unwrap();
+    for _ in 0..50_000_000u64 {
+        if entry.playhead().newest() >= Some(from + 12) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    permit(&permits, Some(2));
+    made_ahead(&mut side, from + 8);
+    side.frame(from + 8).unwrap();
+    let frame = side.frame(from + 12).unwrap();
+    assert_eq!(frame.applied, Some(from + 12));
+    assert_eq!(ahead(&side).published(), crate::layers::Published::At(from + 8));
+    assert_eq!(
+        crate::comparison::behind_at(&side, from + 12),
+        vec![format!("ahead publishes At({})", from + 8)],
+        "the layer is a step behind the hour the sample asks for"
+    );
+    assert!(crate::comparison::behind_at(&side, from + 8).is_empty(), "it stands at the hour it published");
+    permit(&permits, None);
+    until_current(&mut side, from + 12);
+    assert!(crate::comparison::behind_at(&side, from + 12).is_empty(), "its product of the hour arrived");
+}
+
 /// Two steps taken in one frame show the second's product, made ahead.
 #[test]
 fn two_steps_taken_in_one_frame_show_the_seconds_product() {
@@ -2983,124 +2428,6 @@ fn a_dependent_hears_a_fed_layers_change_in_the_frame_of_its_step() {
     }
 }
 
-/// A layer current with the host but owing marks: each step whose last hour is at or past `from`
-/// marks it, and a settle takes a mark only once it has stood `lag` of the layer's settles. Its age
-/// is counted in its settles, the frame advancing when a settle is done, as the layers do.
-struct Owes {
-    from: i32,
-    lag: u64,
-    /// Steps it marks at most; none: every one from `from` on.
-    marks: Option<u32>,
-    frame: u64,
-    owed: std::collections::VecDeque<u64>,
-}
-
-impl Owes {
-    fn new(from: i32, lag: u64, marks: Option<u32>) -> Self {
-        Self { from, lag, marks, frame: 0, owed: std::collections::VecDeque::new() }
-    }
-}
-
-impl Layer for Owes {
-    fn name(&self) -> &'static str {
-        "owes"
-    }
-    fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        inputs.table(table(0), false)?;
-        inputs.index(table(0), 0)
-    }
-    fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
-        self.owed.clear();
-        Ok(())
-    }
-    fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
-        if step.last() >= self.from && self.marks != Some(0) {
-            self.owed.push_back(self.frame);
-            self.marks = self.marks.map(|left| left - 1);
-        }
-    }
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-        while self.owed.front().is_some_and(|&marked| self.frame - marked >= self.lag) {
-            self.owed.pop_front();
-        }
-        self.frame += 1;
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn carried(&self) -> Carried {
-        Carried { entities: self.owed.len(), frames: self.owed.front().map_or(0, |&marked| self.frame - marked) }
-    }
-    fn held(&self) -> usize {
-        0
-    }
-    fn any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-/// A frame taking the next step of four hours on the held clock: its applied hour.
-fn next_step(side: &mut MapSide) -> (super::Frame, i32) {
-    let head = side.applied().unwrap() + 4;
-    for _ in 0..50_000_000u64 {
-        if side.entry().playhead().newest().is_some_and(|newest| newest >= head) {
-            break;
-        }
-        std::thread::yield_now();
-    }
-    let frame = side.frame(head).unwrap();
-    assert_eq!(frame.applied, Some(head), "one step a frame");
-    (frame, head)
-}
-
-/// A layer that owes one mark for `k` of its settles, then takes it: meanwhile it shows the hour
-/// before the step that marked it (k frames ago, one step a frame), then the hour applied.
-#[test]
-fn a_layer_owing_one_mark_for_k_settles_shows_the_hour_before_it_then_the_hour_applied() {
-    let from = 8;
-    let side = &mut drawn_on_held_clock("owes once", vec![Box::new(Owes::new(from, 3, Some(1)))]);
-    while side.applied().unwrap() + 4 < from {
-        next_step(side);
-    }
-    let before = side.applied().unwrap();
-    for frames in 1..=3 {
-        let (frame, applied) = next_step(side);
-        assert_eq!(frame.layers[1].carried, 1, "the mark is owed {frames} settles");
-        assert_eq!(frame.layers[1].shown, Some(before), "owing the mark from the step after {before}, it shows {before}, not {applied}");
-        assert_eq!(frame.drawn, Some(before));
-    }
-    let (frame, applied) = next_step(side);
-    assert_eq!(frame.layers[1].carried, 0);
-    assert_eq!((frame.layers[1].shown, frame.drawn), (Some(applied), Some(applied)), "taken, it shows the hour applied");
-}
-
-/// A layer that always owes the mark of the step before the last (it takes each a settle late):
-/// it shows the hour of the step before, moving every frame. Before, a layer current and carrying
-/// anything kept the hour it last carried nothing, for as long as it carried: here, for ever.
-#[test]
-fn a_layer_always_one_step_behind_shows_the_step_before_and_moves_with_the_head() {
-    let side = &mut drawn_on_held_clock("owes always", vec![Box::new(Owes::new(i32::MIN, 1, None))]);
-    let mut before = side.applied().unwrap();
-    for _ in 0..12 {
-        let (frame, applied) = next_step(side);
-        assert_eq!(frame.layers[1].carried, 1, "it owes the step it just applied");
-        assert_eq!(frame.layers[1].shown, Some(before), "it shows the hour before the mark it owes");
-        assert_eq!(frame.drawn, Some(before));
-        before = applied;
-    }
-}
-
-/// A layer that owes nothing shows the hour applied every frame.
-#[test]
-fn a_layer_owing_nothing_shows_the_hour_applied() {
-    let side = &mut drawn_on_held_clock("owes nothing", vec![Box::new(Owes::new(i32::MAX, 1, None))]);
-    for _ in 0..6 {
-        let (frame, applied) = next_step(side);
-        assert_eq!((frame.layers[1].carried, frame.layers[1].shown, frame.drawn), (0, Some(applied), Some(applied)));
-    }
-}
-
 /// A layer that counts its declarations; with `takes`, it takes a moved camera itself, its
 /// declaration deciding only whether the camera is below a height of 100.
 struct Camera {
@@ -3124,10 +2451,7 @@ impl Layer for Camera {
         Ok(())
     }
     fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
     fn carried(&self) -> Carried {
@@ -3164,4 +2488,338 @@ fn a_moved_camera_declares_again_only_what_the_camera_decides() {
     assert_eq!(counts(), (2, 3), "the camera crossed what the taker's declaration decides: the view is declared whole");
     side.set_view(View { camera_height: 150.0, viewport: [800, 600], fog: !View::default().fog, ..View::default() }).unwrap();
     assert_eq!(counts(), (3, 4), "another change of the view declares it whole");
+}
+
+/// The map side on a thread of its own ([`super::side::SideThread`]): the frame's window, the
+/// view it asks for, and a stepped frame's picture.
+/// A layer whose settle joins a product its own worker makes, asked at the step's apply. Its worker
+/// cannot answer until every other such worker in the test has a job too (`together`), so a step
+/// that asked them one after another, each inside its own settle, joins neither. It asks for a step
+/// that changed the column it reads and for nothing else.
+struct Maker {
+    name: &'static str,
+    /// The table it reads column 0 of; none until it has declared.
+    column: Option<usize>,
+    /// The hour of the newest step that wrote the column it reads.
+    moved: Option<i32>,
+    jobs: mpsc::Sender<i32>,
+    made: mpsc::Receiver<i32>,
+    /// Jobs it asked for, those not answered yet, and the hour of the product it holds.
+    asks: Arc<AtomicU32>,
+    out: usize,
+    product: Option<i32>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Maker {
+    /// `name`'s layer, its worker waiting on `together` for every other maker's first job.
+    fn new(name: &'static str, together: &Arc<std::sync::Barrier>) -> Self {
+        let (jobs, taken) = mpsc::channel::<i32>();
+        let (answers, made) = mpsc::channel::<i32>();
+        let together = Arc::clone(together);
+        let worker = std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                let mut first = true;
+                while let Ok(hour) = taken.recv() {
+                    if std::mem::take(&mut first) {
+                        together.wait();
+                    }
+                    if answers.send(hour).is_err() {
+                        return;
+                    }
+                }
+            })
+            .expect("a worker thread");
+        Self { name, column: None, moved: None, jobs, made, asks: Arc::new(AtomicU32::new(0)), out: 0, product: None, worker: Some(worker) }
+    }
+}
+
+impl Drop for Maker {
+    fn drop(&mut self) {
+        let (jobs, _) = mpsc::channel();
+        drop(std::mem::replace(&mut self.jobs, jobs));
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Layer for Maker {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn inputs(&mut self, _view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
+        let at = usize::from(self.name == "second maker");
+        inputs.table(table(at), true)?;
+        inputs.index(table(at), 0)?;
+        self.column = Some(at);
+        Ok(())
+    }
+
+    fn compose(&mut self, _mirrors: &Mirrors) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
+        let read = self.column.expect("a composed maker reads its column");
+        if step.tables().iter().any(|changes| changes.table() == read && changes.columns().iter().any(|written| written.column() == 0 && !written.is_empty())) {
+            self.moved = Some(step.last());
+        }
+    }
+
+    fn ask(&mut self, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<bool> {
+        if let Some(hour) = self.moved.take() {
+            self.asks.fetch_add(1, Ordering::SeqCst);
+            self.out += 1;
+            let _ = self.jobs.send(hour);
+        }
+        Ok(true)
+    }
+
+    fn join(&mut self, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>, _settling: Settling) -> io::Result<()> {
+        while self.out > 0 {
+            let Ok(hour) = self.made.recv_timeout(Duration::from_secs(30)) else { break };
+            (self.product, self.out) = (Some(hour), self.out - 1);
+        }
+        Ok(())
+    }
+
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn carried(&self) -> Carried {
+        Carried::default()
+    }
+
+    fn held(&self) -> usize {
+        0
+    }
+
+    fn any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+fn maker_of(side: &MapSide, name: &str) -> (u32, Option<i32>) {
+    let layer = side.parts().unwrap().1.iter().filter_map(|layer| layer.any().downcast_ref::<Maker>()).find(|maker| maker.name == name).expect("the maker layer");
+    (layer.asks.load(Ordering::SeqCst), layer.product)
+}
+
+/// Two layers whose settles join a product their own workers make: both are asked at the step's
+/// apply, so both workers hold a job at once and each answers. Neither worker can answer its first
+/// job until the other has one, so a step that asked a maker inside its own settle, the settles one
+/// after another, would join neither.
+#[test]
+fn makers_asked_at_the_applies_build_side_by_side_within_one_step() {
+    let (recording, _) = record(2, BLOCK, busy);
+    let entry = open(units(recording, "makers side by side"), quick()).unwrap();
+    let together = Arc::new(std::sync::Barrier::new(2));
+    let layers: Vec<Box<dyn Layer>> = vec![Box::new(Maker::new("first maker", &together)), Box::new(Maker::new("second maker", &together))];
+    let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
+    entry.playhead().play(4.0);
+    entry.playhead().seek(0);
+    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    frames_until(&mut side, |side, _| maker_of(side, "first maker").1.is_some() && maker_of(side, "second maker").1.is_some());
+    let (first, second) = (maker_of(&side, "first maker"), maker_of(&side, "second maker"));
+    assert!(first.1.is_some() && second.1.is_some(), "each maker's product joined a step: {first:?}, {second:?}");
+}
+
+/// A step that changed nothing a maker reads asks it nothing: its worker is handed a job only for a
+/// step that wrote the column it reads.
+#[test]
+fn a_step_that_changes_nothing_a_maker_reads_asks_it_nothing() {
+    let quiet = |at: u32, table: usize, store: &mut Store| {
+        // The second table is written at the first hour alone: no step after it moves what the
+        // second maker reads.
+        if table == 0 || at == 0 {
+            busy(at, table, store);
+        } else {
+            store.status(table, Status::Complete, true, Some(at as i32), true).unwrap();
+        }
+    };
+    let (recording, _) = record(2, BLOCK, quiet);
+    let entry = open(units(recording, "a quiet maker"), quick()).unwrap();
+    let together = Arc::new(std::sync::Barrier::new(1));
+    let layers: Vec<Box<dyn Layer>> = vec![Box::new(Maker::new("first maker", &together)), Box::new(Maker::new("second maker", &together))];
+    let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
+    entry.playhead().play(4.0);
+    entry.playhead().seek(0);
+    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    frames_until(&mut side, |side, _| maker_of(side, "first maker").0 >= 4);
+    let (asked, product) = maker_of(&side, "second maker");
+    assert_eq!(asked, 0, "the second maker was asked nothing: its column moved in no step after the reset, it holds {product:?}");
+}
+
+mod side_thread {
+    use super::{Sum, record, units, busy, quick};
+    use crate::layers::{Layer, View};
+    use crate::playhead_host::{
+        Head, MapSide, open,
+        side::SideThread,
+    };
+    use std::{
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
+
+    /// A side on its own thread over one busy table, drawing `layer`.
+    fn side(name: &str, layer: Box<dyn Layer>) -> SideThread {
+        let (recording, _) = record(1, 8, busy);
+        let entry = open(units(recording, name), quick()).unwrap();
+        let side = SideThread::new(MapSide::new(entry, vec![layer], View::default()).unwrap()).unwrap();
+        // Unanchored, its playhead decodes nothing and no step ever reaches a layer.
+        side.anchor(0, false, 1.0, true);
+        side
+    }
+
+    /// Windows until `done` holds, or panics after `limit`.
+    fn windows_until(side: &mut SideThread, limit: Duration, what: &str, mut done: impl FnMut(&mut SideThread) -> bool) {
+        let deadline = Instant::now() + limit;
+        while !done(side) {
+            if let Some(mut window) = side.window() {
+                window.take(Default::default());
+            }
+            assert!(Instant::now() < deadline, "{what} within {limit:?}");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn the_frames_window_never_waits_while_the_sides_thread_prepares_a_step() {
+        let composes = Arc::new(Mutex::new(0));
+        let (layer, release, began) = Sum::held_settle(&composes);
+        let mut side = side("window never waits", Box::new(layer));
+        side.ask(View::default(), Head::Paced(7), None);
+        // The side's thread is inside a settle, holding the side. Windows until it says it has
+        // begun: the release of a window is its signal to prepare the next step, and the first
+        // step is the reset's compose rather than a settle.
+        let settling = Instant::now() + Duration::from_secs(120);
+        while began.try_recv().is_err() {
+            if let Some(mut window) = side.window() {
+                window.take(Default::default());
+            }
+            assert!(Instant::now() < settling, "the layer settles within 120 s");
+            std::thread::yield_now();
+        }
+        // Held, every ask for the window is refused, and refused without taking the side: the
+        // window is asked for with `try_lock`, which tells the frame what it missed the side for
+        // instead of waiting. A window that waited would never come back: nothing releases the
+        // settle until below.
+        for _ in 0..100 {
+            assert!(side.window().is_none(), "no window while the side's thread holds the side");
+            assert!(side.products().missed.is_some(), "the frame is told what the side's thread was doing, rather than waiting for it");
+        }
+        // Released, the side comes back and the frame after it has its window.
+        for _ in 0..64 {
+            let _ = release.send(());
+        }
+        windows_until(&mut side, Duration::from_secs(120), "the window is given again", |side| {
+            side.window().is_some()
+        });
+    }
+
+    #[test]
+    fn a_view_asked_between_two_steps_is_taken_at_the_next_one() {
+        let composes = Arc::new(Mutex::new(0));
+        let mut side = side("view between steps", Box::new(Sum::new(&composes)));
+        let high = View { camera_height: 4.0, ..View::default() };
+        side.ask(View::default(), Head::Paced(4), None);
+        windows_until(&mut side, Duration::from_secs(120), "the first picture", |side| side.applied() == Some(4));
+        side.ask(high.clone(), Head::Paced(6), None);
+        // The products say the view once a window has taken them, which is the view the frame draws.
+        windows_until(&mut side, Duration::from_secs(120), "the view asked is taken", |side| side.view().camera_height == 4.0);
+        let heights = side.with_side(|side| side.parts().unwrap().1[0].any().downcast_ref::<Sum>().unwrap().viewed.clone());
+        assert!(heights.contains(&4.0), "the camera the view asked for reached the layer: {heights:?}");
+        assert_eq!(side.view().camera_height, 4.0, "and the products say the view its picture stands at");
+    }
+
+    /// A map that is still opening says its branch before its first window, so a map opened for a
+    /// branch the clock has left is let go before it takes an anchor. Before, it said none.
+    #[test]
+    fn a_side_says_its_branch_before_its_first_window() {
+        let (recording, _) = record(1, 8, busy);
+        let entry = open(units(recording, "branch before window"), quick()).unwrap();
+        let mut side = MapSide::new(entry, Vec::new(), View::default()).unwrap();
+        side.set_branch(5);
+        assert_eq!(SideThread::new(side).unwrap().branch(), Some(5));
+    }
+
+    /// The side stops inside the step a stepped frame waits for: the frame is told, by name, and
+    /// does not wait on for a picture no thread will make.
+    #[test]
+    fn a_stepped_frame_is_told_when_the_side_stops_in_its_step() {
+        let composes = Arc::new(Mutex::new(0));
+        let (layer, release, began) = Sum::settle_stops(&composes);
+        let mut side = side("stepped failure", Box::new(layer));
+        side.ask(View::default(), Head::Stepped(5), None);
+        began.recv_timeout(Duration::from_secs(120)).expect("the side's thread settles the step within 120 s");
+        let _ = release.send(());
+        assert!(side.stepped_window(5).is_none(), "no window once the side has stopped");
+        let why = side.failure().expect("the frame is told why it has no window");
+        assert!(why.contains("the test layer settles no further"), "named by the layer that stopped it: {why}");
+    }
+
+    /// Nothing will stand the picture at the hour a frame waits for: it refuses by name within its
+    /// bound, saying what it waited for, instead of waiting for ever.
+    #[test]
+    fn a_stepped_frame_refuses_by_name_rather_than_wait_for_a_picture_nothing_will_make() {
+        let composes = Arc::new(Mutex::new(0));
+        let mut side = side("stepped bound", Box::new(Sum::new(&composes)));
+        side.ask(View::default(), Head::Stepped(3), None);
+        drop(side.stepped_window(3).expect("the picture of the hour asked"));
+        // The side's thread has nothing to prepare: the ask it reads stands at the hour it answered.
+        let short = (Duration::from_millis(20), Duration::from_millis(200));
+        assert!(side.whole_at(6, short.0, short.1).is_none(), "no window for an hour nothing stands at");
+        let why = side.failure().expect("refused by name");
+        assert!(why.contains("hour 6") && why.contains("Stepped(3)") && why.contains("whole at Some(3)"), "says what it waited for: {why}");
+    }
+
+    /// A seek taken while the side catches up to a stepped frame's hour: the rows at the head are
+    /// driven again for the seek in force, so a product made from the rows of that hour can still
+    /// be made. Driven once before the steps, the seek left that drive stale and the rows then
+    /// followed the hour this map shows, which only the catching-up thread advances and which it
+    /// cannot advance until those rows stand: a picture that could never become whole.
+    #[test]
+    fn a_seek_while_catching_up_leaves_the_rows_driven_at_the_stepped_hour() {
+        let composes = Arc::new(Mutex::new(0));
+        let (layer, release, began) = Sum::held_settle(&composes);
+        let mut side = side("seek while catching up", Box::new(layer));
+        side.ask(View::default(), Head::Stepped(6), None);
+        began.recv_timeout(Duration::from_secs(120)).expect("the side's thread settles within its catch-up in 120 s");
+        let before = side.entry().playhead().epoch();
+        side.entry().anchor(2, false, 1.0, true);
+        // The seek abandons the ring and takes its epoch where it is asked for, so it is in force
+        // before the settle is released.
+        assert_ne!(side.entry().playhead().epoch(), before, "the seek is in force");
+        let _ = release.send(());
+        let mut window = side.stepped_window(6).expect("the picture of the hour asked");
+        window.take(Default::default());
+        drop(window);
+        assert_eq!(side.applied(), Some(6), "the side stands at the stepped hour, so its views do");
+    }
+
+    #[test]
+    fn a_stepped_frames_window_is_the_picture_of_exactly_its_hour() {
+        let composes = Arc::new(Mutex::new(0));
+        let mut side = side("stepped picture", Box::new(Sum::new(&composes)));
+        for hour in [3, 5, 6] {
+            side.ask(View::default(), Head::Stepped(hour), None);
+            let mut window = side.stepped_window(hour).expect("the picture of the hour asked");
+            window.take(Default::default());
+            drop(window);
+            assert_eq!(side.applied(), Some(hour), "every step to the hour is applied");
+            assert_eq!(side.last_frame().drawn, Some(hour), "and every layer shows it");
+        }
+        // A second saved frame at the same hour with another view is another picture. Before, the
+        // picture of the first view answered it.
+        let high = View { camera_height: 4.0, ..View::default() };
+        side.ask(high, Head::Stepped(6), None);
+        let mut window = side.stepped_window(6).expect("the picture of the view asked");
+        window.take(Default::default());
+        drop(window);
+        assert_eq!(side.view().camera_height, 4.0, "the picture stands at the view asked");
+    }
 }

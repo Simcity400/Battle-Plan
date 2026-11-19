@@ -28,7 +28,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-use viewer_foundation::map::counter_move::{Drawn, Position, SharedMovement};
+use viewer_foundation::map::counter_move::{AtHead, Position, SharedMovement};
 use viewer_foundation::map::province_admission::province_boxes;
 use viewer_foundation::map::province_map::ProvinceMap;
 use viewer_foundation::map::province_schedule::{FrameRestore, ProvinceFrame, Shared};
@@ -47,7 +47,7 @@ pub mod naval_combat;
 mod provinces;
 use provinces::Provinces;
 #[cfg(test)]
-mod empty_tests;
+mod same_history;
 pub use naval::Sources as NavalSources;
 
 /// The model path an entity follows.
@@ -159,7 +159,7 @@ impl std::ops::Deref for Targets {
 }
 
 /// One figure, or one hull attached under a formation's root.
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq)]
 struct Part {
     target: Target,
     epoch: u32,
@@ -184,7 +184,7 @@ impl Part {
 
 /// A slot's entity. Its popup scale belongs to the slot, so the
 /// hulls of a formation share their root's.
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq)]
 struct Entity {
     kind: Kind,
     scale: f32,
@@ -248,8 +248,7 @@ struct Frame {
 }
 
 /// One province's unit graphics.
-#[derive(Default)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Province {
     /// The land and ship show bits of its last update.
     shown: [bool; 2],
@@ -258,12 +257,24 @@ struct Province {
     entities: BTreeMap<Slot, Entity>,
     /// Hourly land targets in visual-slot order, with identity ties.
     lands: Arc<[(u32, Slot)]>,
-    /// The round-robin cursor: the visual slot
-    /// ([`Target::order`]) it last visited, not its successor, whichever
+    /// The round-robin cursor as of [`Self::cursor_pass`]: the visual slot
+    /// ([`Target::order`]) that pass visited last, not its successor, whichever
     /// representative holds it now. Recreating units does not reset it.
     land_cursor: u32,
-    /// Visits since each land slot was last queued.
-    land_visits: BTreeMap<Slot, u16>,
+    /// Land passes made: visits at which the camera showed land models and the creation
+    /// allowance had something left, so every visual slot was reached. A pass the frame left
+    /// this province out of counts here too, and steps the cursor; nothing else of it is done
+    /// ([`History::step_with_frame`]).
+    land_passes: u64,
+    /// The pass each land slot was last queued at, so a slot's visits are a subtraction at the
+    /// one frame that reads them rather than an increment a slot a frame.
+    land_visits: BTreeMap<Slot, u64>,
+    /// The pass at which the slot queued longest ago reaches its hundredth visit: before it, no
+    /// slot can queue.
+    due_pass: u64,
+    /// Whether a visit at the same inputs would change nothing but the counter above
+    /// ([`Self::idle`]).
+    quiet: bool,
 }
 
 impl Province {
@@ -287,23 +298,50 @@ impl Province {
                     .any(|formation| *slot == (Kind::Ship, formation.identity))
         };
         let was = self.shown;
-        let mut queued = 0;
+        // Whether this visit leaves anything for the next one: a land pass the allowance cut
+        // short, or a hull it held back.
+        let (mut whole, mut held) = (true, false);
         if frame.shown[Kind::Land as usize] {
-            let lands = &self.lands;
-            let start = lands.partition_point(|&(order, _)| order < self.land_cursor);
-            for &(order, slot) in lands[start..].iter().chain(&lands[..start]) {
-                if queued >= budget.remaining() {
-                    break;
+            let allowance = budget.remaining();
+            if allowance == 0 && budget.holding() {
+                // The frame's room is spent: the slots with no figure are what it owes, and the
+                // province stays due ([`Province::settle`]) until a later frame makes them.
+                let owed = self.lands.iter().filter(|(_, slot)| !self.entities.contains_key(slot)).count();
+                budget.hold(owed);
+            }
+            if allowance != 0 {
+                self.land_passes += 1;
+                let lands = Arc::clone(&self.lands);
+                let mut queued = 0;
+                let mut cut = lands.len();
+                let start = lands.partition_point(|&(order, _)| order < self.land_cursor);
+                for step in 0..lands.len() {
+                    let (order, slot) = lands[(start + step) % lands.len()];
+                    if queued >= allowance {
+                        whole = false;
+                        cut = step;
+                        break;
+                    }
+                    self.land_cursor = order;
+                    let visits = *self.land_visits.entry(slot).or_insert(self.land_passes - 1);
+                    // A slot is queued when its representative changed, which
+                    // here means it has no entity, or on its hundredth visit.
+                    if frame.steady
+                        || self.land_passes.saturating_sub(visits) > 99
+                        || !self.entities.contains_key(&slot)
+                    {
+                        self.land_visits.insert(slot, self.land_passes);
+                        queued += 1;
+                        queue(slot, was[Kind::Land as usize]);
+                    }
                 }
-                self.land_cursor = order;
-                let visits = self.land_visits.entry(slot).or_default();
-                *visits += 1;
-                // A slot is queued when its representative changed, which
-                // here means it has no entity, or on its hundredth visit.
-                if frame.steady || *visits > 99 || !self.entities.contains_key(&slot) {
-                    *visits = 0;
-                    queued += 1;
-                    queue(slot, was[Kind::Land as usize]);
+                // A pass the allowance cut short reached only its first slots; the rest did not
+                // count it, so their visits stand where they were.
+                for step in cut..lands.len() {
+                    let (_, slot) = lands[(start + step) % lands.len()];
+                    if let Some(visits) = self.land_visits.get_mut(&slot) {
+                        *visits += 1;
+                    }
                 }
             }
         }
@@ -373,6 +411,7 @@ impl Province {
                         entity.parts.remove(&index);
                     }
                     if !budget.take() {
+                        held = true;
                         continue;
                     }
                     entity
@@ -414,6 +453,123 @@ impl Province {
             };
         }
         self.arrows = frame.arrows;
+        self.settle(frame, targets, whole, held);
+    }
+
+    /// The cursor one land pass that queued nothing leaves: the pass walks every visual slot
+    /// from the cursor's own and so ends on the slot before it. A pass the frame left this
+    /// province out of is that pass, so it steps the cursor the same way.
+    fn step_cursor(&mut self) {
+        if self.lands.is_empty() {
+            return;
+        }
+        let start = self
+            .lands
+            .partition_point(|&(order, _)| order < self.land_cursor);
+        self.land_cursor = self.lands[(start + self.lands.len() - 1) % self.lands.len()].0;
+    }
+
+    /// Whether another visit at the same inputs, `targets` among them, would change nothing but
+    /// the visit counter and its cursor. `whole` is whether the land pass that ran reached every slot (a frame whose
+    /// allowance was already spent runs none, and so leaves nothing undone), `held` whether the
+    /// allowance held a hull back.
+    fn settle(
+        &mut self,
+        frame: Frame,
+        targets: Option<&BTreeMap<Slot, Parts>>,
+        whole: bool,
+        held: bool,
+    ) {
+        self.quiet = whole
+            && !held
+            && !frame.steady
+            && self.entities.iter().all(|(slot, entity)| {
+                // An entity the hour's targets do not hold stands only while a formation
+                // offers it, and a province whose candidates go must destroy it.
+                targets.is_some_and(|targets| targets.contains_key(slot))
+                    && frame.shown[slot.0 as usize]
+                    && entity.scale >= 1.0
+                    && !entity.shrinking
+            })
+            // Where land shows, every visual slot must have been counted and must hold a
+            // figure: one that has not is queued by the next pass, which is work.
+            && (!frame.shown[Kind::Land as usize]
+                || (self.land_visits.len() == self.lands.len()
+                    && self
+                        .lands
+                        .iter()
+                        .all(|(_, slot)| self.entities.contains_key(slot))));
+        self.due_pass = self
+            .land_visits
+            .values()
+            .min()
+            .map_or(u64::MAX, |visits| visits + 100);
+    }
+
+    /// Whether this frame's update of the province would change nothing but the visit counter
+    /// and its cursor, so the walk can leave it alone. `pass` is whether this frame makes a land
+    /// pass, which is the pass a slot's hundredth visit would fall on. The caller adds what it
+    /// alone knows: the hour's targets, the naval candidates and the combat actors.
+    fn idle(&self, update: Update, frame: Frame, pass: bool) -> bool {
+        if frame.steady || !self.quiet {
+            return false;
+        }
+        match update {
+            Update::InView => {
+                self.shown == frame.shown
+                    && self.arrows == frame.arrows
+                    && self.land_passes + u64::from(pass) < self.due_pass
+            }
+            // Leaving view clears the show bits and the arrow flag and destroys what the gates
+            // already took: a province holding none of those is left alone.
+            Update::OffScreen => {
+                self.shown == [false; 2] && !self.arrows && self.entities.is_empty()
+            }
+        }
+    }
+
+    /// The first field of this province that `other` does not match, named for the judge
+    /// ([`crate::map::actor_check`]).
+    fn differences(&self, other: &Self) -> Option<String> {
+        if self.shown != other.shown {
+            return Some(format!("shown {:?} against {:?}", self.shown, other.shown));
+        }
+        if self.arrows != other.arrows {
+            return Some(format!("arrows {} against {}", self.arrows, other.arrows));
+        }
+        if self.entities != other.entities {
+            return Some(format!(
+                "entities {:?} against {:?}",
+                self.entities.keys().collect::<Vec<_>>(),
+                other.entities.keys().collect::<Vec<_>>()
+            ));
+        }
+        for (name, mine, theirs) in [
+            (
+                "land_cursor",
+                u64::from(self.land_cursor),
+                u64::from(other.land_cursor),
+            ),
+            ("land_passes", self.land_passes, other.land_passes),
+            ("due_pass", self.due_pass, other.due_pass),
+        ] {
+            if mine != theirs {
+                return Some(format!("{name} {mine} against {theirs}"));
+            }
+        }
+        if self.land_visits != other.land_visits {
+            return Some(format!(
+                "land_visits {:?} against {:?}",
+                self.land_visits, other.land_visits
+            ));
+        }
+        if self.quiet != other.quiet {
+            return Some(format!("quiet {} against {}", self.quiet, other.quiet));
+        }
+        if self.lands != other.lands {
+            return Some("lands".to_owned());
+        }
+        None
     }
 
     fn finalize_shown(&mut self, frame: Frame, budget: &Budget) {
@@ -479,12 +635,133 @@ impl Province {
         viewer_foundation::view_record::add("unit models", "history_left_view", (before - self.entities.len()) as u64);
         self.shown = [false; 2];
         self.arrows = false;
+        // What stays is mid-fade and due again; what is gone leaves nothing for a later update
+        // of a province still out of view.
+        self.quiet = !steady && self.entities.is_empty();
+    }
+}
+
+/// The walk as it was for one province the frame left alone, run on a copy and compared field
+/// by field ([`crate::map::actor_check`]). It must spend nothing: no creation, no incarnation
+/// and no queued land.
+fn judge_idle(
+    record: &provinces::Record,
+    update: Update,
+    frame: Frame,
+    epoch: u32,
+    budget: &Budget,
+    pass: bool,
+) {
+    let mut eager = record.province.clone();
+    let (mut spent, mut incarnation, mut queued) = (budget.clone(), epoch, 0u64);
+    match update {
+        Update::InView => {
+            eager.visit(
+                record.targets.as_ref().map(|prepared| &prepared.slots),
+                std::iter::empty(),
+                frame,
+                &mut incarnation,
+                &mut spent,
+                |_, _| queued += 1,
+            );
+            eager.finalize_shown(frame, &spent);
+        }
+        Update::OffScreen => eager.leave(frame.steady),
+    }
+    let mut left = record.province.clone();
+    if pass {
+        left.land_passes += 1;
+        left.step_cursor();
+    }
+    if let Some(difference) = left.differences(&eager) {
+        let targets: Vec<_> = record
+            .targets
+            .as_ref()
+            .map(|prepared| prepared.slots.keys().collect())
+            .unwrap_or_default();
+        crate::map::actor_check::differs(
+            "unit walk",
+            &record.id,
+            &format!("{difference}; the hour holds {targets:?}"),
+        );
+    }
+    if incarnation != epoch || queued != 0 || spent.remaining() != budget.remaining() {
+        crate::map::actor_check::differs(
+            "unit walk",
+            &record.id,
+            &format!(
+                "the visit would have spent something: incarnation {incarnation} against \
+                 {epoch}, {queued} queued, allowance {} against {}",
+                spent.remaining(),
+                budget.remaining()
+            ),
+        );
+    }
+}
+
+/// What one frame's province walk did, summed here and given to the flight record once
+/// ([`viewer_foundation::view_record`], section `unit walk`): a record made per province would
+/// cost more than the walk it measures.
+#[derive(Default)]
+struct WalkCounts {
+    updates: u64,
+    in_view: u64,
+    off_screen: u64,
+    visited: u64,
+    empty: u64,
+    lands: u64,
+    entities: u64,
+    candidates: u64,
+    /// Updates the walk left alone, their counter carried on ([`Province::idle`]).
+    idle: u64,
+    /// What the judge found each visit did ([`crate::map::actor_check`]): nothing at all, nothing
+    /// but the visit counters and their round-robin cursor, or something a frame can see.
+    unchanged: u64,
+    counters_only: u64,
+    changed: u64,
+}
+
+impl WalkCounts {
+    fn record(&self) {
+        use viewer_foundation::view_record::add;
+        for (name, value) in [
+            ("updates", self.updates),
+            ("in_view", self.in_view),
+            ("off_screen", self.off_screen),
+            ("visited", self.visited),
+            ("empty", self.empty),
+            ("lands", self.lands),
+            ("entities", self.entities),
+            ("candidates", self.candidates),
+            ("idle", self.idle),
+            ("visits_unchanged", self.unchanged),
+            ("visits_counters_only", self.counters_only),
+            ("visits_changed", self.changed),
+        ] {
+            add("unit walk", name, value);
+        }
+    }
+
+    /// What one visit did to a province, against the state it found ([`Self::unchanged`]).
+    fn judge(&mut self, before: &Province, after: &Province) {
+        if before == after {
+            self.unchanged += 1;
+            return;
+        }
+        let mut counted = after.clone();
+        counted.land_visits.clone_from(&before.land_visits);
+        counted.land_cursor = before.land_cursor;
+        if counted == *before {
+            self.counters_only += 1;
+        } else {
+            self.changed += 1;
+        }
     }
 }
 
 /// One frame's unit and (when changed) building instance streams.
 pub struct FrameModels {
-    pub units: Vec<(usize, ModelInstance)>,
+    pub units: crate::map::models::Moving,
     pub buildings: Option<Vec<(usize, ModelInstance)>>,
 }
 
@@ -495,6 +772,18 @@ pub struct History {
     targets: Targets,
     /// This frame's moving figures and formations, by slot.
     movement: Vec<(Slot, MovementDelta)>,
+    /// Every part the hours place, in the order the model field is built in: what the field the
+    /// pass holds was last built from, before any display frame's own movement.
+    standing: Vec<(usize, ModelInstance)>,
+    /// This frame's parts, built beside [`Self::standing`] so the two can be compared.
+    standing_next: Vec<(usize, ModelInstance)>,
+    /// The pass's field was replaced by an upload of the residency targets: the next walk hands
+    /// its parts whatever they compare to.
+    standing_owed: bool,
+    /// The parts this frame moves, by their ordinal in [`Self::standing`], and the ordinals the
+    /// frame before moved, which stand again where their hours place them.
+    moving: Vec<(usize, MovementDelta)>,
+    was_moving: Vec<usize>,
     /// This frame's map render delta, which the naval animators advance by as the drawn ones do.
     movement_delta: Option<f32>,
     naval: naval::History,
@@ -506,8 +795,14 @@ pub struct History {
     queued: Vec<(u32, Slot, bool)>,
     #[cfg(test)]
     queue_trace: Vec<(u32, Slot, bool)>,
+    /// The provinces the last walk left alone, in its order.
+    #[cfg(test)]
+    left_alone: Vec<u32>,
     /// Admission operands in province order, refreshed only when the hour installs a roster.
     province_bounds: Vec<(u32, Option<[f32; 4]>)>,
+    /// Bumped whenever the boxes above are rebuilt, so a frame's admission knows whether the ones
+    /// it tested are still these.
+    province_boxes: u64,
     /// Province boxes for camera admission.
     bounds: Arc<BTreeMap<u32, [f32; 4]>>,
     /// The previous frame's animation clock.
@@ -521,6 +816,18 @@ pub struct History {
     epoch: u32,
     /// Offline frames settle for their camera instead of animating.
     steady: bool,
+    /// Walks made, so the judge runs at its own rate ([`crate::map::actor_check`]).
+    checks: u64,
+    /// The creations the frame's own room refused on the walks before this one, and the walks in
+    /// a row that refused any: the next walk makes at least a share of them whatever its frame's
+    /// clock says, so a figure an hour brings waits at most
+    /// [`viewer_foundation::map::frame_budget::BOUND`] frames.
+    held_slots: usize,
+    held_walks: u32,
+    /// The next walk makes every figure whatever the frame's clock says: a load, a seek or a tag
+    /// switch cleared the entities, and the picture that follows is a whole picture, not an hour's
+    /// change to one.
+    unbudgeted: bool,
     /// The raid arrows' units. No unit slot holds them:
     /// The game creates its entity at once
     /// without testing or charging the shared creation counter
@@ -531,9 +838,6 @@ pub struct History {
     /// The raid units' incarnation: a load-equivalent reset recreates them
     /// too, so their animation starts again ([`History::reset`]).
     raid_epoch: u32,
-    /// Select the independent full-walk oracle without changing process environment.
-    #[cfg(test)]
-    empty_fast_path: Option<bool>,
 }
 
 /// Where an entity's root is drawn this frame, against where the hour placed it.
@@ -547,14 +851,18 @@ struct MovementDelta {
 }
 
 impl MovementDelta {
-    /// `rotation` and `scale` are the root rotation and stack scale the hour placed it with.
-    fn new(position: &Position, drawn: Drawn, rotation: f32, scale: f32) -> Self {
-        let (at, heading) = drawn.motion.position_heading();
+    /// `rotation` and `scale` are the root rotation and stack scale the hour placed it with: a
+    /// head whose places give neither keeps them.
+    fn new(position: &Position, at: AtHead, rotation: f32, scale: f32) -> Self {
         Self {
             base: position.at(),
-            at,
-            turn: heading + crate::map::unit_models::MESH_FORWARD_OFFSET - rotation,
-            scale: if scale > 0.0 { drawn.scale / scale } else { 1.0 },
+            at: at.at,
+            turn: at.heading.map_or(0.0, |heading| {
+                heading + crate::map::unit_models::MESH_FORWARD_OFFSET - rotation
+            }),
+            scale: at
+                .scale
+                .map_or(1.0, |drawn| if scale > 0.0 { drawn / scale } else { 1.0 }),
         }
     }
 
@@ -579,8 +887,12 @@ impl History {
         self.naval.set_selection(selected);
     }
 
-    /// Draws the hour's figures and formations where the view's animators move them this frame:
-    /// `positions` are their hour placements, root rotations and settled stack scales.
+    /// Draws the hour's figures and formations where this display frame's own head puts them:
+    /// `positions` are their hour placements, root rotations and settled stack scales, and the
+    /// view's history answers where each one's hours place it at that head
+    /// ([`viewer_foundation::map::counter_move::MovementHistory::at_head`]) — the same places, cut
+    /// at the same publication, its counter stands on, so a figure travels with every display
+    /// frame instead of standing until a publication re-slots it.
     pub fn set_movement<'a>(
         &mut self,
         positions: impl Iterator<Item = (Unit, &'a Position, f32, f32)>,
@@ -595,9 +907,9 @@ impl History {
                 Unit::TaskForce(id) => (Kind::Ship, id),
                 Unit::RailwayGun(_) => continue,
             };
-            if let Some(drawn) = history.sample(unit, position) {
+            if let Some(at) = history.at_head(unit, position) {
                 self.movement
-                    .push((slot, MovementDelta::new(position, drawn, rotation, scale)));
+                    .push((slot, MovementDelta::new(position, at, rotation, scale)));
             }
         }
         self.movement.sort_unstable_by_key(|entry| entry.0);
@@ -628,6 +940,7 @@ impl History {
     }
 
     fn prepare_province_bounds(&mut self) {
+        self.province_boxes += 1;
         self.province_bounds.clear();
         self.province_bounds.extend(
             self.provinces
@@ -744,6 +1057,12 @@ impl History {
         self.steady = true;
     }
 
+    /// The pass's field no longer holds [`Self::standing`] (an upload replaced it): the next walk
+    /// places every part again.
+    pub fn field_replaced(&mut self) {
+        self.standing_owed = true;
+    }
+
     pub fn restart_live(&mut self) {
         self.reset(None);
         self.last = None;
@@ -754,6 +1073,7 @@ impl History {
     /// or a tag switch does ([`viewer_foundation::map::presentation::UnitRestart`]): their entities go and their
     /// show bits drop, so what shows next grows in on a new clock.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
+        (self.held_slots, self.held_walks, self.unbudgeted) = (0, 0, true);
         self.naval.reset(provinces);
         self.combats.reset(provinces);
         self.schedule
@@ -788,7 +1108,12 @@ impl History {
             .schedule
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        schedule.advance_frame_boxes(&self.province_bounds, camera, viewport, self.steady);
+        schedule.advance_frame_boxes(&self.province_bounds, camera, viewport, self.steady, self.province_boxes);
+    }
+
+    /// The view's schedule, whose list the last walk read.
+    pub fn schedule(&self) -> &Shared {
+        &self.schedule
     }
 
     /// A rewound clock must reset before taking updates, so leave its cut to the walk.
@@ -835,6 +1160,23 @@ impl History {
         )
     }
 
+    /// The creations a walk makes before its frame's room can cut it short: what the walks before
+    /// it held, shared over the walks left before
+    /// [`viewer_foundation::map::frame_budget::BOUND`], so a figure an hour brings waits no longer
+    /// than that however busy the frames are.
+    fn floor(&self) -> usize {
+        match viewer_foundation::map::frame_budget::BOUND.saturating_sub(self.held_walks) {
+            0 => usize::MAX,
+            left => self.held_slots.div_ceil(left as usize),
+        }
+    }
+
+    /// What this walk's frame refused to create, for the next walk's floor.
+    fn carried(&mut self, held: usize) {
+        self.held_slots = held;
+        self.held_walks = if held == 0 { 0 } else { self.held_walks + 1 };
+    }
+
     /// Uses the host's cut without spending the shared schedule twice.
     #[allow(clippy::too_many_arguments)]
     pub fn update_models_with_frame(
@@ -852,6 +1194,15 @@ impl History {
         let admission = std::cell::LazyCell::new(|| Admission::new(camera, viewport));
         let bounds = Arc::clone(&self.bounds);
         let mut buildings = buildings.frame(camera, viewport, time, buildings_enabled, self.steady);
+        // The figures this hour brings take the room the frame has left; what does not fit waits
+        // for a later frame ([`Self::floor`] makes what an earlier frame held whatever this
+        // frame's clock says, so nothing waits past the bound).
+        use viewer_foundation::map::frame_budget;
+        let deadline = frame_budget::deadline(frame_budget::Mark::Actors);
+        if let (Some(spent), Some(room)) = (frame_budget::spent(), frame_budget::room(frame_budget::Mark::Actors)) {
+            viewer_foundation::view_record::add("unit models", "budget_spent_us", spent.as_micros() as u64);
+            viewer_foundation::view_record::add("unit models", "budget_room_us", room.as_micros() as u64);
+        }
         let mut budget = Budget::new(limit, self.steady);
         let placed = self.step_with_frame(
             time,
@@ -862,11 +1213,21 @@ impl History {
             &mut budget,
             |id, budget| buildings.through(id, budget),
             frame,
+            deadline,
         );
-        FrameModels {
+        let models = FrameModels {
             units: placed,
             buildings: buildings.finish(&mut budget),
+        };
+        self.carried(budget.held());
+        viewer_foundation::view_record::add("unit models", "history_held", self.held_slots as u64);
+        match deadline {
+            // A frame with no budget creates everything its hour brings, so what it leaves standing
+            // is what a frame with no budget makes: nothing may be pending after it.
+            None => frame_budget::check::quiet("unit figures", self.held_slots),
+            Some(_) => frame_budget::check::carrying("unit figures", self.held_slots, self.held_walks),
         }
+        models
     }
 
     #[cfg(test)]
@@ -877,7 +1238,7 @@ impl History {
         time: f32,
         gates: Gates,
     ) -> Vec<(usize, ModelInstance)> {
-        self.update_models(
+        let models = self.update_models(
             camera,
             viewport,
             time,
@@ -885,8 +1246,8 @@ impl History {
             i32::MAX,
             &mut BuildingHistory::default(),
             false,
-        )
-        .units
+        );
+        self.drawn(&models.units)
     }
 
     #[cfg(test)]
@@ -921,7 +1282,33 @@ impl History {
         budget: &mut Budget,
         buildings: impl FnMut(u32, &mut Budget),
     ) -> Vec<(usize, ModelInstance)> {
-        self.step_with_frame(time, gates, shown, arrows, in_view, budget, buildings, None)
+        let moving =
+            self.step_with_frame(time, gates, shown, arrows, in_view, budget, buildings, None, None);
+        self.drawn(&moving)
+    }
+
+    /// One walk whose frame has already spent its room for what an hour brings: the tests' own
+    /// budgeted frame.
+    #[cfg(test)]
+    fn step_held(&mut self, time: f32, gates: Gates, shown: [bool; 2], budget: &mut Budget) -> Vec<(usize, ModelInstance)> {
+        let moving = self.step_with_frame(time, gates, shown, true, |_| true, budget, |_, _| {}, None,
+            Some(std::time::Instant::now() - std::time::Duration::from_micros(1)));
+        self.carried(budget.held());
+        self.drawn(&moving)
+    }
+
+    /// Where a frame draws every part: the hours' own placements with the parts this frame moved
+    /// written again at their own place among them.
+    #[cfg(test)]
+    pub(crate) fn drawn(
+        &self,
+        moving: &crate::map::models::Moving,
+    ) -> Vec<(usize, ModelInstance)> {
+        let mut placed = self.standing.clone();
+        for &(ordinal, instance) in &moving.moved {
+            placed[ordinal].1 = instance;
+        }
+        placed
     }
 
     /// Uses cut updates, or takes the shared schedule when no cut exists.
@@ -936,7 +1323,14 @@ impl History {
         budget: &mut Budget,
         mut buildings: impl FnMut(u32, &mut Budget),
         province_frame: Option<&ProvinceFrame>,
-    ) -> Vec<(usize, ModelInstance)> {
+        deadline: Option<std::time::Instant>,
+    ) -> crate::map::models::Moving {
+        // The walk after a load, a seek or a tag switch makes a whole picture, not an hour's
+        // change to one, so no frame's clock cuts it.
+        let deadline = deadline.filter(|_| !std::mem::take(&mut self.unbudgeted));
+        if deadline.is_some() {
+            budget.set_floor(self.floor());
+        }
         if self.last.is_some_and(|previous| time < previous) {
             self.reset(None);
         }
@@ -980,12 +1374,17 @@ impl History {
             }
         }
         drop(schedule_span);
-        let fast_empty = true;
-        #[cfg(test)]
-        let fast_empty = self.empty_fast_path.unwrap_or(fast_empty);
         let provinces_span = viewer_foundation::profiling::span("units_provinces");
+        let mut counts = WalkCounts::default();
+        let judged = crate::map::actor_check::due(&mut self.checks);
+        let mut judged_before = Vec::new();
+        // A pass of the land round robin is made where the camera shows land models and the
+        // creation allowance has something left; a province the walk leaves alone counts it too.
+        let land_pass = frame.shown[Kind::Land as usize];
         let dense = &mut self.provinces;
         let mut at = 0;
+        #[cfg(test)]
+        self.left_alone.clear();
         for &(id, update) in &self.updates {
             while at < dense.records.len() && dense.records[at].id < id {
                 at += 1;
@@ -993,43 +1392,80 @@ impl History {
             let Some(record) = dense.records.get_mut(at).filter(|record| record.id == id) else {
                 continue;
             };
+            counts.updates += 1;
+            // Nothing this province holds is due: no figure is growing, shrinking or fading, no
+            // slot has reached its hundredth visit, the hour kept the targets its last visit
+            // applied, the camera's gates are the ones it answered, and no naval candidate or
+            // combat actor stands in it. Its visit counter runs on; nothing else is done.
+            let pass = land_pass && budget.remaining() != 0;
+            if record.province.idle(update, frame, pass)
+                && !record.has_candidates
+                && record.applied_hour()
+                && !self.combats.holds(id)
+            {
+                counts.idle += 1;
+                #[cfg(test)]
+                self.left_alone.push(id);
+                if judged {
+                    judge_idle(record, update, frame, self.epoch, budget, pass);
+                }
+                if pass {
+                    record.province.land_passes += 1;
+                    record.province.step_cursor();
+                }
+                continue;
+            }
+            if judged {
+                judged_before.push((at, record.province.clone()));
+            }
             let province = &mut record.province;
+            // The buildings of every province the walk left alone spent nothing of the shared
+            // allowance, so their groups are applied here, in the order the game applies them.
             buildings(id, budget);
             match update {
                 Update::InView => {
+                    counts.in_view += 1;
+                    counts.lands += province.lands.len() as u64;
+                    counts.entities += province.entities.len() as u64;
+                    counts.candidates += u64::from(record.has_candidates);
                     let land_was_shown = province.shown[Kind::Land as usize];
                     let targets = record.targets.as_ref().map(|p| &p.slots);
-                    if fast_empty
-                        && province.entities.is_empty()
-                        && targets.is_none_or(BTreeMap::is_empty)
-                        && !record.has_candidates
-                    {
-                        // No slot can queue, grow or retire. Empty provinces still
-                        // remember admission, and stale land visits lose membership.
-                        province.land_visits.clear();
-                        province.arrows = frame.arrows;
-                        self.naval.clear_combat_selection();
-                    } else {
-                        province.visit(
-                            targets,
-                            self.naval.representatives(id, animators),
-                            frame,
-                            &mut self.epoch,
-                            budget,
-                            |slot, shown| self.queued.push((id, slot, shown)),
-                        );
-                    }
+                    counts.visited += 1;
+                    counts.empty += u64::from(
+                        province.entities.is_empty() && targets.is_none_or(BTreeMap::is_empty),
+                    );
+                    let (formations, combat) = self.naval.representatives(id, animators);
+                    let queued_before = self.queued.len();
+                    province.visit(
+                        targets,
+                        formations,
+                        frame,
+                        &mut self.epoch,
+                        budget,
+                        |slot, shown| self.queued.push((id, slot, shown)),
+                    );
                     self.combats.visit(
                         id,
-                        self.naval.combat(id),
+                        self.naval.combat(id, combat),
                         frame,
                         land_was_shown,
                         &mut self.epoch,
                         budget,
                     );
                     province.finalize_shown(frame, budget);
+                    // The frame's own room is tested only where this province asked for a
+                    // creation, so a frame that brings nothing reads no clock and a visit and the
+                    // judge's copy of it always see one allowance.
+                    if let Some(deadline) = deadline
+                        && !budget.is_cut()
+                        && self.queued.len() > queued_before
+                        && std::time::Instant::now() >= deadline
+                    {
+                        budget.cut();
+                    }
                 }
                 Update::OffScreen => {
+                    counts.off_screen += 1;
                     self.combats
                         .leave(id, province.shown[Kind::Land as usize], self.steady);
                     province.leave(self.steady);
@@ -1040,6 +1476,10 @@ impl History {
             } else {
                 dense.populated.insert(at);
             }
+            // This update answered these targets. The record holds the table, so its address
+            // stays its own and one pointer says whether a later hour changed anything.
+            let record = &mut dense.records[at];
+            record.applied.clone_from(&record.targets);
         }
         drop(provinces_span);
         buildings(u32::MAX, budget);
@@ -1061,17 +1501,36 @@ impl History {
             if !record.province.entities.is_empty() {
                 dense.populated.insert(at);
             }
+            // A figure created here starts at zero where its province was not already shown.
+            record.province.quiet &= record
+                .province
+                .entities
+                .values()
+                .all(|entity| entity.scale >= 1.0 && !entity.shrinking);
         }
         drop(deferred_span);
+        // The judge compares each province against the state the frame found, after the frame's
+        // deferred creations, which are part of what one visit does.
+        if judged {
+            for (at, before) in &judged_before {
+                counts.judge(before, &self.provinces.records[*at].province);
+            }
+            crate::map::actor_check::checked("unit walk", counts.updates);
+        }
+        counts.record();
         // Graphical province setters and probes run before idle updates
         // dispatches the animation manager. Admit each private combat player
         // once here, after this frame's callbacks and before its rendered pose.
         self.combats.advance(frame.delta);
         let raid_epoch = self.raid_epoch;
         let _collect_span = viewer_foundation::profiling::span("units_collect");
-        let mut placed = self.provinces.placed(&self.movement);
-        placed.extend(self.combats.placed());
-        placed.extend(self.raids.iter().map(|&(mesh, instance)| {
+        let mut next = std::mem::take(&mut self.standing_next);
+        let mut moving = std::mem::take(&mut self.moving);
+        next.clear();
+        moving.clear();
+        self.provinces.standing(&mut next, &mut moving, &self.movement);
+        next.extend(self.combats.placed());
+        next.extend(self.raids.iter().map(|&(mesh, instance)| {
             (
                 mesh,
                 ModelInstance {
@@ -1080,10 +1539,44 @@ impl History {
                 },
             )
         }));
+        // A walk that left every part where its hour placed it keeps the field the pass holds,
+        // so a figure this frame moves costs its own parts and nothing else.
+        let kept = !std::mem::take(&mut self.standing_owed)
+            && next.len() == self.standing.len()
+            && std::iter::zip(&next, &self.standing).all(|(now, held)| {
+                now.0 == held.0 && bytemuck::bytes_of(&now.1) == bytemuck::bytes_of(&held.1)
+            });
+        std::mem::swap(&mut self.standing, &mut next);
+        self.standing_next = next;
+        let mut moved: Vec<(usize, ModelInstance)> = moving
+            .iter()
+            .map(|&(ordinal, delta)| (ordinal, delta.apply(self.standing[ordinal].1)))
+            .collect();
+        if kept {
+            // A figure the frame before moved and this one does not stands where its hour puts it.
+            moved.extend(self.was_moving.iter().copied().filter_map(|ordinal| {
+                moving
+                    .binary_search_by_key(&ordinal, |entry| entry.0)
+                    .is_err()
+                    .then(|| (ordinal, self.standing[ordinal].1))
+            }));
+            moved.sort_unstable_by_key(|entry| entry.0);
+        }
+        self.was_moving.clear();
+        self.was_moving
+            .extend(moving.iter().map(|&(ordinal, _)| ordinal));
+        self.moving = moving;
         if viewer_foundation::view_record::on() {
+            use viewer_foundation::view_record::add;
+            add("unit walk", "standing", self.standing.len() as u64);
+            add("unit walk", "standing_kept", u64::from(kept));
+            add("unit walk", "moved_parts", moved.len() as u64);
             self.note_motion();
         }
-        placed
+        crate::map::models::Moving {
+            standing: (!kept).then(|| self.standing.clone()),
+            moved,
+        }
     }
 
     /// The flight record's check of every land figure drawn against the frame before
@@ -1184,6 +1677,28 @@ pub mod tests {
         h.step(time, GATES, [true; 2], true, |_| true)
     }
 
+    fn walk(h: &mut History, time: f32) -> crate::map::models::Moving {
+        h.step_with_frame(time, GATES, [true; 2], true, |_| true, &mut Budget::new(i32::MAX, h.steady), |_, _| {}, None, None)
+    }
+
+    /// An upload replaces the pass's field with the residency targets, every hull of a roster at
+    /// full scale: the walk after it places its parts again though none moved. Before, a walk that
+    /// left every part where it stood kept the uploaded field, whose same-class hulls raise one
+    /// idle event each and are refused as one presentation.
+    #[test]
+    fn a_walk_after_an_upload_places_its_parts_though_none_moved() {
+        let mut h = history(vec![target(1, Kind::Land)], true);
+        walk(&mut h, 0.0);
+        assert!(walk(&mut h, 0.1).standing.is_none(), "a walk that moved nothing keeps the field");
+        h.field_replaced();
+        assert!(walk(&mut h, 0.2).standing.is_some(), "the walk after an upload places its parts");
+        assert!(walk(&mut h, 0.3).standing.is_none(), "and once placed, the field is kept again");
+        let mut empty = history(Vec::new(), true);
+        walk(&mut empty, 0.0);
+        empty.field_replaced();
+        assert!(walk(&mut empty, 0.1).standing.is_some_and(|standing| standing.is_empty()), "an hour with no unit clears the uploaded field");
+    }
+
     fn limited(h: &mut History, time: f32, limit: i32) -> Vec<(usize, ModelInstance)> {
         h.step_with(
             time,
@@ -1213,22 +1728,39 @@ pub mod tests {
                         .any(|formation| *slot == (Kind::Ship, formation.identity))
             };
             let was = self.shown;
+            let (mut whole, mut held) = (true, false);
             let mut queued = Vec::new();
             if frame.shown[Kind::Land as usize] {
-                let lands = &self.lands;
-                let start = lands.partition_point(|&(order, _)| order < self.land_cursor);
-                for &(order, slot) in lands[start..].iter().chain(&lands[..start]) {
-                    if queued.len() >= budget.remaining() {
-                        break;
+                let allowance = budget.remaining();
+                if allowance != 0 {
+                    self.land_passes += 1;
+                    let lands = Arc::clone(&self.lands);
+                    let mut cut = lands.len();
+                    let start = lands.partition_point(|&(order, _)| order < self.land_cursor);
+                    for step in 0..lands.len() {
+                        let (order, slot) = lands[(start + step) % lands.len()];
+                        if queued.len() >= allowance {
+                            whole = false;
+                            cut = step;
+                            break;
+                        }
+                        self.land_cursor = order;
+                        let visits = *self.land_visits.entry(slot).or_insert(self.land_passes - 1);
+                        // A slot is queued when its representative changed, which
+                        // here means it has no entity, or on its hundredth visit.
+                        if frame.steady
+                            || self.land_passes.saturating_sub(visits) > 99
+                            || !self.entities.contains_key(&slot)
+                        {
+                            self.land_visits.insert(slot, self.land_passes);
+                            queued.push((slot, was[Kind::Land as usize]));
+                        }
                     }
-                    self.land_cursor = order;
-                    let visits = self.land_visits.entry(slot).or_default();
-                    *visits += 1;
-                    // A slot is queued when its representative changed, which
-                    // here means it has no entity, or on its hundredth visit.
-                    if frame.steady || *visits > 99 || !self.entities.contains_key(&slot) {
-                        *visits = 0;
-                        queued.push((slot, was[Kind::Land as usize]));
+                    for step in cut..lands.len() {
+                        let (_, slot) = lands[(start + step) % lands.len()];
+                        if let Some(visits) = self.land_visits.get_mut(&slot) {
+                            *visits += 1;
+                        }
                     }
                 }
             }
@@ -1296,6 +1828,7 @@ pub mod tests {
                             entity.parts.remove(&index);
                         }
                         if !budget.take() {
+                            held = true;
                             continue;
                         }
                         entity
@@ -1337,6 +1870,7 @@ pub mod tests {
                 };
             }
             self.arrows = frame.arrows;
+            self.settle(frame, targets, whole, held);
             queued
         }
     }
@@ -1360,16 +1894,21 @@ pub mod tests {
         );
         provinces.populated.insert(0);
         let turn = std::f32::consts::FRAC_PI_2;
-        let placed = provinces.placed(&[(
-            (Kind::Ship, 7),
-            MovementDelta {
-                base: [0.0; 3],
-                at: [10.0, 0.0, 0.0],
-                turn,
-                scale: 1.5,
-            },
-        )]);
-        let instance = placed[0].1;
+        let (mut standing, mut moving) = (Vec::new(), Vec::new());
+        provinces.standing(
+            &mut standing,
+            &mut moving,
+            &[(
+                (Kind::Ship, 7),
+                MovementDelta {
+                    base: [0.0; 3],
+                    at: [10.0, 0.0, 0.0],
+                    turn,
+                    scale: 1.5,
+                },
+            )],
+        );
+        let instance = moving[0].1.apply(standing[moving[0].0].1);
         assert!((instance.position[0] - 10.0).abs() < 1e-5);
         assert!((instance.position[2] - 3.0).abs() < 1e-5);
         assert_eq!(instance.rotation, turn);
@@ -1384,8 +1923,9 @@ pub mod tests {
             &[[0.0, 0.0, 0.0], [0.0, 0.0, 100.0]],
         )
         .unwrap();
-        let drawn = Drawn { motion, scale: 1.0 };
-        let expected = motion.position_heading().1 + crate::map::unit_models::MESH_FORWARD_OFFSET;
+        let (at, heading) = motion.position_heading();
+        let drawn = AtHead { at, heading: Some(heading), scale: Some(1.0) };
+        let expected = heading + crate::map::unit_models::MESH_FORWARD_OFFSET;
         for standing in [0.0, 1.25, -2.5] {
             let delta = MovementDelta::new(&position, drawn, standing, 1.0);
             let instance = delta.apply(ModelInstance {
@@ -1394,7 +1934,7 @@ pub mod tests {
                 ..ModelInstance::default()
             });
             assert!((instance.rotation - expected).abs() < 1e-5, "{standing}");
-            assert_eq!(instance.position, motion.position());
+            assert_eq!(instance.position, at);
         }
     }
 
@@ -1544,6 +2084,135 @@ pub mod tests {
                 "frame {number} instances"
             );
         }
+    }
+
+    /// A province the walk leaves alone ends in the state every visit would have left it in:
+    /// across paused frames, hours that change its targets and hours that do not, the camera
+    /// losing and regaining each height gate, the arrow flag turning, offline settling, and
+    /// frames the creation allowance cuts short.
+    #[test]
+    fn a_province_left_alone_ends_where_every_visit_would_have() {
+        let (mut eager, mut lazy) = (Province::default(), Province::default());
+        let (mut eager_epoch, mut lazy_epoch) = (0, 0);
+        let mut applied: Option<Arc<ProvinceTargets>> = None;
+        let mut held: Option<Arc<ProvinceTargets>> = None;
+        let (mut left, mut visited) = (0, 0);
+        for number in 0..900u32 {
+            // The hour changes its figures' meshes every 97 frames and nothing else between,
+            // which is what playback does: most hours leave most provinces alone.
+            let hour = number / 97;
+            let targets = Targets::from(
+                (0..5u64)
+                    .map(|slot| Target {
+                        identity: slot,
+                        order: (slot % 3) as u32,
+                        mesh: (hour as usize + slot as usize) % 3,
+                        ..target(5, Kind::Land)
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let prepared = Arc::clone(&targets.0.provinces[&5]);
+            // The hour keeps the table a province already holds when it builds an equal one, as
+            // [`provinces::Record::install`] does, so an unchanged hour is one pointer away.
+            let prepared = match &held {
+                Some(table) if **table == *prepared => Arc::clone(table),
+                _ => {
+                    held = Some(Arc::clone(&prepared));
+                    prepared
+                }
+            };
+            for province in [&mut eager, &mut lazy] {
+                province.lands = Arc::clone(&prepared.lands);
+            }
+            let frame = Frame {
+                // A paused frame, and a frame of play.
+                delta: if number % 7 == 0 { 0.0 } else { 1.0 / 60.0 },
+                gates: GATES,
+                // Each gate lost and regained, together and apart.
+                shown: [number % 211 < 180, number % 307 < 280],
+                arrows: number % 401 < 380,
+                steady: number % 457 == 456,
+            };
+            let limit = if number % 199 == 0 { 0 } else { 64 };
+            let (mut eager_budget, mut lazy_budget) =
+                (Budget::new(limit, frame.steady), Budget::new(limit, frame.steady));
+            let mut queue = Vec::new();
+            eager.visit(
+                Some(&prepared.slots),
+                std::iter::empty(),
+                frame,
+                &mut eager_epoch,
+                &mut eager_budget,
+                |slot, shown| queue.push((slot, shown)),
+            );
+            eager.finalize_shown(frame, &eager_budget);
+            for (slot, shown) in queue.drain(..) {
+                eager.create_land(
+                    slot,
+                    &prepared.slots[&slot],
+                    shown,
+                    frame.steady,
+                    &mut eager_epoch,
+                    &mut eager_budget,
+                );
+            }
+            eager.quiet &= eager
+                .entities
+                .values()
+                .all(|entity| entity.scale >= 1.0 && !entity.shrinking);
+            let hour_kept = applied
+                .as_ref()
+                .is_some_and(|applied| Arc::ptr_eq(applied, &prepared));
+            let pass = frame.shown[Kind::Land as usize] && lazy_budget.remaining() != 0;
+            if lazy.idle(Update::InView, frame, pass) && hour_kept {
+                left += 1;
+                if pass {
+                    lazy.land_passes += 1;
+                    lazy.step_cursor();
+                }
+            } else {
+                visited += 1;
+                lazy.visit(
+                    Some(&prepared.slots),
+                    std::iter::empty(),
+                    frame,
+                    &mut lazy_epoch,
+                    &mut lazy_budget,
+                    |slot, shown| queue.push((slot, shown)),
+                );
+                lazy.finalize_shown(frame, &lazy_budget);
+                for (slot, shown) in queue.drain(..) {
+                    lazy.create_land(
+                        slot,
+                        &prepared.slots[&slot],
+                        shown,
+                        frame.steady,
+                        &mut lazy_epoch,
+                        &mut lazy_budget,
+                    );
+                }
+                lazy.quiet &= lazy
+                    .entities
+                    .values()
+                    .all(|entity| entity.scale >= 1.0 && !entity.shrinking);
+                applied = Some(Arc::clone(&prepared));
+            }
+            assert_eq!(lazy.differences(&eager), None, "frame {number}");
+            let settled = &lazy;
+            assert_eq!(eager_epoch, lazy_epoch, "frame {number} incarnations");
+            assert_eq!(
+                eager_budget.remaining(),
+                lazy_budget.remaining(),
+                "frame {number} allowance"
+            );
+            assert_eq!(
+                eager.entities.values().flat_map(Entity::placed).collect::<Vec<_>>(),
+                settled.entities.values().flat_map(Entity::placed).collect::<Vec<_>>(),
+                "frame {number} instances"
+            );
+        }
+        assert!(left > 600, "{left} frames left alone, {visited} visited");
+        assert!(visited > 20, "{visited} visited");
     }
 
     #[test]
@@ -1805,6 +2474,69 @@ pub mod tests {
         // A new representative in the cursor's slot is visited first.
         h.set(vec![land(1, 10), land(2, 40)], Arc::default(), false);
         assert_eq!(meshes(limited(&mut h, 0.3, 1)), [10]);
+    }
+
+    #[test]
+    fn a_frame_that_has_spent_its_room_carries_its_figures_and_makes_them_all_within_the_bound() {
+        use viewer_foundation::map::frame_budget::BOUND;
+        let targets: Vec<Target> = (1..=8)
+            .flat_map(|province| {
+                (0..3).map(move |order| Target {
+                    order,
+                    identity: u64::from(province * 10 + order),
+                    mesh: (province * 10 + order) as usize,
+                    ..target(province, Kind::Land)
+                })
+            })
+            .collect();
+        let whole: BTreeSet<usize> = targets.iter().map(|target| target.mesh).collect();
+        let mut h = history(targets.clone(), false);
+        // Frame by frame, with the frame's room already spent and the content's count never
+        // binding: what the hour brings is made over the frames, and no figure is made twice.
+        let mut made: Vec<usize> = Vec::new();
+        let mut epochs: BTreeMap<usize, u32> = BTreeMap::new();
+        let mut gates = GATES;
+        for frame in 0..=BOUND {
+            // A resize and a map-mode change between frames: the gates and the viewed set move,
+            // and what is pending is neither lost nor made again.
+            if frame == 1 {
+                gates.arrows = GATES.arrows * 0.5;
+            }
+            let mut budget = Budget::new(i32::MAX, false);
+            let placed = h.step_held(frame as f32 * 0.1, gates, [true; 2], &mut budget);
+            for (mesh, instance) in &placed {
+                let (seed, _) = instance.animation_key();
+                match epochs.entry(*mesh) {
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(seed);
+                        made.push(*mesh);
+                    }
+                    std::collections::btree_map::Entry::Occupied(held) => {
+                        assert_eq!(*held.get(), seed, "mesh {mesh} was made again on frame {frame}");
+                    }
+                }
+            }
+            if frame == 0 {
+                assert!(placed.len() < whole.len(), "a frame with no room left holds some of the hour's figures back");
+                assert!(!placed.is_empty(), "and still advances what it can");
+            }
+        }
+        assert_eq!(made.len(), whole.len(), "every figure is made");
+        assert_eq!(made.iter().copied().collect::<BTreeSet<_>>(), whole);
+        assert_eq!(h.held_slots, 0, "and nothing is left pending at the bound");
+        // Paused: the same hour again at a standing clock brings nothing and carries nothing.
+        let mut budget = Budget::new(i32::MAX, false);
+        let paused = h.step_held(0.4, gates, [true; 2], &mut budget);
+        assert_eq!(paused.len(), whole.len(), "a paused frame shows every figure");
+        assert_eq!(h.held_slots, 0);
+        // A seek: the entities go, and the walk that follows makes the whole picture whatever the
+        // frame's clock says.
+        h.reset(None);
+        h.set(targets, Arc::default(), false);
+        let mut budget = Budget::new(i32::MAX, false);
+        let sought = h.step_held(0.5, gates, [true; 2], &mut budget);
+        assert_eq!(sought.len(), whole.len(), "a seek's first picture is whole");
+        assert_eq!(h.held_slots, 0);
     }
 
     #[test]
@@ -2187,8 +2919,9 @@ pub mod tests {
                     &mut Budget::new(i32::MAX, steady),
                     |_, _| {},
                     taken.as_ref().map(|(frame, _)| frame),
+                    None,
                 );
-                assert_eq!(placed, walked, "frame {frame}");
+                assert_eq!(cut.drawn(&placed), walked, "frame {frame}");
                 assert_eq!(cut.updates, walk.updates, "frame {frame}");
             }
             {

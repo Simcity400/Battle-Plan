@@ -176,11 +176,11 @@ fn the_hq_frame_counts_only_forward_group_members_of_the_viewers_side() {
     with_context(|context| {
         let row = detail(&[5], &[1]);
         let frame = |members: &[NavalCombatShipRow]| {
-            let forward = grid::ForwardMembers::read(members);
+            let forward = grid::forward_members(members);
             hq_frame(
                 viewer(context),
                 &row,
-                forward.of(7, members),
+                forward.get(&7).into_iter().flatten().copied(),
                 &ship_forces,
                 &forces,
             )
@@ -682,10 +682,12 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
             by_combat.entry(member.combat).or_default().push(member);
         }
         let details = rows::<tables::NavalCombatDetails>(&frame).unwrap().rows();
+        // As the draw joins them: the details row of the combat the icon names, in the hour drawn.
+        let details_of: BTreeMap<u64, &NavalCombatDetailsRow> = details.iter().map(|row| (row.combat, row)).collect();
         for icon in &icons {
             let whole = hq_frame(
                 viewer,
-                &details[icon.detail],
+                details_of[&icon.combat],
                 by_combat[&icon.combat].iter().copied(),
                 &ship_forces,
                 &forces,
@@ -702,8 +704,8 @@ fn unit_scale_hours_decide_the_naval_icons_once() {
         let started = Instant::now();
         let mut framed = 0;
         for icon in &icons {
-            let detail = &details[icon.detail];
-            if hour.vectors.contains_key(&icon.home)
+            let detail = details_of[&icon.combat];
+            if hour.vectors.contains(&icon.home)
                 && icon.hq == Ok(true)
                 && detail.combat == icon.combat
                 && icon.decision.progress

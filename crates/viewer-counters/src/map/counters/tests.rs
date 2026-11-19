@@ -1578,9 +1578,11 @@ fn draw_land_action_fixture_with(
                         .content
                         .defines
                         .stack_priority(inputs.camera.height, PriorityTable::Default),
+                    &[false, true].map(|gun| super::land::PlateStyle::read(&inputs, gun)),
                 )
                 .unwrap()
                 .unwrap()
+                .batch
                 .clone();
             (batch, report)
         },
@@ -1684,6 +1686,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         localisation: &localisation,
         recorded_language: "english",
         map: &map,
+        hour: 0,
         camera: Camera {
             center: [2.0, 2.0],
             height: 100.0,
@@ -1709,6 +1712,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         pressed: None,
         plate_hovered: None,
         schedule: &schedule,
+        moved: &viewer_foundation::map::counter_move::NO_MOVED_HOURS,
         movement_history: &movement_history,
         visibility: Visibility::POLITICAL,
         art: 0,
@@ -5279,8 +5283,12 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
     assert_eq!(batch.quads[2].uv, [0.0, 0.0, 1.0, 1.0]);
 }
 
+/// An icon is on screen or it is not; it is laid out when it is on screen or within the pad a
+/// camera moving over the map may reach before the overlay is placed again
+/// ([`viewer_foundation::map::anchored::PAD`]), so the frame that brings it in has it already.
 #[test]
-fn an_icon_wholly_outside_the_viewport_is_dropped() {
+fn an_icon_wholly_outside_the_viewport_and_its_pad_is_dropped() {
+    use viewer_foundation::map::{anchored::PAD, icon_windows::on_screen};
     let viewport = [2048.0, 1152.0];
     assert!(on_screen([0.0, 0.0], [76.0, 24.0], viewport));
     assert!(on_screen([-70.0, -20.0], [76.0, 24.0], viewport));
@@ -5288,6 +5296,10 @@ fn an_icon_wholly_outside_the_viewport_is_dropped() {
     assert!(!on_screen([10.0, -30.0], [76.0, 24.0], viewport));
     assert!(!on_screen([2049.0, 10.0], [76.0, 24.0], viewport));
     assert!(!on_screen([10.0, 1153.0], [76.0, 24.0], viewport));
+    assert!(admitted([-80.0, 10.0], [76.0, 24.0], viewport));
+    assert!(admitted([10.0, 1153.0], [76.0, 24.0], viewport));
+    assert!(!admitted([-77.0 - PAD, 10.0], [76.0, 24.0], viewport));
+    assert!(!admitted([10.0, 1153.0 + PAD], [76.0, 24.0], viewport));
 }
 
 /// `province_at` truncates like the engine's grid lookup, rejects
@@ -5875,3 +5887,28 @@ fn memoized_template_icons_equal_a_fresh_read_hour_by_hour() {
 
 mod capture_scope;
 mod retained;
+
+#[test]
+fn a_view_shows_an_icon_family_below_its_own_cutoff_or_at_the_height_a_zoom_is_sending_it_to() {
+    use super::Shown;
+    let defines = &CounterDefines::VANILLA;
+    let political = &Visibility::POLITICAL;
+    // The zoomed stress camera draws every family; the whole map, at the fit camera, none of them.
+    assert_eq!(Shown::at(Some(110.0), None, political, defines), Shown::EVERY);
+    assert_eq!(
+        Shown::at(Some(2844.0), None, political, defines),
+        Shown { units: false, bases: false, land_combats: false, naval_missions: false },
+        "above every icon cutoff nothing of the hour's icon families can be drawn"
+    );
+    // Zooming in from the whole map declares each family as soon as the target reaches it, so its
+    // parts are made during the ease rather than at the publication after it lands.
+    assert_eq!(Shown::at(Some(2844.0), Some(110.0), political, defines), Shown::EVERY);
+    // Between the cutoffs: the combats and the naval missions draw at 1,200, the counters, bases
+    // and radar do not.
+    assert_eq!(
+        Shown::at(Some(1200.0), None, political, defines),
+        Shown { units: false, bases: false, land_combats: true, naval_missions: true }
+    );
+    // A free eye lays every icon out in the world, and a camera not placed yet draws everything.
+    assert_eq!(Shown::at(None, None, political, defines), Shown::EVERY);
+}

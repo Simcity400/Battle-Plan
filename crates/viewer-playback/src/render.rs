@@ -4,6 +4,7 @@
 //! only owns the device requirements, the PNG readback, the unverified-content
 //! banner and the headless entry point.
 
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use crate::map_icons::MapIcons;
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -105,6 +106,9 @@ pub struct MapLayers<'a> {
 
 pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
     let mut configuration = eframe::egui_wgpu::WgpuConfiguration::default();
+    // The map draws its own frame and presents it: one frame of latency, so what is on screen is
+    // the frame the clock was last sampled for, not the one before it.
+    configuration.surface = eframe::egui_wgpu::SurfaceConfig::LOW_LATENCY;
     // Profiling only: frame pacing without the display's vsync.
     if std::env::var_os("BATTLE_PLAN_VIEWER_NO_VSYNC").or_else(|| std::env::var_os("HOI4_VIEWER_NO_VSYNC")).is_some() {
         configuration.surface.present_mode = wgpu::PresentMode::AutoNoVsync;
@@ -197,7 +201,7 @@ pub fn render_banner(
     let commands = renderer.update_buffers(device, queue, &mut encoder, &jobs, &screen);
     {
         let mut pass = encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
+            .counted_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("content verification banner"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: targets.output_view(),
@@ -233,8 +237,19 @@ pub fn write_png(
     let targets = scene
         .targets()
         .ok_or_else(|| invalid("render a map before saving PNG"))?;
-    let [width, height] = targets.size();
-    let pixels = read_texture(device, queue, targets.output(), 4)?;
+    write_texture_png(targets.output(), device, queue, path)
+}
+
+/// Reads `texture` back and writes it as an 8-bit RGBA PNG: a copy of a frame's output taken
+/// while the run played, written once the run is over.
+pub fn write_texture_png(
+    texture: &wgpu::Texture,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    path: &Path,
+) -> io::Result<()> {
+    let (width, height) = (texture.width(), texture.height());
+    let pixels = read_texture(device, queue, texture, 4)?;
     let mut encoder = png::Encoder::new(BufWriter::new(File::create(path)?), width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
@@ -256,10 +271,9 @@ pub struct DumpReport {
     pub render_seconds: f64,
     /// CPU seconds of the render call before the GPU drain wait.
     pub cpu_seconds: f64,
-    /// Quads the visible grid held.
-    pub quads: u32,
-    /// Grid step in map pixels.
-    pub step: f32,
+    /// Terrain blocks the frame drew, and the quads they hold.
+    pub blocks: usize,
+    pub quads: u64,
     // names
     /// Name-layer vertices and icon quads the frame drew.
     pub overlay: (u32, u32),
@@ -323,8 +337,10 @@ pub fn dump_png(
             &icons.lazy,
             layers.graphics,
         )?;
-        // A dump is a capture: its models draw complete, built in place.
+        // A dump is a capture: its models draw complete, built in place, and every figure is
+        // posed on the frame that draws it.
         scene.settle_builds(true);
+        scene.settle_poses(true);
         // A dump installs no hours: its names build where they draw.
         scene.build_names_in_upload(true);
         // political fill + borders
@@ -519,7 +535,7 @@ pub fn dump_png(
             let bytes = read_texture(&device, &queue, targets.scene_texture(), 8)?;
             File::create_new(path)?.write_all(&bytes)?;
         }
-        let grid = scene.grid();
+        let terrain = scene.terrain_drawn();
         let report = DumpReport {
             pass_warnings: scene.pass_warnings(),
             shader_refusals: scene.shader_refusals().clone(),
@@ -527,8 +543,8 @@ pub fn dump_png(
             device_requirements: device_requirements(device.features()),
             render_seconds,
             cpu_seconds,
-            quads: grid.quads(),
-            step: grid.step,
+            blocks: terrain.0,
+            quads: terrain.1,
             // names
             overlay: scene.overlay_counts(),
             icon_pages: scene.icon_page_count(),

@@ -25,6 +25,7 @@
 //! the raw byte before selecting nonzero state ids. Missing or partial inputs
 //! withhold the layer with a diagnostic. The dump-only `--demilitarized` option
 //! adds explicit state ids to this recorded set.
+use viewer_foundation::map::gpu_contract::Targets;
 use std::{collections::BTreeSet, io};
 
 use eframe::wgpu;
@@ -458,7 +459,7 @@ impl DemilitarizedPass {
         &self,
         arena: &shader_pipeline::gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
+        targets: &Targets,
         inputs: super::border_shader::Inputs<'_>,
         edges: ZoneEdges,
     ) -> io::Result<()> {
@@ -477,7 +478,7 @@ impl DemilitarizedPass {
         // One initialization and every material's texture bind are required
         // even when its runs are empty. Keep the complete bank.
         viewer_foundation::map::gpu_contract::compiled(&self.compiled)?
-            .draw(arena, encoder, target, inputs, &batches, true)
+            .draw(arena, encoder, targets, inputs, &batches, true)
             .map(|_| ())
     }
 

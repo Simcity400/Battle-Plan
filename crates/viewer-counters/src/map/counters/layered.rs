@@ -151,6 +151,20 @@ impl Layered {
         [address(&self.land), address(&self.land_markers), address(&self.naval_markers), address(&self.bases), address(&self.guns), address(&self.air)]
     }
 
+    /// The kinds of [`Self::identity`], in its own order.
+    const IDENTIFIED: [&'static str; 6] =
+        ["land stacks", "land combat markers", "naval combat markers", "bases", "railway guns", "air missions"];
+
+    /// Which products two layouts were made with differ, named ([`Self::identity`]).
+    pub fn moved(was: [usize; 6], now: [usize; 6]) -> Vec<&'static str> {
+        Self::IDENTIFIED
+            .iter()
+            .zip(was.iter().zip(now))
+            .filter(|(_, (was, now))| **was != *now)
+            .map(|(name, _)| *name)
+            .collect()
+    }
+
     /// The kinds whose product differs from `other`'s (by allocation).
     pub fn changed(&self, other: &Self) -> Kinds {
         let mut kinds = Kinds::default();

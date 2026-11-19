@@ -1,7 +1,7 @@
 use super::of;
 use crate::playhead_host::{
     open,
-    rows::{Cadence, Recording, Rows, tests::hourly_steps},
+    views::{Need, Pace, apart::Apart, tests::hourly_steps},
 };
 use playhead::Piece;
 use replay::{
@@ -96,12 +96,11 @@ fn rows_at_the_head_of_a_timeline_are_its_own_pieces_and_never_another_timelines
     for (branch, last) in [(2, base + 8), (1, base + 5)] {
         let entry = open(of(&replay, branch).unwrap(), hourly_steps()).unwrap();
         entry.set_capture(replay.capture_mode);
-        let rows = Rows::of(&entry, Recording { branch }).unwrap();
-        let reader = rows.reader(&[TableId::Countries], Cadence::EveryStep);
-        rows.settled();
+        let mut apart = Apart::new(&entry, branch).unwrap();
+        let reader = apart.store().handle().reader_at("branch rows", &[Need::every(TableId::Countries)], Pace::Step);
         for hour in base..=last {
-            rows.drive(hour);
             entry.playhead().seek(hour);
+            assert!(apart.drive(hour), "branch {branch}: the store never reached hour {hour}");
             let frame = reader.wait(|frame| frame.hour == hour, LIMIT).unwrap_or_else(|error| panic!("branch {branch}, hour {hour}: {error}"));
             let segment = segment_of(base, branch, hour);
             assert_eq!(political_power(&frame), Some(power(segment, hour)), "branch {branch}, hour {hour} reads segment {segment}");

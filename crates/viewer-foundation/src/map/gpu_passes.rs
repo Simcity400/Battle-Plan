@@ -1,7 +1,11 @@
 //! Per-pass GPU timestamps of a frame: a profiling aid under `BATTLE_PLAN_VIEWER_GPU_PASSES`, which
-//! prints each frame's after waiting for it, and the view record's `gpu_passes` while a measurement
-//! keeps that record ([`crate::view_record`]), which never waits: each frame's timestamps map back
-//! on their own and are read frames later.
+//! prints each frame's after waiting for it, and the view record's `gpu_passes` for a measurement
+//! that asked for them ([`record`]) while it keeps that record ([`crate::view_record`]), which
+//! never waits: each frame's timestamps map back on their own and are read frames later.
+//!
+//! A timing run asks only when it is measuring the GPU, because the timestamps are not free on the
+//! CPU: on `stress-b` they cost the frame thread 0.35 ms a frame inside `render-submit`, 0.59 ms a
+//! frame in all, and the graphics driver's threads 1.07 ms a frame.
 //!
 //! [`crate::map::gpu_contract::device_descriptor`] asks for the timestamp features only in those
 //! two cases, so an ordinary run never creates a query set. The scene writes a timestamp after
@@ -11,7 +15,7 @@
 use crate::profile_writer::profile_print;
 use std::sync::{
     Arc, OnceLock,
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
 use eframe::wgpu;
@@ -32,9 +36,18 @@ pub fn requested() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_GPU_PASSES").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_PASSES")).is_some())
 }
 
-/// Whether per-pass GPU timing goes to the view record.
+/// Asks for per-pass GPU times in the view record, before the device is made (the timestamps are
+/// a device feature). A timing run that does not ask records none: its ~31 `write_timestamp`
+/// commands, their resolve and their readback cost the frame thread CPU no window ever pays.
+pub fn record() {
+    RECORD.store(true, Ordering::Release);
+}
+
+static RECORD: AtomicBool = AtomicBool::new(false);
+
+/// Whether per-pass GPU timing goes to the view record: only a run that asked for it ([`record`]).
 pub fn recorded() -> bool {
-    crate::view_record::on()
+    RECORD.load(Ordering::Acquire) && crate::view_record::on()
 }
 
 /// The device features per-pass timing needs.
@@ -275,6 +288,18 @@ fn pass_times(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_pass_times_are_recorded_only_for_a_run_that_asked_for_them() {
+        crate::view_record::enable();
+        assert!(
+            !recorded(),
+            "keeping the view record must not by itself record per-pass GPU times: their \
+             timestamp commands cost the frame thread CPU no window pays"
+        );
+        record();
+        assert!(recorded(), "a run that asked for them records them");
+    }
 
     #[test]
     fn wrap_copies_sum_without_losing_later_passes() {

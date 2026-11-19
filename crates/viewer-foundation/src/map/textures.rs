@@ -74,22 +74,115 @@ pub fn gradient_layer_height(map: MapSize) -> f32 {
     (map.height / gradient_math::DIVISOR) as f32
 }
 
+/// What a texture holds, as a number no texture's content has carried before: one process-wide
+/// count hands out the next one to every texture made, remade or written. A pass keyed on what it
+/// reads ([`crate::map::pass_key`]) keys on this, so both a rewrite and a replacement say
+/// "different content" and neither can be mistaken for the other.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Content(u64);
+
+impl Content {
+    /// The next content number. Every writer of a texture takes one.
+    pub fn next() -> Self {
+        static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub fn number(self) -> u64 {
+        self.0
+    }
+}
+
+/// A texture a pass binds: the view it binds it through, and what that texture holds when its
+/// writer says. A view whose writer publishes no content cannot be keyed, and a pass that binds
+/// it is drawn every frame.
+#[derive(Clone, Copy)]
+pub struct Sampled<'a> {
+    pub view: &'a wgpu::TextureView,
+    pub content: Option<Content>,
+}
+
 /// A texture and the view every pass binds it through.
 pub struct Bound {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub view_format: wgpu::TextureFormat,
+    /// What the texture holds now. Every write through this handle takes the next number; a
+    /// writer that goes round it leaves a keyed reader holding the picture it drew before.
+    /// Shared with every other handle on the same texture ([`Bound::share`]).
+    content: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Bound {
     fn new(texture: wgpu::Texture, descriptor: &wgpu::TextureViewDescriptor<'_>) -> Self {
         let view = texture.create_view(descriptor);
         let view_format = descriptor.format.unwrap_or(texture.format());
+        Self::with_view(texture, view, view_format)
+    }
+
+    /// A texture and a view of it made elsewhere.
+    pub fn with_view(
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        view_format: wgpu::TextureFormat,
+    ) -> Self {
         Self {
             texture,
             view,
             view_format,
+            content: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+                Content::next().number(),
+            )),
         }
+    }
+
+    /// A texture and its whole default view, with a content of its own: a texture a pass made
+    /// and handed over.
+    pub fn of(texture: wgpu::Texture) -> Self {
+        Self::new(texture, &Default::default())
+    }
+
+    /// Another handle on the same texture and view, holding the same content as this one: a
+    /// write through either is a write both see.
+    pub fn share(&self) -> Self {
+        Self {
+            texture: self.texture.clone(),
+            view: self.view.clone(),
+            view_format: self.view_format,
+            content: std::sync::Arc::clone(&self.content),
+        }
+    }
+
+    /// What the texture holds now.
+    pub fn content(&self) -> Content {
+        Content(
+            self.content
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// This texture bound for sampling, with what it holds.
+    pub fn sampled(&self) -> Sampled<'_> {
+        Sampled {
+            view: &self.view,
+            content: Some(self.content()),
+        }
+    }
+
+    /// Records that the texture's content was written, so every pass keyed on it draws again.
+    /// Writing the bytes it already holds is still a write: a writer that knows the content did
+    /// not change does not call this.
+    pub fn written(&self) {
+        self.content.store(
+            Content::next().number(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Replaces the whole texture's contents and records the write.
+    pub fn write(&self, queue: &wgpu::Queue, size: [u32; 2], bytes_per_texel: u32, data: &[u8]) {
+        write_texels(queue, &self.texture, size, bytes_per_texel, data);
+        self.written();
     }
 }
 
@@ -455,7 +548,8 @@ fn upload_unaligned_bc(
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            // A test reads the decoded texels back.
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | if cfg!(test) { wgpu::TextureUsages::COPY_SRC } else { wgpu::TextureUsages::empty() },
             view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
         })
     });
@@ -730,12 +824,13 @@ pub fn data_texture(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    write_data(queue, &texture, size, bytes_per_texel, data);
+    write_texels(queue, &texture, size, bytes_per_texel, data);
     Ok(Bound::new(texture, &Default::default()))
 }
 
-/// Replaces the contents of a data texture created by [`data_texture`].
-pub fn write_data(
+/// Writes a whole data texture. Callers that hold the [`Bound`] write through
+/// [`Bound::write`], which records the content; this is the creation path's own.
+fn write_texels(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     size: [u32; 2],

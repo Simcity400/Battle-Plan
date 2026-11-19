@@ -3,6 +3,7 @@
 //! Simulation routes and first-edge progress come from the recording. Selection and the
 //! expansion/fill animation belong to this viewer; they are never recording inputs.
 
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
 use viewer_foundation::map::gpu_contract::SCENE_FORMAT;
 use viewer_foundation::map::province_admission::admits_box;
@@ -522,7 +523,7 @@ impl Player {
                 ) {
                     Ok(_) if !visible => {}
                     Ok(submission) => {
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("selected movement arrow"),
                             color_attachments: &[Some(
                                 targets.scene_attachment(wgpu::LoadOp::Load),

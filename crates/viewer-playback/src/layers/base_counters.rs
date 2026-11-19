@@ -8,7 +8,7 @@
 //! base's aggregate of the wings standing at it and its registrations' counts of listed wings
 //! holding planes or missing, each base's placing, and the radar groups by state. A wing, a
 //! registration, a base, a state's flag or a province makes again only the sites, provinces and
-//! radar states it reads into, a unit at a time inside the budget. What reads every site (the
+//! radar states it reads into, a unit at a time inside the settling. What reads every site (the
 //! viewing country, the country links, a census becoming whole or partial) sweeps them in the
 //! same units, carried across frames. The values are shared by shard ([`BaseValues`]), so the
 //! window keeps the last version while the next copies only the shards it changes. Until all of a
@@ -17,7 +17,7 @@
 //! Not this layer's yet: the strategic-location icons, the air volunteer allowances, and the
 //! naval base, naval HQ and facility icons.
 
-use super::{Budget, Carried, Gpu, Inputs, Layer, List, Num, Published, Scope, Scoped, Sight, View, land_markers::{bytes_of, held, recorded, u64s}, touched::Touched};
+use super::{Carried, Settling, Inputs, Layer, List, Num, Published, Scope, Scoped, Sight, View, land_markers::{bytes_of, held, recorded, u64s}, touched::Touched};
 use crate::playhead_host::mirror::{Mirror, Mirrors};
 use playhead::Step;
 use replay_columnar::manifest::Status;
@@ -92,7 +92,7 @@ const TABLES: [TableId; 10] = [
     TableId::CountryLinks,
 ];
 
-/// Units made between two looks at the budget: provinces, bases placed, sites or radar states.
+/// Units made between two looks at the settling: provinces, bases placed, sites or radar states.
 /// Each unit reads a fixed number of rows (a site's bases and their registrations), never a list
 /// of wings.
 const PER_LOOK: usize = 8;
@@ -413,7 +413,7 @@ pub struct BaseCounters {
     /// Its settled sites, provinces and radar states, for the paced count of those in view.
     scoped: Scoped,
     /// Mirror rows its applies read: none.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
 
@@ -455,7 +455,7 @@ impl BaseCounters {
             made: 0,
             work: 0,
             scoped: Scoped::default(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             applied_reads: 0,
         }
     }
@@ -496,24 +496,24 @@ impl BaseCounters {
 
     /// The parts the window's base icons would draw; none while refused or hidden. The window's
     /// layer is its worker's ([`BaseCountersFed`]).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn published(&self) -> Option<&Arc<BaseValues>> {
         self.values.as_ref().filter(|_| self.refused.is_none() && !self.hidden)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn made(&self) -> usize {
         self.made
     }
 
     /// Rows read or changed since it was made: what its applies and settles cost.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn work(&self) -> u64 {
         self.work
     }
 
     /// Mirror rows its applies read since it was made.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
     }
@@ -527,7 +527,7 @@ impl BaseCounters {
     fn release(&mut self) {
         let kept = std::mem::replace(self, Self::new());
         (self.columns, self.hidden, self.vision, self.vision_new, self.frame, self.made, self.work) = (kept.columns, kept.hidden, kept.vision, kept.vision_new, kept.frame, kept.made, kept.work);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.applied_reads = kept.applied_reads;
         }
@@ -789,7 +789,7 @@ impl BaseCounters {
         }
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         let core = if self.hidden { Err("not drawn at this view".to_owned()) } else { self.core(mirrors) };
         let vision = match core {
@@ -818,20 +818,14 @@ impl BaseCounters {
             (self.since, self.pending) = (None, None);
             return;
         }
-        // A look, not a unit: the free unit goes to the first piece of work below.
-        if !budget.peek() {
-            self.since.get_or_insert(self.frame);
-            return;
-        }
         let columns = self.columns();
         let link = Self::link(mirrors, columns);
         if std::mem::take(&mut self.all) {
             self.make_whole(mirrors, columns, ours, &link);
         }
-        self.take_touched(mirrors, budget, columns);
+        self.take_touched(mirrors, columns);
         let census = self.census.unwrap_or_else(|| Census::now(mirrors)).wings(ours);
-        let left = |budget: &mut Budget| budget.left();
-        if self.circle_stale && left(budget) {
+        if self.circle_stale && true {
             let circle = Self::circle(mirrors, columns, ours, &link);
             self.work += 1;
             if circle != self.circle {
@@ -841,7 +835,7 @@ impl BaseCounters {
             }
             self.circle_stale = false;
         }
-        while !self.moved.is_empty() && left(budget) {
+        while !self.moved.is_empty() && true {
             let moved: Vec<(u64, Option<(u32, i32)>)> = self.moved.iter().take(PER_LOOK).map(|(&base, &held)| (base, held)).collect();
             for (base, held) in moved {
                 self.moved.remove(&base);
@@ -849,7 +843,7 @@ impl BaseCounters {
             }
         }
         let provinces = held(mirrors.get(TableId::Provinces));
-        while !self.provinces.is_empty() && left(budget) {
+        while !self.provinces.is_empty() && true {
             let at = self.provinces.len().saturating_sub(PER_LOOK * 8);
             for province in self.provinces.split_off(at) {
                 self.scoped.province(province);
@@ -875,14 +869,14 @@ impl BaseCounters {
                     self.sites.extend(values.site_bases.keys_from((state, i32::MIN)).take_while(|&(of, _)| of == state).map(|(state, kind)| (state, site_kind(kind))));
                 }
             }
-            while !self.sites.is_empty() && left(budget) {
+            while !self.sites.is_empty() && true {
                 for _ in 0..PER_LOOK {
                     let Some(site) = self.sites.pop_first() else { break };
                     self.make_site(site, mirrors, columns, &census, &link);
                 }
             }
             while let Some(from) = self.sweep_sites.filter(|_| self.sites.is_empty())
-                && left(budget)
+                && true
             {
                 let keys: Vec<(u32, i32)> = self.values.as_deref().map(|values| values.site_bases.keys_from(from).take(PER_LOOK + 1).collect()).unwrap_or_default();
                 self.sweep_sites = keys.get(PER_LOOK).copied();
@@ -892,14 +886,14 @@ impl BaseCounters {
             }
         }
         if !self.circle_stale {
-            while !self.radar.is_empty() && left(budget) {
+            while !self.radar.is_empty() && true {
                 for _ in 0..PER_LOOK {
                     let Some(state) = self.radar.pop_first() else { break };
                     self.decide(state, mirrors, columns, &link);
                 }
             }
             while let Some(from) = self.sweep_radar
-                && left(budget)
+                && true
             {
                 let states: Vec<u32> = self.index.hosts.range(from..).take(PER_LOOK + 1).map(|(&state, _)| state).collect();
                 self.sweep_radar = states.get(PER_LOOK).copied();
@@ -1005,10 +999,10 @@ impl BaseCounters {
         }
     }
 
-    /// The marks the applies left, taken while `budget` lasts.
-    fn take_touched(&mut self, mirrors: &Mirrors, budget: &mut Budget, columns: Columns) {
+    /// The marks the applies left.
+    fn take_touched(&mut self, mirrors: &Mirrors, columns: Columns) {
         let mut touched = std::mem::take(&mut self.touched);
-        touched.take(mirrors, budget, |table, touch, key| self.touch(table, touch.groups(), key, mirrors, columns));
+        touched.take(mirrors, |table, touch, key| self.touch(table, touch.groups(), key, mirrors, columns));
         self.touched = touched;
     }
 }
@@ -1060,7 +1054,7 @@ impl Layer for BaseCounters {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         let made = self.made;
         self.all = true;
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors);
         self.made = made;
         Ok(())
     }
@@ -1070,7 +1064,7 @@ impl Layer for BaseCounters {
         if step.gap() || self.columns.is_none() || self.hidden || self.refused.is_some() || self.all {
             return;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let reads = crate::playhead_host::mirror::probe::reads();
         self.stepped.get_or_insert(step.first());
         let columns = self.columns();
@@ -1091,26 +1085,22 @@ impl Layer for BaseCounters {
         if self.carries() && self.pending.is_none() {
             self.pending = Some(step.first());
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.applied_reads += crate::playhead_host::mirror::probe::reads() - reads;
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         let flags = [self.all, self.circle_stale, self.notes_stale, self.sweep_sites.is_some(), self.sweep_radar.is_some()].into_iter().filter(|&flag| flag).count();
         let entities = flags + self.provinces.len() + self.moved.len() + self.bases.len() + self.states.len() + self.sites.len() + self.radar.len() + self.touched.len();
-        let since = self.since.into_iter().chain(self.touched.since()).min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     /// The hour before the oldest step whose changes are not all in the values; nothing while it

@@ -1,6 +1,6 @@
-use super::{Geography, Rails, Target};
+use super::{Geography, Rails, Strips, Target};
 use crate::{
-    layers::{Budget, Layer, View},
+    layers::{Layer, View},
     playhead_host::{Frame, MapSide, mirror::Mirror, open, units::Units},
 };
 use playhead::{
@@ -141,7 +141,7 @@ pub fn side_at_pace(pages: Arc<dyn Pages>, layer: Box<dyn Layer>, name: &str, sp
     let kinds = Arc::new((0..TableId::ALL.len()).map(|table| pages.kinds(table).map(<[Kind]>::to_vec).unwrap_or_default()).collect());
     let timeline = Timeline::whole(&*pages).unwrap();
     let units = Units { name: name.to_owned(), pages, timeline, kinds };
-    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: RING, speed, rate: 1.0 };
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: RING, speed, rate: 1.0, ..Settings::default() };
     let entry = open(units, settings).unwrap();
     let side = MapSide::new(Arc::clone(&entry), vec![layer], View::default()).unwrap();
     entry.playhead().play(speed);
@@ -288,7 +288,7 @@ fn rails_settled_every_step_equal_composed_and_follow_writes_deletes_inserts_and
         }
         let (mirrors, _) = side.parts().unwrap();
         let layer = rails(side);
-        assert_eq!(layer.carried().entities, 0, "a 3 ms budget settles a step of this world");
+        assert_eq!(layer.carried().entities, 0, "a 3 ms settling settles a step of this world");
         let mut fresh = layer.fresh();
         fresh.compose(mirrors).unwrap();
         assert_eq!(layer.differ(&fresh), (0, None), "settled at hour {:?} equals composed", frame.applied);
@@ -313,27 +313,6 @@ fn rails_settled_every_step_equal_composed_and_follow_writes_deletes_inserts_and
         hour >= 76
     });
     assert!(seen.iter().any(|hour| NOT_RECORDED.contains(hour)) && seen.iter().any(|&hour| hour >= 48 && hour < 76), "{seen:?}");
-}
-
-#[test]
-fn rails_out_of_budget_carry_and_settle_late_to_the_newest_values() {
-    let mut side = side("rails-budget");
-    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
-    // Held, the steps' marks are carried and the host counts the frames; released with no budget, a
-    // unit a frame settles them.
-    side.set_budget(Duration::ZERO);
-    let settles = side.hold_settles();
-    let mut late = 0;
-    frames_until(&mut side, |side, frame| {
-        late = frame.layers[0].late;
-        frame.applied.is_some_and(|hour| hour >= 36) && rails(side).carried().entities > 0 && late >= 1
-    });
-    assert!(late >= 1, "the carry-over is counted in frames: {late}");
-    crate::layers::recorded::released_unit_by_unit(&mut side, settles);
-    let (mirrors, _) = side.parts().unwrap();
-    let mut fresh = rails(&side).fresh();
-    fresh.compose(mirrors).unwrap();
-    assert_eq!(rails(&side).differ(&fresh), (0, None), "settled late, with the newest values");
 }
 
 #[test]
@@ -471,7 +450,7 @@ fn sent_at(side: &mut MapSide, hour: i32, scene: &mut Counted) -> Rails {
     let (mirrors, _) = side.parts().unwrap();
     let mut layer = rails(side).fresh();
     layer.compose(mirrors).unwrap();
-    layer.push(scene, &mut Budget::unlimited()).unwrap();
+    layer.push(scene).unwrap();
     assert!(layer.uploaded(), "an unlimited upload sends everything");
     layer
 }
@@ -491,11 +470,11 @@ fn rails_upload_writes_only_the_strip_a_level_change_redrew() {
     settle_at(&mut side, 8);
     let (mirrors, _) = side.parts().unwrap();
     layer.mark_edge(key(100, 101));
-    layer.settle_dirty(mirrors, &mut Budget::unlimited()).unwrap();
+    layer.settle_dirty(mirrors).unwrap();
     assert_ne!(layer.runs()[&100].vertices, before, "the level is drawn in province 100's strip");
     let (writes, written, bridges) = (scene.writes, scene.written, scene.bridges);
     assert!(!layer.uploaded(), "the redrawn strip is owed to the scene");
-    layer.push(&mut scene, &mut Budget::unlimited()).unwrap();
+    layer.push(&mut scene).unwrap();
     assert_eq!(
         (scene.writes - writes, scene.written - written, scene.bridges - bridges),
         (1, layer.runs()[&100].vertices.len(), 0),
@@ -505,25 +484,19 @@ fn rails_upload_writes_only_the_strip_a_level_change_redrew() {
     assert_eq!(scene.drawn(), whole(&layer), "the scene draws today's mesh after the change");
 }
 
-/// With its budget spent, each upload sends one piece (the bridges, or one strip) and carries the
-/// rest; the pieces together draw today's whole mesh.
+/// An upload runs to completion: one sends the bridges and every strip, and they draw today's whole
+/// mesh.
 #[test]
-fn rails_upload_out_of_budget_sends_one_piece_a_frame_and_carries_the_rest() {
-    let mut side = side_of(chain(), Box::new(Rails::new(Arc::new(Stub))), "rails-upload-budget");
+fn rails_upload_sends_every_piece_at_once() {
+    let mut side = side_of(chain(), Box::new(Rails::new(Arc::new(Stub))), "rails-upload-settling");
     settle_at(&mut side, 4);
     let (mirrors, _) = side.parts().unwrap();
     let mut layer = rails(&side).fresh();
     layer.compose(mirrors).unwrap();
     let mut scene = Counted::default();
-    let mut uploads = 0;
-    while !layer.uploaded() {
-        let (writes, bridges) = (scene.writes, scene.bridges);
-        layer.push(&mut scene, &mut Budget::new(Duration::ZERO)).unwrap();
-        uploads += 1;
-        assert_eq!((scene.writes - writes) + (scene.bridges - bridges), 1, "upload {uploads} sends one piece");
-        assert!(uploads <= CHAIN as usize + 1, "the upload never finished");
-    }
-    assert_eq!(uploads, CHAIN as usize + 1, "the bridges, then a strip an upload");
+    layer.push(&mut scene).unwrap();
+    assert!(layer.uploaded(), "one upload sends it all");
+    assert_eq!(scene.writes + scene.bridges, CHAIN as usize + 1, "the bridges and a strip a chain link");
     assert_eq!(scene.drawn(), whole(&layer), "the pieces draw today's mesh");
 }
 
@@ -573,7 +546,6 @@ fn rails_mark_no_supply_row_for_a_write_that_leaves_its_source_as_it_was() {
     let mut side = side_of(sources(), Box::new(Rails::new(Arc::new(Stub))), "rails-sources");
     settle_at(&mut side, 4);
     let before = rails(&side).marked()[1];
-    side.set_budget(Duration::ZERO);
     let settles = side.hold_settles();
     // Frames at a head of the test's own: the hour 10 write stays out of the first window.
     applied_at(&mut side, 8);
@@ -583,7 +555,6 @@ fn rails_mark_no_supply_row_for_a_write_that_leaves_its_source_as_it_was() {
     assert_eq!(rails(&side).marked()[1], before + 1, "province 3's first flags bit marks its row");
     assert_eq!(rails(&side).carried().entities, 1, "held, the row is carried");
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
-    side.set_budget(Duration::from_secs(1));
     let hour = side.applied().unwrap();
     settle_at(&mut side, hour);
     let sources: Vec<u32> = rails(&side).network().sources.iter().copied().collect();
@@ -592,4 +563,44 @@ fn rails_mark_no_supply_row_for_a_write_that_leaves_its_source_as_it_was() {
     let mut fresh = rails(&side).fresh();
     fresh.compose(mirrors).unwrap();
     assert_eq!(rails(&side).differ(&fresh), (0, None), "settled, the railway equals one composed");
+}
+
+/// The index list a publish writes: the entries of the runs that moved, and nothing read of the
+/// runs that stand where they stood. Before, every publish walked every index of every live strip
+/// to find the span that moved.
+#[test]
+fn rail_strip_indices_are_written_where_a_run_moved_and_read_nowhere_else() {
+    let whole = |runs: &[Range<u32>]| -> Vec<u32> { runs.iter().flat_map(|run| run.clone().chain(std::iter::once(u32::MAX))).collect() };
+    let mut runs: Vec<Range<u32>> = (0..50u32).map(|at| at * 10..at * 10 + 8).collect();
+    let mut strips = Strips::default();
+    let (length, owed) = strips.laid(&runs).unwrap();
+    assert_eq!((length, owed.clone()), (whole(&runs).len(), Some(0..whole(&runs).len())), "nothing stands yet, so the whole list is owed");
+    // What the buffer holds: every entry the span carried.
+    strips.sent = length;
+    assert_eq!(strips.held[..length], whole(&runs)[..], "the list laid out whole");
+    assert_eq!(strips.laid(&runs).unwrap(), (length, None), "the same runs owe nothing");
+
+    // A strip redrawn to the same length moves its own entries alone; the runs after it stand.
+    runs[20] = 1_000..1_008;
+    let (length, owed) = strips.laid(&runs).unwrap();
+    assert_eq!(owed, Some(20 * 9..20 * 9 + 8), "the run's entries, not its separator, which did not move");
+    assert_eq!(strips.held[..length], whole(&runs)[..], "and the list holds what a whole layout holds");
+    strips.sent = length;
+
+    // A strip of another length shifts every entry after it: they are laid out again.
+    runs[10] = 2_000..2_004;
+    let (length, owed) = strips.laid(&runs).unwrap();
+    assert_eq!(owed.map(|owed| owed.start), Some(10 * 9), "from the run that changed length");
+    assert_eq!(strips.held[..length], whole(&runs)[..], "the shifted list");
+    strips.sent = length;
+
+    // A strip gone, and one more: the list shrinks and grows where it must.
+    runs.remove(30);
+    let (length, _) = strips.laid(&runs).unwrap();
+    assert_eq!(strips.held[..length], whole(&runs)[..]);
+    strips.sent = length;
+    runs.push(5_000..5_016);
+    let (length, owed) = strips.laid(&runs).unwrap();
+    assert_eq!(owed.map(|owed| owed.start), Some(strips.sent), "only the new tail");
+    assert_eq!(strips.held[..length], whole(&runs)[..]);
 }

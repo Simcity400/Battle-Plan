@@ -8,7 +8,7 @@ pub mod proof;
 #[cfg(test)]
 mod tests;
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, View, resource_icons::{complete, next_version}};
+use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, View, resource_icons::{complete, next_version}};
 use crate::{
     document::Content,
     playhead_host::{
@@ -120,7 +120,7 @@ impl OccupationMarks {
         }
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         let Some(columns) = self.columns else { return };
         let content = Arc::clone(&self.content);
@@ -149,7 +149,7 @@ impl OccupationMarks {
         }
         let mut dirty = std::mem::take(&mut self.states);
         let mut changed = false;
-        let _ = dirty.settle(budget, |state| {
+        let _ = dirty.settle(|state| {
             let (Some(states), Some(links), Some(resistance)) = (mirrors.get(TableId::States), mirrors.get(TableId::CountryLinks), mirrors.get(TableId::StateResistance)) else { return Ok(()) };
             let Some(slot) = states.slot(u128::from(state)) else {
                 changed |= self.marks.remove(&state).is_some();
@@ -242,7 +242,7 @@ impl Layer for OccupationMarks {
         self.states.clear();
         (self.everything, self.reviewers) = (true, true);
         self.statuses = TABLES.into_iter().map(|table| (table, mirrors.get(table).and_then(Mirror::status))).collect();
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors);
         self.marked = marked;
         self.version = next_version();
         Ok(())
@@ -292,17 +292,14 @@ impl Layer for OccupationMarks {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.states.len(), frames: self.states.since().map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities: self.states.len() }
     }
 
     fn held(&self) -> usize {

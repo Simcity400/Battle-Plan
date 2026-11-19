@@ -3,8 +3,14 @@ import type { BoundTrack } from './model';
 import type { PlaybackController } from './playback';
 
 type ClockTarget = Pick<ReturnType<PlaybackController['getSnapshot']>, 'hour' | 'fraction' | 'hoursPerSecond' | 'playing' | 'seekSequence'>;
-type MapClock = { getSnapshot: () => ClockTarget; subscribe: PlaybackController['subscribe']; subscribeFrame: PlaybackController['subscribeFrame'] };
-export type MapPlayback = Omit<ClockTarget, 'hour'>;
+type MapClock = { getSnapshot: () => ClockTarget; composedAt: PlaybackController['composedAt'];
+  subscribe: PlaybackController['subscribe']; subscribeFrame: PlaybackController['subscribeFrame'] };
+/** An anchor as the page composed it: where the clock stood, how it was moving, and when the page
+ * read it (`composedAt`, on the page's own monotonic clock). The map places the anchor by that
+ * time, so the time it spends in delivery moves no clock. */
+export type MapPlayback = Omit<ClockTarget, 'hour'> & { composedAt: number };
+/** The clock as one anchor carries it: its values and when the page read them. */
+type Anchor = ClockTarget & { composedAt: number };
 type SeekMap = (path: string, revision: string, branch: string, hour: number, playback: MapPlayback) => Promise<void>;
 
 /** Sends the clock's anchors, only the latest when the native command is busy; the map runs its own clock between
@@ -13,8 +19,8 @@ type SeekMap = (path: string, revision: string, branch: string, hour: number, pl
 export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: SeekMap, onStatus: (error: unknown | null) => void) {
   let active = true;
   let sending = false;
-  let pending: ClockTarget | null = null;
-  let last: ClockTarget | null = null;
+  let pending: Anchor | null = null;
+  let last: Anchor | null = null;
   const flush = async () => {
     if (sending) return;
     sending = true;
@@ -22,7 +28,7 @@ export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: Seek
       while (active && pending != null) {
         const target = pending; pending = null;
         try {
-          await seek(track.source.path, track.source.revision, track.branch.id, target.hour, { playing: target.playing, seekSequence: target.seekSequence, fraction: target.fraction, hoursPerSecond: target.hoursPerSecond });
+          await seek(track.source.path, track.source.revision, track.branch.id, target.hour, { playing: target.playing, seekSequence: target.seekSequence, fraction: target.fraction, hoursPerSecond: target.hoursPerSecond, composedAt: target.composedAt });
           if (active && target === last) onStatus(null);
         } catch (error) {
           if (active && target === last) onStatus(error);
@@ -34,7 +40,8 @@ export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: Seek
   const update = (anchor: boolean) => {
     if (!active) return;
     const snapshot = clock.getSnapshot();
-    const target = { hour: snapshot.hour + track.axisOffset, playing: snapshot.playing, seekSequence: snapshot.seekSequence, fraction: snapshot.fraction, hoursPerSecond: snapshot.hoursPerSecond };
+    const target = { hour: snapshot.hour + track.axisOffset, playing: snapshot.playing, seekSequence: snapshot.seekSequence, fraction: snapshot.fraction, hoursPerSecond: snapshot.hoursPerSecond, composedAt: clock.composedAt() };
+    // Only the clock's own values decide whether this is a new anchor; when it was composed is not one.
     if (target.hour === last?.hour && target.fraction === last.fraction && target.hoursPerSecond === last.hoursPerSecond
       && target.playing === last.playing && target.seekSequence === last.seekSequence) return;
     const { hour } = target;
@@ -56,6 +63,13 @@ export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: Seek
   update(true);
   const stop = () => { active = false; pending = null; unsubscribe(); unsubscribeFrame(); };
   return Object.assign(stop, { resend: () => { last = null; update(true); } });
+}
+
+/** What decides whether a set of dashboard map targets is the one the maps already hold. When the
+ * page composed a target is not part of it: a target the maps already hold is not sent again
+ * because the page read its clock at a new time. */
+export function viewsKey(views: { composedAt: number }[]): string {
+  return JSON.stringify(views.map(({ composedAt: _composedAt, ...view }) => view));
 }
 
 /** Map commands, each failure reported by its operation until a later send of that operation succeeds. Only an

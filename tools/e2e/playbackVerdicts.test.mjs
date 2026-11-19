@@ -78,14 +78,12 @@ test('the map\'s bars name the worst frame, and a partial run judges nothing', (
   const layers = rows.find(row => row.bar === 'content lag, the layers');
   assert.equal(layers.verdict, FAIL, 'worst 60 h is over two steps');
   assert.deepEqual([layers.values.p99, layers.worst.frame], [10, 90]);
-  assert.equal(verdictOf(rows, 'content lag, today\'s parts'), FAIL);
   assert.equal(verdictOf(rows, 'playhead step time'), UNMEASURABLE);
   const fine = pacedRows({ ...paced(), label: 'layers', floor: { rate: 0, late: 0, frames: 600 } });
   assert.deepEqual(['window-thread CPU a frame', 'presented frame interval', 'late frames against the floor', 'content lag, the layers'].map(bar => verdictOf(fine, bar)), [PASS, PASS, PASS, PASS]);
-  assert.equal(verdictOf(fine, 'content lag, today\'s parts'), FAIL, 'today\'s 30 h is over one step at p99');
-  const neverDrawn = pacedRows({ ...paced(120, frames => frames.forEach(frame => { frame.drawn_hour = null; })), label: 'layers' })
-    .find(row => row.bar === 'content lag, today\'s parts');
-  assert.deepEqual([neverDrawn.verdict, neverDrawn.measured], [FAIL, 'none of today\'s parts was drawn']);
+  const neverDrawn = pacedRows({ ...paced(120, frames => frames.forEach(frame => { frame.layers = {}; })), label: 'layers' })
+    .find(row => row.bar === 'content lag');
+  assert.deepEqual([neverDrawn.verdict, neverDrawn.measured], [FAIL, 'no picture was drawn']);
   const partial = pacedRows({ ...run, run: { ...run.run, exit: null, stopped: 'stopped after 5 s, as asked' }, label: 'layers' });
   assert.ok(partial.every(row => row.verdict === PARTIAL && row.measured === '–'));
 });
@@ -127,11 +125,10 @@ test("each layer is judged against its own bar on its own CPU, and the stepper's
   assert.deepEqual(['playhead stalls', 'playhead held()'].map(bar => verdictOf(rows, bar)), [PASS, PASS]);
 });
 
-test("a run cut short says what it covered, and a run asked without today's pipeline must have run so", () => {
+test('a run cut short says what it covered', () => {
   const run = paced(60);
   assert.match(wholeHarness({ ...run.run, exit: 1, stopped: 'stopped after 9 s, as asked' }, null, run.frames).reasons.join('; '), /covered 60 frames, the head to 2416 of 2440/);
-  assert.match(wholeHarness({ ...run.run, todayOff: true }, run.report, run.frames).reasons.join(), /the report says it ran/);
-  assert.equal(wholeHarness({ ...run.run, todayOff: true }, { ...run.report, layers_only: { on: true } }, run.frames).whole, true);
+  assert.equal(wholeHarness(run.run, run.report, run.frames).whole, true);
 });
 
 test('the proof run judges stalls and the playhead\'s held bytes', () => {

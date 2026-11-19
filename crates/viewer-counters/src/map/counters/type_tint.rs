@@ -10,7 +10,7 @@
 use replay_data::{rows::DivisionRow, rows::SentVolunteerRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::Arc,
 };
@@ -276,8 +276,13 @@ fn country<F: RelationFacts>(facts: &F, viewer: &Result<F::Receiver<'_>, String>
 /// earliest such position. A lookup never walks divisions or volunteer lists.
 #[derive(Debug, Default, PartialEq)]
 pub struct Index {
-    countries: HashMap<u32, Country>,
+    /// Held in shards, so an index made again for a few countries copies the shards they stand in
+    /// and shares the rest.
+    countries: super::Shards<u32, Country>,
     problem: Option<String>,
+    /// Per country whose relation is refused, its reason, which decides `query_problem` without
+    /// reading every country.
+    problems: BTreeMap<u32, String>,
     query_problem: Option<String>,
     volunteer_problem: Option<String>,
 }
@@ -348,6 +353,27 @@ impl Index {
         }
     }
 
+    /// `raw`'s relation decided from `facts`, with the reason it is refused kept for
+    /// [`Self::query_problem`]; whether it changed.
+    fn decide<F: RelationFacts>(&mut self, facts: &F, viewer: &Result<F::Receiver<'_>, String>, links: &BTreeMap<u32, u32>, hosts: &[(u32, u32)], raw: u32) -> bool {
+        if raw != 0 && !links.contains_key(&raw) {
+            self.problems.remove(&raw);
+            return self.countries.remove(&raw);
+        }
+        let decided = country(facts, viewer, links, hosts, raw);
+        match refusal(&decided) {
+            Some(reason) => self.problems.insert(raw, reason),
+            None => self.problems.remove(&raw),
+        };
+        self.countries.insert(raw, decided)
+    }
+
+    /// The first refusal in the order the countries are decided: the volunteers', then the lowest
+    /// raw reference's, country zero's last.
+    fn query_problem(&self) -> Option<String> {
+        self.volunteer_problem.clone().or_else(|| self.problems.range(1..).next().or_else(|| self.problems.get_key_value(&0)).map(|(_, reason)| reason.clone()))
+    }
+
     fn new(frame: &DecodedFrame, links: &BTreeMap<u32, u32>, key: &Key) -> Self {
         let facts = FrameFacts { frame, links, families: Families::read(frame, links) };
         Self::compute(&facts, links, key.ours, key.hosts.as_deref().map_err(Clone::clone))
@@ -356,51 +382,44 @@ impl Index {
     /// The index from `facts`: `links` raw to canonical slot, the viewing country's slot `ours`
     /// and its volunteer hosts ([`volunteer_hosts`]).
     pub fn compute<F: RelationFacts>(facts: &F, links: &BTreeMap<u32, u32>, ours: u32, hosts: Result<&[(u32, u32)], String>) -> Self {
-        let viewer = viewer_of(facts, links, ours);
-        let volunteer_problem = hosts.as_ref().err().cloned();
-        let hosts = hosts.unwrap_or_default();
-        let countries = links.keys().copied().chain([0]).map(|raw| (raw, country(facts, &viewer, links, hosts, raw))).collect();
-        let mut index = Self { countries, problem: None, query_problem: None, volunteer_problem };
-        index.query_problem = index.first_query_problem(links);
+        let mut index = Self { volunteer_problem: hosts.as_ref().err().cloned(), ..Self::default() };
+        index.remake_in_place(facts, links, ours, hosts, links.keys().copied().chain([0]), &mut |_| {});
         index
     }
 
-    /// This index made again for the same viewing country with only the countries `raws` names
-    /// decided anew from `facts`; every other country's relation is kept. A country `links` no
-    /// longer holds leaves.
-    pub fn remake<F: RelationFacts>(&self, facts: &F, links: &BTreeMap<u32, u32>, ours: u32, hosts: Result<&[(u32, u32)], String>, raws: &BTreeSet<u32>) -> Self {
-        if self.problem.is_some() {
-            return Self::compute(facts, links, ours, hosts);
-        }
+    /// The countries `raws` names decided anew from `facts` into this index, each one that changed
+    /// handed to `changed`; every other country's relation is kept and the shards they stand in are
+    /// not copied. A country `links` no longer holds leaves.
+    pub fn remake_in_place<F: RelationFacts>(
+        &mut self,
+        facts: &F,
+        links: &BTreeMap<u32, u32>,
+        ours: u32,
+        hosts: Result<&[(u32, u32)], String>,
+        raws: impl IntoIterator<Item = u32>,
+        changed: &mut dyn FnMut(u32),
+    ) {
         let viewer = viewer_of(facts, links, ours);
-        let volunteer_problem = hosts.as_ref().err().cloned();
+        self.volunteer_problem = hosts.as_ref().err().cloned();
         let hosts = hosts.unwrap_or_default();
-        let mut countries = self.countries.clone();
-        for &raw in raws {
-            if raw == 0 || links.contains_key(&raw) {
-                countries.insert(raw, country(facts, &viewer, links, hosts, raw));
-            } else {
-                countries.remove(&raw);
+        self.problem = None;
+        for raw in raws {
+            if self.decide(facts, &viewer, links, hosts, raw) {
+                changed(raw);
             }
         }
-        let mut index = Self { countries, problem: None, query_problem: None, volunteer_problem };
-        index.query_problem = index.first_query_problem(links);
-        index
+        self.query_problem = self.query_problem();
     }
 
-    /// The first refusal in the order the countries are decided (the volunteers', then each
-    /// country's in raw order, country zero last): what `of` reports when it answers `None`.
-    fn first_query_problem(&self, links: &BTreeMap<u32, u32>) -> Option<String> {
-        if let Some(problem) = &self.volunteer_problem {
-            return Some(problem.clone());
+    /// The same index, its countries' shards shared with this one until one of them changes.
+    pub fn clone_shared(&self) -> Self {
+        Self {
+            countries: self.countries.clone(),
+            problem: self.problem.clone(),
+            problems: self.problems.clone(),
+            query_problem: self.query_problem.clone(),
+            volunteer_problem: self.volunteer_problem.clone(),
         }
-        links.keys().copied().chain([0]).find_map(|raw| {
-            let country = self.countries.get(&raw)?;
-            match (&country.friend, &country.enemy, &country.first_host_enemy) {
-                (Err(reason), _, _) | (_, Err(reason), _) | (_, _, Some((_, Err(reason)))) => Some(reason.clone()),
-                _ => None,
-            }
-        })
     }
 
     /// An index the hour cannot make, for `problem`.
@@ -418,7 +437,7 @@ impl Index {
                 first.get_or_insert(format!("{what}: {a:?} against {b:?}"));
             }
         }
-        let raws: BTreeSet<u32> = self.countries.keys().chain(other.countries.keys()).copied().collect();
+        let raws: BTreeSet<u32> = self.countries.keys().chain(other.countries.keys()).collect();
         for raw in raws {
             let (a, b) = (self.countries.get(&raw), other.countries.get(&raw));
             if a != b {
@@ -431,13 +450,18 @@ impl Index {
 
     /// Countries (raw references) whose relation differs from `other`'s.
     pub fn changed_from(&self, other: &Self) -> Vec<u32> {
-        let raws: BTreeSet<u32> = self.countries.keys().chain(other.countries.keys()).copied().collect();
+        let raws: BTreeSet<u32> = self.countries.keys().chain(other.countries.keys()).collect();
         raws.into_iter().filter(|raw| self.countries.get(raw) != other.countries.get(raw)).collect()
     }
 
     /// Why the viewer's volunteer hosts are not known, when they are not.
     pub fn volunteer_problem(&self) -> Option<&String> {
         self.volunteer_problem.as_ref()
+    }
+
+    /// The countries it holds a relation for, by raw reference, in key order.
+    pub fn countries(&self) -> impl Iterator<Item = u32> + '_ {
+        self.countries.keys()
     }
 
     /// Countries it holds a relation for.
@@ -523,6 +547,14 @@ impl Index {
         } else {
             Allegiance::Other
         })
+    }
+}
+
+/// The reason one country's relation is refused, in the order the index reports it.
+fn refusal(country: &Country) -> Option<String> {
+    match (&country.friend, &country.enemy, &country.first_host_enemy) {
+        (Err(reason), _, _) | (_, Err(reason), _) | (_, _, Some((_, Err(reason)))) => Some(reason.clone()),
+        _ => None,
     }
 }
 

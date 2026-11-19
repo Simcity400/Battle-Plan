@@ -166,6 +166,13 @@ pub fn committed() -> Option<usize> {
     read.then(|| stats[COMMITTED] as usize + pages::committed())
 }
 
+/// Large blocks' own pages: the calls made, those that overlapped another call (what one list
+/// behind one lock would have made wait), and those that found their size class held and so took
+/// fresh pages or released at once instead of waiting.
+pub fn large_blocks() -> (u64, u64, u64) {
+    pages::contention()
+}
+
 /// The bytes a request of `size` takes of the heap: its own pages past [`pages::LARGE`], else
 /// mimalloc's size class. It allocates nothing, so the allocator may call it.
 pub fn size_class(size: usize) -> usize {

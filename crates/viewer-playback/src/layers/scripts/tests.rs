@@ -1,8 +1,9 @@
-use super::{Ask, Scripts, Sources};
+use super::{Held, Scripts};
+use crate::layers::{Layer, Settling};
 use crate::playhead_host::{
-    Entry, open,
-    rows::{Cadence, Recording, RowReader, Rows},
+    open,
     units::Units,
+    views::{Need, Recording, Views, apart::Apart},
 };
 use dashboard_text::triggers::World;
 use installed_content_sound::music::{Music, Song, Track};
@@ -27,7 +28,6 @@ use viewer_foundation::{map::perspective, trigger_content::TriggerContent};
 use viewer_raids::map::raids::{self, test_support};
 
 const RECORDING: Recording = Recording { branch: 3 };
-const LIMIT: Duration = Duration::from_secs(60);
 /// Hours recorded; the head moves an hour at a time until the scripts have learned their tables.
 const HOURS: u32 = 120;
 
@@ -206,7 +206,7 @@ fn record(name: &str, frame: &DecodedFrame) -> Units {
 
 /// An hour a step.
 fn hourly_steps() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }
 }
 
 /// Two songs: a base chance, and one doubled while the viewing country is at war with ENG.
@@ -228,10 +228,10 @@ fn fixture() -> DecodedFrame {
 }
 
 struct Fixture {
-    entry: Arc<Entry>,
-    rows: Arc<Rows>,
-    /// A reader every step, which the test waits on to know the head reached an hour.
-    watch: RowReader,
+    /// A view store of this playhead, driven to the hours the test asks for, as the map side's
+    /// is by its step.
+    fed: Apart,
+    views: Views,
     raids: Arc<raids::RaidAssets>,
     triggers: Arc<TriggerContent>,
     audio: Arc<viewer_audio::Content>,
@@ -246,35 +246,47 @@ impl Fixture {
         let triggers = Arc::new(raids.trigger_content.clone());
         let entry = open(record(name, &fixture()), hourly_steps()).unwrap();
         entry.set_capture(CaptureMode::Full);
-        let rows = Rows::of(&entry, RECORDING).unwrap();
-        let watch = rows.reader(&[TableId::Countries], Cadence::EveryStep);
-        rows.settled();
-        rows.drive(1);
         entry.playhead().seek(1);
-        watch.wait(|frame| frame.hour == 1, LIMIT).unwrap();
-        Self { entry, rows, watch, raids, triggers, audio: music(), tables, hour: 1 }
+        let mut fed = Apart::new(&entry, RECORDING.branch).unwrap();
+        assert!(fed.drive(1), "the store never reached hour 1");
+        let views = fed.store().handle();
+        Self { fed, views, raids, triggers, audio: music(), tables, hour: 1 }
     }
 
-    fn ask(&self, playing: bool) -> Ask<'_> {
-        static CHOICE: std::sync::LazyLock<perspective::Choice> = std::sync::LazyLock::new(perspective::Choice::default);
-        Ask { entry: &self.entry, recording: RECORDING, sources: Sources { raids: &self.raids, triggers: &self.triggers, audio: Some(&self.audio), tables: Some(self.tables) }, perspective: &CHOICE, playing, raids: true, music: true }
+    /// What the scripts evaluate with, as the layer is given it from the document's content.
+    fn content(&self) -> Held {
+        Held { raids: Arc::clone(&self.raids), triggers: Arc::clone(&self.triggers), audio: Some(Arc::clone(&self.audio)), tables: Some(self.tables) }
     }
 
-    /// The head an hour on, reached.
+    /// The layer opened on this store, drawn, at the hour the store stands at.
+    fn scripts(&self, needs: &[Need]) -> Scripts {
+        let mut scripts = Scripts::with(self.content(), needs.to_vec());
+        scripts.views = Some(self.views.clone());
+        scripts.shown = (true, true);
+        scripts.applied = Some(self.hour);
+        // The music chances' rate is read against a clock this test steps, so what it withholds
+        // never depends on how long the test took.
+        scripts.clock = super::Clock::Stepped(Duration::ZERO);
+        scripts
+    }
+
+    /// The views its readers ask for, posted again at the hour it stands at: what a publication
+    /// the head stands still for does.
+    fn posted(&mut self) {
+        assert!(self.fed.drive(self.hour), "the store never posted hour {}", self.hour);
+    }
+
+    /// The head an hour on, reached, and its views posted.
     fn step(&mut self) {
         self.hour += 1;
-        self.rows.drive(self.hour);
-        self.watch.wait(|frame| frame.hour == self.hour, LIMIT).unwrap();
+        assert!(self.fed.drive(self.hour), "the store never reached hour {}", self.hour);
     }
 
-    /// Whether every table the scripts declare has joined: the rows' worker holds its mirror. The
-    /// scripts' worker declares off this thread, so this waits for the declaration first: a head
-    /// moved before it would spend the recording's hours with nothing to join.
-    fn joined(&self, tables: &[TableId], deadline: std::time::Instant) -> bool {
-        assert!(self.rows.declared(tables, deadline), "the scripts' reader did not declare its tables to the playhead within {LIMIT:?}: {tables:?}");
-        let held = self.rows.held();
-        tables.iter().all(|table| held.mirrors.iter().any(|(mirrored, _)| mirrored == table))
+    /// The tables the store keeps views of now.
+    fn held(&self) -> Vec<TableId> {
+        self.fed.store().held().iter().map(|(table, _)| *table).collect()
     }
+
 }
 
 /// Today's evaluation over today's frame at `hour`: the raid icons with every target evaluated,
@@ -318,6 +330,32 @@ fn today_in(fixture: &Fixture, hour: Hour, ours: u32) -> (String, String) {
     (format!("{:?} {:?}", icons.icons, icons.report), format!("{:?} {:?}", music.weights, music.refusals))
 }
 
+/// The layer asked and joined as the map side's step asks and joins it: the newest rows offered to
+/// the worker at the apply, then what it published taken, waiting for the hour applied when the
+/// publication waits ([`Layer::ask`], [`Layer::join`]).
+fn asked(scripts: &mut Scripts, settling: Settling) -> io::Result<()> {
+    let mirrors = crate::playhead_host::mirror::Mirrors::default();
+    let upstream = crate::layers::Upstream::new(&[]);
+    assert!(Layer::ask(scripts, &mirrors, &upstream)?, "the scripts join a maker of their own");
+    Layer::join(scripts, &mirrors, &upstream, settling)
+}
+
+/// A publication at the hour after the one before: the hour's steps applied and the views its
+/// readers asked for posted, then the layer asked and joined.
+fn step(fixture: &mut Fixture, scripts: &mut Scripts, settling: Settling) -> io::Result<()> {
+    scripts.ensure_open();
+    fixture.step();
+    scripts.applied = Some(fixture.hour);
+    asked(scripts, settling)
+}
+
+/// What the layer published, as the proof compares it: the icons and the music chances in words.
+fn published(scripts: &Scripts, ours: u32, hour: Hour) -> Option<(String, String)> {
+    let icons = scripts.raids(RECORDING.branch, ours).filter(|icons| icons.built_for.is_some_and(|(_, at, _)| at == hour) && icons.report.cycle_complete())?;
+    let (_, music) = scripts.music_at().filter(|(at, _)| *at == hour)?;
+    Some((format!("{:?} {:?}", icons.icons, icons.report), format!("{:?} {:?}", music.weights, music.refusals)))
+}
+
 #[test]
 fn the_script_readers_read_rows_at_the_head_learning_their_tables_and_close_with_the_view() {
     let mut fixture = Fixture::new("readers");
@@ -327,56 +365,85 @@ fn the_script_readers_read_rows_at_the_head_learning_their_tables_and_close_with
     let read = read_by(&fixture, ours);
     assert!(read.contains(&tables::WarRelations::ID), "{read:?}");
     let primed: Vec<TableId> = read.iter().copied().filter(|&table| table != tables::WarRelations::ID).collect();
-    let mut scripts = Scripts::primed(&primed.iter().map(|&table| crate::playhead_host::rows::Need::keys(table)).collect::<Vec<_>>());
-    scripts.show(fixture.ask(false), || {});
-    assert!(scripts.raids(RECORDING.branch, ours).is_none() && scripts.music().is_none(), "nothing while the tables load: the window shows today's");
-    // The head moves on until every table the scripts read has joined and they evaluated it. A
-    // table learned while playing joins only after the steps already built ahead of the head (at
-    // most the ring), so the head moves whenever one has not joined; the recording leaves room.
-    let ahead = hourly_steps().ring as Hour;
-    let deadline = std::time::Instant::now() + LIMIT;
-    let (icons, music) = loop {
-        let tables = scripts.tables();
-        assert!(std::time::Instant::now() < deadline, "the scripts did not evaluate at the head within {LIMIT:?}: hour {}, declaring {tables:?}", fixture.hour);
-        if !fixture.joined(&tables, deadline) {
-            assert!(fixture.hour + ahead < HOURS as Hour, "the recording ran out of hours before the scripts' tables joined (the ring builds {ahead} steps ahead): {tables:?}");
-            fixture.step();
-            continue;
-        }
-        let rounds = scripts.rounds();
-        scripts.show(fixture.ask(false), || {});
-        scripts.end_frame();
-        let at = |scripts: &Scripts| {
-            let icons = scripts.raids(RECORDING.branch, ours).filter(|icons| icons.built_for.is_some_and(|(_, hour, _)| hour == fixture.hour) && icons.report.cycle_complete());
-            let music = scripts.music_at().filter(|(hour, _)| *hour == fixture.hour);
-            match (icons, music, scripts.tables() == tables) {
-                (Some(icons), Some((_, music)), true) => Some((format!("{:?} {:?}", icons.icons, icons.report), format!("{:?} {:?}", music.weights, music.refusals))),
-                _ => None,
-            }
-        };
-        // Evaluated already, or evaluated in the round this frame lets run; a table learned
-        // joins only when the head moves on.
-        let reached = at(&scripts).or_else(|| {
-            if scripts.tables() != tables {
-                return None;
-            }
-            scripts.wait_round(rounds, deadline.saturating_duration_since(std::time::Instant::now()));
-            at(&scripts)
-        });
-        if let Some(reached) = reached {
+    let mut scripts = fixture.scripts(&primed.iter().map(|&table| Need::keys(table)).collect::<Vec<Need>>());
+    assert!(scripts.raids(RECORDING.branch, ours).is_none() && scripts.music_at().is_none(), "nothing while the tables load: the window shows today's");
+    // The head moves on until the scripts have learned every table they read and a publication
+    // the head stands still for has the icons of its own hour.
+    let reached = loop {
+        let tables: Vec<TableId> = scripts.needs().iter().map(|need| need.table).collect();
+        assert!(fixture.hour + 2 < HOURS as Hour, "the recording ran out of hours before the scripts evaluated: {tables:?}");
+        step(&mut fixture, &mut scripts, Settling::still()).unwrap();
+        if let Some(reached) = published(&scripts, ours, fixture.hour) {
             break reached;
         }
     };
-    let learned = scripts.tables();
+    let learned: Vec<TableId> = scripts.needs().iter().map(|need| need.table).collect();
     assert!(learned.contains(&tables::WarRelations::ID) && learned.contains(&tables::RaidTargetStatuses::ID), "learned by reading: {learned:?}");
-    assert_eq!((icons, music), today(&fixture, fixture.hour, ours), "the same as today's evaluation over today's frame of the hour");
-    let held = fixture.rows.held();
-    assert!(held.mirrors.iter().any(|(table, _)| *table == tables::WarRelations::ID));
-    // A frame that does not ask closes the readers off this thread: wait for the reader to be gone.
-    scripts.end_frame();
-    assert!(fixture.rows.released(tables::WarRelations::ID, std::time::Instant::now() + LIMIT), "the scripts' reader closes with the frame that did not ask");
-    assert!(scripts.raids(RECORDING.branch, ours).is_none() && scripts.music().is_none(), "closed, it holds nothing");
+    assert_eq!(reached, today(&fixture, fixture.hour, ours), "the same as today's evaluation over today's frame of the hour");
+    assert!(fixture.held().contains(&tables::WarRelations::ID), "the store keeps the views the scripts read");
+    // Neither raid icons nor music are drawn: the reader closes off this thread, and nothing is held.
+    scripts.shown = (false, false);
+    // Waited for by the hand-over itself: the thread the close handed back frees the reader.
+    if let Some(closing) = scripts.close() {
+        closing.join().expect("the scripts' closing thread");
+    }
+    assert!(!fixture.held().contains(&tables::WarRelations::ID), "closed, the scripts' reader lets its tables go");
+    assert!(scripts.raids(RECORDING.branch, ours).is_none() && scripts.music_at().is_none(), "closed, it holds nothing");
     fixture.step();
-    let held = fixture.rows.held();
-    assert_eq!(held.mirrors.iter().map(|(table, _)| *table).collect::<Vec<_>>(), vec![TableId::Countries], "only the watch's table is held");
+    assert!(fixture.held().is_empty(), "no reader is left, so the store keeps no view: {:?}", fixture.held());
+}
+
+/// A stopped picture (a publication the head stands still for, a saved frame, the proof) shows the
+/// scripts' product of its own hour, with every target of the offer cycle evaluated: the step
+/// waits for it. While the hours run the rate holds the evaluations to its own count and the
+/// product stands at an hour no older than the rate allows.
+#[test]
+fn a_stopped_picture_shows_the_scripts_product_of_its_own_hour() {
+    let mut fixture = Fixture::new("stopped");
+    let ours = super::ours(&self::fixture(), &perspective::Choice::default()).unwrap();
+    let primed: Vec<Need> = read_by(&fixture, ours).iter().map(|&table| Need::every(table)).collect();
+    let mut scripts = fixture.scripts(&primed);
+    // Every publication the head stands still for shows the hour it stands at, from the first the
+    // scripts' tables are all home for.
+    let mut stopped = 0;
+    while stopped < 3 {
+        assert!(fixture.hour + 2 < HOURS as Hour, "the recording ran out of hours");
+        step(&mut fixture, &mut scripts, Settling::still()).unwrap();
+        let Some(reached) = published(&scripts, ours, fixture.hour) else { continue };
+        assert_eq!(reached, today(&fixture, fixture.hour, ours), "hour {}: the stopped picture is today's evaluation of its own hour", fixture.hour);
+        assert_eq!(crate::layers::Layer::published(&scripts), crate::layers::Published::Current, "its product stands at the rows it has seen");
+        stopped += 1;
+    }
+    // Playing, the raid cycle is evaluated at every publication: its icons are on screen, so the
+    // product keeps the hour. The music chances are the rated product and their rate withholds
+    // most of the reads.
+    let evaluations: u64 = scripts.stats().evaluations.values().sum();
+    for _ in 0..8 {
+        // As the side settles: a product the bound's publications behind is waited for.
+        let behind = (fixture.hour + 1 - scripts.product().expect("published above").hour) as u32;
+        step(&mut fixture, &mut scripts, Settling::step().behind_bound(behind, crate::layers::BOUND)).unwrap();
+        let behind = fixture.hour - scripts.product().expect("published above").hour;
+        assert!((0..crate::layers::BOUND as Hour).contains(&behind), "{behind} hours behind at hour {}", fixture.hour);
+    }
+    assert!(scripts.stats().evaluations.values().sum::<u64>() > evaluations, "the cycle is evaluated at the publication's rate");
+    assert!(scripts.stats().rated > 0, "the music chances' rate withheld reads of them while the hours ran");
+    // The rate's own clock decides that, and nothing else: inside its interval the chances are
+    // withheld, and once the clock has passed it they are read again.
+    let withheld = scripts.stats().rated;
+    assert!(!scripts.music_due(false), "inside its interval the rate withholds the chances");
+    assert_eq!(scripts.stats().rated, withheld + 1);
+    scripts.clock.step(super::MUSIC_RATE.interval());
+    assert!(scripts.music_due(false), "its interval elapsed, the chances are read again");
+    assert_eq!(scripts.stats().rated, withheld + 1, "and nothing more is withheld");
+    // The hours stop: the first publication that waits asks for the rows of the hour it shows and
+    // the one after it shows the scripts' product of that hour, as the rows of an hour are made by
+    // the step that asks for them. Nothing older is ever shown as the hour's.
+    step(&mut fixture, &mut scripts, Settling::still()).unwrap();
+    let stopped_at = fixture.hour;
+    scripts.applied = Some(stopped_at);
+    for _ in 0..2 {
+        fixture.posted();
+        asked(&mut scripts, Settling::still()).unwrap();
+    }
+    assert_eq!(published(&scripts, ours, stopped_at), Some(today(&fixture, stopped_at, ours)), "the picture the hours stopped on is its own hour's");
 }

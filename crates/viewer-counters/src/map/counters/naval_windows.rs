@@ -1305,6 +1305,11 @@ pub(super) fn tick(
         transition_unknown(windows, Registered::Mission(window), &why);
     }
     windows.clock += tick.dt;
+    if !tick_due(windows, missions.is_some()) {
+        viewer_foundation::map::redraws::note("naval.tick_not_due", 1);
+        settle_after(windows, native, missions.is_some(), Vec::new(), report);
+        return;
+    }
     // The windows whose tick failed, with why: a pool's phase fails as a whole.
     let mut failed: Vec<(Registered, String)> = Vec::new();
     fn failing(
@@ -1488,6 +1493,18 @@ pub(super) fn tick(
         let result = windows.missions.tick_draws(missions, resources, report);
         failing(&mut failed, || mission_windows(&windows.missions), result);
     }
+    settle_after(windows, native, missions.is_some(), failed, report);
+}
+
+/// What a tick leaves behind, whether it ticked the windows or found none due: the windows whose
+/// transition is unknown settled on the view's clock, and whether anything of the view still runs.
+fn settle_after(
+    windows: &mut Windows,
+    native: &NativeWindows,
+    missions: bool,
+    failed: Vec<(Registered, String)>,
+    report: &mut CounterReport,
+) {
     if let Some((_, why)) = failed.first() {
         *report
             .naval_window_notes
@@ -1508,9 +1525,25 @@ pub(super) fn tick(
             .counters
             .values()
             .any(|counter| counter.instance.active())
-        || (missions.is_some() && windows.missions.active());
+        || (missions && windows.missions.active());
     windows.active = std::mem::take(&mut windows.kept_off_screen) || windows.visible;
     windows.settled = !windows.active;
+}
+
+/// Whether a tick would change any window of the view: one that changes on its own, or one a call
+/// changed since its last tick ([`Instance::idle`]). A tick of any other window only stamps the
+/// frame's clock on it, which nothing a settled window draws reads
+/// ([`native_gui::Shading::changing`]), so a frame with none due ticks none.
+fn tick_due(windows: &Windows, missions: bool) -> bool {
+    windows.combats.as_ref().is_some_and(Pool::tick_due)
+        || windows.bases.as_ref().is_some_and(Pool::tick_due)
+        || windows.results.as_ref().is_some_and(Pool::tick_due)
+        || windows.items.values().any(|item| !item.instance.idle())
+        || windows
+            .counters
+            .values()
+            .any(|counter| !counter.instance.idle())
+        || (missions && windows.missions.tick_due())
 }
 
 /// Every mission window, as the transition list names it: a phase of the mission view fails as a

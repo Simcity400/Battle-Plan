@@ -157,7 +157,7 @@ fn record_world(history: &mut BTreeMap<i32, Truth>) -> crate::playhead_host::uni
 
 /// Four hours a step.
 fn quick() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
 /// Plays to `last` with the vision and naval layers, calling `each` after every frame that took a
@@ -253,10 +253,9 @@ fn another_map_mode_declares_nothing_and_the_default_composes_again() {
         };
         let Some(shown) = shown_at else {
             if hour > at {
-                let (mirrors, layer) = naval(side);
+                let (_, layer) = naval(side);
                 assert!(layer.attributes().is_empty(), "nothing is drawn at another map mode (hour {hour})");
                 assert_eq!(layer.carried().entities, 0, "a layer that declared nothing carries nothing: the map's first picture waits on what is carried (hour {hour})");
-                assert!(mirrors.get(TableId::NavalSupremacy).is_none(), "a table no drawn layer declares leaves the mirrors (hour {hour})");
                 if hour >= at + 8 {
                     side.set_view(View::default()).unwrap();
                     shown_at = Some(hour);
@@ -293,7 +292,7 @@ fn political_content() -> Arc<crate::layers::political::Content> {
     let map = MapData { width: 2, height: 1, province_ids: vec![1, 2], definitions: [definition(1, ProvinceKind::Land), definition(2, ProvinceKind::Sea)].into_iter().collect(), country_colors: Default::default() };
     let empty = |class| BorderMesh { class, chunks: vec![], draws: vec![] };
     let meshes = BorderMeshes { meshes: BorderClass::ALL.iter().map(|&class| empty(class)).collect(), hidden: empty(BorderClass::Province), indices: vec![], one_pixel_provinces: vec![] };
-    Arc::new(crate::layers::political::Content::new(Arc::new(map), &meshes))
+    Arc::new(crate::layers::political::Content::new(Arc::new(map), std::sync::Arc::new(meshes)))
 }
 
 #[test]
@@ -312,7 +311,7 @@ fn the_limitation_lines_while_the_political_layer_draws_are_the_political_and_na
         let mut expected = political.warnings();
         expected.extend(naval.warnings());
         // Today's political part is empty while the layers draw it: its lines must not be the ones shown.
-        let lines = crate::presentation::political_lines(Some(side), &[]);
+        let lines = crate::presentation::political_lines(side);
         assert_eq!(lines, expected, "the political and naval layers' lines at hour {hour}");
         if !history[&hour].recorded {
             assert!(lines.iter().any(|line| line.starts_with("Naval dominance FX withheld for 2 strategic regions")), "the naval layer's withheld regions at hour {hour}: {lines:?}");

@@ -1500,6 +1500,18 @@ impl MissionView {
 
     /// Whether a mission window changes on its own ([`Pool::active`], [`Instance::active`]), or
     /// an icon is kept off screen by the presentation-dirty bit ([`Self::kept_off_screen`]).
+    /// Whether a tick would change any mission window: one whose fade and movement this frame's
+    /// update left unknown, a pool with a growth waiting, or a window that changes on its own or
+    /// was written since its last tick ([`Pool::tick_due`], [`Instance::idle`]).
+    pub(super) fn tick_due(&self) -> bool {
+        !self.unsettled.is_empty()
+            || self.pool.as_ref().is_some_and(Pool::tick_due)
+            || self
+                .icons
+                .values()
+                .any(|icon| icon.entries.iter().any(|entry| !entry.idle()))
+    }
+
     pub(super) fn active(&self) -> bool {
         self.kept_off_screen
             || self.pool.as_ref().is_some_and(Pool::active)

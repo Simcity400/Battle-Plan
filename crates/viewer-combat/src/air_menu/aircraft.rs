@@ -100,6 +100,7 @@ fn read(
         Ok::<_, String>((registry, sortie, countries))
     };
     let members = OnceCell::new();
+    let regions = OnceCell::new();
     let fractions = OnceCell::new();
     let wars = OnceCell::new();
     let families = OnceCell::new();
@@ -156,6 +157,10 @@ fn read(
                         .clone()
                         .and_then(|families| families.with_attaches(frame, &links).ok())
                 });
+                let regions = regions
+                    .get_or_init(|| viewer_foundation::map::air_reachability::RegionStates::read(frame, members).map_err(|why| why.to_string()))
+                    .as_ref()
+                    .map_err(Clone::clone)?;
                 let needs = |mask| {
                     registered
                         .values()
@@ -170,11 +175,11 @@ fn read(
                         .then(|| PortTargetSources::read(frame, wars))
                         .and_then(Result::ok),
                     strategic: needs(0x1_0008)
-                        .then(|| StrategicTargetSources::read(frame, wars, members))
+                        .then(|| StrategicTargetSources::read(frame, wars, regions))
                         .and_then(Result::ok),
                     scout: needs(1 << 14)
                         .then(|| {
-                            ScoutTargetSources::read(frame, &links, wars, fog.as_ref(), members)
+                            ScoutTargetSources::read(frame, &links, wars, fog.as_ref(), regions)
                         })
                         .and_then(Result::ok),
                     naval_combat: needs(0x90)

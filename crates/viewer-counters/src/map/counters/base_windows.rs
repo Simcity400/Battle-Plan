@@ -395,9 +395,6 @@ impl PreparedBases {
                 })
                 .collect();
             view.set_cleaning(self.placed[family as usize].iter().any(|icon| schedule.cleans(icon.province)));
-            // A strategic location's icon fixes its location when its window is
-            // acquired and keeps it while that window lives, as the game's icon
-            // keeps the list it gathered when it was made.
             debug_assert_eq!(index, family as usize);
             if let Some((at, _)) = family.wing_grid()
                 && !view.same(&context)
@@ -409,7 +406,6 @@ impl PreparedBases {
                     .wing_grid()
                     .is_some_and(|(at, _)| self.air_grids.contains_key(&(at, owner)))
             };
-            let mut acquired = std::mem::take(&mut view.acquired_sprites);
             let held = std::cell::RefCell::new(std::mem::take(written));
             let kept = view.present_kept(
                 &context,
@@ -443,12 +439,13 @@ impl PreparedBases {
                             }
                             return Ok(());
                         }
-                        let sprite = acquired_sprite(&mut acquired, owner, slot, &state.sprite);
+                        // The game's icon builds its sprite name from the hour's first
+                        // location every update and sets it on whatever window it holds.
                         let state = State {
                             air: None,
                             frame: state.frame,
                             enabled: state.enabled,
-                            sprite,
+                            sprite: state.sprite.clone(),
                         };
                         update(instance, root, family, &state)
                     })();
@@ -482,8 +479,6 @@ impl PreparedBases {
             let _ = kept;
             *written = held.into_inner();
             let live = view.live();
-            forget_released(&mut acquired, &live);
-            view.acquired_sprites = acquired;
             if let Some((at, _)) = family.wing_grid() {
                 wings[at].retain(&live);
             }
@@ -527,7 +522,14 @@ impl PreparedBases {
                 };
                 // A wing grid's items draw on their own clocks: its window is drawn every frame.
                 let drawn = if composed.parts.iter().all(Vec::is_empty) {
-                    painted[family as usize].paint(placed.id, generation, key, placed.anchor, batch, draw)
+                    painted[family as usize]
+                        .paint(
+                            viewer_foundation::map::sprites::WindowKey::new(
+                                viewer_foundation::map::sprites::WindowPool::Base,
+                                family as u32,
+                                placed.id,
+                            ),
+                            placed.id, generation, drawn.origin, key, placed.anchor, batch, draw)
                 } else {
                     draw(batch)
                 };
@@ -599,32 +601,6 @@ impl PreparedBases {
             painted.finish();
         }
     }
-}
-
-/// The sprite an owner's window fixed when it was acquired: `offered` the
-/// first time the owner holds `slot`, and that same choice while it keeps it.
-pub(super) fn acquired_sprite<K: Eq + std::hash::Hash, S: PartialEq + Copy>(
-    acquired: &mut HashMap<K, (S, Option<String>)>,
-    owner: K,
-    slot: S,
-    offered: &Option<String>,
-) -> Option<String> {
-    match acquired.get(&owner) {
-        Some((held, sprite)) if *held == slot => sprite.clone(),
-        _ => {
-            acquired.insert(owner, (slot, offered.clone()));
-            offered.clone()
-        }
-    }
-}
-
-/// Drops the choices of windows no longer live, so an owner whose window
-/// was released chooses afresh when it is acquired again.
-pub(super) fn forget_released<K: Eq + std::hash::Hash, S: PartialEq + Copy>(
-    acquired: &mut HashMap<K, (S, Option<String>)>,
-    live: &[(K, S)],
-) {
-    acquired.retain(|owner, (slot, _)| live.iter().any(|(o, s)| o == owner && s == slot));
 }
 
 /// The binders find bg_btn locally; its actual drawn footprint intercepts unit input.
@@ -933,6 +909,7 @@ mod tests {
                                 world: anchor,
                                 cutoff: 50.0,
                                 family: IconFamily::Bases,
+                                moves: None,
                             })
                         );
                     }
@@ -996,6 +973,7 @@ mod tests {
                         world: anchor,
                         cutoff: 100.0,
                         family: IconFamily::Bases,
+                        moves: None,
                     })
                 );
 
@@ -1124,38 +1102,6 @@ mod tests {
             update(&mut instance, &bare, Family::RocketSite, &state)
                 .unwrap_err()
                 .contains("bg_strat_btn")
-        );
-    }
-
-    /// A strategic location's window keeps the location it took when it was
-    /// acquired: a later offer changes nothing while the window lives, and
-    /// a released window chooses afresh when its owner acquires one again.
-    /// Before, the sprite followed every frame's offer.
-    #[test]
-    fn a_strategic_location_keeps_its_sprite_for_its_window_s_lifetime() {
-        let mut acquired: HashMap<u32, (u32, Option<String>)> = HashMap::new();
-        let offer = |name: &str| Some(name.to_owned());
-        assert_eq!(
-            acquired_sprite(&mut acquired, 7, 1, &offer("A")),
-            offer("A")
-        );
-        forget_released(&mut acquired, &[(7, 1)]);
-        // A province token added while the icon is visible keeps the first.
-        assert_eq!(
-            acquired_sprite(&mut acquired, 7, 1, &offer("B")),
-            offer("A")
-        );
-        // Released, then acquired again: the current choice.
-        forget_released(&mut acquired, &[]);
-        assert!(acquired.is_empty());
-        assert_eq!(
-            acquired_sprite(&mut acquired, 7, 1, &offer("B")),
-            offer("B")
-        );
-        // A different slot is a new window.
-        assert_eq!(
-            acquired_sprite(&mut acquired, 7, 2, &offer("C")),
-            offer("C")
         );
     }
 

@@ -36,32 +36,25 @@
 //! ([`naval_check`]), publishing [`History::byte_check`].
 //! [`check_recorded_bytes`] uses the same fold for a dump.
 
-use job_priority::SpawnCarried as _;
+use playhead::Timeline;
 use replay::campaign::Replay;
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_frame::{branches::BranchReason, branches::BranchStart, frame::DecodedFrame, frame::Tables};
 use std::{
     collections::BTreeMap,
     io, mem,
-    sync::{
-        Arc, Mutex,
-        atomic::Ordering,
-        mpsc::{self, Receiver, Sender},
-    },
-    thread,
+    sync::{Arc, atomic::Ordering},
     time::Instant,
 };
 use viewer_foundation::engaged::HourSides;
 use viewer_foundation::engagement_history::{
-    Changes, Covered, History, ICON_KINDS, NAVAL, NAVAL_ICON, SOURCES, icon_hour, icon_source,
+    Covered, Folded, History, ICON_KINDS, NAVAL, NAVAL_ICON, SOURCES, icon_hour, icon_source,
 };
 use viewer_foundation::fold_tables::available;
 #[cfg(test)]
 use viewer_foundation::engagement_history::{
     CombatFlags, LAND, Provenance, at, combats, kept_frames,
 };
-use viewer_foundation::profile_writer::profile_print;
-use viewer_foundation::profile_writer::profiling;
 use viewer_foundation::{
     engaged::{self, Continuity, Engaged},
     icon_frames::{IconFold, Kept},
@@ -71,7 +64,6 @@ use viewer_foundation::{
         visibility::Relations,
     },
     naval_check::{self, ByteCheck, Summary},
-    worker_priority::lowest_priority,
 };
 
 /// The tables the icon kinds read besides the viewer's.
@@ -160,7 +152,7 @@ fn whole_core<T: replay_data::rows::TableSchema, F: Tables + ?Sized>(frame: &F) 
 }
 
 impl Viewer {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     fn read<F: Tables + ?Sized>(frame: &F, country: &Country) -> io::Result<Self> {
         Self::with(frame, country, &Arc::new(Inputs::read(frame)?))
     }
@@ -213,14 +205,9 @@ impl Viewer {
     }
 }
 
-/// The index for one perspective country; dropping it stops the pass.
+/// An index of one perspective country's engagements; dropping it stops the fold.
 pub struct EngagedIndex {
-    country: Country,
     pub shared: Arc<History>,
-    snapshots: Sender<Arc<Replay>>,
-    /// The snapshot last handed to the pass, which a newer one must extend.
-    /// The pass holds the same one while it waits, so this keeps no more.
-    folding: Mutex<Arc<Replay>>,
 }
 
 impl Drop for EngagedIndex {
@@ -230,43 +217,6 @@ impl Drop for EngagedIndex {
 }
 
 impl EngagedIndex {
-    /// Starts the pass over `replay` for `country`.
-    pub fn start(replay: Arc<Replay>, country: Country) -> io::Result<Self> {
-        let shared = Arc::new(History::default());
-        let (snapshots, inbox) = mpsc::channel();
-        let folding = Arc::clone(&replay);
-        let pass = Pass::new(Arc::clone(&shared), country.clone());
-        thread::Builder::new()
-            .name("engaged index".into())
-            .spawn_carried(move || {
-                lowest_priority();
-                pass.run(replay, inbox)
-            })?;
-        Ok(Self {
-            country,
-            shared,
-            snapshots,
-            folding: Mutex::new(folding),
-        })
-    }
-
-    pub fn country(&self) -> &Country {
-        &self.country
-    }
-
-    /// Continues the pass over `replay` when it is a newer snapshot of the
-    /// same recording ([`extends`]); otherwise the caller starts a new index.
-    pub fn extend(&self, replay: &Arc<Replay>) -> bool {
-        let mut folding = self.folding.lock().unwrap_or_else(|p| p.into_inner());
-        if !extends(&folding, replay) {
-            return false;
-        }
-        *folding = Arc::clone(replay);
-        // A stopped pass keeps what it folded; there is nothing to continue.
-        let _ = self.snapshots.send(Arc::clone(replay));
-        true
-    }
-
     /// An index folded over `frames` (one branch, a load at `load`) on this
     /// thread, as the pass folds them.
     #[cfg(any(test, feature = "test-support"))]
@@ -276,36 +226,8 @@ impl EngagedIndex {
         for frame in frames {
             pass.fold_hour(frame.branch, frame.hour, Some(frame), load, false);
         }
-        let (snapshots, _inbox) = mpsc::channel();
-        Self {
-            country,
-            shared,
-            snapshots,
-            folding: Mutex::new(Arc::new(crate::playback::tests::fixture())),
-        }
+        Self { shared }
     }
-}
-
-/// Whether `newer` is `older` with more recorded, so what the pass folded
-/// from `older` stands: the same campaign and format, every branch start of
-/// `older` unchanged (its reason and hours decide how its first hour folds,
-/// [`native_load`]), unchanged sessions/gaps, and the recorded block index
-/// retained as a prefix. Source reuse follows the metadata-only append policy;
-/// this check performs no compressed-byte reads or hashes.
-fn extends(older: &Replay, newer: &Replay) -> bool {
-    older.campaign_id == newer.campaign_id
-        && older.format == newer.format
-        && older.identity == newer.identity
-        && newer.sessions.starts_with(&older.sessions)
-        && newer.gaps.starts_with(&older.gaps)
-        && older.branches.iter().all(|start| {
-            newer
-                .branches
-                .iter()
-                .find(|newer| newer.id == start.id)
-                .is_some_and(|newer| newer == start)
-        })
-        && newer.index.starts_with(&older.index)
 }
 
 /// One viewer's histories of every kind and their per-hour change buffers.
@@ -358,16 +280,10 @@ impl Track {
         }
     }
 
-    /// Appends the hour's changes to `points`.
-    fn record(&self, points: &mut [Changes], hour: Hour) {
-        for ((points, changed), ended) in points.iter_mut().zip(&self.changed).zip(&self.ended) {
-            record(points, hour, changed.iter().copied());
-            // An ended combat takes no more points: keep only what it holds.
-            for key in ended {
-                if let Some(changes) = points.get_mut(key) {
-                    changes.shrink_to_fit();
-                }
-            }
+    /// Appends the hour's changes to `fold`'s points and its hour log.
+    fn record(&self, fold: &mut Folded, hour: Hour) {
+        for (kind, (changed, ended)) in self.changed.iter().zip(&self.ended).enumerate() {
+            fold.record(kind, hour, changed, ended);
         }
     }
 }
@@ -496,37 +412,6 @@ impl Pass {
             check: ByteCheck::default(),
             inputs: None,
             viewer: None,
-        }
-    }
-
-    fn run(mut self, mut replay: Arc<Replay>, inbox: Receiver<Arc<Replay>>) {
-        let tables = pass_tables();
-        let mut opened = true;
-        loop {
-            let started = Instant::now();
-            self.check.summary.complete = false;
-            self.publish();
-            let hours = self.fold(&replay, &tables);
-            if self.cancelled() {
-                return;
-            }
-            self.check.summary.complete = true;
-            self.publish();
-            // The open cost is always logged; each extension only when profiling.
-            if opened || profiling() {
-                let (sides, points, bytes) = self.size();
-                profile_print(format!(
-                    "Engaged index: folded {hours} hours in {:.2} s; {sides} combat sides, {points} change points, about {} KiB",
-                    started.elapsed().as_secs_f64(),
-                    bytes / 1024
-                ));
-            }
-            opened = false;
-            // Wait for a newer snapshot; the window dropping the index ends it.
-            match inbox.recv() {
-                Ok(newer) => replay = newer,
-                Err(_) => return,
-            }
         }
     }
 
@@ -816,46 +701,18 @@ impl Pass {
             {
                 covered.players.push((hour, player_slot));
             }
-            fold.perspective.record(&mut covered.points, hour);
-            fold.recording.record(&mut covered.recording, hour);
-            for (icons, changed) in [
-                (&mut covered.icons, &fold.icon_changed),
-                (&mut covered.recording_icons, &fold.recording_icon_changed),
-            ] {
-                for (points, changed) in icons.iter_mut().zip(changed) {
-                    for &(combat, kept) in changed {
-                        points.entry(combat).or_default().push((hour, kept));
-                    }
+            fold.perspective.record(covered.fold(false), hour);
+            fold.recording.record(covered.fold(true), hour);
+            for (recording, changed) in [(false, &fold.icon_changed), (true, &fold.recording_icon_changed)] {
+                let track = covered.fold(recording);
+                for (kind, changed) in changed.iter().enumerate() {
+                    track.record_icons(kind, hour, changed);
                 }
             }
         }
+        // Outside the lock the hour was published under: a reader waiting for this hour wakes.
+        self.shared.folded();
         self.publish();
-    }
-
-    /// Combat sides, change points and an estimate of their bytes.
-    fn size(&self) -> (usize, usize, usize) {
-        let branches = self
-            .shared
-            .branches
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let (mut sides, mut points, mut bytes) = (0, 0, 0);
-        for covered in branches.values() {
-            bytes += covered.viewers.capacity() * size_of::<(Hour, u32)>()
-                + covered.players.capacity() * size_of::<(Hour, Option<u32>)>();
-            for kind in covered.points.iter().chain(&covered.recording) {
-                sides += kind.len();
-                for changes in kind.values() {
-                    points += changes.len();
-                    // Key, vector header and a B-tree slot's share.
-                    bytes += size_of::<(u64, u8)>()
-                        + size_of::<Vec<(Hour, Engaged)>>()
-                        + 16
-                        + changes.capacity() * size_of::<(Hour, Engaged)>();
-                }
-            }
-        }
-        (sides, points, bytes)
     }
 }
 
@@ -868,45 +725,59 @@ fn sides_of<F: Tables + ?Sized>(kind: usize, frame: &F) -> io::Result<HourSides>
     }
 }
 
-/// Appends each side's value where it differs from its last point.
-fn record(points: &mut Changes, hour: Hour, held: impl Iterator<Item = ((u64, u8), Engaged)>) {
-    for (key, value) in held {
-        let changes = points.entry(key).or_default();
-        if changes.last().is_none_or(|(_, last)| *last != value) {
-            changes.push((hour, value));
-        }
-    }
+/// The blocks of run `run` holding any hour of `from..=to`, in hour order, each block once: the
+/// index lists a block under every branch that plays it, and a fold of one branch's hours reads
+/// the hours once.
+fn piece_blocks(index: &[replay::campaign::BlockIndex], run: usize, from: Hour, to: Hour) -> Vec<&replay::campaign::BlockIndex> {
+    let mut blocks: Vec<&replay::campaign::BlockIndex> = index.iter().filter(|block| block.run as usize == run && block.last_hour >= from && block.first_hour <= to).collect();
+    blocks.sort_by_key(|block| (block.first_hour, block.page));
+    blocks.dedup_by_key(|block| block.page);
+    blocks
 }
 
-/// Today's fold of `replay`'s hours `first..=last` for `country`, from whole decoded blocks: the
-/// index it makes, and the nanoseconds spent reading the blocks and folding the hours.
-pub fn fold_range(replay: &Replay, country: Country, first: Hour, last: Hour) -> (Arc<History>, u64, u64) {
+/// Today's fold of `branch`'s hours `first..=last` for `country`, from whole decoded blocks: the
+/// index it makes, and the nanoseconds spent reading the blocks and folding the hours. The hours
+/// folded are `timeline`'s, piece by piece, under `branch`, as the lanes fold them
+/// ([`lanes::fold`]): a branch plays the pieces of the runs before it, whose blocks carry the
+/// branch they were recorded under, and a fold of another branch's hours is another index.
+pub fn fold_range(replay: &Replay, country: Country, timeline: &Timeline, branch: BranchId, first: Hour, last: Hour) -> (Arc<History>, u64, u64, u64) {
     let shared = Arc::new(History::default());
     let mut pass = Pass::new(Arc::clone(&shared), country);
     let tables = pass_tables();
-    let (mut total_ns, mut fold_ns) = (0u64, 0u64);
-    let mut blocks: Vec<_> = replay.index.iter().filter(|block| block.last_hour >= first && block.first_hour <= last).collect();
-    blocks.sort_by_key(|block| (block.branch, block.first_hour));
-    for block in blocks {
-        let began = Instant::now();
-        let _ = replay.read_block_alone(
-            block,
-            &tables,
-            |_, decoded| {
-                if !(first..=last).contains(&decoded.hour) {
-                    return Ok(());
-                }
-                let folding = Instant::now();
-                let campaign = core::<tables::Campaign>(decoded).is_ok_and(|rows| rows.len() == 1 && rows[0].id == replay.campaign_id);
-                pass.fold_hour(block.branch, decoded.hour, campaign.then_some(decoded), None, false);
-                fold_ns += folding.elapsed().as_nanos() as u64;
-                Ok(())
-            },
-            || Ok(()),
-        );
-        total_ns += began.elapsed().as_nanos() as u64;
+    let (mut total_ns, mut fold_ns, mut failed) = (0u64, 0u64, 0u64);
+    for piece in timeline.pieces() {
+        let (from, to) = (first.max(piece.first), last.min(piece.last));
+        if from > to {
+            continue;
+        }
+        for block in piece_blocks(&replay.index, piece.run, from, to) {
+            let began = Instant::now();
+            let read = replay.read_block_alone(
+                block,
+                &tables,
+                |_, decoded| {
+                    if !(from..=to).contains(&decoded.hour) {
+                        return Ok(());
+                    }
+                    let folding = Instant::now();
+                    let campaign = core::<tables::Campaign>(decoded).is_ok_and(|rows| rows.len() == 1 && rows[0].id == replay.campaign_id);
+                    pass.fold_hour(branch, decoded.hour, campaign.then_some(decoded), None, false);
+                    fold_ns += folding.elapsed().as_nanos() as u64;
+                    Ok(())
+                },
+                || Ok(()),
+            );
+            // A block that could not be read leaves its hours unfolded: the fold is told, as the
+            // index's own pass is told ([`Pass::fold`]), rather than seeing a hole in the hours
+            // and calling everything after it unknown.
+            if read.is_err() {
+                failed += 1;
+                pass.failed_block(branch, block.last_hour);
+            }
+            total_ns += began.elapsed().as_nanos() as u64;
+        }
     }
-    (shared, total_ns.saturating_sub(fold_ns), fold_ns)
+    (shared, total_ns.saturating_sub(fold_ns), fold_ns, failed)
 }
 
 pub mod lanes;

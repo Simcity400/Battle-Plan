@@ -23,11 +23,7 @@ fn sources<'a>(
     task_forces: &'a [TaskForceRow],
 ) -> Sources<'a> {
     Sources {
-        // The members grouped as the naval markers group them once per hour.
-        combat_ships: Some((
-            combat_ships,
-            Box::leak(Box::new(ForwardMembers::read(combat_ships))),
-        )),
+        combat_ships: Some(combat_ships),
         ships: Some(ShipCensus::from_rows(ships)),
         task_forces: Some(task_forces),
         counter_inputs: None,
@@ -556,9 +552,8 @@ fn countries_share_one_index_across_combats() {
     }
     // The census the naval counters index once per hour, shared as they share it.
     let census = ShipCensus::from_rows(&ships);
-    let forward = ForwardMembers::read(&combat_ships);
     let index = Index::new(Sources {
-        combat_ships: Some((&combat_ships, &forward)),
+        combat_ships: Some(&combat_ships),
         ships: Some(ShipCensus {
             task_forces: Cow::Borrowed(&census.task_forces),
             counts: Cow::Borrowed(&census.counts),
@@ -583,7 +578,7 @@ fn countries_share_one_index_across_combats() {
     let vision = Vision::default();
     // An index over a census of its own, as the grids built before sharing the counters'.
     let own = Index::new(Sources {
-        combat_ships: Some((&combat_ships, &forward)),
+        combat_ships: Some(&combat_ships),
         ships: Some(ShipCensus::from_rows(&ships)),
         task_forces: Some(&task_forces),
         counter_inputs: Some(&counter_inputs),

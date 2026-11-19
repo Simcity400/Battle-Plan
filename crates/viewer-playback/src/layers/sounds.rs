@@ -7,7 +7,7 @@
 //! The sounds the map's entities fire (`viewer_world::map::sound_events`) belong to the animated
 //! models and stay with the presented frame; only the battle list is hour work.
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, Scope, Scoped, Sight, Text, View, touched::Touched};
+use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Scope, Scoped, Sight, Text, View, touched::Touched};
 use crate::playhead_host::mirror::{Mirror, Mirrors, UNREAD_REASON};
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
@@ -66,7 +66,6 @@ struct Held {
 }
 
 /// The most of a frame the layer's applies and settle take together; a busier step is carried.
-const SLICE: std::time::Duration = std::time::Duration::from_micros(350);
 
 const TABLES: [TableId; 5] = [TableId::BattleSounds, TableId::LandCombats, TableId::Divisions, TableId::DivisionTemplateIcons, TableId::LexicalTokens];
 
@@ -140,8 +139,6 @@ pub struct Sounds {
     whole: bool,
     statuses: HashMap<usize, Option<Status>>,
     frame: u64,
-    /// What this frame's applies took, taken from the settle's [`SLICE`].
-    applied: std::time::Duration,
     /// Combats, provinces and battles the steps have marked.
     marked: [usize; 3],
     /// The divisions, templates and tokens the steps applied since touched, not yet read.
@@ -183,7 +180,6 @@ impl Sounds {
             whole: true,
             statuses: HashMap::new(),
             frame: 0,
-            applied: std::time::Duration::ZERO,
             marked: [0; 3],
             touched: Touched::default(),
             scoped: Scoped::default(),
@@ -452,8 +448,8 @@ impl Sounds {
         battles.into_iter().for_each(|slot| self.mark_battle(slot));
     }
 
-    /// Combats, then fronts, then battles, within `budget`; the rest carried.
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    /// Combats, then fronts, then battles, every one marked.
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         if self.columns.is_none() {
             return;
@@ -462,10 +458,10 @@ impl Sounds {
             self.touched.clear();
             self.mark_all(mirrors);
         }
-        self.take_touched(mirrors, budget);
+        self.take_touched(mirrors);
         self.read_notes(mirrors);
         let mut dirty = std::mem::take(&mut self.combat_dirty);
-        let _ = dirty.settle(budget, |slot| {
+        let _ = dirty.settle(|slot| {
             self.read_combat(slot, mirrors);
             match self.combats.get(slot as usize).and_then(Option::as_ref) {
                 Some(combat) => self.scoped.heard_province(combat.province),
@@ -475,7 +471,7 @@ impl Sounds {
         });
         self.combat_dirty = dirty;
         let mut dirty = std::mem::take(&mut self.province_dirty);
-        let _ = dirty.settle(budget, |province| {
+        let _ = dirty.settle(|province| {
             self.scoped.heard_province(province);
             self.read_front(province, mirrors);
             Ok(())
@@ -483,7 +479,7 @@ impl Sounds {
         self.province_dirty = dirty;
         let notes = self.notes.clone();
         let mut dirty = std::mem::take(&mut self.battle_dirty);
-        let _ = dirty.settle(budget, |slot| {
+        let _ = dirty.settle(|slot| {
             self.read_battle(slot, mirrors);
             match self.battles.get(slot as usize).and_then(Option::as_ref) {
                 Some(held) => self.scoped.heard(held.battle.center, held.battle.radius),
@@ -557,12 +553,12 @@ impl Sounds {
         }
     }
 
-    /// The divisions, templates and tokens the applies noted, taken while `budget` lasts: the
+    /// The divisions, templates and tokens the applies noted, taken while `settling` lasts: the
     /// fronts of the combats whose members' compositions they move.
-    fn take_touched(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn take_touched(&mut self, mirrors: &Mirrors) {
         let mut touched = std::mem::take(&mut self.touched);
         let (mut divisions, mut templates, mut tokens) = (BTreeSet::new(), BTreeSet::new(), false);
-        touched.take(mirrors, budget, |table, _, key| match table {
+        touched.take(mirrors, |table, _, key| match table {
             TableId::Divisions => {
                 divisions.insert(key as u64);
             }
@@ -750,44 +746,30 @@ impl Layer for Sounds {
         let marked = self.marked;
         self.whole = true;
         let inline = std::mem::replace(&mut self.mix_inline, true);
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors);
         self.mix_inline = inline;
         self.marked = marked;
-        self.applied = std::time::Duration::ZERO;
         Ok(())
     }
 
     fn apply(&mut self, step: &Step, _mirrors: &Mirrors) {
         #[cfg(any(test, feature = "test-support"))]
         let reads = crate::playhead_host::mirror::probe::reads();
-        let started = std::time::Instant::now();
         self.apply_step(step);
-        self.applied += started.elapsed();
         #[cfg(any(test, feature = "test-support"))]
         {
             self.applied_reads += crate::playhead_host::mirror::probe::reads() - reads;
         }
     }
 
-    /// At most [`SLICE`] of a frame with its applies, while the shared budget lasts; the rest is
-    /// carried. A sound is not a picture: the mix may be a frame or two late, and it is published
-    /// only once settled whole.
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        let slice = SLICE.saturating_sub(std::mem::take(&mut self.applied));
-        let mut capped = budget.capped(slice);
-        self.settle_dirty(mirrors, &mut capped);
-        budget.absorb(&capped);
-        Ok(())
-    }
-
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         Ok(())
     }
 
     fn carried(&self) -> Carried {
         let entities = self.combat_dirty.len() + self.province_dirty.len() + self.battle_dirty.len() + self.touched.len() + usize::from(self.whole && self.columns.is_some());
-        let since = [self.combat_dirty.since(), self.province_dirty.since(), self.battle_dirty.since(), self.touched.since()].into_iter().flatten().min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     fn scope(&mut self, sight: &Sight<'_>) -> Option<Scope> {

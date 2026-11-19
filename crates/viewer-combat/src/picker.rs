@@ -201,6 +201,7 @@ impl Placed {
 }
 
 /// One frame of the picker: its quads and tooltips, and its controls in paint order.
+#[derive(Clone)]
 pub struct PickerDrawn {
     pub drawn: Drawn,
     pub controls: Vec<Placed>,
@@ -209,6 +210,15 @@ pub struct PickerDrawn {
 }
 
 impl PickerDrawn {
+    /// This picture to draw again, its sounds and clicks spent ([`Drawn::again`]).
+    fn again(&self) -> Self {
+        Self {
+            drawn: self.drawn.again(),
+            controls: self.controls.clone(),
+            clicked: Vec::new(),
+        }
+    }
+
     /// The topmost control under `point`.
     pub fn control_at(&self, point: [f32; 2]) -> Option<&Control> {
         self.controls
@@ -239,6 +249,20 @@ pub struct Picker {
     above: Vec<[f32; 4]>,
     /// Each window's controls as last drawn, bottom first.
     owners: Vec<(Part, Placed)>,
+    /// What the last draw drew and what it drew it for: a frame asking for the same picture of a
+    /// picker in which nothing animates takes this copy instead of laying it out again.
+    held: Option<(Shown, PickerDrawn)>,
+}
+
+/// What a drawn picker was drawn for; the same again is the same picture.
+#[derive(Clone, Copy, PartialEq)]
+struct Shown {
+    fingerprint: u64,
+    viewport: [i32; 2],
+    hovers: bool,
+    advance: bool,
+    /// Where the pointer stood, which decides what draws hovered.
+    place: Option<native_gui::pointer::Place>,
 }
 
 /// One of the picker's windows, which share the primary button.
@@ -299,6 +323,14 @@ impl Picker {
             .any(Retained::pointing)
     }
 
+    /// Whether a window of the picker draws differently next frame without a call from the code.
+    fn animating(&self) -> bool {
+        [&self.root, &self.list, &self.slots]
+            .into_iter()
+            .flatten()
+            .any(Retained::active)
+    }
+
     fn refresh_values(&mut self, state: &State<'_>, root: &installed_content_core::gui::native::Element) {
         if self.root_generation == Some(self.generation) {
             return;
@@ -343,6 +375,26 @@ impl Picker {
             self.last = Some(fingerprint);
             self.generation += 1;
         }
+        let shown = Shown {
+            fingerprint,
+            viewport,
+            hovers,
+            advance,
+            place: input.as_ref().and_then(|input| input.place),
+        };
+        // A picker whose values did not change, in which nothing animates and whose pointer stood
+        // where it stood with its button still, draws the picture it drew last frame.
+        let still = input
+            .as_ref()
+            .is_none_or(|input| input.buttons.is_empty() && !input.held);
+        if still
+            && !self.animating()
+            && let Some((held, drawn)) = &self.held
+            && *held == shown
+        {
+            return Ok(drawn.again());
+        }
+        self.held = None;
         let assets = content.assets.as_ref();
         let inventory = gui_resources::GuiAssets::new(assets, &Bindings::default());
         let resources = gui_resources::GuiResources::new(
@@ -530,6 +582,7 @@ impl Picker {
             .filter(|placed| placed.control == Control::Window)
             .map(|placed| placed.rect)
             .collect();
+        self.held = Some((shown, out.again()));
         Ok(out)
     }
 }

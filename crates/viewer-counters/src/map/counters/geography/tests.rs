@@ -67,6 +67,7 @@ impl Content {
                     state: geometry.state_of.get(&province).copied(),
                     region: self.regions.get(&province).copied(),
                     anchor: [province as f32 * 49.5, 3.25, province as f32 * 2.0],
+                    track: None,
                 })
                 .collect::<Vec<_>>()
         };

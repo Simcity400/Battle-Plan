@@ -5,13 +5,14 @@
 //! that panics is a named refusal of a worker that goes on, and one round learns every table a
 //! build reaches. A worker builds nothing while no table it reads changes, its product then
 //! standing at the newer hours, and with a step every frame it makes the product of each step's
-//! rows, waiting for no clock.
+//! rows, waiting for no clock. What the scene takes after a compose is taken anew however many
+//! products were taken before the scene was given one.
 
 use super::{Build, Seen, Whole};
 use engine_executable::executable_tables::Tables;
 use crate::{
     layers::{Layer, Published, View, recorded, vision},
-    playhead_host::{MapSide, open, rows::Cadence, rows::Recording, units::Units},
+    playhead_host::{MapSide, open, units::Units, views::Recording},
 };
 use playhead::{
     Settings, Timeline,
@@ -34,7 +35,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use viewer_foundation::map::perspective::{Choice, VISION_TABLES, Vision};
+use viewer_foundation::map::{perspective::{Choice, VISION_TABLES, Vision}, presentation::Continuity};
 
 /// Shut, a build waits at it, so the worker holds its work; a minute shut fails the build by name.
 #[derive(Default)]
@@ -62,6 +63,11 @@ impl Gate {
 
     fn reached(&self) -> bool {
         self.state.lock().unwrap().1
+    }
+
+    /// Shut again, no build reached.
+    fn close(&self) {
+        *self.state.lock().unwrap() = (false, false);
     }
 
     fn pass(&self) -> io::Result<()> {
@@ -257,10 +263,10 @@ pub fn without(units: Units, table: TableId) -> Units {
 /// before the seek to the first hour (so the seek brings their tables), played until that reset is
 /// swapped in.
 fn side_with<B: Build>(units: Units, probes: Vec<(&'static str, B)>) -> MapSide {
-    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
+    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut layers: Vec<Box<dyn Layer>> = vec![Box::new(vision::Vision::new(vision_content()))];
     for (name, probe) in probes {
-        layers.push(Box::new(Whole::new(name, probe, |_, _| true, |_| 0, &[TableId::Clock], Cadence::EveryStep, false, false).unwrap()));
+        layers.push(Box::new(Whole::new(name, probe, |_, _| true, |_| 0, &[TableId::Clock], false).unwrap()));
     }
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
     assert!(side.refusals().next().is_none());
@@ -364,8 +370,14 @@ fn a_build_that_misses_three_tables_learns_the_three_in_one_round() {
 /// view's perspective with the vision left to the builder, each product it takes handed to the scene;
 /// drawn below a camera height of 500.
 fn window_side(units: Units, gate: &Arc<Gate>) -> MapSide {
-    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
-    let probe = Whole::new("probe", Probe { reads: Vec::new(), gate: Arc::clone(gate) }, |_, view| view.camera_height < 500.0, |_| 0, &[TableId::Clock], Cadence::EveryStep, false, false).unwrap().in_window(Arc::clone(&entry), Recording { branch: 1 }).unwrap();
+    window_side_with(units, gate, false)
+}
+
+/// [`window_side`], the probe [`Whole::exact`] when `exact`.
+fn window_side_with(units: Units, gate: &Arc<Gate>, exact: bool) -> MapSide {
+    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let probe = Whole::new("probe", Probe { reads: Vec::new(), gate: Arc::clone(gate) }, |_, view| view.camera_height < 500.0, |_| 0, &[TableId::Clock], false).unwrap().in_window(Arc::clone(&entry), Recording { branch: 1 }).unwrap();
+    let probe = if exact { probe.exact() } else { probe };
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(vision::Vision::new(vision_content())), Box::new(probe)];
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
     entry.playhead().play(4.0);
@@ -431,6 +443,78 @@ fn a_window_layer_shows_todays_plan_until_its_first_product_and_nothing_where_th
     assert!(!probe_of(&side).shows(), "shown again, today's plan is drawn until the layer's first product");
 }
 
+/// An exact layer (a map mode's colours) is part of the hour's picture: a step waits on the side's
+/// thread for the product of its own hour, while the worker is held, and the layer then stands at
+/// the hour applied. Before, a step took whatever product the worker had published, so the mode's
+/// colours of an older hour were drawn under the newer hour's overlay and the hour said was the
+/// newer.
+#[test]
+fn an_exact_layer_is_the_product_of_the_hour_each_step_applies() {
+    let gate = Gate::opened();
+    let mut side = window_side_with(record(), &gate, true);
+    let _opens = Opens(Arc::clone(&gate));
+    frames_at(&mut side, None, &gate, "the probe's first product", |side| probe_of(side).product().is_some());
+    let hour = side.applied().expect("the head has reached an hour");
+    gate.close();
+    // The worker is held again: the next step's product waits for a build the test lets through.
+    let opener = {
+        let gate = Arc::clone(&gate);
+        std::thread::spawn(move || {
+            while !gate.reached() {
+                std::thread::yield_now();
+            }
+            gate.open();
+        })
+    };
+    let next = hour + 4;
+    assert!(next < 40, "the recording holds hour {next}");
+    frames_at(&mut side, Some(next), &gate, &format!("hour {next} applied"), |side| side.applied() >= Some(next) && !side.composing());
+    opener.join().unwrap();
+    let applied = side.applied().unwrap();
+    let probe = probe_of(&side);
+    assert_eq!(probe.product().map(|built| built.hour), Some(applied), "the product of the hour applied: {}", window_state(&side, &gate));
+    assert_eq!(probe.published(), crate::layers::Published::Current, "and the layer stands at it");
+}
+
+/// A seek back to the hour the layer stands at is a compose, a new point in history: the product
+/// built before it is let go, and the one the layer then holds was built after it. Before, the old
+/// product was still of that hour and generation, so a seek to the same hour on another branch kept
+/// drawing the history it left.
+#[test]
+fn a_compose_lets_the_product_built_before_it_go() {
+    let gate = Gate::opened();
+    let mut side = window_side_with(record(), &gate, true);
+    let _opens = Opens(Arc::clone(&gate));
+    frames_at(&mut side, None, &gate, "the probe's first product", |side| probe_of(side).product().is_some());
+    let hour = side.applied().expect("the head has reached an hour");
+    let before = probe_of(&side).product().map(|built| built.generation).unwrap();
+    side.entry().playhead().seek(hour);
+    frames_at(&mut side, Some(hour), &gate, "the seek composed", |side| !side.composing() && probe_of(side).product().is_some_and(|built| built.generation > before));
+    assert_eq!(probe_of(&side).product().map(|built| built.hour), Some(hour), "built again at the hour sought: {}", window_state(&side, &gate));
+}
+
+/// A compose is owed one plan the scene takes anew, and the install pays it. On the base the
+/// compose's reset was spent by the product that happened to be taken first, so a product taken
+/// after it and before the scene had been given anything was handed on as a continuation, and
+/// which of them the scene took was a race between the layer's worker and the frame.
+#[test]
+fn the_plan_the_scene_takes_after_a_compose_is_taken_anew_however_many_products_were_taken_first() {
+    let gate = Gate::opened();
+    let mut side = window_side(ticking(200), &gate);
+    let _opens = Opens(Arc::clone(&gate));
+    frames_at(&mut side, None, &gate, "the probe's first product", |side| probe_of(side).product().is_some());
+    assert_eq!(probe_of(&side).installing(), Some(Continuity::Reset), "the seek composed the layer: the scene takes its first plan anew");
+    let (hour, taken) = (side.applied().expect("the head has reached an hour"), probe_of(&side).marked()[1]);
+    let next = hour + 8;
+    assert!(next < 200, "the recording holds hour {next}");
+    frames_at(&mut side, Some(next), &gate, "a second product taken before the scene is given one", |side| probe_of(side).marked()[1] > taken);
+    assert_eq!(
+        probe_of(&side).installing(),
+        Some(Continuity::Reset),
+        "the product replacing one taken anew is taken anew too: the scene has been given neither"
+    );
+}
+
 /// Builds nothing of the rows, and stands at any rows that hold its tables unchanged.
 struct Steady;
 
@@ -450,12 +534,12 @@ impl Build for Steady {
     }
 }
 
-/// The vision layer, then [`Steady`] reading `reads` from rows at `cadence`; its reader declared
+/// The vision layer, then [`Steady`] reading `reads` from the side's views; its reader declared
 /// before the seek to the first hour (so the seek's reset brings its tables), played until that
 /// reset is swapped in.
-fn steady_side(units: Units, reads: &[TableId], cadence: Cadence) -> MapSide {
-    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
-    let steady = Whole::new("steady", Steady, |_, _| true, |_| 0, reads, cadence, false, false).unwrap();
+fn steady_side(units: Units, reads: &[TableId]) -> MapSide {
+    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let steady = Whole::new("steady", Steady, |_, _| true, |_| 0, reads, false).unwrap();
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(vision::Vision::new(vision_content())), Box::new(steady)];
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
     steady_of(&side).rebuilt().set_source(Arc::clone(&entry), Recording { branch: 1 }, (Choice::default(), None)).unwrap();
@@ -486,7 +570,7 @@ fn next_hour(side: &mut MapSide) -> i32 {
 
 #[test]
 fn a_layer_builds_nothing_while_no_table_it_reads_changes_and_its_product_stands_at_the_newer_hours() {
-    let mut side = steady_side(ticking(200), &[TableId::LocalPlayer], Cadence::EveryStep);
+    let mut side = steady_side(ticking(200), &[TableId::LocalPlayer]);
     let mut last = 0;
     for _ in 0..40 {
         last = next_hour(&mut side);
@@ -508,7 +592,7 @@ fn a_layer_builds_nothing_while_no_table_it_reads_changes_and_its_product_stands
 /// frames of rows a second: a step's rows could be passed over for the next tick's.
 #[test]
 fn a_layer_with_a_step_every_frame_makes_the_product_of_each_steps_rows_and_waits_for_no_clock() {
-    let mut side = steady_side(ticking(520), &[TableId::Clock], Cadence::Ready);
+    let mut side = steady_side(ticking(520), &[TableId::Clock]);
     let first = steady_of(&side).rebuilt().builds().count;
     let steps = 60u64;
     let mut last = 0;

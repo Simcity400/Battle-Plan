@@ -1,9 +1,11 @@
 //! Live snow/mud display-grid boundary, including attachment after a full rebuild.
-//! Incremental display writes exclude the last row and column; full rebuilds
-//! publish every cell. No load history is needed. The refresh token is stored
-//! before copying and rebuilding; outstanding work clears only after job joins.
-//! Read the token, require zero work, select and copy, require zero work again,
-//! then compare the token. Equality alone can admit a running rebuild. Never retry or wait.
+//! A changed province queues its cells clamped one short of the grid, so an ordinary
+//! weather change never reaches the last row and column; only a whole-grid mark
+//! publishes every cell, and only that can move the boundary. No load history is
+//! needed. The refresh token is stored before copying and rebuilding; the queued
+//! count clears only after job joins. Read the token, require no whole-grid rebuild,
+//! select and copy, require it again, then compare the token. Equality alone can
+//! admit a running rebuild. Never retry or wait.
 
 use super::*;
 
@@ -42,6 +44,12 @@ pub struct DisplayGrid {
 }
 
 impl DisplayGrid {
+    fn cells(&self) -> Result<usize, &'static str> {
+        (self.size[0] as usize)
+            .checked_mul(self.size[1] as usize)
+            .ok_or("weather display grid extent overflow")
+    }
+
     pub fn edge_bytes(&self) -> Result<usize, &'static str> {
         (self.size[0] as usize)
             .checked_add(self.size[1] as usize)
@@ -91,7 +99,7 @@ impl DisplayGrid {
                 return Err("weather display edge row unreadable");
             }
         }
-        require_display_idle(memory, self.manager)?;
+        require_boundary_unqueued(memory, self.manager, self.cells()?)?;
         if read_display_identity(memory, self.manager)? != self.refresh_identity {
             return Err("weather display refreshed during boundary copy");
         }
@@ -110,11 +118,19 @@ fn read_display_identity(memory: &impl Memory, manager: usize) -> Result<u64, &'
         .map_err(|_| "weather display refresh identity unreadable")
 }
 
-fn require_display_idle(memory: &impl Memory, manager: usize) -> Result<(), &'static str> {
-    let work: i32 = movement_field(memory, manager, DISPLAY_WORK_COUNT)
+/// A queue that can still move the boundary. The queue holds one entry per cell and
+/// is emptied whole, so it reaches the grid's cell count only while a whole-grid mark
+/// is outstanding; anything shorter is interior cells the rebuild clamps away from the
+/// last row and column.
+fn require_boundary_unqueued(
+    memory: &impl Memory,
+    manager: usize,
+    cells: usize,
+) -> Result<(), &'static str> {
+    let queued: i32 = movement_field(memory, manager, DISPLAY_WORK_COUNT)
         .map_err(|_| "weather display work count unreadable")?;
-    if work != 0 {
-        return Err("weather display graphics work pending");
+    if queued < 0 || queued as usize >= cells {
+        return Err("weather display whole-grid rebuild queued");
     }
     Ok(())
 }
@@ -126,11 +142,14 @@ pub fn read_display_grid(
     base: usize,
     manager: usize,
 ) -> Result<DisplayGrid, &'static str> {
+    let size = display_grid_size(memory, base)?;
+    let extent = (size[0] as usize)
+        .checked_mul(size[1] as usize)
+        .ok_or("weather display grid extent overflow")?;
     // Keep these separate and ordered: the timestamp is stored before work
     // finishes, so selecting it in a header batch cannot certify completion.
     let refresh_identity = read_display_identity(memory, manager)?;
-    require_display_idle(memory, manager)?;
-    let size = display_grid_size(memory, base)?;
+    require_boundary_unqueued(memory, manager, extent)?;
     let fields = FieldBatch::gather(
         memory,
         movement_fields(
@@ -148,9 +167,6 @@ pub fn read_display_grid(
         u64::from_le_bytes(bytes[..8].try_into().unwrap()),
         u64::from_le_bytes(bytes[8..].try_into().unwrap()),
     ];
-    let extent = (size[0] as usize)
-        .checked_mul(size[1] as usize)
-        .ok_or("weather display grid extent overflow")?;
     let mut planes = [0; 2];
     for (plane, pointer) in planes.iter_mut().zip(pointers) {
         *plane = usize::try_from(pointer)
@@ -305,14 +321,30 @@ mod tests {
     }
 
     #[test]
-    fn weather_display_completion_guard_refuses_pending_or_unreadable_work_before_edges() {
-        for work in [1_i32, -1] {
+    fn weather_display_completion_guard_refuses_a_whole_grid_rebuild_or_unreadable_work_before_edges()
+    {
+        // A partial queue is interior cells the rebuild clamps away from the last row
+        // and column, so the retained boundary still reads.
+        for work in [1_i32, 5] {
+            let mut source = Source::grid();
+            source.put(0x2000 + DISPLAY_WORK_COUNT, &work.to_le_bytes());
+            let reader = Reader::with_manager(&source, 0, 0x2000).unwrap();
+            let mut edges = [0; 8];
+            reader
+                .display_grid()
+                .unwrap()
+                .read_edges(&source, &mut edges)
+                .unwrap();
+            assert_eq!(edges, [2, 3, 4, 5, 22, 23, 24, 25]);
+        }
+        // The grid's six cells queued whole, more than whole, or a nonsense count.
+        for work in [6_i32, 7, -1] {
             let mut source = Source::grid();
             source.put(0x2000 + DISPLAY_WORK_COUNT, &work.to_le_bytes());
             let reader = Reader::with_manager(&source, 0, 0x2000).unwrap();
             assert_eq!(
                 reader.display_grid(),
-                Err("weather display graphics work pending")
+                Err("weather display whole-grid rebuild queued")
             );
             assert!(
                 !source

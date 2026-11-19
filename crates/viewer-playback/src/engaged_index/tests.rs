@@ -53,14 +53,8 @@ fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
         let country = Country::Tag("AAA".into());
         let mut pass = Pass::new(Arc::clone(&shared), country.clone());
         pass.fold_hour(frame.branch, frame.hour, Some(&frame), native_load(&start), false);
-        let (snapshots, _inbox) = mpsc::channel();
-        let index = EngagedIndex {
-            country,
-            shared,
-            snapshots,
-            folding: Mutex::new(Arc::new(crate::playback::tests::fixture())),
-        };
-        let viewer = Viewer::read(&frame, &index.country).unwrap();
+        let index = EngagedIndex { shared };
+        let viewer = Viewer::read(&frame, &country).unwrap();
         combats(
             &frame,
             LAND,
@@ -269,14 +263,8 @@ fn fold_hours(tag: &str, hours: &[(Hour, &[u32], &[(u32, u32)], [u8; 2])]) -> Pa
     pass
 }
 
-fn index(pass: &Pass, tag: &str) -> EngagedIndex {
-    let (snapshots, _inbox) = mpsc::channel();
-    EngagedIndex {
-        country: Country::Tag(tag.into()),
-        shared: Arc::clone(&pass.shared),
-        snapshots,
-        folding: Mutex::new(Arc::new(crate::playback::tests::fixture())),
-    }
+fn index(pass: &Pass) -> EngagedIndex {
+    EngagedIndex { shared: Arc::clone(&pass.shared) }
 }
 
 /// The flags `CombatFlags::read` serves `viewer` at `hour` of that frame.
@@ -320,7 +308,7 @@ fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
     );
     let summary = &pass.check.summary;
     assert_eq!((summary.agreements, summary.mismatches), (8, 0));
-    let index = index(&pass, "C1");
+    let index = index(&pass);
     let mut frame = naval_frame(6, &[1], allied, 1, [1, 0]);
     // Land combat 100 has the same sides: A is served its rebuilt Yes for
     // both kinds.
@@ -334,7 +322,7 @@ fn a_viewer_who_is_the_recording_player_takes_its_player_change_rebuilds() {
     // possible controller refresh.
     let branches = pass.shared.branches.lock().unwrap();
     for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
-        let points = &branches[&3].points[kind][&(combat, 0)];
+        let points = &branches[&3].folds()[0].points()[kind][&(combat, 0)];
         assert_eq!(at(points, 12), Some(Engaged::No));
         assert_eq!(
             at(points, 13),
@@ -354,14 +342,14 @@ fn a_player_change_rebuilds_nothing_for_another_viewer() {
         "C5",
         &[(10, &[1], none, [0, 0]), (11, &[2], allied, [1, 1])],
     );
-    let index = index(&pass, "C5");
+    let index = index(&pass);
     let mut frame = naval_frame(6, &[2], allied, 1, [1, 1]);
     // Country 5 defends: engaged either way, so read the attacking side,
     // of the naval combat and of the land one beside it.
     let branches = pass.shared.branches.lock().unwrap();
     for (kind, combat) in [(NAVAL, 0), (LAND, 100)] {
         assert_eq!(
-            at(&branches[&3].points[kind][&(combat, 0)], 11),
+            at(&branches[&3].folds()[0].points()[kind][&(combat, 0)], 11),
             Some(Engaged::No)
         );
     }
@@ -396,7 +384,7 @@ fn a_player_change_hidden_in_an_unreadable_block_rebuilds_nothing_on_recovery() 
     pass.failed_block(3, 19);
     let mut frame = naval_frame(6, &[3], allied, 1, [0, 0]);
     pass.fold_hour(3, 20, Some(&frame), Some(10), false);
-    let index = index(&pass, "C3");
+    let index = index(&pass);
     let served = flags(&index, &mut frame, 20, 3);
     assert_eq!(served.land[&100], Engaged::Unknown);
     assert_eq!(served.naval[&0], Engaged::No);
@@ -428,7 +416,7 @@ fn mismatches_are_named_and_undecided_sides_counted_apart() {
     let mut frame = naval_frame(6, &[1], none, 1, [0, 1]);
     pass.fold_hour(3, 10, Some(&frame), None, false);
     assert_eq!(pass.check.summary.undecided, 2);
-    let index = index(&pass, "C1");
+    let index = index(&pass);
     assert_eq!(naval_flag(&index, &mut frame, 10, 1), Engaged::Yes);
     // Another viewer (3, on neither side) keeps its own derivation, not the byte.
     assert_eq!(naval_flag(&index, &mut frame, 10, 3), Engaged::No);
@@ -529,7 +517,7 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
         summary.first
     );
     // Viewing 4, the recording's client, is served its stale flag at 11.
-    let index = index(&pass, "C1");
+    let index = index(&pass);
     let mut frame = naval_frame(6, &[1], allied, 1, [1, 0]);
     *frame.tables[TableId::LocalPlayer.index()] =
         replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::LocalPlayer(vec![
@@ -590,7 +578,7 @@ fn the_recording_players_icons_keep_the_clients_carried_frame() {
     for frame in &frames {
         pass.fold_hour(3, frame.hour, Some(frame), Some(10), false);
     }
-    let index = index(&pass, "C3");
+    let index = index(&pass);
     let mut frame = frames[2].clone();
     let naval = flags(&index, &mut frame, 12, 3).naval;
     let (kept, provenance) =
@@ -656,7 +644,7 @@ fn a_joined_recordings_icon_keeps_the_frame_its_recorded_bytes_set() {
         // No load: the branch joined a running game.
         pass.fold_hour(3, frame.hour, Some(frame), None, false);
     }
-    let index = index(&pass, "C1");
+    let index = index(&pass);
     let mut frame = frames[2].clone();
     let naval = flags(&index, &mut frame, 12, 1).naval;
     let (kept, provenance) =
@@ -765,7 +753,7 @@ fn an_unengaged_naval_icon_keeps_its_last_engaged_frame_through_the_index() {
     for frame in &frames {
         pass.fold_hour(3, frame.hour, Some(frame), Some(10), false);
     }
-    let index = index(&pass, "C1");
+    let index = index(&pass);
     let kept = |at: usize| {
         let mut frame = frames[at].clone();
         let hour = frame.hour;
@@ -835,39 +823,24 @@ fn a_side_whose_combat_ends_is_reported_once() {
 #[test]
 fn a_lookup_takes_the_last_change_at_or_before_the_hour_for_the_folded_viewer() {
     let shared = Arc::new(History::default());
-    let mut points = BTreeMap::new();
-    record(
-        &mut points,
-        10,
-        [((62, 0), Engaged::No), ((62, 1), Engaged::No)].into_iter(),
+    let mut covered = Covered::new(10);
+    (covered.last, covered.viewers) = (20, vec![(10, 1)]);
+    for (hour, side) in [(10, Engaged::No), (11, Engaged::No), (14, Engaged::Yes)] {
+        covered
+            .fold(false)
+            .record(LAND, hour, &[((62, 0), Engaged::No), ((62, 1), side)], &[]);
+    }
+    assert_eq!(
+        covered.folds()[0].points()[LAND][&(62, 1)],
+        [(10, Engaged::No), (14, Engaged::Yes)]
     );
-    record(
-        &mut points,
-        11,
-        [((62, 0), Engaged::No), ((62, 1), Engaged::No)].into_iter(),
-    );
-    record(
-        &mut points,
-        14,
-        [((62, 0), Engaged::No), ((62, 1), Engaged::Yes)].into_iter(),
-    );
-    assert_eq!(points[&(62, 1)], [(10, Engaged::No), (14, Engaged::Yes)]);
-    shared.branches.lock().unwrap().insert(
-        3,
-        Covered {
-            points: vec![points],
-            viewers: vec![(10, 1)],
-            last: 20,
-            ..Covered::new(10)
-        },
-    );
-    let (snapshots, _inbox) = mpsc::channel();
-    let index = EngagedIndex {
-        country: Country::Recorded,
-        shared,
-        snapshots,
-        folding: Mutex::new(Arc::new(crate::playback::tests::fixture())),
-    };
+    shared.branches.lock().unwrap().insert(3, covered);
+    // The hour log names the combats a side changed at, and only those.
+    let changed = |from, to| shared.flags_changed(LAND, 3, from, to, 1);
+    assert_eq!(changed(10, 14), Some(vec![62]), "side 1 took a new value at 14");
+    assert_eq!(changed(14, 20), Some(Vec::new()), "nothing changed after it");
+    assert_eq!(changed(10, 21), None, "past the fold every flag is read again");
+    let index = EngagedIndex { shared };
     let at = |hour, viewer| index.shared.lookup(LAND, 3, hour, viewer, &[62]);
     assert_eq!(at(13, 1), Ok(BTreeMap::from([(62, Engaged::No)])));
     assert_eq!(at(14, 1), Ok(BTreeMap::from([(62, Engaged::Yes)])));
@@ -1009,15 +982,9 @@ fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) 
     for frame in hours {
         pass.fold_hour(frame.branch, frame.hour, Some(frame), Some(0), false);
     }
-    let (snapshots, _inbox) = mpsc::channel();
-    let index = EngagedIndex {
-        country,
-        shared,
-        snapshots,
-        folding: Mutex::new(Arc::new(crate::playback::tests::fixture())),
-    };
+    let index = EngagedIndex { shared };
     let last = hours.last().unwrap();
-    let viewer = Viewer::read(last, &index.country).unwrap();
+    let viewer = Viewer::read(last, &country).unwrap();
     combats(
         last,
         LAND,
@@ -1074,13 +1041,7 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
     let shared = Arc::new(History::default());
     let mut pass = Pass::new(Arc::clone(&shared), Country::Tag("AAA".into()));
     pass.fold_hour(1, 0, Some(&frames[0]), Some(0), false);
-    let (snapshots, _inbox) = mpsc::channel();
-    let index = EngagedIndex {
-        country: Country::Tag("AAA".into()),
-        shared,
-        snapshots,
-        folding: Mutex::new(Arc::new(crate::playback::tests::fixture())),
-    };
+    let index = EngagedIndex { shared };
     assert_eq!(
         rebuilt(Some(index.shared.as_ref())),
         (yes.clone(), Provenance::Pending)
@@ -1117,65 +1078,20 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
     assert_eq!(Provenance::Indexed.limitation(), None);
 }
 
-/// A newer snapshot keeps the folded index only when every folded block
-/// retains explicit source metadata under the metadata-only append policy.
-#[test]
-fn a_snapshot_extends_the_index_only_with_the_same_blocks_and_branch_starts() {
-    use replay::spool::Record;
-    let open =
-        |records: Vec<Record>| Replay::from_records(b"campaign".to_vec(), &[records]).unwrap();
-    let records = || crate::playback::tests::records(1, &[100, 101, 102]);
-    let older = Arc::new(open(records()));
-    let same = Arc::new(Replay::open(older.bytes().to_vec()).unwrap());
-    // Equal metadata, one block's bytes changed.
-    let changed = Arc::new(Replay::open(older.damaged_block(&older.index[0]).unwrap()).unwrap());
-    assert_eq!(
-        (&changed.index, &changed.branches),
-        (&older.index, &older.branches)
-    );
-    // The same blocks, but the branch now starts with a load signal.
-    let mut loaded = records();
-    for record in &mut loaded {
-        if let Record::BranchStart(start) = record {
-            start.reason = BranchReason::LoadSignal;
-        }
-    }
-    let reloaded = Arc::new(open(loaded));
-    assert_eq!(reloaded.index, older.index);
-    let index = EngagedIndex::start(Arc::clone(&older), Country::Recorded).unwrap();
-    assert!(index.extend(&changed));
-    assert!(!index.extend(&reloaded));
-    assert!(index.extend(&same));
-}
 
+/// The timeline index lists one physical block (a run and its page) under every branch that
+/// plays it, so a fold of one branch's hours that took every listed block would fold those hours
+/// once a branch: the second pass starts behind the hours already folded, which reads as a gap
+/// and loses every side that does not rebuild again.
 #[test]
-fn file_backed_append_inherits_only_unchanged_index_branch_session_and_gap_metadata() {
-    let original = crate::playback::tests::fixture();
-    let appended = original
-        .append(&[crate::playback::tests::records(2, &[900, 901])])
-        .unwrap();
-    let directory = std::env::temp_dir().join(format!("engaged-append-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&directory).unwrap();
-    let old_path = directory.join("old.battleplan");
-    let new_path = directory.join("new.battleplan");
-    std::fs::write(&old_path, original.bytes()).unwrap();
-    std::fs::write(&new_path, appended.bytes()).unwrap();
-    let older = Replay::open_path(&old_path).unwrap();
-    let mut newer = Replay::open_path(&new_path).unwrap();
-    assert!(super::extends(&older, &newer));
-    let saved = newer.sessions[0].clone();
-    newer.sessions[0].process_id ^= 1;
-    assert!(!super::extends(&older, &newer));
-    newer.sessions[0] = saved;
-    let saved = newer.gaps[0].clone();
-    newer.gaps[0].reason.push_str(" changed");
-    assert!(!super::extends(&older, &newer));
-    newer.gaps[0] = saved;
-    newer.index[0].last_hour += 1;
-    assert!(!super::extends(&older, &newer));
-    drop(older);
-    drop(newer);
-    std::fs::remove_file(old_path).unwrap();
-    std::fs::remove_file(new_path).unwrap();
-    std::fs::remove_dir(directory).unwrap();
+fn a_block_played_by_two_branches_is_read_once() {
+    let block = |branch, page: u32, first: Hour| replay::campaign::BlockIndex { branch, first_hour: first, last_hour: first + 719, run: 2, page };
+    let index = [block(3, 0, 1000), block(7, 0, 1000), block(3, 1, 1720), block(7, 1, 1720), block(3, 0, 1000)];
+    let taken: Vec<(u32, Hour)> = piece_blocks(&index, 2, 1000, 2439).iter().map(|block| (block.page, block.first_hour)).collect();
+    assert_eq!(taken, [(0, 1000), (1, 1720)]);
+    // Another run's pages are another piece's.
+    assert!(piece_blocks(&index, 0, 1000, 2439).is_empty());
+    // Only the pages holding an hour of the range.
+    let taken: Vec<u32> = piece_blocks(&index, 2, 1800, 2000).iter().map(|block| block.page).collect();
+    assert_eq!(taken, [1]);
 }

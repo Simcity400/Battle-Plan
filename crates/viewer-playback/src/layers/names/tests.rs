@@ -74,6 +74,11 @@ impl Atlas for Stub {
             alpha: 1.0,
         })
     }
+    /// The height the country names draw at, as the content's defines give it.
+    fn names_cutoff(&self) -> f32 {
+        260.0
+    }
+
 }
 
 const GAP: std::ops::Range<i32> = 40..48;
@@ -246,6 +251,8 @@ fn names_settled_every_step_equal_composed_and_follow_owners_operands_rows_and_g
 struct Gated {
     stub: Stub,
     held: &'static str,
+    /// The one placement of `held` the gate holds and counts: the component it is placed over.
+    component: &'static [u32],
     gate: Arc<(Mutex<(Option<u64>, u64)>, Condvar)>,
 }
 
@@ -275,7 +282,7 @@ impl Atlas for Gated {
     }
 
     fn place(&self, tag: &str, text: &str, component: &[u32]) -> Option<WorldName> {
-        if tag != self.held {
+        if tag != self.held || component != self.component {
             return self.stub.place(tag, text, component);
         }
         let (lock, wake) = &*self.gate;
@@ -291,6 +298,11 @@ impl Atlas for Gated {
         drop(gate);
         self.stub.place(tag, text, component)
     }
+    /// The height the country names draw at, as the content's defines give it.
+    fn names_cutoff(&self) -> f32 {
+        260.0
+    }
+
 }
 
 /// The stepped harness settles once without a limit and then needs the hour whole: an area placed
@@ -299,8 +311,7 @@ impl Atlas for Gated {
 fn names_settled_without_a_limit_carry_nothing_left_on_the_worker() {
     let mut side = side("names-unlimited");
     side.catch_up(8).unwrap();
-    // Out of budget, the frames leave every change to the settle without a limit, which places them.
-    side.set_budget(Duration::ZERO);
+    // Out of settling, the frames leave every change to the settle without a limit, which places them.
     side.catch_up(12).unwrap();
     let layer = names(&side);
     assert_eq!((layer.carried().entities, layer.published()), (0, Published::Current), "the hour province 3 changed hands in is placed whole: {:?}", layer.carried());
@@ -353,8 +364,10 @@ fn names_with_a_placement_held_show_the_last_product_whole_and_never_part_of_the
         }
     });
     let localisation: Localisation = [("AAA", "Alpha"), ("BBB", "Beta"), ("CCC", "Gamma")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    let gate = Arc::new((Mutex::new((None::<u64>, 0u64)), Condvar::new()));
-    let atlas = Gated { stub: Stub(Arc::new(localisation)), held: "AAA", gate: Arc::clone(&gate) };
+    // Alpha's placement over province 1 alone, which only the step from hour 9 asks: held from the
+    // start, as the worker may place a step it was fed ahead of the frames before the test looks.
+    let gate = Arc::new((Mutex::new((Some(0), 0u64)), Condvar::new()));
+    let atlas = Gated { stub: Stub(Arc::new(localisation)), held: "AAA", component: &[1], gate: Arc::clone(&gate) };
     let mut side = side_of(pages, Box::new(Names::new(Arc::new(atlas))), "names-held");
     let _opened_before_the_side_drops = Opens(Arc::clone(&gate));
     let (alpha, beta) = (1, 2);
@@ -372,18 +385,12 @@ fn names_with_a_placement_held_show_the_last_product_whole_and_never_part_of_the
         }
     };
     side.catch_up(0).unwrap();
-    let entered = gate.0.lock().unwrap().1;
-    {
-        let (lock, wake) = &*gate;
-        lock.lock().unwrap().0 = Some(0);
-        wake.notify_all();
-    }
     frames_to(&mut side, 8, "hour 8 shown", &|layer| layer.published() == Published::Current);
     frames_to(&mut side, 12, "the step from hour 9 applied", &|_| true);
     {
         let (lock, wake) = &*gate;
         let mut held = lock.lock().unwrap();
-        while held.1 <= entered {
+        while held.1 == 0 {
             let left = deadline.saturating_duration_since(Instant::now());
             assert!(!left.is_zero(), "Alpha's placement did not reach the gate within 120 s");
             held = wake.wait_timeout(held, left).unwrap().0;
@@ -511,7 +518,7 @@ fn areas() -> Names {
 #[test]
 fn names_upload_writes_only_the_area_placed_again() {
     let (mut layer, mut scene) = (areas(), Held::default());
-    layer.push(&mut scene, &mut crate::layers::Budget::unlimited()).unwrap();
+    layer.push(&mut scene).unwrap();
     assert_eq!((scene.begun, scene.sets.len()), (1, AREAS as usize), "composed, every area is written once");
     assert_eq!(scene.drawn(), layer.placements().country);
     assert!(layer.uploaded() && layer.drawn.generation == scene.generation.unwrap(), "the window's placements carry the scene's generation");
@@ -521,7 +528,7 @@ fn names_upload_writes_only_the_area_placed_again() {
     layer.owe(100);
     assert!(!layer.uploaded());
     let sets = scene.sets.len();
-    layer.push(&mut scene, &mut crate::layers::Budget::unlimited()).unwrap();
+    layer.push(&mut scene).unwrap();
     assert_eq!(&scene.sets[sets..], [100], "one area written, of {AREAS}");
     assert_eq!(scene.begun, 1);
     assert_eq!(scene.drawn(), layer.placements().country, "the scene draws today's placements after the change");
@@ -532,35 +539,26 @@ fn names_upload_writes_only_the_area_placed_again() {
 #[test]
 fn names_upload_with_no_area_changed_writes_nothing() {
     let (mut layer, mut scene) = (areas(), Held::default());
-    layer.push(&mut scene, &mut crate::layers::Budget::unlimited()).unwrap();
+    layer.push(&mut scene).unwrap();
     let (drawn, sets) = (Arc::clone(&layer.drawn), scene.sets.len());
-    layer.push(&mut scene, &mut crate::layers::Budget::unlimited()).unwrap();
+    layer.push(&mut scene).unwrap();
     assert_eq!(scene.sets.len(), sets, "nothing written");
     assert!(Arc::ptr_eq(&drawn, &layer.drawn), "the window's placements are the same");
 }
 
-/// The scene holding names the layer did not send (another placement drew there): every area is
-/// sent again, an area an upload while the budget is spent, and the pieces end as the whole. The
-/// window's placements follow the scene's generation after every piece.
+/// The scene holding names the layer did not send (another placement drew there): one upload sends
+/// every area again, and the window's placements follow the scene's generation.
 #[test]
-fn names_sent_again_whole_are_carried_across_spent_budgets_and_end_equal_to_whole() {
+fn names_sent_again_whole_send_every_area_in_one_upload() {
     let (mut layer, mut scene) = (areas(), Held::default());
-    layer.push(&mut scene, &mut crate::layers::Budget::unlimited()).unwrap();
+    layer.push(&mut scene).unwrap();
     scene.generation = Some(0);
-    let mut uploads = 0;
-    loop {
-        let sets = scene.sets.len();
-        layer.push(&mut scene, &mut crate::layers::Budget::new(Duration::ZERO).first_free()).unwrap();
-        uploads += 1;
-        assert!(scene.sets.len() - sets <= 1, "upload {uploads} writes one area at most");
-        assert_eq!(Some(layer.drawn.generation), scene.generation, "the window draws what the scene holds after upload {uploads}");
-        if layer.uploaded() {
-            break;
-        }
-        assert!(uploads <= AREAS as usize + 1, "the upload never finished");
-    }
-    assert_eq!((scene.begun, uploads), (2, AREAS as usize), "begun again with the first area, then an area an upload");
-    assert_eq!(scene.drawn(), layer.placements().country, "the pieces draw today's placements");
+    let sets = scene.sets.len();
+    layer.push(&mut scene).unwrap();
+    assert!(layer.uploaded(), "one upload sends it all");
+    assert_eq!((scene.begun, scene.sets.len() - sets), (2, AREAS as usize), "begun again, every area written");
+    assert_eq!(Some(layer.drawn.generation), scene.generation, "the window draws what the scene holds");
+    assert_eq!(scene.drawn(), layer.placements().country, "the areas draw today's placements");
 }
 
 /// Plays a step a frame, as at 1,440 hours a second: between two steps, frames at the hour applied
@@ -668,7 +666,7 @@ fn names_whose_naming_string_is_not_named_are_refused_by_name() {
     let atlas: Arc<dyn Atlas> = Arc::clone(&layer.content);
     let mut model = super::Model::new(Arc::clone(&atlas), columns, tables);
     let placers = super::Placers::new(&atlas);
-    let placed = model.settle(&placers);
+    let placed = model.settle(&placers, true);
     let mut shown = layer.fresh();
     shown.take(model.made(0, placed));
     let area = &shown.areas()[&1];
@@ -677,6 +675,36 @@ fn names_whose_naming_string_is_not_named_are_refused_by_name() {
     assert!(why.contains("cosmetic tag: string 99 is not named at the head"), "the mirror read's words: {why}");
     let warnings = shown.placements().warnings;
     assert!(warnings.iter().any(|line| line.contains("AAA: ") && line.contains("cosmetic tag: string 99 is not named at the head")), "the window's warning names it: {warnings:?}");
+}
+
+/// The product a reset makes is placed where the camera draws names. That product is what a
+/// compose waits for, and a compose is the first picture of a cold seek and of a saved frame, so a
+/// reset carries the camera's answer rather than a message sent after it: a first product made with
+/// whatever answer the worker happened to hold placed no name at all, and the first picture after a
+/// seek drew none.
+#[test]
+fn a_reset_places_its_areas_where_the_camera_draws_names() {
+    let mut side = side("names-reset");
+    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    let (mirrors, _) = side.parts().unwrap();
+    let layer = names(&side);
+    let columns = layer.columns.unwrap();
+    let tables = crate::layers::owned::Tables::from_mirrors(mirrors, &columns.shapes());
+    let atlas: Arc<dyn Atlas> = Arc::clone(&layer.content);
+    let (jobs, receive) = std::sync::mpsc::channel();
+    let (send, made) = std::sync::mpsc::channel();
+    let due = super::Due::default();
+    let worker = std::thread::Builder::new().name("names reset".into()).spawn(move || super::run(atlas, receive, send, due)).unwrap();
+    jobs.send(super::Job::Reset { epoch: 7, tables: Box::new(tables), columns, stamp: Some(4), placing: true }).unwrap();
+    let product = made.recv_timeout(Duration::from_secs(120)).expect("the reset's product");
+    assert_eq!((product.epoch, product.stamp), (7, Some(4)), "the reset's own epoch and hour");
+    assert!(!product.placed.is_empty(), "the reset's product placed its areas: {:?}", product.placed.len());
+    let mut shown = layer.fresh();
+    shown.take(product);
+    assert!(shown.areas().values().all(|area| area.tag.is_none() || !area.placed.is_empty()), "every area with a tag is placed: {:?}", shown.areas().iter().map(|(slot, area)| (*slot, area.tag.clone(), area.placed.len())).collect::<Vec<_>>());
+    assert!(!shown.placements().country.is_empty(), "the window draws the names of the reset's product");
+    drop(jobs);
+    worker.join().unwrap();
 }
 
 fn view(mode: Stock) -> View {
@@ -690,8 +718,8 @@ fn windowed(name: &str) -> crate::playhead_host::MapSide {
     let kinds = Arc::new((0..TableId::ALL.len()).map(|table| pages.kinds(table).map(<[replay_columnar::state::Kind]>::to_vec).unwrap_or_default()).collect());
     let timeline = playhead::Timeline::whole(&*pages).unwrap();
     let units = crate::playhead_host::units::Units { name: name.to_owned(), pages, timeline, kinds };
-    let entry = crate::playhead_host::open(units, playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
-    let layer = Names::new(Arc::new(stub())).in_window(Arc::clone(&entry), crate::playhead_host::rows::Recording { branch: 1 }).unwrap();
+    let entry = crate::playhead_host::open(units, playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..playhead::Settings::default() }).unwrap();
+    let layer = Names::new(Arc::new(stub())).in_window(Arc::clone(&entry), crate::playhead_host::views::Recording { branch: 1 }).unwrap();
     let mut side = crate::playhead_host::MapSide::new(Arc::clone(&entry), vec![Box::new(layer)], View::default()).unwrap();
     entry.playhead().play(4.0);
     entry.playhead().seek(0);
@@ -743,8 +771,8 @@ fn names_at_each_mode_draw_what_todays_rule_writes_there_and_never_the_old_modes
         let applied = side.applied().unwrap();
         side.frame(applied).unwrap();
         if !side.composing() {
-            side.upload_each(|layer, budget| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Names>()) {
-                Some(names) => names.push_any(&mut scene, budget),
+            side.upload_each(|layer| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Names>()) {
+                Some(names) => names.push_any(&mut scene),
                 None => Ok(()),
             })
             .unwrap();
@@ -765,7 +793,8 @@ fn names_at_each_mode_draw_what_todays_rule_writes_there_and_never_the_old_modes
     assert_eq!(names(&side).shown().country[0].key, format!("factions at {}", built.hour));
     let again = modes.again(built).unwrap().unwrap();
     assert_eq!(again.country, names(&side).shown().country, "today's names of the mode, composed from the same rows");
-    assert_eq!(names(&side).published(), Published::Cadence(built.hour), "made on the fill layer's cadence, at the hour of its rows");
+    let expected = if Some(built.hour) >= side.applied() { Published::Current } else { Published::At(built.hour) };
+    assert_eq!(names(&side).published(), expected, "part of the hour's picture: at the hour applied, or holding the drawn hour at its own");
 
     side.set_view(View::default()).unwrap();
     assert!(names(&side).shown().country.is_empty(), "nothing of the factions' names is shown at the default mode");
@@ -794,8 +823,8 @@ fn a_modes_whole_names_are_installed_again_in_a_scene_that_does_not_hold_them() 
     side.set_view(view(Stock::Factions)).unwrap();
     let mut scene = Held::default();
     let upload = |side: &mut crate::playhead_host::MapSide, scene: &mut Held| {
-        side.upload_each(|layer, budget| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Names>()) {
-            Some(names) => names.push_any(scene, budget),
+        side.upload_each(|layer| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Names>()) {
+            Some(names) => names.push_any(scene),
             None => Ok(()),
         })
         .unwrap();
@@ -835,8 +864,6 @@ fn names_at_a_mode_that_writes_none_declare_and_hold_nothing() {
         side.frame(applied).unwrap();
     }
     assert_eq!(side.refusals().count(), 0, "drawn, writing nothing; not refused");
-    let (mirrors, _) = side.parts().unwrap();
-    assert!(mirrors.get(TableId::Provinces).is_none() && mirrors.get(TableId::Clock).is_none(), "it declares no table");
     assert_eq!(names(&side).held(), 0, "it holds nothing");
     assert!(names(&side).shown().country.is_empty() && names(&side).areas().is_empty(), "it hands the window no name");
     assert_eq!(names(&side).published(), Published::Current);
@@ -857,8 +884,8 @@ fn names_hand_the_window_only_pictures_the_scene_has_prepared_at_every_kind_of_m
         if side.composing() {
             return false;
         }
-        side.upload_each(|layer, budget| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Names>()) {
-            Some(names) => names.push_any(scene, budget),
+        side.upload_each(|layer| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Names>()) {
+            Some(names) => names.push_any(scene),
             None => Ok(()),
         })
         .unwrap();

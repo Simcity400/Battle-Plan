@@ -29,7 +29,7 @@ fn aircraft(layer: &dyn Layer) -> &Aircraft {
 }
 
 pub(super) fn ships_make(document: &Document) -> Box<dyn Layer> {
-    Box::new(Ships::new(Arc::clone(&document.content) as Arc<dyn crate::layers::ships::Naval>, false).expect("the ships layer's worker starts"))
+    Box::new(Ships::new(Arc::clone(&document.content) as Arc<dyn crate::layers::ships::Naval>).expect("the ships layer's worker starts"))
 }
 
 pub(super) fn aircraft_make(document: &Document) -> Box<dyn Layer> {
@@ -39,7 +39,7 @@ pub(super) fn aircraft_make(document: &Document) -> Box<dyn Layer> {
 /// Gives the layers the playhead whose rows they read; the ships today's vision of the document's
 /// hour, the aircraft the perspective alone, as the window does.
 pub(super) fn give(layer: &dyn Layer, side: &crate::playhead_host::MapSide, document: &Document, choice: &Choice) -> io::Result<()> {
-    let recording = crate::playhead_host::rows::Recording { branch: document.playback.branch() };
+    let recording = crate::playhead_host::views::Recording { branch: document.playback.branch() };
     if let Some(ships) = layer.any().downcast_ref::<Ships>() {
         ships.set_source(Arc::clone(side.entry()), recording)?;
         ships.set_vision(choice.clone(), document.vision(choice)?);
@@ -131,7 +131,7 @@ pub(super) fn ships_today(layer: &dyn Layer, document: &Document) -> io::Result<
         "today_task_force_provinces": candidates.len(), "dropped_by_competitor_refusal": dropped.len(),
         "left_out": {"competitor_candidates": today.candidates.iter().filter(|candidate| candidate.class != CounterClass::TaskForce).count(), "naval_battles": today.combats.battles.len()},
         "roster_batches": builds.len(), "roster_batch_ms_most": builds.iter().max().map(|ns| *ns as f64 / 1e6), "roster_tables": tables.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(),
-        "rows_held": layer.rosters().rows_held(), "front": layer.front(256.0),
+        "front": layer.front(256.0),
         "window_draws_todays_ships_for": layer.needs_today(),
     });
     Ok(compared)
@@ -187,6 +187,10 @@ pub(super) fn aircraft_today(layer: &dyn Layer, document: &Document) -> io::Resu
 
 pub(super) fn ships_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = ships(layer);
+    // A view that draws no ship model composes none: there is nothing to build again.
+    if !layer.drawn() {
+        return Ok(Compared { entries: 1, notes: json!({"drawn": false}), ..Compared::default() });
+    }
     let mut fresh = layer.fresh()?;
     fresh.compose(mirrors)?;
     let (differing, first) = layer.differ(&fresh);

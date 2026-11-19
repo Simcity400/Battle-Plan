@@ -1,7 +1,7 @@
 use super::{BEING_READ, NOT_IN_TIME, Reason};
 use crate::{
     layers::{View, recorded::record},
-    playhead_host::{MapSide, details, open, rows::tests::hourly_steps, shared_maps_tests::Reads, units::Units},
+    playhead_host::{MapSide, details, open, views::tests::hourly_steps, shared_maps_tests::Reads, units::Units},
 };
 use replay_columnar::manifest::Status;
 use replay_data::{rows::TableId, scope::CaptureMode};
@@ -40,11 +40,10 @@ fn an_unavailable_table_no_layer_declares_gives_its_reasons_words_at_the_head() 
     let mut side = MapSide::new(Arc::clone(&entry), vec![layer], View::default()).unwrap();
     side.anchor(5, false, 0.0, true);
     side.catch_up(5).unwrap();
-    assert!(side.parts().is_none_or(|(mirrors, _)| mirrors.get(TableId::LandCombats).is_none()), "no mirror holds the table");
     let line = |lines: Vec<String>, start: &str| lines.into_iter().find(|line| line.starts_with(start)).unwrap_or_default();
     let detail = line(details::of_map(&side), "LandCombats: ");
     assert_eq!(detail, format!("LandCombats: unavailable ({REASON})"), "the report waits for the words: asked once, first, it gives them");
-    let limitation = once_read(|| line(super::lines(&side, &[]).unwrap(), "Table LandCombats "));
+    let limitation = once_read(|| line(super::lines(&side).unwrap(), "Table LandCombats "));
     assert!(limitation.starts_with(&format!("Table LandCombats unavailable: {REASON}: ")), "the reason's words, never its id: {limitation}");
 }
 
@@ -83,11 +82,11 @@ impl crate::layers::Layer for RowNotes {
 
     fn apply(&mut self, _step: &playhead::Step, _mirrors: &crate::playhead_host::mirror::Mirrors) {}
 
-    fn settle(&mut self, _mirrors: &crate::playhead_host::mirror::Mirrors, _budget: &mut crate::layers::Budget) -> std::io::Result<()> {
+    fn settle(&mut self, _mirrors: &crate::playhead_host::mirror::Mirrors, _settling: crate::layers::Settling) -> std::io::Result<()> {
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut crate::layers::Gpu<'_>, _budget: &mut crate::layers::Budget) -> std::io::Result<()> {
+    fn upload(&mut self, _gpu: &mut crate::layers::Gpu<'_>) -> std::io::Result<()> {
         Ok(())
     }
 
@@ -105,7 +104,7 @@ impl crate::layers::Layer for RowNotes {
 }
 
 #[test]
-fn a_tables_row_note_is_todays_from_the_column_a_drawn_layer_reads_and_named_where_none_reads_it() {
+fn a_tables_row_note_is_todays_whether_or_not_a_drawn_layer_reads_its_column() {
     use crate::layers::recorded::column;
     use replay_columnar::state::Cell;
     let units = record("limitations row notes", 12, |at, store| {
@@ -126,17 +125,19 @@ fn a_tables_row_note_is_todays_from_the_column_a_drawn_layer_reads_and_named_whe
     let entry = open(units, hourly_steps()).unwrap();
     entry.set_capture(CaptureMode::Full);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(RowNotes)], View::default()).unwrap();
-    let unread = format!("{}Field Division template model inputs: no drawn layer reads DivisionTemplateIcons.model_unreadable", super::NOT_GIVEN);
+    // Every table's columns are held for the view store's readers, so a note is stated in today's
+    // words even where no drawn layer reads its column.
+    let unread = "Field Division template model inputs: model inputs of 1 division template were unreadable this hour; ";
     let bases = "Field Naval base access lists: 2 naval bases recorded an unreadable country list; ";
     side.anchor(4, false, 0.0, true);
     side.catch_up(4).unwrap();
-    let lines = super::lines(&side, &[]).unwrap();
-    assert!(!lines.iter().any(|line| line.starts_with("Field Naval base access lists") || *line == unread), "tables holding no rows give no row note: {lines:?}");
+    let lines = super::lines(&side).unwrap();
+    assert!(!lines.iter().any(|line| line.starts_with("Field Naval base access lists") || line.starts_with(unread)), "tables holding no rows give no row note: {lines:?}");
     side.anchor(8, false, 0.0, true);
     side.catch_up(8).unwrap();
-    let lines = super::lines(&side, &[]).unwrap();
+    let lines = super::lines(&side).unwrap();
     assert!(lines.iter().any(|line| line.starts_with(bases)), "the count of the column a layer reads, in today's words: {lines:?}");
-    assert!(lines.contains(&unread), "the note whose column no drawn layer reads is named, not dropped: {lines:?}");
+    assert!(lines.iter().any(|line| line.starts_with(unread)), "the note whose column no drawn layer reads, in today's words: {lines:?}");
 }
 
 #[test]

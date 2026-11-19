@@ -60,11 +60,12 @@ pub struct OpenRequest {
     pub revision: Option<String>,
 }
 
-fn validate_snapshot(path: &str, revision: &str) -> Result<(), String> {
+/// A command's recording and, where the page expects one, the revision its analysis read.
+fn validate_snapshot(path: &str, revision: Option<&str>) -> Result<(), String> {
     if path.is_empty() || path.contains('\0') {
         return Err("A replay path must be nonempty and contain no NUL".into());
     }
-    if revision.is_empty() || revision.len() > 128 {
+    if revision.is_some_and(|revision| revision.is_empty() || revision.len() > 128) {
         return Err("A replay command must include its recording revision".into());
     }
     Ok(())
@@ -159,10 +160,10 @@ impl Pending {
                 );
             }
             NativeCommand::Open { path, revision } => {
-                validate_snapshot(&path, &revision)?;
+                validate_snapshot(&path, revision.as_deref())?;
                 self.open = Some(OpenRequest {
                     path: PathBuf::from(path),
-                    revision: Some(revision),
+                    revision,
                 });
                 self.seek = None;
                 self.error = None;
@@ -177,7 +178,7 @@ impl Pending {
                 if let Some(playback) = playback {
                     playback.validate()?;
                 }
-                validate_snapshot(&path, &revision)?;
+                validate_snapshot(&path, Some(&revision))?;
                 if branch.is_empty() || !branch.bytes().all(|byte| byte.is_ascii_digit()) {
                     return Err("A branch must be an unsigned decimal string".into());
                 }
@@ -346,14 +347,10 @@ impl Shared {
         self.output_ready.notify_one();
     }
 
-    /// Queues each map whose acknowledgement changed since `last`, which becomes `states`.
-    fn maps(&self, last: &mut Option<Vec<DashboardMapState>>, states: Vec<DashboardMapState>) {
-        if last.as_ref().is_some_and(|previous| {
-            previous.len() == states.len()
-                && previous.iter().zip(&states).all(|(old, new)| same_ack(old, new))
-        }) {
-            return;
-        }
+    /// Queues each map whose acknowledgement changed since `sent` held it, and keeps what it sent
+    /// there. A view whose clock alone moved waits until [`STATE_INTERVAL`] after its last report;
+    /// the wait it still owes is returned, so the map draws again and offers its newest state then.
+    fn maps(&self, sent: &mut Sent, states: Vec<DashboardMapState>, now: Instant) -> Option<Duration> {
         let mut outgoing = self
             .outgoing
             .lock()
@@ -361,25 +358,43 @@ impl Shared {
         let ids: BTreeSet<_> = states.iter().map(|state| state.id.clone()).collect();
         outgoing.maps.retain(|id, _| ids.contains(id));
         outgoing.map_order.retain(|id| ids.contains(id));
-        for state in &states {
-            if last
-                .as_ref()
-                .is_some_and(|previous| previous.iter().any(|old| same_ack(old, state)))
-            {
+        sent.0.retain(|id, _| ids.contains(id));
+        let mut queued = false;
+        let mut owed = None;
+        for state in states {
+            let held = sent.0.get(&state.id);
+            if held.is_some_and(|(old, _)| same_ack(old, &state)) {
                 continue;
             }
-            // Updating a pending view preserves its FIFO position, so a fast
-            // clock cannot starve another map's first ready/error response.
-            if !outgoing.maps.contains_key(&state.id) {
-                outgoing.map_order.push_back(state.id.clone());
+            // The clock's own progress is read at a fixed rate; everything else a frame draws is
+            // what the page must not wait for, so it goes at once.
+            let urgent = held.is_none_or(|(old, _)| !clock_only(old, &state));
+            let waited = held.map(|(_, at)| now.duration_since(*at));
+            if urgent || waited.is_none_or(|waited| waited >= STATE_INTERVAL) {
+                // Updating a pending view preserves its FIFO position, so a fast
+                // clock cannot starve another map's first ready/error response.
+                if !outgoing.maps.contains_key(&state.id) {
+                    outgoing.map_order.push_back(state.id.clone());
+                }
+                outgoing.maps.insert(state.id.clone(), state.clone());
+                sent.0.insert(state.id.clone(), (state, now));
+                queued = true;
+                continue;
             }
-            outgoing.maps.insert(state.id.clone(), state.clone());
+            let remaining = STATE_INTERVAL.saturating_sub(waited.unwrap_or_default());
+            owed = Some(owed.map_or(remaining, |owed: Duration| owed.min(remaining)));
         }
-        *last = Some(states);
         drop(outgoing);
-        self.maps_ready.notify_one();
+        if queued {
+            self.maps_ready.notify_one();
+        }
+        owed
     }
 }
+
+/// Each view's last reported acknowledgement and when it was reported.
+#[derive(Default)]
+struct Sent(BTreeMap<String, (DashboardMapState, Instant)>);
 
 /// Whether two map states acknowledge the same: the frame's fraction, how far it is behind the
 /// clock and when it was drawn change with every frame, and the host shows none of them. So the
@@ -392,6 +407,22 @@ fn same_ack(old: &DashboardMapState, new: &DashboardMapState) -> bool {
         ..state.clone()
     };
     bare(old) == bare(new)
+}
+
+/// Whether the only thing that changed is where the clock stands: the hour drawn, its sequence and
+/// how far behind it is. Everything else a frame reports — a seek's acknowledgement, the mode it
+/// drew, what it highlights, its tooltip, its camera, its options, loading and refusals — is what
+/// the page must not wait for.
+fn clock_only(old: &DashboardMapState, new: &DashboardMapState) -> bool {
+    let clockless = |state: &DashboardMapState| DashboardMapState {
+        hour: None,
+        fraction: None,
+        sequence: 0,
+        behind: None,
+        drawn_at: None,
+        ..state.clone()
+    };
+    clockless(old) == clockless(new)
 }
 
 /// Followed answers go to `send` from a thread of their own, so the stepper only queues: the
@@ -461,8 +492,10 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         }
         // The map's read of the same recording is shared, never repeated ([`units::shared`]).
         let (units, _) = crate::playhead_host::units::at_path(path, Some(branch)).map_err(|error| error.to_string())?;
-        // A mapping other than the map's (game hours, 0) runs a playhead of its own.
-        let entry = crate::playhead_host::open_clocked(units, crate::playhead_host::settings(), clock).map_err(|error| error.to_string())?;
+        // Follow runs a playhead of its own, never the map's: its hook evaluates the followed
+        // queries on that playhead's stepper, and no map's frame takes steps from it. Its steps
+        // are built at the display's rate, so it answers no more often than the display refreshes.
+        let entry = crate::playhead_host::open_clocked(units, crate::playhead_host::settings(), clock, crate::playhead_host::Side::Follow).map_err(|error| error.to_string())?;
         entry.set_capture(capture);
         let follow = dashboard_follow::Follow::new(clock);
         let out = Arc::clone(push);
@@ -472,18 +505,22 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
         let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), crate::playhead_host::Entry::playhead, crate::playhead_host::Entry::follow_anchor, follow, held).map_err(|error| error.to_string())?;
         let hook = entry.hooks().add(hook);
-        let rows = Arc::new(FollowRows { entry, branch, hook });
+        let rows = Arc::new(FollowRows { entry, branch, hook, views: std::sync::Mutex::new(std::sync::Weak::new()) });
         host.show_panels(rows, Arc::clone(push));
         self.hosts.lock().unwrap_or_else(|error| error.into_inner()).insert(key, Arc::downgrade(&host));
         Ok(host as Arc<dyn dashboard_follow::registry::Hosted>)
     }
 }
 
-/// Rows at the head of a follow host's playhead for its panels, at a panel's cadence.
+/// Rows at the head of a follow host's playhead for its panels, at a panel's cadence. No map
+/// draws this playhead, so its views are made by a store of its own, stepped to the playhead's
+/// head by one thread ([`crate::playhead_host::views::apart::Following`]), opened with the first
+/// panel that asks and stopped when the last one closes.
 struct FollowRows {
     hook: u64,
     entry: Arc<crate::playhead_host::Entry>,
     branch: u64,
+    views: std::sync::Mutex<std::sync::Weak<crate::playhead_host::views::apart::Following>>,
 }
 
 impl Drop for FollowRows {
@@ -494,25 +531,45 @@ impl Drop for FollowRows {
 
 impl dashboard_follow::panel::PanelRows for FollowRows {
     fn reader(&self, tables: &[replay_data::rows::TableId]) -> io::Result<Box<dyn dashboard_follow::panel::PanelReader>> {
-        use crate::playhead_host::rows::{Cadence, Recording, Rows};
-        let rows = Rows::of(&self.entry, Recording { branch: self.branch })?;
-        Ok(Box::new(FollowRowReader(rows.reader(tables, Cadence::EveryStep))))
+        use crate::playhead_host::views::{Need, Pace, apart::Following};
+        let following = {
+            let mut held = self.views.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match held.upgrade() {
+                Some(following) => following,
+                None => {
+                    let following = Arc::new(Following::open(&self.entry, self.branch)?);
+                    *held = Arc::downgrade(&following);
+                    following
+                }
+            }
+        };
+        let reader = following.views().reader_at("follow panel", &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), Pace::Step);
+        Ok(Box::new(FollowRowReader { reader, entry: Arc::clone(&self.entry), _following: following }))
     }
 }
 
-struct FollowRowReader(crate::playhead_host::rows::RowReader);
+struct FollowRowReader {
+    reader: crate::playhead_host::views::Reader,
+    entry: Arc<crate::playhead_host::Entry>,
+    /// The store's stepping thread, kept while a panel reads it; dropped after the reader.
+    _following: Arc<crate::playhead_host::views::apart::Following>,
+}
 
 impl dashboard_follow::panel::PanelReader for FollowRowReader {
     fn through_seek(&self, frame: &Arc<replay_frame::frame::DecodedFrame>) -> Option<(replay_data::Hour, u64)> {
-        self.0.through_seek(Arc::as_ptr(frame))
+        self.reader.through_seek(Arc::as_ptr(frame))
     }
 
     fn frame(&self) -> Option<Arc<replay_frame::frame::DecodedFrame>> {
-        self.0.frame()
+        self.reader.frame()
     }
 
+    /// The playhead's error, at the hour of the last rows it gave: no later rows will come.
     fn stopped(&self) -> Option<(replay_data::Hour, String)> {
-        self.0.stopped()
+        let playhead = self.entry.playhead();
+        let error = playhead.error()?;
+        let hour = self.reader.frame().map_or_else(|| playhead.head(std::time::Instant::now()), |frame| frame.hour);
+        Some((hour, format!("The rows at the head stopped: {error}")))
     }
 }
 
@@ -522,6 +579,7 @@ pub struct Parent {
     window: crate::host::Window,
     commands: mpsc::Receiver<NativeCommand>,
     events: crate::host::Events,
+    service: Arc<dashboard::Service>,
 }
 
 impl Parent {
@@ -529,12 +587,13 @@ impl Parent {
         window: crate::host::Window,
         commands: mpsc::Receiver<NativeCommand>,
         events: crate::host::Events,
+        service: Arc<dashboard::Service>,
     ) -> Self {
-        Self { window, commands, events }
+        Self { window, commands, events, service }
     }
 
     pub fn attach(self, ctx: &egui::Context) -> io::Result<Controller> {
-        let Self { window, commands, events } = self;
+        let Self { window, commands, events, service } = self;
         let window = NativeWindow::new(window)?;
         let shared = Arc::new(Shared {
             pending: Mutex::new(Pending::default()),
@@ -545,9 +604,6 @@ impl Parent {
             terminal_error: AtomicBool::new(false),
             ctx: ctx.clone(),
         });
-        // The map's own service, which its loads read sources and preferences from; the host's
-        // dashboard queries go to the host's own.
-        let service = dashboard::Service::new(Arc::new(|_: dashboard::transport::DataEvent| false))?;
         let (output_finished, output_done) = mpsc::sync_channel::<()>(0);
         let controller = Controller {
             window,
@@ -557,7 +613,7 @@ impl Parent {
             closing: false,
             output_done,
             service,
-            last_maps: None,
+            sent_maps: Sent::default(),
         };
         let input = Arc::clone(&shared);
         thread::Builder::new()
@@ -687,7 +743,7 @@ pub struct Controller {
     closing: bool,
     output_done: mpsc::Receiver<()>,
     service: Arc<dashboard::Service>,
-    last_maps: Option<Vec<DashboardMapState>>,
+    sent_maps: Sent,
 }
 
 impl Controller {
@@ -826,8 +882,13 @@ impl Controller {
         self.shared.output_ready.notify_one();
     }
 
-    pub fn report_maps(&mut self, states: Vec<DashboardMapState>) {
-        self.shared.maps(&mut self.last_maps, states);
+    /// Reports each map's newest acknowledgement. A view whose clock alone moved reports at
+    /// [`STATE_INTERVAL`]; the map is asked to draw again when one is held back, so the page gets
+    /// the newest state of every view it did not already have.
+    pub fn report_maps(&mut self, states: Vec<DashboardMapState>, ctx: &egui::Context) {
+        if let Some(remaining) = self.shared.maps(&mut self.sent_maps, states, Instant::now()) {
+            ctx.request_repaint_after(remaining);
+        }
     }
 
     fn error(&self, message: impl Into<String>) {
@@ -878,11 +939,7 @@ impl Drop for Controller {
         }
         self.shared.output_ready.notify_one();
         self.shared.maps_ready.notify_one();
-        let service = Arc::clone(&self.service);
-        // Runtime/file joins must not stall eframe's window destruction.
-        let _ = thread::Builder::new()
-            .name("dashboard shutdown".into())
-            .spawn_carried(move || service.shutdown());
+        // The service is the host's: it outlives this map and ends with the host.
         // Let the host receive the final error/state before the map ends, but never hang the
         // map's thread on a host that stopped taking events.
         let _ = self.output_done.recv_timeout(Duration::from_millis(100));
@@ -1094,14 +1151,15 @@ mod tests {
         let shared = shared();
         let map_error = "é".repeat(500);
         assert_eq!(map_error.len(), 1_000);
-        let mut last = None;
+        let mut sent = Sent::default();
         shared.maps(
-            &mut last,
+            &mut sent,
             vec![DashboardMapState {
                 id: "m".into(),
                 error: Some(map_error.clone()),
                 ..Default::default()
             }],
+            Instant::now(),
         );
         let message = "x".repeat(10_000);
         shared.error(message.clone());
@@ -1171,6 +1229,54 @@ mod tests {
         assert!(same_ack(&drawn(5, "default", 10.0), &drawn(5, "default", 20.0)));
         assert!(!same_ack(&drawn(5, "default", 10.0), &drawn(5, "terrain", 20.0)));
         assert!(!same_ack(&drawn(5, "default", 10.0), &drawn(6, "default", 20.0)));
+        // Only the hour moved: the clock, which the page reads at a fixed rate.
+        assert!(clock_only(&drawn(5, "default", 10.0), &drawn(6, "default", 20.0)));
+        assert!(!clock_only(&drawn(5, "default", 10.0), &drawn(6, "terrain", 20.0)));
+    }
+
+    /// Playing, a view's hour reaches the page once every [`STATE_INTERVAL`] however many frames
+    /// it draws, and the map is asked to draw again when a state is held back. Everything else a
+    /// frame reports goes at once, and never costs the clock its own next report.
+    #[test]
+    fn a_views_clock_reports_at_a_fixed_rate_and_everything_else_at_once() {
+        let shared = shared();
+        let mut sent = Sent::default();
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let drawn = |hour: i32, hover: Option<&str>| {
+            vec![DashboardMapState {
+                id: "m".into(),
+                hour: Some(hour),
+                sequence: hour as u64,
+                hover: hover.map(str::to_owned),
+                ..Default::default()
+            }]
+        };
+        let queued = |shared: &Shared| {
+            let mut outgoing = shared.outgoing.lock().unwrap_or_else(|error| error.into_inner());
+            let count = outgoing.maps.len();
+            let _ = outgoing.take_maps();
+            count
+        };
+        // The first frame reports at once: the page has nothing yet.
+        assert_eq!(shared.maps(&mut sent, drawn(10, None), at(0)), None);
+        assert_eq!(queued(&shared), 1);
+        // Frames through the interval only move the clock, so they are held, and the map is told
+        // how long it still owes.
+        assert_eq!(shared.maps(&mut sent, drawn(11, None), at(16)), Some(Duration::from_millis(234)));
+        assert_eq!(shared.maps(&mut sent, drawn(12, None), at(32)), Some(Duration::from_millis(218)));
+        assert_eq!(queued(&shared), 0);
+        // A frame that highlights something is what the page must not wait for.
+        assert_eq!(shared.maps(&mut sent, drawn(13, Some("division:7")), at(48)), None);
+        assert_eq!(queued(&shared), 1);
+        // That report does not buy the clock an earlier one.
+        assert_eq!(shared.maps(&mut sent, drawn(14, Some("division:7")), at(100)), Some(Duration::from_millis(198)));
+        assert_eq!(queued(&shared), 0);
+        assert_eq!(shared.maps(&mut sent, drawn(15, Some("division:7")), at(300)), None);
+        assert_eq!(queued(&shared), 1);
+        // A frame that acknowledges nothing new is never queued, however late.
+        assert_eq!(shared.maps(&mut sent, drawn(15, Some("division:7")), at(900)), None);
+        assert_eq!(queued(&shared), 0);
     }
 
     #[test]
@@ -1350,7 +1456,7 @@ mod tests {
         let mut pending = Pending::default();
         let open = NativeCommand::Open {
             path: "A".into(),
-            revision: "v1".into(),
+            revision: Some("v1".into()),
         };
         pending.push(open.clone()).unwrap();
         pending
@@ -1384,6 +1490,7 @@ mod tests {
                         seek_sequence: (hour / 100) as u64,
                         fraction: 0.375,
                         hours_per_second: 1440.0,
+                        composed_at: 0.0,
                     }),
                 })
                 .unwrap();
@@ -1400,13 +1507,14 @@ mod tests {
                     seek_sequence: 99,
                     fraction: 0.375,
                     hours_per_second: 1440.0,
+                    composed_at: 0.0,
                 }),
             })
         );
         pending
             .push(NativeCommand::Open {
                 path: "new.battleplan".into(),
-                revision: "100:20:0".into(),
+                revision: Some("100:20:0".into()),
             })
             .unwrap();
         assert_eq!(pending.seek, None);
@@ -1437,7 +1545,7 @@ mod tests {
         pending
             .push(NativeCommand::Open {
                 path: "late.battleplan".into(),
-                revision: "100:30:0".into(),
+                revision: Some("100:30:0".into()),
             })
             .unwrap();
         assert!(pending.close && pending.open.is_none() && pending.seek.is_none());
@@ -1449,7 +1557,7 @@ mod tests {
         pending
             .push(NativeCommand::Open {
                 path: "older.battleplan".into(),
-                revision: "100:10:0".into(),
+                revision: Some("100:10:0".into()),
             })
             .unwrap();
         for (path, revision) in [
@@ -1558,5 +1666,76 @@ mod tests {
         assert!(placement.show());
         placement.visible = false;
         assert!(!placement.show());
+    }
+
+    const FAILURE: &str = "the follow test's recording could not be read";
+
+    /// A recording's pages whose every read fails once `broken` is set.
+    struct Breaking {
+        inner: Arc<dyn playhead::pages::Pages>,
+        runs: Vec<BreakingRun>,
+    }
+
+    struct BreakingRun {
+        inner: Arc<dyn playhead::pages::Pages>,
+        run: usize,
+        broken: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl replay_columnar::unit::reader::Extents for BreakingRun {
+        fn read_at(&self, offset: u64, length: usize, out: &mut Vec<u8>) -> io::Result<()> {
+            if self.broken.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(io::Error::other(FAILURE));
+            }
+            self.inner.extents(self.run).read_at(offset, length, out)
+        }
+    }
+
+    impl playhead::pages::Pages for Breaking {
+        fn extents(&self, run: usize) -> &dyn replay_columnar::unit::reader::Extents {
+            &self.runs[run]
+        }
+
+        fn runs(&self) -> &[playhead::pages::Run] {
+            self.inner.runs()
+        }
+
+        fn kinds(&self, table: usize) -> Option<&[replay_columnar::state::Kind]> {
+            self.inner.kinds(table)
+        }
+    }
+
+    /// A follow panel whose playhead stops on a read error says so, at the hour of the last rows
+    /// it was given, instead of showing them as current; its last reader closing stops the store.
+    #[test]
+    fn a_follow_panel_reports_its_playheads_read_error_at_its_last_rows_and_its_last_reader_retires_the_store() {
+        use crate::playhead_host::views::tests::{RECORDING, hourly_steps, record};
+        use dashboard_follow::panel::PanelRows as _;
+        let broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut units = record("follow panel stops", 2 * replay_columnar::unit::BLOCK);
+        let runs = (0..units.pages.runs().len()).map(|run| BreakingRun { inner: Arc::clone(&units.pages), run, broken: Arc::clone(&broken) }).collect();
+        units.pages = Arc::new(Breaking { inner: Arc::clone(&units.pages), runs });
+        let entry = crate::playhead_host::open_clocked(units, hourly_steps(), 0, crate::playhead_host::Side::Follow).unwrap();
+        entry.set_capture(replay_data::scope::CaptureMode::Full);
+        entry.playhead().seek(1);
+        let rows = FollowRows { hook: entry.hooks().add(Box::new(|_, _| {})), entry: Arc::clone(&entry), branch: RECORDING.branch, views: std::sync::Mutex::new(std::sync::Weak::new()) };
+        let panel = rows.reader(&[replay_data::rows::TableId::Countries]).unwrap();
+        let following = rows.views.lock().unwrap().clone();
+        assert!(following.upgrade().is_some(), "the panel's reader holds the store it reads");
+        assert_eq!(panel.stopped(), None);
+        entry.playhead().wait_for(|| panel.frame().is_some_and(|frame| frame.hour == 1)).unwrap();
+
+        broken.store(true, std::sync::atomic::Ordering::Release);
+        entry.playhead().seek(1_000);
+        let error = entry.playhead().wait_for(|| false).expect_err("the playhead stops on the failed read");
+        assert!(error.contains(FAILURE), "the playhead's error: {error}");
+        let (hour, reason) = panel.stopped().expect("a stopped playhead stops the panel");
+        assert_eq!(hour, 1, "the hour of the last rows the panel was given");
+        assert!(reason.starts_with("The rows at the head stopped: ") && reason.contains(FAILURE), "the reason: {reason}");
+
+        let declarations = entry.playhead().declarations();
+        drop(panel);
+        assert!(following.upgrade().is_none(), "the last panel reader's close stops the store");
+        assert!(entry.playhead().declarations() > declarations, "the store's playhead reader is retired");
     }
 }

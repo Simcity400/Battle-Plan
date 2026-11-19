@@ -166,6 +166,7 @@ fn a_free_eye_shows_each_icon_by_its_own_distance() {
         world: anchor,
         cutoff: 900.,
         family: IconFamily::Resources,
+        moves: None,
     };
     assert!(near.placed.iter().all(|icon| icon.anchor == expected));
 }
@@ -316,6 +317,7 @@ fn placed(text: bool, rows: usize, flag: Option<u32>) -> PreparedResourceIcons {
                 world: [3000., 10., 1500.],
                 cutoff: 900.,
                 family: IconFamily::Resources,
+                moves: None,
             },
             priority: 10,
             text,

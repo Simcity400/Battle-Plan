@@ -177,8 +177,8 @@ fn mixed_frame(
         buildings,
         true,
     );
-    let mut meshes: Vec<_> = frame
-        .units
+    let mut meshes: Vec<_> = units
+        .drawn(&frame.units)
         .iter()
         .map(|(mesh, _)| *mesh)
         .chain(buildings.collect(None, 0.0).iter().map(|(mesh, _)| *mesh))
@@ -294,11 +294,9 @@ fn buildings_precede_hulls_and_held_hulls_keep_the_growing_root() {
         &mut buildings,
         true,
     );
-    assert_eq!(
-        frame.units.iter().map(|p| p.0).collect::<Vec<_>>(),
-        [0, 1, 2]
-    );
-    assert!(frame.units.iter().all(|p| p.1.scale == 0.25));
+    let drawn = units.drawn(&frame.units);
+    assert_eq!(drawn.iter().map(|p| p.0).collect::<Vec<_>>(), [0, 1, 2]);
+    assert!(drawn.iter().all(|p| p.1.scale == 0.25));
     assert_eq!(
         mixed_frame(&mut units, &mut buildings, 2, 0.25),
         [0, 1, 2, 3, 100, 101]
@@ -1150,7 +1148,7 @@ fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
     assert_eq!(
         summary.refused_tokens,
         BTreeMap::from([
-            ("token 78 is not in LexicalTokens".to_owned(), 1),
+            ("token 78 is not in lexical tokens".to_owned(), 1),
             ("token 79 is not spelled as text".to_owned(), 1),
             (
                 "token 80 (not_a_building) names no authored building type".to_owned(),
@@ -1160,7 +1158,7 @@ fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
     );
     assert_eq!(
         summary.warnings()[0],
-        "Map buildings: 1 rows not drawn, refused type token: token 78 is not in LexicalTokens."
+        "Map buildings: 1 rows not drawn, refused type token: token 78 is not in lexical tokens."
     );
     // A truncated table cannot say the token does not exist.
     let (frame, vision) = buildings_frame(TableView::Truncated { rows, missing: 4 }, &[0, 78]);
@@ -1169,7 +1167,7 @@ fn building_rows_refuse_their_unnamed_type_tokens_by_reason() {
     assert_eq!(
         summary.refused_tokens,
         BTreeMap::from([(
-            "token 78 is among LexicalTokens' missing rows".to_owned(),
+            "token 78 is among lexical tokens' missing rows".to_owned(),
             1
         )])
     );
@@ -1290,7 +1288,7 @@ fn the_update_cutoff_is_water_relative() {
 #[test]
 fn undecided_floating_harbours_are_listed_by_reason() {
     let summary = MapBuildingSummary {
-        refused_tokens: BTreeMap::from([("token 78 is not in LexicalTokens".to_owned(), 1)]),
+        refused_tokens: BTreeMap::from([("token 78 is not in lexical tokens".to_owned(), 1)]),
         unknown_floating_harbors: BTreeMap::from([
             ("the controller's floating-harbour deployment is unknown", 2),
             ("the fog byte of the harbour's sea province is unknown", 1),
@@ -1300,7 +1298,7 @@ fn undecided_floating_harbours_are_listed_by_reason() {
     assert_eq!(
         summary.warnings(),
         [
-            "Map buildings: 1 rows not drawn, refused type token: token 78 is not in LexicalTokens.",
+            "Map buildings: 1 rows not drawn, refused type token: token 78 is not in lexical tokens.",
             "Map buildings: 2 floating harbours not drawn: the controller's floating-harbour deployment is unknown.",
             "Map buildings: 1 floating harbours not drawn: the fog byte of the harbour's sea province is unknown.",
         ]
@@ -1884,7 +1882,7 @@ fn shared_slot_pages_install_as_the_layers_slots_and_share_untouched_pages() {
     let mut slots: Vec<PreparedSlot> = (0..150).map(PreparedSlot::empty).collect();
     let mut history = BuildingHistory::default();
     let first = assets.slot_pages(&slots, &[], None).unwrap();
-    let product = assets.shared_product(&first, None, [7; 32], hour(1)).unwrap();
+    let product = assets.shared_product(&first, [7; 32], hour(1)).unwrap();
     let installed = history.install_display(&product, &assets).unwrap();
     assert!((0..150).all(|id| installed.slots[id] == slots[id]));
     for id in [70, 140] {
@@ -1894,8 +1892,13 @@ fn shared_slot_pages_install_as_the_layers_slots_and_share_untouched_pages() {
     let patched = assets.slot_pages(&slots, &[2, 1, 1], Some(&first)).unwrap();
     assert!(Arc::ptr_eq(patched.0.chunks.get(0).unwrap(), first.0.chunks.get(0).unwrap()), "an untouched page is shared");
     assert_eq!(patched.0, assets.slot_pages(&slots, &[], None).unwrap().0, "patched pages equal pages made whole");
-    let product = assets.shared_product(&patched, Some(&product), [7; 32], hour(2)).unwrap();
+    let groups = Arc::clone(&product.groups);
+    let product = assets.shared_product(&patched, [7; 32], hour(2)).unwrap();
     let installed = history.install_display(&product, &assets).unwrap();
     assert!((0..150).all(|id| installed.slots[id] == slots[id]), "the install takes the layer's slots as they are");
     assert!(installed.slots.ptr_eq(&patched.0), "the install shares the pages, converting nothing");
+    // The province boxes are the content's own: a product made with no product before it, as a
+    // compose makes one, shares them rather than laying them out again.
+    assert!(Arc::ptr_eq(&groups, &product.groups), "every product shares one set of province boxes");
+    assert!(Arc::ptr_eq(&groups, &assets.shared_product(&first, [7; 32], hour(3)).unwrap().groups));
 }

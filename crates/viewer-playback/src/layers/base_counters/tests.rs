@@ -195,46 +195,6 @@ fn one_changed_wing_costs_the_same_rows_whatever_the_number_of_bases() {
 }
 
 #[test]
-fn a_sweep_of_every_site_is_carried_across_settles_inside_a_spent_budget() {
-    let units = campaign("bases sweep", |_, _| Status::Complete, |at, store| {
-        if at == 0 {
-            many(store, MANY);
-        }
-        if at == 200 {
-            for i in 0..MANY {
-                put(store, TableId::AirWings, i + 1, None, &[("planes", Cell::I32(7))]);
-            }
-        }
-    });
-    let mut side = side_for(units);
-    reach(&mut side, 150);
-    let mut changed = layer(&side).fresh();
-    changed.compose(side.parts().unwrap().0).unwrap();
-    reach(&mut side, 204);
-    let (mirrors, _) = side.parts().unwrap();
-    // The rows as the steps to hour 204 leave the index, and every site to make again, as a new
-    // viewing country or new country links sweep them, with no time left in the frame.
-    changed.index = super::Index::build(mirrors, changed.columns());
-    changed.sweep_sites = Some(super::SWEEP_SITES);
-    let spent = || crate::layers::Budget::new(std::time::Duration::ZERO).first_free();
-    let before = changed.made();
-    changed.settle(mirrors, &mut spent()).unwrap();
-    assert!((1..=super::PER_LOOK).contains(&(changed.made() - before)), "a spent budget makes one unit of sites");
-    assert!(changed.carried().entities > 0 && changed.carried().frames == 0, "and carries the rest");
-    for _ in 0..MANY {
-        if changed.carried().entities == 0 {
-            break;
-        }
-        changed.settle(mirrors, &mut spent()).unwrap();
-    }
-    assert_eq!(changed.carried().entities, 0, "a unit a settle drains the sweep");
-    let mut fresh = layer(&side).fresh();
-    fresh.compose(mirrors).unwrap();
-    assert_eq!(changed.values(), fresh.values());
-    assert_eq!(changed.values().unwrap().wings[&(452, viewer_foundation::map::building_facts::AIR_BASE)].planes, 7);
-}
-
-#[test]
 fn while_changes_are_carried_it_shows_the_hour_before_the_oldest() {
     use crate::layers::Published;
     let units = campaign("bases pending", |_, _| Status::Complete, |at, store| {
@@ -256,7 +216,7 @@ fn while_changes_are_carried_it_shows_the_hour_before_the_oldest() {
     held.bases.insert(1040);
     held.pending = Some(180);
     assert_eq!(Layer::published(&held), Published::At(179), "the hour before the oldest change it carries, not the last time it carried nothing");
-    held.settle(mirrors, &mut crate::layers::Budget::unlimited()).unwrap();
+    held.settle(mirrors, crate::layers::Settling::Whole).unwrap();
     assert_eq!(Layer::published(&held), Published::Current, "everything in, it is current with what it was given");
 }
 

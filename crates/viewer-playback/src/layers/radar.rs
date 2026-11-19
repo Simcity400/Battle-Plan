@@ -5,7 +5,7 @@
 //!
 //! A table not whole refuses the symbols by name and draws none, as today.
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, Num, Upstream, View};
+use super::{Carried, Settling, Dirty, Gpu, Inputs, Layer, Num, Upstream, View};
 use crate::{
     layers::vision::{Vision, complete},
     playhead_host::mirror::{Mirror, Mirrors},
@@ -187,7 +187,7 @@ impl Radar {
         }
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         if self.whole {
             self.whole = false;
@@ -195,15 +195,16 @@ impl Radar {
         }
         let columns = self.columns.expect("declared");
         let rows = complete(mirrors, TableId::RadarCoverage);
-        self.field_dirty |= self.dirty.len() > 0;
         let mut dirty = std::mem::take(&mut self.dirty);
-        let _ = dirty.settle(budget, |at| {
+        let _ = dirty.settle(|at| {
             let key = self.keys[at as usize];
             let entry = rows.and_then(|rows| rows.slot(key).map(|slot| Entry { country: (key >> 32) as u32, ordinal: key as u32, state: rows.number(columns.state, slot).value(), radius: rows.number(columns.radius, slot).value() }));
-            match entry {
+            let held = match entry {
                 Some(entry) => self.groups.insert(key, entry),
                 None => self.groups.remove(&key),
             };
+            // The field is placed and sorted whole: it is made again only for a group that moved.
+            self.field_dirty |= held != entry;
             Ok(())
         });
         self.dirty = dirty;
@@ -242,7 +243,7 @@ impl Layer for Radar {
         let marked = self.marked;
         *self = Self { columns: self.columns, ..Self::new() };
         self.statuses = mirrors.iter().filter_map(|mirror| mirror.status().map(|status| (mirror.table().index(), status))).collect();
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors);
         self.marked = marked;
         Ok(())
     }
@@ -279,13 +280,13 @@ impl Layer for Radar {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         Ok(())
     }
 
-    fn upload(&mut self, gpu: &mut Gpu<'_>, budget: &mut Budget) -> io::Result<()> {
-        if self.uploaded() || !budget.left() {
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
+        if self.uploaded() {
             return Ok(());
         }
         let assets = &gpu.content.assets;
@@ -306,7 +307,7 @@ impl Layer for Radar {
     }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.dirty.len() + usize::from(self.whole), frames: self.dirty.since().map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities: self.dirty.len() + usize::from(self.whole) }
     }
 
     fn held(&self) -> usize {
@@ -323,10 +324,10 @@ impl Layer for Radar {
         Ok(())
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
         let ours = upstream.get::<Vision>().and_then(Vision::ours);
         self.field_dirty |= ours != self.ours;
         self.ours = ours;
-        self.settle(mirrors, budget)
+        self.settle(mirrors, settling)
     }
 }

@@ -16,17 +16,19 @@
 //! admitted task force is in combat or shares its province with a land occupant, the layer does not
 //! stand in for today's ships ([`Ships::stands_in`]) and the window draws today's.
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, Published, Text, Upstream, View};
+use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Published, Text, Upstream, View};
 use crate::{
     document::Content,
     playhead_host::{
         Entry,
         mirror::{Cell, Mirror, Mirrors},
-        rows::{Cadence, Recording, RowReader, Rows},
+        views::{Need, Recording},
+        views,
     },
 };
 use playhead::Step;
 use replay_columnar::manifest::Status;
+use crate::playhead_host::timeline::{self, Mark};
 use replay_data::{Hour, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -48,9 +50,6 @@ use viewer_world::map::{
     unit_history::NavalSources,
     unit_models::{Force, ForcePart, ModelReport, ResolvedRoster, ShipGround},
 };
-
-/// How often the worker's rows are made while playing; at once when paused or sought.
-pub const CADENCE: Cadence = Cadence::Ready;
 
 /// The tables the roster resolution reads before any script, and the Clock, whose hour the graphics
 /// pools' limits may compare; the rest are learned.
@@ -163,6 +162,9 @@ struct Held {
     roster: Option<Arc<Roster>>,
     /// Its roster was asked of the worker and not answered yet.
     asked: bool,
+    /// The hour the camera first admitted it, while it does: what is drawn of it is nobody's
+    /// picture before then, so a roster owed from an earlier hour does not make it late.
+    in_view_at: Option<Hour>,
     /// Its province's occupants hold one that is no task force: today's land competitors.
     contested: bool,
 }
@@ -177,9 +179,9 @@ struct Asked {
     /// The playhead's seek ([`playhead::Playhead::epoch`]) when the map applied `head`: every roster
     /// asked belongs to it, and rows of an older seek answer none.
     seek: Option<u64>,
-    rows: Option<Arc<Rows>>,
-    /// A reader declared by the caller of [`Ships::set_source`], for the worker to take.
-    reader: Option<RowReader>,
+    /// The map side's view store, for the worker to take: the rows of the step's hour, made from
+    /// the side's own mirrors.
+    views: Option<views::Reader>,
     /// Task forces whose roster is asked, each with the hour the map applied when it was asked (it
     /// is answered from rows standing at that hour or later), and every one resolved so far (asked
     /// again when a table only the scripts read changes).
@@ -191,16 +193,27 @@ struct Asked {
     answers: Vec<(u64, Arc<Roster>)>,
     /// The hour of the rows the last answers were resolved at.
     answered: Option<Hour>,
+    /// The batch being resolved, each task force with the hour its ask was made at.
+    building: Vec<(u64, Hour)>,
+    /// When `answered` was last set: how long a wait for it slept past its answer.
+    answered_at: Option<Instant>,
     tables: Vec<TableId>,
     builds: Vec<u64>,
     error: Option<String>,
     /// Why every roster of this recording is refused: a table the scripts read that the recording
     /// holds nothing of.
     refused: Option<String>,
+    /// Something woke the worker since its last look: it takes no wait, however the notification
+    /// and its own unlock fell. The map's side joins the rosters to every step, and a notification
+    /// lost between them would cost the step a whole tick.
+    woken: bool,
+    /// Whether the worker has let the rows it read go: closed or refused, it declares no table,
+    /// so the store keeps no view for it ([`Rosters::closed`]).
+    let_go: bool,
     /// The worker holds a reader whose tables have not all arrived.
     loading: bool,
     /// The frames the worker has looked at.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     looks: u64,
 }
 
@@ -220,25 +233,27 @@ impl Shared {
 pub struct Rosters {
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
-    drive: bool,
+    maker: timeline::Maker,
 }
 
 impl Rosters {
-    fn new(naval: Arc<dyn Naval>, drive: bool) -> io::Result<Self> {
+    fn new(naval: Arc<dyn Naval>) -> io::Result<Self> {
         let shared = Arc::new(Shared {
-            asked: Mutex::new(Asked { source: None, open: false, stop: false, head: None, seek: None, rows: None, reader: None, wanted: Vec::new(), known: Vec::new(), decided: Decided::new(), answers: Vec::new(), answered: None, tables: ROSTER_TABLES.to_vec(), builds: Vec::new(), error: None, refused: None, loading: false,
-                #[cfg(test)]
+            asked: Mutex::new(Asked { source: None, open: false, stop: false, head: None, seek: None, wanted: Vec::new(), known: Vec::new(), decided: Decided::new(), answers: Vec::new(), answered: None, building: Vec::new(), answered_at: None, views: None, let_go: false, tables: ROSTER_TABLES.to_vec(), builds: Vec::new(), error: None, refused: None, loading: false, woken: false,
+                #[cfg(any(test, feature = "test-support"))]
                 looks: 0,
             }),
             wake: Condvar::new(),
             answered: Condvar::new(),
         });
         let working = Arc::clone(&shared);
+        let maker = timeline::maker("ship_rosters");
         let worker = std::thread::Builder::new().name("ship rosters".into()).spawn(move || {
-            viewer_foundation::worker_priority::background_priority();
-            resolve(&working, &*naval, drive)
+            // The step's settle joins its product: at the head's priority, never below normal.
+            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            resolve(&working, &*naval, maker)
         })?;
-        Ok(Self { shared, worker: Some(worker), drive })
+        Ok(Self { shared, worker: Some(worker), maker })
     }
 
     fn set_open(&self, open: bool) {
@@ -250,8 +265,8 @@ impl Rosters {
                 asked.known.clear();
                 asked.decided.clear();
                 asked.answers.clear();
-                asked.reader = None;
             }
+            asked.woken = true;
             drop(asked);
             self.shared.wake.notify_all();
         }
@@ -259,11 +274,12 @@ impl Rosters {
 
     fn applied(&self, hour: Hour) {
         let mut asked = self.shared.lock();
-        let seek = asked.source.as_ref().map(|(entry, _)| entry.playhead().epoch()).or_else(|| asked.rows.as_ref().map(|rows| rows.entry().playhead().epoch()));
+        let seek = asked.source.as_ref().map(|(entry, _)| entry.playhead().epoch());
         if asked.head == Some(hour) && asked.seek == seek {
             return;
         }
         asked.head = Some(hour);
+        timeline::mark(self.maker, Mark::Asked);
         // A seek: the answers of the one before go (its compose asks every roster again).
         if asked.seek.is_some_and(|before| Some(before) != seek) {
             asked.answers.clear();
@@ -273,11 +289,8 @@ impl Rosters {
         for (_, at) in &mut asked.wanted {
             *at = (*at).min(hour);
         }
-        let rows = if self.drive { asked.rows.clone() } else { None };
+        asked.woken = true;
         drop(asked);
-        if let Some(rows) = rows {
-            rows.drive(hour);
-        }
         self.shared.wake.notify_all();
     }
 
@@ -287,9 +300,31 @@ impl Rosters {
         let at = asked.head.unwrap_or(Hour::MIN);
         asked.wanted.extend(forces.into_iter().map(|force| (force, at)));
         if asked.wanted.len() != before {
+            asked.woken = true;
             drop(asked);
             self.shared.wake.notify_all();
         }
+    }
+
+    /// Nothing draws the rosters of `forces` any more: they leave the rosters known, so a resolve
+    /// of every one of them (a table only the scripts read moved) rebuilds none of theirs. Asked
+    /// again, they come back.
+    fn forget(&self, forces: impl IntoIterator<Item = u64>) {
+        let gone: Vec<u64> = forces.into_iter().collect();
+        if gone.is_empty() {
+            return;
+        }
+        let mut asked = self.shared.lock();
+        asked.known.retain(|force| !gone.contains(force));
+        asked.wanted.retain(|(force, _)| !gone.contains(force));
+        asked.answers.retain(|(force, _)| !gone.contains(force));
+    }
+
+    /// Every roster known is let go: the layer dropped them all.
+    fn forget_all(&self) {
+        let mut asked = self.shared.lock();
+        asked.known.clear();
+        asked.answers.clear();
     }
 
     fn take(&self) -> Vec<(u64, Arc<Roster>)> {
@@ -301,43 +336,68 @@ impl Rosters {
         self.shared.lock().answered
     }
 
+    /// The task forces it still owes an answer for, asked or being resolved, each with the hour
+    /// of the change that asked: what the layer draws of that task force is exact only before
+    /// that hour. Empty once every roster asked is answered.
+    fn owed(&self) -> Vec<(u64, Hour)> {
+        let asked = self.shared.lock();
+        asked.wanted.iter().chain(&asked.building).copied().collect()
+    }
+
     /// Waits until every roster asked is answered from rows at `hour`, once the map applied it; for
     /// a caller that holds the head (the proof tool, tests), never the window.
     pub fn wait(&self, hour: Hour, limit: Duration) -> io::Result<()> {
-        let until = Instant::now() + limit;
+        let began = Instant::now();
+        let until = began + limit;
         let mut asked = self.shared.lock();
         if asked.head.is_none() || !asked.open {
             return Ok(());
         }
+        let (mut slices, mut timeouts) = (0_u64, 0_u64);
         loop {
             if let Some(error) = &asked.error {
                 return Err(io::Error::other(format!("The ship rosters' worker stopped: {error}")));
             }
             if asked.wanted.is_empty() && asked.answered == Some(hour) {
+                waited_for(began, asked.answered_at, slices, timeouts, true);
                 return Ok(());
             }
             let now = Instant::now();
             if now >= until {
-                return Err(io::Error::other(format!("The ship rosters were not answered at hour {hour} in {limit:?} (rows at {:?}, {} asked, loading {}; the rows' worker: {:?})", asked.answered, asked.wanted.len(), asked.loading, asked.rows.as_ref().and_then(|rows| rows.error()))));
+                waited_for(began, asked.answered_at, slices, timeouts, false);
+                return Err(io::Error::other(format!("The ship rosters were not answered at hour {hour} in {limit:?} (rows at {:?}, {} asked, loading {})", asked.answered, asked.wanted.len(), asked.loading)));
             }
-            asked = self.shared.answered.wait_timeout(asked, (until - now).min(Duration::from_millis(50))).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+            let (held, ended) = self.shared.answered.wait_timeout(asked, (until - now).min(Duration::from_millis(50))).unwrap_or_else(std::sync::PoisonError::into_inner);
+            asked = held;
+            slices += 1;
+            timeouts += u64::from(ended.timed_out());
+        }
+    }
+
+    /// Waits until the worker has let the rows it read go, which it does once nothing draws the
+    /// rosters: the hand-over itself answers, so nothing here waits on the clock.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn closed(&self) {
+        let mut asked = self.shared.lock();
+        while !asked.let_go {
+            asked = self.shared.answered.wait(asked).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
     /// Whether rosters are asked and not answered yet.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn pending(&self) -> bool {
         !self.shared.lock().wanted.is_empty()
     }
 
     /// The frames the worker has looked at: one more once it has seen every roster asked before.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn looks(&self) -> u64 {
         self.shared.lock().looks
     }
 
     /// Whether the worker's rows are loading: a table it reads has not arrived.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn loading(&self) -> bool {
         self.shared.lock().loading
     }
@@ -348,13 +408,6 @@ impl Rosters {
         (asked.builds.clone(), asked.tables.clone())
     }
 
-    /// What the rows at the head hold for the rosters' tables: the worker's mirrors and the rows.
-    pub fn rows_held(&self) -> Option<(usize, usize)> {
-        let asked = self.shared.lock();
-        let held = asked.rows.as_ref()?.held();
-        let mine = |list: &[(TableId, usize)]| list.iter().filter(|(table, _)| asked.tables.contains(table)).map(|(_, bytes)| bytes).sum();
-        Some((mine(&held.mirrors), mine(&held.rows)))
-    }
 }
 
 impl Drop for Rosters {
@@ -367,10 +420,27 @@ impl Drop for Rosters {
     }
 }
 
+/// What one wait of [`Rosters::wait`] cost, in the flight record: how long it waited, how much of
+/// that was after the answer it waited for was published (it slept past its product), how many
+/// condvar slices it took and how many of those ended by timeout rather than by the answer.
+fn waited_for(began: Instant, answered_at: Option<Instant>, slices: u64, timeouts: u64, answered: bool) {
+    use viewer_foundation::view_record::add;
+    if !viewer_foundation::view_record::on() {
+        return;
+    }
+    let late = answered_at.filter(|_| answered).map_or(0, |at| began.max(at).elapsed().as_micros() as u64);
+    add("ship rosters", "waits", 1);
+    add("ship rosters", "wait_us", began.elapsed().as_micros() as u64);
+    add("ship rosters", "wait_late_us", late);
+    add("ship rosters", "wait_slices", slices);
+    add("ship rosters", "wait_timeouts", timeouts);
+    add("ship rosters", "waits_unanswered", u64::from(!answered));
+}
+
 /// The worker: whenever rosters are asked, or a table only the scripts read changed under the
 /// rosters it knows, resolve them over the newest rows and hand the answers back.
-fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
-    let mut reader: Option<RowReader> = None;
+fn resolve(shared: &Shared, naval: &dyn Naval, maker: timeline::Maker) {
+    let mut reader: Option<views::Reader> = None;
     let mut last: Option<Arc<DecodedFrame>> = None;
     loop {
         let mut asked = shared.lock();
@@ -379,55 +449,63 @@ fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
         }
         if !asked.open {
             // Closed, it holds no reader: its tables leave the rows and come back as a reset.
-            (reader, asked.reader, last, asked.loading) = (None, None, None, false);
-            let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            if let Some(held) = reader.take() {
+                held.declare_only(&[]);
+                asked.views = Some(held);
+                asked.let_go = true;
+                shared.answered.notify_all();
+            }
+            (last, asked.loading) = (None, false);
+            if !std::mem::take(&mut asked.woken) {
+                let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            }
             continue;
         }
         if let Some(why) = asked.refused.clone() {
-            (reader, asked.reader, asked.loading) = (None, None, false);
+            if let Some(held) = reader.take() {
+                held.declare_only(&[]);
+                asked.views = Some(held);
+                asked.let_go = true;
+            }
+            asked.loading = false;
             let forces = std::mem::take(&mut asked.wanted);
             let refused = !forces.is_empty();
             asked.answers.extend(forces.into_iter().map(|(force, _)| (force, Arc::new(Some(Err(why.clone()))))));
             if let Some(head) = asked.head.filter(|&head| refused || asked.answered != Some(head)) {
                 asked.answered = Some(head);
+                asked.answered_at = Some(Instant::now());
+                timeline::mark(maker, Mark::Published);
                 shared.answered.notify_all();
             }
-            let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            if !std::mem::take(&mut asked.woken) {
+                let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            }
             continue;
         }
         if reader.is_none() {
-            reader = asked.reader.take();
-        }
-        if reader.is_none() {
-            let rows = match (asked.rows.clone(), asked.source.clone()) {
-                (Some(rows), _) => Some(rows),
-                (None, Some((entry, recording))) => Rows::of(&entry, recording).map_err(|error| asked.error = Some(error.to_string())).ok(),
-                (None, None) => None,
-            };
-            if let Some(rows) = rows {
-                reader = Some(rows.reader(&asked.tables, CADENCE));
-                if drive && let Some(head) = asked.head {
-                    rows.drive(head);
-                }
-                asked.rows = Some(rows);
+            reader = asked.views.take();
+            if let Some(reader) = &reader {
+                asked.let_go = false;
+                reader.declare_only(&asked.tables);
             }
         }
-        // Between batches it has finished with the rows it took.
-        if let Some(reader) = &reader {
-            reader.ready();
-        }
         // A frame made before a table was declared lacks it: rosters over it would learn it again.
-        let frame = reader.as_ref().and_then(RowReader::frame).filter(|frame| super::rebuilt::holds(frame, &asked.tables));
+        let frame = reader.as_ref().and_then(views::Reader::frame).filter(|frame| super::rebuilt::holds(frame, &asked.tables));
         asked.loading = reader.is_some() && frame.is_none();
         let Some(frame) = frame else {
-            let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            if !std::mem::take(&mut asked.woken) {
+                let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            }
             continue;
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             asked.looks += 1;
         }
         let newer = last.as_ref().is_none_or(|last| !Arc::ptr_eq(last, &frame));
+        if newer {
+            timeline::mark(maker, Mark::Rows);
+        }
         let scripts_moved = newer && last.as_ref().is_some_and(|last| {
             (0..frame.tables.len()).any(|table| !ROSTER_TABLES.iter().any(|known| known.index() == table) && !replay_frame::frame::SharedView::ptr_eq(&frame.tables[table], &last.tables[table]))
         });
@@ -444,7 +522,9 @@ fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
         // Rows of a seek before the map's answer nothing: sought back, they may stand past its hour.
         let Some((through, seek)) = reader.as_ref().and_then(|reader| reader.through_seek(Arc::as_ptr(&frame))) else { continue };
         if asked.seek.is_some_and(|current| seek < current) {
-            let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            if !std::mem::take(&mut asked.woken) {
+                let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            }
             continue;
         }
         // A roster is answered from rows standing at the hour it was asked or later: rows from before
@@ -460,27 +540,51 @@ fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
         if forces.is_empty() {
             if newer {
                 asked.answered = Some(frame.hour);
+                asked.answered_at = Some(Instant::now());
                 last = Some(frame);
+                timeline::mark(maker, Mark::Published);
                 shared.answered.notify_all();
             } else if let Some(stands) = reader.as_ref().and_then(|reader| reader.through(Arc::as_ptr(&frame)))
                 && asked.answered.is_some_and(|answered| answered < stands)
             {
                 // No step since changed the rows every roster known was answered from.
                 asked.answered = Some(stands);
+                asked.answered_at = Some(Instant::now());
+                timeline::mark(maker, Mark::Published);
                 shared.answered.notify_all();
             }
-            let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+            // Nothing to resolve: it waits for the rows of the hour the map applied, or, standing
+            // there already, for the rows of the step after it. The map's side waits for the
+            // rosters at every step, so a blind wait here would cost the step a whole tick.
+            let seen = reader.as_ref().map_or(0, views::Reader::published);
+            let woken = std::mem::take(&mut asked.woken);
+            match (woken, reader.as_ref()) {
+                (true, _) => drop(asked),
+                // A frame newer than the one it has is the step after this one: the views it reads
+                // stand at the hour the side applied, so there is no older hour to chase.
+                (false, Some(reader)) => {
+                    drop(asked);
+                    reader.wait_newer(seen, Duration::from_millis(17));
+                }
+                (false, None) => {
+                    let _ = shared.wake.wait_timeout(asked, Duration::from_millis(17));
+                }
+            }
             continue;
         }
         forces.sort_unstable();
         forces.dedup();
+        asked.building.clone_from(&batch);
         drop(asked);
+        timeline::mark(maker, Mark::BuildBegan);
         let started = Instant::now();
         let (resolved, missed) = replay_frame::frame::discovering(|| {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| naval.rosters(&frame, &forces))).unwrap_or_else(|panic| Err(io::Error::other(format!("The rosters' build panicked: {}", super::rebuilt::panicked(&*panic)))))
         });
         let ns = started.elapsed().as_nanos() as u64;
+        timeline::mark(maker, Mark::BuildEnded);
         let mut asked = shared.lock();
+        asked.building.clear();
         // Sought while it was built: its answers are the seek before's, and what it answered waits
         // for the rows of the map's.
         if asked.seek.is_some_and(|current| seek < current) {
@@ -500,7 +604,7 @@ fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
             asked.tables.sort_unstable_by_key(|table| table.index());
             asked.tables.dedup();
             if let Some(reader) = &reader {
-                reader.declare(&asked.tables);
+                reader.declare_only(&asked.tables);
             }
             last = None;
             continue;
@@ -521,8 +625,10 @@ fn resolve(shared: &Shared, naval: &dyn Naval, drive: bool) {
         asked.known.dedup();
         asked.answers.extend(answers);
         asked.answered = Some(frame.hour);
+        asked.answered_at = Some(Instant::now());
         last = Some(frame);
         drop(asked);
+        timeline::mark(maker, Mark::Published);
         shared.answered.notify_all();
     }
 }
@@ -594,6 +700,8 @@ pub struct Ships {
     figures: Dirty,
     camera: Option<(Placement, [u32; 2])>,
     admission: Option<Admission>,
+    /// [`Self::admission`] with a margin: the provinces whose rosters are warmed.
+    nearby: Option<Admission>,
     camera_dirty: bool,
     all_dirty: bool,
     rosters_dirty: bool,
@@ -633,10 +741,10 @@ pub struct Ships {
 }
 
 impl Ships {
-    /// `drive`: the layer drives its rows to the map's hour (a caller that plays the playhead
+    /// (a caller that plays the playhead
     /// itself); otherwise they follow the playhead's clock.
-    pub fn new(naval: Arc<dyn Naval>, drive: bool) -> io::Result<Self> {
-        let rosters = Rosters::new(Arc::clone(&naval), drive)?;
+    pub fn new(naval: Arc<dyn Naval>) -> io::Result<Self> {
+        let rosters = Rosters::new(Arc::clone(&naval))?;
         Ok(Self {
             naval,
             given: Mutex::new(None),
@@ -651,6 +759,7 @@ impl Ships {
             figures: Dirty::default(),
             camera: None,
             admission: None,
+            nearby: None,
             camera_dirty: false,
             all_dirty: true,
             rosters_dirty: true,
@@ -770,18 +879,26 @@ impl Ships {
         if asked.source.as_ref().is_some_and(|(held, _)| Arc::ptr_eq(held, &entry)) {
             return Ok(());
         }
-        let rows = Rows::of(&entry, recording)?;
         let absent = super::rebuilt::absent(&entry, &asked.tables);
         asked.refused = (!absent.is_empty()).then(|| super::rebuilt::refusal("the ships' rosters", &absent));
-        asked.reader = asked.refused.is_none().then(|| rows.reader(&asked.tables, CADENCE));
-        let declared = asked.reader.is_some();
-        (asked.source, asked.rows) = (Some((entry, recording)), Some(Arc::clone(&rows)));
+        asked.source = Some((entry, recording));
+        asked.woken = true;
         drop(asked);
-        if declared {
-            rows.settled();
-        }
         self.rosters.shared.wake.notify_all();
         Ok(())
+    }
+
+    /// The map side's view store: the rosters' worker reads the rows of the step's hour from it,
+    /// made from the side's own mirrors. Given once, as the side is made.
+    pub fn set_views(&self, store: &views::Store) {
+        let needs: Vec<Need> = ROSTER_TABLES.iter().map(|&table| Need::every(table)).collect();
+        let reader = store.reader("ship_rosters", &needs);
+        let mut asked = self.rosters.shared.lock();
+        reader.declare_only(&asked.tables);
+        asked.views = Some(reader);
+        asked.woken = true;
+        drop(asked);
+        self.rosters.shared.wake.notify_all();
     }
 
     /// What the viewer sees and the perspective it is for; every figure is made again with it.
@@ -846,7 +963,7 @@ impl Ships {
 
     /// A layer of the same content, inputs, vision and rosters, made from scratch.
     pub fn fresh(&self) -> io::Result<Self> {
-        let mut fresh = Self::new(Arc::clone(&self.naval), false)?;
+        let mut fresh = Self::new(Arc::clone(&self.naval))?;
         (fresh.columns, fresh.camera, fresh.camera_dirty, fresh.vision, fresh.reuse) = (self.columns, self.camera, true, self.vision.clone(), true);
         for (&id, &slot) in &self.by_id {
             if let Some(roster) = &self.forces[slot as usize].roster {
@@ -875,20 +992,64 @@ impl Ships {
         self.admission.as_ref().is_none_or(|admission| admission.admits_province(self.naval.bounds(), province))
     }
 
+    /// Whether `province` is inside the margin around the view: what the camera can come to admit
+    /// before a roster asked now could be answered.
+    fn nears(&self, province: u32) -> bool {
+        self.nearby.as_ref().is_none_or(|nearby| nearby.admits_province(self.naval.bounds(), province))
+    }
+
     fn readmit(&mut self) {
         self.camera_dirty = false;
         self.touched += 1;
         let (size, defines) = self.naval.map();
-        self.admission = self.camera.filter(|(_, viewport)| *viewport != [0, 0]).map(|(placement, viewport)| Admission::new(placement.on(size, defines), viewport));
+        let camera = self.camera.filter(|(_, viewport)| *viewport != [0, 0]);
+        self.admission = camera.map(|(placement, viewport)| Admission::new(placement.on(size, defines), viewport));
+        // The margin is the camera's own height, which is the scale of what it sees: it grows and
+        // shrinks with the view rather than being a distance we picked.
+        self.nearby = camera.map(|(placement, viewport)| {
+            let eye = placement.on(size, defines);
+            Admission::padded(eye, viewport, eye.height)
+        });
         let held: Vec<u32> = self.by_id.values().copied().collect();
+        let head = self.head;
         for slot in held {
             let at = slot as usize;
             let admitted = self.forces[at].force.is_some_and(|force| self.admits(force.province));
-            self.forces[at].admitted = admitted;
+            self.came_into_view(at, admitted, head);
             if admitted && self.forces[at].part.is_none() {
                 self.figures.mark(slot, self.frame);
             }
         }
+        // A task force the camera will admit before its roster could be answered: its roster is
+        // asked while it is still outside the view, so the figure is whole when it arrives.
+        let warming: Vec<u64> = self
+            .by_id
+            .iter()
+            .filter(|&(_, &slot)| {
+                let held = &self.forces[slot as usize];
+                !held.admitted && held.roster.is_none() && !held.asked && held.force.is_some_and(|force| self.nears(force.province))
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        for id in warming {
+            let slot = self.by_id[&id];
+            self.forces[slot as usize].asked = true;
+            self.marked[2] += 1;
+            self.rosters.ask([id]);
+        }
+    }
+
+    /// Task force at slot `at` is admitted or not: the hour it came into view at is kept while it
+    /// is, and forgotten when it leaves, so what is drawn of it is never counted from an hour it
+    /// was in nobody's picture.
+    fn came_into_view(&mut self, at: usize, admitted: bool, head: Option<Hour>) {
+        let held = &mut self.forces[at];
+        held.in_view_at = match (held.admitted && held.in_view_at.is_some(), admitted) {
+            (_, false) => None,
+            (true, true) => held.in_view_at,
+            (false, true) => head,
+        };
+        held.admitted = admitted;
     }
 
     fn mark_force(&mut self, slot: u32) {
@@ -972,6 +1133,7 @@ impl Ships {
             for held in &mut self.forces {
                 (held.roster, held.asked) = (None, false);
             }
+            self.rosters.forget_all();
         }
         self.all_dirty = true;
     }
@@ -988,6 +1150,9 @@ impl Ships {
             Some(Force { id: forces.key(slot)? as u64, province: number(columns.province), logical_owner: number(columns.logical_owner), roster_owner: number(columns.roster_owner), expeditionary_owner: number(columns.expeditionary_owner) })
         });
         let held = &self.forces[at];
+        // Task forces the layer draws no roster of any more: their rosters are let go, so no later
+        // resolve of every roster known rebuilds one nothing reads.
+        let mut gone: Vec<u64> = Vec::new();
         if let Some(old) = held.force {
             if row.is_none_or(|new| new.province != old.province) {
                 if let Some(list) = self.in_province.get_mut(&old.province) {
@@ -996,6 +1161,7 @@ impl Ships {
             }
             if row.is_none_or(|new| new.id != old.id) {
                 self.by_id.remove(&old.id);
+                gone.push(old.id);
             }
         }
         if let Some(new) = row {
@@ -1003,14 +1169,19 @@ impl Ships {
                 self.in_province.entry(new.province).or_default().push(new.id);
             }
             if held.force.is_some_and(|old| old.roster_owner != new.roster_owner || old.expeditionary_owner != new.expeditionary_owner || old.id != new.id) {
-                self.forces[at].roster = None;
-                self.forces[at].asked = false;
+                gone.push(new.id);
             }
             self.by_id.insert(new.id, slot);
         }
+        if !gone.is_empty() {
+            (self.forces[at].roster, self.forces[at].asked) = (None, false);
+            self.rosters.forget(gone);
+        }
         let admitted = row.is_some_and(|force| force.province != 0 && self.admits(force.province));
+        let head = self.head;
+        self.came_into_view(at, admitted, head);
         let held = &mut self.forces[at];
-        (held.force, held.admitted, held.part) = (row, admitted, None);
+        (held.force, held.part) = (row, None);
         if admitted {
             if held.roster.is_none() && !held.asked {
                 held.asked = true;
@@ -1069,16 +1240,37 @@ impl Ships {
         self.forces[at].part = Some(part);
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
-        self.settle_marked(mirrors, budget);
-        if self.columns.is_some() && self.refused.is_none() && self.marks() == 0 && self.waiting() == 0 && self.stale() == 0 {
-            let head = mirrors.get(TableId::TaskForces).and_then(Mirror::head);
-            // The rosters drawn are of the rows they were answered from, which may stand behind the head.
-            self.product_hour = head.map(|head| self.rosters.answered().map_or(head, |answered| answered.min(head))).or(self.product_hour);
-        }
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
+        self.settle_marked(mirrors);
         self.head = mirrors.get(TableId::TaskForces).and_then(Mirror::head);
+        // Nothing stands anywhere until every admitted task force has been drawn once.
+        let stood = self.product_hour.is_some() || (self.marks() == 0 && self.waiting() == 0);
+        if self.columns.is_some() && self.refused.is_none() && stood {
+            self.product_hour = self.standing().or(self.product_hour);
+        }
         self.publish();
         self.warn();
+    }
+
+    /// The newest hour everything it draws is exact at: the hour the rows its rosters were
+    /// answered from stand at and, for a task force **the camera admits** whose roster the worker
+    /// owes, the hour before the change that asked for it, or before it came into view if that is
+    /// later. A roster owed for a task force the camera does not admit holds nothing back: it is
+    /// in no picture. A figure drawn from a roster nobody has asked again is exact at the head,
+    /// and nothing leaves this standing at an older settle's hour.
+    fn standing(&self) -> Option<Hour> {
+        let head = self.head?;
+        let rows = self.rosters.answered().map_or(head, |answered| answered.min(head));
+        let mut stands = rows;
+        for (force, at) in self.rosters.owed() {
+            let Some(held) = self.by_id.get(&force).map(|&slot| &self.forces[slot as usize]).filter(|held| held.admitted) else { continue };
+            // What a watcher saw of it: never older than the publication it came into view at.
+            let from = held.in_view_at.map_or(at, |seen| at.max(seen));
+            if from > Hour::MIN {
+                stands = stands.min(from - 1);
+            }
+        }
+        Some(stands)
     }
 
     /// The frame thread's own marks: task forces and figures to make, and whole passes owed.
@@ -1091,12 +1283,7 @@ impl Ships {
         self.by_id.values().filter(|&&slot| self.forces[slot as usize].admitted && self.forces[slot as usize].part.is_none()).count()
     }
 
-    /// Admitted task forces drawn with a part whose roster was asked again and not answered yet.
-    fn stale(&self) -> usize {
-        self.by_id.values().filter(|&&slot| self.forces[slot as usize].admitted && self.forces[slot as usize].asked && self.forces[slot as usize].part.is_some()).count()
-    }
-
-    fn settle_marked(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn settle_marked(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         if self.columns.is_none() {
             return;
@@ -1162,14 +1349,14 @@ impl Ships {
             }
         }
         let mut dirty = std::mem::take(&mut self.dirty);
-        let _ = dirty.settle(budget, |slot| {
+        let _ = dirty.settle(|slot| {
             self.read_force(slot, mirrors);
             Ok(())
         });
         self.dirty = dirty;
         let mut figures = std::mem::take(&mut self.figures);
         let mut waiting = Vec::new();
-        let _ = figures.settle(budget, |slot| {
+        let _ = figures.settle(|slot| {
             self.place(slot, mirrors);
             if self.forces.get(slot as usize).is_some_and(|held| held.admitted && held.part.is_none()) {
                 waiting.push(slot);
@@ -1201,8 +1388,15 @@ impl Ships {
         }
         let Some(vision) = upstream.get::<Layered>() else { return };
         let given = self.given.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some();
-        let whole = always || (self.vision.is_none() && !given) || self.vision.as_ref().is_some_and(|(choice, _)| choice != vision.choice()) || self.sight_epoch != Some(vision.sight_epoch());
-        let named: Vec<u32> = if whole { Vec::new() } else { upstream.changed::<Layered>().of("unit").iter().filter_map(|unit| self.by_id.get(unit).copied()).collect() };
+        let marked = match upstream.changed::<Layered>() {
+            super::Change::Whole => None,
+            super::Change::Marked(marked) => Some(marked),
+        };
+        let whole = always || marked.is_none() || (self.vision.is_none() && !given) || self.vision.as_ref().is_some_and(|(choice, _)| choice != vision.choice()) || self.sight_epoch != Some(vision.sight_epoch());
+        let named: Vec<u32> = match marked.filter(|_| !whole) {
+            None => Vec::new(),
+            Some(marked) => marked.of("unit").iter().filter_map(|unit| self.by_id.get(unit).copied()).collect(),
+        };
         if !whole && named.is_empty() && !self.born && !self.all_dirty {
             return;
         }
@@ -1233,6 +1427,23 @@ impl Ships {
 impl Layer for Ships {
     fn name(&self) -> &'static str {
         "ships"
+    }
+
+    /// Where the camera stands is taken here, and of its declaration the camera decides only
+    /// whether ship models are drawn at its height: a move that stays one side of that cutoff
+    /// declares nothing again and resets no table.
+    fn placed(&mut self, view: &View) -> Option<u64> {
+        let camera = view.camera.map(|camera| (camera, view.viewport));
+        if camera != self.camera {
+            self.camera = camera;
+            self.camera_dirty = true;
+        }
+        Some(u64::from(view.camera.is_none_or(|camera| self.naval.drawn_at(camera.height))))
+    }
+
+    fn views(&mut self, store: &crate::playhead_host::views::Store) -> io::Result<()> {
+        self.set_views(store);
+        Ok(())
     }
 
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
@@ -1311,7 +1522,7 @@ impl Layer for Ships {
         let marked = self.marked;
         (self.all_dirty, self.rosters_dirty, self.like_today) = (true, true, false);
         self.refused = Some("composing".into());
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors);
         self.marked = marked;
         Ok(())
     }
@@ -1321,18 +1532,33 @@ impl Layer for Ships {
         self.compose(mirrors)
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+    /// Its task forces read and their figures placed, and the roster each figure waits for asked
+    /// of the worker: it resolves them while the layers that join no maker settle.
+    fn ask(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<bool> {
         self.take_vision(upstream, mirrors, false);
-        self.settle_dirty(mirrors, budget);
-        // The window's whole settle (the stepped harness) draws every roster of its hour.
+        self.settle_dirty(mirrors);
+        Ok(true)
+    }
+
+    /// Its rosters join the step: the picture it settles for stands at one hour.
+    fn join(&mut self, mirrors: &Mirrors, _upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
+        timeline::mark(self.rosters.maker, Mark::JoinBegan);
         if self.window
-            && budget.unlimited_now()
             && let Some(hour) = mirrors.get(TableId::TaskForces).and_then(Mirror::head)
-            && self.rosters.wait(hour, Duration::from_secs(30)).is_ok()
         {
-            self.settle_dirty(mirrors, budget);
+            let answered = self.rosters.wait(hour, settling.waiting(Duration::from_secs(30))).is_ok();
+            timeline::mark(self.rosters.maker, Mark::Waited);
+            if answered {
+                self.settle_dirty(mirrors);
+            }
         }
+        timeline::mark(self.rosters.maker, Mark::Joined);
         Ok(())
+    }
+
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
+        self.ask(mirrors, upstream)?;
+        self.join(mirrors, upstream, settling)
     }
 
     fn apply(&mut self, step: &Step, mirrors: &Mirrors) {
@@ -1404,28 +1630,24 @@ impl Layer for Ships {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         if self.columns.is_none() || self.refused.as_deref().is_some_and(|why| why != "composing") {
             return Carried::default();
         }
         // A roster asked of the worker is the worker's: counted here it held the shown hour.
-        let since = [self.dirty.since(), self.figures.since()].into_iter().flatten().min();
-        Carried { entities: self.marks(), frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities: self.marks() }
     }
 
-    /// While a task force waits for its roster, the newest hour the parts stand for, or nothing
-    /// before the first. Otherwise current once the parts stand at the hour applied: while one is
-    /// drawn with a roster asked again, or the rosters' rows stand behind the head, the hour they
-    /// stand for, made on the rows' cadence. Hidden or refused, it draws nothing and owes nothing.
+    /// While a task force waits for its roster, the hour its figures stand at ([`Self::standing`]),
+    /// or nothing before the first is made. Otherwise that hour, made on the rows' cadence, until
+    /// it is the hour applied and the layer is current. Hidden or refused, it draws nothing and
+    /// owes nothing.
     fn published(&self) -> Published {
         if self.columns.is_none() || self.refused.as_deref().is_some_and(|why| why != "composing") {
             return Published::Current;
@@ -1437,8 +1659,7 @@ impl Layer for Ships {
         if !drawn {
             return Published::Current;
         }
-        let stands = if self.stale() > 0 { self.product_hour } else { self.head.map(|head| self.rosters.answered().map_or(head, |answered| answered.min(head))) };
-        match (stands, self.head) {
+        match (self.product_hour, self.head) {
             (Some(stands), Some(head)) if stands < head => Published::Cadence(stands),
             _ => Published::Current,
         }

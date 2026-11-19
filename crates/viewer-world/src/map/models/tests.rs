@@ -1033,6 +1033,23 @@ fn a_group_outside_the_visible_rectangle_is_culled() {
 }
 
 #[test]
+fn a_figure_flying_above_the_rectangle_is_not_culled_by_its_ground_position() {
+    let library = library_with_one_mesh(0.0);
+    let flying = ModelInstance {
+        position: [10.0, 60.0, 10.0],
+        ..at(10.0, 10.0)
+    };
+    let field = ModelField::build(&library, vec![(0, flying)], 256.0);
+    let group = &field.groups[0];
+    // Its ground position is 20 units past the rectangle's edge, and a figure 60 units up leans
+    // 29 units past the margin the rectangle already carries, so the camera shows it and the
+    // game's own cull is what decides.
+    assert!(visible(group, 0.0, Some([-50.0, -50.0, -10.0, 50.0])));
+    // No lean reaches 400 units: the pre-filter still drops it.
+    assert!(!visible(group, 0.0, Some([-500.0, -50.0, -400.0, 50.0])));
+}
+
+#[test]
 fn unit_lifetime_and_hidden_animation_clock() {
     use {
         super::super::unit_history::History, super::super::unit_history::Kind,
@@ -1548,6 +1565,111 @@ fn convoy_collision_radius_is_the_runtime_bounds_three_dimensional_half_diagonal
 }
 
 #[test]
+fn a_moved_part_is_written_where_it_stands_and_leaves_the_rest_of_the_field_alone() {
+    let library = library_with_one_mesh(2.0);
+    let standing = vec![
+        (0, at(300.0, 10.0)),
+        (0, at(20.0, 10.0)),
+        (0, at(310.0, 10.0)),
+        (0, at(10.0, 10.0)),
+    ];
+    // A move inside the cull tile and one across it: the field a patch leaves must place and
+    // bound every part as a whole placement of the same parts does.
+    for shift in [30.0, 400.0] {
+        let mut pass = ModelPass::new(&library, "moved parts");
+        pass.update_placed(standing.clone(), 256.0);
+        let held = (
+            pass.field.instances.as_ptr(),
+            pass.field.native_order.clone(),
+            pass.field.groups.iter().map(|group| (group.mesh, group.range.clone())).collect::<Vec<_>>(),
+        );
+        let moved = at(300.0 + shift, 10.0);
+        pass.update_moving(
+            crate::map::models::Moving {
+                standing: None,
+                moved: vec![(0, moved)],
+            },
+            256.0,
+        );
+        assert_eq!(
+            pass.field.native_order, held.1,
+            "a part that moves keeps the field's walk order"
+        );
+        assert_eq!(
+            pass.field.groups.iter().map(|group| (group.mesh, group.range.clone())).collect::<Vec<_>>(),
+            held.2,
+            "a part that moves keeps its group and the parts in it"
+        );
+        assert_eq!(
+            pass.field.instances.as_ptr(),
+            held.0,
+            "the field's storage is written in place"
+        );
+        let (group, index) = pass.field.native_order[0];
+        assert_eq!(pass.field.instances[index].position, moved.position);
+        for (at, instance) in pass.field.instances.iter().enumerate() {
+            if at == index {
+                continue;
+            }
+            assert!(
+                standing.iter().any(|(_, held)| held.position == instance.position),
+                "a part the frame did not move stands where its placement put it"
+            );
+        }
+        let bounds = pass.field.groups[group].bounds;
+        assert!(
+            bounds[0] <= moved.position[0] - 2.0
+                && bounds[2] >= moved.position[0] + 2.0
+                && bounds[1] <= moved.position[2] - 2.0
+                && bounds[3] >= moved.position[2] + 2.0,
+            "the group a moved part stands in reaches it: {bounds:?} for {:?}",
+            moved.position
+        );
+        let mut whole = standing.clone();
+        whole[0].1 = moved;
+        let afresh = ModelField::build_meshes(&pass.meshes, whole, 256.0);
+        for (ordinal, &(group, index)) in pass.field.native_order.iter().enumerate() {
+            let (built_group, built) = afresh.native_order[ordinal];
+            assert_eq!(
+                pass.field.instances[index].position, afresh.instances[built].position,
+                "ordinal {ordinal} is placed where a whole placement places it"
+            );
+            // A part carried across the cull tile stays in the group its placement gave it, so
+            // that group reaches at least as far as the one a whole placement would build.
+            let (held, built) = (
+                pass.field.groups[group].bounds,
+                afresh.groups[built_group].bounds,
+            );
+            assert!(
+                held[0] <= built[0] && held[1] <= built[1] && held[2] >= built[2] && held[3] >= built[3],
+                "ordinal {ordinal}'s group reaches it: {held:?} against {built:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_frame_that_moves_no_part_writes_nothing_to_the_field() {
+    let library = library_with_one_mesh(2.0);
+    let mut pass = ModelPass::new(&library, "moved parts");
+    pass.update_placed(vec![(0, at(300.0, 10.0)), (0, at(20.0, 10.0))], 256.0);
+    pass.written.set(false);
+    let before = ModelField::build_meshes(&pass.meshes, vec![(0, at(300.0, 10.0)), (0, at(20.0, 10.0))], 256.0);
+    pass.update_moving(
+        crate::map::models::Moving {
+            standing: None,
+            moved: Vec::new(),
+        },
+        256.0,
+    );
+    assert_eq!(pass.field, before);
+    assert!(
+        !pass.written.get(),
+        "a frame that moves nothing leaves no change for the lists to follow"
+    );
+}
+
+#[test]
 fn retained_placement_storage_keeps_group_ties_order_and_replacement_state() {
     let library = library_with_one_mesh(2.0);
     let mut pass = ModelPass::new(&library, "retained placements");
@@ -1675,6 +1797,7 @@ fn the_game_cull_tests_the_eye_s_distance_to_the_sphere_s_centre_then_the_four_s
         eye: [0., 100., 0.],
         sides: [[1., 0., 0., wide], [-1., 0., 0., wide], [0., 0., 1., wide], [0., 0., -1., wide]],
         x: 0.,
+        pad: 0.,
     };
     let default = installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
     assert_eq!(cull.test([400., 0., 0.], 1., default), None);
@@ -1695,8 +1818,76 @@ fn a_figure_walked_on_a_camera_moved_onto_another_map_copy_is_culled_where_it_st
     let eye = viewer_foundation::map::camera::Camera { center: [-10., 0.], height: 100., map: MapSize::TEST, defines: MapDefines::test(), pose: viewer_foundation::map::camera::Pose::Map };
     let moved = viewer_foundation::map::camera::Camera { center: [width - 10., 0.], ..eye };
     let pass = ModelPass::new(&library_with_one_mesh(1.), "unit models");
-    pass.set_cull(Some(GameCull { eye: [-10., 100., 0.], sides: [[1., 0., 0., wide], [-1., 0., 0., wide], [0., 0., 1., wide], [0., 0., -1., wide]], x: -10. }));
+    let cull = GameCull { eye: [-10., 100., 0.], sides: [[1., 0., 0., wide], [-1., 0., 0., wide], [0., 0., 1., wide], [0., 0., -1., wide]], x: -10., pad: 0. };
+    pass.set_cull(Some(cull), Some(cull));
     let instance = ModelInstance { position: [width - 20., 0., 0.], scale: 1.0, ..ModelInstance::default() };
     assert_eq!(pass.game_culled(0, &instance, 0., &moved), None, "beside the moved eye: drawn");
     assert_eq!(pass.game_culled(0, &instance, 0., &eye), Some(Culled::Distance), "walked on the eye where it stands, the figure is a map width away");
+}
+
+/// A pose batch in flight when an animation history starts again (a seek, a branch change) was
+/// made from the samples of the history that ended: its limbs are never installed over the new
+/// history's figures, however stable a figure's identity is across the seek. And a stopped
+/// picture, which is exact, asks the worker for nothing: every figure is posed on the frame that
+/// draws it, from the samples it draws.
+#[test]
+fn a_pose_batch_of_a_history_that_ended_never_replaces_the_new_historys_poses() {
+    use crate::map::poses;
+    let mut library = library_with_one_mesh(1.0);
+    library.palette = vec![PaletteJoint::IDENTITY];
+    library.rigs.push(Arc::new(entity_animation::stage_rig(false)));
+    let mut pass = ModelPass::new(&library, "synthetic poses");
+    let mut worker = poses::Worker::new();
+    assert!(worker.refusal().is_none(), "the pose worker must run: {:?}", worker.refusal());
+    let mut jobs = poses::Jobs::default();
+    // One figure, placed and played: the worker makes its limbs and the pass installs them.
+    let place = |pass: &mut ModelPass, time: f32| {
+        pass.update_placed(vec![(0, at(10.0, 10.0))], 128.0);
+        pass.animate(time, None, &[0.0]);
+    };
+    let made = |worker: &mut poses::Worker, jobs: &mut poses::Jobs| loop {
+        // Waited for by the hand-over itself: the worker always answers a batch it took.
+        if let Some(made) = worker.take(jobs) {
+            return made;
+        }
+        std::thread::yield_now();
+    };
+    place(&mut pass, 1.0);
+    let rig = Arc::clone(&library.rigs[0]);
+    let key = (0, 0, 0);
+    pass.pose_jobs(&mut jobs, None, &[0.0]);
+    assert_eq!(jobs.len(), 1, "the placed figure's pose is asked for");
+    worker.give(1.0, &mut jobs);
+    let first = made(&mut worker, &mut jobs);
+    pass.take_poses(&first);
+    assert_eq!(pass.posed.len(), 1, "the batch is this pass's own history's, so its set is installed");
+    let worked = pass.actors(0, key, &rig, pass.players.get(&key), false);
+    assert!(
+        pass.posed.get((key, 0)).is_some_and(|posed| Arc::ptr_eq(&posed, &worked)),
+        "a figure the set holds is drawn with the worker's limbs"
+    );
+    // A seek: the same figure keeps its identity, and the batch in flight is of the history that
+    // ended.
+    pass.pose_jobs(&mut jobs, None, &[0.0]);
+    worker.give(2.0, &mut jobs);
+    let stale = made(&mut worker, &mut jobs);
+    let ended = pass.pose_pass();
+    pass.reset_animation();
+    place(&mut pass, 3.0);
+    pass.take_poses(&stale);
+    assert_eq!(pass.posed.len(), 0, "a set of the history that ended is not installed");
+    let posed = pass.actors(0, key, &rig, pass.players.get(&key), false);
+    assert!(
+        !Arc::ptr_eq(&posed, &stale.set_for(ended).get((key, 0)).expect("the stale batch posed it")),
+        "the new history's figure is posed where it is read, not with the pre-seek limbs"
+    );
+    // A stopped picture: nothing is asked of the worker and nothing it finished is installed.
+    pass.pose_jobs(&mut jobs, None, &[0.0]);
+    worker.give(4.0, &mut jobs);
+    let own = made(&mut worker, &mut jobs);
+    pass.pose_on_the_frame(true);
+    pass.take_poses(&own);
+    assert_eq!(pass.posed.len(), 0, "a stopped picture installs no set of another frame");
+    pass.pose_jobs(&mut jobs, None, &[0.0]);
+    assert_eq!(jobs.len(), 0, "a stopped picture asks the worker for nothing");
 }

@@ -7,7 +7,7 @@
 
 use super::{Columns, Sounds, TABLES};
 use crate::{
-    layers::{Budget, Carried, Fed as Products, Gpu, Inputs, Layer, Published, Scope, Scoped, Sight, View},
+    layers::{Carried, Settling, Fed as Products, Inputs, Layer, Published, Scope, Scoped, Sight, View},
     playhead_host::mirror::{Mirror, Mirrors},
 };
 use playhead::Step;
@@ -105,7 +105,7 @@ fn run(jobs: mpsc::Receiver<Job>, made: mpsc::Sender<Made>) {
                         }
                     }
                 }
-                held.model.settle_dirty(&held.mirrors, &mut Budget::unlimited());
+                held.model.settle_dirty(&held.mirrors);
                 held.made(epoch, stamp, answers)
             }
         };
@@ -172,7 +172,7 @@ impl SoundsFed {
     }
 
     /// Battles its worker made (their members' fronts summed and named), as of the newest battles.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn made(&self) -> u64 {
         self.made_battles
     }
@@ -288,8 +288,8 @@ impl Layer for SoundsFed {
     /// What the worker made taken, never waited for while playing; this frame's steps and a new
     /// declaration then go to the worker in one job. A whole settle waits for the battles of its
     /// hour.
-    fn settle(&mut self, _mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        let whole = budget.unlimited_now();
+    fn settle(&mut self, _mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        let whole = settling.waits();
         self.exchange(false);
         let applied = self.products.applied_hour();
         let mut steps = Vec::new();
@@ -304,9 +304,6 @@ impl Layer for SoundsFed {
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         // Every mark is the worker's: published, not carried.

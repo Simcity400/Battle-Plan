@@ -3,7 +3,7 @@
 use super::{Config, MAP_LINES_LOADING, Options, Viewer};
 use crate::{
     layers::{View, recorded::record, strikes::Strikes},
-    playhead_host::{MapSide, limitations, open, rows::tests::hourly_steps},
+    playhead_host::{MapSide, limitations, open, views::tests::hourly_steps},
 };
 use replay_columnar::manifest::Status;
 use replay_data::rows::TableId;
@@ -14,22 +14,23 @@ use std::{
 use viewer_world::map::strike_effects;
 
 #[test]
-fn with_the_playhead_map_open_and_no_hour_installed_the_lines_are_the_maps_whole_list() {
+fn before_the_head_reaches_an_hour_the_lines_are_the_maps_whole_list() {
     let units = record("warning lines", 12, |at, store| {
         let status = if at >= 2 { Status::Truncated { missing: 3 } } else { Status::Complete };
         store.status(TableId::NuclearStrikes.index(), status, true, Some(at as i32), true).unwrap();
     });
     let side = MapSide::new(open(units, hourly_steps()).unwrap(), vec![Box::new(Strikes::new(Arc::new(|_| None)))], View::default()).unwrap();
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
+    let mut side = crate::playhead_host::side::SideThread::new(side).unwrap();
+    side.driven(|_| ());
     viewer.playhead_map = Some(side);
-    assert!(viewer.shown.is_none(), "no hour of today's is installed");
-    let [lines, _] = viewer.hour_lines().expect("the open map's lines, though no hour is installed");
+    let [lines, _] = viewer.hour_lines().expect("the open map's lines, though it shows no hour");
     assert_eq!(lines, [MAP_LINES_LOADING], "loading by name before the head reaches an hour");
     let side = viewer.playhead_map.as_mut().unwrap();
     side.anchor(4, false, 0.0, true);
     let deadline = Instant::now() + Duration::from_secs(120);
-    while side.composing() || side.applied() != Some(4) || side.parts().is_some_and(|(_, layers)| layers[0].carried().entities > 0) {
-        let frame = side.frame(4).unwrap();
+    while side.composing() || side.applied() != Some(4) || side.with_side(|side| side.parts().is_some_and(|(_, layers)| layers[0].carried().entities > 0)) {
+        let frame = side.driven(|side| side.frame(4)).unwrap();
         assert!(Instant::now() < deadline, "hour 4 applied and settled within 120 s: applied {:?}, composing {}", side.applied(), side.composing());
         if frame.steps == 0 && frame.swapped.is_none() {
             std::thread::yield_now();
@@ -37,7 +38,7 @@ fn with_the_playhead_map_open_and_no_hour_installed_the_lines_are_the_maps_whole
     }
     let [lines, _] = viewer.hour_lines().expect("the open map's lines");
     let side = viewer.playhead_map.as_ref().unwrap();
-    assert_eq!(lines, limitations::lines(side, &[]).unwrap(), "the map's whole list at the head, nothing appended");
+    assert_eq!(lines, side.with_side(|side| limitations::lines(side)).unwrap(), "the map's whole list at the head, nothing appended");
     assert!(lines.iter().any(|line| line.starts_with("Table ")), "the tables' notes at the head: {lines:?}");
     let note = format!("Field Nuclear impact effects: {}", strike_effects::truncated(3));
     assert!(lines.contains(&note), "the strikes layer's own note, in today's words: {lines:?}");

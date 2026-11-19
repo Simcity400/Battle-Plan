@@ -210,7 +210,9 @@ pub(crate) fn ensure<'a>(
 }
 
 impl Retained {
-    fn active(&self) -> bool {
+    /// Whether the window draws differently next frame without a call from the code: an animation
+    /// of its own, or a pointer state still settling.
+    pub(crate) fn active(&self) -> bool {
         self.instance.active() || self.pointer.changing() || self.entries.values().any(Self::active)
     }
 

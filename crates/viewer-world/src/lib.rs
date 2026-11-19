@@ -24,6 +24,8 @@ pub mod map {
         .into()
     }
 
+    pub mod actor_check;
+    pub(crate) mod actor_motion;
     pub mod adjacency_icons;
     pub mod air_assignment;
     pub mod air_orders;
@@ -67,6 +69,7 @@ pub mod map {
     pub mod pointlights;
     pub mod political;
     pub mod political_gpu;
+    pub(crate) mod poses;
     pub mod post;
     pub mod projection_fold;
     pub mod radar_symbols;

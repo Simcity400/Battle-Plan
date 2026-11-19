@@ -255,6 +255,7 @@ pub fn run(
             defines.as_ref(),
             map.terrain.as_ref(),
             map.data.as_ref(),
+            map.regions.as_ref(),
             decode,
         );
         log.note("viewer.visual_parity", Kind::Offline, "Asset loading and shader compilation do not establish visual parity; compare recorded campaign frames with the game at the same hour, camera and display settings.");
@@ -495,9 +496,17 @@ fn interface(
         installed_content_core::particles::Catalog::read(layers)
     }) {
         Some(catalog) => {
-            log.read("weather", || {
+            log.notes("particles", Kind::Refused, catalog.refused());
+            if let Some(effects) = log.read("weather", || {
                 installed_content_weather::weather::effects(layers, &catalog)
-            });
+            }) {
+                let withheld: Vec<String> = effects
+                    .values()
+                    .flatten()
+                    .filter_map(|pair| Some(format!("{}: {}", pair.name, pair.withheld.as_ref()?)))
+                    .collect();
+                log.notes("weather", Kind::Refused, &withheld);
+            }
             // Every pdxparticle object's emitters as the viewer's particle
             // assets read them: each subsystem through RenderDescriptor::read.
             let mut refused = Vec::new();

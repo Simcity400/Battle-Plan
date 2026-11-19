@@ -11,7 +11,7 @@
 use crate::{
     document::Document,
     playback_cost::distribution,
-    playhead_host::{self, Entry, Head, MapSide, Opening},
+    playhead_host::{self, Entry, Head, MapSide, Opening, side::SideThread},
 };
 use replay_data::Hour;
 use serde_json::{Value, json};
@@ -51,7 +51,7 @@ struct Shown {
 
 /// An extra map drawn, and the reader opening whose first picture it has not drawn yet.
 struct Drawn {
-    side: MapSide,
+    side: SideThread,
     opened: Option<usize>,
     /// The hidden map shown again, until its first picture and its lag after.
     watched: bool,
@@ -72,7 +72,7 @@ pub(super) struct Extras {
     entry: Option<Arc<Entry>>,
     sides: Vec<Drawn>,
     pending: Vec<Pending>,
-    other: Option<MapSide>,
+    other: Option<SideThread>,
     /// Per frame: the extra maps' frames on the window thread, the other timeline's, the map's step
     /// built by the stepper (most a step).
     draw_ms: Vec<f64>,
@@ -94,7 +94,7 @@ pub(super) struct Extras {
 
 impl Extras {
     /// The extras the environment asks for beside `main`, the harness's map of `document`.
-    pub(super) fn open(document: &Document, main: Option<&MapSide>, speed: f64) -> io::Result<Self> {
+    pub(super) fn open(document: &Document, main: Option<&SideThread>, speed: f64) -> io::Result<Self> {
         let wanted = number("BATTLE_PLAN_EXTRA_MAPS")?.unwrap_or(0) as usize;
         let churn = number("BATTLE_PLAN_MAP_CHURN")?.filter(|&frames| frames > 0);
         let hide = match std::env::var("BATTLE_PLAN_HIDE").or_else(|_| std::env::var("HOI4_HIDE")) {
@@ -125,7 +125,7 @@ impl Extras {
             let first = units.timeline.first();
             let entry = playhead_host::open(units, playhead_host::settings())?;
             entry.set_capture(document.capture_mode());
-            let side = MapSide::new(Arc::clone(&entry), Self::layers(document), main.map(|side| side.view().clone()).unwrap_or_default())?;
+            let side = SideThread::new(MapSide::new(Arc::clone(&entry), Self::layers(document), main.map(|side| side.view().clone()).unwrap_or_default())?)?;
             entry.anchor(first, true, speed, true);
             extras.other = Some(side);
         }
@@ -138,7 +138,7 @@ impl Extras {
 
     /// The window's layers for another recording's map.
     fn layers(document: &Document) -> Vec<Box<dyn crate::layers::Layer>> {
-        let content = Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), &document.border_meshes));
+        let content = Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)));
         let place_in = Arc::clone(&document.content);
         vec![
             Box::new(crate::layers::political::Political::new(content)),
@@ -152,8 +152,11 @@ impl Extras {
     fn start(&mut self, document: &Document, index: u64, shown: bool) {
         while self.sides.len() + self.pending.len() < self.wanted {
             match Opening::start(document, None) {
-                Some(opening) => self.pending.push(Pending { opening, started: index, shown }),
-                None => break,
+                Ok(opening) => self.pending.push(Pending { opening, started: index, shown }),
+                Err(error) => {
+                    eprintln!("An extra map's playhead is refused: {error}");
+                    break;
+                }
             }
         }
     }
@@ -169,7 +172,7 @@ impl Extras {
     }
 
     /// One frame of every extra map, after the harness's map drew at `head` (none while covered).
-    pub(super) fn frame(&mut self, document: &Document, main: Option<&MapSide>, index: u64, head: Head) -> Value {
+    pub(super) fn frame(&mut self, document: &Document, main: Option<&SideThread>, index: u64, head: Head) -> Value {
         if !self.active() {
             return Value::Null;
         }
@@ -213,7 +216,7 @@ impl Extras {
             match self.pending[at].opening.poll() {
                 Some(made) => {
                     let pending = self.pending.remove(at);
-                    if let Some(side) = made {
+                    if let Ok(side) = made.and_then(SideThread::new) {
                         if pending.shown {
                             self.shown.arrived = Some(index);
                         }
@@ -232,7 +235,10 @@ impl Extras {
         let view = main.or(self.sides.first().map(|drawn| &drawn.side)).map(|side| side.view().clone()).unwrap_or_default();
         let (started, draw_cpu) = (Instant::now(), current_thread_cpu_time());
         for drawn in &mut self.sides {
-            playhead_host::draw_frame(&mut drawn.side, view.clone(), head);
+            drawn.side.ask(view.clone(), head, None);
+            if let Some(mut window) = window_for(&mut drawn.side, head) {
+                window.take(Default::default());
+            }
         }
         let draw = started.elapsed().as_secs_f64() * 1e3;
         let draw_cpu = current_thread_cpu_time().zip(draw_cpu).map(|(now, then)| now.saturating_sub(then).as_secs_f64() * 1e3);
@@ -254,7 +260,10 @@ impl Extras {
         }
         let other = self.other.as_mut().map(|side| {
             let started = Instant::now();
-            playhead_host::draw_frame(side, view.clone(), Head::Clock(Instant::now()));
+            side.ask(view.clone(), Head::Clock, None);
+            if let Some(mut window) = side.window() {
+                window.take(Default::default());
+            }
             started.elapsed().as_secs_f64() * 1e3
         });
         self.draw_ms.push(draw);
@@ -283,7 +292,7 @@ impl Extras {
 
     /// While a map is hidden, what the playhead holds; once the covered map is shown again, when
     /// its reader arrives, when it first draws, and its lag after.
-    fn track_hidden(&mut self, main: Option<&MapSide>, index: u64) {
+    fn track_hidden(&mut self, main: Option<&SideThread>, index: u64) {
         let Some((which, from, frames)) = self.hide else { return };
         if (from..from + frames).contains(&index)
             && let Some(entry) = &self.entry
@@ -306,14 +315,14 @@ impl Extras {
         }
     }
 
-    fn held_now(&self, entry: &Entry, main: Option<&MapSide>) -> Value {
+    fn held_now(&self, entry: &Entry, main: Option<&SideThread>) -> Value {
         let (now, _, _) = entry.playhead().held();
-        let side = |side: &MapSide| {
-            json!({
+        let side = |thread: &SideThread| {
+            thread.with_side(|side| json!({
                 "mirrors": side.held().mirrors.iter().map(|(_, bytes)| bytes).sum::<usize>(), "layers": side.held().layers.iter().map(|(_, bytes)| bytes).sum::<usize>(),
                 "applied": side.applied(), "composing": side.composing(), "draws_political": side.draws("political"),
                 "refused": side.refusals().map(|(name, why)| format!("{name}: {why}")).collect::<Vec<_>>(),
-            })
+            }))
         };
         json!({
             "playhead": now.total, "playhead_lanes": now.lanes, "ring_steps": now.ring_steps, "ring_bytes": now.ring_bytes,
@@ -367,5 +376,14 @@ impl Extras {
             "held": self.held, "playhead_peak": peak, "stalls": counters,
             "scope": "extra_draw_ms: every extra map's frame (mirror apply, layers' apply and settle) on the window thread, after the map's own; no extra map uploads (it has no scene). opening_work: the frame thread's time starting, polling and installing readers made on workers, in frames where one was. step_most_ms: the stepper's wall time for the longest step the map took each frame. held: bytes every 60 frames; hidden_*: every frame a map was hidden (the playhead's report is refreshed at its own interval).",
         })
+    }
+}
+
+/// An extra map's window for `head`: a stepped head waits for the picture of its hour, as the
+/// harness's own map does.
+fn window_for(side: &mut SideThread, head: Head) -> Option<crate::playhead_host::side::Window<'_>> {
+    match head {
+        Head::Stepped(hour) => side.stepped_window(hour),
+        _ => side.window(),
     }
 }

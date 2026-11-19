@@ -11,9 +11,9 @@ use crate::map::terrain::MARGIN;
 use std::{collections::BTreeSet, sync::Arc};
 use viewer_foundation::map::camera::Camera;
 
-/// One part of the presentation step in the flight record, on whatever thread runs it: its wall
-/// time (`presentation_wall_us`) and that thread's own CPU (`presentation_cpu_us`). The frame
-/// thread's wait on the parts lent to workers is the `join` part's wall less its CPU.
+/// One part of the presentation step in the flight record: its wall time
+/// (`presentation_wall_us`) and the thread's own CPU (`presentation_cpu_us`). Every part runs on
+/// the thread that draws the frame, which lends none of them.
 struct Part {
     name: &'static str,
     began: Option<(std::time::Instant, Option<std::time::Duration>)>,
@@ -71,10 +71,12 @@ pub(super) struct Presentation<'a> {
     pub map_frame: Option<&'a mut ModelPass>,
     pub ambient: Option<&'a mut crate::map::mapframe::Presentation>,
     pub last_animation_time: Option<f32>,
-    /// The hour builders' threads the step may lend its independent work.
-    pub workers: &'a viewer_foundation::parallel::Workers,
     /// The host's cut, or `None` to take updates at the walk.
     pub province_frame: Option<&'a viewer_foundation::map::province_schedule::ProvinceFrame>,
+    /// Whether this frame stands in a new pose tick ([`crate::map::poses::tick`]): only such a
+    /// frame advances the actors' plays and asks for their poses. Every other frame places,
+    /// clocks and draws them with the limbs the last tick left.
+    pub pose_tick: bool,
 }
 
 impl Presentation<'_> {
@@ -109,15 +111,15 @@ impl Presentation<'_> {
             map_frame,
             ambient,
             last_animation_time,
-            workers,
             province_frame,
+            pose_tick,
         } = self;
         let view_span = viewer_foundation::profiling::span("step_view");
         let visible = camera.visible_ground(size, MARGIN);
         let animation_offsets = wrap_offsets(visible, camera.map.x());
         drop(view_span);
         // The aircraft share no state with the rest of the walk, so they step beside it.
-        let fly = || {
+        let mut fly = || {
             let _part = Part::new("aircraft");
             // Every mission is placed; one the display hides stays placed and only stops drawing.
             let Some((pass, assets, plan)) = aircraft.as_deref_mut() else {
@@ -137,10 +139,12 @@ impl Presentation<'_> {
             pass.replace_field(&assets.library(), &mut field);
             pass.set_hidden(hidden);
             drop(place_span);
-            let _animate_span = viewer_foundation::profiling::span("aircraft_animate");
-            let _animate_profile = viewer_foundation::profiling::thread_span("aircraft_animate");
-            pass.animate_with_workers(animation_time, None, &[0.], workers);
-            drop((_animate_span, _animate_profile, _aircraft_span));
+            if pose_tick {
+                let _animate_span = viewer_foundation::profiling::span("aircraft_animate");
+                let _animate_profile = viewer_foundation::profiling::thread_span("aircraft_animate");
+                pass.animate(animation_time, None, &[0.]);
+            }
+            drop(_aircraft_span);
             // A pool thread's records join the frame's.
             viewer_foundation::profiling::take_thread_records()
         };
@@ -155,8 +159,10 @@ impl Presentation<'_> {
                 let field_span = viewer_foundation::profiling::span("train_field");
                 pass.replace_field(&assets.library, plan.field(assets, animation_time));
                 drop(field_span);
-                let _animate_span = viewer_foundation::profiling::span("train_animate");
-                pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
+                if pose_tick {
+                    let _animate_span = viewer_foundation::profiling::span("train_animate");
+                    pass.animate(animation_time, visible, &animation_offsets);
+                }
             }
             // City actors are precreated outside the dynamic mesh creation budget. Each province's
             // damage inputs select their states.
@@ -164,22 +170,31 @@ impl Presentation<'_> {
                 let _part = Part::new("cities");
                 let _cities_span = viewer_foundation::profiling::span("step_cities");
                 let update_span = viewer_foundation::profiling::span("city_update");
-                if let Some(placed) = presentation.update(
+                let placed = presentation.update(
                     camera,
                     size,
                     crate::map::models::draws_city_sprawl(&camera),
                     animation_time,
-                ) {
+                );
+                viewer_foundation::view_record::add(
+                    "city sprawl",
+                    if placed.is_some() { "field_rebuilt" } else { "field_kept" },
+                    1,
+                );
+                if let Some(placed) = placed {
                     let _place_span = viewer_foundation::profiling::span("city_place");
+                    viewer_foundation::view_record::add("city sprawl", "placed", placed.len() as u64);
                     pass.update_placed(placed, crate::map::sprawl::SPRAWL_TILE);
                 }
                 drop(update_span);
                 let clocks_span = viewer_foundation::profiling::span("city_clocks");
                 pass.set_clock_records(presentation.clock_records(), animation_time);
                 drop(clocks_span);
-                let _animate_span = viewer_foundation::profiling::span("city_animate");
-                let _animate_profile = viewer_foundation::profiling::thread_span("city_animate");
-                pass.animate_with_workers(animation_time, None, &[0.0], workers);
+                if pose_tick {
+                    let _animate_span = viewer_foundation::profiling::span("city_animate");
+                    let _animate_profile = viewer_foundation::profiling::thread_span("city_animate");
+                    pass.animate(animation_time, None, &[0.0]);
+                }
             }
             let mut gates = unit_gates.unwrap_or(UnitGates::OFF);
             if let Some(arrows) = &movement_arrows {
@@ -235,17 +250,24 @@ impl Presentation<'_> {
                     let _place_span = viewer_foundation::profiling::span("building_place");
                     pass.update_placed(placed, BUILDING_TILE);
                 }
-                let _animate_span = viewer_foundation::profiling::span("building_animate");
-                let _animate_profile =
-                    viewer_foundation::profiling::thread_span("building_animate");
-                pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
+                if pose_tick {
+                    let _animate_span = viewer_foundation::profiling::span("building_animate");
+                    let _animate_profile =
+                        viewer_foundation::profiling::thread_span("building_animate");
+                    pass.animate(animation_time, visible, &animation_offsets);
+                }
             }
             if let Some(pass) = unit_models {
                 let _part = Part::new("units");
                 let _units_span = viewer_foundation::profiling::span("step_units");
                 let place_span = viewer_foundation::profiling::span("unit_place");
                 let place_profile = viewer_foundation::profiling::thread_span("unit_place");
-                pass.update_placed(models.units, crate::map::unit_models::UNIT_TILE);
+                viewer_foundation::view_record::add(
+                    "unit walk",
+                    "placed",
+                    models.units.standing.as_ref().map_or(0, Vec::len) as u64,
+                );
+                pass.update_moving(models.units, crate::map::unit_models::UNIT_TILE);
                 drop(place_profile);
                 drop(place_span);
                 let clocks_span = viewer_foundation::profiling::span("unit_clocks");
@@ -253,13 +275,16 @@ impl Presentation<'_> {
                 drop(clocks_span);
                 // Advance hidden entities too. History retires their players independently of
                 // render culling.
-                let _animate_span = viewer_foundation::profiling::span("unit_animate");
-                let _animate_profile = viewer_foundation::profiling::thread_span("unit_animate");
-                pass.animate_with_workers(animation_time, None, &[0.0], workers);
+                if pose_tick {
+                    let _animate_span = viewer_foundation::profiling::span("unit_animate");
+                    let _animate_profile = viewer_foundation::profiling::thread_span("unit_animate");
+                    pass.animate(animation_time, None, &[0.0]);
+                }
             }
         };
         let joined = Part::new("join");
-        let (flown, ()) = workers.join(fly, walk);
+        let flown = fly();
+        walk();
         drop(joined);
         viewer_foundation::profiling::adopt_thread_records(flown);
         // Missile scenarios finished since the last frame start their explosions on the clock
@@ -306,8 +331,10 @@ impl Presentation<'_> {
             let clocks_span = viewer_foundation::profiling::span("map_frame_clocks");
             pass.set_clocks(clocks);
             drop(clocks_span);
-            let _animate_span = viewer_foundation::profiling::span("map_frame_animate");
-            pass.animate_with_workers(animation_time, None, &[0.], workers);
+            if pose_tick {
+                let _animate_span = viewer_foundation::profiling::span("map_frame_animate");
+                pass.animate(animation_time, None, &[0.]);
+            }
             struck.extend(pass.clock_actor_addresses());
         }
         struck
@@ -454,8 +481,8 @@ mod tests {
                 map_frame: None,
                 ambient: None,
                 last_animation_time: self.last,
-                workers: &Default::default(),
                 province_frame: None,
+                pose_tick: true,
             }
             .step(camera, [1024, 768], time, true);
             self.last = Some(time);

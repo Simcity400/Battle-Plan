@@ -7,7 +7,7 @@
 //! Each step hands every row it appended with its cells, and every impact of every hour the head
 //! passed starts its effect on the frame its step is applied.
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, Num, View};
+use super::{Carried, Settling, Dirty, Gpu, Inputs, Layer, Num, View};
 use crate::playhead_host::mirror::{Mirror, Mirrors, UNREAD_REASON};
 use playhead::{Step, changes::Changes};
 use replay_columnar::{manifest::Status, store::Value};
@@ -267,7 +267,7 @@ impl Layer for Strikes {
         self.events.clear();
         self.unplaced_events = 0;
         self.reset = true;
-        self.settle(mirrors, &mut Budget::unlimited())?;
+        self.settle(mirrors, Settling::Whole)?;
         self.marked = marked;
         Ok(())
     }
@@ -285,7 +285,7 @@ impl Layer for Strikes {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         self.frame += 1;
         if self.columns.is_none() {
             return Ok(());
@@ -307,7 +307,7 @@ impl Layer for Strikes {
             Some(Status::NotRecorded) | None => Some("NuclearStrikes not recorded at this hour: impacts have no effect".to_owned()),
         };
         let mut dirty = std::mem::take(&mut self.dirty);
-        let settled = dirty.settle(budget, |slot| {
+        let settled = dirty.settle(|slot| {
             self.read(slot, mirrors);
             Ok(())
         });
@@ -318,7 +318,7 @@ impl Layer for Strikes {
 
     /// At a reset the head's impacts start with every slot cleared, as today's presentation of a
     /// sought hour; then each step's impacts, in birth order.
-    fn upload(&mut self, gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         use viewer_foundation::map::presentation::Continuity;
         if std::mem::take(&mut self.reset) {
             gpu.scene.set_nuclear_impacts([&self.product()], Continuity::Reset);
@@ -331,7 +331,7 @@ impl Layer for Strikes {
     }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.dirty.len() + usize::from(self.whole && self.columns.is_some()), frames: self.dirty.since().map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities: self.dirty.len() + usize::from(self.whole && self.columns.is_some()) }
     }
 
     fn held(&self) -> usize {

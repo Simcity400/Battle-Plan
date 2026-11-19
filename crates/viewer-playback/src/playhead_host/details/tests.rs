@@ -2,7 +2,7 @@ use crate::{
     layers::View,
     playhead_host::{
         MapSide, open,
-        rows::tests::{hourly_steps, record},
+        views::tests::{hourly_steps, record},
         shared_maps_tests::Reads,
     },
 };
@@ -29,7 +29,7 @@ fn the_detail_report_reads_every_tables_status_at_the_head_and_its_rows_from_the
         assert_eq!(lines.len(), TableId::ALL.len() + 2, "every table, the head and the capture time");
         assert_eq!(lines[0], format!("At the playback head: hour {hour}"));
         assert_eq!(line(&lines, TableId::Countries), countries, "hour {hour}");
-        assert_eq!(line(&lines, TableId::LandCombats), "LandCombats: recorded; its rows are not held at the head", "a table no mirror holds gives its status alone");
+        assert_eq!(line(&lines, TableId::LandCombats), "LandCombats: 2 rows", "every table is held for the view store's readers, so one no layer reads gives its rows");
         assert_eq!(lines.last().map(String::as_str), Some("Capture time: not recorded in the playhead's units"), "missing, never zero");
         for (line, table) in lines[1..lines.len() - 1].iter().zip(TableId::ALL) {
             assert!(line.starts_with(&format!("{table:?}: ")), "{line}");

@@ -13,7 +13,7 @@ use crate::{
     layers::{Layer, View, political::Political, strikes::Strikes},
     playhead_host::{
         self, Entry, MapSide,
-        rows::{Cadence, Recording, RowReader, Rows},
+        views::{Need, Pace, Reader as ViewReader},
     },
 };
 use map_display_data::{
@@ -62,9 +62,8 @@ pub(crate) const TODAY: &[&str] = &[
 /// A playhead sought to one hour, its layers composed there and its rows held.
 pub(crate) struct DumpHead {
     side: MapSide,
-    rows: Arc<Rows>,
-    /// Holds the rows' tables declared while the dump runs.
-    _reader: RowReader,
+    /// Holds the views' tables declared while the dump runs.
+    _reader: ViewReader,
     frame: Arc<DecodedFrame>,
     tables: usize,
     units: String,
@@ -77,30 +76,30 @@ pub(crate) fn open(document: &Document) -> io::Result<DumpHead> {
     let entry = playhead_host::open(units, playhead_host::settings())?;
     entry.set_capture(document.capture_mode());
     document.playback.read_rosters_of(&entry);
-    let content = Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), &document.border_meshes));
+    let content = Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)));
     let place_in = Arc::clone(&document.content);
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(Political::new(content)), Box::new(Strikes::new(Arc::new(move |province| place_in.products.impact_place(province))))];
-    at(entry, layers, document.playback.hour(), Recording { branch: document.playback.branch() }, dashboard_base::map_tables::selected_tables(), name)
+    at(entry, layers, document.playback.hour(), document.playback.branch(), dashboard_base::map_tables::selected_tables(), name)
 }
 
-/// `layers` composed at `hour` on `entry`'s playhead, and rows at the head of `tables` there.
-pub(crate) fn at(entry: Arc<Entry>, layers: Vec<Box<dyn Layer>>, hour: Hour, recording: Recording, tables: &[TableId], units: String) -> io::Result<DumpHead> {
+/// `layers` composed at `hour` on `entry`'s playhead, and rows at the head of `tables` there,
+/// stamped with `branch`.
+pub(crate) fn at(entry: Arc<Entry>, layers: Vec<Box<dyn Layer>>, hour: Hour, branch: replay_data::BranchId, tables: &[TableId], units: String) -> io::Result<DumpHead> {
     let timeline = entry.playhead().timeline();
     if !(timeline.first()..=timeline.last()).contains(&hour) {
         return Err(io::Error::other(format!("hour {hour} is outside the playhead's units ({} to {})", timeline.first(), timeline.last())));
     }
-    let rows = Rows::of(&entry, recording)?;
-    let reader = rows.reader(tables, Cadence::EveryStep);
-    rows.settled();
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default())?;
+    side.set_branch(branch);
+    let reader = side.views().handle().reader_at("dump", &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), Pace::Step);
     if let Some((name, why)) = side.refusals().next() {
         return Err(io::Error::other(format!("The {name} layer is refused: {why}")));
     }
-    rows.drive(hour);
     side.anchor(hour, false, 0.0, true);
+    // The side's steps make the views: once it stands at `hour`, so do they.
     side.catch_up(hour)?;
     let frame = reader.wait(|frame| frame.hour == hour, LIMIT)?;
-    Ok(DumpHead { side, rows, _reader: reader, frame, tables: tables.len(), units })
+    Ok(DumpHead { side, _reader: reader, frame, tables: tables.len(), units })
 }
 
 impl DumpHead {
@@ -147,25 +146,25 @@ impl DumpHead {
     /// What the dump says about where its products come from and what the head held.
     pub(crate) fn lines(&self) -> Vec<String> {
         let (now, peak, _) = self.side.entry().playhead().held();
-        let held = self.rows.held();
+        let held = self.side.views().held();
         let megabytes = |bytes: usize| bytes as f64 / 1e6;
         vec![
             format!("Playhead: hour {} from {}, rows at the head of {} tables", self.frame.hour, self.units, self.tables),
             format!("Playhead: from layers: {}", FROM_LAYERS.join("; ")),
             format!("Playhead: today's calls over rows at the head: {}", TODAY.join("; ")),
             format!(
-                "Playhead: held {:.1} MB of cells (peak {:.1}), rows' copies {:.1} MB, rows {:.1} MB, map mirrors {:.1} MB",
+                "Playhead: held {:.1} MB of cells (peak {:.1}), rows {:.1} MB, map mirrors {:.1} MB",
                 megabytes(now.total),
                 megabytes(peak.total),
-                megabytes(held.mirrors.iter().map(|(_, bytes)| bytes).sum()),
-                megabytes(held.rows.iter().map(|(_, bytes)| bytes).sum()),
+                megabytes(held.iter().map(|(_, bytes)| bytes).sum()),
                 megabytes(self.side.held().total()),
             ),
         ]
     }
 
+    /// The tables the dump's own reader declares, as the store holds them.
     #[cfg(test)]
-    pub(crate) fn rows(&self) -> &Rows {
-        &self.rows
+    pub(crate) fn declared(&self) -> usize {
+        self._reader.reads()
     }
 }

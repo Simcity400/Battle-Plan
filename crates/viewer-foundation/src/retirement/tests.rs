@@ -1,17 +1,13 @@
 use super::*;
-#[cfg(test)]
-use crate::map::test_support::TEST_HANG_GUARD;
-use std::{
-    sync::{
-        Arc,
-        atomic::Ordering,
-        mpsc::{Receiver, Sender},
-    },
-    time::Instant,
+use std::sync::{
+    Arc,
+    atomic::Ordering,
+    mpsc::{Receiver, Sender},
 };
 
+/// However long the destructor stalls, handing over a retirement frees nothing here.
 #[test]
-fn retirements_are_bounded_even_when_the_destructor_stalls() {
+fn a_stalled_destructor_never_makes_the_caller_free_a_retirement() {
     /// Counts its drop; the first one stalls the destructor until released.
     struct Counted(
         Arc<std::sync::atomic::AtomicUsize>,
@@ -26,39 +22,37 @@ fn retirements_are_bounded_even_when_the_destructor_stalls() {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
-    for capacity in [1, builder_count()] {
-        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let frame = |pieces| {
-            let mut retired = Retired::default();
-            for _ in 0..pieces {
-                retired.push(Counted(Arc::clone(&dropped), None));
-            }
-            retired
-        };
-        let (started, stalled) = mpsc::channel();
-        let (release, wait) = mpsc::channel();
-        let dropper = Dropper::with_capacity(capacity).unwrap();
-        dropper.drop_later(Counted(Arc::clone(&dropped), Some((started, wait))));
-        stalled.recv().unwrap();
-        // A frame's pieces take one place in the queue however many.
-        for _ in 0..capacity {
-            dropper.drop_later(frame(3));
+    let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let frame = |pieces| {
+        let mut retired = Retired::default();
+        for _ in 0..pieces {
+            retired.push(Counted(Arc::clone(&dropped), None));
         }
-        assert_eq!(dropped.load(Ordering::SeqCst), 0);
-        // Full: this frame's retirement is freed here, without waiting on
-        // the stalled destructor; every queued one is still held.
-        dropper.drop_later(frame(2));
-        assert_eq!(dropped.load(Ordering::SeqCst), 2);
-        release.send(()).unwrap();
-        // The destructor frees the queue in order, then the thread ends.
-        drop(dropper);
-        let deadline = Instant::now() + TEST_HANG_GUARD;
-        while dropped.load(Ordering::SeqCst) < 3 + 3 * capacity {
-            assert!(
-                Instant::now() < deadline,
-                "the queued retirements were not freed"
-            );
-            thread::yield_now();
+        retired
+    };
+    let (started, stalled) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let dropper = Dropper::new().unwrap();
+    dropper.drop_later(Counted(Arc::clone(&dropped), Some((started, wait))));
+    stalled.recv().unwrap();
+    // A frame's pieces take one place in the queue however many.
+    let frames = 4 * builder_count();
+    for _ in 0..frames {
+        dropper.drop_later(frame(3));
+    }
+    assert_eq!(dropped.load(Ordering::SeqCst), 0, "the caller freed nothing");
+    release.send(()).unwrap();
+    // The destructor frees the queue in order, so the last retirement handed over says, as it is
+    // freed, that every one before it has been: the test waits for that word, not for the clock.
+    struct Last(Sender<()>);
+    impl Drop for Last {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
         }
     }
+    let (freed, reached) = mpsc::channel();
+    dropper.drop_later(Last(freed));
+    drop(dropper);
+    reached.recv().expect("the queue frees in order, so its last retirement is freed last");
+    assert_eq!(dropped.load(Ordering::SeqCst), 1 + 3 * frames, "every queued retirement was freed");
 }

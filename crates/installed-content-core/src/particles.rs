@@ -56,6 +56,44 @@ pub struct RenderDescriptor {
     pub trail: bool,
     pub billboard: bool,
     pub local_space: bool,
+    pub sort: Sort,
+    /// Reverses `sort` to smallest key first; the game reads it for nothing else.
+    pub invert: bool,
+}
+
+/// The key a subsystem's `sort` reorders its particle storage by, a pass each frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    #[default]
+    None,
+    /// Along the camera's look direction.
+    Depth,
+    /// Squared distance from the camera.
+    Distance,
+    Age,
+}
+
+impl Sort {
+    /// Assignments apply in order, lowercased; the game reports any other value and keeps the
+    /// previous one.
+    fn read(fields: &[parser::Item]) -> Self {
+        fields
+            .iter()
+            .filter(|item| item.keyword_is("sort"))
+            .fold(Self::None, |state, item| {
+                match item
+                    .value
+                    .read_string()
+                    .map(<[u8]>::to_ascii_lowercase)
+                    .as_deref()
+                {
+                    Some(b"depth") => Self::Depth,
+                    Some(b"distance") => Self::Distance,
+                    Some(b"age") => Self::Age,
+                    _ => state,
+                }
+            })
+    }
 }
 
 impl RenderDescriptor {
@@ -76,6 +114,8 @@ impl RenderDescriptor {
                 .fold(true, |_, item| {
                     item.value.scalar().map(parser::c_string) == Some(b"yes")
                 }),
+            sort: Sort::read(fields),
+            invert: parser::read_bool_field(fields, "invert", false),
         };
         if let Some(texture) = last(fields, b"texture") {
             for item in block(texture, "particle texture")? {
@@ -141,17 +181,20 @@ pub struct Particle {
 }
 
 /// Every `pdxparticle` object and every named `particle` block of the stack,
-/// and the `gfx/**/*.asset` entity files, listed in one walk of `gfx`.
+/// and the `gfx/**/*.asset` entity files, listed in one walk of `gfx`. An
+/// object or block the viewer cannot read keeps its name and why, so only
+/// what resolves through it is refused.
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
-    /// Object name to (`type`, `scale`).
-    objects: BTreeMap<String, (String, f32)>,
+    /// Object name to (`type`, `scale`), or why it cannot be read.
+    objects: BTreeMap<String, Result<(String, f32), String>>,
     ordinals: BTreeMap<String, usize>,
     registrations: usize,
-    /// Particle block name to its file.
-    files: BTreeMap<String, ScriptPath>,
+    /// Particle block name to its file, or why it cannot be used.
+    files: BTreeMap<String, Result<ScriptPath, String>>,
     assets: Vec<ScriptPath>,
-    max_particles: usize,
+    /// Files and blocks too broken to name an object or particle in, each with why.
+    refused: Vec<String>,
 }
 
 impl Catalog {
@@ -165,15 +208,21 @@ impl Catalog {
             .cloned()
             .collect();
         let gfx = object_file_order(&interface, &gfx);
+        // A listed file that cannot be read is refused by path; only what it declares is missing.
         for path in gfx {
-            let bytes = path.read_uncovered(layers)?;
+            let bytes = match path.read_uncovered(layers) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    out.refused.push(format!("{path}: {error}"));
+                    continue;
+                }
+            };
             // Sprite files never declare objects; skip parsing them. The keyword folds case.
             if bytes
                 .windows(11)
                 .any(|word| word.eq_ignore_ascii_case(b"pdxparticle"))
             {
-                out.add_objects(&bytes)
-                    .map_err(|error| invalid(format!("{path}: {error}")))?;
+                out.add_objects(&bytes, &path);
             }
         }
         // Folder lookup ignores case, so distinct listed spellings can register identical blocks.
@@ -181,16 +230,26 @@ impl Catalog {
         for path in &out.assets.clone() {
             let lower = path.as_bytes().to_ascii_lowercase();
             if lower.starts_with(b"gfx/particles/") {
-                let bytes = path.read_uncovered(layers)?;
+                let bytes = match path.read_uncovered(layers) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        out.refused.push(format!("{path}: {error}"));
+                        continue;
+                    }
+                };
                 let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
                 if !opened.insert((lower, digest)) {
                     continue;
                 }
-                out.add_particles(&bytes, path)
-                    .map_err(|error| invalid(format!("{path}: {error}")))?;
+                out.add_particles(&bytes, path);
             }
         }
         Ok(out)
+    }
+
+    /// Files and blocks too broken to name what they declare, each with why.
+    pub fn refused(&self) -> &[String] {
+        &self.refused
     }
 
     /// Every effective `gfx/**/*.asset`, in (layer, path) order.
@@ -198,68 +257,116 @@ impl Catalog {
         &self.assets
     }
 
-    fn add_objects(&mut self, bytes: &[u8]) -> io::Result<()> {
-        let (document, _) = crate::parser::parse_unclosed(bytes)?;
+    fn add_objects(&mut self, bytes: &[u8], path: &ScriptPath) {
+        let document = match crate::parser::parse_unclosed(bytes) {
+            Ok((document, _)) => document,
+            Err(error) => return self.refused.push(format!("{path}: {error}")),
+        };
         for objects in keyword_values(&document.items, "objectTypes") {
-            for value in keyword_values(block(objects, "objectTypes")?, "pdxparticle") {
-                let fields = block(value, "pdxparticle")?;
+            let objects = match block(objects, "objectTypes") {
+                Ok(objects) => objects,
+                Err(error) => {
+                    self.refused.push(format!("{path}: {error}"));
+                    continue;
+                }
+            };
+            for value in keyword_values(objects, "pdxparticle") {
+                // Registration allocates an ordinal for every object, a duplicate included.
+                let ordinal = self.registrations;
+                self.registrations += 1;
+                let Ok(fields) = block(value, "pdxparticle") else {
+                    self.refused
+                        .push(format!("{path}: pdxparticle {ordinal} is not a block"));
+                    continue;
+                };
                 let field = |key: &'static str| {
                     keyword_values(fields, key)
                         .next_back()
                         .ok_or_else(|| invalid(format!("pdxparticle has no {key}")))
                 };
-                let name = text(field("name")?, "pdxparticle name")?;
-                let kind = text(field("type")?, "pdxparticle type")?;
-                let scale = match keyword_values(fields, "scale").next_back() {
-                    Some(value) => number(value, "pdxparticle scale")?,
-                    None => 1.0,
+                let name = match field("name").and_then(|name| text(name, "pdxparticle name")) {
+                    Ok(name) => name,
+                    Err(error) => {
+                        self.refused.push(format!("{path}: {error}"));
+                        continue;
+                    }
                 };
-                if !scale.is_finite() || scale <= 0.0 {
-                    return Err(invalid(format!("pdxparticle {name} has scale {scale}")));
-                }
+                let read = || -> io::Result<(String, f32)> {
+                    let kind = text(field("type")?, "pdxparticle type")?;
+                    let scale = match keyword_values(fields, "scale").next_back() {
+                        Some(value) => number(value, "pdxparticle scale")?,
+                        None => 1.0,
+                    };
+                    if !scale.is_finite() || scale <= 0.0 {
+                        return Err(invalid(format!("pdxparticle {name} has scale {scale}")));
+                    }
+                    Ok((kind.to_owned(), scale))
+                };
+                let read = read().map_err(|error| format!("{path}: pdxparticle {name}: {error}"));
                 // Objects prepend to their name bucket, so lookup returns the latest
-                // exact match. Registration allocates an ordinal even for a duplicate.
-                let ordinal = self.registrations;
-                self.registrations += 1;
-                self.objects
-                    .insert(name.to_owned(), (kind.to_owned(), scale));
+                // exact match.
+                self.objects.insert(name.to_owned(), read);
                 self.ordinals.insert(name.to_owned(), ordinal);
             }
         }
-        Ok(())
     }
 
-    fn add_particles(&mut self, bytes: &[u8], path: &ScriptPath) -> io::Result<()> {
-        let document = parser::parse(bytes)?;
+    fn add_particles(&mut self, bytes: &[u8], path: &ScriptPath) {
+        let document = match parser::parse(bytes) {
+            Ok(document) => document,
+            Err(error) => return self.refused.push(format!("{path}: {error}")),
+        };
         for value in all(&document.items, b"particle") {
-            let fields = block(value, "particle")?;
-            let name = text(require(fields, "name", "particle")?, "particle name")?;
-            self.max_particles = self.max_particles.max(
-                capacity(fields).map_err(|error| invalid(format!("{path}: {name}: {error}")))?,
-            );
-            if self
-                .files
-                .insert(name.to_owned(), path.clone())
-                .is_some()
+            let name = match block(value, "particle")
+                .and_then(|fields| text(require(fields, "name", "particle")?, "particle name"))
             {
-                return Err(invalid(format!("particle {name} is declared twice")));
+                Ok(name) => name,
+                Err(error) => {
+                    self.refused.push(format!("{path}: {error}"));
+                    continue;
+                }
+            };
+            let fields = block(value, "particle").unwrap_or_default();
+            let read = match capacity(fields) {
+                Ok(_) => Ok(path.clone()),
+                Err(error) => Err(format!("{path}: particle {name}: {error}")),
+            };
+            match self.files.get(name) {
+                None => {
+                    self.files.insert(name.to_owned(), read);
+                }
+                Some(earlier) => {
+                    let earlier = earlier.as_ref().map_or_else(Clone::clone, |p| p.to_string());
+                    self.files.insert(
+                        name.to_owned(),
+                        Err(format!(
+                            "particle {name} is declared twice ({earlier}; {path}), with unsettled precedence"
+                        )),
+                    );
+                }
             }
         }
-        Ok(())
     }
 
-    /// The particle block a `pdxparticle` object names, refused when either
-    /// link is missing.
+    /// The particle block a `pdxparticle` object names, refused by name when
+    /// either link is missing or cannot be read.
     pub fn resolve(&self, object: &str) -> io::Result<Particle> {
         let (kind, scale) = self
             .objects
             .get(object)
-            .ok_or_else(|| invalid(format!("no pdxparticle {object}")))?;
-        let path = self.files.get(kind).ok_or_else(|| {
-            invalid(format!(
-                "pdxparticle {object} names missing particle {kind}"
-            ))
-        })?;
+            .ok_or_else(|| invalid(format!("no pdxparticle {object}")))?
+            .as_ref()
+            .map_err(|why| invalid(why.clone()))?;
+        let path = self
+            .files
+            .get(kind)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "pdxparticle {object} names missing particle {kind}"
+                ))
+            })?
+            .as_ref()
+            .map_err(|why| invalid(format!("pdxparticle {object}: {why}")))?;
         Ok(Particle {
             path: path.clone(),
             name: kind.clone(),
@@ -273,18 +380,13 @@ impl Catalog {
         let ordinal = self.registrations;
         self.registrations += 1;
         self.ordinals.insert(object.into(), ordinal);
-        self.objects.insert(object.into(), (kind.into(), scale));
-        self.files.insert(kind.into(), ScriptPath::from(path));
+        self.objects.insert(object.into(), Ok((kind.into(), scale)));
+        self.files.insert(kind.into(), Ok(ScriptPath::from(path)));
     }
 
     /// Every object name, for loaders that resolve all of them.
     pub fn objects(&self) -> impl Iterator<Item = &str> {
         self.objects.keys().map(String::as_str)
-    }
-
-    /// The maximum system capacity, including replicated children.
-    pub fn max_particles(&self) -> usize {
-        self.max_particles
     }
 }
 
@@ -364,6 +466,33 @@ mod tests {
     }
 
     #[test]
+    fn sort_folds_case_and_keeps_its_value_past_an_unknown_one() {
+        for (source, sort, invert) in [
+            ("", Sort::None, false),
+            ("sort = \"depth\"", Sort::Depth, false),
+            ("sort = DISTANCE invert = yes", Sort::Distance, true),
+            (
+                "sort = age sort = nearest invert = yes invert = YES",
+                Sort::Age,
+                true,
+            ),
+            (
+                "sort = depth sort = { age } invert = yes invert = no",
+                Sort::Depth,
+                false,
+            ),
+        ] {
+            let document = parser::parse(source.as_bytes()).unwrap();
+            let descriptor = RenderDescriptor::read(&document.items).unwrap();
+            assert_eq!(
+                (descriptor.sort, descriptor.invert),
+                (sort, invert),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
     fn billboard_assignments_are_yes_only_c_strings() {
         for (source, expected) in [
             (b"billboard = no".as_slice(), false),
@@ -384,21 +513,36 @@ mod tests {
     }
 
     #[test]
-    fn capacity_replicates_children_and_takes_maximum_system() {
+    fn capacity_replicates_children_and_refuses_a_block_without_one() {
         let mut catalog = Catalog::default();
         catalog.add_particles(br#"
             particle={name=large subsystem={max_amount=3 subsystem={max_amount=4 subsystem={max_amount=2}}} subsystem={max_amount=5}}
             particle={name=hidden subsystem={hide=yes max_amount=900}}
             particle={name=small subsystem={max_amount=6}}
-        "#, &"fixture".into()).unwrap();
-        assert_eq!(catalog.max_particles(), 44);
-        assert!(
-            catalog
-                .add_particles(b"particle={name=bad subsystem={}}", &"fixture".into())
-                .unwrap_err()
-                .to_string()
-                .contains("max_amount")
+        "#, &"fixture".into());
+        let blocks = parser::parse(br#"
+            particle={name=large subsystem={max_amount=3 subsystem={max_amount=4 subsystem={max_amount=2}}} subsystem={max_amount=5}}
+            particle={name=hidden subsystem={hide=yes max_amount=900}}
+        "#).unwrap();
+        let capacities: Vec<_> = all(&blocks.items, b"particle")
+            .map(|block| capacity(block.items().unwrap()).unwrap())
+            .collect();
+        assert_eq!(capacities, [44, 0]);
+        // A block without a capacity, or an object of scale 0, is refused by name; the rest of
+        // the catalogue still loads and keeps its registration order.
+        catalog.add_objects(
+            b"objectTypes={pdxparticle={name=uses_bad type=bad} pdxparticle={name=uses_small type=small} pdxparticle={name=zero type=small scale=0}}",
+            &"fixture".into(),
         );
+        catalog.add_particles(b"particle={name=bad subsystem={}}", &"fixture".into());
+        let error = catalog.resolve("uses_bad").unwrap_err().to_string();
+        assert!(
+            error.contains("pdxparticle uses_bad: fixture: particle bad") && error.contains("max_amount"),
+            "{error}"
+        );
+        let error = catalog.resolve("zero").unwrap_err().to_string();
+        assert!(error.contains("pdxparticle zero has scale 0"), "{error}");
+        assert_eq!(catalog.resolve("uses_small").unwrap().registration, 1);
     }
 
     #[test]
@@ -413,9 +557,9 @@ mod tests {
             .add_particles(
                 br#"particle = { name = p subsystem = { max_amount = "4tail" } }"#,
                 &"fixture".into(),
-            )
-            .unwrap();
-        assert_eq!(catalog.max_particles(), 4);
+            );
+        let block = parser::parse(br#"subsystem = { max_amount = "4tail" }"#).unwrap();
+        assert_eq!(capacity(&block.items).unwrap(), 4);
     }
 
     #[test]
@@ -466,12 +610,9 @@ mod tests {
         let mut catalog = Catalog::default();
         catalog
             .add_objects(
-                b"objectTypes={pdxparticle={name=z type=shared} pdxparticle={name=a type=shared}}",
-            )
-            .unwrap();
+                b"objectTypes={pdxparticle={name=z type=shared} pdxparticle={name=a type=shared}}", &"fixture".into());
         catalog
-            .add_particles(b"particle={name=shared}", &"gfx/particles/shared.asset".into())
-            .unwrap();
+            .add_particles(b"particle={name=shared}", &"gfx/particles/shared.asset".into());
         assert_eq!(catalog.resolve("z").unwrap().registration, 0);
         assert_eq!(catalog.resolve("a").unwrap().registration, 1);
     }
@@ -509,15 +650,12 @@ mod tests {
                     PdxParticle = { Name = snow Type = snow_particle }
                     "pdxparticle" = { name = quoted type = snow_particle }
                     pdxparticle = { "name" = keyed name = keyed_name type = snow_particle }
-                }"#,
-            )
-            .unwrap();
+                }"#, &"fixture".into());
         catalog
             .add_particles(
                 b"particle = { name = Rain_Particle } particle = { name = snow_particle }",
                 &"gfx/particles/weather.asset".into(),
-            )
-            .unwrap();
+            );
         let rain = catalog.resolve("Rain").unwrap();
         assert_eq!((rain.name.as_str(), rain.scale), ("Rain_Particle", 2.0));
         assert!(catalog.resolve("rain").is_err());
@@ -525,13 +663,13 @@ mod tests {
         assert!(catalog.resolve("quoted").is_err());
         assert!(catalog.resolve("keyed").is_err());
         assert_eq!(catalog.resolve("keyed_name").unwrap().registration, 2);
-        assert!(
-            catalog
-                .add_objects(b"objectTypes = { pdxparticle = { NAME = nameless } }")
-                .unwrap_err()
-                .to_string()
-                .contains("pdxparticle has no type")
+        catalog.add_objects(
+            b"objectTypes = { pdxparticle = { NAME = typeless } pdxparticle = { type = x } }",
+            &"fixture".into(),
         );
+        let error = catalog.resolve("typeless").unwrap_err().to_string();
+        assert!(error.contains("pdxparticle has no type"), "{error}");
+        assert_eq!(catalog.refused(), ["fixture: pdxparticle has no name"]);
     }
 
     #[test]
@@ -542,15 +680,12 @@ mod tests {
                 br#"objectTypes = {
                     pdxparticle = { name = "drops" type = "unrelated_id" scale = 0.5 }
                     pdxparticle = { name = "bare" type = "absent" }
-                }"#,
-            )
-            .unwrap();
+                }"#, &"fixture".into());
         catalog
             .add_particles(
                 b"particle = { name = \"unrelated_id\" subsystem = { max_amount=1 } }",
                 &"gfx/particles/custom/any_file.asset".into(),
-            )
-            .unwrap();
+            );
         assert_eq!(
             catalog.resolve("drops").unwrap(),
             Particle {
@@ -568,21 +703,18 @@ mod tests {
             pdxparticle = { name = drops type = unrelated_id scale = 2 }
             pdxparticle = { name = other type = unrelated_id }
             pdxparticle = { name = Drops type = unrelated_id }
-        }"#,
-            )
-            .unwrap();
+        }"#, &"fixture".into());
         let replaced = catalog.resolve("drops").unwrap();
         assert_eq!(replaced.scale, 2.);
         assert_eq!(replaced.registration, 2);
         assert_eq!(catalog.resolve("other").unwrap().registration, 3);
         assert_eq!(catalog.resolve("Drops").unwrap().registration, 4);
-        assert!(
-            catalog
-                .add_particles(
-                    b"particle = { name = unrelated_id }",
-                    &"gfx/particles/b.asset".into()
-                )
-                .is_err()
+        // A second block of the name has unsettled precedence: what names it is refused.
+        catalog.add_particles(
+            b"particle = { name = unrelated_id }",
+            &"gfx/particles/b.asset".into(),
         );
+        let error = catalog.resolve("drops").unwrap_err().to_string();
+        assert!(error.contains("particle unrelated_id is declared twice"), "{error}");
     }
 }

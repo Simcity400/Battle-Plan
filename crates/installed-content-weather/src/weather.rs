@@ -25,10 +25,22 @@ pub const EFFECT_KINDS: [&str; 5] = ["rain_light", "rain_heavy", "snow", "blizza
 /// Either may be absent.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EffectPair {
-    pub entity: Vec<Particle>,
-    pub fading_entity: Vec<Particle>,
+    /// The pair's kind, place and entity names, for refusals.
+    pub name: String,
+    pub entity: Vec<EffectParticle>,
+    pub fading_entity: Vec<EffectParticle>,
     /// Dummy parent spheres of the two members, independent of their particles.
     pub parents: [Option<EffectParent>; 2],
+    /// Why the pair cannot be presented as the game presents it. A withheld pair keeps its
+    /// place in its bank, so it is still drawn by index, and presents nothing.
+    pub withheld: Option<String>,
+}
+
+/// A particle a weather entity's default state starts, `delay` seconds after the state begins.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectParticle {
+    pub particle: Particle,
+    pub delay: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -515,14 +527,15 @@ pub fn temperature_ranges(layers: &ResolvedLayers) -> io::Result<TemperatureRang
 }
 
 /// The particles one weather entity's default state emits. Only the forms the
-/// weather pass draws are accepted: particle events at time zero that keep
-/// their particle and attach to no node, with no mesh, attachment, state
-/// transition, animation or weighted variants.
+/// weather pass draws are accepted: particle events that keep their particle and
+/// attach to no node, with no mesh, attachment, state transition, animation or
+/// weighted variants. An event after time zero starts its particle then, once:
+/// its state must not loop it, nor scale or offset its clock.
 fn entity_particles(
     name: &str,
     entities: &Descriptors,
     catalog: &Catalog,
-) -> io::Result<(Vec<Particle>, EffectParent)> {
+) -> io::Result<(Vec<EffectParticle>, EffectParent)> {
     let refuse = |why: &str| invalid(format!("weather entity {name}: {why}"));
     let mut link = name;
     for _ in 0..=entities.entities.len() {
@@ -564,12 +577,32 @@ fn entity_particles(
         let Some(object) = &event.particle else {
             continue;
         };
-        if event.time != 0.0 || !event.keep_particle || !event.node.is_empty() {
-            return Err(refuse("has a timed, transient or attached particle event"));
+        if !event.keep_particle {
+            return Err(refuse(&format!(
+                "particle event {object} does not keep its particle"
+            )));
+        }
+        if !event.node.is_empty() {
+            return Err(refuse(&format!(
+                "particle event {object} attaches to node {}",
+                event.node
+            )));
+        }
+        let once = !state.looping || event.trigger_once;
+        let plain_clock = state.speed == 1.0 && state.start == 0.0 && state.random_start <= 0.0;
+        if event.time != 0.0 && !(event.time > 0.0 && event.time.is_finite() && once && plain_clock)
+        {
+            return Err(refuse(&format!(
+                "particle event {object} at time {} in a state that loops it or scales or offsets its clock",
+                event.time
+            )));
         }
         let mut particle = catalog.resolve(object)?;
         particle.scale *= scale;
-        out.push(particle);
+        out.push(EffectParticle {
+            particle,
+            delay: event.time,
+        });
     }
     Ok((
         out,
@@ -590,7 +623,8 @@ fn entity_particles(
     ))
 }
 
-/// The weather effects of the stack, each entity resolved to its particles.
+/// The weather effects of the stack, each entity resolved to its particles. A pair
+/// with an entity the weather pass cannot present is withheld by name.
 pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects> {
     let document = read_weather(layers)?;
     let names = effect_names(&document)
@@ -598,7 +632,7 @@ pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects
     //The existing memoized registry is also used by entity lights/models.
     //Clones copy the parent's registration-time definition, not its final one.
     let roster = layers.descriptor_roster()?;
-    let resolve = |name: &Option<String>| -> io::Result<(Vec<Particle>, Option<EffectParent>)> {
+    let resolve = |name: &Option<String>| -> io::Result<(Vec<EffectParticle>, Option<EffectParent>)> {
         match name {
             Some(name) => {
                 if let Some(path) = roster.unreadable_names.get(name) {
@@ -612,24 +646,41 @@ pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects
             None => Ok((Vec::new(), None)),
         }
     };
-    names
+    Ok(names
         .into_iter()
-        .map(|(key, pairs)| {
+        .map(|((kind, small), pairs)| {
             let pairs = pairs
                 .iter()
-                .map(|[entity, fading]| {
-                    let (entity, primary) = resolve(entity)?;
-                    let (fading_entity, fading) = resolve(fading)?;
-                    Ok(EffectPair {
-                        entity,
-                        fading_entity,
-                        parents: [primary, fading],
-                    })
+                .enumerate()
+                .map(|(index, [entity, fading])| {
+                    let name = format!(
+                        "{PATH} {}{} weather_effect {} (entity {}, fading_entity {})",
+                        EFFECT_KINDS[kind],
+                        if small { " small" } else { "" },
+                        index + 1,
+                        entity.as_deref().unwrap_or("none"),
+                        fading.as_deref().unwrap_or("none"),
+                    );
+                    let resolved = resolve(entity).and_then(|primary| Ok((primary, resolve(fading)?)));
+                    match resolved {
+                        Ok(((entity, primary), (fading_entity, fading))) => EffectPair {
+                            name,
+                            entity,
+                            fading_entity,
+                            parents: [primary, fading],
+                            withheld: None,
+                        },
+                        Err(error) => EffectPair {
+                            withheld: Some(error.to_string()),
+                            name,
+                            ..EffectPair::default()
+                        },
+                    }
                 })
-                .collect::<io::Result<_>>()?;
-            Ok((key, pairs))
+                .collect();
+            ((kind, small), pairs)
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]

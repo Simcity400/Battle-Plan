@@ -5,9 +5,8 @@ use super::{ModelField, ModelGroup, ModelInstance, Rig, entity_animation};
 use std::{
     collections::BTreeMap,
     ops::Range,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
-use viewer_foundation::parallel::Workers;
 
 type Key = (usize, u32, u32);
 
@@ -188,7 +187,7 @@ impl Dispatch {
         time: f32,
         shown: &dyn Fn(&ModelGroup) -> bool,
         events: &mut Vec<entity_animation::Event>,
-        workers: &Workers,
+        label: &'static str,
     ) -> bool {
         self.created.clear();
         let created = &mut self.created;
@@ -198,6 +197,7 @@ impl Dispatch {
             .as_ref()
             .is_none_or(|layout| !layout.matches(rigs, field))
         {
+            viewer_foundation::view_record::add(label, "dispatch_layout_built", 1);
             self.layout = Some(Layout::build(rigs, field));
         }
         let layout = self.layout.as_mut().unwrap();
@@ -271,28 +271,26 @@ impl Dispatch {
             // Keys are sorted in both stores. Only this frame's borrow bindings are
             // temporary; occurrence lists and event packet capacities stay retained.
             let mut tasks = layout.tasks.iter_mut().peekable();
-            let bound: Vec<_> = players
+            let mut bound: Vec<_> = players
                 .iter_mut()
                 .filter_map(|(key, player)| {
                     while tasks.peek().is_some_and(|task| task.key < *key) {
                         tasks.next();
                     }
                     let task = tasks.next_if(|task| task.key == *key)?;
-                    task.ordinary.then(|| Mutex::new((player, task)))
+                    task.ordinary.then_some((player, task))
                 })
                 .collect();
             drop(plan_span);
             run_span = viewer_foundation::profiling::span("animation_dispatch_run_commit");
-            workers.run(bound.len(), &|at| {
-                let mut bound = bound[at].lock().unwrap_or_else(|error| error.into_inner());
-                let (player, task) = &mut *bound;
+            for (player, task) in &mut bound {
                 let Task { rig, calls, .. } = &mut **task;
                 for call in calls {
                     if call.active && !call.clocked {
                         player.evaluate(rig, call.instance, time, &mut [], &mut call.events);
                     }
                 }
-            });
+            }
         }
         for source in &layout.sources {
             if let Some((task, call)) = source.call {
@@ -329,6 +327,22 @@ impl Dispatch {
                         .get(key)
                         .is_some_and(|clock| clock.phase.is_some()))
         });
+        if viewer_foundation::view_record::on() {
+            use viewer_foundation::view_record::add;
+            add(label, "dispatch_sources", layout.sources.len() as u64);
+            add(
+                label,
+                "dispatch_sources_shown",
+                layout.sources.iter().filter(|source| layout.visible[source.group]).count() as u64,
+            );
+            let (mut alive, mut ordinary) = (0, 0);
+            for task in &layout.tasks {
+                alive += u64::from(task.alive);
+                ordinary += u64::from(task.ordinary);
+            }
+            add(label, "dispatch_tasks_alive", alive);
+            add(label, "dispatch_tasks_ordinary", ordinary);
+        }
         drop(run_span);
         true
     }

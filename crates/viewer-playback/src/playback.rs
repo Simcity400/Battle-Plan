@@ -50,8 +50,6 @@ pub struct Playback {
     materialized: bool,
     /// Walks the recording's hours on a thread of its own, from the hour it read last.
     cursor: Option<HourCursor>,
-    /// Complete views carry change facts, as the display reads them.
-    display_changes: bool,
     map_binding: Option<Arc<MapBinding>>,
     /// The map's hours read from the recording's runs in place, which replace the replay's
     /// hour reads once open; `map_failure`, why they could not be read, refuses the map until
@@ -61,10 +59,7 @@ pub struct Playback {
     /// The replay's row frames leave the map tables to its native capture, as a decoded
     /// frame showed: only the bound map reads it, so no hour is read for it without one.
     native_map: bool,
-    map_workers: usize,
     source_path: Option<bool>,
-    #[cfg(any(test, feature = "test-support"))]
-    source_paths: Vec<(Hour, bool)>,
 }
 
 impl Playback {
@@ -80,8 +75,8 @@ impl Playback {
         Ok(playback)
     }
 
-    /// Presentation state without synchronous decoding. The hour coordinator
-    /// supplies exact frames through `present` before this state is rendered.
+    /// Presentation state without synchronous decoding: exact frames arrive through `present`
+    /// before this state is rendered.
     pub fn unloaded(replay: Arc<Replay>) -> io::Result<Self> {
         // A recording read as timelines opens on its main history.
         let main = replay.timelines().map(|timelines| timelines.main);
@@ -103,39 +98,16 @@ impl Playback {
             current: gap(branch, hour, "hour has not been decoded".into()),
             materialized: false,
             cursor: None,
-            display_changes: false,
             map_binding: None,
             map: None,
             map_failure: None,
             native_map: false,
-            map_workers: 1,
             source_path: None,
-            #[cfg(any(test, feature = "test-support"))]
-            source_paths: Vec::new(),
         })
-    }
-
-    pub fn with_display_changes(mut self) -> Self {
-        self.display_changes = true;
-        self.cursor = None;
-        self
     }
 
     pub fn replay(&self) -> &Replay {
         &self.replay
-    }
-
-    pub fn with_map_workers(mut self, workers: usize) -> Self {
-        self.map_workers = workers;
-        if let Some(map) = &mut self.map {
-            map.set_workers(workers);
-        }
-        self
-    }
-
-    pub fn with_map_binding(mut self, binding: Arc<MapBinding>) -> Self {
-        self.bind_map(binding);
-        self
     }
 
     pub fn bind_map(&mut self, binding: Arc<MapBinding>) {
@@ -168,10 +140,6 @@ impl Playback {
         }
     }
 
-    pub fn map_binding(&self) -> Option<Arc<MapBinding>> {
-        self.map_binding.clone()
-    }
-
     /// Opens the binding's map; cancellation leaves it to be opened again.
     fn refresh_map(&mut self) -> io::Result<()> {
         if self.map.is_some() || self.map_failure.is_some() {
@@ -182,7 +150,7 @@ impl Playback {
         };
         let opened = binding
             .columnar()
-            .and_then(|columnar| columnar.open(Arc::clone(&self.replay), self.map_workers));
+            .and_then(|columnar| columnar.open(Arc::clone(&self.replay), 1));
         match opened {
             Ok(map) => self.map = Some(map),
             Err(error) if interrupted(&error) => return Err(error),
@@ -204,8 +172,6 @@ impl Playback {
             return;
         }
         self.source_path = Some(indexed);
-        #[cfg(any(test, feature = "test-support"))]
-        self.source_paths.push((hour, indexed));
         if profiling {
             let thread = std::thread::current();
             viewer_foundation::profile_writer::profile_print(source_path_line(
@@ -215,12 +181,6 @@ impl Playback {
                 indexed,
             ));
         }
-    }
-
-    /// Each change of source so far: hour, and whether the bound map served it.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn source_paths(&self) -> &[(Hour, bool)] {
-        &self.source_paths
     }
 
     /// A handle to the same replay for a worker thread.
@@ -295,12 +255,8 @@ impl Playback {
         }
     }
 
-    /// Shows an hour another playback decoded, without decoding anything.
-    ///
-    /// The window's hour builders decode ahead of the playhead on their own
-    /// thread (`crate::hours`); this moves the position the rest of the window
-    /// reads to the hour they built, in the frame that draws it.
-    /// Returns the hour it replaces, for the caller to free where it likes.
+    /// Shows an hour read elsewhere, without decoding anything: it moves the position the rest
+    /// of the window reads. Returns the hour it replaces, for the caller to free where it likes.
     pub fn present(&mut self, branch: BranchId, hour: Hour, current: Current) -> Current {
         self.branch = branch;
         self.hour = hour;
@@ -350,28 +306,6 @@ impl Playback {
         self.seek(branch, first)
     }
 
-    /// The hour a seek to `hour` of `branch` would walk from: the last hour the
-    /// decoder applied in that hour's block when it is still before `hour`,
-    /// else keyframe - 1 (i64 permits Hour::MIN - 1). None when no block holds it,
-    /// or when the block failed at or before `hour`: that seek is a gap with no
-    /// walk at all. A refused map reads the hour alone, with no walk before it.
-    pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<i64> {
-        if let Some(map) = &self.map {
-            return map.walk_start(branch, hour);
-        }
-        if self.map_failure.is_some() || self.native_map {
-            return Some(i64::from(hour));
-        }
-        let block = self.replay.block_at(branch, hour)?;
-        let continued = self
-            .cursor
-            .as_ref()
-            .filter(|cursor| cursor.continues(branch, hour))
-            .and_then(HourCursor::last)
-            .map(|(_, last)| last);
-        Some(continued.map_or_else(|| i64::from(block.first_hour) - 1, i64::from))
-    }
-
     /// Seek to exactly this hour. A hole never borrows the last displayed rows.
     /// Only the target block may be decompressed; backward seeks reuse its frames.
     /// Intermediate hours advance the baseline without copying their decoded rows.
@@ -389,43 +323,8 @@ impl Playback {
         hour: Hour,
         mut passed: impl FnMut(&DecodedFrame),
     ) -> io::Result<()> {
-        self.seek_to(branch, hour, |frame| passed(frame), true, &|| false)?;
+        self.seek_to(branch, hour, |frame| passed(frame), &|| false)?;
         self.materialized = true;
-        Ok(())
-    }
-
-    pub fn seek_cancellable(
-        &mut self,
-        branch: BranchId,
-        hour: Hour,
-        mut passed: impl FnMut(&DecodedFrame),
-        cancelled: &dyn Fn() -> bool,
-    ) -> io::Result<()> {
-        self.seek_to(branch, hour, |frame| passed(frame), true, cancelled)?;
-        self.materialized = true;
-        Ok(())
-    }
-
-    pub fn seek_shared_cancellable(
-        &mut self,
-        branch: BranchId,
-        hour: Hour,
-        passed: impl FnMut(&Arc<DecodedFrame>),
-        cancelled: &dyn Fn() -> bool,
-    ) -> io::Result<()> {
-        self.seek_to(branch, hour, passed, true, cancelled)?;
-        self.materialized = true;
-        Ok(())
-    }
-
-    pub fn advance_cancellable(
-        &mut self,
-        branch: BranchId,
-        hour: Hour,
-        cancelled: &dyn Fn() -> bool,
-    ) -> io::Result<()> {
-        self.seek_to(branch, hour, |_| {}, false, cancelled)?;
-        self.materialized = false;
         Ok(())
     }
 
@@ -437,7 +336,6 @@ impl Playback {
         branch: BranchId,
         hour: Hour,
         mut passed: impl FnMut(&Arc<DecodedFrame>),
-        materialize: bool,
         cancelled: &dyn Fn() -> bool,
     ) -> io::Result<()> {
         let mode = self.replay.capture_mode;
@@ -449,7 +347,7 @@ impl Playback {
                 passed(frame);
             }
         };
-        self.seek_source(branch, hour, passed, materialize, cancelled)?;
+        self.seek_source(branch, hour, passed, cancelled)?;
         let held = native
             || matches!(&self.current, Current::Frame(frame) if leaves_map_to_native(frame, mode));
         if held && self.map.is_none() {
@@ -465,7 +363,6 @@ impl Playback {
         branch: BranchId,
         hour: Hour,
         mut passed: impl FnMut(&Arc<DecodedFrame>),
-        materialize: bool,
         cancelled: &dyn Fn() -> bool,
     ) -> io::Result<()> {
         if cancelled() {
@@ -477,7 +374,7 @@ impl Playback {
         self.refresh_map()?;
         let cached_output =
             self.branch == branch && self.hour == hour && self.cursor.is_some() && self.materialized;
-        if !cached_output || !materialize {
+        if !cached_output {
             // This decode lane's old output is no longer needed. Displayed
             // hours retained by other owners stay immutable; without one the
             // decoder can apply deltas in its existing row storage.
@@ -485,7 +382,7 @@ impl Playback {
             self.materialized = false;
         }
         if let Some(map) = &mut self.map {
-            let current = map.read(branch, hour, materialize, cancelled)?;
+            let current = map.read(branch, hour, true, cancelled)?;
             self.branch = branch;
             self.hour = hour;
             self.current = current;
@@ -511,7 +408,7 @@ impl Playback {
             return Ok(());
         }
         self.note_source(branch, hour, false);
-        if cached_output && materialize {
+        if cached_output {
             return Ok(());
         }
         self.branch = branch;
@@ -520,11 +417,10 @@ impl Playback {
             self.current = gap(branch, hour, self.gap_reason(branch, hour));
             return Ok(());
         }
-        let changes = self.display_changes;
         let replay = &self.replay;
         let cursor = self
             .cursor
-            .get_or_insert_with(|| HourCursor::new(Arc::clone(replay), &TableId::ALL, changes));
+            .get_or_insert_with(|| HourCursor::new(Arc::clone(replay), &TableId::ALL, false));
         // Hours just before the one asked, which a cursor going on builds on its way, are handed
         // on; a jump builds the hour alone.
         if let Some((_, last)) = cursor.last().filter(|_| cursor.continues(branch, hour))
@@ -556,20 +452,6 @@ impl Playback {
             }
         };
         Ok(())
-    }
-
-    /// Advance one absolute game hour, including a gap. Stop at this branch's end.
-    ///
-    /// The window advances through the hours its builders finish now
-    /// (`crate::hours`); this survives for the tests that pin the stepping rule.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn step(&mut self) -> io::Result<bool> {
-        let (_, last) = self.range(self.branch).expect("selected branch exists");
-        let Some(next) = self.hour.checked_add(1).filter(|next| *next <= last) else {
-            return Ok(false);
-        };
-        self.seek(self.branch, next)?;
-        Ok(true)
     }
 
     fn gap_reason(&self, branch: BranchId, hour: Hour) -> String {
@@ -634,8 +516,8 @@ pub mod tests {
     #[test]
     fn source_path_line_names_the_thread_and_source() {
         assert_eq!(
-            source_path_line("hour decoder", 1, 101, true),
-            "PROFILE source_path thread=hour_decoder branch=1 hour=101 path=native"
+            source_path_line("map source", 1, 101, true),
+            "PROFILE source_path thread=map_source branch=1 hour=101 path=native"
         );
         assert_eq!(
             source_path_line("map source decoder", 7, -3, false),
@@ -1057,7 +939,6 @@ pub mod tests {
         }
         assert_seek_matches_shared(&mut playback, 1, 819);
         assert_seek_matches_shared(&mut playback, 1, 820);
-        assert!(!playback.step().unwrap());
         assert_eq!(playback.hour(), 820);
         assert_seek_matches_shared(&mut playback, 1, 105);
         assert!(playback.seek(999, 100).is_err());
@@ -1068,10 +949,10 @@ pub mod tests {
     }
 
     #[test]
-    fn steps_show_table_failures_and_gaps_without_interpolation() {
+    fn seeks_show_table_failures_and_gaps_without_interpolation() {
         let (replay, derived) = written_fixture();
         let mut playback = Playback::new(replay).unwrap();
-        assert!(playback.step().unwrap());
+        playback.seek(1, 101).unwrap();
         let frame = playback.frame().unwrap();
         assert!(matches!(
             &*frame.tables[TableId::Countries.index()],
@@ -1082,7 +963,7 @@ pub mod tests {
             TableView::Truncated { missing: 1, .. }
         ));
         for hour in [102, 103] {
-            assert!(playback.step().unwrap());
+            playback.seek(1, hour).unwrap();
             assert_eq!(playback.hour(), hour);
             assert!(playback.frame().is_none());
             assert!(matches!(
@@ -1090,48 +971,8 @@ pub mod tests {
                 Current::Gap { reason, .. } if reason == "flush failed"
             ));
         }
-        assert!(playback.step().unwrap());
+        playback.seek(1, 104).unwrap();
         assert_eq!(playback.frame(), Some(&read_back(&derived, 1, 104)));
-    }
-
-    #[test]
-    fn a_block_at_the_earliest_hour_walks_from_before_its_keyframe() {
-        let first = Hour::MIN;
-        let mut records = vec![
-            Record::SessionStart(session(1)),
-            Record::BranchStart(BranchStart {
-                id: 1,
-                session: 1,
-                loaded_hour: None,
-                first_hour: first,
-                parent: Parentage::Unknown,
-                reason: BranchReason::SessionStart,
-            }),
-        ];
-        let mut encoder = FrameEncoder::new();
-        for hour in [first, first + 1] {
-            let mut tables: [TableView; TableId::ALL.len()] =
-                std::array::from_fn(|_| TableView::Unavailable {
-                    reason: "outside the fixture".into(),
-                });
-            tables[TableId::Campaign.index()] =
-                TableView::Complete(TableRows::Campaign(vec![CampaignRow {
-                    id: b"campaign".to_vec(),
-                }]));
-            let frame = DecodedFrame {
-                branch: 1,
-                hour,
-                tables: tables.map(Into::into),
-                metrics: Metrics::default(),
-            };
-            records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
-        }
-        let replay = Replay::from_records(b"campaign".to_vec(), &[records]).unwrap();
-        let playback = Playback::unloaded(Arc::new(replay)).unwrap();
-        assert_eq!(
-            playback.walk_start(1, first + 1),
-            Some(i64::from(first) - 1)
-        );
     }
 
     /// Every hour of the corrupt first block is that hour's failure, carrying the shared
@@ -1256,27 +1097,6 @@ pub mod tests {
         assert!(playback.frame().is_none());
         playback.seek(1, 103).unwrap();
         assert!(playback.frame().is_none());
-        assert!(!playback.step().unwrap());
-    }
-
-    #[test]
-    fn cancellation_walks_do_not_hold_endpoints_and_can_export_the_same_hour_afterwards() {
-        let (replay, derived) = written_fixture();
-        let replay = Arc::new(replay);
-        let mut playback = Playback::unloaded(Arc::clone(&replay)).unwrap();
-        playback.advance_cancellable(1, 104, &|| false).unwrap();
-        assert!(!playback.materialized);
-        playback.advance_cancellable(1, 105, &|| false).unwrap();
-        assert_seek_matches_shared(&mut playback, 1, 105);
-        let held = playback.current().clone();
-        for hour in [820, 102, 104, 100] {
-            playback.advance_cancellable(1, hour, &|| false).unwrap();
-            assert_seek_matches_shared(&mut playback, 1, hour);
-        }
-        let Current::Frame(held) = held else {
-            panic!("held frame")
-        };
-        assert_eq!(held.as_ref(), &read_back(&derived, 1, 105));
     }
 
     #[test]
@@ -1298,8 +1118,6 @@ pub mod tests {
             Current::Frame(presented) if Arc::ptr_eq(presented, &shown)
         ));
         assert_eq!((playback.branch(), playback.hour()), (1, 105));
-        // Hours 104 and 105 are a run of their own, after the lost hours.
-        assert_eq!(playback.walk_start(1, 105), Some(103));
         playback.seek(1, 105).unwrap();
         assert_eq!(playback.frame(), Some(&*shown));
         for hour in [100, 101, 102, 104, 820, 105] {
@@ -1315,8 +1133,7 @@ pub mod tests {
             matches!(&unreadable, Current::Refused { .. }),
             "{unreadable:?}"
         );
-        assert!(!playback.holds_source(), "a failed walk is let go");
-        assert_eq!(playback.walk_start(1, 101), Some(99));
+        assert!(!playback.holds_source(), "a failed read is let go");
         playback.seek(1, 100).unwrap();
         assert_eq!(playback.current(), &unreadable);
         for hour in [101, 100] {

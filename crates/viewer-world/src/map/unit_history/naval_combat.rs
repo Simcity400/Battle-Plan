@@ -286,6 +286,12 @@ impl History {
         self.refusals.clear();
     }
 
+    /// Whether `province` holds a combat actor, so a frame that leaves the province alone knows
+    /// that releasing it would do nothing.
+    pub(super) fn holds(&self, province: u32) -> bool {
+        !self.provinces.is_empty() && self.provinces.contains_key(&province)
+    }
+
     pub(super) fn leave(&mut self, province: u32, land_was_shown: bool, steady: bool) {
         // The game deactivates combat graphics directly on the land-gate loss;
         // unlike ordinary hulls, they have no popup-scale fade.

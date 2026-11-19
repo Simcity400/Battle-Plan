@@ -5,9 +5,10 @@
 //! moved), settles every mark whole and makes the scene's product. The frame never waits for it
 //! while playing: it installs the newest product that has arrived and shows the hour it is of.
 
+use std::time::Instant;
 use super::{Buildings, Declared, FromLayer, Inspected, Install, NOT_SLOTTED, READ, Seen, Upper};
 use crate::{
-    layers::{Budget, Carried, Fed as Products, Gpu, Inputs, Layer, Published, Scope, Scoped, Sight, Upstream, View, clock},
+    layers::{Carried, Change, Changed, Settling, Fed as Products, Gpu, Inputs, Layer, Published, Scope, Scoped, Sight, Upstream, View},
     playhead_host::mirror::{Mirror, Mirrors},
 };
 use playhead::Step;
@@ -29,7 +30,7 @@ struct VisionCopy {
     state: (Option<u32>, bool, u64),
     refused: Option<String>,
     bytes: Vec<Option<u8>>,
-    moved: Vec<u64>,
+    changed: Changed,
 }
 
 impl Seen for VisionCopy {
@@ -55,13 +56,14 @@ impl Upper for VisionCopy {
         self
     }
 
-    fn moved(&self) -> &[u64] {
-        &self.moved
+    fn moved(&self) -> Change<'_> {
+        self.changed.read()
     }
 }
 
 /// The vision layer as the frame last saw it, for the worker: gone, or its state and refusal with
-/// the bytes of every fog province (`whole`, at a new sight epoch) or of those named as moved.
+/// the bytes of every fog province (`whole`, at a new sight epoch or a whole publish) or of those
+/// named as moved.
 enum Seeing {
     Absent,
     Seen { state: (Option<u32>, bool, u64), refused: Option<String>, whole: bool, bytes: Vec<(u32, Option<u8>)>, moved: Vec<u64> },
@@ -85,13 +87,12 @@ struct Made {
     install: Option<Install>,
     /// The scene's inputs the install was made with.
     scene: Option<SceneInputs>,
-    uploaded: bool,
     refused: Option<String>,
     error: Option<String>,
     warnings: Vec<String>,
     marked: [usize; 3],
     causes: [u64; super::CAUSES.len()],
-    uploads: [u64; 5],
+    uploads: [u64; 6],
     upload_ns: [u64; 3],
     scoped: Scoped,
     held: usize,
@@ -123,7 +124,7 @@ impl Work {
                 let size = self.model.fog_seen.len();
                 let copy = match (&mut self.vision, whole) {
                     (Some(copy), false) => copy,
-                    (held, _) => held.insert(VisionCopy { state, refused: None, bytes: vec![None; size], moved: Vec::new() }),
+                    (held, _) => held.insert(VisionCopy { state, refused: None, bytes: vec![None; size], changed: Changed::default() }),
                 };
                 (copy.state, copy.refused) = (state, refused);
                 for (province, byte) in bytes {
@@ -131,7 +132,10 @@ impl Work {
                         *held = byte;
                     }
                 }
-                copy.moved.extend(moved);
+                if whole {
+                    copy.changed.everything();
+                }
+                moved.into_iter().for_each(|province| copy.changed.mark("province", province));
             }
         }
         if let Some((choice, vision)) = given {
@@ -148,10 +152,10 @@ impl Work {
         if compose {
             self.model.compose_upper(&self.mirrors, upper)?;
         } else {
-            self.model.settle_dirty(&self.mirrors, &mut Budget::unlimited(), upper)?;
+            self.model.settle_dirty(&self.mirrors, upper)?;
         }
         if let Some(copy) = &mut self.vision {
-            copy.moved.clear();
+            copy.changed.clear();
         }
         let Some((bank, thresholds)) = self.scene else { return Ok(None) };
         self.model.note_thresholds(thresholds);
@@ -171,7 +175,6 @@ impl Work {
             answers,
             install,
             scene: self.scene,
-            uploaded: model.uploaded(),
             refused: model.refused.clone(),
             error,
             warnings: model.warnings(),
@@ -276,13 +279,12 @@ pub struct BuildingsFed {
     /// scene's history cold.
     pending: Option<Install>,
     cold_owed: bool,
-    uploaded: bool,
     refused: Option<String>,
     error: Option<String>,
     warnings: Vec<String>,
     marked: [usize; 3],
     causes: [u64; super::CAUSES.len()],
-    uploads: [u64; 5],
+    uploads: [u64; 6],
     upload_ns: [u64; 3],
     install_ns: u64,
     scoped: Scoped,
@@ -310,13 +312,12 @@ impl BuildingsFed {
             scene: None,
             pending: None,
             cold_owed: false,
-            uploaded: false,
             refused: Some("not composed yet".into()),
             error: None,
             warnings: Vec::new(),
             marked: [0; 3],
             causes: [0; super::CAUSES.len()],
-            uploads: [0; 5],
+            uploads: [0; 6],
             upload_ns: [0; 3],
             install_ns: 0,
             scoped: Scoped::default(),
@@ -382,9 +383,12 @@ impl BuildingsFed {
         }
         let Some(upper) = FromLayer::of(upstream) else { return self.seen_sent.take().map(|_| Seeing::Absent) };
         let (state, refused) = (upper.state(), upper.refused());
-        let whole = self.seen_sent.as_ref().is_none_or(|(sent, _)| *sent != state);
+        let whole = self.seen_sent.as_ref().is_none_or(|(sent, _)| *sent != state) || matches!(upper.moved(), Change::Whole);
         let fog = &self.spec.fog_seen;
-        let moved: Vec<u64> = if whole { Vec::new() } else { upper.moved().iter().copied().filter(|&province| fog.get(province as usize).is_some_and(|&seen| seen != NOT_SLOTTED)).collect() };
+        let moved: Vec<u64> = match upper.moved() {
+            Change::Marked(marked) if !whole => marked.of("province").iter().copied().filter(|&province| fog.get(province as usize).is_some_and(|&seen| seen != NOT_SLOTTED)).collect(),
+            _ => Vec::new(),
+        };
         if !whole && moved.is_empty() && self.seen_sent.as_ref().is_some_and(|(_, sent)| *sent == refused) {
             return None;
         }
@@ -442,7 +446,7 @@ impl BuildingsFed {
                     self.cold_owed |= !continues;
                 }
             }
-            (self.uploaded, self.refused, self.warnings, self.marked) = (made.uploaded, made.refused, made.warnings, made.marked);
+            (self.refused, self.warnings, self.marked) = (made.refused, made.warnings, made.marked);
             (self.causes, self.uploads, self.upload_ns, self.worker_held) = (made.causes, made.uploads, made.upload_ns, made.held);
             self.scoped.extend(made.scoped);
             if let Some(error) = made.error {
@@ -534,15 +538,15 @@ impl Layer for BuildingsFed {
         self.waiting.retain(|step| kept.is_some_and(|kept| step.last() <= kept));
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_with(mirrors, &Upstream::new(&[]), budget)
+    fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        self.settle_with(mirrors, &Upstream::new(&[]), settling)
     }
 
     /// What the worker made taken, never waited for while playing; this frame's declaration, steps,
     /// vision moves and a vision given then go to the worker in one job. A whole settle waits for the
     /// product of its hour.
-    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
-        let whole = budget.unlimited_now();
+    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
+        let whole = settling.waits();
         self.exchange(false)?;
         let applied = self.products.applied_hour();
         let mut steps = Vec::new();
@@ -559,8 +563,9 @@ impl Layer for BuildingsFed {
     }
 
     /// The scene's inputs handed to the worker when they change (it makes no product before it has
-    /// them); the newest product installed within the budget.
-    fn upload(&mut self, gpu: &mut Gpu<'_>, budget: &mut Budget) -> io::Result<()> {
+    /// them); the newest product that has arrived installed. A picture that must be whole at its
+    /// hour waits for the product of that hour; a playing frame waits for nothing the worker holds.
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         if self.declared_now().columns.is_none() {
             return Ok(());
         }
@@ -576,20 +581,23 @@ impl Layer for BuildingsFed {
             Err(error) if self.refused.is_none() => return Err(error),
             Err(_) => {}
         }
-        self.exchange(budget.unlimited_now())?;
-        if self.refused.is_some() || self.pending.is_none() || !budget.left() {
+        self.exchange(gpu.whole)?;
+        if self.refused.is_some() || self.pending.is_none() {
             return Ok(());
         }
         let (product, continues) = self.pending.take().expect("a product is pending");
         let continues = continues && !std::mem::take(&mut self.cold_owed);
-        let started = clock::now();
+        let started = Instant::now();
         super::install(gpu, (product, continues))?;
-        self.install_ns += clock::now().duration_since(started).as_nanos() as u64;
+        self.install_ns += Instant::now().duration_since(started).as_nanos() as u64;
         Ok(())
     }
 
+    /// Nothing the worker has handed over is left for a later frame. Declaring nothing, it has
+    /// nothing to install ([`Buildings::uploaded`]); a product the worker still owes is its own
+    /// cadence, which [`Self::published`] says, not an install this frame left behind.
     fn uploaded(&self) -> bool {
-        self.pending.is_none() && self.uploaded
+        self.declared_now().columns.is_none() || self.pending.is_none()
     }
 
     fn carried(&self) -> Carried {

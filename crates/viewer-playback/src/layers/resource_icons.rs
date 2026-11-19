@@ -14,7 +14,7 @@ pub mod proof;
 #[cfg(test)]
 pub(super) mod tests;
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, Num, Text, View};
+use super::{Carried, Settling, Dirty, Inputs, Layer, Num, Text, View};
 use crate::{
     document::Content,
     playhead_host::{
@@ -412,7 +412,7 @@ impl ResourceIcons {
         }
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn settle_dirty(&mut self, mirrors: &Mirrors) {
         self.frame += 1;
         // Hidden, its tables may still be mirrored for another layer: none of them is read.
         if self.hidden.is_some() {
@@ -437,7 +437,7 @@ impl ResourceIcons {
         let localisation = content.localisation();
         let mut dirty = std::mem::take(&mut self.states);
         let mut changed = false;
-        let _ = dirty.settle(budget, |state| {
+        let _ = dirty.settle(|state| {
             let live = mirrors.get(TableId::States).and_then(|mirror| mirror.slot(u128::from(state))).is_some();
             if !live || self.whole.is_err() {
                 changed |= self.icons.remove(&state).is_some();
@@ -722,7 +722,7 @@ impl Layer for ResourceIcons {
             self.index(mirrors);
             self.refold = true;
             self.mark_all(mirrors);
-            self.settle_dirty(mirrors, &mut Budget::unlimited());
+            self.settle_dirty(mirrors);
         }
         self.marked = marked;
         self.version = next_version();
@@ -848,17 +848,14 @@ impl Layer for ResourceIcons {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors);
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.states.len(), frames: self.states.since().map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities: self.states.len() }
     }
 
     fn held(&self) -> usize {

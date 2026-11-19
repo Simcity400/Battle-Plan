@@ -45,7 +45,7 @@ impl Pool {
                 let inbox = Arc::clone(&inbox);
                 let capacity = Arc::clone(&capacity);
                 thread::Builder::new()
-                    .name(format!("hour builder {index}"))
+                    .name(format!("map worker {index}"))
                     .spawn_carried(move || {
                         let _cost = replay_frame::cpu::scope("jobs.dispatch", Some("other"));
                         background_priority();

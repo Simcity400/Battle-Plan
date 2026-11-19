@@ -75,6 +75,7 @@ pub fn prepare(inputs: &RaidInputs<'_>, icons: &RaidIcons) -> PreparedRaids {
                         world,
                         cutoff: far,
                         family: IconFamily::Raids,
+                        moves: None,
                     },
                 },
             ))
@@ -249,7 +250,11 @@ impl PreparedRaids {
             batch.at_layer(key);
             batch.at_anchor(Some(placed.anchor));
             let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
-            if let Err(why) = painted.paint(drawn.owner, generation, key, Some(placed.anchor), batch, draw) {
+            if let Err(why) =
+                painted.paint(
+                    sprites::WindowKey::new(sprites::WindowPool::Raid, 0, drawn.owner),
+                    drawn.owner, generation, drawn.origin, key, Some(placed.anchor), batch, draw)
+            {
                 count_refused(&mut report.reasons, WINDOW, &[why]);
                 continue;
             }
@@ -289,6 +294,7 @@ impl PreparedRaids {
                     world: [0.0; 3],
                     cutoff: f32::INFINITY,
                     family: IconFamily::Raids,
+                    moves: None,
                 },
             }],
             report: RaidReport::default(),
@@ -306,6 +312,7 @@ mod tests {
         world: [0.0; 3],
         cutoff: f32::INFINITY,
         family: IconFamily::Raids,
+        moves: None,
     };
     use viewer_foundation::map::native_gui::lifecycle::Instance;
 

@@ -1,6 +1,7 @@
 //! Isolated native sprite shader output for straight-alpha dashboard images.
 //! GUI layout and compositing remain the caller's; programs and samplers come from content.
 
+use crate::gpu::stats::CountedPasses as _;
 use job_priority::SpawnCarried as _;
 use std::{
     collections::BTreeMap,
@@ -659,7 +660,7 @@ impl Renderer {
             });
             {
                 let view = target.create_view(&Default::default());
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &view,
                         resolve_target: None,

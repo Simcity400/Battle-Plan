@@ -21,6 +21,7 @@ fn frame(camera: Camera, offsets: &[f32]) -> ModelFrame<'_> {
         camera,
         offsets,
         visible: Some([0., 0., 100., 100.]),
+        seen: Some([0., 0., 100., 100.]),
         alpha: 1.,
     }
 }
@@ -40,12 +41,16 @@ fn a_frame_from_the_same_inputs_keeps_the_list_and_each_input_makes_it_again() {
     assert!(same(9, &frame(camera(), &offsets), &[&[1; 416], &[2; 416]], 1, 3));
 
     assert!(!same(10, &frame(camera(), &offsets), &[&SCENE, &SCENE], 1, 3), "revision");
+    // A camera that travels keeps the list: its view is admitted with room to spare.
     let mut moved = camera();
     moved.center[0] += 0.5;
-    assert!(!same(9, &frame(moved, &offsets), &[&SCENE, &SCENE], 1, 3), "camera");
+    assert!(same(9, &frame(moved, &offsets), &[&SCENE, &SCENE], 1, 3), "camera");
     let mut lower = camera();
     lower.height -= 1.;
-    assert!(!same(9, &frame(lower, &offsets), &[&SCENE, &SCENE], 1, 3), "height");
+    assert!(same(9, &frame(lower, &offsets), &[&SCENE, &SCENE], 1, 3), "height");
+    let mut wider = camera();
+    wider.map.width += 1;
+    assert!(!same(9, &frame(wider, &offsets), &[&SCENE, &SCENE], 1, 3), "map");
     assert!(!same(9, &frame(camera(), &[0.]), &[&SCENE, &SCENE], 1, 3), "views");
     assert!(!same(9, &frame(camera(), &[0., -5632.]), &[&SCENE, &SCENE], 1, 3), "offsets");
     let mut light = frame(camera(), &offsets);
@@ -93,23 +98,44 @@ fn a_lit_list_is_made_again_by_what_its_walk_reads_beyond_the_casters() {
 }
 
 #[test]
-fn blocks_are_placed_as_the_arena_places_them() {
+fn the_walk_records_each_nodes_block_once() {
     let mut recording = Recording::default();
     let world = [1u8; 208];
-    let first = recording.place(false, &world, 160, ALIGNMENT);
-    assert_eq!(first, Block { live: false, at: 0, length: 208 });
+    let first = recording.place(&world);
+    assert_eq!(first, Block { at: 0, length: 208 });
     let palette = [2u8; 128];
-    let second = recording.place(false, &palette, 512, ALIGNMENT);
-    assert_eq!(second.at, 256, "the next block starts at the alignment");
-    let region = &recording.regions[1];
-    assert_eq!(region.len(), 256 + 512, "a block is zero-filled to the size its program reads");
-    assert_eq!(&region[..208], &world);
-    assert!(region[208..256].iter().all(|&byte| byte == 0));
-    assert_eq!(&region[256..384], &palette);
-    assert!(region[384..].iter().all(|&byte| byte == 0));
-    let live = recording.place(true, &world, 0, ALIGNMENT);
-    let own = Block { live: true, at: 0, length: 208 };
-    assert_eq!(live, own, "live blocks have a region of their own");
+    let second = recording.place(&palette);
+    assert_eq!(second, Block { at: 208, length: 128 });
+    assert_eq!(recording.recorded(first), &world);
+    assert_eq!(recording.recorded(second), &palette);
+    assert_eq!(recording.bytes.len(), 336, "each block as it stands, the list placing it");
+}
+
+#[test]
+fn a_walk_bands_where_its_parts_stop_agreeing_and_a_part_with_no_order_stands_alone() {
+    let opaque = mesh_shader::Order::for_tests(15, (4, 4));
+    let tracks = mesh_shader::Order::for_tests(15, (0, 0));
+    let band = |orders: &[Option<mesh_shader::Order>]| {
+        let mut bands = Bands::default();
+        let held: Vec<u32> = orders.iter().map(|order| bands.next(*order)).collect();
+        (held, bands.count())
+    };
+    assert_eq!(band(&[]), (vec![], 0), "no draw, no band");
+    assert_eq!(
+        band(&[Some(opaque); 4]),
+        (vec![0; 4], 1),
+        "parts that agree are one band, whatever their part"
+    );
+    // A tank's tracks between two bodies: the bodies on either side are bands of their own.
+    assert_eq!(
+        band(&[Some(opaque), Some(opaque), Some(tracks), Some(opaque), Some(opaque)]),
+        (vec![0, 0, 1, 2, 2], 3)
+    );
+    // A part that allows no order at all is a band of its own, and so is the draw after it.
+    assert_eq!(
+        band(&[Some(opaque), None, None, Some(opaque)]),
+        (vec![0, 1, 2, 3], 4)
+    );
 }
 
 fn key(identity: u32) -> FigureKey {
@@ -130,6 +156,7 @@ fn unit(live: bool, index: usize, vertex: Option<Block>, skin: Option<Block>) ->
         skin,
         bones: 2,
         mask: 0,
+        draws: 0,
         parts: 0,
     }
 }
@@ -137,32 +164,9 @@ fn unit(live: bool, index: usize, vertex: Option<Block>, skin: Option<Block>) ->
 /// One still figure's walk at `position`: a world block of `fill`.
 fn still_figure(recording: &mut Recording, position: usize, identity: u32, fill: u8) -> Block {
     recording.begin(0, position, key(identity), false);
-    let block = recording.place(false, &[fill; 208], 0, ALIGNMENT);
+    let block = recording.place(&[fill; 208]);
     recording.units.push(unit(false, position, Some(block), None));
     block
-}
-
-/// A walk of three figures in one view: actor 1 still, actor 2 with a player, actor 3 still.
-fn laid_out() -> (Kept, Block, Block, Block) {
-    let mut recording = Recording::default();
-    let still = still_figure(&mut recording, 0, 1, 3);
-    recording.begin(0, 1, key(2), true);
-    let world = recording.place(true, &[4; 208], 0, ALIGNMENT);
-    let bones = recording.place(true, &[5; 128], 0, ALIGNMENT);
-    recording.units.push(unit(true, 1, Some(world), Some(bones)));
-    let other = still_figure(&mut recording, 2, 3, 6);
-    recording.visited = vec![true];
-    let layout = Layout::new(Vec::new(), &mut recording, &[&SCENE, &SCENE], &[512, 416], ALIGNMENT);
-    let mut casters = Kept::default();
-    let made = laid_out_made();
-    let still = layout.absolute(still);
-    let other = layout.absolute(other);
-    let reserved = vec![512, 416];
-    let shared = Shared { at: Vec::new(), reserved, reads: Reads { views: 2, ..Reads::default() } };
-    casters.take(layout, recording, DrawList::default(), shared, ALIGNMENT, Some(made));
-    casters.read(5);
-    let world = casters.units[1].vertex.unwrap();
-    (casters, still, other, world)
 }
 
 fn laid_out_made() -> Made {
@@ -170,88 +174,229 @@ fn laid_out_made() -> Made {
     Made::new(0, &frame(camera(), &[0., 0.]), &[&SCENE, &SCENE], reads, 1, 0, 0, &[], None)
 }
 
-/// Where the still area of [`laid_out`] begins: after the scene blocks (1024 bytes) and the live
-/// area, which keeps room for live figures to join.
-fn still_start() -> usize {
-    1024 + capacity(384, ALIGNMENT)
+/// A block of `fill` the list keeps, whole, as it keeps every node's.
+fn kept_block(list: &mut Kept, fill: u8, length: usize) -> Block {
+    let at = list.blocks.len();
+    list.blocks.extend(std::iter::repeat_n(fill, length));
+    Block { at, length }
+}
+
+/// A list of one figure a node, in walk order: `nodes` gives each its actor's identity, whether
+/// its actor has a player, whether it waited on a build and the byte its block is filled with.
+fn listed(nodes: &[(u32, bool, bool, u8)]) -> Kept {
+    let mut list = Kept::new(Kind::Casters);
+    for (at, &(identity, live, waiting, fill)) in nodes.iter().enumerate() {
+        let block = kept_block(&mut list, fill, 208);
+        list.units.push(Unit { vertex: Some(block), ..unit(live, at, None, None) });
+        list.figures.push(Figure {
+            view: 0,
+            position: at,
+            key: key(identity),
+            live,
+            waiting,
+            units: at..at + 1,
+            draws: 0..0,
+        });
+    }
+    list.made = Some(laid_out_made());
+    list.read(5);
+    list.visited = vec![true];
+    list.index();
+    list
+}
+
+/// A list with room for rows: the still area above the live one, each with a megabyte.
+fn rows_list(groups: &[(usize, bool, bool, &[(Supply, usize)])]) -> Kept {
+    let mut list = Kept::new(Kind::Lit);
+    list.bytes = vec![0; 2 << 20];
+    list.live_area = Area::new(1024, 1024, 1 << 20);
+    list.still_area = Area::new(1 << 20, 1 << 20, 2 << 20);
+    for &(key, live, alone, runs) in groups {
+        list.make_group(key, 0, live, 0, alone, true, runs, ALIGNMENT)
+            .expect("the areas hold these runs");
+    }
+    list
+}
+
+/// What the list holds of the group at `at`: its rows block, its runs and its slots.
+fn held(list: &Kept, at: usize) -> (Option<usize>, Vec<Run>, usize) {
+    let group = list.groups[at].as_ref().expect("a group of the list");
+    (group.rows, group.runs.clone(), group.slots.len())
 }
 
 #[test]
-fn the_layout_puts_scene_and_live_blocks_before_the_still_ones_each_with_room() {
-    let (casters, still, other, world) = laid_out();
-    assert_eq!(casters.shared.at, vec![0, 512]);
-    assert_eq!(world.at, 1024, "live blocks follow the scene blocks");
-    assert_eq!(casters.units[1].skin.unwrap().at, 1280);
-    assert_eq!(casters.live_area.top, 1536, "a kept frame writes the scene and live blocks only");
-    assert!(casters.live_area.end >= 1536 + (64 << 10), "room for live figures to join");
-    assert_eq!((still.at, other.at), (still_start(), still_start() + 256), "still blocks after");
-    assert_eq!(casters.units[0].vertex, Some(still), "units hold their blocks' final places");
-    assert_eq!(&casters.bytes[still.at..still.at + 208], &[3; 208]);
-    assert_eq!(&casters.bytes[other.at..other.at + 208], &[6; 208]);
-    assert_eq!(casters.bytes.len() % ALIGNMENT, 0);
-    assert_eq!(casters.live(), &[1]);
-    assert_eq!(casters.units_of(2).collect::<Vec<_>>(), vec![2]);
-    assert_eq!(casters.units_of(5).count(), 0);
-}
-
-#[test]
-fn a_full_walk_gives_each_figure_its_units_and_a_span_of_its_area() {
-    let (casters, still, other, world) = laid_out();
-    let spans: Vec<_> = casters.figures.iter().map(|figure| figure.span.clone()).collect();
-    assert_eq!(
-        spans,
-        vec![still.at..still.at + 256, world.at..world.at + 512, other.at..other.at + 256]
+fn a_groups_runs_stand_at_a_multiple_of_their_stride_with_room_for_what_joins_it() {
+    let runs = [(Supply::Vertex, 208), (Supply::Skin, 128)];
+    let list = rows_list(&[(3, false, false, &runs)]);
+    let (rows, placed, slots) = held(&list, 0);
+    assert_eq!(slots, 0, "no instance yet");
+    assert_eq!(rows.expect("a rows block") % ALIGNMENT, 0, "a uniform binds at the alignment");
+    assert!(
+        placed.iter().all(|run| run.at.is_multiple_of(run.stride)),
+        "the instance index reaches every row of a run from its base"
     );
-    let units: Vec<_> = casters.figures.iter().map(|figure| figure.units.clone()).collect();
-    assert_eq!(units, vec![0..1, 1..2, 2..3]);
-    let keys: Vec<_> = casters.figures.iter().map(|figure| (figure.key, figure.live)).collect();
-    assert_eq!(keys, vec![(key(1), false), (key(2), true), (key(3), false)]);
-    assert_eq!((casters.figure_of(0), casters.figure_of(1), casters.figure_of(2)), (0, 1, 2));
+    assert_eq!(placed.iter().map(|run| run.stride).collect::<Vec<_>>(), vec![208, 128]);
+    assert_eq!(list.groups[0].as_ref().expect("made").capacity, 5, "room for four more");
+    // A part whose draws keep the list's order stands alone, one instance a draw.
+    let alone = rows_list(&[(3, false, true, &runs)]);
+    assert_eq!(alone.groups[0].as_ref().expect("made").capacity, 1);
 }
 
 #[test]
-fn a_kept_frame_writes_its_scene_and_live_nodes_and_no_still_block() {
-    let (mut casters, still, _, world) = laid_out();
-    let before = casters.bytes.clone();
-    let pose: [[f32; 4]; 4] = [[0.5; 4]; 4];
-    let bones = [9u8; 128];
-    assert!(casters.write_unit(
-        1,
-        LiveBytes {
-            world: &pose,
-            userdata: None,
-            bones: Some(&bones)
-        }
-    ));
-    assert!(casters.dirty_ranges().is_empty(), "a live node is in the bytes every frame writes");
-    let written = casters.kept_bytes(&[&[1; 416], &[2; 416]]).len();
-    assert_eq!(written, 1536, "nothing past the live blocks reaches the GPU");
-    let counts = casters.counts();
-    assert_eq!((counts.walks, counts.kept), (1, 1), "one walk, then one frame kept with no walk");
-    assert_eq!(&casters.bytes[..416], &[1; 416]);
-    assert_eq!(&casters.bytes[512..928], &[2; 416]);
-    assert_eq!(&casters.bytes[world.at..world.at + 64], bytemuck::bytes_of(&pose));
+fn an_instance_takes_the_next_slot_and_a_full_group_grows_where_its_rows_fit() {
+    let mut list = rows_list(&[(3, false, false, &[(Supply::Vertex, 208)])]);
+    let first = held(&list, 0).1[0].at;
+    for slot in 0..5 {
+        assert_eq!(list.take_slot(0), Some((slot, false)), "room for five");
+    }
+    for slot in 0..5u32 {
+        let row = first + slot as usize * 208;
+        list.bytes[row..row + 4].copy_from_slice(&slot.to_le_bytes());
+    }
+    assert_eq!(list.take_slot(0), Some((5, true)), "the sixth grew the run");
+    let (_, placed, slots) = held(&list, 0);
+    assert_eq!(slots, 6);
+    assert!(placed[0].at.is_multiple_of(208));
+    assert_ne!(placed[0].at, first, "a longer run elsewhere");
+    for slot in 0..5u32 {
+        let row = placed[0].at + slot as usize * 208;
+        assert_eq!(&list.bytes[row..row + 4], &slot.to_le_bytes(), "its rows moved with it");
+    }
+}
+
+#[test]
+fn a_group_with_no_room_for_its_runs_leaves_none_taken() {
+    let mut list = rows_list(&[]);
+    let free = list.still_area.clone();
+    let long = [(Supply::Vertex, 1 << 22)];
+    assert!(list.make_group(1, 0, false, 0, false, true, &long, ALIGNMENT).is_none());
+    assert_eq!(list.still_area, free, "the area is as it was");
+    // A group that cannot grow keeps the slots it has.
+    let mut list = rows_list(&[(2, false, false, &[(Supply::Vertex, 1 << 17)])]);
+    while list.take_slot(0).is_some() {}
+    let slots = held(&list, 0).2;
+    assert!(slots >= 5, "five rows were placed: {slots}");
+    assert_eq!(list.take_slot(0), None, "full");
+    assert_eq!(held(&list, 0).2, slots);
+}
+
+/// Takes one slot of the group at `at` for the list's next instance.
+fn joined(list: &mut Kept, at: usize) -> usize {
+    let (slot, _) = list.take_slot(at).expect("room");
+    let instance = list.instances.len();
+    list.groups[at].as_mut().expect("made").slots[slot] = instance;
+    list.instances.push(Instance { group: at, slot });
+    slot
+}
+
+#[test]
+fn an_instance_that_leaves_gives_its_slot_back_and_the_rows_above_it_move_down() {
+    let mut list = rows_list(&[(3, false, false, &[(Supply::Vertex, 208)])]);
+    let at = held(&list, 0).1[0].at;
+    for instance in 0..4u8 {
+        let slot = joined(&mut list, 0);
+        list.bytes[at + slot * 208] = 10 + instance;
+    }
+    list.dirty.clear();
+    list.release(&[1]);
+    assert_eq!(held(&list, 0).2, 3, "three instances left");
     assert_eq!(
-        &casters.bytes[world.at + 64..world.at + 208],
-        &before[world.at + 64..world.at + 208],
-        "a caster's world block changes in its matrix only"
+        list.instances.iter().map(|instance| instance.slot).collect::<Vec<_>>(),
+        vec![0, 1, 1, 2],
+        "the instances above the hole the second left moved down, in order"
     );
-    let skin = casters.units[1].skin.unwrap();
-    assert_eq!(&casters.bytes[skin.at..skin.at + 128], &bones);
-    assert_eq!(&casters.bytes[still.at..], &before[still.at..], "still blocks untouched");
+    let rows: Vec<u8> = (0..3).map(|slot| list.bytes[at + slot * 208]).collect();
+    assert_eq!(rows, vec![10, 12, 13], "their rows moved with them");
+    assert_eq!(list.dirty_ranges(), vec![at + 208..at + 624], "the still rows it wrote");
+    // Every instance of a group leaving gives its runs back.
+    list.release(&[0, 2, 3]);
+    assert!(list.groups[0].is_none(), "the group left");
+    assert_eq!(list.still_area, Area::new(1 << 20, 1 << 20, 2 << 20), "its area is as it was");
 }
 
 #[test]
-fn a_moved_instance_writes_its_own_still_block_and_no_other() {
-    let (mut casters, still, other, _) = laid_out();
-    let before = casters.bytes.clone();
-    let pose: [[f32; 4]; 4] = [[2.0; 4]; 4];
-    assert!(casters.write_unit(2, LiveBytes { world: &pose, userdata: None, bones: None }));
-    assert_eq!(casters.dirty_ranges(), vec![other.at..other.at + 64]);
-    assert_eq!(&casters.bytes[other.at..other.at + 64], bytemuck::bytes_of(&pose));
-    assert_eq!(&casters.bytes[still.at..other.at], &before[still.at..other.at]);
-    assert_eq!(&casters.bytes[other.at + 64..], &before[other.at + 64..]);
-    assert!(casters.dirty_ranges().is_empty(), "written once");
+fn a_node_writes_its_world_and_userdata_into_its_block_and_the_rows_its_draws_read() {
+    // Its part reads 96 bytes of its 208-byte block: the row holds those, the list the whole.
+    let runs = [(Supply::Vertex, 96), (Supply::Skin, 128)];
+    let mut list = rows_list(&[(3, false, false, &runs)]);
+    let (_, placed, _) = held(&list, 0);
+    joined(&mut list, 0);
+    joined(&mut list, 0);
+    let vertex = kept_block(&mut list, 0, 208);
+    let skin = kept_block(&mut list, 0, 128);
+    list.units.push(Unit {
+        vertex: Some(vertex),
+        skin: Some(skin),
+        draws: 1,
+        parts: 1,
+        ..unit(false, 0, None, None)
+    });
+    let (world, userdata, bones) = ([[1.0f32; 4]; 4], [2.0f32; 8], [9u8; 128]);
+    let wrote = LiveBytes { world: &world, userdata: Some(userdata), bones: Some(&bones) };
+    assert!(list.write_unit(0, wrote));
+    let (row, palette) = (placed[0].at + 96, placed[1].at + 128);
+    assert_eq!(&list.bytes[row..row + 64], bytemuck::bytes_of(&world), "the second slot's row");
+    assert_eq!(&list.bytes[row + 64..row + 96], bytemuck::bytes_of(&userdata));
+    assert_eq!(&list.bytes[palette..palette + 128], &bones);
+    assert_eq!(&list.vertex_bytes(0).expect("its block")[..64], bytemuck::bytes_of(&world));
+    assert_eq!(&list.vertex_bytes(0).expect("its block")[96..], &[0; 112], "the rest as it was");
+    assert_eq!(list.skin_bytes(0).expect("its palette"), &bones);
+    assert_eq!(
+        list.dirty_ranges(),
+        vec![row..palette + 128],
+        "the still rows it wrote, joined: they stand near each other"
+    );
+    // A palette of another length only a walk of its figure can place.
+    let moved = LiveBytes { world: &world, userdata: None, bones: Some(&[0; 64]) };
+    assert!(!list.write_unit(0, moved));
+    let none = LiveBytes { world: &world, userdata: None, bones: None };
+    assert!(!list.write_unit(0, none));
+}
+
+#[test]
+fn a_kept_frame_stages_the_rows_and_shared_blocks_whose_bytes_changed() {
+    let mut list = rows_list(&[(3, true, false, &[(Supply::Vertex, 208)])]);
+    list.shared = Shared { at: vec![0, 512], reserved: vec![416, 416], reads: Reads { views: 2, ..Reads::default() } };
+    let at = held(&list, 0).1[0].at;
+    joined(&mut list, 0);
+    let vertex = kept_block(&mut list, 0, 208);
+    list.units.push(Unit { vertex: Some(vertex), parts: 1, ..unit(true, 0, None, None) });
+    let world = [[0.5f32; 4]; 4];
+    assert!(list.write_unit(0, LiveBytes { world: &world, userdata: None, bones: None }));
+    assert_eq!(list.dirty_ranges(), vec![at..at + 64], "the live row whose bytes changed");
+    assert_eq!(&list.bytes[at..at + 64], bytemuck::bytes_of(&world));
+    assert!(list.write_unit(0, LiveBytes { world: &world, userdata: None, bones: None }));
+    assert!(list.dirty_ranges().is_empty(), "the same pose again stages nothing");
+    let moved = [[0.75f32; 4]; 4];
+    assert!(list.write_unit(0, LiveBytes { world: &moved, userdata: None, bones: None }));
+    assert_eq!(list.dirty_ranges(), vec![at..at + 64], "a row whose node moved");
+    // A shared block reaches the GPU on the frame its bytes change, and near writes join.
+    list.write_shared(&[&[1; 416], &[2; 416]]);
+    assert_eq!(list.dirty_ranges(), vec![0..928], "both blocks");
+    list.write_shared(&[&[1; 416], &[2; 416]]);
+    assert!(list.dirty_ranges().is_empty(), "the blocks stand");
+    list.write_shared(&[&[1; 416], &[3; 416]]);
+    assert_eq!(list.dirty_ranges(), vec![512..928], "the one that changed");
+    assert_eq!(&list.bytes[..416], &[1; 416]);
+    assert_eq!(&list.bytes[512..928], &[3; 416]);
+}
+
+#[test]
+fn the_judge_of_the_staged_bytes_names_a_row_the_list_did_not_stage() {
+    let mut list = rows_list(&[(3, true, false, &[(Supply::Vertex, 208)])]);
+    let at = held(&list, 0).1[0].at;
+    list.resident = list.bytes.clone();
+    assert_eq!(list.staged_difference(), None, "the GPU holds a whole write's bytes");
+    list.bytes[at + 8] = 9;
+    assert_eq!(list.staged_difference(), Some(at + 8), "a row written and not staged");
+    list.resident[at + 8] = 9;
+    assert_eq!(list.staged_difference(), None, "staged");
+    let past = list.live_area.top + 4;
+    list.bytes[past] = 7;
+    assert_eq!(list.staged_difference(), None, "nothing past the rows its draws read");
+    list.resident = Vec::new();
+    list.bytes[at + 8] = 1;
+    assert_eq!(list.staged_difference(), None, "no judge keeps no bytes to compare");
 }
 
 #[test]
@@ -262,17 +407,8 @@ fn near_writes_join_and_far_ones_stay_apart() {
 }
 
 #[test]
-fn a_node_whose_palette_changes_length_walks_its_figure_again() {
-    let (mut casters, ..) = laid_out();
-    let pose = [[0.0; 4]; 4];
-    assert!(!casters.write_unit(1, LiveBytes { world: &pose, userdata: None, bones: Some(&[0; 64]) }));
-    assert!(!casters.write_unit(1, LiveBytes { world: &pose, userdata: None, bones: None }));
-    assert!(!casters.write_unit(0, LiveBytes { world: &pose, userdata: None, bones: Some(&[0; 64]) }));
-}
-
-#[test]
 fn a_forgotten_list_or_one_that_missed_a_change_of_the_field_is_not_fresh() {
-    let (mut casters, ..) = laid_out();
+    let mut casters = listed(&[(1, false, false, 3)]);
     let made = laid_out_made();
     assert!(casters.fresh(&made, Some(5)));
     assert!(!casters.fresh(&made, Some(6)), "the field was read in a frame the list was not");
@@ -298,26 +434,26 @@ fn a_walk_of_some_figures_takes_their_routes_alone_and_marks_each() {
     let mut all = Recording::default();
     assert!(all.takes(0, 0) && all.takes(3, 9), "a full walk takes every route");
 
-    // Two still figures around a live one and one with no block: each is one run of its region.
+    // Two still figures around a live one and one with no block: each keeps its own nodes.
     let mut recording = Recording::default();
     still_figure(&mut recording, 0, 1, 1);
     recording.begin(0, 1, key(2), true);
-    recording.place(true, &[2; 208], 512, ALIGNMENT);
+    recording.place(&[2; 208]);
     recording.begin(0, 2, key(3), false);
     recording.units.push(unit(false, 2, None, None));
     still_figure(&mut recording, 3, 4, 4);
-    let walked = recording.walked(ALIGNMENT);
+    let walked = recording.walked();
     let runs: Vec<_> = walked
         .iter()
-        .map(|walk| (walk.mark.key, walk.units.clone(), walk.region.clone()))
+        .map(|walk| (walk.mark.key, walk.units.clone(), walk.mark.live))
         .collect();
     assert_eq!(
         runs,
         vec![
-            (key(1), 0..1, 0..208),
-            (key(2), 1..1, 0..512),
-            (key(3), 1..2, 208..208),
-            (key(4), 2..3, 256..464),
+            (key(1), 0..1, false),
+            (key(2), 1..1, true),
+            (key(3), 1..2, false),
+            (key(4), 2..3, false),
         ]
     );
 }
@@ -325,12 +461,12 @@ fn a_walk_of_some_figures_takes_their_routes_alone_and_marks_each() {
 #[test]
 fn an_area_takes_free_runs_first_and_a_run_given_back_joins_its_neighbours() {
     let mut area = Area::new(1024, 1024, 4096);
-    assert_eq!(area.take(512), Some(1024));
-    assert_eq!(area.take(256), Some(1536));
-    assert_eq!(area.take(512), Some(1792));
-    assert_eq!(area.take(2048), None, "full");
+    assert_eq!(area.take(512, ALIGNMENT), Some(1024));
+    assert_eq!(area.take(256, ALIGNMENT), Some(1536));
+    assert_eq!(area.take(512, ALIGNMENT), Some(1792));
+    assert_eq!(area.take(2048, ALIGNMENT), None, "full");
     area.give(1024..1536);
-    assert_eq!(area.take(256), Some(1024), "a free run before the top first");
+    assert_eq!(area.take(256, ALIGNMENT), Some(1024), "a free run before the top first");
     assert_eq!(area.free, vec![1280..1536]);
     area.give(1024..1280);
     assert_eq!(area.free, vec![1024..1536], "neighbours join");
@@ -338,7 +474,18 @@ fn an_area_takes_free_runs_first_and_a_run_given_back_joins_its_neighbours() {
     assert_eq!(area.top, 1792, "the run at the top lowers it");
     area.give(1536..1792);
     assert_eq!((area.top, area.free.len()), (1024, 0), "all given back");
-    assert_eq!(area.take(3072), Some(1024));
+    assert_eq!(area.take(3072, ALIGNMENT), Some(1024));
+}
+
+#[test]
+fn a_run_of_one_stride_starts_at_a_multiple_of_it() {
+    let mut area = Area::new(0, 0, 4096);
+    assert_eq!(area.take(208, 208), Some(0));
+    assert_eq!(area.take(416, 208), Some(208), "the rows after it");
+    area.give(0..208);
+    assert_eq!(area.take(104, 104), Some(0), "the free run holds these rows");
+    assert_eq!(area.take(104, 208), Some(624), "no row of 208 fits below: above the top");
+    assert_eq!(area.free, vec![104..208], "what the free run has left");
 }
 
 fn target(position: usize, identity: u32, born: bool) -> Target {
@@ -355,7 +502,7 @@ fn target(position: usize, identity: u32, born: bool) -> Target {
 
 #[test]
 fn a_figure_placed_once_in_both_frames_is_kept_and_every_other_is_walked() {
-    let (casters, ..) = laid_out();
+    let casters = listed(&[(1, false, false, 3), (2, true, false, 4), (3, false, false, 6)]);
     // 3 first, 1 kept, 4 joins; 2 left.
     // Each walked target counted once, by why.
     let entered = |targets: &[Target], demoted: &[bool]| {
@@ -397,90 +544,6 @@ fn a_figure_placed_once_in_both_frames_is_kept_and_every_other_is_walked() {
     let mut keys = only(Entered::KeyMesh, 1);
     keys[Entered::KeyEpoch as usize] = 1;
     assert_eq!(entered(&[mesh, epoch], &[]), keys);
-}
-
-#[test]
-fn a_splice_keeps_the_figures_that_stay_and_walks_and_places_only_the_one_that_joined() {
-    let (mut casters, still, other, _) = laid_out();
-    let before = casters.bytes.clone();
-    let targets = [target(0, 3, false), target(1, 1, false), target(2, 4, false)];
-    let next = casters.plan(&targets, &[]);
-    for (target, figure) in targets.iter().zip(&next) {
-        if let Some(figure) = *figure {
-            casters.follow(figure, target);
-        }
-    }
-    let mut recording = Recording::of(vec![(0, 2)]);
-    assert!(recording.takes(0, 2));
-    still_figure(&mut recording, 2, 4, 8);
-    // The live figure posed with the bytes it holds: written, and nothing in the list changes.
-    let same = [[f32::from_bits(0x0404_0404); 4]; 4];
-    assert!(casters.write_unit(1, LiveBytes { world: &same, userdata: None, bones: Some(&[5; 128]) }));
-    let bind = |_: &[u8],
-                _: &Shared,
-                _: &Pending,
-                _: Block,
-                _: Option<Block>|
-     -> io::Result<Option<RecordedDraw>> { unreachable!("no figure here draws") };
-    assert!(casters.splice(&next, &recording, vec![true], ALIGNMENT, bind).unwrap());
-
-    let keys: Vec<_> = casters.figures.iter().map(|figure| figure.key).collect();
-    assert_eq!(keys, vec![key(3), key(1), key(4)], "this frame's order");
-    assert_eq!(casters.figures[0].span, other.at..other.at + 256, "kept where it was");
-    assert_eq!(casters.figures[1].span, still.at..still.at + 256, "kept where it was");
-    let joined = still_start() + 512;
-    assert_eq!(casters.figures[2].span, joined..joined + 256, "taken above the still top");
-    assert_eq!(&casters.bytes[joined..joined + 208], &[8; 208]);
-    assert_eq!(&casters.bytes[..joined], &before[..joined], "nothing else written");
-    assert_eq!(casters.dirty_ranges(), vec![joined..joined + 208], "only the joined blocks");
-    let units: Vec<_> = casters.units.iter().map(|unit| (unit.index, unit.vertex)).collect();
-    assert_eq!(
-        units,
-        vec![
-            (0, Some(other)),
-            (1, Some(still)),
-            (2, Some(Block { live: false, at: joined, length: 208 })),
-        ],
-        "kept units follow their instances; the joined one's blocks are at its span"
-    );
-    assert!(casters.live().is_empty());
-    assert_eq!(casters.live_area.top, 1024, "the live figure that left gave its span back");
-    assert_eq!(casters.units_of(2).collect::<Vec<_>>(), vec![2]);
-    let counts = casters.counts();
-    assert_eq!((counts.walks, counts.spliced, counts.figures), (1, 1, 1), "one figure walked");
-
-    // The next figure to join takes the span of one that left.
-    let targets = [target(0, 3, false), target(1, 5, false), target(2, 4, false)];
-    let next = casters.plan(&targets, &[]);
-    assert_eq!(next, vec![Some(0), None, Some(2)]);
-    let mut recording = Recording::of(vec![(0, 1)]);
-    assert!(recording.takes(0, 1));
-    still_figure(&mut recording, 1, 5, 9);
-    assert!(casters.splice(&next, &recording, vec![true], ALIGNMENT, bind).unwrap());
-    assert_eq!(casters.figures[1].span, still.at..still.at + 256);
-    assert_eq!(&casters.bytes[still.at..still.at + 208], &[9; 208]);
-    assert_eq!(casters.counts().figures, 2);
-}
-
-#[test]
-fn a_splice_whose_walk_is_not_the_one_planned_or_has_no_room_makes_the_list_again() {
-    let (mut casters, ..) = laid_out();
-    let next = vec![Some(0), None];
-    let bind = |_: &[u8],
-                _: &Shared,
-                _: &Pending,
-                _: Block,
-                _: Option<Block>|
-     -> io::Result<Option<RecordedDraw>> { unreachable!("no figure here draws") };
-    let empty = Recording::of(vec![(0, 1)]);
-    assert!(!casters.splice(&next, &empty, vec![true], ALIGNMENT, bind).unwrap(), "no walk");
-
-    let (mut casters, ..) = laid_out();
-    let mut recording = Recording::of(vec![(0, 1)]);
-    assert!(recording.takes(0, 1));
-    recording.begin(0, 1, key(9), false);
-    recording.place(false, &vec![1; 200 << 10], 0, ALIGNMENT);
-    assert!(!casters.splice(&next, &recording, vec![true], ALIGNMENT, bind).unwrap(), "full");
 }
 
 #[test]
@@ -682,57 +745,27 @@ fn a_whole_change_lists_the_actors_in_both_fields_whose_values_changed() {
     assert_eq!(changed.instances, vec![0]);
 }
 
-#[test]
-fn a_lit_node_writes_its_own_userdata_after_its_world() {
-    let (mut list, still, ..) = laid_out();
-    let before = list.bytes.clone();
-    let (world, userdata) = ([[1.0f32; 4]; 4], [2.0f32; 8]);
-    let bytes = LiveBytes { world: &world, userdata: Some(userdata), bones: None };
-    assert!(list.write_unit(0, bytes));
-    assert_eq!(&list.bytes[still.at..still.at + 64], bytemuck::bytes_of(&world));
-    assert_eq!(&list.bytes[still.at + 64..still.at + 96], bytemuck::bytes_of(&userdata));
-    assert_eq!(&list.bytes[still.at + 96..], &before[still.at + 96..]);
-    assert_eq!(list.dirty_ranges(), vec![still.at..still.at + 96]);
-}
-
-fn pending(key: usize, vertex: Block, skin: Option<Block>, material: usize) -> Pending {
-    Pending {
-        key,
-        view: 0,
-        vertex,
-        skin,
-        reference: 0,
-        vertices: ((48, false), 0),
-        indices: 0,
-        first: 0,
-        count: 3,
-        base: 0,
-        textures: 1,
-        material,
-    }
-}
-
 /// A lit walk of two figures: a node drawing one part (frame, vertex, pixel and grid), then a
 /// skinned node drawing two parts and a node written that draws nothing.
 fn lit(reads: Reads) -> Kept {
-    let mut recording = Recording::default();
-    recording.begin(0, 0, key(1), false);
-    let a = recording.place(false, &[1; 208], 0, ALIGNMENT);
-    recording.units.push(Unit { mask: 0b10_1111, parts: 1, ..unit(false, 0, Some(a), None) });
-    recording.pending.push(pending(3, a, None, 5));
-    recording.begin(0, 1, key(2), false);
-    let b = recording.place(false, &[2; 208], 0, ALIGNMENT);
-    let bones = recording.place(false, &[6; 128], 0, ALIGNMENT);
-    recording.units.push(Unit { mask: 0b11_1111, parts: 2, ..unit(false, 1, Some(b), Some(bones)) });
-    recording.pending.push(pending(4, b, Some(bones), 6));
-    recording.pending.push(pending(5, b, Some(bones), 7));
-    let c = recording.place(false, &[3; 208], 0, ALIGNMENT);
-    recording.units.push(unit(false, 1, Some(c), None));
-    let grid = [0u8; 16];
-    let layout = Layout::new(Vec::new(), &mut recording, &[&SCENE, &grid], &[416, 16], ALIGNMENT);
     let mut list = Kept::new(Kind::Lit);
-    let shared = Shared { at: Vec::new(), reserved: vec![416, 16], reads };
-    list.take(layout, recording, DrawList::default(), shared, ALIGNMENT, None);
+    let a = kept_block(&mut list, 1, 208);
+    list.units.push(Unit { mask: 0b10_1111, draws: 0, parts: 1, ..unit(false, 0, Some(a), None) });
+    let b = kept_block(&mut list, 2, 208);
+    let bones = kept_block(&mut list, 6, 128);
+    list.units.push(Unit {
+        mask: 0b11_1111,
+        draws: 1,
+        parts: 2,
+        ..unit(false, 1, Some(b), Some(bones))
+    });
+    let c = kept_block(&mut list, 3, 208);
+    list.units.push(Unit { draws: 3, ..unit(false, 1, Some(c), None) });
+    for (key, material) in [(3, 5), (4, 6), (5, 7)] {
+        list.metas.push(Meta { key, textures: 1, material });
+    }
+    list.shared = Shared { at: Vec::new(), reserved: vec![416, 16], reads };
+    list.index();
     list
 }
 
@@ -814,13 +847,8 @@ fn a_figure_that_waited_on_a_build_is_walked_again_alone_and_the_list_is_kept() 
     recording.wait();
     still_figure(&mut recording, 2, 3, 5);
     assert!(!recording.incomplete(), "the wait is its figure's");
-    let shared = [&SCENE[..], &SCENE[..]];
-    let layout = Layout::new(Vec::new(), &mut recording, &shared, &[416, 416], ALIGNMENT);
-    let mut list = Kept::default();
+    let list = listed(&[(1, false, false, 3), (2, false, true, 4), (3, false, false, 5)]);
     let made = laid_out_made();
-    let blocks = Shared { at: Vec::new(), reserved: vec![416, 416], reads: Reads { views: 2, ..Reads::default() } };
-    list.take(layout, recording, DrawList::default(), blocks, ALIGNMENT, Some(made.clone()));
-    list.read(5);
     assert!(list.fresh(&made, Some(5)), "kept, though one figure waited");
     let waiting = list.waiting().expect("one figure waited");
     assert_eq!(waiting, vec![false, true, false]);
@@ -833,24 +861,17 @@ fn a_figure_that_waited_on_a_build_is_walked_again_alone_and_the_list_is_kept() 
 }
 
 #[test]
-fn part_counts_give_what_instancing_by_run_and_by_part_would_leave() {
+fn part_counts_give_what_instancing_by_run_and_by_part_leaves() {
     // Two figures of parts 3, 4 then 3, 4 in one view, then one of part 3 in another.
-    let mut recording = Recording::default();
+    let mut list = Kept::new(Kind::Lit);
     for (position, view) in [(0, 0), (1, 0), (2, 1)] {
-        recording.begin(view, position, key(position as u32), false);
-        let block = recording.place(false, &[1; 208], 0, ALIGNMENT);
         let parts = if view == 0 { 2 } else { 1 };
-        recording.units.push(Unit { view, parts, ..unit(false, position, Some(block), None) });
-        recording.pending.push(pending(3, block, None, 5));
-        if parts == 2 {
-            recording.pending.push(pending(4, block, None, 5));
+        let draws = list.metas.len();
+        list.units.push(Unit { view, draws, parts, ..unit(false, position, None, None) });
+        for key in 3..3 + parts {
+            list.metas.push(Meta { key, textures: 1, material: 5 });
         }
     }
-    let grid = [0u8; 16];
-    let layout = Layout::new(Vec::new(), &mut recording, &[&SCENE, &SCENE, &grid], &[416, 416, 16], ALIGNMENT);
-    let mut list = Kept::new(Kind::Lit);
-    let shared = Shared { at: Vec::new(), reserved: vec![416, 416, 16], reads: Reads { views: 2, ..Reads::default() } };
-    list.take(layout, recording, DrawList::default(), shared, ALIGNMENT, None);
     let counts = list.part_counts();
     assert_eq!(counts, PartCounts { parts: 2, runs: 5, in_views: 3 }, "3,4,3,4 then 3 in view 1");
 }
@@ -866,6 +887,7 @@ fn with_the_camera_still_a_unit_walking_out_or_in_crosses_the_cull_on_the_frame_
         eye: [0., 100., 0.],
         sides: [[1., 0., 0., wide], [-1., 0., 0., wide], [0., 0., 1., wide], [0., 0., -1., wide]],
         x: 0.,
+        pad: 0.,
     };
     let distance = installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
     let mut list = Kept::default();

@@ -1,4 +1,5 @@
 //! Compiled mesh passes with retained material state and ordered submission.
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use super::*;
 mod admission;
 mod builds;
@@ -308,6 +309,8 @@ struct Resident {
     geometry: SharedGeometry,
     caster_texture: bool,
     blended: bool,
+    /// What its draws and a list's others must agree on to stand in any order among its figures.
+    order: Option<mesh_shader::Order>,
     /// Physical slots this material updates, independent of shader reads.
     samplers: u32,
     /// Published only at the successful descriptor commit. Stale programs stay cold until use.
@@ -465,9 +468,30 @@ struct RecordNames {
     spliced: &'static str,
     splice_us: &'static str,
     splice_walk_us: &'static str,
+    /// The splice's own parts: the targets walked, the figures planned and followed, the live
+    /// units written in place, and the list's rows moved. A kept list's test and rewrite.
+    targets_us: &'static str,
+    plan_us: &'static str,
+    rewrite_us: &'static str,
+    apply_us: &'static str,
+    keep_test_us: &'static str,
+    keep_rewrite_us: &'static str,
     entered: &'static str,
     left: &'static str,
     rewritten: &'static str,
+    /// Of the rows a kept frame wrote in place, those whose bytes differed from the ones the
+    /// GPU holds, and how many of their bytes did; the live rows the list holds and the frames
+    /// a new pose set marked them all on; and the writes and bytes the frame staged.
+    rows_changed: &'static str,
+    row_bytes_changed: &'static str,
+    live_rows: &'static str,
+    reposed: &'static str,
+    staged: &'static str,
+    staged_bytes: &'static str,
+    /// Figures whose level of detail the frame's own eye changed in a kept list.
+    relevelled: &'static str,
+    /// Figures the padded view admits that the frame's own camera does not: drawn off screen.
+    extras: &'static str,
     flipped: &'static str,
     waiting: &'static str,
     /// The distinct parts drawn, and the draws instancing by part would leave: by runs of one
@@ -475,6 +499,14 @@ struct RecordNames {
     parts: &'static str,
     instanced_runs: &'static str,
     instanced_parts: &'static str,
+    /// A list whose parts do not all let their draws stand in any order among its figures: it
+    /// keeps one draw an instance, in walk order.
+    ordered: &'static str,
+    /// The bands the walk's draws fall into: maximal runs whose parts agree, inside which one
+    /// part in one view and liveness stands as one instanced draw.
+    bands: &'static str,
+    /// Frames the judge of the list's draws ran on.
+    judged: &'static str,
     lods: [&'static str; kept::LODS],
     /// Why the list was walked whole ([`kept::Whole`]), or made from which other input
     /// ([`kept::Made::first_difference`]); and why each figure walked into a kept list was
@@ -498,7 +530,7 @@ macro_rules! why_names {
                 "no_room", "unbound", "error",
             ]),
             prefixed!($queue, "_whole_input_", [
-                "revision", "camera", "offsets", "visible", "alpha", "shared", "reads", "samples", "textures",
+                "revision", "map", "offsets", "visible", "alpha", "shared", "reads", "samples", "textures",
                 "globals", "chain", "cull",
             ]),
             prefixed!($queue, "_entered_", [
@@ -521,14 +553,31 @@ const CASTER_RECORD: RecordNames = RecordNames {
     spliced: "caster_spliced",
     splice_us: "caster_splice_us",
     splice_walk_us: "caster_splice_walk_us",
+    targets_us: "caster_targets_us",
+    plan_us: "caster_plan_us",
+    rewrite_us: "caster_rewrite_us",
+    apply_us: "caster_apply_us",
+    keep_test_us: "caster_keep_test_us",
+    keep_rewrite_us: "caster_keep_rewrite_us",
     entered: "caster_entered",
     left: "caster_left",
     rewritten: "caster_rewritten",
+    rows_changed: "caster_rows_changed",
+    row_bytes_changed: "caster_row_bytes_changed",
+    live_rows: "caster_live_rows",
+    reposed: "caster_reposed",
+    staged: "caster_staged",
+    staged_bytes: "caster_staged_bytes",
+    relevelled: "caster_relevelled",
+    extras: "caster_extras",
     flipped: "caster_groups_flipped",
     waiting: "caster_waiting",
     parts: "caster_parts",
     instanced_runs: "caster_instanced_runs",
     instanced_parts: "caster_instanced_parts",
+    ordered: "caster_ordered",
+    bands: "caster_bands",
+    judged: "caster_judged",
     lods: ["caster_lod_0", "caster_lod_1", "caster_lod_2", "caster_lod_3", "caster_lod_4", "caster_lod_5_plus"],
     whole: CASTER_WHY.0,
     inputs: CASTER_WHY.1,
@@ -543,14 +592,31 @@ const LIT_RECORD: RecordNames = RecordNames {
     spliced: "lit_spliced",
     splice_us: "lit_splice_us",
     splice_walk_us: "lit_splice_walk_us",
+    targets_us: "lit_targets_us",
+    plan_us: "lit_plan_us",
+    rewrite_us: "lit_rewrite_us",
+    apply_us: "lit_apply_us",
+    keep_test_us: "lit_keep_test_us",
+    keep_rewrite_us: "lit_keep_rewrite_us",
     entered: "lit_entered",
     left: "lit_left",
     rewritten: "lit_rewritten",
+    rows_changed: "lit_rows_changed",
+    row_bytes_changed: "lit_row_bytes_changed",
+    live_rows: "lit_live_rows",
+    reposed: "lit_reposed",
+    staged: "lit_staged",
+    staged_bytes: "lit_staged_bytes",
+    relevelled: "lit_relevelled",
+    extras: "lit_extras",
     flipped: "lit_groups_flipped",
     waiting: "lit_waiting",
     parts: "lit_parts",
     instanced_runs: "lit_instanced_runs",
     instanced_parts: "lit_instanced_parts",
+    ordered: "lit_ordered",
+    bands: "lit_bands",
+    judged: "lit_judged",
     lods: ["lit_lod_0", "lit_lod_1", "lit_lod_2", "lit_lod_3", "lit_lod_4", "lit_lod_5_plus"],
     whole: LIT_WHY.0,
     inputs: LIT_WHY.1,
@@ -628,6 +694,48 @@ const CASTER_WALK_STEPS: [&str; WALK_STEPS] = [
 ];
 
 
+/// What a list needs of each part its draws stand for: its program, and whether its draws may
+/// stand in any order among the list's figures.
+fn part_programs<'r>(
+    residents: &'r [Resident],
+) -> impl Fn(usize) -> Option<kept::PartProgram<'r>> + 'r {
+    move |key| {
+        let resident = residents.get(key)?;
+        let (_, program) = resident.program.as_ref()?;
+        Some(kept::PartProgram {
+            program: &**program,
+            order: resident.order,
+        })
+    }
+}
+
+/// With `BATTLE_PLAN_ORDER_LIST` set, one line on the standard error for each part a pass builds: the
+/// key a list names it by, where it sits in its mesh, its technique and material, and whether its
+/// draws may stand in any order among a list's figures.
+#[allow(clippy::too_many_arguments, reason = "one line names the part, its place and its order")]
+fn note_part(
+    key: usize,
+    mesh: usize,
+    node: usize,
+    lod: usize,
+    part: usize,
+    blended: bool,
+    selection: &Selection,
+    source: &Part,
+    order: Option<mesh_shader::Order>,
+) {
+    static LIST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*LIST.get_or_init(|| std::env::var_os("BATTLE_PLAN_ORDER_LIST").or_else(|| std::env::var_os("HOI4_ORDER_LIST")).is_some()) {
+        return;
+    }
+    let technique = &selection.effect.source.techniques[selection.index].name;
+    let shader = source.material.shader_file.as_deref().unwrap_or("");
+    eprintln!(
+        "order part: key {key} mesh {mesh} node {node} lod {lod} part {part} blended {blended}          technique {technique} shader {shader} diffuse {} order {order:?}",
+        source.material.diffuse
+    );
+}
+
 fn record_names(queue: Queue) -> &'static RecordNames {
     if queue == Queue::Caster { &CASTER_RECORD } else { &LIT_RECORD }
 }
@@ -636,11 +744,17 @@ fn record_names(queue: Queue) -> &'static RecordNames {
 /// figures walked in and left, and nodes by level of detail.
 fn note_list(label: &'static str, queue: Queue, list: &mut kept::Kept) {
     let moved = list.take_moved();
+    let wrote = list.take_wrote();
     if !viewer_foundation::view_record::on() {
         return;
     }
     use viewer_foundation::view_record::add;
     let names = record_names(queue);
+    add(label, names.rows_changed, wrote.changed);
+    add(label, names.row_bytes_changed, wrote.changed_bytes);
+    add(label, names.live_rows, list.live().len() as u64);
+    add(label, names.staged, wrote.staged);
+    add(label, names.staged_bytes, wrote.staged_bytes);
     add(label, names.draws, list.draws.draws.iter().filter(|draw| draw.shown).count() as u64);
     add(label, names.figures, list.figures() as u64);
     add(label, names.entered, moved[0]);
@@ -652,12 +766,27 @@ fn note_list(label: &'static str, queue: Queue, list: &mut kept::Kept) {
     let counts = list.part_counts();
     let blended = queue == Queue::Alternate;
     let drawn = list.draws.draws.len();
+    if !list.order_free() {
+        add(label, names.ordered, 1);
+    }
+    add(label, names.bands, list.bands() as u64);
     add(label, names.parts, counts.parts as u64);
     add(label, names.instanced_runs, if blended { drawn } else { counts.runs } as u64);
     add(label, names.instanced_parts, if blended { drawn } else { counts.in_views } as u64);
     for (name, nodes) in names.lods.iter().zip(list.lods()) {
         add(label, name, nodes);
     }
+}
+
+/// Runs the judge of a prepared list at its own rate ([`crate::map::actor_check`]).
+fn judge_list(label: &'static str, queue: Queue, list: &mut kept::Kept, residents: &[Resident]) {
+    if !crate::map::actor_check::due(list.checks()) {
+        return;
+    }
+    let what = if queue == Queue::Caster { "caster draws" } else { "lit draws" };
+    list.judge(what, part_programs(residents));
+    list.judge_staged(if queue == Queue::Caster { "caster staged" } else { "lit staged" });
+    viewer_foundation::view_record::add(label, record_names(queue).judged, 1);
 }
 
 /// One walk a retained list keeps: its queue, the shared blocks' bytes as `reads` orders them,
@@ -774,30 +903,8 @@ impl ResourceIdentities {
 
 type VertexKey = ((u64, bool), usize);
 
-/// Submission order is fixed even while preceding encoders finish on helpers.
-pub(crate) enum MapBuffer {
-    Finished(wgpu::CommandBuffer),
-    Finishing(viewer_foundation::parallel::Detached<wgpu::CommandBuffer>),
-}
-
-impl MapBuffer {
-    /// Every buffer in order, waiting for those still finishing.
-    fn submitted(buffers: Vec<Self>) -> Vec<wgpu::CommandBuffer> {
-        let wall_profile = viewer_foundation::profile_writer::profiling();
-        let clock = wall_profile.then(std::time::Instant::now);
-        let buffers = buffers
-            .into_iter()
-            .map(|buffer| match buffer {
-                Self::Finished(buffer) => buffer,
-                Self::Finishing(finishing) => finishing.join(),
-            })
-            .collect();
-        if let Some(clock) = clock {
-            viewer_foundation::profiling::record_lap("native_finish_join", clock.elapsed());
-        }
-        buffers
-    }
-}
+/// A map command buffer in submission order; every one is finished where it is encoded.
+pub(crate) struct MapBuffer(wgpu::CommandBuffer);
 
 /// What a bundle is recorded for: its pass's colour format and sample count. Every model pass
 /// has a depth and stencil attachment of [`DEPTH_FORMAT`], both written.
@@ -842,6 +949,23 @@ struct RecordedDraw {
     first: u32,
     count: u32,
     base: i32,
+    /// Its instances, each reading the rows of its own slot in its group's runs.
+    instances: u32,
+}
+
+impl RecordedDraw {
+    /// What it draws, beside the blocks its group binds for it, as a draw of `view`.
+    fn geometry(&self, view: usize) -> kept::DrawGeometry {
+        kept::DrawGeometry {
+            view,
+            reference: self.reference,
+            vertices: self.vertices,
+            indices: self.indices,
+            first: self.first,
+            count: self.count,
+            base: self.base,
+        }
+    }
 }
 
 impl DrawList {
@@ -882,102 +1006,33 @@ impl DrawList {
             draw.bindings
                 .bind_after(pass, previous.map(|last| &last.bindings));
             shader_pipeline::gpu::stats::draw();
-            pass.draw_indexed(draw.first..draw.first + draw.count, draw.base, 0..1);
+            pass.draw_indexed(draw.first..draw.first + draw.count, draw.base, 0..draw.instances);
             previous = Some(draw);
         }
     }
 
-    /// Slices share attachments; the preceding encoder joins first at submission.
-    fn encode(
-        lists: &[&Self],
-        device: &wgpu::Device,
-        targets: &Targets,
-        admitted: &viewer_foundation::parallel::Admitted,
-        preceding: &mut wgpu::CommandEncoder,
-    ) -> Vec<MapBuffer> {
-        let total = lists.iter().map(|list| list.draws.len()).sum::<usize>();
-        let count = total.min(admitted.capacity());
-        if count == 0 {
-            admitted.run(0, &|_, _| {});
-            return Vec::new();
+    /// The models' draws in one pass of their own, opened on the frame's own encoder: a pass
+    /// costs the commands it holds, where an encoder of its own costs a finish and a buffer in
+    /// the frame's submission as well.
+    fn encode(lists: &[&Self], targets: &Targets, encoder: &mut wgpu::CommandEncoder) {
+        if lists.iter().all(|list| list.draws.is_empty()) {
+            return;
         }
-        let preceding = std::mem::replace(
-            preceding,
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") }),
-        );
-        let slice = |index, count| Self::encode_slice(lists, total, device, targets, index, count);
-        let outputs: Vec<_> = (0..count).map(|_| std::sync::Mutex::new(None)).collect();
-        let wall_profile = viewer_foundation::profile_writer::profiling();
-        let ((count, finishing), timing) =
-            viewer_foundation::parallel::profile_run(wall_profile, || {
-                admitted.run_detached(
-                    count,
-                    &|index, count| {
-                        *outputs[index].lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some(slice(index, count));
-                    },
-                    move || preceding.finish(),
-                )
-            });
-        if wall_profile {
-            viewer_foundation::profiling::record_lap("native_encode_caller", timing.own);
-            viewer_foundation::profiling::record_lap("native_turns_finish_wait", timing.wait);
-        }
-        // The first buffer stays before every slice, whichever encoder finishes first.
-        std::iter::once(MapBuffer::Finishing(finishing))
-            .chain(outputs.into_iter().take(count).map(|output| {
-                MapBuffer::Finished(
-                    output
-                        .into_inner()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .expect("native slice encoded"),
-                )
-            }))
-            .collect()
-    }
-
-    /// Slice `index` of `count` over the lists' draws, in its own finished encoder.
-    fn encode_slice(
-        lists: &[&Self],
-        total: usize,
-        device: &wgpu::Device,
-        targets: &Targets,
-        index: usize,
-        count: usize,
-    ) -> wgpu::CommandBuffer {
-        let std::ops::Range { start, end } = draw_slice(total, count, index);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("native model slice"),
-        });
+        let clock = viewer_foundation::profile_writer::profiling().then(std::time::Instant::now);
         {
-            let mut colour = targets.scene_attachment(wgpu::LoadOp::Load);
-            // Resolve only the last slice; intermediate slices retain every multisample value.
-            if index + 1 < count {
-                colour.resolve_target = None;
-            }
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("native model slice"),
-                color_attachments: &[Some(colour)],
+            let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("native models"),
+                color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
                 depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
                 ..Default::default()
             });
-            let mut base = 0;
             for list in lists {
-                let next = base + list.draws.len();
-                if base < end && next > start {
-                    list.record_range(
-                        &mut pass,
-                        start.saturating_sub(base)..(end - base).min(list.draws.len()),
-                        lit_target(targets.samples()),
-                    );
-                }
-                base = next;
-                if base >= end {
-                    break;
-                }
+                list.record_range(&mut pass, 0..list.draws.len(), lit_target(targets.samples()));
             }
         }
-        encoder.finish()
+        if let Some(clock) = clock {
+            viewer_foundation::profiling::record_lap("native_encode_caller", clock.elapsed());
+        }
     }
 
     fn clear(&mut self) {
@@ -1118,21 +1173,13 @@ fn record_bundle(
         counts[1] += pipelines;
         counts[2] += groups;
         counts[0] += 1;
-        bundle.draw_indexed(draw.first..draw.first + draw.count, draw.base, 0..1);
+        bundle.draw_indexed(draw.first..draw.first + draw.count, draw.base, 0..draw.instances);
         previous = Some(draw);
     }
     let bundle = bundle.finish(&wgpu::RenderBundleDescriptor {
         label: Some("native model draws"),
     });
     (bundle, counts)
-}
-
-/// Balanced contiguous runs, sized from the actual draw count and borrowed worker count.
-fn draw_slice(total: usize, count: usize, index: usize) -> std::ops::Range<usize> {
-    let width = total / count;
-    let extra = total % count;
-    let start = index * width + index.min(extra);
-    start..start + width + usize::from(index < extra)
 }
 
 /// Resident geometry in shared chunk buffers, so a draw of another part moves
@@ -1321,10 +1368,6 @@ fn matrix(transform: &mesh::Transform) -> [[f32; 4]; 4] {
 }
 
 impl ModelPass {
-    pub(crate) fn has_placements(&self) -> bool {
-        !self.field.native_order.is_empty()
-    }
-
     pub fn settle_builds(&self, settled: bool) {
         self.settled.set(settled);
     }
@@ -1347,7 +1390,7 @@ impl ModelPass {
         if self.field.native_order.is_empty() {
             return Ok(());
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(self.label),
             color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
             depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
@@ -1494,6 +1537,27 @@ impl ModelPass {
         Ok(std::mem::take(&mut native.list(walk.id).draws))
     }
 
+    /// The constant bindings a part's draws read one block of per instance: each node's own
+    /// world block and its palette, and the pixel snapshot where a lit node writes its own
+    /// userdata. A pass whose lit queues draw straight into a pass of their own stages each
+    /// draw's constants in the frame's arena and so reads none of them per instance; its casters
+    /// are retained as every pass's are.
+    fn instanced(&self, caster: bool) -> u32 {
+        let caller = plan_tail::Caller::select(self.label);
+        if !caster && (self.direct || matches!(caller, plan_tail::Caller::Unavailable(_))) {
+            return 0;
+        }
+        let own = !caster && !matches!(caller, plan_tail::Caller::Unchanged);
+        (1 << binding(1, Stage::Vertex))
+            | (1 << binding(2, Stage::Vertex))
+            | if own { 1 << binding(1, Stage::Pixel) } else { 0 }
+    }
+
+    /// [`Self::instanced`] of the lit and the caster builds a warm-up makes.
+    fn instanced_masks(&self) -> [u32; 2] {
+        [self.instanced(false), self.instanced(true)]
+    }
+
     /// The caller whose userdata a lit walk of `queue` writes, when that walk is kept as a list:
     /// never for the casters' queue, a caller the walk refuses, or a pass that places nothing.
     fn kept_lit(&self, queue: Queue) -> Option<plan_tail::Caller<'static>> {
@@ -1527,10 +1591,16 @@ impl ModelPass {
         walk: &Walk<'_>,
         mut object: Option<&mut ObjectConstants>,
     ) -> io::Result<()> {
+        if crate::map::actor_check::every().is_some() {
+            self.judge_view(&frame, walk.queue);
+        }
         if self.keep_list(arena, &frame, &inputs, walk, object.as_deref_mut())? {
             if let Some(native) = self.native.borrow_mut().as_mut() {
                 viewer_foundation::view_record::add(self.label, record_names(walk.queue).kept, 1);
-                note_list(self.label, walk.queue, native.list(walk.id));
+                let Renderer { casters, lit, residents, .. } = native;
+                let list = list_of(casters, lit, walk.id);
+                note_list(self.label, walk.queue, list);
+                judge_list(self.label, walk.queue, list, residents);
             }
             return Ok(());
         }
@@ -1558,20 +1628,8 @@ impl ModelPass {
             ..
         } = native;
         let list = list_of(casters, lit, walk.id);
-        list.finish(
-            arena,
-            recording,
-            draws,
-            &walk.shared,
-            walk.reads,
-            |key| {
-                residents
-                    .get(key)
-                    .and_then(|resident| resident.program.as_ref())
-                    .map(|(_, program)| &**program)
-            },
-            made,
-        )?;
+        list.finish(arena, recording, draws, &walk.shared, walk.reads, part_programs(residents), made)?;
+        list.levelled_at(frame.camera.eye());
         list.unmade_for(if self.refused.get() != refused { kept::Whole::Refused } else { kept::Whole::Waiting });
         list.read(arena.frame());
         if walk.queue != Queue::Caster {
@@ -1579,6 +1637,7 @@ impl ModelPass {
         }
         viewer_foundation::view_record::add(self.label, record_names(walk.queue).walks, 1);
         note_list(self.label, walk.queue, list);
+        judge_list(self.label, walk.queue, list, residents);
         Ok(())
     }
 
@@ -1603,6 +1662,7 @@ impl ModelPass {
         walk: &Walk<'_>,
         object: Option<&mut ObjectConstants>,
     ) -> io::Result<bool> {
+        let began = viewer_foundation::view_record::on().then(std::time::Instant::now);
         let change = self.frame_change(arena.frame());
         let mut renderer = self.native.borrow_mut();
         let Some(native) = renderer.as_mut() else {
@@ -1644,25 +1704,40 @@ impl ModelPass {
         // A figure drawn without a part that waited on its build is walked again, alone.
         let waiting = list.waiting();
         let mut demoted = waiting.unwrap_or_else(|| vec![false; list.figures()]);
+        // The camera travelled inside the list's padding: every figure keeps the level of detail
+        // this frame's own eye chooses for it, and the one whose level changed is walked again.
+        let relevelled = self.relevel(list, frame, &mut demoted);
+        viewer_foundation::view_record::add(self.label, names.relevelled, relevelled);
         viewer_foundation::view_record::add(self.label, record_names(walk.queue).flipped, flips.len() as u64);
         if change.change != super::Change::Whole
             && change.born.is_empty()
             && !flipped
             && !demoted.contains(&true)
         {
+            // A standing figure's row holds its root and its limbs. The limbs move only with a
+            // pose set, so the rows of the live figures are written again for a new set and
+            // otherwise only where the figure's own instance changed.
             let mut units: Vec<usize> = change
                 .changed
                 .instances
                 .iter()
                 .flat_map(|&instance| list.units_of(instance))
-                .filter(|&unit| !list.unit(unit).live)
                 .collect();
+            if self.pose_epoch != list.posed() {
+                units.extend_from_slice(list.live());
+                viewer_foundation::view_record::add(self.label, names.reposed, 1);
+            }
             units.sort_unstable();
             units.dedup();
-            units.extend_from_slice(list.live());
+            let tested = began.map(|_| std::time::Instant::now());
             let failed = self.rewrite(arena, native, walk, frame, &units);
             if failed.is_empty() {
                 self.kept(arena, native, walk, inputs, object);
+                if let (Some(began), Some(tested)) = (began, tested) {
+                    use viewer_foundation::view_record::add;
+                    add(self.label, names.keep_test_us, (tested - began).as_micros() as u64);
+                    add(self.label, names.keep_rewrite_us, tested.elapsed().as_micros() as u64);
+                }
                 return Ok(true);
             }
             let list = native.list(walk.id);
@@ -1688,6 +1763,80 @@ impl ModelPass {
         }
         self.kept(arena, native, walk, inputs, object);
         Ok(true)
+    }
+
+    /// The judge of a view admitted against a held camera: every group and every figure this
+    /// frame's own camera admits, the padded view the lists were walked for admits too, so the
+    /// camera's travel inside the padding took nothing off the screen. Counts the figures the
+    /// padding admits and the camera does not, which are drawn and thrown away by the GPU.
+    /// Names what it finds and does not stop the frame.
+    fn judge_view(&self, frame: &ModelFrame<'_>, queue: Queue) {
+        let (Some(cull), Some(seen)) = (self.cull.get(), self.seen.get()) else {
+            return;
+        };
+        let what = if queue == Queue::Caster { "caster view" } else { "lit view" };
+        let mut extras = 0;
+        let mut judged = 0;
+        for (view, offset) in frame.offsets.iter().enumerate() {
+            for (at, group) in self.field.groups.iter().enumerate() {
+                if visible(group, *offset, frame.seen) && !visible(group, *offset, frame.visible) {
+                    crate::map::actor_check::differs(what, &(view, at), &"a group in view the admitted view left out");
+                }
+            }
+            for (group_index, index, _) in self.native_walk.routes(&self.field) {
+                let (Some(group), Some(instance)) =
+                    (self.field.groups.get(group_index), self.field.instances.get(index))
+                else {
+                    continue;
+                };
+                judged += 1;
+                let centre = frame.camera.center[0];
+                let admitted = self.culled_by(&cull, group.mesh, instance, *offset, centre);
+                let in_view = self.culled_by(&seen, group.mesh, instance, *offset, centre);
+                match (in_view.is_none(), admitted.is_none()) {
+                    (true, false) => crate::map::actor_check::differs(what, &(view, index), &"a figure in view the admitted cull left out"),
+                    (false, true) => extras += 1,
+                    _ => {}
+                }
+            }
+        }
+        viewer_foundation::view_record::add(self.label, record_names(queue).extras, extras);
+        crate::map::actor_check::checked(if queue == Queue::Caster { "caster view" } else { "lit view" }, judged);
+    }
+
+    /// [`Self::game_culled`] against a cull given rather than the frame's.
+    fn culled_by(&self, cull: &super::GameCull, mesh: usize, instance: &ModelInstance, offset: f32, centre: f32) -> Option<super::Culled> {
+        let mesh = self.meshes.get(mesh)?;
+        let scale = instance.scale.abs();
+        let at = [instance.position[0] + offset + cull.x - centre, instance.position[1] + mesh.height * scale * 0.5, instance.position[2]];
+        cull.test(at, (mesh.bound + mesh.height * 0.5) * scale, mesh.cull_distance_squared)
+    }
+
+    /// Gives every figure of `list` the level of detail this frame's eye chooses for it, marking
+    /// `demoted` where it changed, and returns how many changed. A list whose levels already
+    /// stand for this eye is not walked at all, so a still camera pays nothing.
+    fn relevel(&self, list: &mut kept::Kept, frame: &ModelFrame<'_>, demoted: &mut [bool]) -> u64 {
+        let eye = frame.camera.eye();
+        if list.lods_for() == Some(eye) {
+            return 0;
+        }
+        let mut changed = 0;
+        for at in 0..list.units().len() {
+            let unit = list.unit(at);
+            let level = self
+                .field
+                .groups
+                .get(unit.group)
+                .and_then(|group| self.meshes.get(group.mesh))
+                .and_then(|mesh| mesh.native.get(unit.descriptor))
+                .map(|descriptor| descriptor.lod(unit.at, eye));
+            if level.map(|level| level.ok()) != Some(Some(unit.lod)) {
+                demoted[list.figure_of(at)] = true;
+                changed += 1;
+            }
+        }
+        list.levelled_at(eye);
+        changed
     }
 
     /// How many figures crossed the game cull since the list was made: held by it and culled now,
@@ -1728,6 +1877,7 @@ impl ModelPass {
         let list = native.list(walk.id);
         list.keep(arena, &walk.shared);
         list.read(arena.frame());
+        list.posed_for(self.pose_epoch);
         if let Some(object) = object {
             self.replay_into(native, walk, inputs, object, true);
         }
@@ -1871,6 +2021,7 @@ impl ModelPass {
                 });
             }
         }
+        let targets_ended = std::time::Instant::now();
         let list = native.list(walk.id);
         let mut entered = viewer_foundation::view_record::on().then_some([0u64; kept::ENTERED]);
         let mut next = list.plan_counting(&targets, demoted, entered.as_mut());
@@ -1893,7 +2044,9 @@ impl ModelPass {
                 }
             }
         }
+        let plan_ended = std::time::Instant::now();
         let failed = self.rewrite(arena, native, walk, frame, &units);
+        let rewrite_ended = std::time::Instant::now();
         if !failed.is_empty() {
             let list = native.list(walk.id);
             let mut demote = vec![false; list.figures()];
@@ -1947,37 +2100,13 @@ impl ModelPass {
             ..
         } = native;
         let list = list_of(casters, lit, walk.id);
-        let Some(buffer) = list.buffer() else {
-            list.drop_for(kept::Whole::NoBuffer);
-            return Ok(false);
-        };
         if let Some(draws) = &mut walked {
             list.draws.vertices.append(&mut draws.vertices);
             list.draws.indices.append(&mut draws.indices);
         }
         let alignment = kept::block_alignment(arena);
-        let spliced = list.splice(
-            &next,
-            &recording,
-            visited,
-            alignment,
-            |bytes, shared, pending, vertex, skin| {
-                let program = residents
-                    .get(pending.key)
-                    .and_then(|resident| resident.program.as_ref())
-                    .map(|(_, program)| &**program)
-                    .ok_or_else(|| invalid("native program missing after its walk"))?;
-                kept::bind(
-                    arena,
-                    &buffer,
-                    program,
-                    (bytes, shared),
-                    pending,
-                    vertex,
-                    skin,
-                )
-            },
-        )?;
+        let spliced =
+            list.splice(arena, &next, &recording, visited, alignment, part_programs(residents))?;
         if spliced {
             list.set_culled(culled);
         }
@@ -2006,6 +2135,10 @@ impl ModelPass {
             add(self.label, names.spliced, 1);
             add(self.label, names.splice_us, own.as_micros() as u64);
             add(self.label, names.splice_walk_us, (walk_ended - walk_began).as_micros() as u64);
+            add(self.label, names.targets_us, (targets_ended - began).as_micros() as u64);
+            add(self.label, names.plan_us, (plan_ended - targets_ended).as_micros() as u64);
+            add(self.label, names.rewrite_us, (rewrite_ended - plan_ended).as_micros() as u64);
+            add(self.label, names.apply_us, walk_ended.elapsed().as_micros() as u64);
         }
         Ok(spliced)
     }
@@ -2077,13 +2210,20 @@ impl ModelPass {
                         frame_handles.resolve(row.player, row.mesh, frozen, || {
                             self.actors(
                                 group.mesh,
+                                layout.players[row.player],
                                 rig,
                                 self.players.get(&layout.players[row.player]),
                                 frozen,
                             )
                         })
                     } else {
-                        self.actors(group.mesh, rig, self.player(group.mesh, &instance), frozen)
+                        self.actors(
+                            group.mesh,
+                            self.player_key(group.mesh, &instance),
+                            rig,
+                            self.player(group.mesh, &instance),
+                            frozen,
+                        )
                     }
                 })
                 .clone();
@@ -2151,31 +2291,30 @@ impl ModelPass {
         }
     }
 
-    /// Preparation retains native order; encoding lends only the immutable command packets.
+    /// Preparation and encoding both retain native order, on the thread that draws the frame.
     pub(crate) fn encode_native(
         lists: &[(&Self, DrawList)],
-        device: &wgpu::Device,
         targets: &Targets,
-        admitted: &viewer_foundation::parallel::Admitted,
-        preceding: &mut wgpu::CommandEncoder,
-    ) -> Vec<MapBuffer> {
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         DrawList::encode(
             &lists.iter().map(|(_, list)| list).collect::<Vec<_>>(),
-            device,
             targets,
-            admitted,
-            preceding,
-        )
+            encoder,
+        );
     }
 
     /// A finished map command buffer, in the order [`Self::encode_native`]'s buffers keep.
     pub(crate) fn finished_buffer(buffer: wgpu::CommandBuffer) -> MapBuffer {
-        MapBuffer::Finished(buffer)
+        MapBuffer(buffer)
     }
 
-    /// The map's buffers in submission order, once every native preceding encoder finished.
+    /// The map's buffers in submission order.
     pub(crate) fn submitted_buffers(buffers: Vec<MapBuffer>) -> Vec<wgpu::CommandBuffer> {
-        MapBuffer::submitted(buffers)
+        buffers
+            .into_iter()
+            .map(|MapBuffer(buffer)| buffer)
+            .collect()
     }
 
     fn new_renderer(&self, map: [u32; 2]) -> io::Result<Renderer> {
@@ -2236,6 +2375,7 @@ impl ModelPass {
                     library,
                     &descriptor.lods,
                     (forced, samples),
+                    self.instanced_masks(),
                 );
             }
         }
@@ -2267,7 +2407,7 @@ impl ModelPass {
             })
             .collect();
         super::count(super::Count::WarmedNodes, added.len() as u64);
-        builds.warm_behind(device, added, (forced, samples));
+        builds.warm_behind(device, added, (forced, samples), self.instanced_masks());
         self.warmed.set(self.meshes.len());
         Ok(())
     }
@@ -2308,10 +2448,10 @@ impl ModelPass {
         let caster = queue == Queue::Caster;
         // A walk of some figures of a retained list leaves no constant state for later passes.
         let partial = recording.as_ref().is_some_and(|recording| recording.partial());
-        let alignment = recording.as_ref().map_or(0, |_| kept::block_alignment(arena));
         let caller = plan_tail::Caller::select(self.label);
         // The game forces every train actor and attachment.
         let forced = self.label == "supply trains";
+        let instanced = self.instanced(caster);
         let mut renderer = self.native.borrow_mut();
         if renderer.is_none() {
             *renderer = Some(self.new_renderer([frame.camera.map.width, frame.camera.map.height])?);
@@ -2469,12 +2609,12 @@ impl ModelPass {
                         if dense_handles {
                             let row = row.expect("installed actor route");
                             frame_handles.resolve(row.player, row.mesh, frozen, || {
-                                self.actors(group.mesh, rig, self.players.get(&layout.players[row.player]), frozen)
+                                self.actors(group.mesh, layout.players[row.player], rig, self.players.get(&layout.players[row.player]), frozen)
                             })
                         } else {
                             // Optional handle allocation cannot add a refusal or suppress
                             // the original actor demand. No separate preparation path.
-                            self.actors(group.mesh, rig, self.player(group.mesh, &instance), frozen)
+                            self.actors(group.mesh, self.player_key(group.mesh, &instance), rig, self.player(group.mesh, &instance), frozen)
                         }
                     });
                     spend(WALK_POSE, since);
@@ -2512,6 +2652,7 @@ impl ModelPass {
                                         skin: None,
                                         bones: 0,
                                         mask: 0,
+                                        draws: 0,
                                         parts: 0,
                                     });
                                 }
@@ -2611,7 +2752,7 @@ impl ModelPass {
                                         library,
                                         source,
                                         (caster, forced),
-                                        inputs.samples,
+                                        (inputs.samples, instanced),
                                         settled,
                                     );
                                 }
@@ -2657,6 +2798,18 @@ impl ModelPass {
                                             &source_blend(&lit),
                                             &source_blend(&shadow),
                                             !source.material.diffuse.is_empty(),
+                                        );
+                                        let order = pipeline.order();
+                                        note_part(
+                                            native.residents.len(),
+                                            group.mesh,
+                                            descriptor.node,
+                                            lod,
+                                            part,
+                                            blended,
+                                            &lit,
+                                            source,
+                                            order,
                                         );
                                         let (compiled, retained) =
                                             part_program(&pipeline, &source.geometry)?;
@@ -2779,6 +2932,7 @@ impl ModelPass {
                                                 .fold(0, |mask, (slot, _)| mask | (1 << slot)),
                                             caster_texture,
                                             blended,
+                                            order,
                                             samplers,
                                             program: None,
                                         });
@@ -2850,13 +3004,15 @@ impl ModelPass {
                                             }
                                         }
                                         _ => {
-                                            let (_, program) = gpu
+                                            // The list keeps the buffer its rows stand in, so the
+                                            // program stages no constants of its own.
+                                            let program = gpu
                                                 .pipeline
                                                 .pipeline
-                                                .bind_program_with(
+                                                .rows_program(
                                                     arena,
-                                                    |binding| supplies.get(binding),
                                                     |binding| textures[binding as usize],
+                                                    None,
                                                 )
                                                 .map_err(invalid)?;
                                             candidates.push((key, program));
@@ -2913,37 +3069,17 @@ impl ModelPass {
                             // pass's walk starts from the last one written.
                             let blocks = match recording.as_deref_mut() {
                                 Some(recording) if !prepared.is_empty() || !caster => {
-                                    let mut reserve = [0usize; 2];
                                     let mut bones = 0;
                                     for part in &prepared {
                                         let resident = &native.residents[part.key];
                                         if resident.geometry.cpu_skin.is_some() {
                                             bones = bones.max(resident.geometry.skin_bones);
                                         }
-                                        let Some((_, program)) = &resident.program else {
-                                            continue;
-                                        };
-                                        for spec in program.constant_reads() {
-                                            let block = match plan_tail::selector(spec.binding) {
-                                                Some(plan_tail::VERTEX) => 0,
-                                                // Its own userdata makes its block the snapshot.
-                                                Some(plan_tail::PIXEL) if userdata.is_some() => 0,
-                                                Some(plan_tail::SKIN) => 1,
-                                                _ => continue,
-                                            };
-                                            let size = spec.size as usize;
-                                            reserve[block] = reserve[block].max(size);
-                                        }
                                     }
-                                    let vertex = recording.place(
-                                        live,
-                                        scratch.vertex(),
-                                        reserve[0],
-                                        alignment,
-                                    );
+                                    let vertex = recording.place(scratch.vertex());
                                     let skin = skin_pose.filter(|_| bones != 0).map(|pose| {
                                         let palette: &[u8] = bytemuck::cast_slice(&pose.bones);
-                                        recording.place(live, palette, reserve[1], alignment)
+                                        recording.place(palette)
                                     });
                                     recording.units.push(kept::Unit {
                                         live,
@@ -2958,6 +3094,7 @@ impl ModelPass {
                                         skin,
                                         bones,
                                         mask: submitted_mask,
+                                        draws: 0,
                                         parts: prepared.len(),
                                     });
                                     Some((vertex, skin))
@@ -2976,6 +3113,7 @@ impl ModelPass {
                                         skin: None,
                                         bones: 0,
                                         mask: 0,
+                                        draws: 0,
                                         parts: 0,
                                     });
                                     None
@@ -3024,6 +3162,7 @@ impl ModelPass {
                                         first: gpu.geometry.indices.1,
                                         count,
                                         base: gpu.geometry.vertices.1,
+                                        instances: 1,
                                     }),
                                     (None, Some(recording), Some((vertex, skin))) => {
                                         recording.pending.push(kept::Pending {
@@ -3122,35 +3261,16 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn draw_slices_cover_native_order_without_empty_runs() {
-        for total in [0, 1, 2, 3, 7, 32, 1109, 14475] {
-            for threads in 1..=32 {
-                let count = total.min(threads);
-                let ranges: Vec<_> = (0..count)
-                    .map(|index| draw_slice(total, count, index))
-                    .collect();
-                assert!(ranges.iter().all(|range| !range.is_empty()));
-                assert_eq!(
-                    ranges.into_iter().flatten().collect::<Vec<_>>(),
-                    (0..total).collect::<Vec<_>>()
-                );
-            }
-        }
-    }
-
-    /// Native packets fully establish state at each boundary. Splitting between arbitrary
-    /// draws preserves MSAA samples, colour blending, depth, stencil and pooled geometry.
+    /// Native packets fully establish state at each boundary. Encoding the models into a
+    /// pass of their own preserves MSAA samples, colour blending, depth, stencil and pooled
+    /// geometry, and the preceding encoder's buffer still submits first.
     #[test]
     #[ignore = "requires a GPU"]
-    fn ordered_encoder_slices_keep_blend_depth_stencil_and_dynamic_bindings() {
+    fn the_models_own_pass_keeps_blend_depth_stencil_and_dynamic_bindings() {
         use shader_pipeline::{
             Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput, gpu,
         };
-        use viewer_foundation::{
-            map::gpu_contract::{buffer, read_texture},
-            parallel::{Spawn, Workers},
-        };
+        use viewer_foundation::map::gpu_contract::{buffer, read_texture};
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
@@ -3263,36 +3383,6 @@ mod tests {
                 .unwrap()
             })
             .collect();
-        struct Pool;
-        impl Spawn for Pool {
-            fn try_spawn(
-                &self,
-                job: Box<dyn FnOnce() + Send>,
-            ) -> Result<(), Box<dyn FnOnce() + Send>> {
-                std::thread::spawn(job);
-                Ok(())
-            }
-            fn threads(&self) -> usize {
-                3
-            }
-        }
-        let assist =
-            viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(Arc::new(Pool), 1)
-                .unwrap();
-        let workers = Workers::new(Arc::new(assist));
-        struct Busy;
-        impl Spawn for Busy {
-            fn try_spawn(
-                &self,
-                job: Box<dyn FnOnce() + Send>,
-            ) -> Result<(), Box<dyn FnOnce() + Send>> {
-                Err(job)
-            }
-            fn threads(&self) -> usize {
-                3
-            }
-        }
-        let busy = Workers::new(Arc::new(Busy));
         for samples in [1, 4] {
             let arena = gpu::Arena::new(&device);
             let state = gpu::State::authored(&program, &program.techniques[0]).unwrap();
@@ -3396,6 +3486,7 @@ mod tests {
                         first: 1,
                         count: 3,
                         base: 1,
+                        instances: 1,
                     });
             }
             arena.flush(&queue);
@@ -3411,13 +3502,13 @@ mod tests {
                 }
                 assert!(lists.iter().any(|list| !list.runs.is_empty()));
             }
-            // Without workers, `bundled` draws each list: 0 directly, 1 by its runs' bundles
-            // (`record_range`, no slices), 2 each drawable draw from a bundle of its own.
-            let render = |lists: &[DrawList], workers: Option<(&Workers, usize)>, empty: bool, bundled: u8| {
+            // Drawn in place, `bundled` draws each list: 0 directly, 1 by its runs' bundles
+            // (`record_range`), 2 each drawable draw from a bundle of its own.
+            let render = |lists: &[DrawList], encode: bool, empty: bool, bundled: u8| {
                 let targets = Targets::new(&device, [16, 16], [16, 16], samples);
                 let mut encoder = device.create_command_encoder(&Default::default());
                 {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                         color_attachments: &[Some(
                             targets.scene_attachment(wgpu::LoadOp::Clear(wgpu::Color::BLACK)),
                         )],
@@ -3426,7 +3517,7 @@ mod tests {
                         ),
                         ..Default::default()
                     });
-                    if workers.is_none() && !empty {
+                    if !encode && !empty {
                         for list in lists {
                             match bundled {
                                 0 => list.record(&mut pass),
@@ -3453,25 +3544,24 @@ mod tests {
                         }
                     }
                 }
-                // The preceding clear must submit first even when it finishes last.
-                let slices = workers.map(|(workers, helpers)| {
-                    workers.with_admitted(workers.threads(), |admitted| {
-                        admitted.wait_for_helpers(helpers);
-                        let lists = if empty {
-                            Vec::new()
-                        } else {
-                            lists.iter().collect()
-                        };
-                        DrawList::encode(&lists, &device, &targets, admitted, &mut encoder)
-                    })
-                });
-                let mut commands = slices.unwrap_or_default();
-                commands.push(ModelPass::finished_buffer(encoder.finish()));
-                queue.submit(ModelPass::submitted_buffers(commands));
+                // The preceding clear is encoded before the models' own pass, in one encoder.
+                if encode {
+                    let lists = if empty {
+                        Vec::new()
+                    } else {
+                        lists.iter().collect()
+                    };
+                    DrawList::encode(&lists, &targets, &mut encoder);
+                }
+                queue.submit([encoder.finish()]);
+                // The scene resolves once, after the draws, as a frame's does.
+                let mut resolve = device.create_command_encoder(&Default::default());
+                targets.resolve_scene(&mut resolve);
+                queue.submit([resolve.finish()]);
                 read_texture(&device, &queue, targets.scene_texture(), 8).unwrap()
             };
             for empty in [false, true] {
-                let reference = render(&lists, None, empty, 0);
+                let reference = render(&lists, false, empty, 0);
                 assert_eq!(
                     reference
                         .chunks_exact(8)
@@ -3479,22 +3569,12 @@ mod tests {
                     !empty
                 );
                 // Where bundles draw other pixels, which: each draw's own bundle, or a run's.
-                assert_eq!(render(&lists, None, empty, 2), reference, "one draw a bundle {samples}x MSAA empty={empty}");
-                assert_eq!(render(&lists, None, empty, 1), reference, "bundled directly {samples}x MSAA empty={empty}");
+                assert_eq!(render(&lists, false, empty, 2), reference, "one draw a bundle {samples}x MSAA empty={empty}");
+                assert_eq!(render(&lists, false, empty, 1), reference, "bundled directly {samples}x MSAA empty={empty}");
                 assert_eq!(
-                    render(&lists, Some((&Workers::default(), 0)), empty, 0),
+                    render(&lists, true, empty, 0),
                     reference,
-                    "serial {samples}x MSAA empty={empty}"
-                );
-                assert_eq!(
-                    render(&lists, Some((&workers, workers.threads() - 1)), empty, 0),
-                    reference,
-                    "borrowed {samples}x MSAA empty={empty}"
-                );
-                assert_eq!(
-                    render(&lists, Some((&busy, 0)), empty, 0),
-                    reference,
-                    "busy {samples}x MSAA empty={empty}"
+                    "the models' own pass {samples}x MSAA empty={empty}"
                 );
             }
         }

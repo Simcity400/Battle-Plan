@@ -707,6 +707,17 @@ pub struct TreeFrame<'a> {
     pub planes: viewer_foundation::map::province_admission::Planes,
 }
 
+/// One `draw_indexed` of a bucket: the material slot, the canopy indices of its LOD, and the
+/// instances of the bucket.
+type Batch = (usize, Range<u32>, Range<u32>);
+
+/// The walk of the world's tree buckets a camera admitted, kept while that camera stands.
+#[derive(Default, PartialEq)]
+struct Admitted {
+    key: Option<(Camera, viewer_foundation::map::province_admission::Planes, Vec<f32>)>,
+    copies: Vec<Vec<Batch>>,
+}
+
 /// The GPU tree pass.
 pub struct TreePass {
     compiled_caster: super::tree_caster::Caster,
@@ -732,6 +743,8 @@ pub struct TreePass {
     instance_bytes: Arc<[u8]>,
     geometry: TreeGeometry,
     buckets: Vec<TreeBucket>,
+    /// The batches the last camera's walk admitted, by wrap copy ([`TreePass::batches`]).
+    admitted: RefCell<Admitted>,
     /// Instances the last frame drew, for reporting.
     drawn: Cell<u32>,
     drawn_buckets: Cell<u32>,
@@ -820,6 +833,7 @@ impl TreePass {
             instance_bytes: Default::default(),
             geometry: TreeGeometry::default(),
             buckets: Vec::new(),
+            admitted: RefCell::default(),
             drawn: Cell::new(0),
             drawn_buckets: Cell::new(0),
         })
@@ -839,6 +853,7 @@ impl TreePass {
             self.instances = None;
             self.geometry = TreeGeometry::default();
             self.buckets = Vec::new();
+            self.admitted = RefCell::default();
             return Ok(());
         }
         self.vertices = Some(buffer(
@@ -862,6 +877,7 @@ impl TreePass {
         )?);
         self.geometry = geometry;
         self.buckets = field.buckets.clone();
+        self.admitted = RefCell::default();
         Ok(())
     }
 
@@ -916,14 +932,6 @@ impl TreePass {
         if frame.camera.height > frame.camera.defines.tree_fade[1] {
             return Ok(());
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("trees"),
-            color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
-            depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
         let (Some(vertices), Some(indices), Some(instances)) =
             (&self.vertices, &self.indices, &self.instances)
         else {
@@ -948,6 +956,8 @@ impl TreePass {
         ] {
             textures.insert(binding(slot, Stage::Pixel), view.clone());
         }
+        let mut pass = super::scene::world_pass(encoder, targets, "trees");
+        let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&compiled.pipeline.pipeline);
         shader_pipeline::gpu::stats::state();
@@ -975,7 +985,8 @@ impl TreePass {
                 )?);
             }
             let mut previous = None;
-            for (slot, indices, instances) in self.batches(frame, copy) {
+            let batches = self.batches(frame, copy);
+            for &(slot, ref indices, ref instances) in batches.iter() {
                 if let Some(retained) = inputs.retained {
                     textures.insert(binding(0, Stage::Pixel), self.diffuse[slot].view.clone());
                     textures.insert(binding(1, Stage::Pixel), self.normal[slot].view.clone());
@@ -993,13 +1004,13 @@ impl TreePass {
                         self.instance_bytes.clone(),
                     );
                 }
-                bindings[slot].bind_after(&mut pass, previous);
+                bindings[slot].bind_after(pass, previous);
                 previous = Some(&bindings[slot]);
                 self.drawn
                     .set(self.drawn.get() + instances.end - instances.start);
                 self.drawn_buckets.set(self.drawn_buckets.get() + 1);
                 shader_pipeline::gpu::stats::draw();
-                pass.draw_indexed(indices, 0, instances);
+                pass.draw_indexed(indices.clone(), 0, instances.clone());
             }
         }
         Ok(())
@@ -1046,11 +1057,11 @@ impl TreePass {
                 )?);
             }
             let mut previous = None;
-            for (slot, indices, instances) in self.batches(frame, copy) {
+            for &(slot, ref indices, ref instances) in self.batches(frame, copy).iter() {
                 bindings[slot].bind_after(pass, previous);
                 previous = Some(&bindings[slot]);
                 shader_pipeline::gpu::stats::draw();
-                pass.draw_indexed(indices, 0, instances);
+                pass.draw_indexed(indices.clone(), 0, instances.clone());
             }
         }
         Ok(())
@@ -1112,47 +1123,72 @@ impl TreePass {
                 )?);
             }
             let mut previous = None;
-            for (slot, indices, instances) in self.batches(frame, copy) {
+            for &(slot, ref indices, ref instances) in self.batches(frame, copy).iter() {
                 bindings[slot].bind_after(pass, previous);
                 previous = Some(&bindings[slot]);
                 shader_pipeline::gpu::stats::draw();
-                pass.draw_indexed(indices, 0, instances);
+                pass.draw_indexed(indices.clone(), 0, instances.clone());
             }
         }
         Ok(())
     }
 
-    fn batches<'a>(
-        &'a self,
-        frame: TreeFrame<'a>,
-        copy: usize,
-    ) -> impl Iterator<Item = (usize, Range<u32>, Range<u32>)> + 'a {
-        // Collect in generator order, sort, then resolve model and LOD.
-        let mut rows: Vec<_> = self
-            .buckets
-            .iter()
-            .enumerate()
-            .filter_map(|(index, bucket)| {
-                let (selected, distance) = nearest_visible_copy(bucket, frame)?;
-                (selected == copy).then_some(super::tree_order::Entry {
-                    palette: bucket.palette,
-                    distance,
-                    bucket: index,
-                })
-            })
-            .collect();
-        super::tree_order::sort(&mut rows);
-        rows.into_iter().filter_map(move |row| {
-            let bucket = &self.buckets[row.bucket];
-            let (distances, shapes) = self.geometry.lods.get(&bucket.palette)?;
-            let lod = lod_for_squared_distance(distances, row.distance, *shapes);
-            let slot = self
-                .materials
-                .iter()
-                .position(|p| *p == (bucket.palette, lod))?;
-            let range = self.geometry.ranges.get(&(bucket.palette, lod))?;
-            (!range.is_empty()).then(|| (slot, range.clone(), bucket.range.clone()))
+    /// The batches each wrap copy draws, as this camera admits them: the bucket list is the whole
+    /// world's, so it is walked once for a camera and every wrap copy, and the lit, caster and
+    /// receiver paths of that camera's frame read the walk it left.
+    fn batches(&self, frame: TreeFrame<'_>, copy: usize) -> std::cell::Ref<'_, [Batch]> {
+        let key = (frame.camera, frame.planes, frame.offsets.to_vec());
+        if self.admitted.borrow().key.as_ref() != Some(&key) {
+            let copies = self.walk(frame);
+            *self.admitted.borrow_mut() = Admitted { key: Some(key), copies };
+            viewer_foundation::view_record::add("trees", "walks", 1);
+            viewer_foundation::view_record::add("trees", "buckets_walked", self.buckets.len() as u64);
+        } else if super::actor_check::every().is_some() {
+            let fresh = self.walk(frame);
+            if fresh != self.admitted.borrow().copies {
+                super::actor_check::differs("tree buckets", &copy, &"the held walk is not this camera's");
+            }
+            super::actor_check::checked("tree buckets", self.buckets.len() as u64);
+        }
+        viewer_foundation::view_record::add("trees", "batches_read", 1);
+        std::cell::Ref::map(self.admitted.borrow(), |admitted| {
+            admitted.copies.get(copy).map_or(&[][..], Vec::as_slice)
         })
+    }
+
+    /// One walk of the world's buckets: each admitted bucket's batch, in draw order, under the
+    /// wrap copy nearest the eye.
+    fn walk(&self, frame: TreeFrame<'_>) -> Vec<Vec<Batch>> {
+        // Collect in generator order, sort, then resolve model and LOD.
+        let mut rows: Vec<Vec<super::tree_order::Entry>> = vec![Vec::new(); frame.offsets.len()];
+        for (index, bucket) in self.buckets.iter().enumerate() {
+            let Some((selected, distance)) = nearest_visible_copy(bucket, frame) else {
+                continue;
+            };
+            rows[selected].push(super::tree_order::Entry {
+                palette: bucket.palette,
+                distance,
+                bucket: index,
+            });
+        }
+        rows.iter_mut()
+            .map(|rows| {
+                super::tree_order::sort(rows);
+                rows.iter()
+                    .filter_map(|row| {
+                        let bucket = &self.buckets[row.bucket];
+                        let (distances, shapes) = self.geometry.lods.get(&bucket.palette)?;
+                        let lod = lod_for_squared_distance(distances, row.distance, *shapes);
+                        let slot = self
+                            .materials
+                            .iter()
+                            .position(|p| *p == (bucket.palette, lod))?;
+                        let range = self.geometry.ranges.get(&(bucket.palette, lod))?;
+                        (!range.is_empty()).then(|| (slot, range.clone(), bucket.range.clone()))
+                    })
+                    .collect()
+            })
+            .collect()
     }
 }
 

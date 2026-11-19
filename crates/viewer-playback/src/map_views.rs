@@ -1,10 +1,10 @@
 //! Per-view composition of counter options, icon histories and the shared schedule.
 
-use std::sync::{Condvar, Mutex};
+use std::sync::Mutex;
 use std::{collections::BTreeSet, sync::Arc};
 use viewer_foundation::map::counter_move::SharedMovement;
+use viewer_foundation::map::icon_windows::Pools;
 use viewer_foundation::map::province_schedule::Shared;
-use viewer_foundation::parallel::Workers;
 use viewer_foundation::unit_handle::Unit;
 use {
     viewer_counters::map::counters::{CounterSettings, naval_windows},
@@ -110,7 +110,7 @@ const OWNER_TABLES: [replay_data::rows::TableId; 3] = [
 #[derive(Debug, Default)]
 pub struct CounterOwners {
     resolved: Option<ResolvedOwners>,
-    head: Option<crate::playhead_host::rows::AtHead>,
+    head: Option<crate::playhead_host::views::AtHead>,
 }
 
 /// The table allocations and filter the owners were read for, and the owners. An allocation
@@ -128,16 +128,16 @@ impl CounterOwners {
     pub fn get(
         &mut self,
         today: Option<&replay_frame::frame::DecodedFrame>,
-        head: Option<(&Arc<crate::playhead_host::Entry>, crate::playhead_host::rows::Recording)>,
+        head: Option<&crate::playhead_host::views::Views>,
         filter: &dashboard_core::protocol::CounterFilter,
     ) -> Option<Arc<BTreeSet<u32>>> {
-        use crate::playhead_host::rows::{AtHead, Cadence};
-        let Some((entry, recording)) = head else {
+        use crate::playhead_host::views::{AtHead, Pace};
+        let Some(views) = head else {
             self.head = None;
             return today.and_then(|frame| self.read(frame, filter));
         };
-        let at = self.head.get_or_insert_with(|| AtHead::new(&OWNER_TABLES, Cadence::Ready));
-        match at.frame(entry, recording) {
+        let at = self.head.get_or_insert_with(|| AtHead::new("counter owners", &OWNER_TABLES, Pace::Step).keeps_its_answer());
+        match at.frame(views) {
             Some(rows) => self.read(&rows, filter),
             None => self.resolved.as_ref().and_then(|(_, _, owners)| owners.clone()),
         }
@@ -226,41 +226,23 @@ impl Views {
             || self.adjacency_rules.running_visibly()
     }
 
-    pub fn take_running(&mut self) -> bool {
-        let naval = self.naval.take_active();
-        let labels = self.labels.take_running();
-        let pings = self.pings.take_running();
-        let raids = self.raids.take_running();
-        let intel = self.intel.take_running();
-        let bases = self.bases.take_running();
-        let land_combats = self.land_combats.take_running();
-        let resources = self.resources.take_running();
-        let occupation = self.occupation.take_running();
-        let adjacency_rules = self.adjacency_rules.take_running();
-        for (running, name) in [
-            (naval, "running.naval"),
-            (labels, "running.labels"),
-            (pings, "running.pings"),
-            (raids, "running.raids"),
-            (intel, "running.intel"),
-            (bases, "running.bases"),
-            (land_combats, "running.land_combats"),
-            (resources, "running.resources"),
-            (occupation, "running.occupation"),
-            (adjacency_rules, "running.adjacency_rules"),
-        ] {
+    pub fn take_running(&mut self) -> Pools {
+        let running = Pools {
+            naval: self.naval.take_active(),
+            labels: self.labels.take_running(),
+            pings: self.pings.take_running(),
+            raids: self.raids.take_running(),
+            intel: self.intel.take_running(),
+            bases: self.bases.take_running(),
+            land_combats: self.land_combats.take_running(),
+            resources: self.resources.take_running(),
+            occupation: self.occupation.take_running(),
+            adjacency_rules: self.adjacency_rules.take_running(),
+        };
+        for (running, name) in running.named() {
             viewer_foundation::map::redraws::note(name, u64::from(running));
         }
-        naval
-            || labels
-            || pings
-            || raids
-            || intel
-            || bases
-            || land_combats
-            || resources
-            || occupation
-            || adjacency_rules
+        running
     }
 }
 
@@ -306,7 +288,7 @@ impl Presentation {
 
     /// A presentation standing on its own: a copy of this one's province schedule, no unit
     /// animation, no window history and no memory, for drawing a layout apart from the view
-    /// ([`crate::app::laid_proof`]).
+    /// (the overlay's own gate).
     pub fn snapshot(&self) -> Self {
         let schedule = self.schedule.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         Self {
@@ -317,14 +299,15 @@ impl Presentation {
         }
     }
 
-    /// Takes the counters' memory `laid` laid an overlay out on, which is bound to that overlay's
-    /// tables, and gives it this one's; the memory taken keeps the products this view was given
-    /// since.
+    /// Takes the counters' memory a layout was laid out on, which is bound to that layout's tables
+    /// and windows, and gives it this one's: the two memories alternate, and the frame draws the
+    /// quads of the layout over the memory they were laid out on. The maker lays out only while no
+    /// layout it published stands untaken ([`crate::playhead_host::overlay::lays`]), so the memory
+    /// handed over here is never the one it is writing.
     pub fn take_memory(&self, laid: &Presentation) {
         let mut ours = self.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut theirs = laid.counters.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         std::mem::swap(&mut *ours, &mut *theirs);
-        ours.adopt_layered(&theirs);
     }
 
     /// Gives `laid`'s counters' memory the products this view shows, before it lays out on it.
@@ -349,7 +332,11 @@ impl Presentation {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .running();
         viewer_foundation::map::redraws::note("running.movement", u64::from(moving));
-        Running { any: windows || moving, visible: visible || moving }
+        // A unit still moving asks for the next frame but neither for a painting nor for the
+        // pools' passes: its counter's window stands on a track the display frame evaluates at its
+        // own head ([`viewer_foundation::map::anchored`]), so the overlay is painted for what
+        // changes in it, presented for a pool that has a pass to run, and never for motion.
+        Running { any: windows.any() || moving, visible, windows }
     }
 }
 
@@ -358,9 +345,14 @@ impl Presentation {
 pub struct Running {
     /// Something asks for the next frame.
     pub any: bool,
-    /// Something it shows changes: a window on its own, a unit moving. Without it the next frame
-    /// asks only for the pools' passes.
+    /// A window changed on its own or one asked for is still to be made: the next frame paints the
+    /// batch over the pools it presents.
     pub visible: bool,
+    /// The families of windows that have a pass to run on the next frame. With none the frame was
+    /// asked for by a mover alone, which it answers by moving the windows it holds: presenting the
+    /// pools would run every manager's pass over every window for a frame in which none of them
+    /// has anything to do.
+    pub windows: Pools,
 }
 
 /// One map view's counter options and memory, which its overlays are laid out with. Two views
@@ -387,11 +379,6 @@ pub struct CounterView {
 }
 
 impl CounterView {
-    /// The counter kinds the map's layers draw, which the hour's tables then leave out.
-    pub fn layered(&self) -> viewer_counters::map::counters::Kinds {
-        self.presentation.counters.lock().unwrap_or_else(|error| error.into_inner()).drawing()
-    }
-
     /// Resolve the mode together so shared visibility cannot hide a label-mode change.
     pub fn set_mode(&mut self, mode: &viewer_world::map::map_mode::MapMode) {
         use viewer_world::map::{
@@ -441,49 +428,61 @@ impl PartialEq for CounterView {
     }
 }
 
-/// Fork two disjoint overlay owners on the existing pool, or run them in order when busy.
-/// Each closure and result has one owner; the mutexes only transfer them to that owner.
-pub fn join<A: Send, B: Send>(
-    workers: &Workers,
-    left: impl FnOnce() -> A + Send,
-    right: impl FnOnce() -> B + Send,
-) -> (A, B) {
-    workers.join(left, right)
-}
-
-/// Stateful resource requests retain the preceding owner's allocation order, without
-/// serialising ordinary layout, glyphs, sprites or hit geometry. Never wait holding the
-/// province schedule or a GUI resource lock. Completion also releases waiters on unwind.
-#[derive(Default)]
-pub struct ResourceOrder {
-    complete: Mutex<bool>,
-    changed: Condvar,
-}
-
-impl ResourceOrder {
-    pub fn wait(&self) {
-        let mut done = self.complete.lock().unwrap_or_else(|p| p.into_inner());
-        while !*done {
-            done = self.changed.wait(done).unwrap_or_else(|p| p.into_inner());
-        }
-    }
-
-    pub fn finishing(&self) -> impl Drop + '_ {
-        struct Finish<'a>(&'a ResourceOrder);
-        impl Drop for Finish<'_> {
-            fn drop(&mut self) {
-                *self.0.complete.lock().unwrap_or_else(|p| p.into_inner()) = true;
-                self.0.changed.notify_all();
-            }
-        }
-        Finish(self)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use dashboard_core::protocol::CounterFilter;
+
+    /// The maker lays a layout out on a memory of its own and the frame takes that memory with it;
+    /// the two then alternate, so the memory the maker lays the next layout on is the one the frame
+    /// has handed back and never the one it draws.
+    #[test]
+    fn the_memory_a_layout_was_laid_out_on_is_taken_with_it_and_the_two_alternate() {
+        use viewer_counters::map::counters::{BaseValues, Kinds, Layered};
+        let view = Presentation::default();
+        let maker = view.sharing();
+        // Each layout leaves a product of its own on the memory it was laid out on.
+        let product = |memory: &Presentation| {
+            let bases = Arc::new(BaseValues::default());
+            let at = Arc::as_ptr(&bases) as usize;
+            memory.counters.lock().unwrap().set_layered(Layered { bases: Some(bases), ..Layered::default() }, Kinds::BASES, Kinds::BASES);
+            at
+        };
+        let drawing = || view.counters.lock().unwrap().layered().identity()[3];
+        let making = || maker.counters.lock().unwrap().layered().identity()[3];
+        let held = product(&view);
+        let first = product(&maker);
+        view.take_memory(&maker);
+        assert_eq!(drawing(), first, "the view draws on the memory that layout was laid out on");
+        assert_eq!(making(), held, "and the maker holds the memory the frame handed back");
+        // The maker's next layout goes on that memory, never on the one the frame draws.
+        let second = product(&maker);
+        assert_eq!(drawing(), first, "what the frame draws is untouched while the next is laid out");
+        view.take_memory(&maker);
+        assert_eq!(drawing(), second);
+    }
+
+    /// What asks for the next frame and what asks for the pools' passes are separate: a unit still
+    /// moving asks for the frame alone, which places the windows it holds at its own head, and
+    /// only a pool with a pass to run asks for the pools to be presented.
+    #[test]
+    fn only_a_pool_with_a_pass_to_run_asks_for_the_pools_to_be_presented() {
+        let view = Presentation::default();
+        let idle = Running { any: false, visible: false, windows: Pools::default() };
+        assert_eq!(view.take_running(), idle, "nothing asks for anything");
+        view.windows.lock().unwrap().pings.keep_running();
+        let running = view.take_running();
+        // The family that has a pass to run asks for it, and no other family is presented for it.
+        assert_eq!(
+            running,
+            Running {
+                any: true,
+                visible: false,
+                windows: Pools { pings: true, ..Pools::default() },
+            }
+        );
+        assert_eq!(view.take_running(), idle, "taken, so the frame after it asks for nothing");
+    }
 
     #[test]
     fn occupation_mode_changes_invalidate_shared_visibility_and_clear_locally() {
@@ -596,163 +595,3 @@ mod tests {
         assert_eq!(reads, 4);
     }
 }
-
-#[cfg(test)]
-mod parallel_tests {
-    use super::*;
-    use std::sync::{
-        Barrier,
-        atomic::{AtomicBool, Ordering},
-    };
-    use viewer_foundation::{builder_pool::Pool, parallel::Spawn};
-
-    #[test]
-    fn borrowed_overlay_owners_finish_before_join_and_stateful_reads_keep_order() {
-        let assist = viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(
-            Arc::new(Pool::new(1).unwrap()), 1,
-        ).unwrap();
-        let workers = Workers::new(Arc::new(assist));
-        let order = ResourceOrder::default();
-        let wrote = AtomicBool::new(false);
-        let (left, right) = join(
-            &workers,
-            || {
-                let _finish = order.finishing();
-                wrote.store(true, Ordering::Relaxed);
-                vec![3, 2, 1]
-            },
-            || {
-                order.wait();
-                assert!(wrote.load(Ordering::Relaxed));
-                vec![7, 6]
-            },
-        );
-        assert_eq!([left, right].concat(), [3, 2, 1, 7, 6]);
-    }
-
-    #[test]
-    fn busy_builders_leave_the_ordered_overlay_on_the_caller() {
-        struct Busy;
-        impl Spawn for Busy {
-            fn try_spawn(
-                &self,
-                job: Box<dyn FnOnce() + Send>,
-            ) -> Result<(), Box<dyn FnOnce() + Send>> {
-                Err(job)
-            }
-            fn threads(&self) -> usize {
-                2
-            }
-        }
-        let workers = Workers::new(Arc::new(Busy));
-        let caller = std::thread::current().id();
-        let order = ResourceOrder::default();
-        let values = join(
-            &workers,
-            || {
-                let _finish = order.finishing();
-                assert_eq!(std::thread::current().id(), caller);
-                4
-            },
-            || {
-                order.wait();
-                assert_eq!(std::thread::current().id(), caller);
-                5
-            },
-        );
-        assert_eq!(values, (4, 5));
-    }
-
-    #[test]
-    fn occupied_builders_do_not_make_the_caller_wait_for_a_queued_turn() {
-        let pool = Arc::new(Pool::new(1).unwrap());
-        let (started, running) = std::sync::mpsc::channel();
-        let (release, blocked) = std::sync::mpsc::channel();
-        pool.submit(Box::new(move || {
-            started.send(()).unwrap();
-            let _ = blocked.recv();
-        }));
-        running.recv().unwrap();
-        let workers = Workers::new(pool.clone());
-        let caller = std::thread::current().id();
-        let order = ResourceOrder::default();
-        let values = join(
-            &workers,
-            || {
-                let _finish = order.finishing();
-                assert_eq!(std::thread::current().id(), caller);
-                4
-            },
-            || {
-                order.wait();
-                assert_eq!(std::thread::current().id(), caller);
-                5
-            },
-        );
-        assert_eq!(values, (4, 5));
-        // Only now may the builder finish and consume the already-closed borrowed turn.
-        release.send(()).unwrap();
-    }
-
-    #[test]
-    fn a_panicking_predecessor_releases_the_resource_waiter_before_join_unwinds() {
-        let assist = viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(
-            Arc::new(Pool::new(1).unwrap()), 1,
-        ).unwrap();
-        let workers = Workers::new(Arc::new(assist));
-        let order = ResourceOrder::default();
-        let waited = AtomicBool::new(false);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            join(
-                &workers,
-                || {
-                    let _finish = order.finishing();
-                    panic!("counter failure");
-                },
-                || {
-                    order.wait();
-                    waited.store(true, Ordering::Relaxed);
-                },
-            );
-        }));
-        assert!(result.is_err());
-        // A worker is not required to take the second task before the panic.
-        order.wait();
-    }
-
-    #[test]
-    #[ignore = "borrowed-thread fork/join latency measurement"]
-    fn overlay_fork_join_latency() {
-        use std::time::Instant;
-        let workers = Workers::new(Arc::new(Pool::new(1).unwrap()));
-        if workers.threads() < 2 {
-            return;
-        }
-        let barrier = Barrier::new(2);
-        // Both tasks have to run on distinct threads, so this includes a real wake/join.
-        let mut samples = Vec::with_capacity(10_000);
-        for index in 0..10_100 {
-            let start = Instant::now();
-            join(
-                &workers,
-                || {
-                    barrier.wait();
-                },
-                || {
-                    barrier.wait();
-                },
-            );
-            if index >= 100 {
-                samples.push(start.elapsed().as_nanos());
-            }
-        }
-        samples.sort_unstable();
-        eprintln!(
-            "overlay fork/join real handoff: p10={}ns median={}ns p90={}ns",
-            samples[1000], samples[5000], samples[9000]
-        );
-    }
-}
-
-mod overlays;
-pub use overlays::OverlayInputs;

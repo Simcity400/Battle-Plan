@@ -965,9 +965,16 @@ impl Roster {
         file: &ScriptPath,
         words: &[&str],
     ) -> io::Result<Option<parser::Document>> {
-        let bytes = file.read_uncovered(layers)?;
         let text = file.text();
         let path: &str = &text;
+        // A listed file that cannot be read is recorded by path; only what it declares is missing.
+        let bytes = match file.read_uncovered(layers) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.unreadable.push(format!("{path} ({error})"));
+                return Ok(None);
+            }
+        };
         if !words.iter().any(|word| {
             bytes
                 .windows(word.len())

@@ -392,6 +392,28 @@ pub struct BuildingHistory {
     dirty: bool,
     /// An entity changed since the stream was last collected.
     changed: bool,
+    /// The groups that could come into view, in group order: those a camera held while the real
+    /// one travels inside the padding admits with that padding to spare, so a pan tests every
+    /// group's box only when it leaves the pad.
+    candidates: Vec<u32>,
+    admitted_against: viewer_foundation::map::camera::Hold,
+    candidates_for: Option<(Camera, [u32; 2], f32, Arc<[ProvinceSlots]>)>,
+    /// Of those, the ones this camera admits, which the frame walks
+    /// ([`BuildingFrame::through`]): the pad narrows what a moved camera tests, and the camera
+    /// itself still decides, so the set is the one an untested camera would give.
+    admitted: Vec<u32>,
+    admitted_for: Option<(Camera, [u32; 2])>,
+    /// What this frame's walk did, given to the record once at its end.
+    counts: BuildingCounts,
+}
+
+/// What one frame's building walk reached: the groups the camera admitted, those it applied
+/// rather than finding settled, and their slots.
+#[derive(Default)]
+struct BuildingCounts {
+    groups: u64,
+    applied: u64,
+    slots: u64,
 }
 
 impl BuildingHistory {
@@ -407,8 +429,35 @@ impl BuildingHistory {
             self.last_time = None;
             self.last_view = None;
         }
-        self.settled.clear();
-        self.settled.resize(prepared.groups.len(), false);
+        // The builder shares every chunk of slots it did not touch, so a group whose chunks all
+        // came through unchanged still holds what it settled on and is not applied again. A
+        // changed group list, popup speed or shrink distance leaves nothing to keep.
+        let kept = self.prepared.as_ref().filter(|_| !reset).and_then(|previous| {
+            (Arc::ptr_eq(&previous.groups, &prepared.groups)
+                && previous.popup_speed == prepared.popup_speed
+                && previous.shrink_distance == prepared.shrink_distance)
+                .then(|| prepared.slots.changed_chunks(&previous.slots).ok())
+                .flatten()
+        });
+        match kept {
+            Some(changed) => {
+                self.settled.resize(prepared.groups.len(), false);
+                for (index, group) in prepared.groups.iter().enumerate() {
+                    if self.settled[index]
+                        && group
+                            .slots
+                            .iter()
+                            .any(|&id| changed.get(&(id as usize / WIRE_CHUNK)).is_some())
+                    {
+                        self.settled[index] = false;
+                    }
+                }
+            }
+            None => {
+                self.settled.clear();
+                self.settled.resize(prepared.groups.len(), false);
+            }
+        }
         self.prepared = Some(prepared);
         self.dirty = true;
         reset
@@ -470,6 +519,37 @@ impl BuildingHistory {
         if let Some(prepared) = &self.prepared {
             self.settled.resize(prepared.groups.len(), false);
         }
+        // Which groups the camera admits, of those the held camera's padded view could bring
+        // into view: every group's box is tested only when the held camera, the viewport or the
+        // group list is not the one they were tested against.
+        let (against, pad) = self.admitted_against.at(camera, viewport);
+        if let Some(groups) = self.prepared.as_ref().map(|prepared| Arc::clone(&prepared.groups))
+            && enabled
+        {
+            if self.candidates_for.as_ref().is_none_or(|(was, port, with, tested)| {
+                *was != against || *port != viewport || *with != pad || !Arc::ptr_eq(tested, &groups)
+            }) {
+                let padded = Admission::padded(against, viewport, pad);
+                self.candidates.clear();
+                self.candidates.extend(
+                    groups
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, group)| padded.admits(group.bounds))
+                        .map(|(index, _)| index as u32),
+                );
+                self.candidates_for = Some((against, viewport, pad, Arc::clone(&groups)));
+                self.admitted_for = None;
+            }
+            if self.admitted_for != Some((camera, viewport)) {
+                let admission = Admission::new(camera, viewport);
+                self.admitted.clear();
+                self.admitted.extend(self.candidates.iter().copied().filter(|&index| {
+                    groups.get(index as usize).is_some_and(|group| admission.admits(group.bounds))
+                }));
+                self.admitted_for = Some((camera, viewport));
+            }
+        }
         let prepared = self.prepared.take();
         BuildingFrame {
             history: self,
@@ -481,7 +561,6 @@ impl BuildingHistory {
             steady,
             active,
             next: 0,
-            admission: Admission::new(camera, viewport),
         }
     }
 
@@ -573,6 +652,7 @@ impl BuildingHistory {
         budget: &mut super::mesh_budget::Budget,
     ) {
         let group = &prepared.groups[index];
+        self.counts.groups += 1;
         if !draws_map_buildings(camera.height, prepared.shrink_distance) {
             if !self.near.remove(&index) {
                 return;
@@ -597,6 +677,8 @@ impl BuildingHistory {
         if self.settled[index] {
             return;
         }
+        self.counts.applied += 1;
+        self.counts.slots += group.slots.len() as u64;
         self.near.insert(index);
         let mut settled = true;
         for &id in &group.slots {
@@ -674,6 +756,7 @@ impl BuildingHistory {
 
     /// The drawn entities in the tiles `rect` reaches in any map copy, or all.
     fn collect(&self, rect: Option<[f32; 4]>, width: f32) -> Vec<Placed> {
+        viewer_foundation::view_record::add("map buildings", "collects", 1);
         let Some(rect) = rect else {
             return self
                 .tiles
@@ -696,6 +779,7 @@ impl BuildingHistory {
                 out.extend(slots.values().copied());
             }
         }
+        viewer_foundation::view_record::add("map buildings", "collected", out.len() as u64);
         out
     }
 }
@@ -711,8 +795,8 @@ pub struct BuildingFrame<'a> {
     enabled: bool,
     steady: bool,
     active: bool,
+    /// How far through the admitted groups this frame has reached.
     next: usize,
-    admission: Admission,
 }
 
 impl BuildingFrame<'_> {
@@ -723,20 +807,29 @@ impl BuildingFrame<'_> {
         if !self.active {
             return;
         }
-        while let Some(group) = prepared.groups.get(self.next) {
+        // Above the update cutoff only a group left near takes its one hiding step, so with none
+        // left near no admitted group can change.
+        if !draws_map_buildings(self.camera.height, prepared.shrink_distance)
+            && self.history.near.is_empty()
+        {
+            self.next = self.history.admitted.len();
+            return;
+        }
+        while let Some(index) = self.history.admitted.get(self.next).copied() {
+            let Some(group) = prepared.groups.get(index as usize) else {
+                break;
+            };
             if group.province > province {
                 break;
             }
-            if self.admission.admits(group.bounds) {
-                self.history.apply_group(
-                    prepared,
-                    self.next,
-                    self.camera,
-                    self.delta,
-                    self.steady,
-                    budget,
-                );
-            }
+            self.history.apply_group(
+                prepared,
+                index as usize,
+                self.camera,
+                self.delta,
+                self.steady,
+                budget,
+            );
             self.next += 1;
         }
     }
@@ -744,6 +837,13 @@ impl BuildingFrame<'_> {
     pub fn finish(mut self, budget: &mut super::mesh_budget::Budget) -> Option<Vec<Placed>> {
         self.through(u32::MAX, budget);
         self.history.prepared = self.prepared;
+        {
+            use viewer_foundation::view_record::add;
+            let counts = std::mem::take(&mut self.history.counts);
+            add("map buildings", "groups_admitted", counts.groups);
+            add("map buildings", "groups_applied", counts.applied);
+            add("map buildings", "slots_walked", counts.slots);
+        }
         self.enabled
             .then(|| self.history.stream(self.camera, self.viewport))
             .flatten()
@@ -853,6 +953,9 @@ pub struct MapBuildingAssets {
     display_keys: std::sync::OnceLock<Vec<Arc<map_display_data::buildings::AssetKey>>>,
     display_binding: std::sync::OnceLock<[u8; 32]>,
     display_sites: std::sync::OnceLock<Arc<Vec<map_display_data::buildings::AuthoredSlot>>>,
+    /// The province boxes and their slot ids as a product holds them: the content's own, so every
+    /// product shares one, cold or not.
+    display_groups: std::sync::OnceLock<Arc<Vec<map_display_data::buildings::Group>>>,
     display_bindings: std::sync::OnceLock<
         Result<BTreeMap<Arc<map_display_data::buildings::AssetKey>, usize>, String>,
     >,
@@ -1241,6 +1344,7 @@ impl MapBuildingAssets {
             library,
             defines,
             groups,
+            display_groups: std::sync::OnceLock::new(),
             slots,
             candidates,
             entities,

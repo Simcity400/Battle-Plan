@@ -8,8 +8,9 @@
 //! product it is given whole ([`Buildings::set_vision`]). CountryLinks not wholly recorded refuses
 //! the hour, as today; every other table degrades as today's builder degrades it.
 
+use std::time::Instant;
 use super::{
-    Budget, Carried, Dirty, Gpu, Inputs, Layer, Num, Scope as Settled, Scoped, Sight as InView, Text, Upstream, View, clock,
+    Carried, Change, Settling, Dirty, Gpu, Inputs, Layer, Num, Scope as Settled, Scoped, Sight as InView, Text, Upstream, View,
     touched::{Touch, Touched},
     vision::Vision as Sight,
 };
@@ -105,19 +106,19 @@ pub trait Seen {
 }
 
 /// What the layer reads of the vision layer registered before it: its viewer, whether a fog is
-/// drawn and its sight epoch; why it has no vision; its bytes; and the provinces whose byte moved
-/// since the last settle (every move between two sight epochs is named).
+/// drawn and its sight epoch; why it has no vision; its bytes; and what it changed since the last
+/// settle, the provinces whose byte moved or the whole of it.
 pub trait Upper {
     fn state(&self) -> (Option<u32>, bool, u64);
     fn refused(&self) -> Option<String>;
     fn seen(&self) -> &dyn Seen;
-    fn moved(&self) -> &[u64];
+    fn moved(&self) -> Change<'_>;
 }
 
 /// The vision layer itself, as the host hands it upstream.
 struct FromLayer<'a> {
     sight: &'a Sight,
-    changed: &'a super::Changed,
+    changed: Change<'a>,
 }
 
 impl<'a> FromLayer<'a> {
@@ -139,8 +140,8 @@ impl Upper for FromLayer<'_> {
         self.sight
     }
 
-    fn moved(&self) -> &[u64] {
-        self.changed.of("province")
+    fn moved(&self) -> Change<'_> {
+        self.changed
     }
 }
 
@@ -202,7 +203,7 @@ pub struct Declared {
 pub type Install = (wire::Buildings, bool);
 
 /// Marks by cause, uploads installed and held back, and the installs' parts, for the paced report.
-fn figures(causes: &[u64; CAUSES.len()], uploads: &[u64; 5], upload_ns: &[u64; 3]) -> serde_json::Value {
+fn figures(causes: &[u64; CAUSES.len()], uploads: &[u64; 6], upload_ns: &[u64; 3]) -> serde_json::Value {
     let [index, product, install] = upload_ns.map(|ns| ns as f64 / 1e6);
     serde_json::json!({
         "marked_by_cause": CAUSES.iter().zip(causes).map(|(name, count)| (name.to_string(), serde_json::json!(count))).collect::<serde_json::Map<_, _>>(),
@@ -210,6 +211,7 @@ fn figures(causes: &[u64; CAUSES.len()], uploads: &[u64; 5], upload_ns: &[u64; 3
         "installs_with_slot_chunks_changed": uploads[1],
         "installs_with_drawn_city_states_moved": uploads[2],
         "index_provinces_patched": uploads[3],
+        "installs_with_the_city_index_made_whole": uploads[5],
         "provinces_judged_in_the_settle": uploads[4],
         "install_ms_total": {"health index": index, "pages and product": product, "the scene's install": install},
     })
@@ -235,10 +237,13 @@ impl Seen for Sight {
     }
 }
 
-/// The slot table, the types and meshes, and the city terrain the slots are decided over.
+/// The slot table, the types and meshes, the city terrain the slots are decided over, and the
+/// height the city sprawl is drawn below.
 pub trait Catalogue: Send + Sync {
     fn assets(&self) -> &MapBuildingAssets;
     fn city(&self) -> CityTerrain<'_>;
+    /// `CITY_SPRAWL_SHRINK_DISTANCE`.
+    fn sprawl_cutoff(&self) -> f32;
 }
 
 impl Catalogue for Content {
@@ -248,6 +253,10 @@ impl Catalogue for Content {
 
     fn city(&self) -> CityTerrain<'_> {
         CityTerrain { width: self.map.width, height: self.map.height, spawn_city: self.assets.spawn_city.as_slice() }
+    }
+
+    fn sprawl_cutoff(&self) -> f32 {
+        self.map_defines.sprawl_cutoff
     }
 }
 
@@ -428,13 +437,13 @@ pub struct Buildings {
     /// provinces patched into the index, provinces judged in the settle; nanoseconds of the
     /// installs' parts: health index, pages and product, the scene's install.
     causes: [u64; CAUSES.len()],
-    uploads: [u64; 5],
+    uploads: [u64; 6],
     upload_ns: [u64; 3],
     /// The head hour settled, which the scene's history orders hours by.
     hour: i32,
     fog: bool,
     /// Mirror rows its applies read: none.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
 
@@ -515,11 +524,11 @@ impl Buildings {
             supply_read: HashMap::new(),
             deployment_of: HashMap::new(),
             causes: [0; CAUSES.len()],
-            uploads: [0; 5],
+            uploads: [0; 6],
             upload_ns: [0; 3],
             hour: 0,
             fog: true,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             applied_reads: 0,
             content,
         };
@@ -527,7 +536,7 @@ impl Buildings {
     }
 
     /// Mirror rows its applies read since it was made.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
     }
@@ -553,13 +562,13 @@ impl Buildings {
     }
 
     /// Why the hour is not drawn, as today refuses it.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn refused(&self) -> Option<&str> {
         self.refused.as_deref()
     }
 
     /// Every slot by id: the ordinary slots, then the floating harbours.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn slots(&self) -> &[PreparedSlot] {
         &self.slots
     }
@@ -573,7 +582,7 @@ impl Buildings {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn city_refused(&self) -> Option<&str> {
         self.city_refused.as_deref()
     }
@@ -599,7 +608,7 @@ impl Buildings {
     fn compose_upper(&mut self, mirrors: &Mirrors, upper: Option<&dyn Upper>) -> io::Result<()> {
         let marked = self.marked;
         (self.held, self.seen_state) = (None, None);
-        self.settle_dirty(mirrors, &mut Budget::unlimited(), upper)?;
+        self.settle_dirty(mirrors, upper)?;
         self.marked = marked;
         Ok(())
     }
@@ -647,9 +656,9 @@ impl Buildings {
         if self.columns.is_none() || self.refused.is_some() || self.uploaded() {
             return Ok(None);
         }
-        let started = clock::now();
+        let started = Instant::now();
         let city_damage = Arc::new(wire::CityDamage { health: self.health_index(thresholds)?, refused: self.city_refused.clone() });
-        let indexed = clock::now();
+        let indexed = Instant::now();
         self.uploads[1] += u64::from(!self.chunks_changed.is_empty());
         let changed: Vec<usize> = std::mem::take(&mut self.chunks_changed).into_iter().collect();
         let warnings = match &self.warned {
@@ -660,9 +669,9 @@ impl Buildings {
         let content = Arc::clone(&self.content);
         let assets = content.assets();
         let pages = assets.slot_pages(&self.slots, &changed, self.pages.as_ref())?;
-        let product = assets.shared_product(&pages, self.wired.as_ref(), bank, hour)?;
+        let product = assets.shared_product(&pages, bank, hour)?;
         self.pages = Some(pages);
-        let made = clock::now();
+        let made = Instant::now();
         let continues = !self.cold;
         (self.wired, self.cold, self.city_whole) = (Some(product.clone()), false, false);
         self.uploads[0] += 1;
@@ -674,6 +683,18 @@ impl Buildings {
 
     fn columns(&self) -> Columns {
         self.columns.expect("the buildings layer is declared before it composes")
+    }
+
+    /// Whether this view draws a building or a city at all: its switch on and the camera (or the
+    /// height a zoom is sending it to, so the slots are settled during the zoom's own ease) below
+    /// the height the game creates and updates that figure at. Above both, the layer declares
+    /// nothing and settles nothing, as the trains and the rails do; coming back below declares
+    /// again, which composes the slots whole from the mirrors.
+    fn drawn(&self, view: &View) -> bool {
+        let height = |cutoff: f32, at: f32| at - viewer_foundation::map::camera::WATER_HEIGHT < cutoff;
+        let below = |cutoff: f32| view.camera.is_none() || height(cutoff, view.camera_height) || view.target.is_some_and(|target| height(cutoff, target.height));
+        let assets = self.content.assets();
+        (view.graphics.buildings && below(assets.defines.shrink_distance)) || (view.graphics.city_sprawl && below(self.content.sprawl_cutoff()))
     }
 
     fn assets(&self) -> &MapBuildingAssets {
@@ -1109,25 +1130,29 @@ impl Buildings {
             self.fog_fill = true;
             return;
         }
-        // Every byte that moved is named, a whole publish's too.
-        if self.seen_state != Some(state) {
-            self.seen_state = Some(state);
-            for at in 0..self.fog_provinces.len() {
-                self.fog_dirty.mark(self.fog_provinces[at], self.frame);
+        // Its state unmoved and the provinces named: only those. A whole change, or a state that
+        // moved, reads every fog province's decisions again.
+        let moved = match upper.moved() {
+            Change::Marked(moved) if self.seen_state == Some(state) => moved,
+            _ => {
+                self.seen_state = Some(state);
+                for at in 0..self.fog_provinces.len() {
+                    self.fog_dirty.mark(self.fog_provinces[at], self.frame);
+                }
+                return;
             }
-            return;
-        }
-        for province in upper.moved().iter().map(|&id| id as u32) {
+        };
+        for province in moved.of("province").iter().map(|&id| id as u32) {
             if self.fog_seen.get(province as usize).is_some_and(|&seen| seen != NOT_SLOTTED) {
                 self.fog_dirty.mark(province, self.frame);
             }
         }
     }
 
-    /// The marked provinces' fog decisions read again within the budget; the slots and harbours of
+    /// The marked provinces' fog decisions read again within the settling; the slots and harbours of
     /// those whose decisions moved are marked. After a restart every slotted province's decisions
     /// are read whole first, as the slots marked then read them too.
-    fn settle_fog(&mut self, vision: &dyn Seen, budget: &mut Budget) -> io::Result<()> {
+    fn settle_fog(&mut self, vision: &dyn Seen) -> io::Result<()> {
         if std::mem::take(&mut self.fog_fill) {
             for &province in &self.fog_provinces {
                 self.fog_seen[province as usize] = fog_decisions(vision.byte(province));
@@ -1137,7 +1162,7 @@ impl Buildings {
         }
         let mut moved = Vec::new();
         let (seen, scoped) = (&mut self.fog_seen, &mut self.scoped);
-        self.fog_dirty.settle(budget, |province| {
+        self.fog_dirty.settle(|province| {
             scoped.province(province);
             let decided = fog_decisions(vision.byte(province));
             let held = &mut seen[province as usize];
@@ -1254,7 +1279,7 @@ impl Buildings {
         self.templates.as_ref().err().cloned()
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget, upper: Option<&dyn Upper>) -> io::Result<()> {
+    fn settle_dirty(&mut self, mirrors: &Mirrors, upper: Option<&dyn Upper>) -> io::Result<()> {
         self.frame += 1;
         let Some(columns) = self.columns else { return Ok(()) };
         self.take_vision();
@@ -1269,7 +1294,7 @@ impl Buildings {
             self.held = Some(held);
             self.restart(mirrors);
         }
-        self.take_touched(mirrors, budget);
+        self.take_touched(mirrors);
         let links = mirrors.get(TableId::CountryLinks);
         let hour = mirrors.get(TableId::Provinces).and_then(Mirror::head);
         let given = self.vision.as_ref().map(|(_, vision)| Arc::clone(vision));
@@ -1305,7 +1330,7 @@ impl Buildings {
         }
         let vision = sight.expect("a vision when not refused");
         if self.reads_layer {
-            self.settle_fog(vision, budget)?;
+            self.settle_fog(vision)?;
         }
         let content = Arc::clone(&self.content);
         let assets = content.assets();
@@ -1324,7 +1349,7 @@ impl Buildings {
         let found = Found { tables: TABLES.map(|table| rows(mirrors.get(table))), columns, tokens_of: &self.tokens_of };
         let unreadable = std::cell::Cell::new(0u64);
         let (slots, gate_reads, chunks, scoped) = (&mut self.slots, &mut self.gate_reads, &mut self.chunks_changed, &mut self.scoped);
-        self.slot_dirty.settle(budget, |id| {
+        self.slot_dirty.settle(|id| {
             match assets.slot_province(id) {
                 Some(province) => scoped.province(province),
                 None => scoped.unplaced(),
@@ -1339,7 +1364,7 @@ impl Buildings {
         })?;
         let ordinary = assets.ordinary_slots();
         let (slots, harbours, deployments, chunks, warned, scoped) = (&mut self.slots, &mut self.harbours, &self.deployments, &mut self.chunks_changed, &mut self.warned, &mut self.scoped);
-        self.harbour_dirty.settle(budget, |index| {
+        self.harbour_dirty.settle(|index| {
             scoped.province(assets.harbour_sea(index as usize));
             let (slot, counts) = assets.harbour_value(index as usize, |province| vision.byte(province), |province| Self::deployed(columns, deployments, mirrors, province));
             let id = ordinary + index as usize;
@@ -1359,7 +1384,7 @@ impl Buildings {
             let mut moved = Vec::new();
             for (at, provincial) in [false, true].into_iter().enumerate() {
                 let (city, scoped) = (&mut self.city[at], &mut self.scoped);
-                self.city_dirty[at].settle(budget, |location| {
+                self.city_dirty[at].settle(|location| {
                     if provincial {
                         scoped.province(location);
                     } else {
@@ -1408,11 +1433,11 @@ impl Buildings {
         }
     }
 
-    /// The marks the applies left, taken while `budget` lasts: each row a step touched, marked
+    /// The marks the applies left, taken while `settling` lasts: each row a step touched, marked
     /// where it is read. A table not holding rows now marks nothing.
-    fn take_touched(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn take_touched(&mut self, mirrors: &Mirrors) {
         let mut touched = std::mem::take(&mut self.touched);
-        touched.take(mirrors, budget, |table, touch, key| {
+        touched.take(mirrors, |table, touch, key| {
             if let Some(mirror) = rows(mirrors.get(table)) {
                 self.touch(mirror, table, touch, key);
             }
@@ -1534,6 +1559,7 @@ impl Buildings {
     /// decided which), each now at its current damage.
     fn health_index(&mut self, thresholds: Option<(i64, i64)>) -> io::Result<ValueIndex<u32, Option<i64>>> {
         if self.city_whole {
+            self.uploads[5] += 1;
             self.health_index = ValueIndex::try_from_iter(self.health())?;
             self.index_due.clear();
             self.note_whole(thresholds);
@@ -1560,7 +1586,7 @@ impl Buildings {
     }
 
     /// Entries of `self` that differ from `other`'s, and the first described.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn differ(&self, other: &Self) -> (u64, Option<String>) {
         self.inspect().differ(&other.inspect())
     }
@@ -1663,12 +1689,12 @@ impl Layer for Buildings {
         "buildings"
     }
 
-    fn placed(&mut self, _view: &crate::layers::View) -> Option<u64> {
-        Some(0)
+    fn placed(&mut self, view: &crate::layers::View) -> Option<u64> {
+        Some(u64::from(self.drawn(view)))
     }
 
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        if !view.graphics.buildings && !view.graphics.city_sprawl {
+        if !self.drawn(view) {
             self.declare(Declared { columns: None, fog: view.fog });
             return Ok(());
         }
@@ -1710,7 +1736,7 @@ impl Layer for Buildings {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         let marked = self.marked;
         self.held = None;
-        self.settle_dirty(mirrors, &mut Budget::unlimited(), None)?;
+        self.settle_dirty(mirrors, None)?;
         self.marked = marked;
         Ok(())
     }
@@ -1720,9 +1746,9 @@ impl Layer for Buildings {
         self.compose_upper(mirrors, upper.as_ref().map(|upper| upper as &dyn Upper))
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
         let upper = FromLayer::of(upstream);
-        self.settle_dirty(mirrors, budget, upper.as_ref().map(|upper| upper as &dyn Upper))
+        self.settle_dirty(mirrors, upper.as_ref().map(|upper| upper as &dyn Upper))
     }
 
     /// Marks only: the rows each of its tables' change sets names, read at the settle.
@@ -1730,7 +1756,7 @@ impl Layer for Buildings {
         if step.gap() || self.columns.is_none() {
             return;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let reads = crate::playhead_host::mirror::probe::reads();
         let columns = self.columns();
         let mut order = READ;
@@ -1740,37 +1766,40 @@ impl Layer for Buildings {
                 self.touched.note(changes, self.frame, |column| Self::groups(table, column, columns));
             }
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.applied_reads += crate::playhead_host::mirror::probe::reads() - reads;
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget, None)
+    fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors, None)
     }
 
     /// The settled slots handed to the scene as today's chunk pages (the changed chunks made again,
     /// the rest shared), installed in its building history as today's part installs them without
     /// converting a slot; a reset starts that history cold.
-    fn upload(&mut self, gpu: &mut Gpu<'_>, budget: &mut Budget) -> io::Result<()> {
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         if self.columns.is_none() || self.refused.is_some() {
             return Ok(());
         }
         let thresholds = gpu.scene.city_damage_thresholds();
         self.note_thresholds(thresholds);
-        if self.uploaded() || !budget.left() {
+        if self.uploaded() {
             return Ok(());
         }
         let Some(install) = self.make(gpu.content.products.display_binding()?, thresholds)? else { return Ok(()) };
-        let started = clock::now();
+        let started = Instant::now();
         self::install(gpu, install)?;
-        self.upload_ns[2] += clock::now().duration_since(started).as_nanos() as u64;
+        self.upload_ns[2] += Instant::now().duration_since(started).as_nanos() as u64;
         Ok(())
     }
 
+    /// Declaring nothing, it has nothing to install: a map that draws no building and no city
+    /// (hidden by its switches, or above the heights they are drawn at) never wired a product, and
+    /// a first picture that waited for one would never be drawn.
     fn uploaded(&self) -> bool {
-        self.wired.is_some() && self.chunks_changed.is_empty() && !self.city_whole && self.index_due.is_empty()
+        self.columns.is_none() || (self.wired.is_some() && self.chunks_changed.is_empty() && !self.city_whole && self.index_due.is_empty())
     }
 
     fn carried(&self) -> Carried {
@@ -1780,8 +1809,7 @@ impl Layer for Buildings {
         }
         let city = if self.city_refused.is_none() { &self.city_dirty[..] } else { &[] };
         let entities = self.slot_dirty.len() + self.harbour_dirty.len() + self.fog_dirty.len() + city.iter().map(Dirty::len).sum::<usize>() + self.touched.len();
-        let since = [self.slot_dirty.since(), self.harbour_dirty.since(), self.fog_dirty.since(), self.touched.since()].into_iter().chain(city.iter().map(Dirty::since)).flatten().min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     fn scope(&mut self, sight: &InView<'_>) -> Option<Settled> {

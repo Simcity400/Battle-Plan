@@ -63,15 +63,18 @@ impl Restore {
             .map_err(refuse)
     }
 
-    pub(super) fn bindings(
+    /// Native texture order: scene, bloom, colour cube, current adapted luminance. The block is
+    /// the seed's own b1, kept in the chain's buffer.
+    pub(super) fn kept(
         &self,
-        arena: &gpu::Arena,
-        constants: &[f32; 17],
+        device: &wgpu::Device,
+        buffer: &wgpu::Buffer,
+        offset: u32,
+        bytes: &[u8],
         sources: [&wgpu::TextureView; 4],
     ) -> io::Result<gpu::Bindings> {
-        // Native order: scene, bloom, colour cube, current adapted luminance.
         self.0
-            .bind_textures(arena, 1, bytemuck::cast_slice(constants), &sources)
+            .kept(device, buffer, 1, offset, bytes, &sources)
             .map_err(refuse)
     }
 

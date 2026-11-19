@@ -12,7 +12,7 @@
 //! is made. Each plan the layer takes goes to the scene's aircraft pass.
 
 use super::rebuilt::{Build, Seen, Whole};
-use crate::{document::Content, playhead_host::rows::Cadence};
+use crate::document::Content;
 use replay_data::rows::{TableId, TaskForceRow};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -226,7 +226,7 @@ fn drawn(flights: &Flights, view: &super::View) -> bool {
 /// it reads (and ten times a second at most when steps move only the hour); `timed` as
 /// [`Whole::new`].
 pub fn new(content: Arc<Content>, timed: bool) -> io::Result<Aircraft> {
-    Whole::new("aircraft", Flights { content, kept: Mutex::default() }, drawn, |flown| flown.plan.bytes(), TABLES, Cadence::Ready, false, timed)
+    Whole::new("aircraft", Flights { content, kept: Mutex::default() }, drawn, |flown| flown.plan.bytes(), TABLES, timed)
 }
 
 /// What the aircraft's worker measured for the paced report: builds, how many a second and how much

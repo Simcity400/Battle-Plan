@@ -11,8 +11,10 @@
 //! pixels earlier passes left outside their viewport, so a mip chain is not
 //! equivalent.
 //!
-//! Bloom blurs the seed horizontally into a second target and vertically back. It remains enabled
-//! independently of the `draw_bloom` display option.
+//! Bloom blurs the seed horizontally into a second target and vertically back, where the grading
+//! in force gives its taps a weight; with every weight zero the blurs would write zeros, so they
+//! are not drawn and the restore adds a zeroed texture. It remains enabled independently of the
+//! `draw_bloom` display option.
 //!
 //! Restore adds the blurred seed, exposure, tone mapping, gamma, colour cube and level adjustment.
 //! The compiled pass samples the scene linearly into the full-size output before nonlinear
@@ -27,6 +29,7 @@
 //! its LUTs and `NDefines.NGraphics`. Missing or malformed content refuses the
 //! pass.
 
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use std::sync::Arc;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::map::textures::load_image;
@@ -849,6 +852,161 @@ struct History {
     fresh: bool,
 }
 
+/// A block of the chain's kept constants: large enough for any of its constant registers (the
+/// seed's 80-byte b1 is the largest) and laid at the device's uniform offset alignment, so the
+/// bytes at an offset can be written again without the bindings over them changing.
+const BLOCK: usize = 256;
+
+/// The chain's constant blocks, laid out once for the bindings that read them.
+struct Blocks {
+    stride: usize,
+    bytes: Vec<u8>,
+}
+
+impl Blocks {
+    /// `alignment` is the device's `min_uniform_buffer_offset_alignment`.
+    fn new(alignment: u32) -> Self {
+        Self {
+            stride: BLOCK.next_multiple_of((alignment as usize).max(1)),
+            bytes: Vec::new(),
+        }
+    }
+
+    /// Lays `bytes` down zero-filled to a whole block and gives the offset they stand at.
+    fn push(&mut self, bytes: &[u8]) -> u32 {
+        let offset = self.bytes.len();
+        self.bytes.extend_from_slice(bytes);
+        self.bytes.resize(offset + self.stride, 0);
+        offset as u32
+    }
+}
+
+/// The views the chain's kept bindings bind: the targets and the exposure history they were made
+/// with, the colour cube the restore samples, and whether the grading's blur has a weight, which
+/// decides whether the restore samples the blurred seed or the zeroed texture. A grade that keeps
+/// these is a write of the blocks the bindings read, never bindings of its own.
+#[derive(PartialEq)]
+struct KeptFor {
+    made: u64,
+    lut: wgpu::TextureView,
+    blurred: bool,
+}
+
+/// Every post pass's constants and bindings, made when [`KeptFor`] changes and recorded on every
+/// frame between: one buffer holds each pass's block, and the passes whose views the exposure
+/// history's parity picks keep one set of bindings a parity.
+struct Kept {
+    made_for: KeptFor,
+    constants: wgpu::Buffer,
+    seed: shader_pipeline::gpu::Bindings,
+    reductions: Vec<shader_pipeline::gpu::Bindings>,
+    /// By the parity the adaptation reads.
+    adaptation: [shader_pipeline::gpu::Bindings; 2],
+    /// By the parity the adaptation reads; the restore samples the one it wrote.
+    restore: [shader_pipeline::gpu::Bindings; 2],
+    /// Horizontal then vertical; `None` where the grading gives the blur no weight.
+    blurs: Option<[shader_pipeline::gpu::Bindings; 2]>,
+    /// Where the blocks that are not the chain's own stand: the seed's and restore's b1, the
+    /// adaptation's b2, and the two blurs' b2.
+    native_block: u32,
+    adaptation_block: u32,
+    blur_blocks: Option<[u32; 2]>,
+    /// The operands the blocks above hold: the output size and grade of the last frame that
+    /// wrote them, and the adaptation's τ, which is the frame's own.
+    output: [u32; 2],
+    values: PostValuesResolved,
+    tau: f32,
+}
+
+impl Kept {
+    /// Writes the blocks whose operands this frame changed, leaving the bindings over them as
+    /// they are: the grade's own values (and with them the bloom's weights), the output size the
+    /// restore grades at, and the adaptation's τ.
+    fn restate(
+        &mut self,
+        arena: &shader_pipeline::gpu::Arena,
+        chain: &Chain,
+        defines: PostDefines,
+        output: [u32; 2],
+        values: PostValuesResolved,
+        tau: f32,
+    ) {
+        let graded = (self.output, self.values) != (output, values);
+        let write = |offset: u32, bytes: &[u8]| arena.write(&self.constants, offset.into(), bytes);
+        if graded {
+            let native = native_block(chain, defines, output, values);
+            write(self.native_block, bytemuck::cast_slice(&native));
+            if let Some(blocks) = self.blur_blocks {
+                // A grade that keeps a weight keeps the blurs; one that loses it remakes them.
+                for (offset, blur) in blocks.iter().zip(blur_blocks(chain, values).iter().flatten())
+                {
+                    write(*offset, bytemuck::bytes_of(blur));
+                }
+            }
+            self.output = output;
+            self.values = values;
+        }
+        if graded || self.tau != tau {
+            let adaptation = compiled_gather::Gather::constants(
+                chain.schedule.gather,
+                chain.schedule.backing,
+                tau,
+                [values.hdr_min, values.hdr_max],
+            );
+            write(self.adaptation_block, bytemuck::cast_slice(&adaptation));
+            self.tau = tau;
+        }
+    }
+}
+
+/// The seed's and restore's shared b1: HSV bytes 0..15, colour balance 16..27, emissive 28,
+/// inverse seed 32/36, inverse viewport 40/44, bloom scale 48/52, threshold 56, middle grey 60
+/// and squared white luminance 64. HSV and colour balance use neutral renderer constants.
+/// Preserve the negative zero.
+fn native_block(
+    chain: &Chain,
+    defines: PostDefines,
+    output: [u32; 2],
+    values: PostValuesResolved,
+) -> [f32; 17] {
+    [
+        -0.0_f32,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        defines.emissive_strength,
+        1.0 / chain.schedule.seed[0] as f32,
+        1.0 / chain.schedule.seed[1] as f32,
+        // Use the full restore viewport for InvWindowSize,
+        // including with a half-size scene; seed/seed BloomToScreenScale is 1.
+        1.0 / output[0] as f32,
+        1.0 / output[1] as f32,
+        1.0,
+        1.0,
+        values.bloom[2],
+        values.middle_grey,
+        defines.luminance_white_squared,
+    ]
+}
+
+/// The two blurs' b2, horizontal into the blur target then vertical back into the seed; `None`
+/// where the grading gives the blur no weight, when the blurs are not drawn at all.
+fn blur_blocks(chain: &Chain, values: PostValuesResolved) -> Option<[Blur; 2]> {
+    let [width, scale, _] = values.bloom;
+    blur_weights(width, scale).map(|(weight0, weights, offsets)| {
+        [1.0, 0.0].map(|axis| Blur {
+            inv_size: chain.schedule.seed.map(|side| 1.0 / side as f32),
+            axis,
+            weight0,
+            weights,
+            offsets,
+        })
+    })
+}
+
 /// The pipelines of the post stage and the resources they bind.
 pub struct PostPass {
     compiled_bloom: compiled_bloom::Bloom,
@@ -864,9 +1022,14 @@ pub struct PostPass {
     /// Keeps the device's copy program for the next view.
     _copy: Arc<CopyProgram>,
     luts: luts::LutRenderer,
+    /// The blurred seed a zero-weight bloom adds: one zeroed texel, whatever the restore samples.
+    zero_bloom: wgpu::TextureView,
     volumes: Volumes,
     chain: Option<Chain>,
     history: Option<History>,
+    kept: Option<Kept>,
+    /// Counts the targets and histories made, so bindings over the ones before are not kept.
+    made: u64,
     last_grading: Option<Grading>,
 }
 
@@ -883,18 +1046,26 @@ struct Blur {
 
 /// Five Gaussian taps use variance `2 * BLOOM_WIDTH^2`, floored at 0.01, over distances zero through
 /// eight texels. Normalize over both sides, scale by `BLOOM_SCALE`, then fold into linearly filtered
-/// pairs.
-fn blur_weights(width: f32, scale: f32) -> (f32, [f32; 4], [f32; 4]) {
+/// pairs. `None` when every weight is zero, so the blur would write zeros whatever it read; a pair
+/// of zero weight keeps the centre texel, which that weight then multiplies by zero.
+fn blur_weights(width: f32, scale: f32) -> Option<(f32, [f32; 4], [f32; 4])> {
     let variance = (2.0 * width * width).max(0.01);
     let norm = (variance * std::f32::consts::PI).sqrt();
     let taps: [f32; 9] = std::array::from_fn(|i| (-((i * i) as f32) / variance).exp() / norm);
     let total = taps[0] + 2.0 * taps[1..].iter().sum::<f32>();
     let g = taps.map(|tap| tap / total * scale);
-    let weights = std::array::from_fn(|k| g[2 * k + 1] + g[2 * k + 2]);
+    let weights: [f32; 4] = std::array::from_fn(|k| g[2 * k + 1] + g[2 * k + 2]);
+    if g[0] == 0.0 && weights.iter().all(|weight| *weight == 0.0) {
+        return None;
+    }
     let offsets = std::array::from_fn(|k| {
-        ((2 * k + 1) as f32 * g[2 * k + 1] + (2 * k + 2) as f32 * g[2 * k + 2]) / weights[k]
+        if weights[k] == 0.0 {
+            0.0
+        } else {
+            ((2 * k + 1) as f32 * g[2 * k + 1] + (2 * k + 2) as f32 * g[2 * k + 2]) / weights[k]
+        }
     });
-    (g[0], weights, offsets)
+    Some((g[0], weights, offsets))
 }
 
 /// The post copy program, its layout and sampler: one per device, format and sample count.
@@ -980,6 +1151,7 @@ impl PostPass {
     pub fn invalidate(&mut self) {
         self.chain = None;
         self.history = None;
+        self.kept = None;
         self.luts.invalidate();
     }
 
@@ -987,6 +1159,7 @@ impl PostPass {
     /// history stays unless it was never drawn, when it holds nothing a new one would not.
     pub fn release_chain(&mut self) {
         self.chain = None;
+        self.kept = None;
         if self.history.as_ref().is_some_and(|history| history.fresh) {
             self.history = None;
         }
@@ -1010,6 +1183,7 @@ impl PostPass {
         let size = targets.world_size();
         if rebuilt || self.chain.as_ref().is_none_or(|chain| chain.size != size) {
             self.chain = Some(self.make_chain(device, targets));
+            self.made += 1;
         }
         let key = [targets.size(), size];
         if self
@@ -1017,6 +1191,7 @@ impl PostPass {
             .as_ref()
             .is_none_or(|history| history.targets != key)
         {
+            self.made += 1;
             self.history = Some(History {
                 targets: key,
                 adapted: [
@@ -1060,9 +1235,12 @@ impl PostPass {
             sampler: program.sampler.clone(),
             _copy: program,
             luts,
+            zero_bloom: target(device, "post bloom zero", [1, 1], BLOOM_FORMAT),
             volumes,
             chain: None,
             history: None,
+            kept: None,
+            made: 0,
             last_grading: None,
         })
     }
@@ -1136,9 +1314,146 @@ impl PostPass {
         }
     }
 
+    /// The chain's constants and bindings for these targets: made here, kept while [`KeptFor`]
+    /// stands, and recorded by [`Self::draw`] on every frame between.
+    fn make_kept(
+        &self,
+        device: &wgpu::Device,
+        targets: &Targets,
+        made_for: KeptFor,
+        values: PostValuesResolved,
+        tau: f32,
+    ) -> io::Result<Kept> {
+        let (Some(chain), Some(history)) = (&self.chain, &self.history) else {
+            unreachable!("prepared by the caller");
+        };
+        let output = targets.size();
+        let native = native_block(chain, self.volumes.defines, output, values);
+        let native: &[u8] = bytemuck::cast_slice(&native);
+        let reductions: Vec<[f32; 10]> = chain
+            .schedule
+            .steps
+            .iter()
+            .map(|step| compiled_reduce::Reductions::constants(step.viewport, step.uv_scale))
+            .collect();
+        let adaptation = compiled_gather::Gather::constants(
+            chain.schedule.gather,
+            chain.schedule.backing,
+            tau,
+            [values.hdr_min, values.hdr_max],
+        );
+        let adaptation: &[u8] = bytemuck::cast_slice(&adaptation);
+        let blurs = blur_blocks(chain, values);
+        let mut blocks = Blocks::new(device.limits().min_uniform_buffer_offset_alignment);
+        let native_at = blocks.push(native);
+        let reductions_at: Vec<u32> = reductions
+            .iter()
+            .map(|constants| blocks.push(bytemuck::cast_slice(constants)))
+            .collect();
+        let adaptation_at = blocks.push(adaptation);
+        let blurs_at = blurs.map(|pair| pair.map(|blur| blocks.push(bytemuck::bytes_of(&blur))));
+        let constants = shader_pipeline::gpu::stats::create_buffer_init(
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("post kept constants"),
+                contents: &blocks.bytes,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            },
+        );
+        let seed = self.compiled_seed.kept(
+            device,
+            &constants,
+            native_at,
+            native,
+            targets.scene_view(),
+        )?;
+        let reduction_bindings = reductions
+            .iter()
+            .enumerate()
+            .map(|(index, step)| {
+                let source = if index == 0 {
+                    &chain.seed_view
+                } else {
+                    &chain.reductions[(index - 1) % 2]
+                };
+                self.compiled_reduce.kept(
+                    device,
+                    &constants,
+                    index,
+                    reductions_at[index],
+                    bytemuck::cast_slice(step),
+                    source,
+                )
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let gathered = if reductions.is_empty() {
+            &chain.seed_view
+        } else {
+            &chain.reductions[(reductions.len() - 1) % 2]
+        };
+        let adapted = |parity: usize| {
+            self.compiled_gather.kept(
+                device,
+                &constants,
+                adaptation_at,
+                adaptation,
+                gathered,
+                &history.adapted[parity],
+            )
+        };
+        // The vertical blur writes the blurred seed back into the seed target, so the restore reads
+        // it there; with no weight it reads the zeroed texture the blurs would have written zeros into.
+        let blurred = if blurs.is_some() {
+            &chain.seed_view
+        } else {
+            &self.zero_bloom
+        };
+        let graded = |parity: usize| {
+            self.compiled_restore.kept(
+                device,
+                &constants,
+                native_at,
+                native,
+                [
+                    targets.scene_view(),
+                    blurred,
+                    self.luts.output(),
+                    // The restore samples what the adaptation of this parity wrote.
+                    &history.adapted[1 - parity],
+                ],
+            )
+        };
+        let blurs = match (blurs, blurs_at) {
+            (Some([horizontal, vertical]), Some([at_x, at_y])) => Some([
+                self.compiled_bloom
+                    .kept(device, &constants, at_x, &horizontal, &chain.seed_view)?,
+                self.compiled_bloom
+                    .kept(device, &constants, at_y, &vertical, &chain.bloom_view)?,
+            ]),
+            _ => None,
+        };
+        Ok(Kept {
+            made_for,
+            seed,
+            reductions: reduction_bindings,
+            adaptation: [adapted(0)?, adapted(1)?],
+            restore: [graded(0)?, graded(1)?],
+            blurs,
+            constants,
+            native_block: native_at,
+            adaptation_block: adaptation_at,
+            blur_blocks: blurs_at,
+            output,
+            values,
+            tau,
+        })
+    }
+
     /// Runs the whole stage in 's order: the LUT blends, the
-    /// bright/log seed, the luminance chain, the bloom blur,
-    /// then `RestoreBloom` into the output attachment.
+    /// bright/log seed, the luminance chain, the bloom blur where the grading in force gives it a
+    /// weight, then `RestoreBloom` into the output attachment. Every pass draws with the bindings
+    /// [`Self::make_kept`] made for this grade and these targets, so an ordinary frame writes the
+    /// adaptation's τ and records the draws.
     ///
     /// `tau_delta` is raw `HDR_ADJUSTMENT_SPEED * dt`; reset uses native100. It draws into
     /// what [`Self::prepare`] made for `targets`.
@@ -1159,115 +1474,62 @@ impl PostPass {
         self.luts
             .draw(arena, encoder, grading.luts, grading.values.lut, mark)?;
         mark(encoder, "post LUT");
-        let (Some(chain), Some(history)) = (&self.chain, &mut self.history) else {
-            unreachable!("prepared above");
-        };
         let values = grading.values;
-        let [width, scale, threshold] = values.bloom;
-        let (weight0, weights, offsets) = blur_weights(width, scale);
-        let mut compiled_bindings = Vec::new();
-        for (axis, source) in [1.0, 0.0]
-            .into_iter()
-            .zip([&chain.seed_view, &chain.bloom_view])
+        // A fresh history takes the instantaneous value whatever the caller asked for.
+        let tau = match &self.history {
+            Some(history) if history.fresh => 100.0,
+            _ => tau_delta,
+        };
+        let made_for = KeptFor {
+            made: self.made,
+            lut: self.luts.output().clone(),
+            blurred: blur_weights(values.bloom[0], values.bloom[1]).is_some(),
+        };
+        if self
+            .kept
+            .as_ref()
+            .is_none_or(|kept| kept.made_for != made_for)
         {
-            let blur = Blur {
-                inv_size: chain.schedule.seed.map(|side| 1.0 / side as f32),
-                axis,
-                weight0,
-                weights,
-                offsets,
-            };
-            compiled_bindings.push(self.compiled_bloom.bindings(arena, &blur, source)?);
+            self.kept = Some(self.make_kept(arena.device(), targets, made_for, values, tau)?);
         }
-
-        // HSV bytes 0..15, colour balance 16..27, emissive 28, inverse seed 32/36, inverse viewport 40/44,
-        // bloom scale 48/52, threshold 56, middle grey 60 and squared white luminance 64. HSV and colour
-        // balance use neutral renderer constants. Preserve the negative zero.
-        let native = [
-            -0.0_f32,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            1.0,
-            self.volumes.defines.emissive_strength,
-            1.0 / chain.schedule.seed[0] as f32,
-            1.0 / chain.schedule.seed[1] as f32,
-            // Use the full restore viewport for InvWindowSize,
-            // including with a half-size scene; seed/seed BloomToScreenScale is 1.
-            1.0 / targets.size()[0] as f32,
-            1.0 / targets.size()[1] as f32,
-            1.0,
-            1.0,
-            threshold,
-            values.middle_grey,
-            self.volumes.defines.luminance_white_squared,
-        ];
-        self.compiled_seed.draw(
-            arena,
-            encoder,
-            &native,
-            targets.scene_view(),
-            &chain.seed_view,
-        )?;
+        let defines = self.volumes.defines;
+        let (Some(chain), Some(history), Some(kept)) =
+            (&self.chain, &mut self.history, &mut self.kept)
+        else {
+            unreachable!("prepared and made above");
+        };
+        kept.restate(arena, chain, defines, targets.size(), values, tau);
+        self.compiled_seed
+            .record(encoder, &chain.seed_view, &kept.seed);
         mark(encoder, "post seed");
         for (index, step) in chain.schedule.steps.iter().enumerate() {
-            let source = if index == 0 {
-                &chain.seed_view
-            } else {
-                &chain.reductions[(index - 1) % 2]
-            };
-            self.compiled_reduce.draw(
-                arena,
+            self.compiled_reduce.record(
                 encoder,
                 index,
                 step.viewport,
-                step.uv_scale,
-                source,
                 &chain.reductions[index % 2],
-            )?;
+                &kept.reductions[index],
+            );
         }
         mark(encoder, "post luminance reductions");
         let next = 1 - history.parity;
-        let source = if chain.schedule.steps.is_empty() {
-            &chain.seed_view
-        } else {
-            &chain.reductions[(chain.schedule.steps.len() - 1) % 2]
-        };
-        self.compiled_gather.draw(
-            arena,
+        self.compiled_gather.record(
             encoder,
-            chain.schedule.gather,
-            chain.schedule.backing,
-            // A fresh history takes the instantaneous value whatever the caller asked for.
-            if history.fresh { 100.0 } else { tau_delta },
-            [values.hdr_min, values.hdr_max],
-            source,
-            &history.adapted[history.parity],
             &history.adapted[next],
-        )?;
+            &kept.adaptation[history.parity],
+        );
         mark(encoder, "post luminance adaptation");
-        self.compiled_bloom
-            .draw(encoder, &chain.bloom_view, &compiled_bindings[0]);
-        mark(encoder, "post bloom x");
-        self.compiled_bloom
-            .draw(encoder, &chain.seed_view, &compiled_bindings[1]);
-        mark(encoder, "post bloom y");
-
-        let restore = self.compiled_restore.bindings(
-            arena,
-            &native,
-            [
-                targets.scene_view(),
-                &chain.seed_view,
-                self.luts.output(),
-                &history.adapted[next],
-            ],
-        )?;
+        if let Some([horizontal, vertical]) = &kept.blurs {
+            self.compiled_bloom
+                .draw(encoder, &chain.bloom_view, horizontal);
+            mark(encoder, "post bloom x");
+            self.compiled_bloom.draw(encoder, &chain.seed_view, vertical);
+            mark(encoder, "post bloom y");
+        }
+        let restore = &kept.restore[history.parity];
         // The grade writes every sample of the 8-bit output and resolves it; the
         // overlays load it, draw over it and resolve it again.
-        let mut render = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut render = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("post grade"),
             color_attachments: &[Some(
                 targets.output_attachment(wgpu::LoadOp::Clear(wgpu::Color::BLACK)),
@@ -1277,7 +1539,7 @@ impl PostPass {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        self.compiled_restore.draw(&mut render, &restore);
+        self.compiled_restore.draw(&mut render, restore);
         drop(render);
         history.parity = next;
         history.fresh = false;
@@ -1307,7 +1569,7 @@ impl PostPass {
             unreachable!("prepared above");
         };
         history.fresh = false;
-        let mut render = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut render = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("post copy"),
             color_attachments: &[Some(
                 targets.output_attachment(wgpu::LoadOp::Clear(wgpu::Color::BLACK)),

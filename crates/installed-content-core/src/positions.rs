@@ -238,6 +238,56 @@ pub fn parse_buildings(input: &[u8]) -> io::Result<Vec<BuildingPosition>> {
     Ok(buildings)
 }
 
+/// One authored weather anchor of `map/weatherpositions.txt`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeatherPosition {
+    /// One-based line number, for the loader's reports.
+    pub line: usize,
+    /// The `i32` the loader's `strtol` stores.
+    pub region: i32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub small: bool,
+}
+
+/// Reads `map/weatherpositions.txt` as the loader does: split the file at every `\n`, skip
+/// empty lines, cut each line at its first `\r` and read only lines of exactly five
+/// `;`-separated fields, `region;x;y;z;size`. The region is the signed decimal prefix of its
+/// field and each coordinate the longest floating-point prefix of its own, 0 when none is.
+/// The anchor is small when its size, lowercased and trimmed of white space, starts with
+/// `small`. Every other line is skipped and returned as its one-based number and field count.
+pub fn parse_weather_positions(input: &[u8]) -> (Vec<WeatherPosition>, Vec<(usize, usize)>) {
+    let mut anchors = Vec::new();
+    let mut skipped = Vec::new();
+    for (index, line) in input.split(|byte| *byte == b'\n').enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let line = line.split(|byte| *byte == b'\r').next().unwrap_or_default();
+        let fields: Vec<&[u8]> = line.split(|byte| *byte == b';').collect();
+        let [region, x, y, z, size] = fields[..] else {
+            skipped.push((index + 1, fields.len()));
+            continue;
+        };
+        let size = size
+            .iter()
+            .map(u8::to_ascii_lowercase)
+            .skip_while(|byte| matches!(byte, b' ' | b'\t'..=b'\r'))
+            .take(5)
+            .collect::<Vec<_>>();
+        anchors.push(WeatherPosition {
+            line: index + 1,
+            region: strtol(region),
+            x: strtof(x),
+            y: strtof(y),
+            z: strtof(z),
+            small: size == b"small",
+        });
+    }
+    (anchors, skipped)
+}
+
 /// Reads `map/unitstacks.txt` from the resolved layers.
 pub fn read_unit_stacks(layers: &crate::ResolvedLayers) -> io::Result<Vec<UnitStack>> {
     parse_unit_stacks(&layers.read("map/unitstacks.txt")?)
@@ -396,6 +446,29 @@ mod tests {
         row.extend_from_slice(b";2;3;4;0");
         let buildings = parse_buildings(&row).unwrap();
         assert_eq!((buildings[0].x, buildings[0].y), (0.0, 2.0));
+    }
+
+    /// Size folds case and white space and only its prefix counts; a line of another field
+    /// count is skipped by number, a CRLF blank line included, and the rest still load.
+    #[test]
+    fn weather_positions_read_as_the_loader_reads_them() {
+        let (anchors, skipped) = parse_weather_positions(
+            b"1;10.5;2;3;SMALL\n\
+              12abc; 4 ;5x;;  small_x \r\n\
+              \r\n\
+              3;1;2;3\n\
+              \n\
+              -4;1;2;3;big\n",
+        );
+        assert_eq!(
+            anchors,
+            [
+                WeatherPosition { line: 1, region: 1, x: 10.5, y: 2.0, z: 3.0, small: true },
+                WeatherPosition { line: 2, region: 12, x: 4.0, y: 5.0, z: 0.0, small: true },
+                WeatherPosition { line: 6, region: -4, x: 1.0, y: 2.0, z: 3.0, small: false },
+            ]
+        );
+        assert_eq!(skipped, [(3, 1), (4, 4)]);
     }
 
     #[test]

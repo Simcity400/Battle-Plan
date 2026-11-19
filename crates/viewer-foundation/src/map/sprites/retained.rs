@@ -3,177 +3,28 @@ use super::{Batch, Exact, Quad};
 use crate::map::native_shader::draw;
 use std::sync::Arc;
 
-/// The complete drawn camera and viewport, compared by field bits rather than Rust padding.
-/// This is only a hint to decline retention; the full upload key still decides every reuse.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CameraFrame {
-    values: [u32; 81],
-    free: Option<[u32; 6]>,
-}
-
-impl CameraFrame {
-    pub fn new(camera: crate::map::camera::Camera, size: [u32; 2]) -> Self {
-        use crate::map::{
-            camera::{Camera, Free, Lens, MapDefines, MapSize, Pose},
-            gradient_math::FieldDefines,
-        };
-        // Exhaustive patterns make a new camera operand a compile error until it is included.
-        let Camera {
-            center,
-            height,
-            map,
-            defines,
-            pose,
-        } = camera;
-        let MapSize {
-            width,
-            height: map_height,
-        } = map;
-        let MapDefines {
-            tilt_lead,
-            heights,
-            outside,
-            sun,
-            moon,
-            second_latitude,
-            gradient_borders,
-            shadows,
-            fog,
-            tree_fade,
-            ambient,
-            sun_diffuse,
-            moon_diffuse,
-            raid_icons,
-            raid_icons_raid_mode,
-            sun_specular,
-            cubemap,
-            country_names_cutoff,
-            gradient_field,
-            border_width,
-            border_fades,
-            sprawl_cutoff,
-            map_objects_cutoff,
-            railway_cutoff,
-            railway_cutoff_speed,
-        } = defines;
-        let FieldDefines {
-            center: field_center,
-            country_thickness,
-            country_area,
-            strategic_thickness,
-            optimization_range,
-            navy_neutral,
-            mode_thickness_max,
-        } = gradient_field;
-        let free = match pose {
-            Pose::Map => None,
-            Pose::Free(free) => {
-                let Free {
-                    yaw,
-                    pitch,
-                    roll,
-                    lens,
-                } = free;
-                let Lens { fov_y, near, far } = lens;
-                Some([yaw, pitch, roll, fov_y, near, far].map(f32::to_bits))
-            }
-        };
-        Self {
-            values: [
-                center[0].to_bits(),
-                center[1].to_bits(),
-                height.to_bits(),
-                width,
-                map_height,
-                size[0],
-                size[1],
-                tilt_lead.to_bits(),
-                heights[0].to_bits(),
-                heights[1].to_bits(),
-                outside[0].to_bits(),
-                outside[1].to_bits(),
-                sun[0].to_bits(),
-                sun[1].to_bits(),
-                sun[2].to_bits(),
-                moon[0].to_bits(),
-                moon[1].to_bits(),
-                second_latitude[0].to_bits(),
-                second_latitude[1].to_bits(),
-                gradient_borders[0].to_bits(),
-                gradient_borders[1].to_bits(),
-                gradient_borders[2].to_bits(),
-                gradient_borders[3].to_bits(),
-                shadows[0].to_bits(),
-                shadows[1].to_bits(),
-                fog[0].to_bits(),
-                fog[1].to_bits(),
-                tree_fade[0].to_bits(),
-                tree_fade[1].to_bits(),
-                ambient[0][0].to_bits(),
-                ambient[0][1].to_bits(),
-                ambient[0][2].to_bits(),
-                ambient[1][0].to_bits(),
-                ambient[1][1].to_bits(),
-                ambient[1][2].to_bits(),
-                ambient[2][0].to_bits(),
-                ambient[2][1].to_bits(),
-                ambient[2][2].to_bits(),
-                ambient[3][0].to_bits(),
-                ambient[3][1].to_bits(),
-                ambient[3][2].to_bits(),
-                ambient[4][0].to_bits(),
-                ambient[4][1].to_bits(),
-                ambient[4][2].to_bits(),
-                ambient[5][0].to_bits(),
-                ambient[5][1].to_bits(),
-                ambient[5][2].to_bits(),
-                sun_diffuse[0].to_bits(),
-                sun_diffuse[1].to_bits(),
-                sun_diffuse[2].to_bits(),
-                sun_diffuse[3].to_bits(),
-                moon_diffuse[0].to_bits(),
-                moon_diffuse[1].to_bits(),
-                moon_diffuse[2].to_bits(),
-                moon_diffuse[3].to_bits(),
-                raid_icons[0].to_bits(),
-                raid_icons[1].to_bits(),
-                raid_icons_raid_mode.to_bits(),
-                sun_specular.to_bits(),
-                cubemap.to_bits(),
-                country_names_cutoff.to_bits(),
-                field_center.to_bits(),
-                country_thickness[0].to_bits(),
-                country_thickness[1].to_bits(),
-                country_area[0].to_bits(),
-                country_area[1].to_bits(),
-                strategic_thickness.to_bits(),
-                optimization_range.to_bits(),
-                u32::from(navy_neutral[0]),
-                u32::from(navy_neutral[1]),
-                u32::from(navy_neutral[2]),
-                mode_thickness_max.to_bits(),
-                border_width.to_bits(),
-                border_fades[0][0].to_bits(),
-                border_fades[0][1].to_bits(),
-                border_fades[1][0].to_bits(),
-                border_fades[1][1].to_bits(),
-                sprawl_cutoff.to_bits(),
-                map_objects_cutoff.to_bits(),
-                railway_cutoff.to_bits(),
-                railway_cutoff_speed.to_bits(),
-            ],
-            free,
-        }
-    }
-}
 
 pub(super) struct Upload {
-    quads: Vec<Quad>,
+    /// How many quads the batch held.
+    quads: usize,
+    /// The windows it held, in push order. A window's quads are a function of its key and its
+    /// stamp ([`super::WindowStamp`]), so two equal records draw the same quads and an unchanged
+    /// window is never compared quad for quad.
+    windows: Vec<super::BatchWindow>,
+    /// The quads belonging to no window, which are compared quad for quad, by index.
+    loose: Vec<(usize, Quad)>,
     /// The quads in the order the upload draws them ([`super::sort_order`]).
     order: Vec<usize>,
     size: [u32; 2],
     scale: u32,
     artwork: Option<u64>,
+}
+
+/// Where a quad stands: in a window, at an offset inside it, or on its own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stands {
+    Window(super::WindowKey, super::WindowStamp, [i32; 2], u32),
+    Loose,
 }
 
 impl Upload {
@@ -185,7 +36,9 @@ impl Upload {
         artwork: Option<u64>,
     ) -> Self {
         let mut upload = Self {
-            quads: Vec::new(),
+            quads: 0,
+            windows: Vec::new(),
+            loose: Vec::new(),
             order: Vec::new(),
             size,
             scale: scale.to_bits(),
@@ -206,7 +59,15 @@ impl Upload {
         scale: f32,
         artwork: Option<u64>,
     ) {
-        self.quads.clone_from(&batch.quads);
+        self.quads = batch.quads.len();
+        self.windows.clear();
+        self.windows.extend(batch.windows());
+        self.loose.clear();
+        self.loose.extend(
+            (0..self.quads)
+                .filter(|index| stands(&self.windows, *index) == Stands::Loose)
+                .map(|index| (index, batch.quads[index].clone())),
+        );
         self.order.clear();
         if order.len() == batch.quads.len() {
             self.order.extend_from_slice(order);
@@ -214,6 +75,11 @@ impl Upload {
         self.size = size;
         self.scale = scale.to_bits();
         self.artwork = artwork;
+    }
+
+    /// Where the snapshot's quad `index` stood.
+    fn stood(&self, index: usize) -> Stands {
+        stands(&self.windows, index)
     }
 
     pub(super) fn matches(
@@ -226,12 +92,57 @@ impl Upload {
         self.size == size
             && self.scale == scale.to_bits()
             && self.artwork == artwork
-            && self.quads.len() == batch.quads.len()
+            && self.quads == batch.quads.len()
+            && self.windows.iter().copied().eq(batch.windows())
             && self
-                .quads
+                .loose
                 .iter()
-                .zip(&batch.quads)
-                .all(|(a, b)| same_quad(a, b))
+                .all(|(index, quad)| same_quad(quad, &batch.quads[*index]))
+    }
+
+    /// Which of the snapshot's windows `batch` stands somewhere else, when that is the only way
+    /// the two differ: the same windows in the same places holding the same quads, and every
+    /// quad outside them drawing what it drew. `None` when anything else changed, which the
+    /// caller answers by emitting the batch whole.
+    pub(super) fn moved_windows(
+        &self,
+        batch: &Batch,
+        size: [u32; 2],
+        scale: f32,
+        artwork: Option<u64>,
+    ) -> Option<Vec<usize>> {
+        if self.size != size
+            || self.scale != scale.to_bits()
+            || self.artwork != artwork
+            || self.quads != batch.quads.len()
+        {
+            return None;
+        }
+        let mut moved = Vec::new();
+        let mut windows = batch.windows();
+        for (at, held) in self.windows.iter().enumerate() {
+            let now = windows.next()?;
+            if (now.key, now.stamp, now.first, now.count)
+                != (held.key, held.stamp, held.first, held.count)
+            {
+                return None;
+            }
+            if now.shift != held.shift {
+                moved.push(at);
+            }
+        }
+        if windows.next().is_some() {
+            return None;
+        }
+        self.loose
+            .iter()
+            .all(|(index, quad)| same_quad(quad, &batch.quads[*index]))
+            .then_some(moved)
+    }
+
+    /// The quads of the snapshot's window `at`.
+    pub(super) fn window(&self, at: usize) -> super::BatchWindow {
+        self.windows[at]
     }
 
     /// Whether `batch`, drawn in `order`, draws what the snapshot drew: the same quads in the same
@@ -244,16 +155,38 @@ impl Upload {
         scale: f32,
         artwork: Option<u64>,
     ) -> bool {
-        self.size == size
-            && self.scale == scale.to_bits()
-            && self.artwork == artwork
-            && self.quads.len() == batch.quads.len()
-            && self.order.len() == self.quads.len()
-            && order.len() == batch.quads.len()
-            && order
-                .iter()
-                .zip(&self.order)
-                .all(|(&now, &then)| same_drawn(&batch.quads[now], &self.quads[then]))
+        if self.size != size
+            || self.scale != scale.to_bits()
+            || self.artwork != artwork
+            || self.quads != batch.quads.len()
+            || self.order.len() != self.quads
+            || order.len() != batch.quads.len()
+        {
+            return false;
+        }
+        let windows: Vec<_> = batch.windows().collect();
+        order.iter().zip(&self.order).all(|(&now, &then)| {
+            let stands = stands(&windows, now);
+            match (stands, self.stood(then)) {
+                (Stands::Window(..), _) | (_, Stands::Window(..)) => stands == self.stood(then),
+                // A quad outside every window is compared with the one that stood where it does.
+                (Stands::Loose, Stands::Loose) => self
+                    .loose
+                    .binary_search_by_key(&then, |(index, _)| *index)
+                    .is_ok_and(|at| same_drawn(&batch.quads[now], &self.loose[at].1)),
+            }
+        })
+    }
+}
+
+/// Where quad `index` stands among `windows`, which are in push order and so ascending.
+fn stands(windows: &[super::BatchWindow], index: usize) -> Stands {
+    let at = windows.partition_point(|window| (window.first as usize) <= index);
+    match at.checked_sub(1).map(|at| windows[at]) {
+        Some(window) if window.quads().contains(&index) => {
+            Stands::Window(window.key, window.stamp, window.shift, index as u32 - window.first)
+        }
+        _ => Stands::Loose,
     }
 }
 
@@ -358,129 +291,6 @@ fn same_native(a: &draw::Quad, b: &draw::Quad) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn camera() -> crate::map::camera::Camera {
-        use crate::map::camera::{Camera, MapDefines, MapSize, Pose};
-        Camera {
-            center: [0.0, 10.0],
-            height: 20.0,
-            map: MapSize::TEST,
-            defines: MapDefines::test(),
-            pose: Pose::Map,
-        }
-    }
-
-    #[test]
-    fn sprite_camera_frame_covers_every_camera_operand_and_viewport() {
-        let mut camera = camera();
-        let mut count = 0;
-        for value in camera
-            .center
-            .iter_mut()
-            .chain(std::iter::once(&mut camera.height))
-            .chain(std::iter::once(&mut camera.defines.tilt_lead))
-            .chain(camera.defines.heights.iter_mut())
-            .chain(camera.defines.outside.iter_mut())
-            .chain(camera.defines.sun.iter_mut())
-            .chain(camera.defines.moon.iter_mut())
-            .chain(camera.defines.second_latitude.iter_mut())
-            .chain(camera.defines.gradient_borders.iter_mut())
-            .chain(camera.defines.shadows.iter_mut())
-            .chain(camera.defines.fog.iter_mut())
-            .chain(camera.defines.tree_fade.iter_mut())
-            .chain(camera.defines.ambient.iter_mut().flatten())
-            .chain(camera.defines.sun_diffuse.iter_mut())
-            .chain(camera.defines.moon_diffuse.iter_mut())
-            .chain(camera.defines.raid_icons.iter_mut())
-            .chain(std::iter::once(&mut camera.defines.raid_icons_raid_mode))
-            .chain(std::iter::once(&mut camera.defines.sun_specular))
-            .chain(std::iter::once(&mut camera.defines.cubemap))
-            .chain(std::iter::once(&mut camera.defines.country_names_cutoff))
-            .chain(std::iter::once(&mut camera.defines.border_width))
-            .chain(camera.defines.border_fades.iter_mut().flatten())
-            .chain(std::iter::once(&mut camera.defines.sprawl_cutoff))
-            .chain(std::iter::once(&mut camera.defines.map_objects_cutoff))
-            .chain(std::iter::once(&mut camera.defines.railway_cutoff))
-            .chain(std::iter::once(&mut camera.defines.railway_cutoff_speed))
-            .chain(std::iter::once(&mut camera.defines.gradient_field.center))
-            .chain(camera.defines.gradient_field.country_thickness.iter_mut())
-            .chain(camera.defines.gradient_field.country_area.iter_mut())
-            .chain(std::iter::once(
-                &mut camera.defines.gradient_field.strategic_thickness,
-            ))
-            .chain(std::iter::once(
-                &mut camera.defines.gradient_field.optimization_range,
-            ))
-            .chain(std::iter::once(
-                &mut camera.defines.gradient_field.mode_thickness_max,
-            ))
-        {
-            count += 1;
-            *value = f32::from_bits(0x7fc0_0000 + count);
-        }
-        let key = CameraFrame::new(camera, [123, 456]);
-        let mut observed: Vec<_> = key
-            .values
-            .into_iter()
-            .filter(|value| *value > 0x7fc0_0000 && *value <= 0x7fc0_0000 + count)
-            .collect();
-        observed.sort_unstable();
-        assert_eq!(
-            observed,
-            (1..=count).map(|n| 0x7fc0_0000 + n).collect::<Vec<_>>()
-        );
-        assert_eq!(key, CameraFrame::new(camera, [123, 456]));
-        assert_ne!(key, CameraFrame::new(camera, [124, 456]));
-        assert_ne!(key, CameraFrame::new(camera, [123, 457]));
-        let mut changed = camera;
-        changed.map.width += 1;
-        assert_ne!(key, CameraFrame::new(changed, [123, 456]));
-        changed = camera;
-        changed.map.height += 1;
-        assert_ne!(key, CameraFrame::new(changed, [123, 456]));
-        for index in 0..3 {
-            changed = camera;
-            changed.defines.gradient_field.navy_neutral[index] ^= 1;
-            assert_ne!(key, CameraFrame::new(changed, [123, 456]));
-        }
-    }
-
-    #[test]
-    fn sprite_camera_frame_keeps_zero_nan_and_every_free_pose_bit() {
-        use crate::map::camera::{Free, Lens, Pose};
-        let mut camera = camera();
-        let map = CameraFrame::new(camera, [16, 16]);
-        camera.center[0] = -0.0;
-        assert_ne!(map, CameraFrame::new(camera, [16, 16]));
-        camera.center[0] = f32::from_bits(0x7fc0_0001);
-        let nan = CameraFrame::new(camera, [16, 16]);
-        assert_eq!(nan, CameraFrame::new(camera, [16, 16]));
-        camera.center[0] = f32::from_bits(0x7fc0_0002);
-        assert_ne!(nan, CameraFrame::new(camera, [16, 16]));
-        camera.pose = Pose::Free(Free::new(0.0, 0.0, Lens::MAP));
-        let free = CameraFrame::new(camera, [16, 16]);
-        assert_ne!(free, map);
-        for index in 0..6 {
-            let mut changed = camera;
-            let Pose::Free(pose) = &mut changed.pose else {
-                unreachable!()
-            };
-            let value = match index {
-                0 => &mut pose.yaw,
-                1 => &mut pose.pitch,
-                2 => &mut pose.roll,
-                3 => &mut pose.lens.fov_y,
-                4 => &mut pose.lens.near,
-                _ => &mut pose.lens.far,
-            };
-            *value = f32::from_bits(value.to_bits() ^ 1);
-            assert_ne!(
-                free,
-                CameraFrame::new(changed, [16, 16]),
-                "pose operand {index}"
-            );
-        }
-    }
 
     #[test]
     fn retained_upload_float_inputs_include_every_component_and_nan_bit() {
@@ -622,18 +432,148 @@ mod tests {
             [1.; 4],
         );
         let mut kept = Upload::new(&batch, &[], [16, 16], 1., Some(3));
-        let storage = kept.quads.as_ptr();
-        let capacity = kept.quads.capacity();
+        let storage = kept.loose.as_ptr();
+        let capacity = kept.loose.capacity();
         batch.quads[0].rect[0] = -0.;
         assert!(!kept.matches(&batch, [17, 18], 2., Some(4)));
         kept.update(&batch, &[], [17, 18], 2., Some(4));
         assert!(kept.matches(&batch, [17, 18], 2., Some(4)));
-        assert_eq!(kept.quads.as_ptr(), storage);
-        assert_eq!(kept.quads.capacity(), capacity);
+        assert_eq!(kept.loose.as_ptr(), storage);
+        assert_eq!(kept.loose.capacity(), capacity);
         batch.clear();
         kept.update(&batch, &[], [17, 18], 2., Some(4));
         assert!(kept.matches(&batch, [17, 18], 2., Some(4)));
-        assert_eq!(kept.quads.capacity(), capacity);
+        assert_eq!(kept.loose.capacity(), capacity);
+    }
+
+    fn sheet() -> super::super::SpriteSheet {
+        super::super::SpriteSheet {
+            name: "synthetic".into(),
+            texture: 0,
+            frames: 1,
+            size: [4, 4],
+        }
+    }
+
+    /// One window of `quads` quads, drawn at `stamp`.
+    fn windowed(owner: u64, stamp: super::super::WindowStamp, quads: usize) -> Batch {
+        use super::super::{WindowKey, WindowPool};
+        let mut batch = Batch::default();
+        batch.at_window(WindowKey::new(WindowPool::Base, 0, owner), stamp);
+        for index in 0..quads {
+            batch.scaled(&sheet(), 0, [index as f32, 0.], [4., 4.], [1.; 4]);
+        }
+        batch.no_window();
+        batch.scaled(&sheet(), 0, [100., 0.], [4., 4.], [1.; 4]);
+        batch
+    }
+
+    #[test]
+    fn a_window_that_draws_what_it_drew_is_retained_without_comparing_its_quads() {
+        use super::super::WindowStamp;
+        let stamp = WindowStamp { painting: 7, taken: 11 };
+        let batch = windowed(3, stamp, 4);
+        let kept = Upload::new(&batch, &[], [16, 16], 1., Some(3));
+        assert!(kept.matches(&batch, [16, 16], 1., Some(3)));
+        // The window's quads are not compared: its stamp says what it draws, and a batch that
+        // hands the same window at the same stamp hands the quads it drew.
+        let mut moved = batch.clone();
+        for quad in &mut moved.quads[..4] {
+            quad.rect[0] = f32::from_bits(0x7fc0_0001);
+        }
+        assert!(kept.matches(&moved, [16, 16], 1., Some(3)));
+        // A quad outside every window is compared quad for quad.
+        let mut loose = batch.clone();
+        loose.quads[4].rect[0] = -0.;
+        assert!(!kept.matches(&loose, [16, 16], 1., Some(3)));
+        // A new painting, a new sort key, a new count of quads and a new owner each miss.
+        for changed in [
+            windowed(3, WindowStamp { painting: 8, taken: 11 }, 4),
+            windowed(3, WindowStamp { painting: 7, taken: 12 }, 4),
+            windowed(3, stamp, 5),
+            windowed(4, stamp, 4),
+        ] {
+            assert!(!kept.matches(&changed, [16, 16], 1., Some(3)));
+        }
+    }
+
+    /// Two windows of two quads each, with a loose quad after each: quads 0-1 and 3-4 stand in
+    /// windows 0 and 1, quads 2 and 5 in none.
+    fn two_windows() -> Batch {
+        use super::super::WindowStamp;
+        let mut batch = Batch::default();
+        for owner in [1_u64, 2] {
+            batch.append(&windowed(
+                owner,
+                WindowStamp { painting: owner, taken: owner * 10 },
+                2,
+            ));
+        }
+        batch
+    }
+
+    #[test]
+    fn a_batch_whose_windows_only_stand_elsewhere_names_those_windows_and_nothing_else() {
+        let batch = two_windows();
+        let kept = Upload::new(&batch, &[], [16, 16], 1., Some(3));
+        assert_eq!(
+            kept.moved_windows(&batch, [16, 16], 1., Some(3)),
+            Some(Vec::new()),
+            "a batch standing where it stood moved no window"
+        );
+        let mut moved = batch.clone();
+        moved.standing_windows()[1].shift = [3, -2];
+        // A window's quads are not compared: where it stands is what changed, and its own offset
+        // says so, so what a move wrote into them is already there.
+        for quad in &mut moved.quads[3..5] {
+            quad.rect[0] += 3.0;
+        }
+        assert_eq!(kept.moved_windows(&moved, [16, 16], 1., Some(3)), Some(vec![1]));
+        // Anything else: a window painted again, a quad outside every window, the viewport, the
+        // interface scale, the artwork, and a window the batch did not hold before.
+        let mut painted = batch.clone();
+        painted.standing_windows()[0].stamp.painting += 1;
+        assert_eq!(kept.moved_windows(&painted, [16, 16], 1., Some(3)), None);
+        let mut loose = moved.clone();
+        loose.quads[2].rect[0] = -0.0;
+        assert_eq!(kept.moved_windows(&loose, [16, 16], 1., Some(3)), None);
+        assert_eq!(kept.moved_windows(&batch, [17, 16], 1., Some(3)), None);
+        assert_eq!(kept.moved_windows(&batch, [16, 16], 2., Some(3)), None);
+        assert_eq!(kept.moved_windows(&batch, [16, 16], 1., Some(4)), None);
+        let mut more = batch.clone();
+        more.append(&windowed(
+            3,
+            super::super::WindowStamp { painting: 3, taken: 30 },
+            2,
+        ));
+        assert_eq!(kept.moved_windows(&more, [16, 16], 1., Some(3)), None);
+    }
+
+    #[test]
+    fn windows_that_only_changed_places_among_others_draw_the_same() {
+        use super::super::WindowStamp;
+        let stamp = |owner: u64| WindowStamp { painting: owner, taken: owner * 10 };
+        let mut batch = Batch::default();
+        for owner in [1_u64, 2] {
+            batch.append(&windowed(owner, stamp(owner), 2));
+        }
+        let mut order: Vec<usize> = (0..batch.quads.len()).collect();
+        let kept = Upload::new(&batch, &order, [16, 16], 1., Some(3));
+        assert!(kept.matches_in_order(&batch, &order, [16, 16], 1., Some(3)));
+        // The second window drawn first draws the same quads in another order, so it does not.
+        order.swap(0, 3);
+        assert!(!kept.matches_in_order(&batch, &order, [16, 16], 1., Some(3)));
+        // The same windows at the same places in the drawn order draw the same, whatever the
+        // batch holds in the quads themselves.
+        let mut again = Batch::default();
+        for owner in [1_u64, 2] {
+            again.append(&windowed(owner, stamp(owner), 2));
+        }
+        for quad in &mut again.quads {
+            quad.layer += 1;
+        }
+        let order: Vec<usize> = (0..again.quads.len()).collect();
+        assert!(kept.matches_in_order(&again, &order, [16, 16], 1., Some(3)));
     }
 
     #[test]

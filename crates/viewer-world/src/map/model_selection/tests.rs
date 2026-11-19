@@ -176,7 +176,7 @@ fn an_unnamed_candidate_refuses_the_pair_instead_of_ranking_the_next() {
         .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "variant 40 equipment type: token 999 is not in LexicalTokens"
+        "variant 40 equipment type: token 999 is not in lexical tokens"
     );
 }
 
@@ -399,7 +399,7 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
             )
             .unwrap_err()
             .to_string(),
-        "variant 40 equipment type: token 999 is not in LexicalTokens"
+        "variant 40 equipment type: token 999 is not in lexical tokens"
     );
     let mut spans = viewer_foundation::profiling::BuilderSpans::new(true);
     stages.append_to(&mut spans);
@@ -463,6 +463,7 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
     let mut random = 0xe91a_62d3_u64;
     let mut successful = 0;
     let mut refused = 0;
+    let mut reasons = std::collections::BTreeMap::<String, (usize, usize)>::new();
     for hour in 0_usize..384 {
         random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
         if hour.is_multiple_of(47) {
@@ -477,12 +478,10 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
             }
         }
         if hour.is_multiple_of(9) {
+            // Variant 20 defined again as another type, and 40 added: the rows stay one per id,
+            // ascending, as a frame's are.
             let mut rows = definitions.clone();
-            rows.push(VariantDefinitionRow {
-                id: 20,
-                equipment_token: 103,
-                ..Default::default()
-            });
+            rows[1].equipment_token = 103;
             rows.push(VariantDefinitionRow {
                 id: 40,
                 equipment_token: 999,
@@ -565,6 +564,9 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
             assert_eq!(expected, actual, "hour {hour} query {query}");
             successful += usize::from(actual.as_ref().is_ok_and(Option::is_some));
             refused += usize::from(actual.is_err());
+            if let Err((_, why)) = &actual {
+                reasons.entry(why.clone()).or_insert((0, hour)).0 += 1;
+            }
         }
         // The immutable authored clone shares index facts, but replacing Content
         // above starts a fresh bank even for the same held replay tables.
@@ -588,6 +590,6 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
     }
     assert!(
         successful > 100 && refused > 100,
-        "successful={successful}, refused={refused}"
+        "successful={successful}, refused={refused}, refusals (count, first hour) {reasons:?}"
     );
 }

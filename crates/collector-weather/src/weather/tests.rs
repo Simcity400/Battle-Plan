@@ -1251,6 +1251,24 @@ fn weather_display_raw_and_typed_attach_dirty_and_full_rebuild_snapshots_match()
         put(&mut source.bytes, 0x4800, &[210]);
         put(&mut source.bytes, 0x4d00, &[200]);
     }
+    // Interior cells stay queued between timed graphics rebuilds, which is most
+    // of the time. Those cells are clamped off the last row and column, so the
+    // retained boundary is still the game's and the hour still records it.
+    put(
+        &mut source.bytes,
+        0x2000 + cweather_manager::DISPLAY_WORK_COUNT,
+        &8_i32.to_le_bytes(),
+    );
+    let (queued, _) = weather_display_split(&source, 10);
+    let rows::Recorded::Value(Some(display)) = weather_display_row(&queued).display else {
+        panic!("boundary refused while interior cells were queued")
+    };
+    assert_eq!(display.edges, [vec![99; 5], vec![88; 5]].concat());
+    assert_eq!(queued.display_failure(), None);
+    let mut typed = Captured::with_capacities(&capacity);
+    typed.capture(&source, 0, 0x1000);
+    give_fixture_accumulators(&mut typed);
+    assert_eq!(queued.tables(), typed.tables());
 }
 
 #[test]
@@ -1362,7 +1380,7 @@ fn weather_display_refresh_crossing_the_copy_refuses_only_the_boundary() {
 }
 
 #[test]
-fn weather_display_already_running_refresh_with_equal_token_refuses_only_the_boundary() {
+fn weather_display_whole_grid_rebuild_with_equal_token_refuses_only_the_boundary() {
     struct Refreshing {
         source: AttackWeatherMemory,
         completed: Cell<bool>,
@@ -1373,6 +1391,7 @@ fn weather_display_already_running_refresh_with_equal_token_refuses_only_the_bou
                 return false;
             }
             if address == 0x2000 + cweather_manager::DISPLAY_WORK_COUNT {
+                // The fixture grid's nine cells, queued whole: a whole-grid rebuild.
                 let work = if self.completed.get() { 0_i32 } else { 9 };
                 destination.copy_from_slice(&work.to_le_bytes());
             }
@@ -1422,7 +1441,7 @@ fn weather_display_already_running_refresh_with_equal_token_refuses_only_the_bou
         assert_eq!(row.display_snow, 200);
         assert_eq!(
             captured.display_failure(),
-            Some("weather display graphics work pending")
+            Some("weather display whole-grid rebuild queued")
         );
         assert_eq!(
             source.source.attempts(0x4d02),
@@ -1478,6 +1497,7 @@ fn weather_display_completion_guard_refuses_pending_or_faulted_work_after_edges(
                 if !self.source.copy(address, destination) {
                     return false;
                 }
+                // The fixture grid's nine cells, queued whole after the snow plane.
                 destination.copy_from_slice(&9_i32.to_le_bytes());
                 return true;
             }
@@ -1521,7 +1541,7 @@ fn weather_display_completion_guard_refuses_pending_or_faulted_work_after_edges(
                 Some(if fault_after_copy {
                     "weather display work count unreadable"
                 } else {
-                    "weather display graphics work pending"
+                    "weather display whole-grid rebuild queued"
                 })
             );
             assert_eq!(source.source.attempts(0x4d02), 1, "copy once; no retry");

@@ -15,7 +15,8 @@ use replay_frame::frame::DecodedFrame;
 use std::{
     collections::BTreeMap,
     io,
-    sync::{Mutex, atomic::AtomicBool},
+    sync::{Condvar, Mutex, atomic::AtomicBool, atomic::Ordering},
+    time::{Duration, Instant},
 };
 
 pub const LAND: usize = 0;
@@ -289,23 +290,108 @@ impl CombatFlags {
 /// Per combat side: the hours its flag took a new value, ascending.
 pub type Changes = BTreeMap<(u64, u8), Vec<(Hour, Engaged)>>;
 
+/// The combats a fold changed at each hour it covers: the hours ascending, each
+/// naming where its combats start in one run of ids. A reader advancing from
+/// one hour to another reads the combats between them and leaves the rest.
+#[derive(Debug, Default)]
+pub struct Touched {
+    hours: Vec<(Hour, u32)>,
+    ids: Vec<u64>,
+}
+
+impl Touched {
+    /// The combats `ids` changed at `hour`, later than every hour recorded
+    /// before it; an hour that changed none takes no entry.
+    fn record(&mut self, hour: Hour, ids: impl IntoIterator<Item = u64>) {
+        let at = u32::try_from(self.ids.len()).expect("the engaged index's hour log holds under four billion changes");
+        self.ids.extend(ids);
+        if self.ids.len() > at as usize {
+            self.hours.push((hour, at));
+        }
+    }
+
+    /// The combats whose value changed after `from` and at or before `to`, each
+    /// once, ascending.
+    fn between(&self, from: Hour, to: Hour) -> Vec<u64> {
+        let bound = |hour| self.hours.get(self.hours.partition_point(|&(held, _)| held <= hour)).map_or(self.ids.len(), |&(_, at)| at as usize);
+        let mut ids = self.ids[bound(from)..bound(to)].to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+}
+
+/// One viewer's folded history of a branch: per kind the flags' change points,
+/// per icon kind the kept frames', and for both the combats each hour changed,
+/// appended together so an advance over hours can never miss one.
+#[derive(Debug, Default)]
+pub struct Folded {
+    points: Vec<Changes>,
+    icons: Vec<IconPoints>,
+    touched: Vec<Touched>,
+    icon_touched: Vec<Touched>,
+}
+
+impl Folded {
+    fn new() -> Self {
+        Self {
+            points: vec![BTreeMap::new(); SOURCES.len()],
+            icons: vec![BTreeMap::new(); ICON_KINDS],
+            touched: (0..SOURCES.len()).map(|_| Touched::default()).collect(),
+            icon_touched: (0..ICON_KINDS).map(|_| Touched::default()).collect(),
+        }
+    }
+
+    /// Per kind and side: the hours its flag took a new value, ascending.
+    pub fn points(&self) -> &[Changes] {
+        &self.points
+    }
+
+    /// Per icon kind and combat: the hours its kept frame changed.
+    pub fn icons(&self) -> &[IconPoints] {
+        &self.icons
+    }
+
+    /// `changed` sides of `kind` took new values at `hour`, and the combats of
+    /// `ended` are over: the change points and the hour's combats together.
+    pub fn record(&mut self, kind: usize, hour: Hour, changed: &[((u64, u8), Engaged)], ended: &[(u64, u8)]) {
+        let points = &mut self.points[kind];
+        let mut touched: Vec<u64> = Vec::with_capacity(changed.len());
+        for &(key, value) in changed {
+            let changes = points.entry(key).or_default();
+            if changes.last().is_none_or(|(_, last)| *last != value) {
+                changes.push((hour, value));
+                touched.push(key.0);
+            }
+        }
+        self.touched[kind].record(hour, touched);
+        // An ended combat takes no more points: keep only what it holds.
+        for key in ended {
+            if let Some(changes) = points.get_mut(key) {
+                changes.shrink_to_fit();
+            }
+        }
+    }
+
+    /// `changed` icons of `kind` took new kept frames at `hour`.
+    pub fn record_icons(&mut self, kind: usize, hour: Hour, changed: &[(u64, Option<Kept>)]) {
+        for &(combat, kept) in changed {
+            self.icons[kind].entry(combat).or_default().push((hour, kept));
+        }
+        self.icon_touched[kind].record(hour, changed.iter().map(|&(combat, _)| combat));
+    }
+}
+
 /// The folded change points of one branch.
 #[derive(Default)]
 pub struct Covered {
     pub first: Hour,
     pub last: Hour,
-    /// Per kind and side: the hours its flag took a new value, ascending, for
-    /// the perspective's viewer.
-    pub points: Vec<Changes>,
+    /// The perspective's viewer's history.
+    pub perspective: Folded,
     /// The same for the recording's own player, whose history follows its
-    /// player changes.
-    pub recording: Vec<Changes>,
-    /// Per icon kind and combat: the hours its kept frame changed, for the
-    /// perspective's viewer.
-    pub icons: Vec<IconPoints>,
-    /// The same for the recording's own player, whose icons take their frames
-    /// from its own flag history.
-    pub recording_icons: Vec<IconPoints>,
+    /// player changes and whose icons take their frames from its own flags.
+    pub recording: Folded,
     /// The viewer per hour where it changed, ascending; a lookup for another
     /// viewer is not covered.
     pub viewers: Vec<(Hour, u32)>,
@@ -322,25 +408,34 @@ pub fn at<T: Copy>(changes: &[(Hour, T)], hour: Hour) -> Option<T> {
 
 impl Covered {
     pub fn new(hour: Hour) -> Self {
-        Self {
-            first: hour,
-            last: hour,
-            points: vec![BTreeMap::new(); SOURCES.len()],
-            recording: vec![BTreeMap::new(); SOURCES.len()],
-            icons: vec![BTreeMap::new(); ICON_KINDS],
-            recording_icons: vec![BTreeMap::new(); ICON_KINDS],
-            viewers: Vec::new(),
-            players: Vec::new(),
-        }
+        Self { first: hour, last: hour, perspective: Folded::new(), recording: Folded::new(), viewers: Vec::new(), players: Vec::new() }
+    }
+
+    /// The hour's changes of one track: the recording player's when `recording`.
+    pub fn fold(&mut self, recording: bool) -> &mut Folded {
+        if recording { &mut self.recording } else { &mut self.perspective }
+    }
+
+    /// Both tracks, the perspective's first.
+    pub fn folds(&self) -> [&Folded; 2] {
+        [&self.perspective, &self.recording]
     }
 
     fn viewer(&self, hour: Hour) -> Option<u32> {
         at(&self.viewers, hour)
     }
 
+    /// Whether the viewer the pass resolved, or the recording's player, changed
+    /// after `from` and at or before `to`: the values held at `from` then came
+    /// from another track and none of them carries over.
+    fn one_track(&self, from: Hour, to: Hour) -> bool {
+        let steady = |mut hours: Box<dyn Iterator<Item = Hour> + '_>| !hours.any(|hour| hour > from && hour <= to);
+        steady(Box::new(self.viewers.iter().map(|&(hour, _)| hour))) && steady(Box::new(self.players.iter().map(|&(hour, _)| hour)))
+    }
+
     /// The perspective's viewer at `hour`, or why a lookup for `viewer`
     /// cannot use the perspective's history.
-    fn perspective(&self, hour: Hour, viewer: u32) -> Result<(), Provenance> {
+    fn answers_viewer(&self, hour: Hour, viewer: u32) -> Result<(), Provenance> {
         match self.viewer(hour) {
             Some(folded) if folded == viewer => Ok(()),
             Some(_) => Err(Provenance::OtherViewer),
@@ -352,18 +447,46 @@ impl Covered {
     /// player's own history when `viewer` is that player, which is the
     /// client's flag itself, else the perspective's when it resolved to
     /// `viewer`.
-    fn points_for(&self, hour: Hour, viewer: u32) -> Result<&[Changes], Provenance> {
-        if at(&self.players, hour).flatten() == Some(viewer) {
+    fn points_for(&self, hour: Hour, viewer: u32) -> Result<&Folded, Provenance> {
+        if self.recording_player(hour, viewer) {
             return Ok(&self.recording);
         }
-        self.perspective(hour, viewer)?;
-        Ok(&self.points)
+        self.answers_viewer(hour, viewer)?;
+        Ok(&self.perspective)
+    }
+
+    /// Whether `viewer` is the recording's own player at `hour`, whose history
+    /// is the client's flag itself.
+    pub fn recording_player(&self, hour: Hour, viewer: u32) -> bool {
+        at(&self.players, hour).flatten() == Some(viewer)
+    }
+}
+
+/// Where `hour`'s flags for `viewer` come from, over the folds published so far.
+fn provenance_in(
+    branches: &BTreeMap<BranchId, Covered>,
+    branch: BranchId,
+    hour: Hour,
+    viewer: u32,
+) -> Provenance {
+    let Some(covered) = branches
+        .get(&branch)
+        .filter(|covered| (covered.first..=covered.last).contains(&hour))
+    else {
+        return Provenance::Pending;
+    };
+    match covered.points_for(hour, viewer) {
+        Ok(_) => Provenance::Indexed,
+        Err(provenance) => provenance,
     }
 }
 
 #[derive(Default)]
 pub struct History {
     pub branches: Mutex<BTreeMap<BranchId, Covered>>,
+    /// Signalled after each hour the fold publishes under `branches`: what a reader that must see
+    /// a given hour waits on ([`History::reached`]).
+    folded: Condvar,
     /// The byte check's published summary; the pass folds it privately.
     pub check: Mutex<Summary>,
     pub cancelled: AtomicBool,
@@ -413,7 +536,7 @@ impl History {
             .filter(|covered| (covered.first..=covered.last).contains(&hour))
             .ok_or(Provenance::Pending)?;
         // Every kind in SOURCES has its points from the first folded hour.
-        let points = &covered.points_for(hour, viewer)?[kind];
+        let points = &covered.points_for(hour, viewer)?.points()[kind];
         let side = |combat: u64, side: u8| {
             points
                 .get(&(combat, side))
@@ -443,11 +566,11 @@ impl History {
             .ok_or(Provenance::Pending)?;
         // The client's icons follow its own flags: the recording player's icon
         // history answers a viewer who is that player there, as `points_for`.
-        let points = if at(&covered.players, hour).flatten() == Some(viewer) {
-            &covered.recording_icons[kind]
+        let points = if covered.recording_player(hour, viewer) {
+            &covered.recording.icons()[kind]
         } else {
-            covered.perspective(hour, viewer)?;
-            &covered.icons[kind]
+            covered.answers_viewer(hour, viewer)?;
+            &covered.perspective.icons()[kind]
         };
         Ok(combats
             .iter()
@@ -457,5 +580,67 @@ impl History {
                 Some((combat, points.get(at.checked_sub(1)?)?.1?))
             })
             .collect())
+    }
+
+    /// Where a lookup at `hour` for `viewer` takes its values from, read
+    /// without naming a combat: what [`Self::lookup`] and
+    /// [`Self::lookup_icons`] report there.
+    pub fn provenance(&self, branch: BranchId, hour: Hour, viewer: u32) -> Provenance {
+        let branches = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        provenance_in(&branches, branch, hour, viewer)
+    }
+
+    /// The fold has published an hour: woken for every [`Self::reached`].
+    pub fn folded(&self) {
+        self.folded.notify_all();
+    }
+
+    /// [`Self::provenance`] once the fold has reached `hour`, waited for within `limit`: what a
+    /// frame that is saved asks, so its combat markers are the markers of its hour and not of
+    /// however far the background fold had got when it was drawn. Every provenance but
+    /// [`Provenance::Pending`] is a decision time cannot change and is answered at once; `Pending`
+    /// is answered when the fold is cancelled or `limit` runs out.
+    pub fn reached(&self, branch: BranchId, hour: Hour, viewer: u32, limit: Duration) -> Provenance {
+        let until = Instant::now() + limit;
+        let mut branches = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            let provenance = provenance_in(&branches, branch, hour, viewer);
+            if provenance != Provenance::Pending || self.cancelled.load(Ordering::Acquire) {
+                return provenance;
+            }
+            let Some(left) = until
+                .checked_duration_since(Instant::now())
+                .filter(|left| !left.is_zero())
+            else {
+                return Provenance::Pending;
+            };
+            branches = self
+                .folded
+                .wait_timeout(branches, left)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+    }
+
+    /// The combats of `kind` whose flag changed after `from` and at or before
+    /// `to` for `viewer`; `None` when the two hours are not answered from one
+    /// folded track, so every combat's flag is read again.
+    pub fn flags_changed(&self, kind: usize, branch: BranchId, from: Hour, to: Hour, viewer: u32) -> Option<Vec<u64>> {
+        self.advance(branch, from, to, viewer, |fold| &fold.touched[kind])
+    }
+
+    /// The same for the kept frames of icon kind `kind`
+    /// ([`Self::lookup_icons`]).
+    pub fn icons_changed(&self, kind: usize, branch: BranchId, from: Hour, to: Hour, viewer: u32) -> Option<Vec<u64>> {
+        self.advance(branch, from, to, viewer, |fold| &fold.icon_touched[kind])
+    }
+
+    fn advance(&self, branch: BranchId, from: Hour, to: Hour, viewer: u32, log: impl Fn(&Folded) -> &Touched) -> Option<Vec<u64>> {
+        let branches = self.branches.lock().unwrap_or_else(|p| p.into_inner());
+        let covered = branches.get(&branch)?;
+        if from > to || from < covered.first || to > covered.last || !covered.one_track(from, to) {
+            return None;
+        }
+        Some(log(covered.points_for(to, viewer).ok()?).between(from, to))
     }
 }

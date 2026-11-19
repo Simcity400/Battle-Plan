@@ -14,7 +14,7 @@ use crate::{
 };
 use replay_data::rows::TableId;
 use std::sync::{Arc, Mutex};
-use viewer_foundation::{engagement_history::History, map::perspective::Country};
+use viewer_foundation::engagement_history::History;
 
 #[test]
 fn the_marker_hovers_the_combat_window_and_the_byte_check_take_the_engaged_index_from_the_engagements_layer() {
@@ -26,13 +26,14 @@ fn the_marker_hovers_the_combat_window_and_the_byte_check_take_the_engaged_index
     sought(&mut side, 4);
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
     viewer.playhead = Some(Playhead { branch: 3, hour: 4, fraction: 0.0 });
-    assert!(viewer.hours.is_none(), "today's pipeline is never started");
+    let mut side = crate::playhead_host::side::SideThread::new(side).unwrap();
+    side.driven(|_| ());
     viewer.playhead_map = Some(side);
-    let taken = viewer.engaged_history(&Country::Recorded).expect("the layer's index is never an error");
+    let taken = viewer.layer_engaged();
     assert!(taken.is_some_and(|taken| Arc::ptr_eq(&taken, &history)), "the marker hovers and the combat window read the engagements layer's index");
-    let checked = viewer.engaged_shown(&Country::Recorded).expect("the layer's index is never an error");
+    let checked = viewer.layer_history();
     assert!(checked.is_some_and(|checked| Arc::ptr_eq(&checked, &history)), "the engaged byte check reads the same index");
     viewer.playhead_map = None;
-    let today = viewer.engaged_history(&Country::Recorded).expect("today's, with no pipeline, is none");
+    let today = viewer.layer_engaged();
     assert!(today.is_none(), "no playhead map: today's pipeline's index, none without the pipeline");
 }

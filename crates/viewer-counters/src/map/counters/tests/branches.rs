@@ -1,20 +1,6 @@
-//! The branched counter draw against the serial one ([`PreparedCounters::draw_branched`]).
+//! The composed counter draw against the plain one ([`PreparedCounters::draw_branched`]).
 
 use super::*;
-
-/// Independent helper threads, bounded by the worker service's usable processors.
-struct Threads;
-
-impl viewer_foundation::parallel::Spawn for Threads {
-    fn try_spawn(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), Box<dyn FnOnce() + Send>> {
-        std::thread::spawn(job);
-        Ok(())
-    }
-
-    fn threads(&self) -> usize {
-        2
-    }
-}
 
 fn synthetic_hour(inputs: &CounterInputs<'_>, frame: &DecodedFrame) -> HourTables {
     let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
@@ -39,7 +25,7 @@ fn synthetic_hour(inputs: &CounterInputs<'_>, frame: &DecodedFrame) -> HourTable
 }
 
 /// Each reference owns a cold atlas and independent window history.
-fn transcript(workers: Option<viewer_foundation::parallel::Workers>) -> Vec<String> {
+fn transcript(branched: bool) -> Vec<String> {
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}
@@ -124,12 +110,11 @@ fn transcript(workers: Option<viewer_foundation::parallel::Workers>) -> Vec<Stri
                     [2. + at as f32 * 0.125, 2.]
                 };
                 let time = at as f32 / 240.;
-                if let Some(workers) = &workers {
+                if branched {
                     prepared
                         .draw_branched(
                             &inputs,
                             time,
-                            workers,
                             viewer_foundation::profiling::FrameOwners::new(),
                             &mut windows,
                             &mut pings,
@@ -165,18 +150,15 @@ fn transcript(workers: Option<viewer_foundation::parallel::Workers>) -> Vec<Stri
     )
 }
 
-/// Compare every quad and report field with the independent serial draw.
+/// Compare every quad and report field with the independent plain draw.
 #[test]
-fn branched_counters_draw_every_frame_as_the_serial_draw() {
+fn branched_counters_draw_every_frame_as_the_plain_draw() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
-    use viewer_foundation::parallel::Workers;
-    let serial = transcript(None);
-    for workers in [Workers::default(), Workers::new(Arc::new(Threads))] {
-        let branched = transcript(Some(workers));
-        assert_eq!(serial.len(), branched.len());
-        for (frame, (serial, branched)) in serial.iter().zip(&branched).enumerate() {
-            assert_eq!(serial, branched, "frame {frame}");
-        }
+    let serial = transcript(false);
+    let branched = transcript(true);
+    assert_eq!(serial.len(), branched.len());
+    for (frame, (serial, branched)) in serial.iter().zip(&branched).enumerate() {
+        assert_eq!(serial, branched, "frame {frame}");
     }
     assert!(
         serial.iter().any(|frame| !frame.contains("\ncounters []")),

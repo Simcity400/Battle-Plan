@@ -4,10 +4,7 @@ use crate::{
         Layer,
         recorded::{self, column},
     },
-    playhead_host::{
-        open,
-        rows::{Recording, Rows},
-    },
+    playhead_host::{open, views::apart::Apart},
 };
 use playhead::Settings;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
@@ -56,31 +53,29 @@ fn campaign(at: u32, store: &mut Store) {
 
 #[test]
 fn a_plan_is_kept_while_its_rows_are_unchanged_and_made_again_from_the_hour_one_changed() {
-    let entry = open(recorded::record("orders", 60, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(recorded::record("orders", 60, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(CaptureMode::Full);
-    let rows = Rows::of(&entry, Recording { branch: 0 }).unwrap();
+    let mut fed = Apart::new(&entry, 0).unwrap();
     let mut layer = Orders::new(Arc::new(Links));
-    layer.attach(Arc::clone(&rows));
+    layer.set_views(fed.store()).unwrap();
     layer.set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
-    rows.settled();
-    rows.drive(0);
     entry.playhead().seek(0);
-    // At the newest step built, as a map's frames would take it, until `to` is reached.
-    let through = |layer: &mut Orders, to: i32| loop {
+    // At the newest step applied, as a map's frames would take it, until `to` is reached.
+    let through = |fed: &mut Apart, layer: &mut Orders, to: i32| loop {
         let head = entry.playhead().newest().unwrap_or(0);
-        rows.drive(head);
-        layer.settle_at(head, LIMIT).unwrap();
+        assert!(fed.drive(head), "the store never reached hour {head}");
+        layer.settle_at(head, crate::layers::Settling::Whole).unwrap();
         if head >= to {
             break;
         }
     };
 
-    through(&mut layer, 36);
+    through(&mut fed, &mut layer, 36);
     let (hour, plan) = layer.plan().expect("a plan from the first rows");
     assert_eq!((hour, plan.report.recorded), (0, 1));
     assert_eq!(layer.marked()[..2], [1, 0], "one plan while the rows are unchanged, no table learned");
 
-    through(&mut layer, 55);
+    through(&mut fed, &mut layer, 55);
     let (hour, plan) = layer.plan().unwrap();
     assert_eq!(plan.report.recorded, 2);
     assert!((45..50).contains(&hour), "made again from the rows of the step the table changed in, at {hour}");
@@ -113,28 +108,36 @@ fn campaign_with_countries(at: u32, store: &mut Store) {
 /// on full13 in 1940, where invasion plans learned their trigger tables one round at a time).
 #[test]
 fn a_whole_settle_that_learns_a_table_shows_the_plan_of_its_hour_made_once_the_table_joined() {
-    let entry = open(recorded::record("orders learning", 60, campaign_with_countries), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(recorded::record("orders learning", 60, campaign_with_countries), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(CaptureMode::Full);
-    let rows = Rows::of(&entry, Recording { branch: 0 }).unwrap();
+    let mut fed = Apart::new(&entry, 0).unwrap();
     let mut layer = Orders::new(Arc::new(Reaching));
-    layer.attach(Arc::clone(&rows));
+    layer.set_views(fed.store()).unwrap();
     layer.set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
-    rows.settled();
-    rows.drive(0);
     entry.playhead().seek(0);
-    let through = |layer: &mut Orders, to: i32| loop {
+    // A settle at the head, and frames going on coming for that same hour while the build learns
+    // a table: the rows of a table newly declared are made by a step after it, which only another
+    // frame makes.
+    let through = |fed: &mut Apart, layer: &mut Orders, to: i32| loop {
         let head = entry.playhead().newest().unwrap_or(0);
-        rows.drive(head);
-        layer.settle_at(head, LIMIT).unwrap();
+        let limit = std::time::Instant::now() + LIMIT;
+        loop {
+            assert!(fed.drive(head), "the store never reached hour {head}");
+            layer.settle_at(head, crate::layers::Settling::step()).unwrap();
+            if layer.made_for() == Some(head) {
+                break;
+            }
+            assert!(std::time::Instant::now() < limit, "the plan never stood at hour {head}: it stands at {:?}", layer.made_for());
+        }
         if head >= to {
             break head;
         }
     };
 
-    through(&mut layer, 36);
+    through(&mut fed, &mut layer, 36);
     assert_eq!(layer.marked()[1], 0, "no table learned while one link is recorded");
 
-    let head = through(&mut layer, 45);
+    let head = through(&mut fed, &mut layer, 45);
     let (hour, plan) = layer.plan().expect("a plan");
     assert_eq!(layer.marked()[1], 1, "the countries learned once, at the hour the second link came");
     assert_eq!(layer.made_for(), Some(head), "the plan stands for the rows at the hour settled, not for rows before the table was learned");
@@ -209,29 +212,27 @@ fn ordering(at: u32, store: &mut Store) {
 
 #[test]
 fn the_battle_plans_notes_are_stated_from_the_rows_the_viewing_country_holds_an_order_in() {
-    let entry = open(recorded::record("orders notes", 40, ordering), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(recorded::record("orders notes", 40, ordering), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(CaptureMode::Full);
-    let rows = Rows::of(&entry, Recording { branch: 0 }).unwrap();
+    let mut fed = Apart::new(&entry, 0).unwrap();
     let mut layer = Orders::new(Arc::new(Links));
-    layer.attach(Arc::clone(&rows));
+    layer.set_views(fed.store()).unwrap();
     layer.set_vision(Choice::default(), Arc::new(Vision::sharing(0, [])));
-    rows.settled();
-    rows.drive(0);
     entry.playhead().seek(0);
-    let through = |layer: &mut Orders, to: i32| loop {
+    let through = |fed: &mut Apart, layer: &mut Orders, to: i32| loop {
         let head = entry.playhead().newest().unwrap_or(0);
-        rows.drive(head);
-        layer.settle_at(head, LIMIT).unwrap();
+        assert!(fed.drive(head), "the store never reached hour {head}");
+        layer.settle_at(head, crate::layers::Settling::Whole).unwrap();
         if head >= to {
             break;
         }
     };
 
-    through(&mut layer, 12);
+    through(&mut fed, &mut layer, 12);
     assert!(layer.plan().is_some_and(|(hour, _)| hour < 20), "a plan from rows before the order");
     assert!(layer.notes().is_empty(), "no order of the viewing country, no note: {:?}", layer.notes());
 
-    through(&mut layer, 30);
+    through(&mut fed, &mut layer, 30);
     let (hour, _) = layer.plan().unwrap();
     assert!(hour >= 20, "a plan from rows holding the order, at {hour}");
     let mut today = viewer_foundation::map::tables::Limitations::default();
@@ -244,73 +245,63 @@ fn the_battle_plans_notes_are_stated_from_the_rows_the_viewing_country_holds_an_
 /// the rows at that hour (before, rows driven past it were taken as its answer).
 #[test]
 fn after_a_seek_a_driven_settle_shows_the_plan_of_the_sought_hours_rows() {
-    let entry = open(recorded::record("orders driven past the seek", 40, ordering), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(recorded::record("orders driven past the seek", 40, ordering), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(CaptureMode::Full);
-    let rows = Rows::of(&entry, Recording { branch: 0 }).unwrap();
+    let mut fed = Apart::new(&entry, 0).unwrap();
     let mut layer = Orders::new(Arc::new(Links));
-    layer.attach(Arc::clone(&rows));
+    layer.set_views(fed.store()).unwrap();
     layer.set_vision(Choice::default(), Arc::new(Vision::sharing(0, [])));
-    rows.settled();
-    rows.drive(0);
     entry.playhead().seek(0);
-    let through = |layer: &mut Orders, to: i32| loop {
+    let through = |fed: &mut Apart, layer: &mut Orders, to: i32| loop {
         let head = entry.playhead().newest().unwrap_or(0);
-        rows.drive(head);
-        layer.settle_at(head, LIMIT).unwrap();
+        assert!(fed.drive(head), "the store never reached hour {head}");
+        layer.settle_at(head, crate::layers::Settling::Whole).unwrap();
         if head >= to {
             break;
         }
     };
-    through(&mut layer, 30);
+    through(&mut fed, &mut layer, 30);
     let old = layer.plan().unwrap().0;
     assert!(old >= 20, "a plan from the rows holding the order, at {old}");
 
     entry.playhead().seek(4);
     layer.compose(&crate::playhead_host::mirror::Mirrors::default()).unwrap();
-    rows.drive(4);
-    layer.settle_at(4, LIMIT).unwrap();
+    assert!(fed.drive(4), "the store never reached the hour sought");
+    layer.settle_at(4, crate::layers::Settling::Whole).unwrap();
     assert_eq!(layer.plan().unwrap().0, 4, "the plan of the rows at the sought hour");
 }
 
-/// A seek back with the steps past the sought hour built before the map's next frame: the plan
-/// a whole settle shows at the sought hour is the plan of the rows at that hour. The rows worker
-/// is held (a signal) while the playhead builds those steps, and released before the map takes
-/// the seek's reset; on the head it followed the map's last head, of the seek before, took the
-/// new seek's steps through it, and the settle showed the plan of a later hour (`orders:today`
-/// differing after a seek in the units equality jobs).
+/// A seek back with the steps past the sought hour already built: the plan a whole settle shows at
+/// the sought hour is the plan of the rows at that hour, not of the steps built past it. The rows
+/// the plan reads are the map side's own, made of the mirrors its step left, so the hour sought is
+/// the hour applied; the test lets the playhead build every step of the seek before asking the
+/// store for the hour sought. On the base the rows followed the map's last head, of the seek
+/// before, and took the new seek's steps through it (`orders:today` differing after a seek in the
+/// units equality jobs).
 #[test]
 fn after_a_seek_back_the_plan_shown_at_the_sought_hour_is_made_from_its_rows() {
-    let entry = open(recorded::record("orders after a seek back", 40, ordering), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(recorded::record("orders after a seek back", 40, ordering), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(CaptureMode::Full);
-    let mut side = crate::playhead_host::MapSide::new(Arc::clone(&entry), Vec::new(), crate::layers::View::default()).unwrap();
-    let rows = Rows::of(&entry, Recording { branch: 0 }).unwrap();
+    let mut fed = Apart::new(&entry, 0).unwrap();
     let mut layer = Orders::new(Arc::new(Links));
-    layer.attach(Arc::clone(&rows));
+    layer.set_views(fed.store()).unwrap();
     layer.set_vision(Choice::default(), Arc::new(Vision::sharing(0, [])));
-    rows.settled();
-    side.anchor(0, false, 1.0, true);
-    side.catch_up(0).unwrap();
-    layer.settle_at(0, LIMIT).unwrap();
-    side.catch_up(30).unwrap();
-    layer.settle_at(30, LIMIT).unwrap();
+    entry.playhead().seek(0);
+    assert!(fed.drive(30), "the store never reached hour 30");
+    layer.settle_at(30, crate::layers::Settling::Whole).unwrap();
     assert!(layer.plan().is_some(), "a plan before the seek");
 
-    let held = rows.hold_before_take();
     let until = std::time::Instant::now() + LIMIT;
-    assert!(held.holding(until), "the rows worker held before it takes");
-    side.anchor(4, false, 1.0, true);
+    entry.playhead().seek(4);
     layer.compose(&crate::playhead_host::mirror::Mirrors::default()).unwrap();
-    // A step past the sought hour built before the worker wakes again (the hang guard only bounds
-    // a stepper that never builds one).
+    // Every step of the seek built before the store is asked for the hour sought, so a plan made
+    // from a step past it would be taken if the rows chased an hour of their own.
     while entry.playhead().newest().is_none_or(|newest| newest <= 4) {
         assert!(std::time::Instant::now() < until, "the steps past the sought hour were never built");
         std::thread::yield_now();
     }
-    let wakes = rows.wakes();
-    held.release();
-    assert!(rows.woke_past(wakes, until), "the rows worker woke once more before the map's next frame");
-    side.catch_up(4).unwrap();
-    layer.settle_at(4, LIMIT).unwrap();
+    assert!(fed.drive(4), "the store never reached the hour sought");
+    layer.settle_at(4, crate::layers::Settling::Whole).unwrap();
     assert_eq!(layer.plan().unwrap().0, 4, "the plan shown at the sought hour is made from the rows at it");
 }
 
@@ -353,132 +344,199 @@ fn two_plans_labels_differ_by_content_never_by_their_upload_generation() {
     assert_eq!(differ_labels(&today, &layer).as_deref(), Some(r#"2 labels today, 1 the layer; the first unmatched today Some("1:2"), the layer None"#));
 }
 
+/// The gate's state: whether a build may go on, and the builds begun and finished. Every change
+/// is announced on [`Gated::changed`], so a test waits for the worker's own word.
+#[derive(Default)]
+struct Gate {
+    open: bool,
+    begun: usize,
+    builds: usize,
+}
+
 /// A plan the test holds on the worker until it opens the gate (a minute at most, after which the
-/// build goes on and the test's assertions fail by name), counting the builds.
+/// build goes on and the test's assertions fail by name), counting the builds begun and finished.
 #[derive(Default)]
 struct Gated {
-    open: std::sync::Mutex<bool>,
+    gate: std::sync::Mutex<Gate>,
     changed: std::sync::Condvar,
-    builds: std::sync::atomic::AtomicUsize,
 }
 
 impl Gated {
+    fn gate(&self) -> std::sync::MutexGuard<'_, Gate> {
+        self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn set(&self, open: bool) {
-        *self.open.lock().unwrap() = open;
+        self.gate().open = open;
         self.changed.notify_all();
     }
 
+    fn begun(&self) -> usize {
+        self.gate().begun
+    }
+
     fn builds(&self) -> usize {
-        self.builds.load(std::sync::atomic::Ordering::SeqCst)
+        self.gate().builds
+    }
+
+    /// Waits for the worker to begin a build past `begun`, which it announces as it begins it;
+    /// names `what` if none ever begins.
+    fn begun_past(&self, begun: usize, what: &str) {
+        let mut gate = self.gate();
+        while gate.begun <= begun {
+            let (held, waited) = self.changed.wait_timeout(gate, LIMIT).unwrap_or_else(std::sync::PoisonError::into_inner);
+            gate = held;
+            assert!(!waited.timed_out() || gate.begun > begun, "{what}");
+        }
     }
 }
 
 impl Plans for Gated {
     fn build(&self, frame: &DecodedFrame, ours: u32, show_allied: bool) -> io::Result<OrderField> {
-        let until = std::time::Instant::now() + LIMIT;
-        let mut open = self.open.lock().unwrap();
-        while !*open {
-            let Some(left) = until.checked_duration_since(std::time::Instant::now()) else { break };
-            open = self.changed.wait_timeout(open, left).unwrap().0;
+        let mut gate = self.gate();
+        gate.begun += 1;
+        self.changed.notify_all();
+        while !gate.open {
+            let (held, waited) = self.changed.wait_timeout(gate, LIMIT).unwrap_or_else(std::sync::PoisonError::into_inner);
+            gate = held;
+            if waited.timed_out() {
+                break;
+            }
         }
-        drop(open);
-        self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        gate.builds += 1;
+        drop(gate);
+        self.changed.notify_all();
         Links.build(frame, ours, show_allied)
     }
 }
 
-/// A layer over its own recording of `name`, given a vision, its rows at hour 0.
-fn gated(name: &str) -> (Arc<crate::playhead_host::Entry>, Arc<Rows>, Orders, Arc<Gated>) {
-    let entry = open(recorded::record(name, 60, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+/// [`campaign`] with a country link inserted every hour: every hour changes a table the plan
+/// reads, so every step's plan is a new build.
+fn busy(at: u32, store: &mut Store) {
+    for table in orders::memo_tables(false) {
+        store.status(table.index(), Status::Complete, true, Some(at as i32), true).unwrap();
+    }
+    link(store, at, u128::from(at) + 7);
+}
+
+/// A layer over its own recording of `name` written by `written`, given a vision, its rows at hour 0.
+fn gated(name: &str, written: fn(u32, &mut Store)) -> (Arc<crate::playhead_host::Entry>, Apart, Orders, Arc<Gated>) {
+    let entry = open(recorded::record(name, 60, written), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(CaptureMode::Full);
-    let rows = Rows::of(&entry, Recording { branch: 0 }).unwrap();
+    let fed = Apart::new(&entry, 0).unwrap();
     let plans = Arc::new(Gated::default());
     plans.set(true);
-    let mut layer = Orders::new(Arc::clone(&plans) as Arc<dyn Plans>);
-    layer.attach(Arc::clone(&rows));
+    let layer = Orders::new(Arc::clone(&plans) as Arc<dyn Plans>);
+    layer.set_views(fed.store()).unwrap();
     layer.set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
+    let mut layer = layer;
     layer.take_vision();
-    rows.settled();
-    rows.drive(0);
     entry.playhead().seek(0);
-    (entry, rows, layer, plans)
+    (entry, fed, layer, plans)
 }
 
-/// One live frame at `hour`: the rows driven there and waited for, then what a playing frame does
-/// (no wait for the worker).
-fn live(rows: &Rows, layer: &mut Orders, hour: i32) {
-    rows.drive(hour);
-    let reader = layer.rows.get_mut().unwrap();
-    reader.as_ref().unwrap().wait(|frame| frame.hour == hour, LIMIT).unwrap();
-    layer.exchange(false);
+/// One live frame at `hour`: the step applied to the store's mirrors and the newest plan taken, as
+/// a playing frame whose budget is already spent does it, with no wait for the worker at all.
+fn live(fed: &mut Apart, layer: &mut Orders, hour: i32) {
+    assert!(fed.drive(hour), "the store never reached hour {hour}");
+    layer.head = Some(hour);
+    layer.take();
 }
 
-/// Live frames until nothing is on the worker, within the limit.
-fn answered(rows: &Rows, layer: &mut Orders, hour: i32) {
-    let until = std::time::Instant::now() + LIMIT;
-    while layer.in_flight > 0 {
-        assert!(std::time::Instant::now() < until, "the worker's answers never brought the jobs in flight back to none: {} left", layer.in_flight);
-        live(rows, layer, hour);
+/// Live frames at `hour` until the plan taken stands there, within the limit.
+fn stands_at(fed: &mut Apart, layer: &mut Orders, hour: i32) {
+    let limit = std::time::Instant::now() + LIMIT;
+    while layer.made_for() != Some(hour) {
+        assert!(std::time::Instant::now() < limit, "the plan never stood at hour {hour}: it stands at {:?}", layer.made_for());
+        live(fed, layer, hour);
+        std::thread::yield_now();
     }
 }
 
 #[test]
-fn playing_the_plan_is_current_while_its_tables_are_unchanged_and_a_remake_on_the_worker_shows_the_hour_before() {
+fn playing_the_plan_is_current_while_its_tables_are_unchanged_and_a_build_on_the_worker_shows_the_hour_before() {
     use crate::layers::Published;
-    let (_entry, rows, mut layer, plans) = gated("orders playing");
-    live(&rows, &mut layer, 0);
-    answered(&rows, &mut layer, 0);
+    let (_entry, mut fed, mut layer, plans) = gated("orders playing", campaign);
+    stands_at(&mut fed, &mut layer, 0);
     assert_eq!(layer.published(), Published::Current, "the first plan made");
     for hour in 1..45 {
-        live(&rows, &mut layer, hour);
+        stands_at(&mut fed, &mut layer, hour);
         assert_eq!((layer.published(), layer.carried().entities), (Published::Current, 0), "hour {hour}: unchanged tables leave the plan current, nothing carried");
     }
+    // The build of the hour the table changes in is held on the worker.
+    let begun = plans.begun();
     plans.set(false);
-    live(&rows, &mut layer, 45);
-    assert_eq!(layer.published(), Published::At(44), "the remake of hour 45 is on the worker: the plan shown stands through 44");
-    assert_eq!(layer.carried().entities, 0, "the worker's job is not the frame thread's work");
+    live(&mut fed, &mut layer, 45);
+    plans.begun_past(begun, "the change at hour 45 began no build");
+    live(&mut fed, &mut layer, 45);
+    assert_eq!(layer.published(), Published::Cadence(44), "a build of hour 45 is on the worker: the plan shown stands through 44");
+    assert_eq!(layer.plan().map(|(hour, plan)| (hour, plan.report.recorded)), Some((0, 1)), "the plan drawn is the one its rows were last made for");
+    assert_eq!(layer.carried().entities, 0, "the worker's build is not the frame thread's work");
     plans.set(true);
-    answered(&rows, &mut layer, 45);
+    stands_at(&mut fed, &mut layer, 45);
+    assert_eq!(layer.published(), Published::Current, "current again");
     for hour in 46..50 {
-        live(&rows, &mut layer, hour);
+        stands_at(&mut fed, &mut layer, hour);
         assert_eq!((layer.published(), layer.carried().entities), (Published::Current, 0), "hour {hour}: current again");
     }
-    assert_eq!(plans.builds(), 2, "one plan at the start, one for the one change");
     assert_eq!(layer.plan().map(|(hour, plan)| (hour, plan.report.recorded)), Some((45, 2)));
 }
 
+/// Steps arriving faster than a build completes: the plan already finished is shown at its own
+/// hour at every step, and the hour it stands at only moves forward. On the base the layer said it
+/// had published nothing from the first step a build was in flight at to the last (it took the
+/// hour its rows stood at only when no build was out, which at this pace it never was), and a
+/// layer that publishes nothing freezes the whole map's drawn hour: the stress test showed one
+/// hour for six seconds at a time.
 #[test]
-fn jobs_the_worker_coalesced_leave_none_in_flight() {
-    use crate::layers::Published;
-    let (_entry, rows, mut layer, plans) = gated("orders coalesced");
+fn steps_faster_than_a_build_keep_the_plan_finished_shown_at_its_own_hour() {
+    let (_entry, mut fed, mut layer, plans) = gated("orders behind a build", busy);
+    stands_at(&mut fed, &mut layer, 0);
+    let first = layer.made_for().expect("a first plan");
+    // Every build from here waits on the gate, so no step's own plan is ever finished.
     plans.set(false);
-    live(&rows, &mut layer, 0);
-    for _ in 0..2 {
-        layer.sent = None;
-        layer.exchange(false);
+    let mut stood = first;
+    for hour in 1..40 {
+        live(&mut fed, &mut layer, hour);
+        let now = layer.made_for().unwrap_or_else(|| panic!("hour {hour}: the plan finished for hour {first} was not shown while a build was in flight"));
+        assert!(now >= stood, "hour {hour}: the hour the plan stands at went back from {stood} to {now}");
+        assert!(layer.plan().is_some(), "hour {hour}: the plan finished is still drawn");
+        stood = now;
     }
-    assert_eq!(layer.in_flight, 3, "three jobs sent while the worker is held");
+    // Released, it catches up from the newest rows: it never builds a step of every hour it was
+    // behind by, so it is at most one build behind the rows.
     plans.set(true);
-    answered(&rows, &mut layer, 0);
-    assert_eq!(layer.published(), Published::Current, "every job answered, the newest plan is current");
-    assert!(layer.plan().is_some());
+    stands_at(&mut fed, &mut layer, 39);
+    assert!(plans.builds() < 39, "it built every step it was behind by instead of the newest rows: {} builds", plans.builds());
+    let (hour, plan) = layer.plan().expect("a plan");
+    assert_eq!((hour, plan.report.recorded), (39, 40), "the plan of the rows at the hour it caught up to, holding a link an hour");
 }
 
-/// Between its jobs the plan is of the newest rows: while the map has applied an hour past the one
-/// those rows stand at, the layer says their hour, made on the rows' cadence, never current; once
-/// the rows stand at the hour applied it is current. On the base it said current whenever no job
-/// was out, whatever the age of its rows.
+/// The plan of rows behind the hour applied says their hour, made on the rows' cadence, never
+/// current: it neither holds the map's drawn hour nor is reported as standing at it.
 #[test]
-fn between_its_jobs_a_plan_of_rows_behind_the_hour_applied_says_their_hour_and_never_current() {
+fn a_plan_of_rows_behind_the_hour_applied_says_their_hour_and_never_current() {
     use crate::layers::Published;
-    let (_entry, rows, mut layer, _plans) = gated("orders behind");
-    live(&rows, &mut layer, 0);
-    answered(&rows, &mut layer, 0);
+    let (_entry, mut fed, mut layer, _plans) = gated("orders cadence", campaign);
+    stands_at(&mut fed, &mut layer, 0);
     layer.head = Some(3);
-    layer.exchange(false);
-    assert_eq!(layer.in_flight, 0, "no job out");
+    layer.take();
     assert_eq!(layer.published(), Published::Cadence(0), "the map applied hour 3, the plan's rows stand at 0");
-    live(&rows, &mut layer, 3);
-    answered(&rows, &mut layer, 3);
+    stands_at(&mut fed, &mut layer, 3);
     assert_eq!(layer.published(), Published::Current, "its rows stand at the hour applied");
+}
+
+/// A compose is a new picture: the plan of the one before is still drawn, and reported as standing
+/// nowhere until one is made from rows after the reset.
+#[test]
+fn a_compose_shows_the_plan_before_it_and_counts_none_until_one_is_made_after_the_reset() {
+    use crate::layers::Published;
+    let (_entry, mut fed, mut layer, _plans) = gated("orders composed", campaign);
+    stands_at(&mut fed, &mut layer, 0);
+    layer.compose(&crate::playhead_host::mirror::Mirrors::default()).unwrap();
+    layer.take();
+    assert_eq!(layer.published(), Published::Nothing, "no plan of this picture yet");
+    assert!(layer.plan().is_some(), "the plan of the picture before is still drawn");
+    stands_at(&mut fed, &mut layer, 0);
+    assert_eq!(layer.published(), Published::Current);
 }

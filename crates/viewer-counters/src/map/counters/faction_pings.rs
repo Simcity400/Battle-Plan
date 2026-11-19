@@ -510,7 +510,13 @@ impl PreparedPins {
             batch.at_layer(key);
             batch.at_anchor(anchor);
             let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
-            match painted.paint(drawn.owner, generation, key, anchor, batch, draw) {
+            match painted.paint(
+                viewer_foundation::map::sprites::WindowKey::new(
+                    viewer_foundation::map::sprites::WindowPool::FactionPing,
+                    0,
+                    drawn.owner,
+                ),
+                drawn.owner, generation, drawn.origin, key, anchor, batch, draw) {
                 Ok(()) => {
                     report.faction_pings += 1;
                     if let Some(rect) = hover {

@@ -111,6 +111,19 @@ pub fn actors(
     }
 }
 
+/// The actors of `rig` posed at `samples`, away from the player whose play left them: a pose is
+/// a function of its rig and its samples and of nothing else, which is what lets the pose worker
+/// make it ([`crate::map::poses`]). A played actor reads its locals from the samples, so the
+/// frozen choice of [`actors_with`] never applies.
+pub(super) fn actors_at(
+    rig: &super::entity_animation::Rig,
+    samples: &[Option<super::entity_animation::NativeSample>],
+) -> Vec<Actor> {
+    actors_with(rig, false, Some(&|index| {
+        super::entity_animation::locals_at(samples, rig, index)
+    }))
+}
+
 pub(super) fn actors_uncached(
     rig: &super::entity_animation::Rig,
     player: Option<&super::entity_animation::Player>,

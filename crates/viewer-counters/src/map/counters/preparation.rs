@@ -318,7 +318,7 @@ mod hand_over {
     #[test]
     fn a_memory_laid_out_elsewhere_takes_the_products_the_view_was_given_meanwhile() {
         let both = Kinds::LAND.with(Kinds::LAND_MARKERS);
-        let first = Layered { land: Some(Arc::new(LandStacks::new())), land_markers: Some(Arc::default()), ..Layered::default() };
+        let first = Layered { land: Some(Arc::new(LandStacks::default())), land_markers: Some(Arc::default()), ..Layered::default() };
         let mut view = Preparation::default();
         view.set_layered(first.clone(), both, Kinds::default());
         // The worker's memory takes the view's products before it lays out.
@@ -327,7 +327,7 @@ mod hand_over {
         assert!(laid.layered().changed(view.layered()).is_empty());
         assert_eq!(laid.drawing(), view.drawing());
         // Meanwhile the view is given a new land product and loses the markers' layer.
-        let next = Layered { land: Some(Arc::new(LandStacks::new())), ..Layered::default() };
+        let next = Layered { land: Some(Arc::new(LandStacks::default())), ..Layered::default() };
         view.set_layered(next, Kinds::LAND, both);
         // Installed as the view's, the laid memory shows what the view shows now.
         std::mem::swap(&mut view, &mut laid);
@@ -343,7 +343,7 @@ mod hand_over {
         let both = Kinds::LAND.with(Kinds::LAND_MARKERS);
         view.set_layered(Layered::default(), both, Kinds::default());
         assert!(view.drawing().is_empty(), "a layer that has given nothing yet leaves today's in the hour's tables");
-        let published = Layered { land: Some(Arc::new(LandStacks::new())), land_markers: Some(Arc::default()), ..Layered::default() };
+        let published = Layered { land: Some(Arc::new(LandStacks::default())), land_markers: Some(Arc::default()), ..Layered::default() };
         view.set_layered(published.clone(), both, Kinds::default());
         assert_eq!(view.drawing(), both, "drawing with a product, the next hour's tables leave both kinds out");
         assert!(view.layered().changed(&published).is_empty(), "and the layout takes the layers' products");

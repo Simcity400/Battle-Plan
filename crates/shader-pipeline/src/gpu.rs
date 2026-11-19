@@ -30,6 +30,70 @@ mod uploads;
 #[cfg(any(test, feature = "test-support"))]
 pub use uploads::FrozenBufferWrites;
 
+/// Bytes a differential write compares and writes as one block. Smaller finds more unchanged
+/// bytes; larger issues fewer writes. A GUI draw's constant block is 256 bytes or less.
+const BLOCK: usize = 256;
+/// Unchanged blocks one write crosses rather than splitting in two.
+const BRIDGE: usize = 4;
+
+/// The spans of `fresh` a buffer holding `held` does not hold, offset by `start`, compared in
+/// [`BLOCK`] units and bridging runs of up to [`BRIDGE`] unchanged blocks so one changed window
+/// is one write. `fresh` and `held` are the same length.
+///
+/// This is how a pass writes only what changed: a frame that stages what the last one staged
+/// writes nothing, and one in which a window moved writes that window's constants alone.
+pub fn unheld(start: usize, fresh: &[u8], held: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut at = 0;
+    while at < fresh.len() {
+        let end = (at + BLOCK).min(fresh.len());
+        if fresh[at..end] != held[at..end] {
+            match spans.last_mut() {
+                Some(span) if at - span.end <= BRIDGE * BLOCK => span.end = end,
+                _ => spans.push(at..end),
+            }
+        }
+        at = end;
+    }
+    for span in &mut spans {
+        span.start += start;
+        span.end += start;
+    }
+    spans
+}
+
+#[cfg(test)]
+mod unheld_tests {
+    #[test]
+    fn unheld_blocks_bridge_short_unchanged_runs_and_split_long_ones() {
+        let held = vec![0_u8; super::BLOCK * 12];
+        assert!(super::unheld(0, &held, &held).is_empty());
+        let mut fresh = held.clone();
+        fresh[super::BLOCK] = 1;
+        assert_eq!(
+            super::unheld(0, &fresh, &held),
+            vec![super::BLOCK..super::BLOCK * 2]
+        );
+        // One write bridges up to BRIDGE unchanged blocks; a longer run is two writes.
+        fresh[super::BLOCK * 6] = 1;
+        assert_eq!(
+            super::unheld(0, &fresh, &held),
+            vec![super::BLOCK..super::BLOCK * 7]
+        );
+        let mut apart = held.clone();
+        apart[0] = 1;
+        apart[super::BLOCK * 11] = 1;
+        assert_eq!(
+            super::unheld(8, &apart, &held),
+            vec![8..super::BLOCK + 8, super::BLOCK * 11 + 8..super::BLOCK * 12 + 8]
+        );
+        // A tail shorter than a block is compared and written whole.
+        let short = vec![0_u8; 3];
+        assert!(super::unheld(0, &short, &short).is_empty());
+        assert_eq!(super::unheld(4, &[1, 0, 0], &short), vec![4..7]);
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextureBinding {
     pub view: wgpu::TextureView,
@@ -70,6 +134,11 @@ pub struct Pipeline {
 pub struct Core {
     _source: Arc<Source>,
     batch: Option<Arc<batch::Program>>,
+    /// Each constant binding the draw reads one row of per instance, ascending, and its row
+    /// stride; empty when the pass draws no instance rows.
+    rows: Vec<(u32, u32)>,
+    /// The vertex stream the draw reads from storage per instance, no longer a vertex buffer.
+    stream: Option<usize>,
     pub pipeline: wgpu::RenderPipeline,
     label: String,
     null_cube: Option<wgpu::TextureView>,
@@ -156,7 +225,7 @@ struct Fallback {
 #[derive(Default)]
 struct Groups {
     frame: u64,
-    constants: Vec<(wgpu::Buffer, wgpu::BindGroup, GroupStamp)>,
+    constants: Vec<(Vec<wgpu::Buffer>, wgpu::BindGroup, GroupStamp)>,
     batch_constants: Vec<(Vec<wgpu::Buffer>, wgpu::BindGroup, GroupStamp)>,
     /// By the hash of the views, so a hit clones none of them.
     textures: HashMap<u64, Vec<(Vec<wgpu::TextureView>, wgpu::BindGroup, GroupStamp)>>,
@@ -205,6 +274,13 @@ pub struct Pass {
     pub depth_stencil: Option<wgpu::DepthStencilState>,
     pub multisample: wgpu::MultisampleState,
     pub targets: Vec<Option<wgpu::ColorTargetState>>,
+    /// The constant bindings whose block the draw reads one of per instance, by
+    /// `binding(slot, stage)`. Zero draws each instance's blocks as its own draw; a program that
+    /// cannot take them per instance is refused by name and keeps the plain pipeline.
+    pub instanced: u32,
+    /// The vertex stream, the last one, the draw reads one slab of per instance, read from
+    /// storage instead of fetched. It is no longer a vertex buffer the caller binds.
+    pub stream: Option<usize>,
 }
 
 impl Pass {
@@ -262,9 +338,15 @@ impl Pass {
                 blend: state.blend,
                 write_mask: state.write_mask,
             })],
+            instanced: 0,
+            stream: None,
         }
     }
 }
+
+/// The bytes of a draw's rows block ([`BindingProgram::rows_block`]), which it selects with a
+/// dynamic offset and which must stand at the device's uniform offset alignment.
+pub const ROWS_BYTES: usize = batch_shader::ROWS_BYTES;
 
 /// Every `binding(slot, stage)` of a constant buffer or texture is below these: D3D11's
 /// registers over both stages, which compilation enforces.
@@ -397,6 +479,10 @@ pub struct BindingProgram {
     texture_slots: Vec<u32>,
     hash: u64,
     buffers: Vec<Buffer>,
+    /// Each constant binding the draw reads one row of per instance, and its row stride.
+    rows: Vec<(u32, u32)>,
+    /// The instanced vertex stream's words and each instance's first vertex in them.
+    stream: Option<[wgpu::Buffer; 2]>,
     layouts: [wgpu::BindGroupLayout; 2],
     groups: Arc<Mutex<Groups>>,
     label: String,
@@ -433,8 +519,9 @@ impl BindingProgram {
         groups
             .constants
             .iter()
+            .chain(&groups.batch_constants)
             .find(|(_, group, _)| *group == actual.groups[0])
-            .map(|(buffer, _, _)| buffer.clone())
+            .and_then(|(buffers, _, _)| buffers.first().cloned())
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -445,6 +532,20 @@ impl BindingProgram {
     /// Reflected physical sizes and conservative reads in dynamic-offset order.
     pub fn constant_reads(&self) -> &[Buffer] {
         &self.buffers
+    }
+
+    /// Each constant binding the draw reads one row of per instance, ascending, and its row
+    /// stride; empty when the pass reads none per instance.
+    pub fn instanced_rows(&self) -> &[(u32, u32)] {
+        &self.rows
+    }
+
+    /// The row stride of `binding`, when the draw reads one row of it per instance.
+    fn row_stride(&self, binding: u32) -> Option<u32> {
+        self.rows
+            .iter()
+            .find(|(row, _)| *row == binding)
+            .map(|(_, stride)| *stride)
     }
 
     /// Stage all constants through the ordinary frame arena, with its unchanged allocation,
@@ -525,6 +626,77 @@ impl BindingProgram {
         })
     }
 
+    /// The bytes of a draw's rows block: the base row of each binding it reads per instance, and
+    /// of its instanced stream's bases. `rows` gives each in [`Self::instanced_rows`] order, the
+    /// stream's last when the pass reads one.
+    pub fn rows_block(&self, rows: &[u32]) -> Result<[u8; batch::ROWS_BYTES], String> {
+        let wanted = self.rows.len() + usize::from(self.stream.is_some());
+        if rows.len() != wanted {
+            return Err(format!(
+                "{}: {} base rows for {wanted} reads per instance",
+                self.label,
+                rows.len()
+            ));
+        }
+        let mut block = [0u8; batch::ROWS_BYTES];
+        let places = self
+            .rows
+            .iter()
+            .map(|(binding, _)| *binding as usize)
+            .chain(self.stream.iter().map(|_| batch::STREAM_ROW));
+        for (at, row) in places.zip(rows) {
+            block[at * 4..at * 4 + 4].copy_from_slice(&row.to_le_bytes());
+        }
+        Ok(block)
+    }
+
+    /// Bindings of a draw whose per-instance rows stand in `buffer`: `blocks` gives each read of
+    /// [`Self::constant_reads`] its bytes and offset, as [`Self::bind_buffer`] takes them, and
+    /// `rows` the offset of the draw's own rows block there. A read taken per instance keeps its
+    /// bytes for the proof; its offset is the whole array's and is never bound dynamically.
+    pub fn bind_rows(
+        &self,
+        arena: &Arena,
+        buffer: &wgpu::Buffer,
+        blocks: &[(&[u8], u32)],
+        rows: u32,
+    ) -> Result<Bindings, String> {
+        if blocks.len() != self.buffers.len() {
+            return Err(format!(
+                "{}: {} constant blocks for {} reads",
+                self.label,
+                blocks.len(),
+                self.buffers.len()
+            ));
+        }
+        let mut offsets = [0; BUFFERS];
+        let mut count = 0;
+        for ((_, offset), spec) in blocks.iter().zip(&self.buffers) {
+            if self.row_stride(spec.binding).is_none() {
+                offsets[count] = *offset;
+                count += 1;
+            }
+        }
+        offsets[count] = rows;
+        count += 1;
+        let resolved = self
+            .resolve_groups(arena, buffer.clone(), false)
+            .map_err(|reason| format!("{}: {reason}", self.label))?;
+        #[cfg(any(test, feature = "test-support"))]
+        let sized: Vec<_> = blocks
+            .iter()
+            .zip(&self.buffers)
+            .map(|((bytes, _), spec)| (*bytes, u64::from(spec.size)))
+            .collect();
+        Ok(Bindings {
+            resources: ResourceHandle::Inline(resolved.resources),
+            offsets,
+            count,
+            #[cfg(any(test, feature = "test-support"))]
+            proof: preparation_bytes(&self.buffers, &sized),
+        })
+    }
+
     fn resolve_groups(
         &self,
         arena: &Arena,
@@ -536,39 +708,71 @@ impl BindingProgram {
         let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
         let groups = &mut *groups;
         groups.advance(frame);
-        let (constants, constants_stamp) = match groups
-            .constants
-            .iter_mut()
-            .find(|(cached, _, _)| *cached == source)
-        {
-            Some((_, group, used)) => {
-                used.set(frame);
-                (group.clone(), capture_use.then(|| used.clone()))
-            }
-            None => {
-                let group = scoped(device, || {
-                    crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
-                        label: Some("native constants"),
-                        layout: &self.layouts[0],
-                        entries: &self
-                            .buffers
-                            .iter()
-                            .map(|spec| wgpu::BindGroupEntry {
-                                binding: spec.binding,
-                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                    buffer: &source,
-                                    offset: 0,
-                                    size: std::num::NonZeroU64::new(u64::from(spec.size)),
-                                }),
-                            })
-                            .collect::<Vec<_>>(),
-                    })
-                })?;
-                let used = GroupStamp::new(frame);
-                groups.constants.push((source, group.clone(), used.clone()));
-                (group, capture_use.then_some(used))
-            }
+        let held: Vec<wgpu::Buffer> = std::iter::once(source.clone())
+            .chain(self.stream.iter().flatten().cloned())
+            .collect();
+        let rows = !self.rows.is_empty() || self.stream.is_some();
+        let cached = if rows {
+            &mut groups.batch_constants
+        } else {
+            &mut groups.constants
         };
+        let (constants, constants_stamp) =
+            match cached.iter_mut().find(|(buffers, _, _)| *buffers == held) {
+                Some((_, group, used)) => {
+                    used.set(frame);
+                    (group.clone(), capture_use.then(|| used.clone()))
+                }
+                None => {
+                    let group = scoped(device, || {
+                        crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
+                            label: Some("native constants"),
+                            layout: &self.layouts[0],
+                            entries: &self
+                                .buffers
+                                .iter()
+                                .map(|spec| wgpu::BindGroupEntry {
+                                    binding: spec.binding,
+                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                        buffer: &source,
+                                        offset: 0,
+                                        // A row's array is bound whole; the instance index picks
+                                        // the row from the base the draw's rows block gives.
+                                        size: self
+                                            .row_stride(spec.binding)
+                                            .is_none()
+                                            .then(|| {
+                                                std::num::NonZeroU64::new(u64::from(spec.size))
+                                            })
+                                            .flatten(),
+                                    }),
+                                })
+                                .chain(rows.then(|| wgpu::BindGroupEntry {
+                                    binding: batch::ROWS_BINDING,
+                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                        buffer: &source,
+                                        offset: 0,
+                                        size: std::num::NonZeroU64::new(batch::ROWS_BYTES as u64),
+                                    }),
+                                }))
+                                .chain(
+                                    self.stream
+                                        .iter()
+                                        .flatten()
+                                        .zip(batch::STREAM_BINDINGS)
+                                        .map(|(buffer, binding)| wgpu::BindGroupEntry {
+                                            binding,
+                                            resource: buffer.as_entire_binding(),
+                                        }),
+                                )
+                                .collect::<Vec<_>>(),
+                        })
+                    })?;
+                    let used = GroupStamp::new(frame);
+                    cached.push((held, group.clone(), used.clone()));
+                    (group, capture_use.then_some(used))
+                }
+            };
         let entries = groups.textures.entry(self.hash).or_default();
         let found = entries
             .iter()
@@ -758,50 +962,28 @@ impl PipelineKey {
 
 pub type Cached = Result<Arc<Pipeline>, String>;
 
-/// GUI pipeline and texture-variant builds under way on their threads.
-static BUILDING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
-/// Every such build ever started.
-static STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// GUI pipeline and texture-variant builds under way on their threads. Nothing waits on them:
+/// a frame draws what is ready and the next one picks up what has been built since.
+static BUILDING: Mutex<usize> = Mutex::new(0);
 
 /// Counts one build under way until dropped.
 pub(crate) struct Building(());
 
 impl Building {
     pub(crate) fn start() -> Self {
-        STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        *BUILDING.0.lock().unwrap_or_else(|error| error.into_inner()) += 1;
+        *BUILDING.lock().unwrap_or_else(|error| error.into_inner()) += 1;
         Self(())
     }
 }
 
-/// How many GUI pipeline and texture-variant builds have started, ever.
-pub fn builds_started() -> u64 {
-    STARTED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// How many GUI pipeline and texture-variant builds are under way.
 pub fn builds_under_way() -> usize {
-    *BUILDING.0.lock().unwrap_or_else(|error| error.into_inner())
+    *BUILDING.lock().unwrap_or_else(|error| error.into_inner())
 }
 
 impl Drop for Building {
     fn drop(&mut self) {
-        let mut building = BUILDING.0.lock().unwrap_or_else(|error| error.into_inner());
-        *building -= 1;
-        if *building == 0 {
-            BUILDING.1.notify_all();
-        }
-    }
-}
-
-/// Waits until no GUI pipeline or texture-variant build is under way.
-pub fn wait_for_builds() {
-    let mut building = BUILDING.0.lock().unwrap_or_else(|error| error.into_inner());
-    while *building != 0 {
-        building = BUILDING
-            .1
-            .wait(building)
-            .unwrap_or_else(|error| error.into_inner());
+        *BUILDING.lock().unwrap_or_else(|error| error.into_inner()) -= 1;
     }
 }
 
@@ -836,6 +1018,15 @@ struct DeviceEntry {
 
 static DEVICE_CORES: DeviceCores = DeviceCores(Mutex::new(Vec::new()), Condvar::new());
 
+/// Why [`DeviceCores::get_or_create`] handed over no core.
+enum NotMade {
+    /// Making it failed, by name; the caller keeps the failure.
+    Failed(String),
+    /// Another thread is making it and the caller does not wait: the thread that draws the
+    /// frames draws without it this frame, and keeps nothing.
+    Building,
+}
+
 struct Source {
     compiled: Compiled,
     samplers: Vec<(u32, [u32; 10])>,
@@ -844,12 +1035,15 @@ struct Source {
     strip_safe: bool,
     unfilterable: u32,
     gui: bool,
+    instanced: u32,
+    stream: Option<usize>,
     prepared: OnceLock<Result<Modules, String>>,
     null_cube: Arc<Mutex<Option<wgpu::TextureView>>>,
 }
 
 struct Modules {
     batch: Option<Arc<batch::Program>>,
+    instanced: Option<Arc<batch_shader::Instanced>>,
     vertex: wgpu::ShaderModule,
     pixel: wgpu::ShaderModule,
 }
@@ -892,6 +1086,8 @@ impl Source {
             .find(|source| {
                 source.gui == gui
                     && source.unfilterable == unfilterable
+                    && source.instanced == pass.instanced
+                    && source.stream == pass.stream
                     && (source.topology == pass.primitive.topology
                         || (source.strip_safe
                             && matches!(
@@ -924,6 +1120,8 @@ impl Source {
             strip_safe: gui && batch_shader::strip_safe(&compiled.vertex.wgsl),
             unfilterable,
             gui,
+            instanced: pass.instanced,
+            stream: pass.stream,
             prepared: OnceLock::new(),
             null_cube,
         });
@@ -959,6 +1157,10 @@ impl Source {
                     } else {
                         None
                     };
+                    let instanced = ((self.instanced != 0 || pass.stream.is_some())
+                        && batch.is_none())
+                    .then(|| batch::instanced(device, &translated, pass, label))
+                    .flatten();
                     let module = |source: &str| {
                         device.create_shader_module(wgpu::ShaderModuleDescriptor {
                             label: Some(label),
@@ -966,17 +1168,21 @@ impl Source {
                         })
                     };
                     Ok(Modules {
-                        vertex: module(
-                            batch
-                                .as_ref()
-                                .map_or(&translated.vertex.wgsl, |batch| &batch.shader.vertex),
-                        ),
-                        pixel: module(
-                            batch
-                                .as_ref()
-                                .map_or(&translated.pixel.wgsl, |batch| &batch.shader.pixel),
-                        ),
+                        vertex: module(match (&batch, &instanced) {
+                            (Some(batch), _) => &batch.shader.vertex,
+                            (None, Some(instanced)) => &instanced.vertex,
+                            (None, None) => &translated.vertex.wgsl,
+                        }),
+                        pixel: module(match (&batch, &instanced) {
+                            (Some(batch), _) => &batch.shader.pixel,
+                            (None, Some(instanced)) => instanced
+                                .pixel
+                                .as_deref()
+                                .unwrap_or(&translated.pixel.wgsl),
+                            (None, None) => &translated.pixel.wgsl,
+                        }),
                         batch,
+                        instanced,
                     })
                 })
                 .and_then(|result| result)
@@ -1040,7 +1246,8 @@ impl DeviceCores {
     }
 
     /// The live core on `device` that `matches`, else the one `create` makes, recorded under
-    /// `key`. Users asking at once for one under way wait for it, so it is made once.
+    /// `key`. Users asking at once for one under way wait for it, so it is made once; a user
+    /// that does not `wait` is told it is being built and draws without it.
     fn get_or_create(
         &self,
         device: &wgpu::Device,
@@ -1048,7 +1255,8 @@ impl DeviceCores {
         matches: impl Fn(&PipelineKey) -> bool,
         key: impl FnOnce() -> PipelineKey,
         create: impl FnOnce() -> (Result<Arc<Core>, String>, Diagnostics),
-    ) -> (Result<Arc<Core>, String>, Diagnostics) {
+        wait: bool,
+    ) -> (Result<Arc<Core>, NotMade>, Diagnostics) {
         let mut retired = Retired(Vec::new());
         let mut devices = self.lock();
         loop {
@@ -1088,6 +1296,9 @@ impl DeviceCores {
             {
                 break;
             }
+            if !wait {
+                return (Err(NotMade::Building), Diagnostics::default());
+            }
             devices = self
                 .1
                 .wait(devices)
@@ -1118,7 +1329,7 @@ impl DeviceCores {
             }
         }
         drop(making);
-        (result, diagnostics)
+        (result.map_err(NotMade::Failed), diagnostics)
     }
 }
 
@@ -1444,7 +1655,7 @@ impl Cache {
                     pass: pass.clone(),
                 };
                 let created = &mut self.created;
-                let (result, diagnostics) = DEVICE_CORES.get_or_create(
+                let (made, diagnostics) = DEVICE_CORES.get_or_create(
                     device,
                     hash,
                     |cached| {
@@ -1468,9 +1679,23 @@ impl Cache {
                             Ok(Arc::new(core))
                         })
                     },
+                    // The thread that draws the frames never waits for another thread's build.
+                    !crate::gpu::stats::on_window_thread(),
                 );
-                let result = result.map(|core| Arc::new(Pipeline::over(core, topology)));
                 diagnostics.credit();
+                let result = match made {
+                    Ok(core) => Ok(Arc::new(Pipeline::over(core, topology))),
+                    // Kept by no cache: the core is on its way and a later frame finds it.
+                    Err(NotMade::Building) => {
+                        let reason = format!(
+                            "effect {:?}, technique {:?}: its pipeline is being built on another thread",
+                            effect.source.effect, effect.source.techniques[selection.index].name
+                        );
+                        *self.refused.entry(reason.clone()).or_default() += 1;
+                        return Err(reason);
+                    }
+                    Err(NotMade::Failed(reason)) => Err(reason),
+                };
                 bucket.push((key(), result.clone(), diagnostics));
                 result
             }
@@ -1760,16 +1985,32 @@ impl Core {
         let modules =
             source.prepare(device, state, pass, &format!("{effect}:{}", technique.name))?;
         let batch = modules.batch.clone();
+        let rows: Vec<(u32, u32)> = modules
+            .instanced
+            .as_ref()
+            .map(|instanced| instanced.rows.clone())
+            .unwrap_or_default();
+        let stream = modules
+            .instanced
+            .as_ref()
+            .and_then(|instanced| instanced.stream.as_ref())
+            .map(|stream| stream.slot);
+        let row_of = |binding: u32| {
+            rows.iter()
+                .find(|(row, _)| *row == binding)
+                .map(|(_, stride)| *stride)
+        };
         let mut buffers = compiled.vertex.buffers.clone();
         buffers.extend_from_slice(&compiled.pixel.buffers);
         buffers.sort_by_key(|buffer| buffer.binding);
         let dynamic = device
             .limits()
             .max_dynamic_uniform_buffers_per_pipeline_layout;
-        if buffers.len() > dynamic as usize {
+        // A row's array is bound whole; the rows block the draw selects takes one dynamic offset.
+        let offsets = buffers.len() - rows.len() + usize::from(!rows.is_empty());
+        if offsets > dynamic as usize {
             return Err(format!(
-                "{} constant buffers exceed this device's {dynamic} dynamically offset buffers",
-                buffers.len()
+                "{offsets} constant buffers exceed this device's {dynamic} dynamically offset buffers"
             ));
         }
         let mut textures = compiled.vertex.textures.clone();
@@ -1859,17 +2100,23 @@ impl Core {
                         binding: b.binding,
                         visibility: visibility(b.binding),
                         ty: wgpu::BindingType::Buffer {
-                            ty: if batch.is_some() {
+                            ty: if batch.is_some() || row_of(b.binding).is_some() {
                                 wgpu::BufferBindingType::Storage { read_only: true }
                             } else {
                                 wgpu::BufferBindingType::Uniform
                             },
-                            has_dynamic_offset: batch.is_none(),
-                            min_binding_size: std::num::NonZeroU64::new(u64::from(b.size)),
+                            has_dynamic_offset: batch.is_none() && row_of(b.binding).is_none(),
+                            min_binding_size: std::num::NonZeroU64::new(u64::from(
+                                row_of(b.binding).unwrap_or(b.size),
+                            )),
                         },
                         count: None,
                     })
                     .chain(batch.iter().map(|_| batch::metadata_layout()))
+                    .chain(
+                        (!rows.is_empty() || stream.is_some()).then(batch::rows_layout),
+                    )
+                    .chain(stream.iter().flat_map(|_| batch::stream_layouts()))
                     .collect::<Vec<_>>(),
             }),
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1937,6 +2184,9 @@ impl Core {
         );
         let mut vertices = pass.vertices.clone();
         let mut primitive = pass.primitive;
+        if let Some(slot) = stream {
+            vertices.truncate(slot);
+        }
         if let Some(batch) = &batch {
             let stride = vertices[0].stride;
             vertices[0].attributes.push(wgpu::VertexAttribute {
@@ -1991,6 +2241,8 @@ impl Core {
         Ok(Self {
             _source: source,
             batch,
+            rows,
+            stream,
             pipeline,
             label: format!("effect {effect:?}, technique {:?}", technique.name),
             null_cube,
@@ -2064,6 +2316,123 @@ impl Pipeline {
         )
     }
 
+    /// Bindings over constant blocks the caller keeps in a buffer of its own: made once and
+    /// valid while that buffer and these views live, so a pass whose constants and views change
+    /// only when its targets or its settings do records its draw with them on every frame,
+    /// staging nothing and looking nothing up. `blocks` gives, by `binding(slot, stage)`, where
+    /// that binding's block stands in `buffer` and the bytes the caller wrote there; the buffer
+    /// must hold the binding's whole physical size at that offset, zero past those bytes (the
+    /// native programs read past a block as zero), and the offset must stand at the device's
+    /// uniform offset alignment.
+    pub fn kept_bindings<'a>(
+        &'a self,
+        device: &wgpu::Device,
+        buffer: &wgpu::Buffer,
+        blocks: impl Fn(u32) -> Option<(u32, &'a [u8])> + Copy,
+        textures: impl Fn(u32) -> Option<&'a wgpu::TextureView> + Copy,
+    ) -> Result<Bindings, String> {
+        self.kept(device, buffer, blocks, |key| {
+            let view = textures(key)?;
+            Some(self.sampled_view(key, view, false))
+        })
+        .map_err(|reason| format!("{}: {reason}", self.label))
+    }
+
+    fn kept<'a>(
+        &self,
+        device: &wgpu::Device,
+        buffer: &wgpu::Buffer,
+        blocks: impl Fn(u32) -> Option<(u32, &'a [u8])> + Copy,
+        textures: impl Fn(u32) -> Option<&'a wgpu::TextureView> + Copy,
+    ) -> Result<Bindings, String> {
+        if self.fallback.is_some() {
+            let mask = self.unfilterable(device, &textures);
+            if mask != 0 {
+                return self.variant(device, mask)?.kept(device, buffer, blocks, textures);
+            }
+        }
+        if !self.rows.is_empty() || self.stream.is_some() {
+            return Err("this pass reads its rows per instance and binds its own buffer".into());
+        }
+        let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
+        let mut offsets = [0; BUFFERS];
+        #[cfg(any(test, feature = "test-support"))]
+        let mut held: [(&[u8], u64); BUFFERS] = [(&[], 0); BUFFERS];
+        for (index, buffer_spec) in self.buffers.iter().enumerate() {
+            let name = buffer_spec.binding / 2;
+            let (offset, bytes) = blocks(buffer_spec.binding)
+                .ok_or_else(|| format!("native constant buffer {name} has not been bound"))?;
+            let size = u64::from(buffer_spec.size).max(bytes.len() as u64);
+            if u64::from(offset) % alignment != 0 {
+                return Err(format!(
+                    "native constant buffer {name} stands at {offset}, not at this device's {alignment}-byte offset alignment"
+                ));
+            }
+            if u64::from(offset) + size > buffer.size() {
+                return Err(format!(
+                    "native constant buffer {name}'s {size} bytes at {offset} are past the {} bytes kept for them",
+                    buffer.size()
+                ));
+            }
+            offsets[index] = offset;
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                held[index] = (bytes, u64::from(buffer_spec.size));
+            }
+        }
+        let count = self.buffers.len();
+        let constants = scoped(device, || {
+            crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
+                label: Some("native kept constants"),
+                layout: &self.layouts[0],
+                entries: &self
+                    .buffers
+                    .iter()
+                    .map(|spec| wgpu::BindGroupEntry {
+                        binding: spec.binding,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer,
+                            offset: 0,
+                            size: std::num::NonZeroU64::new(u64::from(spec.size)),
+                        }),
+                    })
+                    .collect::<Vec<_>>(),
+            })
+        })?;
+        let mut views: [Option<&wgpu::TextureView>; TEXTURES] = [None; TEXTURES];
+        for (view, (binding, _)) in views.iter_mut().zip(&self.textures) {
+            *view = Some(textures(*binding).ok_or_else(|| {
+                format!("native texture slot {} has not been bound", binding / 2)
+            })?);
+        }
+        let sampled = scoped(device, || {
+            crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
+                label: Some("native kept textures"),
+                layout: &self.layouts[1],
+                entries: &self
+                    .textures
+                    .iter()
+                    .zip(views.iter().flatten())
+                    .map(|((binding, _), view)| wgpu::BindGroupEntry {
+                        binding: *binding,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    })
+                    .collect::<Vec<_>>(),
+            })
+        })?;
+        Ok(Bindings {
+            resources: ResourceHandle::Inline(GroupResources {
+                pipeline: self.pipeline.clone(),
+                read_only: self.read_only,
+                groups: [constants, sampled, self.samplers.clone()],
+            }),
+            offsets,
+            count,
+            #[cfg(any(test, feature = "test-support"))]
+            proof: preparation_bytes(&self.buffers, &held[..count]),
+        })
+    }
+
     /// `bindings` with the caller's lookups by `binding(slot, stage)`.
     pub fn bind_with<'a>(
         &'a self,
@@ -2114,6 +2483,109 @@ impl Pipeline {
         }
     }
 
+    /// What this compiled pass reads of each constant buffer it binds, in the order of the
+    /// constant group's dynamic offsets: the physical size and the byte ranges the compiled
+    /// programs read after dead-code elimination ([`Buffer::reads`]). A caller that draws the
+    /// pass only while its inputs change keys on exactly these bytes.
+    pub fn constant_reads(&self) -> &[Buffer] {
+        &self.core.buffers
+    }
+
+    /// The texture slots this compiled pass samples, after dead-code elimination: a slot the
+    /// caller binds that is not here is read by no program of the pass.
+    pub fn sampled_slots(&self) -> impl Iterator<Item = u32> + '_ {
+        self.core.textures.iter().map(|(slot, _)| *slot)
+    }
+
+    /// Whether the pass took the rewrites its [`Pass::instanced`] and [`Pass::stream`] asked
+    /// for; a program that could not take them keeps its plain pipeline, refused by name on the
+    /// standard error where it was translated.
+    pub fn reads_per_instance(&self) -> bool {
+        !self.rows.is_empty() || self.stream.is_some()
+    }
+
+    /// The program of a pass that reads its rows per instance: its pipeline, textures and
+    /// samplers, without staging any constants. The caller binds its own buffer
+    /// ([`BindingProgram::bind_rows`]), where the rows stand. `stream` is the instanced vertex
+    /// stream's words and each instance's first vertex in them, which a pass that reads a stream
+    /// per instance ([`Pass::stream`]) must be given.
+    pub fn rows_program<'a>(
+        &self,
+        arena: &Arena,
+        textures: impl Fn(u32) -> Option<&'a wgpu::TextureView>,
+        stream: Option<[wgpu::Buffer; 2]>,
+    ) -> Result<BindingProgram, String> {
+        let device = arena.device();
+        // A texture no sampler of this device can filter draws through the variant built for it,
+        // as a staged bind does.
+        if self.fallback.is_some() {
+            let mask = self.unfilterable(device, &textures);
+            if mask != 0 {
+                let variant = self.variant(device, mask)?;
+                return variant.rows_program(arena, textures, stream);
+            }
+        }
+        let stream = match (self.stream, stream) {
+            (Some(_), None) => {
+                return Err(format!(
+                    "{}: this pass reads a vertex stream per instance and was given none",
+                    self.label
+                ));
+            }
+            (None, _) => None,
+            (Some(_), given) => given,
+        };
+        let views = self
+            .textures
+            .iter()
+            .map(|(binding, _)| {
+                textures(*binding)
+                    .map(|view| self.sampled_view(*binding, view, false).clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: native texture slot {} has not been bound",
+                            self.label,
+                            binding / 2
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let group = scoped(device, || {
+            crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
+                label: Some("native textures"),
+                layout: &self.layouts[1],
+                entries: &self
+                    .textures
+                    .iter()
+                    .zip(&views)
+                    .map(|((binding, _), view)| wgpu::BindGroupEntry {
+                        binding: *binding,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    })
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .map_err(|reason| format!("{}: {reason}", self.label))?;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::hash::DefaultHasher::new();
+        views.iter().map(Some).collect::<Vec<_>>().hash(&mut hasher);
+        Ok(BindingProgram {
+            pipeline: self.pipeline.clone(),
+            read_only: self.read_only,
+            samplers: self.samplers.clone(),
+            textures: group,
+            texture_slots: self.textures.iter().map(|(slot, _)| *slot).collect(),
+            views,
+            hash: hasher.finish(),
+            buffers: self.buffers.clone(),
+            rows: self.rows.clone(),
+            stream,
+            layouts: self.layouts.clone(),
+            groups: Arc::clone(&self.groups),
+            label: self.label.clone(),
+        })
+    }
+
     fn bind_with_capture<'a>(
         &'a self,
         arena: &Arena,
@@ -2150,6 +2622,9 @@ impl Pipeline {
                 return variant.bind(arena, constants, textures, capture);
             }
         }
+        if !self.rows.is_empty() || self.stream.is_some() {
+            return Err("this pass reads its rows per instance and binds its own buffer".into());
+        }
         // Compilation refuses registers past D3D11's, so both lists fit their arrays.
         let mut blocks: [(&[u8], u64); BUFFERS] = [(&[], 0); BUFFERS];
         for (block, buffer) in blocks.iter_mut().zip(&self.buffers) {
@@ -2182,7 +2657,7 @@ impl Pipeline {
         let constants = match groups
             .constants
             .iter_mut()
-            .find(|(cached, _, _)| *cached == buffer)
+            .find(|(cached, _, _)| cached.as_slice() == [buffer.clone()])
         {
             Some((_, group, used)) => {
                 used.set(frame);
@@ -2209,7 +2684,7 @@ impl Pipeline {
                 })?;
                 groups
                     .constants
-                    .push((buffer, group.clone(), GroupStamp::new(frame)));
+                    .push((vec![buffer], group.clone(), GroupStamp::new(frame)));
                 group
             }
         };
@@ -2275,6 +2750,8 @@ impl Pipeline {
             texture_slots: self.textures.iter().map(|(slot, _)| *slot).collect(),
             hash,
             buffers: self.buffers.clone(),
+            rows: self.rows.clone(),
+            stream: None,
             layouts: self.layouts.clone(),
             groups: Arc::clone(&self.groups),
             label: self.label.clone(),

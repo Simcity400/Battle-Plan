@@ -1,7 +1,7 @@
 use super::{Entry, MapSide, Opening};
 #[cfg(test)]
-use super::{BUDGET, OPENING, open, rows::tests::{hourly_steps, record}};
-use crate::layers::{Budget, Carried, Gpu, Inputs, Layer, View};
+use super::{OPENING, open, views::tests::{hourly_steps, record}};
+use crate::layers::{Carried, Settling, Inputs, Layer, View};
 use crate::playhead_host::mirror::Mirrors;
 use playhead::Step;
 use replay_data::{Hour, rows::TableId};
@@ -14,8 +14,9 @@ use std::{
         atomic::{AtomicU32, Ordering},
         mpsc::Sender,
     },
-    time::Duration,
 };
+#[cfg(test)]
+use std::{sync::{Mutex, mpsc}, time::Duration};
 
 /// A layer that reads one column of each of its tables and counts its composes.
 pub struct Reads {
@@ -50,13 +51,10 @@ impl Layer for Reads {
 
     fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
 
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         Carried::default()
@@ -71,10 +69,8 @@ impl Layer for Reads {
     }
 }
 
-/// A layer reading the countries whose every settle spends `spends` of the test's clock, and that
-/// says on `dropped` which thread let it go.
+/// A layer reading the countries that says on `dropped` which thread let it go.
 struct Probe {
-    spends: Duration,
     dropped: Option<Sender<Option<String>>>,
 }
 
@@ -94,14 +90,10 @@ impl Layer for Probe {
 
     fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
 
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
-        crate::layers::clock::advance(self.spends);
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         Carried::default()
@@ -185,7 +177,7 @@ fn play_to(entry: &Entry, first: &mut MapSide, mut second: Option<&mut MapSide>,
 }
 
 /// The reader an opening delivers, polled without waiting until it is there.
-fn arrived(opening: &Opening) -> Option<MapSide> {
+fn arrived(opening: &Opening) -> std::io::Result<MapSide> {
     for _ in 0..50_000_000u64 {
         if let Some(made) = opening.poll() {
             return made;
@@ -264,7 +256,7 @@ fn a_map_opened_off_the_frame_thread_arrives_while_another_plays_and_resets_noth
     let opening = Opening::spawn(move || {
         wait.recv().unwrap();
         *named.lock().unwrap() = std::thread::current().name().map(str::to_owned);
-        MapSide::new(joining, vec![layer], View::default()).ok()
+        MapSide::new(joining, vec![layer], View::default())
     })
     .unwrap();
     let held_from = first.applied().unwrap();
@@ -291,12 +283,14 @@ fn a_map_opened_off_the_frame_thread_arrives_while_another_plays_and_resets_noth
     assert_eq!(first_composes.load(Ordering::Relaxed), 1, "the first map is never reset by it ({seen:?})");
     assert_eq!(first.applied(), second.applied(), "both follow the one clock");
     drop(second);
+    // The first map's own hold on the playhead: its side and its view store.
+    let held = Arc::strong_count(&entry);
     let (gate, wait) = mpsc::channel::<()>();
     let (dropped, dropped_on) = mpsc::channel();
     let joining = Arc::clone(&entry);
     let abandoned = Opening::spawn(move || {
         wait.recv().unwrap();
-        MapSide::new(joining, vec![Box::new(Probe { spends: Duration::ZERO, dropped: Some(dropped) })], View::default()).ok()
+        MapSide::new(joining, vec![Box::new(Probe { dropped: Some(dropped) })], View::default())
     })
     .unwrap();
     drop(abandoned);
@@ -304,40 +298,8 @@ fn a_map_opened_off_the_frame_thread_arrives_while_another_plays_and_resets_noth
     // A deadline that fails by name, not a wait: the message comes as the reader is dropped.
     let thread = dropped_on.recv_timeout(Duration::from_secs(60)).expect("the reader no longer wanted is dropped");
     assert_eq!(thread.as_deref(), Some(OPENING), "a reader no longer wanted is dropped by its opening's thread");
-    assert_eq!(Arc::strong_count(&entry), 2, "only the first map holds the playhead");
+    assert_eq!(Arc::strong_count(&entry), held, "only the first map holds the playhead");
     play(&entry, &mut first, None, &mut seen, |first, _| !first.composing() && first.applied() >= Some(last + 1), || {});
     assert_eq!(first_composes.load(Ordering::Relaxed), 1, "nor by the reader let go ({seen:?})");
 }
 
-/// A reader made on an opening's thread takes its share of the budget of the thread that draws
-/// it: alone there, every frame's slice is the whole budget, though each settle spends a
-/// millisecond of the test's clock. Had it joined the opening thread's budget, the drawing thread's
-/// frame would never begin again, and each slice would be what the settles before it left.
-#[test]
-fn a_reader_made_on_another_thread_takes_its_share_of_the_budget_of_the_thread_that_draws_it() {
-    crate::layers::clock::hold();
-    let entry = open(record("opening budget", 12), hourly_steps()).unwrap();
-    entry.set_capture(CaptureMode::Full);
-    let joining = Arc::clone(&entry);
-    let opening = Opening::spawn(move || MapSide::new(joining, vec![Box::new(Probe { spends: Duration::from_millis(1), dropped: None })], View::default()).ok()).unwrap();
-    let mut side = arrived(&opening).expect("the reader is made");
-    entry.playhead().play(1.0);
-    entry.playhead().seek(0);
-    let mut seen = Vec::new();
-    let mut slices = Vec::new();
-    let mut drawn = false;
-    play(&entry, &mut side, None, &mut seen, |side, _| {
-        let frame = side.last_frame();
-        if drawn && !frame.composing {
-            slices.push(frame.slice_ns);
-        }
-        drawn |= side.draws("probe");
-        !side.composing() && side.applied() >= Some(8)
-    }, || {});
-    assert!(slices.len() >= 4, "too few frames settled: {slices:?}");
-    let whole = BUDGET.as_nanos() as u64;
-    assert!(slices.iter().all(|&ns| ns + 1_000 >= whole), "every slice is the whole {BUDGET:?}: {slices:?}");
-}
-
-#[cfg(test)]
-use std::sync::{Mutex, mpsc};

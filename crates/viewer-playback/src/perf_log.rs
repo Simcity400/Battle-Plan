@@ -1,5 +1,7 @@
 //! Opt-in window frame timings, one file per map: `<BATTLE_PLAN_PERF_MAP_LOG>.<map>.jsonl`, each map of
-//! the process numbered from 1 as it first records.
+//! the process numbered from 1 as it first records. A log also turns the thread CPU accounting on,
+//! so each map's record of a window of frames ([`SCOPE_FRAMES`]) carries the frame thread's own
+//! labels, the same ones the playback harness writes per frame.
 
 use job_priority::SpawnCarried as _;
 use std::{
@@ -123,18 +125,21 @@ pub struct StartupSpan {
 
 fn requested() -> bool {
     static REQUESTED: OnceLock<bool> = OnceLock::new();
-    *REQUESTED
-        .get_or_init(|| std::env::var_os("BATTLE_PLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")).is_some_and(|path| !path.is_empty()))
+    *REQUESTED.get_or_init(|| {
+        let requested =
+            std::env::var_os("BATTLE_PLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")).is_some_and(|path| !path.is_empty());
+        if requested {
+            account();
+        }
+        requested
+    })
 }
 
-pub fn hour_view(epoch: u64, branch: replay_data::BranchId, hour: replay_data::Hour, view: crate::hours::View) {
-    let Some(log) = log() else { return; };
-    let at = epoch_ms();
-    log.send(serde_json::json!({
-        "t": "map_view", "at": at, "pid": std::process::id(),
-        "epoch": epoch, "branch": branch, "hour": hour,
-        "viewport": view.viewport, "ui_scale": view.ui_scale,
-    }).to_string(), at);
+/// Charges every thread's CPU to its labels, which the maps' scope records are made of. On for the
+/// process from the moment a log is asked for, so a frame's labels are whole from its first frame.
+fn account() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(replay_frame::cpu::enable);
 }
 
 impl StartupSpan {
@@ -263,6 +268,7 @@ static PREFIX: OnceLock<std::ffi::OsString> = OnceLock::new();
 pub fn log_to(prefix: &std::path::Path) {
     let _ = PREFIX.set(prefix.as_os_str().to_owned());
     viewer_foundation::map::gpu_frame_time::request();
+    account();
 }
 
 /// Names the map this thread runs, before it records.
@@ -278,6 +284,7 @@ pub fn epoch_ms() -> f64 {
 }
 
 fn open() -> Option<Log> {
+    account();
     let prefix = PREFIX
         .get()
         .cloned()
@@ -442,7 +449,28 @@ pub fn since(name: &str, started: Instant) {
     );
 }
 
+/// Frames one scope record covers. The thread's labels are read once a window, not once a frame,
+/// so a frame pays nothing for them; short enough that a window falls inside one measured item.
+const SCOPE_FRAMES: u64 = 30;
+
+/// A window of frames whose labels one scope record reports.
+struct Scopes {
+    /// Every label as it stood when the window began.
+    before: std::collections::HashMap<String, [Option<u64>; 3]>,
+    /// Cycle reads the frame thread had made then, so the accounting's own cost is measured.
+    reads: u64,
+    frames: u64,
+    /// The epoch milliseconds of the first frame in the window, and its work.
+    from: f64,
+    work_ms: f64,
+}
+
 thread_local! {
+    /// The camera the last frame drew with, which its window's record names: whether the eye is
+    /// free (the fly and walk cameras) and its height over the map.
+    static VIEW: Cell<Option<(bool, f32)>> = const { Cell::new(None) };
+    /// This map's open scope window, begun at its first recorded frame.
+    static SCOPES: RefCell<Option<Scopes>> = const { RefCell::new(None) };
     /// The number the next `map` record carries.
     static FRAME: Cell<u64> = const { Cell::new(0) };
     /// Frames' GPU milliseconds, or why they have none, not yet written, oldest first.
@@ -510,6 +538,15 @@ pub fn profile_frame(line: &str) {
     );
 }
 
+/// The camera this frame drew with: a free eye (the fly and walk cameras) or the map's own, and
+/// its height. A free eye's world layers draw every map copy its far plane reaches, so a frame's
+/// cost cannot be read without knowing which camera drew it.
+pub fn frame_view(free: bool, height: f32) {
+    if log().is_some() {
+        VIEW.with(|view| view.set(Some((free, height))));
+    }
+}
+
 /// Frames' GPU milliseconds just settled; each later `map` record carries one.
 pub fn gpu_times(times: Vec<(u64, Result<f64, String>)>) {
     if !times.is_empty() && log().is_some() {
@@ -564,73 +601,91 @@ pub fn frame_end() {
         ),
         at,
     );
+    scope_window(log, work, at);
+}
+
+/// A frame joins the open scope window; a full window is written and the next begun. Each label's
+/// CPU, wall time and entries over the window are the window's own difference, keyed as the
+/// playback harness's `scopes_us` keys them, and `work_ms` is the window's frames' work, so a
+/// label's share of a frame is read off one record. A label's wall over its CPU is time the frame
+/// thread spent off a core inside it.
+fn scope_window(log: &Log, work: f64, at: f64) {
+    SCOPES.with(|held| {
+        let mut held = held.borrow_mut();
+        let window = held.get_or_insert_with(|| Scopes {
+            before: replay_frame::cpu::own_totals(),
+            reads: replay_frame::cpu::cycle_reads(),
+            frames: 0,
+            from: at,
+            work_ms: 0.0,
+        });
+        window.frames += 1;
+        window.work_ms += work;
+        if window.frames < SCOPE_FRAMES {
+            return;
+        }
+        // This record's own cost is a label of the window that follows it.
+        let _own = replay_frame::cpu::scope("frame.perf-log", Some("other"));
+        let after = replay_frame::cpu::own_totals();
+        let mut scopes = String::from("{");
+        let mut walls = String::from("{");
+        let mut calls = String::from("{");
+        for (label, [ns, wall, entered]) in &after {
+            let [was_ns, was_wall, was_entered] =
+                window.before.get(label).copied().unwrap_or([None, None, None]);
+            let spent = ns.unwrap_or(0).saturating_sub(was_ns.unwrap_or(0));
+            if spent > 0 {
+                append(&mut scopes, label, spent / 1000);
+            }
+            if let Some(wall) = wall {
+                let waited = wall.saturating_sub(was_wall.unwrap_or(0));
+                if waited > 0 {
+                    append(&mut walls, label, waited / 1000);
+                }
+            }
+            let entered = entered.unwrap_or(0).saturating_sub(was_entered.unwrap_or(0));
+            if entered > 0 {
+                append(&mut calls, label, entered);
+            }
+        }
+        scopes.push('}');
+        walls.push('}');
+        calls.push('}');
+        let reads = replay_frame::cpu::cycle_reads();
+        let camera = VIEW.with(Cell::get).map_or_else(
+            || "null".to_owned(),
+            |(free, height)| {
+                let pose = if free { "free" } else { "map" };
+                format!(r#"{{"pose":"{pose}","height":{height:.1}}}"#)
+            },
+        );
+        let line = format!(
+            r#"{{"t":"map_scopes","at":{at:.3},"map":{},"from":{:.3},"to":{at:.3},"frames":{},"work_ms":{:.3},"cycle_reads":{},"camera":{camera},"scopes_us":{scopes},"scopes_wall_us":{walls},"scopes_calls":{calls}}}"#,
+            log.map,
+            window.from,
+            window.frames,
+            window.work_ms,
+            reads.saturating_sub(window.reads),
+        );
+        *window = Scopes { before: after, reads, frames: 0, from: at, work_ms: 0.0 };
+        drop(held);
+        log.send(line, at);
+    });
+}
+
+/// One `"label":value` member of a scope record's object.
+fn append(out: &mut String, label: &str, value: u64) {
+    if out.len() > 1 {
+        out.push(',');
+    }
+    out.push_str(&json_string(label));
+    out.push(':');
+    out.push_str(&value.to_string());
 }
 
 /// Whether this map records its timings.
 pub fn enabled() -> bool {
     log().is_some()
-}
-
-fn view_json(view: Option<&str>) -> String {
-    view.map_or_else(
-        || "null".to_owned(),
-        |view| serde_json::to_string(view).unwrap_or_else(|_| "null".to_owned()),
-    )
-}
-
-/// A built map hour reaching the window: where its build time went, and how
-/// far behind the clock it arrived. `parts` holds each lap, decode first.
-pub fn map_hour(view: Option<&str>, built: &crate::hours::Built, clock: i32) {
-    use std::fmt::Write as _;
-    let Some(log) = log() else {
-        return;
-    };
-    let at = epoch_ms();
-    let mut parts = String::new();
-    for (name, timing) in &built.laps {
-        if !parts.is_empty() {
-            parts.push(',');
-        }
-        let _ = write!(parts, r#""{name}":{:.3}"#, timing.ms);
-    }
-    log.send(
-        format!(
-            r#"{{"t":"map_hour","at":{at:.3},"map":{},"view":{},"epoch":{},"hour":{},"lag":{},"ok":{},"wall":{:.3},"source":{:.3},"parts":{{{parts}}}}}"#,
-            log.map,
-            view_json(view),
-            built.epoch,
-            built.hour,
-            i64::from(clock) - i64::from(built.hour),
-            built.layers.is_ok(),
-            built.wall,
-            built.waits.source_ms,
-        ),
-        at,
-    );
-}
-
-/// A built map hour installed on screen: its upload time and lag behind the clock.
-pub fn map_upload(
-    view: Option<&str>,
-    epoch: u64,
-    hour: i32,
-    clock: i32,
-    upload_ms: f64,
-    ok: bool,
-) {
-    let Some(log) = log() else {
-        return;
-    };
-    let at = epoch_ms();
-    log.send(
-        format!(
-            r#"{{"t":"map_upload","at":{at:.3},"map":{},"view":{},"epoch":{epoch},"hour":{hour},"lag":{},"ok":{ok},"upload":{upload_ms:.3}}}"#,
-            log.map,
-            view_json(view),
-            i64::from(clock) - i64::from(hour),
-        ),
-        at,
-    );
 }
 
 /// Writes every queued line and any loss still owed, then waits for the writer to end.

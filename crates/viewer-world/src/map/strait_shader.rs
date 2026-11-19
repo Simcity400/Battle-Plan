@@ -1,5 +1,6 @@
 //! Strait registration, inputs/state, geometry.
 //! Authored alpha writes feed the bloom seed; the old runtime port masked them.
+use viewer_foundation::map::gpu_contract::Targets;
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
 
@@ -14,11 +15,6 @@ use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 pub struct StraitVertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
-}
-
-pub struct Target<'a> {
-    pub color: wgpu::RenderPassColorAttachment<'a>,
-    pub depth: wgpu::RenderPassDepthStencilAttachment<'a>,
 }
 
 fn refuse(reason: impl Into<String>) -> io::Error {
@@ -214,7 +210,7 @@ impl Straits {
         &self,
         arena: &gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: Target<'_>,
+        targets: &Targets,
         frames: &[&[u8]],
         snow_mud_and_intel: [&wgpu::TextureView; 2],
         retained: Option<&RefCell<super::shader_scene::State>>,
@@ -265,14 +261,8 @@ impl Straits {
         if !visible {
             return Ok(());
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("compiled straits"),
-            color_attachments: &[Some(target.color)],
-            depth_stencil_attachment: Some(target.depth),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = super::scene::world_pass(encoder, targets, "compiled straits");
+        let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&compiled.pipeline.pipeline);
         pass.set_stencil_reference(compiled.stencil_reference);
@@ -284,7 +274,7 @@ impl Straits {
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint16);
         let mut previous = None;
         for binding in &bindings {
-            binding.bind_after(&mut pass, previous);
+            binding.bind_after(pass, previous);
             previous = Some(binding);
             shader_pipeline::gpu::stats::draw();
             pass.draw_indexed(0..*count, 0, 0..1);

@@ -5,13 +5,11 @@
 
 use super::{OccupationMarks, Source, drawn};
 use crate::{
-    map_views::OverlayInputs,
-    document::{LeftToLayers, MadeBy},
+    document::LeftToLayers,
     layers::{
         Inputs, Layer, View,
         resource_icons::tests::{Memory, Recording, strings_of, write},
     },
-    map_views::CounterView,
     playhead_host::{MapSide, open, shared_maps_tests::Reads, units::Units},
 };
 use installed_content_core::occupation_modifiers::Definitions;
@@ -112,7 +110,7 @@ fn layer(side: &MapSide) -> &OccupationMarks {
 fn the_layer_equals_todays_marks_and_itself_composed_and_a_change_marks_only_its_state() {
     let (units, frames) = campaign("occupation marks, today's");
     let content = content();
-    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(replay_data::scope::CaptureMode::Full);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(OccupationMarks::new(Arc::clone(&content)))], resistance_mode()).unwrap();
     side.anchor(0, false, 0.0, true);
@@ -140,7 +138,7 @@ fn the_layer_equals_todays_marks_and_itself_composed_and_a_change_marks_only_its
 fn a_view_that_hides_the_layer_holds_and_carries_nothing_and_shown_again_composes() {
     let (units, frames) = campaign("occupation marks, hidden");
     let content = content();
-    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(replay_data::scope::CaptureMode::Full);
     let (states, _) = Reads::new(&[TableId::States]);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(OccupationMarks::new(Arc::clone(&content))), states], resistance_mode()).unwrap();
@@ -168,20 +166,14 @@ fn a_view_that_hides_the_layer_holds_and_carries_nothing_and_shown_again_compose
 #[test]
 fn the_window_takes_the_layers_marks_where_it_draws_them_and_todays_where_it_does_not() {
     let (units, _) = campaign("occupation marks, drawn");
-    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(replay_data::scope::CaptureMode::Full);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(OccupationMarks::new(content()))], resistance_mode()).unwrap();
     assert!(drawn(&side).is_none(), "not composed yet: today's makes the marks");
     side.anchor(0, false, 0.0, true);
     side.catch_up(5).unwrap();
     let left = LeftToLayers::of(Some(&side));
-    assert_eq!(left, LeftToLayers { resource_icons: false, occupation_marks: true }, "the layer draws the marks in the resistance mode");
-    assert!(!left.unmet_by(MadeBy::Today, MadeBy::Left), "the part left for the layer is laid in from it, not made by today's");
-    let mut window = CounterView::default();
-    window.set_mode(&MapMode::Stock(Stock::Resistance));
-    let inputs = OverlayInputs::of(&window).expect("the resistance mode reads rows at the head");
-    assert_eq!(inputs.without(false, false), Some(inputs));
-    assert_ne!(inputs.without(false, true), Some(inputs), "while the layer draws, no row at the head is read for the marks");
+    assert_eq!(left, LeftToLayers { resource_icons: false, occupation_marks: true, radar: left.radar }, "the layer draws the marks in the resistance mode");
     let version = drawn(&side).expect("drawn").version();
     side.catch_up(8).unwrap();
     assert_eq!(drawn(&side).expect("drawn").version(), version, "no step to hour 8 changed a mark: the window lays nothing out again");
@@ -191,9 +183,6 @@ fn the_window_takes_the_layers_marks_where_it_draws_them_and_todays_where_it_doe
     side.catch_up(14).unwrap();
     let left = LeftToLayers::of(Some(&side));
     assert_eq!(left, LeftToLayers::default(), "in another mode the layer draws nothing");
-    assert!(left.unmet_by(MadeBy::Today, MadeBy::Layer(version)), "an overlay holding the layer's marks is made again by today's, which draws none there");
-    window.set_mode(&MapMode::default());
-    assert_eq!(OverlayInputs::of(&window), None, "and today's reads nothing for them there");
     assert_eq!(LeftToLayers::of(None), LeftToLayers::default(), "the playhead off: today's makes both");
 }
 

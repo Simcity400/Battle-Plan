@@ -1,29 +1,50 @@
 //! What the window draws beside the land figures: the hour's ships, raid units and convoys. They
 //! come from today's unit models without their land stacks, made on the layer's own worker over
-//! rows at the head (at the step that changes a table they read while playing, at once when paused
-//! or after a seek), never
-//! on the frame. Their rows are the tables the ships, raids and convoys are known to read
-//! ([`tables`]); a table read beyond them is learned as it is read and arrives with a later step,
-//! the older models standing meanwhile. A job is sent only for rows whose tables changed. The land
-//! figures' meshes are the layer's own ([`super::meshes`]).
+//! rows at the head, never on the frame. The land figures' meshes are the layer's own
+//! ([`super::meshes`]).
+//!
+//! The worker owns its reader of the map side's view store, whose rows are made from the side's
+//! own mirrors inside the step, so they stand at the hour the side applied. The layer tells it at
+//! the step's apply what the models are made for (the viewer, the convoys layer's lines, whether
+//! the ships are made): it builds the newest frame of rows it has not built, publishes the
+//! models at the hour of those rows, and asks for the next. A build begun is always finished and
+//! always published, and only the newest frame is ever taken, so the models are at most one build
+//! behind the rows and the hour they stand at only moves forward. A step's settle takes what is
+//! published and waits, within the step's budget, only while the models it holds stand before the
+//! step's hour. So the build runs beside the step's other makers instead of after them, and a step
+//! whose budget is already spent is offered the models of an earlier hour rather than none.
+//!
+//! Their rows are the tables the ships, raids and convoys are known to read ([`tables`]); a table
+//! read beyond them is learned as it is read and its rows arrive with a later frame, the older
+//! models standing meanwhile. A build is begun only for rows whose tables changed.
 
 use super::meshes::{self, Chosen};
-use crate::playhead_host::rows::{Cadence, RowReader, Rows, Stands};
+use crate::playhead_host::{
+    timeline::{self, Mark},
+    views::{self, Need},
+};
 use replay_data::{Hour, rows::TableId};
 use replay_frame::frame::{DecodedFrame, discovering};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     io,
-    sync::{
-        Arc, Weak,
-        mpsc::{self, Receiver, Sender},
-    },
+    sync::{Arc, Condvar, Mutex, MutexGuard},
+    thread::JoinHandle,
+    time::{Duration, Instant},
 };
 use viewer_foundation::map::{memo::TableKey, perspective::Choice};
 use viewer_world::map::{
     trade_routes::ConvoyLine,
     unit_models::{KeptChoices, PreparedModels, SelectInputs, StackModel, Told},
 };
+
+/// How long a settle that waits however long the models take gives them.
+const WHOLE: Duration = Duration::from_secs(10);
+
+/// How long the worker waits for the rows to move before looking at what the layer asks of it (a
+/// new viewing country, new convoy lines): half a frame of a 60 Hz display, since the rows of every
+/// step move the Clock the models read, so the rows are what wakes it while the map plays.
+const LOOK: Duration = Duration::from_millis(8);
 
 /// The tables today's ships, raid units and convoys are known to read, besides the vision's
 /// ([`viewer_foundation::map::perspective::VISION_TABLES`]); each group by why. A table the content's
@@ -102,12 +123,21 @@ pub fn tables() -> Vec<TableId> {
     tables
 }
 
+/// `tables` widened by `learned`, ascending.
+fn declared(learned: &[TableId]) -> Vec<TableId> {
+    let mut tables = tables();
+    tables.extend_from_slice(learned);
+    tables.sort_unstable_by_key(|table| table.index());
+    tables.dedup();
+    tables
+}
+
 /// Today's unit models of a frame of rows, with the raid units and convoys the hour adds.
 pub trait Select: Send + Sync {
     /// `convoys` are the convoys layer's lines while it draws them, today's trade routes are then
     /// not made; no battle plan or air order is made here (the raid units are the raid arrows').
     /// Without `naval` the ships are not made: the ships layer's are joined ([`Models::join_ships`]).
-    /// `kept`: what the job before kept for this one, and where each part's time goes.
+    /// `kept`: what the build before kept for this one, and where each part's time goes.
     fn prepare(&self, frame: &DecodedFrame, perspective: &Choice, convoys: Option<&[ConvoyLine]>, naval: bool, kept: &mut Kept) -> io::Result<PreparedModels>;
 
     /// One session of the land selection over `frame` for the viewer whose canonical slot is
@@ -159,6 +189,9 @@ impl Select for crate::document::Content {
             // Within the session: every held stack's check, and the stacks chosen.
             parts("um_session_stands", standing.as_nanos() as u64);
             parts("um_session_choose", choosing.as_nanos() as u64);
+            viewer_foundation::view_record::add("units", "stacks_walked", stacks.len() as u64);
+            viewer_foundation::view_record::add("units", "stacks_asked", asked.len() as u64);
+            viewer_foundation::view_record::add("units", "stacks_sessions", 1);
             let mut since = std::time::Instant::now();
             let entities: Vec<String> = models.iter().filter_map(|(_, model)| match model {
                 StackModel::Chosen(chosen) => Some(chosen.entity.clone()),
@@ -207,47 +240,69 @@ impl Select for crate::document::Content {
             units.add_raid_units(&self.unit_models, &hour.raid_arrows(ours).0.raid_units);
             lap("raid_units");
             if let Ok(defines) = &self.trade_routes {
-                let lines = layered.map_or_else(|| hour.trade_route_lines_kept(ours, convoys).convoys.clone(), <[ConvoyLine]>::to_vec);
+                let made = layered.is_none().then(|| hour.trade_route_convoys_kept(ours, convoys));
+                lap("convoy_lines");
+                let lines = match (&made, layered) {
+                    (Some(made), _) => (**made).clone(),
+                    (None, Some(lines)) => lines.to_vec(),
+                    (None, None) => Vec::new(),
+                };
+                lap("convoy_copy");
                 units.add_convoys(lines, defines.convoys);
             }
-            lap("convoys");
+            lap("convoy_add");
             Ok(units)
         })
     }
 }
 
-/// What one models job keeps for the next, the worker's own: the trade routes' convoy lines while
-/// the columns they read and the viewer are the same. And where the job's time went, by part.
+/// What one models build keeps for the next, the worker's own: the trade routes' lines while the
+/// columns they read and the viewer are the same, and their convoys made again from those lines
+/// while only the convoys assigned moved. And where the build's time went, by part.
 #[derive(Default)]
 pub struct Kept {
-    convoys: Option<(crate::document::TradeRouteRead, u32, Arc<viewer_world::map::trade_routes::TradeRoutes>)>,
+    convoys: Option<crate::document::KeptConvoys>,
     parts: Vec<(&'static str, u64)>,
 }
 
-struct Job {
-    frame: Arc<DecodedFrame>,
-    convoys: Option<Arc<Vec<ConvoyLine>>>,
-    tables: Vec<TableId>,
+/// What the models are made for besides their rows: the viewer, the convoys layer's lines with the
+/// number of the product they came from, and whether the ships are made.
+#[derive(Clone)]
+struct Asked {
     perspective: Choice,
+    convoys: Option<(u64, Arc<Vec<ConvoyLine>>)>,
     naval: bool,
 }
 
-struct Made {
-    /// The jobs it answers: newer rows replace older ones not started.
-    jobs: usize,
-    hour: Hour,
-    /// The rows it was made from, held weakly.
-    frame: Weak<DecodedFrame>,
-    /// Tables read that the frame did not hold: what was made is not taken.
-    missed: Vec<TableId>,
-    prepared: Result<PreparedModels, String>,
-    /// The worker's time on the job, and by part.
-    busy_ns: u64,
-    parts: Vec<(&'static str, u64)>,
+/// What of an ask decides a build: two asks that key the same make the same models of the same rows.
+type Key = (Choice, Option<u64>, bool);
+
+impl Asked {
+    fn key(&self) -> Key {
+        (self.perspective.clone(), self.convoys.as_ref().map(|&(seq, _)| seq), self.naval)
+    }
 }
 
-/// What the models' worker did since last asked: jobs answered, its time on them, and that time
-/// by part of a job.
+/// The newest models the worker made, at the hour of the rows they were made from.
+#[derive(Clone)]
+struct Made {
+    /// The picture they were made for ([`Held::generation`]).
+    generation: u64,
+    /// Models published up to and including these, so a settle takes only ones it does not hold.
+    stamp: u64,
+    /// The hour of the rows they were made from.
+    hour: Hour,
+    /// The newest hour those rows stand at: a step that changed no table of theirs moves it with no
+    /// build at all ([`RowReader::through`]).
+    stands: Hour,
+    /// The frame they were made from while that frame is the reader's newest, which is while
+    /// `stands` can still move; let go after.
+    frame: Option<Arc<DecodedFrame>>,
+    prepared: Arc<PreparedModels>,
+}
+
+/// What the models' worker did since last asked: builds answered, its time on them, and that time
+/// by part of a build.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub jobs: u64,
@@ -255,45 +310,258 @@ pub struct Counts {
     pub parts: Vec<(&'static str, u64)>,
 }
 
-/// What a job is made from besides its rows: the viewer, the convoys layer's product and whether
-/// the ships are made.
-type Asked = (Choice, Option<u64>, bool);
+impl Counts {
+    fn add(&mut self, busy_ns: u64, parts: Vec<(&'static str, u64)>) {
+        (self.jobs, self.busy_ns) = (self.jobs + 1, self.busy_ns + busy_ns);
+        for (name, ns) in parts {
+            match self.parts.iter_mut().find(|(held, _)| *held == name) {
+                Some((_, sum)) => *sum += ns,
+                None => self.parts.push((name, ns)),
+            }
+        }
+    }
+}
+
+/// What the layer and its worker share.
+#[derive(Default)]
+struct Held {
+    /// What the models are made for; none until the layer has a perspective.
+    asked: Option<Asked>,
+    /// The picture models are made for, bumped by every compose: models of the picture before are
+    /// still drawn, and never counted as this picture's.
+    generation: u64,
+    made: Option<Made>,
+    published: u64,
+    /// The hour the newest rows the worker has answered stand at: it owes nothing up to there,
+    /// whether it built them, found them keyed as the models it holds, or was refused by them.
+    answered: Option<Hour>,
+    /// Why the models could not be made, by name.
+    refused: Option<String>,
+    /// A build is running, or the rows of tables a build learned it reads have not arrived.
+    working: bool,
+    /// The tables its rows are declared with, the learned ones included.
+    tables: Vec<TableId>,
+    counts: Counts,
+    stop: bool,
+}
+
+struct Shared {
+    held: Mutex<Held>,
+    /// Models published, or the rows stopped.
+    done: Condvar,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Waits for the worker to publish, until `until`.
+    fn wait(&self, until: Instant) {
+        let held = self.lock();
+        let _ = self.done.wait_timeout(held, until.saturating_duration_since(Instant::now()));
+    }
+
+    /// The worker has answered the rows standing at `stands`: it owes nothing up to there.
+    fn answered(&self, stands: Hour) {
+        let mut held = self.lock();
+        (held.answered, held.working) = (held.answered.max(Some(stands)), false);
+        drop(held);
+        self.done.notify_all();
+    }
+
+    /// The models published stand at `stands` too: the rows there key the same as theirs, so no
+    /// build is owed for them.
+    fn stood(&self, generation: u64, stands: Hour, frame: &Arc<DecodedFrame>) {
+        let mut held = self.lock();
+        let stamp = held.published + 1;
+        let moved = held.generation == generation
+            && held.made.as_mut().is_some_and(|made| {
+                if made.generation != generation {
+                    return false;
+                }
+                (made.stands, made.frame, made.stamp) = (made.stands.max(stands), Some(Arc::clone(frame)), stamp);
+                true
+            });
+        if moved {
+            held.published = stamp;
+        }
+        drop(held);
+        self.done.notify_all();
+    }
+}
+
+/// The worker: every frame of rows it has not built, built whole and published.
+fn work(shared: &Shared, select: &dyn Select, reader: &views::Reader, maker: timeline::Maker) {
+    let mut kept = Kept::default();
+    let mut tables = shared.lock().tables.clone();
+    // The rows and ask of the newest build begun, and those the models published were made from.
+    let (mut built, mut standing): (Option<(TableKey, Key)>, Option<(TableKey, Key)>) = (None, None);
+    // The frame it has answered, built or stood, by the store's count of frames made for it.
+    let mut handled: Option<(u64, Key)> = None;
+    let mut generation = 0;
+    loop {
+        let (asked, want) = {
+            let held = shared.lock();
+            if held.stop {
+                return;
+            }
+            (held.asked.clone(), held.generation)
+        };
+        // A new picture: models of the one before are not its models, however new the rows they hold.
+        if want != generation {
+            (generation, built, standing, handled) = (want, None, None, None);
+        }
+        let Some(asked) = asked else {
+            shared.lock().working = false;
+            reader.wait_newer(u64::MAX, LOOK);
+            continue;
+        };
+        let key = asked.key();
+        let seen = handled.as_ref().map_or(0, |&(published, _)| published);
+        let Some((newest, published)) = reader.newest() else {
+            reader.wait_newer(seen, LOOK);
+            continue;
+        };
+        // Rows of the seek before are not this picture's: the step after its compose makes the
+        // rows of the hour sought.
+        let Some((through, seek)) = reader.through_seek(Arc::as_ptr(&newest)) else {
+            continue;
+        };
+        if seek != reader.seek() {
+            reader.wait_newer(published, LOOK);
+            continue;
+        }
+        let stands = through.max(newest.hour);
+        // The frame it has answered already, built or stood: nothing to look at until a newer one,
+        // and its rows stand at every later hour no step changed them by.
+        if handled.as_ref() == Some(&(published, key.clone())) {
+            shared.answered(stands);
+            reader.wait_newer(published, LOOK);
+            continue;
+        }
+        handled = Some((published, key.clone()));
+        timeline::mark(maker, Mark::Rows);
+        let at = (TableKey::of(&*newest, &tables), key);
+        // The same tables in the same allocations and the same ask: the models built from them
+        // stand at these rows' hour with no build at all, as the hour they are of is their last change.
+        if built.as_ref() == Some(&at) {
+            if standing.as_ref() == Some(&at) {
+                shared.stood(generation, stands, &newest);
+            }
+            shared.answered(stands);
+            continue;
+        }
+        let frame = newest;
+        let Asked { perspective, convoys, naval } = asked;
+        shared.lock().working = true;
+        timeline::mark(maker, Mark::BuildBegan);
+        let started = Instant::now();
+        let (prepared, read) = discovering(|| select.prepare(&frame, &perspective, convoys.as_ref().map(|(_, lines)| &lines[..]), naval, &mut kept));
+        timeline::mark(maker, Mark::BuildEnded);
+        let busy_ns = started.elapsed().as_nanos() as u64;
+        let parts = std::mem::take(&mut kept.parts);
+        built = Some(at.clone());
+        shared.lock().counts.add(busy_ns, parts);
+        // Tables the build read that the frame did not hold: what was made is not taken, and the
+        // frame after the declaration holds them.
+        let missed: Vec<TableId> = read.into_iter().filter(|table| !tables.contains(table)).collect();
+        if !missed.is_empty() {
+            tables.extend(missed);
+            tables.sort_unstable_by_key(|table| table.index());
+            tables.dedup();
+            reader.declare_only(&tables);
+            let mut held = shared.lock();
+            (held.tables, held.working) = (tables.clone(), true);
+            drop(held);
+            (built, standing, handled) = (None, None, None);
+            continue;
+        }
+        let mut held = shared.lock();
+        if held.stop {
+            return;
+        }
+        // A compose while it built: the models are the picture before's and are not published as
+        // this one's.
+        if held.generation != generation {
+            (built, standing, handled) = (None, None, None);
+            continue;
+        }
+        match prepared {
+            Ok(prepared) => {
+                let stamp = held.published + 1;
+                (held.published, held.refused) = (stamp, None);
+                held.made = Some(Made { generation, stamp, hour: frame.hour, stands, frame: Some(frame), prepared: Arc::new(prepared) });
+                standing = Some(at);
+            }
+            Err(error) => held.refused = Some(format!("Today's unit models cannot be made from the rows at the head: {error}")),
+        }
+        (held.answered, held.working) = (held.answered.max(Some(stands)), false);
+        drop(held);
+        shared.done.notify_all();
+    }
+}
 
 pub struct Models {
-    select: Arc<dyn Select>,
-    reader: RowReader,
-    tables: Vec<TableId>,
-    worker: Option<(Sender<Job>, Receiver<Made>)>,
-    /// The tables of the newest job sent and what else it was made from; the frame of rows they
-    /// were last keyed from, held weakly so an old frame is not kept.
-    sent: Option<(TableKey, Asked)>,
-    keyed: Weak<DecodedFrame>,
-    in_flight: usize,
-    /// Tables a job read undeclared are declared and their rows not here yet.
-    learning: bool,
-    pub prepared: Option<(Hour, Arc<PreparedModels>)>,
-    /// The rows the models drawn stand for: those of their job, or newer ones keyed the same.
-    stands: Option<Stands>,
+    shared: Arc<Shared>,
+    worker: Option<JoinHandle<()>>,
+    /// The side's rows the worker builds from; the layer asks it the hour they stand at.
+    reader: Arc<views::Reader>,
+    maker: timeline::Maker,
+    /// The convoy lines last given to the worker, with the number of the product they came from:
+    /// copied again only when the convoys layer publishes a new one.
+    lines: Option<(u64, Arc<Vec<ConvoyLine>>)>,
+    /// The newest models taken from the worker: drawn whatever picture they were made for, counted
+    /// as this picture's only while their generation is this one's.
+    made: Option<Made>,
+    /// The picture it asks models for, bumped by every compose.
+    generation: u64,
     /// The models as made without ships, and the ships layer's number joined to them in `prepared`.
     shipless: Option<Arc<PreparedModels>>,
     joined: Option<u64>,
+    pub prepared: Option<(Hour, Arc<PreparedModels>)>,
     pub refused: Option<String>,
-    counts: std::sync::Mutex<Counts>,
 }
 
 impl Models {
-    /// Its rows declared with [`tables`] and the tables `learned` before.
-    pub fn new(select: Arc<dyn Select>, rows: &Arc<Rows>, learned: &[TableId]) -> Self {
-        let mut tables = tables();
-        tables.extend_from_slice(learned);
-        tables.sort_unstable_by_key(|table| table.index());
-        tables.dedup();
-        Self { select, reader: rows.reader(&tables, Cadence::Ready), tables, worker: None, sent: None, keyed: Weak::new(), in_flight: 0, learning: false, prepared: None, stands: None, shipless: None, joined: None, refused: None, counts: std::sync::Mutex::default() }
+    /// Its rows declared with [`tables`] and the tables `learned` before, read from the map side's
+    /// view store, and the worker that builds from them.
+    pub fn new(select: Arc<dyn Select>, views: &views::Views, learned: &[TableId]) -> Self {
+        let tables = declared(learned);
+        let reader = Arc::new(views.reader("unit_models", &tables.iter().copied().map(Need::every).collect::<Vec<Need>>()));
+        let maker = timeline::maker("unit_models");
+        let shared = Arc::new(Shared { held: Mutex::new(Held { tables, ..Held::default() }), done: Condvar::new() });
+        let worker = std::thread::Builder::new().name("unit models".into()).spawn({
+            let (shared, reader) = (Arc::clone(&shared), Arc::clone(&reader));
+            move || {
+                // A step's settle joins its product: at the head's priority, never below normal.
+                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+                work(&shared, &*select, &reader, maker);
+            }
+        });
+        let (worker, refused) = match worker {
+            Ok(worker) => (Some(worker), None),
+            Err(error) => (None, Some(format!("The unit models' worker cannot start: {error}"))),
+        };
+        Self { shared, worker, reader, maker, lines: None, made: None, generation: 0, shipless: None, joined: None, prepared: None, refused }
+    }
+
+    /// Its place in the step's timeline.
+    pub fn maker(&self) -> timeline::Maker {
+        self.maker
     }
 
     /// The tables its rows are declared with, the ones learned included.
-    pub fn tables(&self) -> &[TableId] {
-        &self.tables
+    pub fn tables(&self) -> Vec<TableId> {
+        self.shared.lock().tables.clone()
+    }
+
+    /// The models held are the old picture's: they are drawn until ones made from rows after the
+    /// reset arrive, and counted as this picture's only then.
+    pub fn composed(&mut self) {
+        self.generation += 1;
+        let mut held = self.shared.lock();
+        (held.generation, held.answered) = (self.generation, None);
     }
 
     /// Models made without ships carry the ships layer's, joined again when its number moves on.
@@ -312,154 +580,112 @@ impl Models {
         true
     }
 
-    /// Sends the newest rows when they, the viewer or the switch differ from the last sent, and
-    /// takes what the worker made; whether new models arrived.
-    /// `convoys`: the convoys layer's lines and their product's sequence number, while it draws.
-    /// `whole`: the head of a caller that settles whole, which waits for the rows there and for the
-    /// models made from them (not for tables learned: their resets come with a later step).
-    /// `naval`: the ships are made with them (the ships layer does not stand in for them).
-    pub fn exchange(&mut self, perspective: &Choice, convoys: Option<(u64, &[ConvoyLine])>, naval: bool, whole: Option<Hour>) -> bool {
-        if let Some(head) = whole {
-            // A whole settle wants the rows of its hour whatever is on the worker.
-            self.reader.ready();
-            let _ = self.reader.wait_through(head, std::time::Duration::from_secs(10));
-        }
-        if let Some(frame) = self.reader.frame() {
-            let asked = (perspective.clone(), convoys.map(|(seq, _)| seq), naval);
-            // The tables are keyed again only for a frame not keyed yet: the rows' cadence, not the frame rate.
-            let tables = match &self.sent {
-                Some(_) if std::ptr::eq(self.keyed.as_ptr(), Arc::as_ptr(&frame)) => None,
-                Some((tables, _)) => Some(TableKey::of(&*frame, &self.tables)).filter(|key| key != tables),
-                None => Some(TableKey::of(&*frame, &self.tables)),
-            };
-            // Keyed the same as the job the models drawn answer: they stand for these rows too.
-            if tables.is_none()
-                && self.in_flight == 0
-                && !self.learning
-                && let Some(stands) = &mut self.stands
-                && !std::ptr::eq(stands.frame().as_ptr(), Arc::as_ptr(&frame))
-            {
-                *stands = Stands::at(Arc::downgrade(&frame), stands.hour().max(frame.hour));
-            }
-            self.keyed = Arc::downgrade(&frame);
-            let key = match (tables, &self.sent) {
-                (Some(tables), _) => Some((tables, asked)),
-                (None, Some((tables, sent))) if *sent != asked => Some((tables.clone(), asked)),
-                _ => None,
-            };
-            if let Some(key) = key {
-                if self.worker.is_none() {
-                    match spawn(Arc::clone(&self.select)) {
-                        Ok(worker) => self.worker = Some(worker),
-                        Err(error) => self.refused = Some(format!("The unit models' worker cannot start: {error}")),
-                    }
-                }
-                if let Some((jobs, _)) = &self.worker
-                    && jobs.send(Job { frame, convoys: convoys.map(|(_, lines)| Arc::new(lines.to_vec())), tables: self.tables.clone(), perspective: perspective.clone(), naval }).is_ok()
-                {
-                    self.in_flight += 1;
-                    self.sent = Some(key);
-                } else {
-                    self.keyed = Weak::new();
-                }
-            }
-        }
-        let Some((_, made)) = &self.worker else { return false };
-        let (mut arrived, mut learned) = (false, Vec::new());
+    /// What the worker builds the models of the rows it is given next for: the viewer, the convoys
+    /// layer's lines while it draws them with the number of its product, and whether the ships are
+    /// made (the ships layer does not stand in for them). Told at the step's apply, so the build
+    /// runs beside the step's other makers.
+    pub fn ask(&mut self, perspective: &Choice, convoys: Option<(u64, &[ConvoyLine])>, naval: bool) {
+        // The lines are copied only for a product the worker was not given yet.
+        self.lines = match (convoys, self.lines.take()) {
+            (None, _) => None,
+            (Some((seq, _)), Some((held, lines))) if held == seq => Some((seq, lines)),
+            (Some((seq, lines)), _) => Some((seq, Arc::new(lines.to_vec()))),
+        };
+        let asked = Asked { perspective: perspective.clone(), convoys: self.lines.clone(), naval };
+        self.shared.lock().asked = Some(asked);
+        timeline::mark(self.maker, Mark::Asked);
+    }
+
+    /// The models of the rows at `hour`: the newest models published are taken, and a step waits
+    /// for nothing, keeping the models it has at their own hour and joining newer ones at the step
+    /// after. A settle that waits ([`crate::layers::Settling::waits`]) waits for models standing
+    /// at or past `hour`; one whose rows the worker has answered without making models (refused,
+    /// or a table it learned) waits no longer. Whether the models changed.
+    pub fn join(&mut self, hour: Option<Hour>, settling: crate::layers::Settling) -> bool {
+        let Some(hour) = hour else { return self.take() };
+        let until = Instant::now() + settling.waiting(WHOLE);
+        let mut arrived = false;
         loop {
-            let next = if whole.is_some() && self.in_flight > 0 { made.recv().ok() } else { made.try_recv().ok() };
-            let Some(made) = next else { break };
-            self.in_flight = self.in_flight.saturating_sub(made.jobs);
-            let counts = self.counts.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
-            (counts.jobs, counts.busy_ns) = (counts.jobs + 1, counts.busy_ns + made.busy_ns);
-            for (name, ns) in made.parts {
-                match counts.parts.iter_mut().find(|(held, _)| *held == name) {
-                    Some((_, sum)) => *sum += ns,
-                    None => counts.parts.push((name, ns)),
-                }
+            arrived |= self.take();
+            if self.stands().is_some_and(|stands| stands >= hour) || self.shared.lock().answered.is_some_and(|at| at >= hour) {
+                return arrived;
             }
-            if !made.missed.is_empty() {
-                learned.extend(made.missed);
-                continue;
+            if Instant::now() >= until {
+                return arrived;
             }
-            match made.prepared {
-                Ok(prepared) => {
-                    self.learning = false;
-                    let prepared = Arc::new(prepared);
-                    (self.shipless, self.joined) = ((!prepared.naval()).then(|| Arc::clone(&prepared)), None);
-                    self.prepared = Some((made.hour, prepared));
-                    self.stands = Some(Stands::at(made.frame, made.hour));
-                    self.refused = None;
-                    arrived = true;
-                }
-                Err(error) => {
-                    self.learning = false;
-                    self.refused = Some(format!("Today's unit models cannot be made from the rows at the head: {error}"));
-                }
+            self.shared.wait(until);
+        }
+    }
+
+    /// Takes the newest models published for the picture being drawn, and moves the hour the models
+    /// it holds stand at to every later hour no step changed a table of their rows. Whether new
+    /// models arrived.
+    fn take(&mut self) -> bool {
+        let mut arrived = false;
+        {
+            let held = self.shared.lock();
+            self.refused.clone_from(&held.refused);
+            if let Some(made) = held.made.as_ref().filter(|made| made.generation == self.generation)
+                && self.made.as_ref().is_none_or(|ours| ours.stamp < made.stamp)
+            {
+                arrived = self.made.as_ref().is_none_or(|ours| !Arc::ptr_eq(&ours.prepared, &made.prepared));
+                self.made = Some(made.clone());
             }
         }
-        if !learned.is_empty() {
-            self.tables.extend(learned);
-            self.tables.sort_unstable_by_key(|table| table.index());
-            self.tables.dedup();
-            self.reader.declare(&self.tables);
-            self.sent = None;
-            self.learning = true;
+        if let Some(made) = &mut self.made
+            && let Some(frame) = &made.frame
+        {
+            match self.reader.through(Arc::as_ptr(frame)) {
+                Some(through) => made.stands = made.stands.max(through),
+                None => made.frame = None,
+            }
         }
-        // Its last job answered, it has finished with the rows it took.
-        if self.in_flight == 0 {
-            self.reader.ready();
-        }
-        let reader = &self.reader;
-        if let Some(stands) = &mut self.stands {
-            stands.look(|frame| reader.through(frame));
+        if arrived && let Some(made) = &self.made {
+            let prepared = Arc::clone(&made.prepared);
+            (self.shipless, self.joined) = ((!prepared.naval()).then(|| Arc::clone(&prepared)), None);
+            self.prepared = Some((made.hour, prepared));
         }
         arrived
     }
 
     /// What the worker did since the last call.
     pub fn take_counts(&self) -> Counts {
-        std::mem::take(&mut *self.counts.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        std::mem::take(&mut self.shared.lock().counts)
     }
 
-    /// The hour of the rows the models drawn stand for; none before the first.
+    /// The hour of the rows the models drawn stand for; none before the first of this picture.
     pub fn stands(&self) -> Option<Hour> {
-        self.stands.as_ref().map(Stands::hour)
+        self.made.as_ref().filter(|made| made.generation == self.generation).map(|made| made.stands)
     }
 
-    #[cfg(test)]
+    /// Whether a build is running or the rows of tables a build learned it reads are on their way.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn in_flight(&self) -> usize {
-        self.in_flight
+        usize::from(self.shared.lock().working)
     }
 
-    /// Whether models are on their way: a job out, or the rows of tables a job learned it reads.
+    /// The hour of the newest rows its worker has answered: it owes nothing up to there, whether
+    /// it built them, found them keyed as the models it holds, or was refused by them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn answered(&self) -> Option<Hour> {
+        self.shared.lock().answered
+    }
+
+    /// Whether models are on their way: a build running, or the rows of tables a build learned it
+    /// reads.
     pub fn waiting(&self) -> bool {
-        self.in_flight > 0 || self.learning
+        self.shared.lock().working
     }
 }
 
-fn spawn(select: Arc<dyn Select>) -> io::Result<(Sender<Job>, Receiver<Made>)> {
-    let (jobs, receive) = mpsc::channel::<Job>();
-    let (send, made) = mpsc::channel::<Made>();
-    std::thread::Builder::new().name("unit models".into()).spawn(move || {
-        viewer_foundation::worker_priority::background_priority();
-        let mut kept = Kept::default();
-        while let Ok(mut job) = receive.recv() {
-            let mut jobs = 1;
-            while let Ok(newer) = receive.try_recv() {
-                (job, jobs) = (newer, jobs + 1);
-            }
-            let started = std::time::Instant::now();
-            let (prepared, missed) = discovering(|| select.prepare(&job.frame, &job.perspective, job.convoys.as_deref().map(Vec::as_slice), job.naval, &mut kept));
-            let parts = std::mem::take(&mut kept.parts);
-            let missed = missed.into_iter().filter(|table| !job.tables.contains(table)).collect();
-            let busy_ns = started.elapsed().as_nanos() as u64;
-            if send.send(Made { jobs, hour: job.frame.hour, frame: Arc::downgrade(&job.frame), missed, prepared: prepared.map_err(|error| error.to_string()), busy_ns, parts }).is_err() {
-                return;
-            }
+impl Drop for Models {
+    fn drop(&mut self) {
+        self.shared.lock().stop = true;
+        self.shared.done.notify_all();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
         }
-    })?;
-    Ok((jobs, made))
+    }
 }
 
 #[cfg(test)]

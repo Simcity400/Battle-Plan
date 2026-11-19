@@ -22,9 +22,11 @@ fn background() -> io::Result<Arc<Pool>> {
     if let Some(pool) = BACKGROUND.get() {
         return Ok(Arc::clone(pool));
     }
-    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    // One hour is read at a time, so this pool is sized as the builders are: the hardware threads
+    // the process may use less eight, leaving the window's own frame, the GPU driver and the
+    // game's own threads theirs.
     let pool = Arc::new(Pool::new(
-        threads,
+        viewer_foundation::retirement::builder_count(),
         "map background",
         viewer_foundation::worker_priority::background_priority,
     )?);
@@ -70,20 +72,6 @@ pub struct MapSource {
 impl MapSource {
     pub fn roster_source(&self) -> Arc<Natives> {
         Arc::clone(self.cursor.natives())
-    }
-
-    pub fn set_workers(&mut self, workers: usize) {
-        self.workers = workers.max(1);
-    }
-
-    /// The hour a read of `hour` of `branch` starts from: the hour itself, which no walk of the
-    /// caller's precedes; none outside every run.
-    pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<i64> {
-        let segment = self.replay.segment_at(branch, hour)?;
-        self.cursor
-            .natives()
-            .find(segment, hour)
-            .map(|_| i64::from(hour))
     }
 
     /// `hour` of `branch`: with `materialize`, its frame; without, the move taken there and no

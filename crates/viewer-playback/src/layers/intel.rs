@@ -6,7 +6,7 @@
 //! No province fog (fog off, or a visibility gap) draws the all-clear grid, as today.
 
 use super::{
-    Budget, Carried, Dirty, Gpu, Inputs, Layer, Upstream, View,
+    Carried, Change, Settling, Dirty, Gpu, Inputs, Layer, Upstream, View,
     vision::Vision,
 };
 use crate::playhead_host::mirror::Mirrors;
@@ -88,7 +88,7 @@ impl Intel {
         for cell in 0..self.texels.len() as u32 {
             self.cells.mark(cell, self.frame);
         }
-        self.settle_cells(content, &mut Budget::unlimited());
+        self.settle_cells(content);
     }
 
     /// Marks the cells of a province whose byte changed; none while no fog is drawn (the clear
@@ -118,7 +118,7 @@ impl Intel {
                 }
             }
         }
-        if changed.all() {
+        let Change::Marked(changed) = changed else {
             for province in 0..self.bytes.len() as u32 {
                 let byte = vision.intel_byte(province);
                 if self.bytes[province as usize] != byte {
@@ -127,7 +127,7 @@ impl Intel {
                 }
             }
             return;
-        }
+        };
         for province in changed.of("province").iter().map(|&id| id as u32) {
             let byte = vision.intel_byte(province);
             if let Some(held) = self.bytes.get_mut(province as usize)
@@ -139,9 +139,9 @@ impl Intel {
         }
     }
 
-    fn settle_cells(&mut self, content: &Content, budget: &mut Budget) {
+    fn settle_cells(&mut self, content: &Content) {
         let mut dirty = std::mem::take(&mut self.cells);
-        let _ = dirty.settle(budget, |cell| {
+        let _ = dirty.settle(|cell| {
             let byte = if self.drawn { content.cells.cell_byte(cell as usize, |province| self.bytes.get(province as usize).copied().unwrap_or(u8::MAX)) } else { 0 };
             let held = &mut self.texels[cell as usize];
             self.fogged = self.fogged - usize::from(*held > 0) + usize::from(byte > 0);
@@ -197,22 +197,22 @@ impl Layer for Intel {
         self.take_vision(upstream);
     }
 
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
 
-    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
         self.frame += 1;
         self.take_vision(upstream);
         if let Ok(content) = &self.content {
             let content = Arc::clone(content);
-            self.settle_cells(&content, budget);
+            self.settle_cells(&content);
         }
         Ok(())
     }
 
-    fn upload(&mut self, gpu: &mut Gpu<'_>, budget: &mut Budget) -> io::Result<()> {
-        if self.uploaded() || !budget.left() || self.texels.is_empty() {
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
+        if self.uploaded() || self.texels.is_empty() {
             return Ok(());
         }
         let texels = match &self.shown {
@@ -234,7 +234,7 @@ impl Layer for Intel {
     }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.cells.len(), frames: self.cells.since().map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities: self.cells.len() }
     }
 
     fn held(&self) -> usize {

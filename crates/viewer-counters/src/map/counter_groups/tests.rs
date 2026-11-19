@@ -13,6 +13,7 @@ fn icon(kind: u32, owner: u32, province: u32, state: Option<u32>, x: f32) -> Ico
         state,
         region: Some(1),
         anchor: [x, 0.0, 0.0],
+        track: None,
     }
 }
 
@@ -326,6 +327,7 @@ fn the_indexed_rebuild_matches_the_native_scan_over_every_group() {
                     state: (!sea).then(|| next(8)),
                     region: (next(5) != 0).then(|| next(4)),
                     anchor: [next(100) as f32, 0.0, 0.0],
+                    track: None,
                 }
             })
             .collect();
@@ -426,6 +428,7 @@ fn unit_scale_grouping() {
                 state: Some((i % 10_000 / 100) as u32),
                 region: Some((i % 10_000 / 500) as u32),
                 anchor: [(i % 1000) as f32, 0.0, (i / 1000) as f32],
+                track: None,
             })
             .collect();
         let extents = extents(10.0, 10.0);
@@ -512,6 +515,7 @@ fn native_grouping_uses_directed_stored_truth_despite_active_war() {
         state: Some(9),
         region: Some(11),
         anchor: [0.0; 3],
+        track: None,
     };
     let friendly = |first, other| native.co_belligerent(other, first).unwrap();
     assert!(may_group(
@@ -639,7 +643,7 @@ fn only_a_strategic_member_stands_at_its_region_s_centre() {
     let extents = extents(10.0, 10.0);
     let mut sea = icon(0, 1, 200, None, 100.0);
     sea.region = Some(9);
-    let mut other = sea;
+    let mut other = sea.clone();
     other.anchor = [200.0, 0.0, 0.0];
     // Region 9's centre is (5, 0, 5): the strategic member stands there, the state-level one
     // where it is, and their group between them.
@@ -651,4 +655,86 @@ fn only_a_strategic_member_stands_at_its_region_s_centre() {
     );
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].anchor, [102.5, 0.0, 2.5]);
+}
+
+/// A group's anchor and its track are the mean of its members' places, and a mean summed in the
+/// order the members arrived in is not the same number twice: a stopped picture's counters then
+/// stand a pixel apart depending on the order a stack's members joined. The mean is summed over
+/// the members in their own canonical order and in double precision, so two orders of the same
+/// members give the same anchor, bit for bit.
+#[test]
+fn two_orders_of_the_same_members_give_one_anchor_and_one_track() {
+    let track = |x: f32| {
+        Track::new(&[Place { hour: 100, at: [x, 0.0, x * 0.3] }, Place { hour: 148, at: [x + 11.0, 0.0, x * 0.3] }], WIDTH)
+    };
+    // Places whose f32 sum depends on the order they are added in: a large one and many small
+    // ones, as a stack of 1,500 divisions astride a province gives.
+    let icons: Vec<Icon> = (0..64)
+        .map(|at| {
+            let x = if at == 0 { 4096.0 } else { 0.1 + at as f32 * 0.013 };
+            Icon { track: Some(track(x)), ..icon(0, 1, 100, Some(7), x) }
+        })
+        .collect();
+    let levels = everywhere(Level::Province, &icons);
+    let extents = extents(10.0, 10.0);
+    let anchor_of = |members: Vec<usize>| {
+        let mut groups = vec![Group { members, anchor: [0.0; 3], track: None }];
+        update_anchors(&mut groups, &icons, &levels, &extents);
+        let group = groups.remove(0);
+        (group.anchor, group.track.expect("every member moves"))
+    };
+    let forwards: Vec<usize> = (0..icons.len()).collect();
+    let backwards: Vec<usize> = (0..icons.len()).rev().collect();
+    let (anchor, track_forwards) = anchor_of(forwards);
+    let (other, track_backwards) = anchor_of(backwards);
+    assert_eq!(anchor, other, "the same members in another order give the same anchor");
+    assert_eq!(track_forwards, track_backwards, "and the same two places");
+}
+
+/// A member whose track stands on other hours than the group's — one the publication before this
+/// one did not place, so it has no place at the group's first hour — contributes where it stands
+/// at both of them. An hour a member has no place for is never filled in with a guess, and never
+/// with a zero: a zeroed place drags the group's mean to the map's origin.
+#[test]
+fn a_member_without_the_group_s_hours_contributes_where_it_stands() {
+    let moving = Icon {
+        track: Some(Track::new(&[Place { hour: 100, at: [100.0, 0.0, 0.0] }, Place { hour: 148, at: [120.0, 0.0, 0.0] }], WIDTH)),
+        ..icon(0, 1, 100, Some(7), 100.0)
+    };
+    // Its own places stand on other hours: this publication is the first to place it.
+    let joining = Icon {
+        track: Some(Track::new(&[Place { hour: 148, at: [100.0, 0.0, 0.0] }, Place { hour: 196, at: [140.0, 0.0, 0.0] }], WIDTH)),
+        ..icon(0, 1, 100, Some(7), 100.0)
+    };
+    let icons = [moving, joining];
+    let levels = everywhere(Level::Province, &icons);
+    let mut groups = vec![Group { members: vec![0, 1], anchor: [0.0; 3], track: None }];
+    update_anchors(&mut groups, &icons, &levels, &extents(10.0, 10.0));
+    let track = groups[0].track.clone().expect("the first member moves");
+    assert_eq!((track.places()[0].hour, track.places()[1].hour), (100, 148));
+    // The joining member stands at 100 at both hours: the mean is 100 and 110, never near zero.
+    assert_eq!(track.places()[0].at, [100.0, 0.0, 0.0]);
+    assert_eq!(track.places()[1].at, [110.0, 0.0, 0.0]);
+}
+
+/// A group astride the map's seam: its members are unwrapped against the lowest-numbered one for
+/// the mean, the track keeps them unwrapped, and the place a frame reads is folded onto the map
+/// once — so the group travels across the seam and not through the middle of the world.
+#[test]
+fn a_group_astride_the_seam_moves_across_it() {
+    let member = |x: f32, to: f32| Icon {
+        track: Some(Track::new(&[Place { hour: 100, at: [x, 0.0, 0.0] }, Place { hour: 102, at: [to, 0.0, 0.0] }], WIDTH)),
+        ..icon(0, 1, 100, Some(7), x)
+    };
+    // Two members a unit either side of the seam, both moving two units east.
+    let icons = [member(WIDTH - 1.0, 1.0), member(1.0, 3.0)];
+    let levels = everywhere(Level::Province, &icons);
+    let mut groups = vec![Group { members: vec![0, 1], anchor: [0.0; 3], track: None }];
+    update_anchors(&mut groups, &icons, &levels, &extents(10.0, 10.0));
+    let track = groups[0].track.clone().expect("both members move");
+    let at = |hour, fraction| track.at(viewer_foundation::map::anchored::Head { hour, fraction })[0];
+    assert_eq!(groups[0].anchor[0], 0.0, "the mean of the two sits on the seam");
+    assert_eq!(at(100, 0.0), 0.0);
+    assert_eq!(at(102, 0.0), 2.0, "two units east of the seam");
+    assert_eq!(at(101, 0.0), 1.0);
 }

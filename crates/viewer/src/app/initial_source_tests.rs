@@ -43,7 +43,7 @@ fn the_window_lets_go_of_its_load_time_source_once_its_hour_builders_start() -> 
     let target = target(&fixture);
     viewer.install_map(document, fixture.scene()?, "fixture".into());
     until(&mut viewer, &ctx, &frame, &target, |v| {
-        v.hours.is_some() || v.error.is_some() || v.map_error.is_some()
+        v.playhead_map.is_some() || v.error.is_some() || v.map_error.is_some()
     });
     assert!(
         viewer.error.is_none() && viewer.map_error.is_none(),
@@ -53,14 +53,12 @@ fn the_window_lets_go_of_its_load_time_source_once_its_hour_builders_start() -> 
     let document = viewer.document.as_ref().expect("installed");
     assert!(
         !document.playback.holds_source(),
-        "the load-time source block outlived the start of the hour builders"
+        "the load-time source block outlived the opening of the map's reader"
     );
-    if viewer.shown.is_none() {
-        assert!(matches!(
-            document.playback.current(),
-            Current::Frame(presented) if Arc::ptr_eq(presented, &initial)
-        ));
-    }
+    assert!(matches!(
+        document.playback.current(),
+        Current::Frame(presented) if Arc::ptr_eq(presented, &initial)
+    ));
     until(&mut viewer, &ctx, &frame, &target, |v| {
         v.rendered.is_some() || v.error.is_some() || v.map_error.is_some()
     });

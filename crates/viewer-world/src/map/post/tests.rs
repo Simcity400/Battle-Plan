@@ -90,6 +90,33 @@ fn extent(min: [i32; 2], size: [i32; 2], area: i32, land: bool) -> Option<Provin
     })
 }
 
+/// Every pass of the chain reads its own block of the kept constants by a dynamic offset, so a
+/// block must stand where any device can select it and hold its register whole: at the device's
+/// uniform offset alignment, with zeros wherever the pass reads past the bytes written.
+#[test]
+fn a_kept_block_stands_at_the_devices_offset_alignment_and_zeroes_what_follows_its_bytes() {
+    for alignment in [1_u32, 16, 64, 256, 512] {
+        let mut blocks = Blocks::new(alignment);
+        let first = [1_u8, 2, 3];
+        let second = [4_u8; 80];
+        let at_first = blocks.push(&first);
+        let at_second = blocks.push(&second);
+        let (at_first, at_second) = (at_first as usize, at_second as usize);
+        assert_eq!(at_first, 0);
+        assert_eq!(at_second % alignment as usize, 0);
+        assert!(at_second >= BLOCK, "{at_second} leaves a register short");
+        assert_eq!(blocks.bytes[..first.len()], first);
+        assert!(blocks.bytes[first.len()..at_second].iter().all(|byte| *byte == 0));
+        assert_eq!(blocks.bytes[at_second..at_second + second.len()], second);
+        assert!(
+            blocks.bytes[at_second + second.len()..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert!(blocks.bytes.len() - at_second >= BLOCK);
+    }
+}
+
 #[test]
 fn luminance_reduces_in_fixed_targets_and_gathers_the_last_rectangle() {
     let schedule = ReductionSchedule::new([2048, 1152]);
@@ -125,13 +152,27 @@ fn luminance_reduces_in_fixed_targets_and_gathers_the_last_rectangle() {
     assert_eq!(tiny.gather, [6, 5]);
 }
 
+/// A volume whose scale is not zero blurs: its pairs sum to that scale and sit between the texels
+/// they fold. A volume whose scale is zero (this recording's mod) has no weight to draw with.
 #[test]
-fn bloom_pairs_sum_to_the_scale_between_their_texels() {
-    let (centre, weights, offsets) = blur_weights(1.5, 0.9);
-    assert!((centre + 2.0 * weights.iter().sum::<f32>() - 0.9).abs() < 1e-6);
+fn bloom_pairs_sum_to_the_scale_between_their_texels_and_a_zero_scale_has_no_blur() {
+    let mut volumes = europe();
+    let eye = camera([3010.0, 1568.0], 400.0);
+    let [width, scale, _] = volumes.select(eye, DayNight::at_hour(BERLIN_DAY)).values.bloom;
+    let (centre, weights, offsets) =
+        blur_weights(width, scale).expect("a volume whose bloom scale is not zero draws its blurs");
+    assert!((centre + 2.0 * weights.iter().sum::<f32>() - scale).abs() < 1e-6);
     for (pair, offset) in offsets.iter().enumerate() {
         assert!((2 * pair + 1) as f32 <= *offset && *offset <= (2 * pair + 2) as f32);
     }
+
+    for entry in volumes.values.values_mut() {
+        entry.bloom[1] = 0.0;
+    }
+    let [width, scale, _] = volumes.select(eye, DayNight::at_hour(BERLIN_DAY)).values.bloom;
+    assert!(width > 0.0);
+    assert_eq!(scale, 0.0);
+    assert!(blur_weights(width, scale).is_none());
 }
 
 #[test]

@@ -644,6 +644,10 @@ pub struct Instance {
     pointed: Option<super::Pointed>,
     /// The check boxes the last pointer layout drew under the pointer.
     boxes: Vec<String>,
+    /// What [`Self::active`] answered about the window as it now stands. A call that changes the
+    /// window and each phase of a tick forget it; nothing else can change the answer, so a window
+    /// neither written nor ticked is not asked again.
+    active_known: std::cell::Cell<Option<bool>>,
 }
 
 /// The authored parts followed by ordinary children, in `Element::nested` order without
@@ -1405,6 +1409,7 @@ impl Instance {
             dt: 0.0,
             ticked: false,
             written: false,
+            active_known: std::cell::Cell::new(None),
             idle_tick: false,
             kept: false,
             held: Vec::new(),
@@ -1558,7 +1563,10 @@ impl Instance {
         let Some(window) = self.nodes[index].window else {
             return Err(format!("{} is not a containerWindowType", element.path));
         };
-        self.written |= window.position != point;
+        if window.position != point {
+            self.written = true;
+            self.active_known.set(None);
+        }
         self.window_position(element, index, point);
         Ok(())
     }
@@ -1585,6 +1593,7 @@ impl Instance {
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
         self.written = true;
+        self.active_known.set(None);
         let missing = |why| vec![Refusal::new(&element.path, RefusalKind::MissingInput, why)];
         let index = self.index(root, element).map_err(missing)?;
         let container = element
@@ -1680,6 +1689,7 @@ impl Instance {
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         if self.nodes[index].kind == Kind::Window {
@@ -1720,6 +1730,7 @@ impl Instance {
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         self.gui_show_at(elements, index)
@@ -1773,6 +1784,7 @@ impl Instance {
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         self.hide_at(elements, index)
@@ -1832,6 +1844,7 @@ impl Instance {
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         let Some(window) = self.nodes[index].window else {
@@ -1869,6 +1882,7 @@ impl Instance {
         hide: bool,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         self.nodes[index].shown.hide = hide;
         Ok(())
@@ -1881,6 +1895,7 @@ impl Instance {
     /// not taken from here.
     pub fn control(&mut self, root: &Element, element: &Element) -> Result<&mut Bound, String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         self.flush(index);
         Ok(&mut self.nodes[index].control)
@@ -1895,6 +1910,7 @@ impl Instance {
         items: &[&Element],
     ) -> Result<GridLayout, Refusals> {
         self.written = true;
+        self.active_known.set(None);
         self.finalize_grid_with(root, grid, holder, |parent, viewport, position| {
             super::finalize_grid(grid, parent, viewport, items, position)
         })
@@ -1909,6 +1925,7 @@ impl Instance {
         items: &[([i32; 2], [i32; 2])],
     ) -> Result<GridLayout, Refusals> {
         self.written = true;
+        self.active_known.set(None);
         self.finalize_grid_with(root, grid, holder, |parent, _, position| {
             super::finalize_grid_resolved(grid, parent, items, position)
         })
@@ -1951,6 +1968,7 @@ impl Instance {
         include_hidden: bool,
     ) -> Result<(), Refusals> {
         self.written = true;
+        self.active_known.set(None);
         let missing = |why| vec![Refusal::new(&element.path, RefusalKind::MissingInput, why)];
         let index = self.index(root, element).map_err(missing)?;
         let container = element
@@ -2052,6 +2070,7 @@ impl Instance {
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
         self.written = true;
+        self.active_known.set(None);
         self.with_scrollbar(root, element, vertical, resources, |bar, template| {
             bar.set_target(template, widgets::fixed(value), true);
         })
@@ -2067,6 +2086,7 @@ impl Instance {
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
         self.written = true;
+        self.active_known.set(None);
         if !matches!(direction, -1 | 1) {
             return Err(vec![Refusal::new(
                 &element.path,
@@ -2100,6 +2120,7 @@ impl Instance {
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
         self.written = true;
+        self.active_known.set(None);
         let container = element.container().ok_or_else(|| {
             vec![Refusal::new(
                 &element.path,
@@ -2135,6 +2156,7 @@ impl Instance {
         resources: &dyn Resources,
     ) -> Result<Option<([i32; 2], i32)>, Refusals> {
         self.written = true;
+        self.active_known.set(None);
         let mut reached = None;
         self.with_scrollbar(root, element, vertical, resources, |bar, template| {
             if !bar.state.shown {
@@ -2225,6 +2247,7 @@ impl Instance {
             return Ok(());
         }
         self.written = true;
+        self.active_known.set(None);
         self.flush(index);
         self.nodes[index]
             .events
@@ -2242,6 +2265,7 @@ impl Instance {
         frame: i32,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         self.flush(index);
         self.nodes[index].control.progress_float = None;
@@ -2259,6 +2283,7 @@ impl Instance {
         value: i32,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         self.flush(index);
         self.nodes[index].events.push(Event::ProgressFloat(value));
@@ -2289,6 +2314,7 @@ impl Instance {
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         match &mut self.nodes[index].control.text {
             Some(written) => text.clone_into(written),
@@ -2351,6 +2377,7 @@ impl Instance {
         resources: &dyn Resources,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         if lines == 0 {
             return Ok(());
         }
@@ -2378,6 +2405,7 @@ impl Instance {
         resources: &dyn Resources,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         self.with_text_scrollbar(root, element, resources, |plain, scroll| {
             plain.input(direction, wheel);
             let high = plain.range.max as f32 / 100_000.0;
@@ -2495,6 +2523,7 @@ impl Instance {
         children: bool,
     ) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         if self.nodes[index].window.is_none() {
             return Err(format!("{} is not a containerWindowType", element.path));
@@ -2508,6 +2537,7 @@ impl Instance {
     #[cfg(any(test, feature = "test-support"))]
     pub fn play(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         self.written = true;
+        self.active_known.set(None);
         let index = self.index(root, element)?;
         self.flush(index);
         self.nodes[index].events.push(Event::Play);
@@ -2982,6 +3012,7 @@ impl Instance {
     /// The state the last pointer layout drew, whose change the next tick restarts the clock of.
     pub fn point(&mut self, pointed: Option<super::Pointed>, boxes: &[String]) {
         self.written = true;
+        self.active_known.set(None);
         self.pointed = pointed;
         self.boxes.clear();
         self.boxes.extend_from_slice(boxes);
@@ -3021,6 +3052,7 @@ impl Instance {
     ) -> Result<(), String> {
         self.check(root)?;
         self.idle_tick = self.idle();
+        self.active_known.set(None);
         if self.idle_tick {
             self.time = tick.time;
             self.dt = tick.dt;
@@ -3215,6 +3247,7 @@ impl Instance {
     /// ([`Registration`]).
     pub fn tick_transitions(&mut self, root: &Element) -> Result<(), String> {
         self.check(root)?;
+        self.active_known.set(None);
         if self.phase != Phase::Clocked {
             return Err(format!(
                 "the transitions of {} were run before its clocks for the frame: run every \
@@ -3246,6 +3279,7 @@ impl Instance {
     /// records. `resources` are the ones it was built with.
     pub fn tick_draws(&mut self, root: &Element, resources: &dyn Resources) -> Result<(), String> {
         self.check(root)?;
+        self.active_known.set(None);
         if self.phase != Phase::Moved {
             return Err(format!(
                 "the draw of {} was recorded before its transitions for the frame: call \
@@ -3456,6 +3490,15 @@ impl Instance {
     /// reached drawable's state effect still changes on the clock (for as long as its effect
     /// says, [`Effect::settles`]). A caller keeps presenting frames while this holds.
     pub fn active(&self) -> bool {
+        if let Some(active) = self.active_known.get() {
+            return active;
+        }
+        let active = self.asked_active();
+        self.active_known.set(Some(active));
+        active
+    }
+
+    fn asked_active(&self) -> bool {
         if !self.ticked {
             return true;
         }
@@ -3728,8 +3771,8 @@ pub struct Pool<K> {
     growing: bool,
     missed: usize,
     retrying: usize,
-    /// Growths completed since the last [`Pool::take_diagnostics`].
-    grown: u64,
+    /// The windows each growth completed since the last [`Pool::take_diagnostics`] built.
+    grown: Vec<usize>,
     growths: u64,
     /// The initialization each icon type applies after a new window is built.
     setup: Setup,
@@ -3875,13 +3918,21 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
             growing: false,
             missed: 0,
             retrying: 0,
-            grown: 0,
+            grown: Vec::new(),
             growths: 0,
             setup,
             withheld: Withheld::default(),
         };
         pool.add(template, kind.initial(), resources)?;
         Ok(pool)
+    }
+
+    /// The windows the growth a request started builds: every request it could not grant, never
+    /// fewer than the pool's step. A view whose demand arrives at once (the first picture of a
+    /// zoomed camera asks for every icon in it) is then one growth short of its windows rather
+    /// than demand/step of them, so no frame draws itself over again that many times for them.
+    fn grows_by(&self) -> usize {
+        self.growth.max(self.retrying)
     }
 
     fn add(
@@ -3991,7 +4042,10 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
                 }
                 Admission::Inside(point) => {
                     let instance = &mut self.slots[slot.0].instance;
-                    instance.set_position(template, template, point)?;
+                    // A window already standing at the point takes the same position values again.
+                    if instance.position() != point {
+                        instance.set_position(template, template, point)?;
+                    }
                     if !instance.drawn() {
                         instance.gui_show(template, template)?;
                     }
@@ -4056,9 +4110,10 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         self.retrying = std::mem::take(&mut self.missed);
         if std::mem::take(&mut self.growing) {
             let from = self.slots.len();
-            self.add(template, self.growth, resources)?;
+            let built = self.grows_by();
+            self.add(template, built, resources)?;
             self.growths += 1;
-            self.grown += 1;
+            self.grown.push(built);
             slots.extend((from..self.slots.len()).map(SlotId));
         }
         for slot in slots.iter() {
@@ -4097,9 +4152,10 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
     ) -> Result<(), String> {
         self.retrying = std::mem::take(&mut self.missed);
         if std::mem::take(&mut self.growing) {
-            self.add(template, self.growth, resources)?;
+            let built = self.grows_by();
+            self.add(template, built, resources)?;
             self.growths += 1;
-            self.grown += 1;
+            self.grown.push(built);
         }
         for slot in &mut self.slots {
             slot.instance.tick_clocks(template, resources, tick)?;
@@ -4151,6 +4207,12 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         Ok(())
     }
 
+    /// Whether a tick would change any window of the pool: a growth waits for it, or a window
+    /// changes on its own or was written since its last tick ([`Instance::idle`]).
+    pub fn tick_due(&self) -> bool {
+        self.growing || self.slots.iter().any(|slot| !slot.instance.idle())
+    }
+
     /// Whether a request of this frame went ungranted or a growth waits: its tick grows the pool.
     pub fn requests_pending(&self) -> bool {
         self.growing || self.missed > 0
@@ -4167,9 +4229,9 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
         (self.retrying != 0 || self.missed != 0).then(|| super::super::icon_windows::Retry {
             name: self.template.clone(),
             requests: self.retrying.max(self.missed),
-            // Each completed growth adds 16 slots. With constant demand, that many exhausted
-            // requests disappear next frame.
-            rounds: self.retrying.max(self.missed).div_ceil(self.growth),
+            // A growth builds every window the requests it could not grant asked for, so one
+            // completed growth makes that many exhausted requests disappear next frame.
+            rounds: 1,
         })
     }
 
@@ -4203,16 +4265,16 @@ impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
     /// One [`DiagnosticKind::PoolGrowth`] per growth completed since the last call, for the
     /// caller's report.
     pub fn take_diagnostics(&mut self) -> Vec<Diagnostic> {
-        let grown = std::mem::take(&mut self.grown);
-        (0..grown)
-            .map(|_| Diagnostic {
+        std::mem::take(&mut self.grown)
+            .into_iter()
+            .map(|built| Diagnostic {
                 path: self.template.clone(),
                 kind: DiagnosticKind::PoolGrowth,
                 detail: format!(
-                    "the pool of {} was exhausted and grew by {} windows on a worker task, \
+                    "the pool of {} was exhausted and grew by {built} windows on a worker task, \
                      whose completion frame the recording does not hold: taken as the next \
                      frame",
-                    self.template, self.growth
+                    self.template
                 ),
             })
             .collect()

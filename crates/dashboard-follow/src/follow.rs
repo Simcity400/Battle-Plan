@@ -264,7 +264,7 @@ fn union(control: &mut Control) -> io::Result<Vec<Declared>> {
             (Some(logs), None) => *control.classes.entry(table).or_insert(logs.is_log(table)?),
             (None, None) => false,
         };
-        declared.push(Declared { table, columns: columns.into_iter().collect(), keyed, passing: feed && !log });
+        declared.push(Declared { table, columns: columns.into_iter().collect(), keyed, passing: feed && !log, hourly: false });
     }
     Ok(declared)
 }

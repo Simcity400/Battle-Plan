@@ -5,12 +5,10 @@
 
 use super::{ResourceIcons, Source, drawn};
 use crate::{
-    map_views::OverlayInputs,
-    document::{LeftToLayers, MadeBy},
+    document::LeftToLayers,
     layers::{
         Inputs, Layer, View,
     },
-    map_views::CounterView,
     playhead_host::{MapSide, open, shared_maps_tests::Reads, units::Units},
 };
 use installed_content_localisation::localisation::Localisation;
@@ -272,7 +270,7 @@ fn resources() -> View {
 
 /// The map side over `units` with the layer drawn in the resources mode, its first reset composed.
 fn side(units: Units, content: Arc<dyn Source>) -> MapSide {
-    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(replay_data::scope::CaptureMode::Full);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(ResourceIcons::new(content))], resources()).unwrap();
     side.anchor(0, false, 0.0, true);
@@ -327,7 +325,7 @@ fn a_table_not_recorded_refuses_every_icon_by_name() {
 fn hidden_while_another_layer_holds_its_states_it_holds_and_carries_nothing_and_shown_again_composes() {
     let (units, frames) = campaign("resource icons, hidden", false);
     let content = content();
-    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(replay_data::scope::CaptureMode::Full);
     let (states, _) = Reads::new(&[TableId::States]);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(ResourceIcons::new(Arc::clone(&content))), states], View::default()).unwrap();
@@ -358,12 +356,7 @@ fn the_window_takes_the_layers_icons_in_the_resources_mode_and_todays_where_it_d
     let mut side = side(units, content());
     side.catch_up(5).unwrap();
     let left = LeftToLayers::of(Some(&side));
-    assert_eq!(left, LeftToLayers { resource_icons: true, occupation_marks: false }, "the layer draws the icons in the resources mode");
-    assert!(!left.unmet_by(MadeBy::Left, MadeBy::Today), "the part left for the layer is laid in from it, not made by today's");
-    let mut window = CounterView::default();
-    window.set_mode(&MapMode::Stock(Stock::Resources));
-    let inputs = OverlayInputs::of(&window).expect("today's icons read rows at the head");
-    assert_eq!(inputs.without(true, false), None, "while the layer draws, no row at the head is read for the overlay");
+    assert_eq!(left, LeftToLayers { resource_icons: true, occupation_marks: false, radar: left.radar }, "the layer draws the icons in the resources mode");
     let version = drawn(&side).expect("drawn").version();
     side.catch_up(8).unwrap();
     assert_eq!(drawn(&side).expect("drawn").version(), version, "no step to hour 8 changed an icon: the window lays nothing out again");
@@ -373,9 +366,6 @@ fn the_window_takes_the_layers_icons_in_the_resources_mode_and_todays_where_it_d
     side.catch_up(24).unwrap();
     let left = LeftToLayers::of(Some(&side));
     assert_eq!(left, LeftToLayers::default(), "in another mode the layer draws nothing");
-    assert!(left.unmet_by(MadeBy::Layer(version), MadeBy::Today), "an overlay holding the layer's icons is made again by today's, which draws none there");
-    window.set_mode(&MapMode::default());
-    assert_eq!(OverlayInputs::of(&window), None, "and today's reads nothing for them there");
 }
 
 #[test]

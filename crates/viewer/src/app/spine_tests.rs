@@ -1,9 +1,9 @@
-//! With the playhead's map open, the window takes where it is, whether it is ready, the mode on
-//! screen and its histories' continuity from the host, and today's pipeline is never started.
-use super::{Config, Options, Playhead, ShownHour, Viewer};
+//! The window takes where it is, whether it is ready, the mode on screen and its histories'
+//! continuity from the playhead's map.
+use super::{Config, Options, Playhead, Viewer};
 use crate::{
-    layers::{Budget, Carried, Gpu, Inputs, Layer, Published, View, recorded::record},
-    playhead_host::{MapSide, mirror::Mirrors, open, rows::tests::hourly_steps},
+    layers::{Carried, Settling, Inputs, Layer, Published, View, recorded::record},
+    playhead_host::{MapSide, mirror::Mirrors, open, views::tests::hourly_steps},
 };
 use playhead::Step;
 use replay_columnar::manifest::Status;
@@ -15,7 +15,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 use viewer_foundation::map::{
     frame::DayNight,
@@ -53,18 +53,15 @@ impl Layer for Gated {
     fn viewed(&mut self, _view: &View, _mirrors: &Mirrors) {
         self.viewed = true;
     }
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         if self.open.load(Ordering::Acquire) {
             self.published = self.next;
             self.viewed = false;
         }
         Ok(())
     }
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
     fn carried(&self) -> Carried {
-        Carried { entities: usize::from(self.viewed), frames: 0 }
+        Carried { entities: usize::from(self.viewed) }
     }
     fn published(&self) -> Published {
         match self.published == self.next {
@@ -93,34 +90,39 @@ fn side(name: &str) -> (MapSide, Arc<AtomicBool>) {
     (side, gate)
 }
 
-fn map(viewer: &mut Viewer) -> &mut MapSide {
+fn map(viewer: &mut Viewer) -> &mut crate::playhead_host::side::SideThread {
     viewer.playhead_map.as_mut().expect("the window's reader")
 }
 
-/// Frames at `hour` until `done` holds.
-fn frames_at(side: &mut MapSide, hour: Hour, mut done: impl FnMut(&MapSide) -> bool) {
-    loop {
-        let frame = side.frame(hour).unwrap();
-        if done(side) {
-            return;
+/// Frames at `hour` until `done` holds, then the products a frame's window would have taken.
+fn frames_at(side: &mut crate::playhead_host::side::SideThread, hour: Hour, mut done: impl FnMut(&MapSide) -> bool) {
+    side.with_side_mut(|side| {
+        loop {
+            let frame = side.frame(hour).unwrap();
+            if done(side) {
+                return;
+            }
+            if frame.steps == 0 && frame.swapped.is_none() {
+                std::thread::yield_now();
+            }
         }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            std::thread::yield_now();
-        }
-    }
+    });
+    side.driven(|_| ());
 }
 
 /// Frames at `hour` until the map shows it, no reset composing.
-fn shown(side: &mut MapSide, hour: Hour) {
+fn shown(side: &mut crate::playhead_host::side::SideThread, hour: Hour) {
     frames_at(side, hour, |side| !side.composing() && side.last_frame().drawn == Some(hour));
 }
 
-/// A window over `side` whose clock stands at `hour`, today's pipeline never started.
+/// A window over `side` whose clock stands at `hour`.
 fn viewer(side: MapSide, hour: Hour) -> Viewer {
     let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
     viewer.playhead = Some(at(hour));
     viewer.rendered_sequence = 1;
     viewer.playhead_opened = true;
+    let mut side = crate::playhead_host::side::SideThread::new(side).unwrap();
+    side.driven(|_| ());
     viewer.playhead_map = Some(side);
     viewer
 }
@@ -129,11 +131,10 @@ fn at(hour: Hour) -> Playhead {
     Playhead { branch: BRANCH, hour, fraction: 0.0 }
 }
 
-/// The overlay laid out over the rows at the head of `hour`, and the counter layers fed the tables
-/// made from them before the reader's last draw.
+/// The overlay the side made from the rows at the head of `hour`: its tables, its layout and the
+/// counter layers' products all stand at it.
 fn whole_at(viewer: &mut Viewer, hour: Hour) {
-    viewer.overlay_laid = Some((hour, 0));
-    (viewer.counters_given, viewer.counters_drawn) = (Some((hour, 0)), Some((hour, 0)));
+    viewer.overlay_hour = Some(hour);
 }
 
 /// What the end of a drawn frame records: the hour on screen, the layers' while their map is open.
@@ -156,35 +157,17 @@ fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
         fraction: 0.,
         sequence: 1,
         seek_sequence: Some(1),
+        composed_at: 0.0,
         bounds,
         clip: bounds,
         visible: true,
     }
 }
 
-/// Today's installed hour `hour`, as its pipeline would have left it.
-fn installed(hour: Hour) -> ShownHour {
-    ShownHour {
-        epoch: 0,
-        branch: BRANCH,
-        hour,
-        error: None,
-        political_warnings: Vec::new(),
-        plan_warnings: Vec::new(),
-        building_warnings: Vec::new(),
-        model_warnings: Vec::new(),
-        political_build: Duration::ZERO,
-        limitations: Default::default(),
-        snow: Default::default(),
-        header: Default::default(),
-        borders: None,
-    }
-}
-
 /// With today's pipeline never started, the window is not ready until the host's first picture,
 /// then ready at the clock's hour; after a seek it loads until the drawn layer shows the new hour.
 #[test]
-fn with_todays_pipeline_never_started_the_window_is_ready_at_the_hosts_first_picture_and_loads_after_a_seek() {
+fn the_window_is_ready_at_the_hosts_first_picture_and_loads_after_a_seek() {
     let (side, gate) = side("spine first picture");
     let mut viewer = viewer(side, 2);
     assert!(!viewer.picture_ready(), "no picture before the host's first");
@@ -199,7 +182,7 @@ fn with_todays_pipeline_never_started_the_window_is_ready_at_the_hosts_first_pic
     let state = viewer.map_state(&target(2, false));
     assert_eq!((state.loading, state.hour, state.branch_id.as_deref()), (false, Some(2), Some("1")), "{state:?}");
     gate.store(false, Ordering::Release);
-    viewer.anchor_playback(at(8), false, 0.0, true, Instant::now(), LAST);
+    viewer.anchor_playback(at(8), false, 0.0, true, None, Instant::now(), LAST);
     frames_at(map(&mut viewer), 8, |side| !side.composing() && side.applied() == Some(8));
     drawn(&mut viewer);
     let state = viewer.map_state(&target(8, false));
@@ -211,23 +194,21 @@ fn with_todays_pipeline_never_started_the_window_is_ready_at_the_hosts_first_pic
     whole_at(&mut viewer, 8);
     let state = viewer.map_state(&target(8, false));
     assert_eq!((state.loading, state.hour), (false, Some(8)), "{state:?}");
-    assert!(viewer.hours.is_none(), "today's pipeline was never started");
-    assert!(viewer.shown.is_none());
 }
 
-/// Today's installed hour is 2 and the host draws hour 8: the window is at hour 8 and ready there.
+/// The window's frame last drew hour 2 and the host draws hour 8: the window is at hour 8 and
+/// ready there.
 #[test]
-fn the_hour_on_screen_is_the_hosts_drawn_hour_while_todays_installed_hour_is_another() {
+fn the_hour_on_screen_is_the_hosts_drawn_hour() {
     let (side, _gate) = side("spine hour on screen");
     let mut viewer = viewer(side, 8);
-    viewer.shown = Some(installed(2));
     viewer.rendered = Some(at(2));
     map(&mut viewer).anchor(8, false, 0.0, true);
     shown(map(&mut viewer), 8);
     assert_eq!(viewer.layers_on_screen(), Some((BRANCH, 8)));
     whole_at(&mut viewer, 8);
     let state = viewer.map_state(&target(8, false));
-    assert_eq!((state.loading, state.hour), (false, Some(8)), "today's installed hour 2 is not on screen: {state:?}");
+    assert_eq!((state.loading, state.hour), (false, Some(8)), "{state:?}");
 }
 
 /// The clock moves to another branch: the reader of the old one is let go, and the next frame opens
@@ -239,7 +220,7 @@ fn a_branch_change_lets_the_reader_go_and_opens_one_on_the_clocks_branch() {
     map(&mut viewer).anchor(2, false, 0.0, true);
     shown(map(&mut viewer), 2);
     let other = Playhead { branch: BRANCH + 1, hour: 5, fraction: 0.0 };
-    viewer.anchor_playback(other, false, 0.0, true, Instant::now(), LAST);
+    viewer.anchor_playback(other, false, 0.0, true, None, Instant::now(), LAST);
     assert!(viewer.playhead_map.is_none(), "the reader of branch {BRANCH} is let go");
     assert!(!viewer.playhead_opened, "the next frame opens a reader at the clock");
     assert_eq!(viewer.playhead.map(|clock| (clock.branch, clock.hour)), Some((BRANCH + 1, 5)));
@@ -269,11 +250,7 @@ fn a_map_whose_overlay_is_not_laid_out_is_not_ready() {
     shown(map(&mut viewer), 2);
     drawn(&mut viewer);
     assert!(!viewer.presentation_ready(at(2), false), "the layers show hour 2, the overlay nothing");
-    viewer.overlay_laid = Some((2, 0));
-    assert!(!viewer.presentation_ready(at(2), false), "the counter layers were not fed the tables");
-    viewer.counters_given = Some((2, 0));
-    assert!(!viewer.presentation_ready(at(2), false), "fed after the reader's last draw: not on screen yet");
-    viewer.counters_drawn = viewer.counters_given;
+    viewer.overlay_hour = Some(2);
     assert!(viewer.presentation_ready(at(2), false), "every part shows hour 2");
     viewer.overlay_missed = vec![TableId::Countries];
     assert!(!viewer.presentation_ready(at(2), false), "a read the overlay missed is still learned");
@@ -290,11 +267,10 @@ fn the_load_ends_only_once_the_picture_asked_for_is_whole() {
     map(&mut viewer).anchor(2, false, 0.0, true);
     shown(map(&mut viewer), 2);
     gate.store(false, Ordering::Release);
-    viewer.anchor_playback(at(8), false, 0.0, true, Instant::now(), LAST);
+    viewer.anchor_playback(at(8), false, 0.0, true, None, Instant::now(), LAST);
     frames_at(map(&mut viewer), 8, |side| !side.composing() && side.applied() == Some(8));
     drawn(&mut viewer);
     whole_at(&mut viewer, 8);
-    viewer.shown = Some(ShownHour { epoch: viewer.epoch, ..installed(8) });
     assert!(!viewer.load_complete(false, true), "the held layer still shows hour 2");
     gate.store(true, Ordering::Release);
     shown(map(&mut viewer), 8);
@@ -332,13 +308,13 @@ fn the_windows_histories_follow_todays_continuity_over_the_hosts_pictures() {
     assert!(viewer.audio_reset);
     assert_eq!(viewer.follow_continuity(&gaps), None, "the same picture presents nothing new");
     running(&mut viewer, 2);
-    viewer.anchor_playback(at(4), false, 0.0, false, Instant::now(), LAST);
+    viewer.anchor_playback(at(4), false, 0.0, false, None, Instant::now(), LAST);
     shown(map(&mut viewer), 4);
     assert_eq!(viewer.follow_continuity(&gaps), Some((Continuity::Continue, UnitRestart::Keep)), "forward on the branch");
     assert!(!viewer.audio_reset);
     assert!(!day_night_reset(&mut viewer, 4));
     running(&mut viewer, 4);
-    viewer.anchor_playback(at(3), false, 0.0, true, Instant::now(), LAST);
+    viewer.anchor_playback(at(3), false, 0.0, true, None, Instant::now(), LAST);
     shown(map(&mut viewer), 3);
     assert_eq!(viewer.follow_continuity(&gaps), Some((Continuity::Reset, UnitRestart::All)), "the picture composed for the window's seek");
     assert!(viewer.audio_reset);
@@ -376,9 +352,13 @@ fn the_mode_on_screen_stays_the_previous_one_until_the_picture_for_the_new_one_i
     let diplomacy = MapMode::Stock(Stock::Diplomacy);
     viewer.map_mode = diplomacy.clone();
     gate.store(false, Ordering::Release);
-    map(&mut viewer).set_view(View { map_mode: diplomacy.clone(), ..View::default() }).unwrap();
-    map(&mut viewer).frame(2).unwrap();
-    map(&mut viewer).frame(2).unwrap();
+    let at = View { map_mode: diplomacy.clone(), ..View::default() };
+    map(&mut viewer).with_side_mut(|side| {
+        side.set_view(at).unwrap();
+        side.frame(2).unwrap();
+        side.frame(2).unwrap();
+    });
+    map(&mut viewer).driven(|_| ());
     assert_eq!(*viewer.shown_mode(), MapMode::default(), "the layer has not settled the new mode");
     gate.store(true, Ordering::Release);
     frames_at(map(&mut viewer), 2, |side| side.mode_on_screen() == Some(&diplomacy));

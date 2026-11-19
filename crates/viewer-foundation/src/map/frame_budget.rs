@@ -1,0 +1,264 @@
+//! One frame's allowance for what a game hour brings, and what does not fit carried to the next.
+//!
+//! A heavy hour creates unit figures, places them and walks them into the draw lists on the one
+//! frame that shows the hour (the hour's products reach the GPU at the publication, off this
+//! thread: [`crate::map::publication_check`]). The frame keeps a clock
+//! from the moment its work begins; each part an hour drives asks for the room left at its own
+//! [`Mark`], takes what fits and leaves the rest for the next frame. The room is what the display's
+//! interval leaves after what this frame has already spent and after what the frames before it
+//! spent *past* that mark, which each mark learns for itself, so no part needs a cost a frame.
+//!
+//! Nothing is dropped: a part that has left work behind for [`BOUND`] frames takes it whatever the
+//! clock says, and `BATTLE_PLAN_VIEWER_CHECK_BUDGET` fails by name on anything held longer and on anything
+//! still pending when the hours stop.
+//!
+//! A frame that must be whole - a saved frame, a stepped capture, an offline dump - begins no
+//! budget ([`begin`] with `keep` false) and every part then takes everything, as it did before.
+
+use std::{
+    cell::RefCell,
+    sync::atomic::{AtomicU64, Ordering::Relaxed},
+    time::{Duration, Instant},
+};
+
+/// Frames a part may hold a piece of an hour's work before it takes it whatever the clock says.
+pub const BOUND: u32 = 3;
+
+/// Where in the frame a part draws on the budget, in the order the frame reaches them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mark {
+    /// The actors stepped: the figures a heavy hour creates, which the draw lists then walk in.
+    Actors,
+}
+
+impl Mark {
+    const ALL: [Self; 1] = [Self::Actors];
+
+    fn at(self) -> usize {
+        self as usize
+    }
+}
+
+/// How the frames before this one divide, learned once a frame.
+struct Learned {
+    /// Microseconds the frame spent after each mark was reached.
+    rest: [f64; Mark::ALL.len()],
+}
+
+struct Frame {
+    began: Instant,
+    interval: Duration,
+    /// False on a frame that must be whole: every part takes everything.
+    keep: bool,
+    reached: [Option<Duration>; Mark::ALL.len()],
+}
+
+thread_local! {
+    static LEARNED: RefCell<Learned> = const { RefCell::new(Learned { rest: [0.0; Mark::ALL.len()] }) };
+    static FRAME: RefCell<Option<Frame>> = const { RefCell::new(None) };
+}
+
+/// How quickly a mark's learned rest follows the frames: a tenth of the difference a frame, so one
+/// slow frame does not shut a part down and a run of them closes it within a few.
+const FOLLOW: f64 = 0.1;
+
+/// The frame's work begins now, against the display's interval. `keep` is false for a frame whose
+/// picture must be whole, which then has no budget at all.
+/// The frame's work begins now: held for the frame's own path, and what it learns is taken when
+/// it is dropped, so a frame that returns early still leaves the marks what followed them.
+#[must_use = "the budget stands while this is held"]
+pub fn begin(keep: bool) -> Budgeted {
+    begin_at(Instant::now(), keep);
+    Budgeted
+}
+
+/// One frame's budget, which learns and ends when it is dropped.
+pub struct Budgeted;
+
+impl Drop for Budgeted {
+    fn drop(&mut self) {
+        finish();
+    }
+}
+
+/// The frame's work began at `began`: the tests give a clock of their own instead of waiting.
+fn begin_at(began: Instant, keep: bool) {
+    let interval = Duration::from_secs_f64(1.0 / super::display_refresh::rate());
+    FRAME.with_borrow_mut(|frame| {
+        *frame = Some(Frame { began, interval, keep, reached: [None; Mark::ALL.len()] });
+    });
+}
+
+/// The frame's work is done: each mark reached learns what followed it.
+fn finish() {
+    finish_at(Instant::now());
+}
+
+fn finish_at(now: Instant) {
+    let Some(frame) = FRAME.with_borrow_mut(Option::take) else {
+        return;
+    };
+    let whole = now.saturating_duration_since(frame.began).as_micros() as f64;
+    LEARNED.with_borrow_mut(|learned| {
+        for mark in Mark::ALL {
+            if let Some(at) = frame.reached[mark.at()] {
+                let rest = (whole - at.as_micros() as f64).max(0.0);
+                let held = &mut learned.rest[mark.at()];
+                *held += FOLLOW * (rest - *held);
+            }
+        }
+    });
+}
+
+/// The room the part at `mark` has left this frame: the interval less what the frame has spent and
+/// less what the frames before it spent past this mark. `None` where no frame keeps a budget (a
+/// saved frame, a test, a tool): the part takes everything. The first ask of a frame is where the
+/// mark stands, so what the next frame expects past it is measured from exactly here.
+pub fn room(mark: Mark) -> Option<Duration> {
+    room_at(mark, Instant::now())
+}
+
+fn room_at(mark: Mark, now: Instant) -> Option<Duration> {
+    FRAME.with_borrow_mut(|frame| {
+        let frame = frame.as_mut()?;
+        let spent = now.saturating_duration_since(frame.began);
+        frame.reached[mark.at()].get_or_insert(spent);
+        if !frame.keep {
+            return None;
+        }
+        let rest = LEARNED.with_borrow(|learned| learned.rest[mark.at()]);
+        let left = frame.interval.as_micros() as f64 - spent.as_micros() as f64 - rest;
+        Some(Duration::from_micros(left.max(0.0) as u64))
+    })
+}
+
+/// What the frame has spent since its work began; `None` where no frame has begun.
+pub fn spent() -> Option<Duration> {
+    FRAME.with_borrow(|frame| frame.as_ref().map(|frame| frame.began.elapsed()))
+}
+
+/// When the part at `mark` has spent its room, for a part that tests the clock as it works.
+/// `None` where no frame keeps a budget.
+pub fn deadline(mark: Mark) -> Option<Instant> {
+    room(mark).map(|room| Instant::now() + room)
+}
+
+/// `BATTLE_PLAN_VIEWER_CHECK_BUDGET`: every frame, each part says what it carried and for how long, and
+/// says when the hours stop; the judge fails by name on a piece held past [`BOUND`] and on anything
+/// pending where nothing may be.
+pub mod check {
+    use super::{BOUND, AtomicU64, Relaxed};
+
+    static CHECKED: AtomicU64 = AtomicU64::new(0);
+    static DIFFERING: AtomicU64 = AtomicU64::new(0);
+    static CARRIED: AtomicU64 = AtomicU64::new(0);
+    static LONGEST: AtomicU64 = AtomicU64::new(0);
+
+    pub fn on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| {
+            std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_BUDGET").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_BUDGET")).is_some_and(|value| !value.is_empty() && value != "0")
+        })
+    }
+
+    /// `part` is carrying `pieces` pieces, the oldest held for `frames` frames.
+    pub fn carrying(part: &'static str, pieces: usize, frames: u32) {
+        if !on() {
+            return;
+        }
+        CHECKED.fetch_add(1, Relaxed);
+        if pieces > 0 {
+            CARRIED.fetch_add(1, Relaxed);
+            LONGEST.fetch_max(u64::from(frames), Relaxed);
+        }
+        if frames > BOUND {
+            found(part, format!("{pieces} pieces held {frames} frames, past the bound of {BOUND}"));
+        }
+    }
+
+    /// The hours have stopped (a pause, a saved frame, a seek's first picture, the end): `part`
+    /// may carry nothing.
+    pub fn quiet(part: &'static str, pieces: usize) {
+        if !on() {
+            return;
+        }
+        CHECKED.fetch_add(1, Relaxed);
+        if pieces > 0 {
+            found(part, format!("{pieces} pieces still pending where the hours have stopped"));
+        }
+    }
+
+    pub fn found(part: &str, why: impl std::fmt::Display) {
+        DIFFERING.fetch_add(1, Relaxed);
+        eprintln!("BATTLE_PLAN_VIEWER_CHECK_BUDGET: {part}: {why}");
+    }
+
+    /// Checks made, differences found, frames that carried anything, and the longest carry, for
+    /// the run's report.
+    pub fn counted() -> (u64, u64, u64, u64) {
+        (CHECKED.load(Relaxed), DIFFERING.load(Relaxed), CARRIED.load(Relaxed), LONGEST.load(Relaxed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame that began `spent` ago, so a test needs no clock of its own.
+    fn began(spent: u64) -> Instant {
+        Instant::now() - Duration::from_micros(spent)
+    }
+
+    #[test]
+    fn a_frame_that_must_be_whole_keeps_no_budget_and_a_budgeted_frames_room_falls_as_it_spends() {
+        super::super::display_refresh::pace_at(120.0);
+        begin_at(began(0), false);
+        assert_eq!(room(Mark::Actors), None, "a frame that must be whole keeps no budget");
+        assert_eq!(deadline(Mark::Actors), None);
+        finish();
+        assert_eq!(room(Mark::Actors), None, "no frame has begun");
+        let start = began(0);
+        begin_at(start, true);
+        let early = room_at(Mark::Actors, start).expect("a budgeted frame has room");
+        let late = room_at(Mark::Actors, start + Duration::from_micros(2_000)).expect("room");
+        assert!(early <= Duration::from_micros(8_334), "the room is at most the display's interval");
+        assert_eq!(early - late, Duration::from_micros(2_000), "the room falls by what the frame spent");
+        finish();
+    }
+
+    #[test]
+    fn a_mark_learns_what_the_frames_before_spent_past_it_and_closes_when_they_fill_the_interval() {
+        super::super::display_refresh::pace_at(120.0);
+        // Twenty frames that each spend four milliseconds after the mark leave the mark expecting
+        // four milliseconds to follow it.
+        for _ in 0..20 {
+            let start = began(0);
+            begin_at(start, true);
+            room_at(Mark::Actors, start);
+            finish_at(start + Duration::from_micros(4_000));
+        }
+        let start = began(0);
+        begin_at(start, true);
+        let room = room_at(Mark::Actors, start).expect("room");
+        assert!(
+            room > Duration::from_micros(4_500) && room < Duration::from_micros(5_000),
+            "a frame that reaches the mark at once keeps the interval less what follows: {room:?}"
+        );
+        assert_eq!(
+            room_at(Mark::Actors, start + Duration::from_micros(5_000)),
+            Some(Duration::ZERO),
+            "and a frame already five milliseconds in has nothing left past that mark"
+        );
+        finish();
+    }
+
+    #[test]
+    fn the_judge_names_a_piece_held_past_the_bound() {
+        // Off, the judge counts nothing and fails nothing.
+        assert!(!check::on(), "the judge is off unless BATTLE_PLAN_VIEWER_CHECK_BUDGET is set");
+        let (checks, differing, _, _) = check::counted();
+        check::carrying("a part", 9, BOUND + 1);
+        check::quiet("a part", 3);
+        assert_eq!(check::counted(), (checks, differing, 0, 0), "an off judge reads nothing");
+    }
+}

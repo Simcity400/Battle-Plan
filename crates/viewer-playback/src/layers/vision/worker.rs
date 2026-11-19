@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     layers::{
-        Budget, Due, Fed, Published,
+        Due, Fed, Published,
         owned::{Shape, Standing, Table, Tables},
     },
     playhead_host::mirror::Mirrors,
@@ -339,16 +339,23 @@ impl Work {
         let fresh = self.fresh;
         let global = self.reread(content);
         let controllers = self.settle_controllers();
-        self.fold.settle(content, &self.global, &self.columns, &self.tables, &mut Budget::unlimited(), frame);
+        self.fold.settle(content, &self.global, &self.columns, &self.tables, frame);
         let changed = std::mem::take(&mut self.fold.changed);
         let sight = self.fold.sight();
         let gap = self.fold.gap(content);
-        let whole = (self.fresh || changed.all()).then(|| {
+        let marked = match changed.read() {
+            crate::layers::Change::Whole => None,
+            crate::layers::Change::Marked(marked) => Some(marked),
+        };
+        let whole = (self.fresh || marked.is_none()).then(|| {
             let bytes = self.fold.province_bytes();
             (bytes.keys().copied().collect(), bytes.values().copied().collect())
         });
         self.fresh = false;
-        let bytes = if whole.is_some() { Vec::new() } else { changed.of("province").iter().map(|&province| (province as u32, self.fold.byte_of(province as u32))).collect() };
+        let bytes = match marked.filter(|_| whole.is_none()) {
+            None => Vec::new(),
+            Some(marked) => marked.of("province").iter().map(|&province| (province as u32, self.fold.byte_of(province as u32))).collect(),
+        };
         let all = whole.is_some() || gap != self.gap;
         (self.sight, self.gap) = (sight.clone(), gap);
         let (marked, spent) = ([self.fold.marked(), self.sources], self.fold.spent());

@@ -1,6 +1,7 @@
 //! The viewer's province queues of floating map text, fed by the recorded
 //! map events rather than native UI objects.
 
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
@@ -510,7 +511,7 @@ impl Player {
                         }
                     })
                     .map_err(|error| error.to_string())?;
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("animated simulation map text"),
                     color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
                     depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),

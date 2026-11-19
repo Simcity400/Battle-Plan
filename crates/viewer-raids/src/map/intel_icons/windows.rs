@@ -101,6 +101,7 @@ pub fn prepare(
                     world,
                     cutoff,
                     family: IconFamily::Intel,
+                    moves: None,
                 },
             },
         ));
@@ -676,6 +677,7 @@ impl PreparedIntel {
                         world: [0.0; 3],
                         cutoff: f32::INFINITY,
                         family: IconFamily::Intel,
+                        moves: None,
                     },
                 })
                 .collect(),

@@ -1,6 +1,6 @@
 //! The merge and sparse joins against the original per-record point lookups, over full records.
 use super::super::{
-    Budget, History, Kind, NavalSources, Target, empty_tests,
+    Budget, History, Kind, NavalSources, Target, same_history,
     test_support::{GATES, target},
 };
 use super::*;
@@ -504,8 +504,8 @@ fn step_all(
             traces[0], traces[arm],
             "frame {number} arm {arm} building and budget order"
         );
-        empty_tests::assert_instances(&outputs[0], &outputs[arm]);
-        empty_tests::assert_history(&arms[0], &arms[arm]);
+        same_history::assert_instances(&outputs[0], &outputs[arm]);
+        same_history::assert_history(&arms[0], &arms[arm]);
         assert_same_records(&arms[0], &arms[arm]);
     }
     outputs.swap_remove(0)
@@ -639,9 +639,20 @@ fn sparse_install_matches_the_full_walk_across_seeks_branches_views_and_frames()
                 };
                 install(arms, &targets, &sources, &installed, hour);
             }
-            // The map's own reference plus one clone in each of the six histories.
+            // Every history's join is this hour's table for the province, or the equal one it
+            // already held: shared, never copied from other targets.
             for (id, prepared) in &targets.0.provinces {
-                assert_eq!(Arc::strong_count(prepared), 7, "province {id}");
+                for arms in &views {
+                    for history in arms {
+                        let at = history.provinces.indices[id];
+                        let held = history.provinces.records[at].targets.as_ref();
+                        assert!(
+                            held.is_some_and(|held| Arc::ptr_eq(held, prepared)
+                                || **held == **prepared),
+                            "province {id}"
+                        );
+                    }
+                }
             }
             saw[0] |= branch_change;
             saw[1] |= seek;

@@ -172,6 +172,9 @@ fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
         }
         entity = { name = custom clone = base cull_radius = 99 }
         entity = { name = timed state = { name = idle event = { time = 1 particle = drops keep_particle = yes } } }
+        entity = { name = delayed state = { name = idle looping = no event = { time = 1.5 particle = drops keep_particle = yes } } }
+        entity = { name = offset state = { name = idle looping = no animation_start_time = 1 event = { time = 2 particle = drops keep_particle = yes } } }
+        entity = { name = random state = { name = idle looping = no animation_random_start_time = 1 event = { time = 2 particle = drops keep_particle = yes } } }
         entity = { name = orphan clone = absent }
         "#,
         "gfx/entities/weather.asset",
@@ -179,15 +182,24 @@ fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
     .unwrap();
     let mut catalog = Catalog::default();
     catalog.add_test_particle("drops", "unrelated_id", 0.5, "gfx/particles/x/file.asset");
+    let drops = |scale: f32, delay: f32| EffectParticle {
+        particle: Particle {
+            path: "gfx/particles/x/file.asset".into(),
+            name: "unrelated_id".into(),
+            scale,
+            registration: 0,
+        },
+        delay,
+    };
+    // A delayed event in a state that runs once starts its particle at its time.
+    assert_eq!(
+        entity_particles("delayed", &entities, &catalog).unwrap().0,
+        [drops(0.5, 1.5)]
+    );
     assert_eq!(
         entity_particles("custom", &entities, &catalog).unwrap(),
         (
-            vec![Particle {
-                path: "gfx/particles/x/file.asset".into(),
-                name: "unrelated_id".into(),
-                scale: 1.0,
-                registration: 0,
-            }],
+            vec![drops(1.0, 0.0)],
             EffectParent {
                 name: "custom".into(),
                 radius: 6.,
@@ -199,7 +211,8 @@ fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
             }
         )
     );
-    for name in ["timed", "orphan", "absent"] {
+    // A looping state would start it again; an offset clock moves it.
+    for name in ["timed", "offset", "random", "orphan", "absent"] {
         assert!(
             entity_particles(name, &entities, &catalog).is_err(),
             "{name}"
@@ -293,12 +306,12 @@ fn weather_refuses_a_requested_name_from_an_unreadable_later_descriptor() {
     std::fs::create_dir_all(root.join("gfx/entities")).unwrap();
     std::fs::write(
         root.join(PATH),
-        b"weather_effects={rain_light={weather_effect={entity=uncertain}}}",
+        b"weather_effects={rain_light={weather_effect={entity=uncertain} weather_effect={entity=plain}}}",
     )
     .unwrap();
     std::fs::write(
         root.join("gfx/entities/a.asset"),
-        b"entity={name=uncertain state={name=idle}}",
+        b"entity={name=uncertain state={name=idle}} entity={name=plain cull_radius=2 state={name=idle}}",
     )
     .unwrap();
     std::fs::write(
@@ -316,13 +329,20 @@ fn weather_refuses_a_requested_name_from_an_unreadable_later_descriptor() {
             .entities
             .contains_key("uncertain")
     );
-    let error = effects(&layers, &Catalog::default())
-        .unwrap_err()
-        .to_string();
+    // The pair is withheld by name and keeps its place in the bank; the next one loads.
+    let effects = effects(&layers, &Catalog::default()).unwrap();
+    let [uncertain, plain] = &effects[&(0, false)][..] else {
+        panic!("both pairs keep their places: {effects:?}");
+    };
+    let why = uncertain.withheld.as_deref().unwrap();
     assert!(
-        error.contains("weather entity uncertain: unreadable descriptor gfx/entities/b.asset"),
-        "{error}"
+        why.contains("weather entity uncertain: unreadable descriptor gfx/entities/b.asset"),
+        "{why}"
     );
+    assert!(uncertain.name.contains("rain_light weather_effect 1 (entity uncertain"));
+    assert_eq!(uncertain.parents, [None, None]);
+    assert_eq!(plain.withheld, None);
+    assert_eq!(plain.parents[0].as_ref().unwrap().radius, 2.);
     std::fs::remove_dir_all(root).unwrap();
 }
 

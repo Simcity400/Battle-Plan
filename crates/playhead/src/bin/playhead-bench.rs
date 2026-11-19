@@ -263,7 +263,7 @@ fn read_selection(pages: &WorldPages, path: &str, numeric: bool) -> io::Result<V
         }
         chosen.sort_unstable();
         chosen.dedup();
-        declared.push(Declared { table, columns: chosen, keyed: false, passing: false });
+        declared.push(Declared { table, columns: chosen, keyed: false, passing: false, hourly: false });
     }
     Ok(declared)
 }
@@ -1237,7 +1237,7 @@ fn second_declared(selection: &[Declared], tables: &[usize], odd: bool, keyed: b
             if columns.is_empty() {
                 columns.clone_from(&declared.columns);
             }
-            Declared { table: declared.table, columns, keyed, passing: false }
+            Declared { table: declared.table, columns, keyed, passing: false, hourly: false }
         })
         .collect()
 }
@@ -1249,7 +1249,7 @@ fn table_named(wanted: &str) -> io::Result<usize> {
 
 /// Every column of `table`, keyed.
 fn every_column(pages: &dyn Pages, table: usize) -> Declared {
-    Declared { table, columns: (0..pages.kinds(table).expect("a schema table").len()).collect(), keyed: true, passing: false }
+    Declared { table, columns: (0..pages.kinds(table).expect("a schema table").len()).collect(), keyed: true, passing: false, hourly: false }
 }
 
 /// The churning reader's declaration at change `change`: the `second` tables but a third of them,

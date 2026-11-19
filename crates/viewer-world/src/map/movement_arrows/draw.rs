@@ -129,6 +129,8 @@ impl Arrow {
                 blend: state.blend,
                 write_mask: state.write_mask,
             })],
+            instanced: 0,
+            stream: None,
         };
         Ok(Self {
             effect: effect.clone(),

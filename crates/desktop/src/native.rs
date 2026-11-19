@@ -5,7 +5,7 @@ mod lifecycle;
 mod pending;
 
 use dashboard::protocol::{
-    DashboardMapView, ViewBounds, ViewerState, replay_revision, validate_map_views,
+    DashboardMapView, ViewBounds, ViewerState, validate_map_views,
 };
 pub use gamepad::start_gamepad;
 use pending::{Pending, SeekTarget};
@@ -58,7 +58,7 @@ struct Inner {
     /// The last folders sent with [`NativeHost::set_folders`], which a viewer
     /// started afterwards takes over its launch-time read.
     folders: Option<dashboard::Config>,
-    /// The last display choice (VSync, map scale) of each kind sent with
+    /// The last display choice (VSync, map scale, frame rate limit) of each kind sent with
     /// [`NativeHost::set_display`], numbered as `display_sent` counted it.
     display: Vec<(u64, dashboard::protocol::MapAction)>,
     /// How many display choices were sent. A starting viewer takes over its launch-time read
@@ -118,6 +118,7 @@ fn same_display(a: &dashboard::protocol::MapAction, b: &dashboard::protocol::Map
         (a, b),
         (MapAction::Vsync { .. }, MapAction::Vsync { .. })
             | (MapAction::UiScale { .. }, MapAction::UiScale { .. })
+            | (MapAction::FrameLimit { .. }, MapAction::FrameLimit { .. })
     )
 }
 
@@ -291,7 +292,7 @@ impl NativeHost {
         self.flush();
     }
 
-    /// Queues a display choice (VSync or map scale) for a running viewer, replacing any of the
+    /// Queues a display choice (VSync, map scale or frame rate limit) for a running viewer, replacing any of the
     /// same kind still queued, and keeps it for a viewer still starting, which takes it over its
     /// launch-time read. A viewer whose launch begins later reads the current settings instead:
     /// callers send under the video settings' lock and release it only once those hold the choice.
@@ -440,18 +441,16 @@ impl NativeHost {
         Ok(())
     }
 
+    /// Opens a recording the user chose. It carries no revision: the map reads one when it opens
+    /// the file, and reports it.
     pub fn open(&self, path: String) -> Result<(), String> {
-        if path.len() > 32_000 {
-            return Err("Replay path is too long".into());
-        }
-        let revision = replay_revision(&path).map_err(|e| e.to_string())?;
         let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
         inner.dashboard_views = None;
         inner.pending.maps = None;
         inner.requested_path = Some(path.clone());
-        inner.requested_revision = Some(revision.clone());
+        inner.requested_revision = None;
         inner.requested_seek = None;
-        inner.pending.open = Some((path, revision));
+        inner.pending.open = Some((path, None));
         inner.pending.seek = None;
         drop(inner);
         self.flush();
@@ -470,8 +469,8 @@ impl NativeHost {
             playback.validate()?;
         }
         branch.parse::<u64>().map_err(|_| "Invalid replay branch")?;
-        if replay_revision(&path).map_err(|e| e.to_string())? != revision {
-            return Err("The recording changed since this analysis. Refresh the analysis before viewing this sample on the map.".into());
+        if revision.is_empty() || revision.len() > 128 {
+            return Err("A map seek must carry the revision its analysis read".into());
         }
         let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
         inner.dashboard_views = None;
@@ -482,7 +481,7 @@ impl NativeHost {
         if !current_matches {
             inner.requested_path = Some(path.clone());
             inner.requested_revision = Some(revision.clone());
-            inner.pending.open = Some((path.clone(), revision.clone()));
+            inner.pending.open = Some((path.clone(), Some(revision.clone())));
         }
         let target = SeekTarget {
             path,

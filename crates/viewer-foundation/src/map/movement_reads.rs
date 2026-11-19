@@ -1348,12 +1348,7 @@ mod recorded_source_tests {
         assert_eq!(actual.fort_bunker, Recorded::Value(Some(-27_000)));
         assert_eq!(actual.owner_area, Recorded::Value(None));
         assert_eq!(moves.province(2).unwrap_err(), "province 2 is not recorded");
-        assert!(
-            world
-                .core_gap()
-                .unwrap()
-                .to_string()
-                .contains("Provinces is truncated (7 rows missing)")
-        );
+        let gap = world.core_gap().unwrap().to_string();
+        assert!(gap.contains("provinces: read only in part (7 rows missing)"), "{gap}");
     }
 }

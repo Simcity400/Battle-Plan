@@ -45,6 +45,13 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     let layer = naval(layer);
     let hour = document.hour()?;
     let mut compared = Compared::default();
+    // The fill that carries these attributes is the political layer's, drawn at the default map
+    // mode alone: at another mode the layer declares nothing and today draws nothing either.
+    if !layer.drawn() {
+        compared.entries = 1;
+        compared.notes = json!({"drawn": false});
+        return Ok(compared);
+    }
     let (today, source) = match hour.political_product(&MapMode::default(), layer.choice(), None, None) {
         Ok(product) => {
             let regions = &product.layers.regions;

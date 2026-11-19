@@ -1,5 +1,6 @@
 //! Shared map render targets, formats, bindings and geometry upload.
 
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use crate::map::gpu_contract::DEPTH_FORMAT as gpu_contract_DEPTH_FORMAT;
 use crate::map::gpu_contract::OUTPUT_FORMAT as gpu_contract_OUTPUT_FORMAT;
 use crate::map::gpu_contract::SCENE_FORMAT as gpu_contract_SCENE_FORMAT;
@@ -50,6 +51,9 @@ pub struct Targets {
     color_view: wgpu::TextureView,
     pub refraction_view: wgpu::TextureView,
     refraction_depth: wgpu::TextureView,
+    /// What the sea-bed target holds: a content of its own, so a pass kept while its inputs
+    /// repeat draws again into a target made afresh, whose colour is gone.
+    refraction_content: crate::map::textures::Content,
     size: [u32; 2],
     world_size: [u32; 2],
     samples: u32,
@@ -143,15 +147,16 @@ impl Targets {
             color,
             refraction_view: refraction.create_view(&Default::default()),
             refraction_depth: refraction_depth.create_view(&Default::default()),
+            refraction_content: crate::map::textures::Content::next(),
             size,
             world_size,
             samples,
         }
     }
 
-    /// The multisampled float scene attachment resolving into the scene
-    /// texture. Every world pass, that is everything the grade reads, draws
-    /// here.
+    /// The multisampled float scene attachment. Every world pass, that is
+    /// everything the grade reads, draws here; [`Self::resolve_scene`] moves
+    /// the samples into the scene texture once, before the grade reads it.
     pub fn scene_attachment(
         &self,
         load: wgpu::LoadOp<wgpu::Color>,
@@ -163,7 +168,7 @@ impl Targets {
                 &self.scene_ms
             },
             depth_slice: None,
-            resolve_target: (self.samples > 1).then_some(&self.scene_view),
+            resolve_target: None,
             ops: wgpu::Operations {
                 load,
                 store: wgpu::StoreOp::Store,
@@ -171,10 +176,9 @@ impl Targets {
         }
     }
 
-    /// The multisampled 8-bit output attachment resolving into the output
-    /// texture. The grade writes it first and screen-space text and icons draw
-    /// over it; each of them resolves, so the output texture holds the frame
-    /// whichever of them ran last.
+    /// The multisampled 8-bit output attachment. The grade writes it first and
+    /// screen-space text and icons draw over it; [`Self::resolve_output`] moves
+    /// the samples into the output texture once, after the last of them.
     pub fn output_attachment(
         &self,
         load: wgpu::LoadOp<wgpu::Color>,
@@ -186,12 +190,54 @@ impl Targets {
                 &self.color_ms
             },
             depth_slice: None,
-            resolve_target: (self.samples > 1).then_some(&self.color_view),
+            resolve_target: None,
             ops: wgpu::Operations {
                 load,
                 store: wgpu::StoreOp::Store,
             },
         }
+    }
+
+    /// Resolves the multisampled scene into [`Self::scene_view`]. A pass
+    /// resolves its colour attachment when it ends, whether or not it drew, so
+    /// one empty pass costs one resolve and no draws. A single-sample chain
+    /// has the world passes drawing into the scene texture already.
+    pub fn resolve_scene(&self, encoder: &mut wgpu::CommandEncoder) {
+        self.resolve(encoder, "map scene resolve", &self.scene_ms, &self.scene_view);
+    }
+
+    /// Resolves the multisampled output into [`Self::output_view`], which egui,
+    /// the readback and the content banner read.
+    pub fn resolve_output(&self, encoder: &mut wgpu::CommandEncoder) {
+        self.resolve(encoder, "map output resolve", &self.color_ms, &self.color_view);
+    }
+
+    fn resolve(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        label: &str,
+        samples: &wgpu::TextureView,
+        into: &wgpu::TextureView,
+    ) {
+        if self.samples == 1 {
+            return;
+        }
+        drop(encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: samples,
+                depth_slice: None,
+                resolve_target: Some(into),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        }));
     }
 
     pub fn depth_attachment(
@@ -229,6 +275,12 @@ impl Targets {
     /// HDR scene and depth dimensions; output, GUI and refraction keep [`Self::size`].
     pub fn world_size(&self) -> [u32; 2] {
         self.world_size
+    }
+
+    /// What the sea-bed target holds. Only [`Self::refraction_attachment`] writes it, so a pass
+    /// that did not draw left it as it was and this is still the content that pass drew.
+    pub fn refraction_content(&self) -> crate::map::textures::Content {
+        self.refraction_content
     }
 
     pub fn refraction_attachment(&self) -> wgpu::RenderPassColorAttachment<'_> {

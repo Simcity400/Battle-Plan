@@ -639,6 +639,7 @@ fn owner_is_ours(group: &OrdersGroupRow, inputs: &OrderInputs<'_>) -> Option<boo
 
 /// Builds one hour's battle plan for the viewing country.
 pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<OrderField> {
+    let at = stage("plan.tables");
     let transport_context = paradrop_counts::Context::new(frame, inputs.transport);
     let orders = table_gate::rows::<tables::ArmyOrders>(frame)?;
     let groups = table_gate::rows::<tables::OrdersGroups>(frame)?;
@@ -672,6 +673,8 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
             .entry(kind_name(kind))
             .or_default() += 1;
     }
+    drop(at);
+    let at = stage("plan.roots");
     let selection = allied::Selection::read(frame, inputs.links, inputs.ours, inputs.show_allied);
     field.report.allied_refused = selection.refused;
     let mut refused = BTreeMap::new();
@@ -703,10 +706,9 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         );
         return Ok(field);
     };
-    let controllers: BTreeMap<_, _> = table_gate::core::<tables::Provinces>(frame)?
-        .iter()
-        .map(|province| (province.id, province.controller))
-        .collect();
+    drop(at);
+    let at = stage("plan.visits");
+    let controllers = chain::Controllers::of(table_gate::core::<tables::Provinces>(frame)?);
     let indexed: BTreeMap<OrderKey, &ArmyOrderRow> = mine
         .iter()
         .map(|&order| ((order.owner_group, order.instance), order))
@@ -733,6 +735,8 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
             .or_default() += unreached;
     }
 
+    drop(at);
+    let at = stage("plan.geometry");
     let assets = inputs.assets;
     let defines = &assets.defines;
     let geometry = inputs.geometry;
@@ -753,7 +757,7 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
     };
     let raster = chain::Raster {
         map: inputs.map,
-        controllers: &controllers,
+        controllers,
         links: inputs.links,
     };
     let chain_world = chain::ChainWorld {
@@ -1044,6 +1048,8 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         }
         prepared.insert(key, out);
     }
+    drop(at);
+    let at = stage("plan.snap_ends");
     // A move's last control is the nearest stored control of its first successor
     // line, when that graphic exists.
     let width = i64::from(geometry.width) * SCALE;
@@ -1069,6 +1075,8 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         entry.controls = controls;
     }
 
+    drop(at);
+    let at = stage("plan.emit");
     // Emission: one graphic per order, in first-visit order.
     let mut gap_total = 0u64;
     let mut gap_count = 0u64;
@@ -1260,6 +1268,7 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         let group_name = group_plan_rows
             .get(&display)
             .map_or(&[][..], |row| row.name.as_slice());
+        let _labelling = stage("plan.labels");
         let composer = labels::Composer {
             localisation: label_inputs.localisation,
             order_type: order.order_type,
@@ -1349,6 +1358,8 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
             Err(reason) => *field.report.labels_refused.entry(reason).or_default() += 1,
         }
     }
+    drop(at);
+    let at = stage("plan.finish");
     if let Some(mean) = gap_total.checked_div(gap_count) {
         field.report.control_gap_mean_milli = mean as u32;
     }
@@ -1360,6 +1371,7 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
         near: None,
     };
     field.report.refused = refused;
+    drop(at);
     Ok(field)
 }
 
@@ -1440,6 +1452,12 @@ fn plan_kind(kind: Classified) -> dashboard_core::protocol::PlanKind {
         Classified::Paradrop => PlanKind::Paradrop,
         Classified::FrontLine | Classified::GarrisonArea | Classified::Unknown => PlanKind::Front,
     }
+}
+
+/// A stage of [`build`], charged this thread's cycles while a harness measures
+/// (`replay_frame::cpu`), so the plan's build time is reported stage by stage.
+fn stage(name: &'static str) -> replay_frame::cpu::Scope {
+    replay_frame::cpu::scope(name, Some("plan"))
 }
 
 fn kind_name(kind: Classified) -> &'static str {

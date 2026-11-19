@@ -410,16 +410,19 @@ impl AvailableRows {
             let invalid = name.is_none_or(|name| name.invalid);
             let reason = match name {
                 Some(name) => name.reason.clone(),
-                None => Retained::new(if row.building_type == 0 {
-                    "token 0 stands for every key the lexer rejects".to_owned()
-                } else if lexical_complete {
-                    format!("token {} is not in LexicalTokens", row.building_type)
-                } else {
-                    format!(
-                        "token {} is among LexicalTokens' missing rows",
-                        row.building_type
+                None => {
+                    use viewer_foundation::table_access::TokenError;
+                    Retained::new(
+                        if row.building_type == 0 {
+                            TokenError::Rejected
+                        } else if lexical_complete {
+                            TokenError::Absent(row.building_type)
+                        } else {
+                            TokenError::Missing(row.building_type)
+                        }
+                        .to_string(),
                     )
-                }),
+                }
             };
             if invalid {
                 invalid_names = invalid_names.inserted((provincial, key), reason.clone())?;

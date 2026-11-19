@@ -125,7 +125,7 @@ fn pair(a: u32, b: u32) -> u128 {
 }
 
 fn quick() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
 fn reach(side: &mut MapSide, hour: i32) {
@@ -189,6 +189,38 @@ fn a_war_a_faction_and_a_subject_each_change_exactly_the_countries_they_name() {
     assert_eq!(wars.at_war(12, 10), Ok(true));
     assert_eq!(wars.at_war(10, 11), Ok(false));
     assert!(matches!(wars.at_war(99, 10), Err(super::WarUnknown::Receiver(_))));
+    let (mirrors, _) = side.parts().unwrap();
+    assert_eq!(layer.differ(&layer.composed(mirrors)), (0, None), "stepwise equals composed");
+}
+
+/// Work in proportion to the change: a war naming the viewing country decides the country on its
+/// other side and no other, a war between two other countries decides none, and hours that change
+/// nothing decide none. On the base every settle also cloned the index's whole country map and
+/// walked every link for the first refusal.
+#[test]
+fn a_change_decides_the_countries_it_names_and_no_other() {
+    let units = record(BLOCK, |at, store| match at {
+        0 => world(store),
+        200 => insert(store, TableId::WarRelations, 0, pair(10, 12)),
+        300 => insert(store, TableId::WarRelations, 1, pair(11, 13)),
+        _ => {}
+    });
+    let entry = open(units, quick()).unwrap();
+    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Relations::new().viewed_as(1))], View::default()).unwrap();
+    assert_eq!(side.refusals().count(), 0, "{:?}", side.refusals().collect::<Vec<_>>());
+    entry.playhead().play(4.0);
+    entry.playhead().seek(0);
+    reach(&mut side, 150);
+    let decided = |side: &MapSide| side.parts().unwrap().1[0].any().downcast_ref::<Relations>().unwrap().decided();
+    let composed = decided(&side);
+    reach(&mut side, 180);
+    assert_eq!(decided(&side), composed, "thirty hours that changed nothing decided no country");
+    reach(&mut side, 204);
+    assert_eq!(decided(&side) - composed, 1, "the war names the viewer and country 12: country 12 alone is decided");
+    let after = decided(&side);
+    reach(&mut side, 304);
+    assert_eq!(decided(&side), after, "a war between two other countries decides none");
+    let layer = side.parts().unwrap().1[0].any().downcast_ref::<Relations>().unwrap();
     let (mirrors, _) = side.parts().unwrap();
     assert_eq!(layer.differ(&layer.composed(mirrors)), (0, None), "stepwise equals composed");
 }

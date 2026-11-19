@@ -1,3 +1,4 @@
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use eframe::{egui, egui_wgpu, wgpu};
 use std::io;
 
@@ -115,7 +116,7 @@ fn draw_and_read(
         renderer.update_buffers(&state.device, &state.queue, &mut encoder, &jobs, &screen);
     {
         let mut pass = encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
+            .counted_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene image readback pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,

@@ -11,7 +11,6 @@ use crate::{
     layers::{Layer, Upstream, View, recorded, vision},
     playhead_host::{
         MapSide, open,
-        rows::{Recording, Rows},
     },
 };
 use installed_content_core::buildings::Buildings;
@@ -193,7 +192,7 @@ fn record_with(recorded: impl Fn(u32) -> bool, more: impl Fn(u32, &mut Store)) -
 
 /// `hours` hours a step.
 fn settings(hours: f64) -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: hours, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: hours, rate: 1.0, ..Settings::default() }
 }
 
 fn layer(side: &MapSide) -> &MapText {
@@ -206,12 +205,9 @@ fn layer(side: &MapSide) -> &MapText {
 /// waited for) when `settled`. The head moves only here. The map, at `last`.
 fn play(units: crate::playhead_host::units::Units, step: i32, last: i32, settled: bool, mut each: impl FnMut(i32, bool, &mut MapSide)) -> MapSide {
     let entry = open(units, settings(f64::from(step))).unwrap();
-    let rows = Rows::of(&entry, Recording { branch: BRANCH }).unwrap();
-    let text = MapText::new(source(), BRANCH).with_rows(Arc::clone(&rows));
+    let text = MapText::new(source(), BRANCH).with_rows(Arc::clone(&entry));
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(vision::Vision::new(vision_content())), Box::new(text)], View::default()).unwrap();
     assert!(side.refusals().next().is_none(), "no layer refused: {:?}", side.refusals().collect::<Vec<_>>());
-    // The worker's tables are declared to the playhead before the seek, so they are in its reset.
-    rows.settled();
     entry.playhead().play(f64::from(step));
     entry.playhead().seek(0);
     let mut applied = None::<i32>;
@@ -370,7 +366,7 @@ fn relinked(at: u32, store: &mut Store) {
 fn stepped_to(entry: &Arc<crate::playhead_host::Entry>, attached: bool, last: i32) -> MapSide {
     let mut text = MapText::new(source(), BRANCH);
     if attached {
-        text = text.with_rows(Rows::of(entry, Recording { branch: BRANCH }).unwrap());
+        text = text.with_rows(Arc::clone(entry));
     }
     let mut side = MapSide::new(Arc::clone(entry), vec![Box::new(vision::Vision::new(vision_content())), Box::new(text)], View::default()).unwrap();
     entry.playhead().seek(0);
@@ -388,7 +384,7 @@ fn stepped_to(entry: &Arc<crate::playhead_host::Entry>, attached: bool, last: i3
 /// the head reached hour 8 before hour 6's interval was made, and its context was refused.
 #[test]
 fn three_steps_in_one_frame_decide_the_first_steps_events_from_its_own_rows() {
-    let entry = open(record_with(|_| true, relinked), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(record_with(|_| true, relinked), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut side = stepped_to(&entry, true, 5);
     entry.playhead().wait_newest(8).expect("the steps through hour 8 built");
     let frame = side.frame(8).unwrap();
@@ -406,7 +402,7 @@ fn three_steps_in_one_frame_decide_the_first_steps_events_from_its_own_rows() {
 /// 6's rows. On the base it took the new seek's steps through hour 12 first.
 #[test]
 fn a_request_from_before_a_seek_back_never_steps_the_context_past_the_sought_hour() {
-    let entry = open(record_with(|_| true, relinked), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(record_with(|_| true, relinked), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut side = stepped_to(&entry, true, 12);
     entry.playhead().seek(6);
     entry.playhead().wait_newest(8).expect("the new seek's steps through hour 8 built");
@@ -423,9 +419,9 @@ fn a_request_from_before_a_seek_back_never_steps_the_context_past_the_sought_hou
 /// events decided, never refused for want of rows.
 #[test]
 fn an_interval_whose_tables_arrive_with_a_later_step_is_made_then_once() {
-    let entry = open(record(|_| true), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(record(|_| true), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut side = stepped_to(&entry, false, 5);
-    layer(&side).attach(Rows::of(&entry, Recording { branch: BRANCH }).unwrap());
+    layer(&side).attach(Arc::clone(&entry));
     for hour in 6..=8 {
         frames_until(&mut side, hour, "a step an hour", |side| side.last_frame().applied == Some(hour));
         side.settle_all().unwrap();
@@ -475,7 +471,7 @@ fn paradropped(at: u32, store: &mut Store) {
 /// base every interval took the settled vision, and the landing was withheld.
 #[test]
 fn two_steps_in_one_frame_decide_the_first_steps_paradrop_by_its_own_hours_fog() {
-    let entry = open(record_with(|_| true, paradropped), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(record_with(|_| true, paradropped), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut side = stepped_to(&entry, true, 5);
     while entry.playhead().newest().is_none_or(|newest| newest < 7) {
         std::thread::yield_now();
@@ -502,7 +498,7 @@ fn switched(at: u32, store: &mut Store) {
 /// 102's withheld. On the base they took the vision layer's viewer, hour 7's, and the two swapped.
 #[test]
 fn two_steps_in_one_frame_decide_the_first_steps_events_for_its_own_hours_viewer() {
-    let entry = open(record_with(|_| true, switched), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0 }).unwrap();
+    let entry = open(record_with(|_| true, switched), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut side = stepped_to(&entry, true, 5);
     let ours = |side: &MapSide| side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<vision::Vision>()).unwrap().ours();
     let before = ours(&side);

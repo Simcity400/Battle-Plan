@@ -87,6 +87,16 @@ pub fn rows<T: TableSchema>(
     }
 }
 
+/// [`rows`] reading the fields of `fields` alone: a frame of rows at the playback head holds only
+/// the columns its reader declared, and a read that names them is served where one naming others
+/// is refused by name ([`replay_frame::frame::NOT_DECLARED`]).
+pub fn rows_fields<T: TableSchema>(
+    frame: &dyn replay_frame::frame::DecodedSource,
+    fields: u64,
+) -> io::Result<Available<'_, T>> {
+    replay_frame::frame::reading(fields, || rows::<T>(frame))
+}
+
 /// Content names spelled by this hour's `LexicalTokens`. Rows record an
 /// equipment type, module or upgrade by its token: the engine builds each
 /// definition's name and token from one authored key, so the spelling is the

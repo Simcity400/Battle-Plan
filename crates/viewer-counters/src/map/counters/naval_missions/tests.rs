@@ -1605,9 +1605,10 @@ fn a_mission_windows_unknown_transition_settles_as_the_other_naval_windows_do() 
     assert_eq!(transition(&mut harness), 0);
     // A tick that fails (here asked about a root of another reading, which the lifecycle
     // refuses) leaves every mission window's transition unknown: the fading icon is withheld.
+    // The icon is still fading, so its tick is due: a settled view's is not made at all.
     let mut harness = Harness::new(&fading);
     harness.frame(&res, &[(1, Some(&one), [0, 0])], 0.0);
-    harness.frame(&res, &[(1, Some(&one), [0, 0])], 1.0);
+    harness.frame(&res, &[(1, Some(&one), [0, 0])], 0.1);
     assert_eq!(drawn_buttons(&mut harness, &one).len(), 1);
     let content = "\t\tcontainerWindowType = {\n\t\t\tname = \"content\"";
     let other = windows_of(&fading.replacen(

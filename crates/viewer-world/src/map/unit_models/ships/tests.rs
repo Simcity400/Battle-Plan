@@ -855,21 +855,16 @@ fn rosters_hide_port_hulls_and_share_one_slot_at_sea() {
     }
     .on(MapSize::TEST, MapDefines::test());
     for count in [1, 2, 3, 3] {
-        assert_eq!(
-            history
-                .update_models(
-                    camera,
-                    [1024, 768],
-                    0.0,
-                    assets.gates,
-                    1,
-                    &mut crate::map::map_buildings::BuildingHistory::default(),
-                    false
-                )
-                .units
-                .len(),
-            count
+        let frame = history.update_models(
+            camera,
+            [1024, 768],
+            0.0,
+            assets.gates,
+            1,
+            &mut crate::map::map_buildings::BuildingHistory::default(),
+            false,
         );
+        assert_eq!(history.drawn(&frame.units).len(), count);
     }
 }
 

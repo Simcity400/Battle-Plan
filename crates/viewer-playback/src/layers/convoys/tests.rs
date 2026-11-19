@@ -149,7 +149,7 @@ fn campaign(at: u32, store: &mut Store) {
 }
 
 fn side_seeing(name: &str, seeing: bool) -> (MapSide, Arc<Lines>) {
-    let entry = open(recorded::record(name, HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
+    let entry = open(recorded::record(name, HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let routes = Arc::new(Lines::default());
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Convoys::new(Arc::clone(&routes) as Arc<dyn Routes>))], supply()).unwrap();
     if seeing {
@@ -218,13 +218,11 @@ fn a_row_changed_in_a_step_is_taken_and_the_product_equals_the_composed_one() {
 fn a_row_changed_twice_before_the_layer_settles_shows_its_newest_values() {
     let (mut side, _) = side("convoys-twice");
     through(&mut side, 30);
-    side.set_budget(Duration::ZERO);
     let settles = side.hold_settles();
     // Both changes (hours 50 and 51) marked before any settle; the head stays at hour 56 from here,
-    // far before the client replaced at hour 130. Then, with no budget, a unit a frame.
+    // far before the client replaced at hour 130. Then, with no settling, a unit a frame.
     frames_within(&mut side, 56, |_, frame| frame.applied.is_some_and(|applied| applied >= 51));
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
-    side.set_budget(Duration::from_secs(1));
     // The product is made off the frame: it arrives a frame or more after it is asked for.
     frames_within(&mut side, 56, |side, _| layer(side).carried().entities == 0 && layer(side).published() == crate::layers::Published::Current);
     let at = side.parts().unwrap().0.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head).expect("a head");
@@ -282,10 +280,8 @@ fn a_map_mode_that_draws_no_trade_routes_declares_nothing_and_one_that_does_comp
     through(&mut side, 30);
     side.settle_all().unwrap();
     // Hidden while the convoys changed at hours 50 and 51 wait for a product.
-    side.set_budget(Duration::ZERO);
     through(&mut side, 52);
     side.set_view(View::default()).unwrap();
-    side.set_budget(Duration::from_secs(1));
     through(&mut side, 140);
     side.settle_all().unwrap();
     assert_eq!(layer(&side).carried().entities, 0, "a view that draws nothing carries nothing, though a step changed its tables");
@@ -356,7 +352,7 @@ impl Routes for HeldLines {
 #[test]
 fn a_job_out_is_not_carried_and_the_layer_publishes_the_hour_its_product_stands_for() {
     use crate::layers::Published;
-    let entry = open(recorded::record("convoys-job-out", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }).unwrap();
+    let entry = open(recorded::record("convoys-job-out", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let routes = Arc::new(HeldLines::default());
     routes.set(true);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Convoys::new(Arc::clone(&routes) as Arc<dyn Routes>))], supply()).unwrap();

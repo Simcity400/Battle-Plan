@@ -51,10 +51,16 @@ impl Admission {
     /// Cap normalized corner rays at five times eye height, then force y to the water plane. Recenter
     /// a wholly seam-crossing footprint by one map width while retaining original seam flags.
     pub fn new(camera: Camera, viewport: [u32; 2]) -> Self {
+        Self::padded(camera, viewport, 0.0)
+    }
+
+    /// [`Self::new`] with every plane moved `pad` further out, so a camera that travels up to
+    /// `pad` from this one admits nothing this does not ([`super::camera::Hold`]).
+    pub fn padded(camera: Camera, viewport: [u32; 2], pad: f32) -> Self {
         Self {
-            views: views(camera, viewport)
+            views: views_out(camera, viewport, pad)
                 .into_iter()
-                .map(|view| side_planes(view, viewport))
+                .map(|view| planes_out(view, viewport, SIDE_MARGIN + pad))
                 .collect(),
         }
     }
@@ -89,13 +95,20 @@ impl Admission {
 /// A free eye's main view stands on the first map copy, and every other copy its view volume
 /// reaches within its object range adds a view, nearer copies first and the east one of each pair
 /// first.
-pub fn views(mut camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
+pub fn views(camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
+    views_out(camera, viewport, 0.0)
+}
+
+/// [`views`] whose seam reach is widened by `pad`, so a camera that travels up to `pad` from
+/// this one reaches no map copy this does not ([`Admission::padded`]).
+fn views_out(mut camera: Camera, viewport: [u32; 2], pad: f32) -> Vec<Camera> {
     if camera.free().is_some() {
-        return free_views(camera, viewport);
+        return free_views(camera, viewport, pad);
     }
     let width = camera.map.x();
     let corners = footprint(camera, viewport);
-    let [east, west] = reaches(corners, width);
+    let [west_top, east_top, west_bottom, east_bottom] = corners;
+    let [east, west] = reaches([west_top - pad, east_top + pad, west_bottom - pad, east_bottom + pad], width);
     camera.center[0] += crossed(corners, width);
     let mut views = vec![camera];
     for (shift, reached) in [(-width, east), (width, west)] {
@@ -132,7 +145,7 @@ fn crossed([west_top, east_top, west_bottom, east_bottom]: [f32; 4], width: f32)
 
 /// A free eye's views: the eye moved onto the first map copy, then one view per other copy its
 /// reach overlaps, as the game's seam views shift the camera by whole map widths.
-fn free_views(camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
+fn free_views(camera: Camera, viewport: [u32; 2], pad: f32) -> Vec<Camera> {
     let mut views = vec![camera];
     let width = camera.map.x();
     if width.is_nan() || width <= 0.0 {
@@ -145,7 +158,7 @@ fn free_views(camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
     let Some([x0, _, x1, _]) = main.reach(viewport, range, [0.0, BOX_HEIGHT]) else {
         return views;
     };
-    let [x0, x1] = [x0 - SIDE_MARGIN, x1 + SIDE_MARGIN];
+    let [x0, x1] = [x0 - SIDE_MARGIN - pad, x1 + SIDE_MARGIN + pad];
     for copies in seam_copies(x0, x1, width) {
         let mut view = main;
         view.center[0] -= copies as f32 * width;
@@ -230,13 +243,18 @@ pub(super) fn reaches(
 /// The game's camera has no near or far test. A free eye adds its near plane and a far plane at
 /// its [object range](Camera::object_range), each moved out by the same margin.
 pub fn side_planes(camera: Camera, viewport: [u32; 2]) -> Planes {
+    planes_out(camera, viewport, SIDE_MARGIN)
+}
+
+/// [`side_planes`] with the planes moved `margin` out instead of [`SIDE_MARGIN`].
+fn planes_out(camera: Camera, viewport: [u32; 2], margin: f32) -> Planes {
     let m = camera.view_projection(viewport);
     let plane =
         |column: usize, sign: f32| std::array::from_fn(|row| m[row][3] + sign * m[row][column]);
     let [left, right, top, bottom] = [plane(0, 1.0), plane(0, -1.0), plane(1, -1.0), plane(1, 1.0)]
         .map(|plane| {
             let [a, b, c, d] = normalize(plane);
-            [-a, -b, -c, -d - SIDE_MARGIN]
+            [-a, -b, -c, -d - margin]
         });
     let [near, far] = match camera.free() {
         None => [OPEN; 2],
@@ -246,8 +264,8 @@ pub fn side_planes(camera: Camera, viewport: [u32; 2]) -> Planes {
             let depth = fx * eye[0] + fy * eye[1] + fz * eye[2];
             let range = camera.object_range();
             [
-                [-fx, -fy, -fz, depth + free.lens.near - SIDE_MARGIN],
-                [fx, fy, fz, -depth - range - SIDE_MARGIN],
+                [-fx, -fy, -fz, depth + free.lens.near - margin],
+                [fx, fy, fz, -depth - range - margin],
             ]
         }
     };
@@ -603,5 +621,32 @@ mod tests {
         assert_eq!(seam_copies(-10.0, width + 10.0, width), [1, -1]);
         assert_eq!(seam_copies(10.0, 2.5 * width, width), [1, 2]);
         assert!(seam_copies(10.0, width - 10.0, width).is_empty());
+    }
+
+    /// The whole of the padding: a camera that travelled up to the pad admits no province box
+    /// the padded admission at the camera it travelled from left out, so a set admitted once
+    /// stands for every camera inside the pad.
+    #[test]
+    fn a_camera_inside_the_pad_admits_nothing_the_padded_admission_left_out() {
+        let pad = crate::map::camera::PAD;
+        for height in [60., 110., 400.] {
+            let held = camera([3200., 1500.], height);
+            let padded = Admission::padded(held, VIEWPORT, pad);
+            for travel in [[pad, 0.], [-pad, 0.], [0., pad], [0., -pad], [pad * 0.7, pad * 0.7]] {
+                let moved = camera([held.center[0] + travel[0], held.center[1] + travel[1]], height);
+                let seen = Admission::new(moved, VIEWPORT);
+                let mut tested = 0;
+                for x in (2600..3800).step_by(20) {
+                    for z in (900..2100).step_by(20) {
+                        let box_ = [x as f32, z as f32, x as f32 + 20., z as f32 + 20.];
+                        if seen.admits(box_) {
+                            tested += 1;
+                            assert!(padded.admits(box_), "{box_:?} at {height} after {travel:?}");
+                        }
+                    }
+                }
+                assert!(tested > 0, "the sample reaches the view at {height}");
+            }
+        }
     }
 }

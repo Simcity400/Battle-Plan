@@ -33,6 +33,9 @@ struct Inner {
     writes: Vec<(wgpu::Buffer, u64, Vec<u8>)>,
     /// Every draw refused through this arena ([`Arena::refuse`]).
     refusals: std::collections::BTreeSet<String>,
+    /// Bytes every flush of this arena has written to the GPU, so a caller can say what its own
+    /// uploads cost and assert that a frame in which nothing changed wrote nothing.
+    written: u64,
 }
 
 struct Chunk {
@@ -40,7 +43,13 @@ struct Chunk {
     staged: Vec<u8>,
     /// Staged bytes already written by a flush.
     flushed: usize,
+    /// What the buffer holds, as far as it has ever been written. A flush writes only the blocks
+    /// where the staged bytes differ from it, so a frame that stages what the last one staged
+    /// writes nothing at all.
+    held: Vec<u8>,
 }
+
+use super::unheld;
 
 #[derive(Clone, Copy)]
 struct Recent {
@@ -76,6 +85,11 @@ impl Arena {
     /// Every draw refused through this arena, by name ([`Self::refuse`]).
     pub fn refusals(&self) -> std::collections::BTreeSet<String> {
         self.inner.borrow().refusals.clone()
+    }
+
+    /// Bytes every flush of this arena has written to the GPU, counted from its first.
+    pub fn written_bytes(&self) -> u64 {
+        self.inner.borrow().written
     }
 
     pub fn new(device: &wgpu::Device) -> Self {
@@ -127,9 +141,16 @@ impl Arena {
 
     /// Write the uploads staged since the last flush, before submitting the commands that bind
     /// them. Earlier bindings stay valid until `reset`.
+    ///
+    /// Only the blocks the buffer does not already hold are written: the allocator lays a frame's
+    /// uploads out from the same cursor in the same order, so a frame that stages what the last
+    /// one staged writes nothing, and one in which a window moved writes that window's constants
+    /// alone.
     pub fn flush(&self, queue: &wgpu::Queue) {
         let mut inner = self.inner.borrow_mut();
-        for (buffer, offset, bytes) in inner.writes.drain(..) {
+        let mut written = 0;
+        for (buffer, offset, bytes) in std::mem::take(&mut inner.writes) {
+            written += bytes.len() as u64;
             crate::gpu::stats::write_buffer(&queue, &buffer, offset, &bytes);
         }
         for chunk in &mut inner.chunks {
@@ -137,14 +158,34 @@ impl Arena {
                 continue;
             }
             chunk.staged.resize(align(chunk.staged.len(), 4), 0);
-            crate::gpu::stats::write_buffer(
-                &queue,
-                &chunk.buffer,
-                chunk.flushed as u64,
-                &chunk.staged[chunk.flushed..],
-            );
-            chunk.flushed = chunk.staged.len();
+            let (from, to) = (chunk.flushed, chunk.staged.len());
+            chunk.flushed = to;
+            // What the buffer holds of this suffix, and the rest, which it has never held.
+            let known = chunk.held.len().clamp(from, to);
+            // Only the written blocks are copied back: the rest the buffer already holds.
+            for span in unheld(from, &chunk.staged[from..known], &chunk.held[from..known]) {
+                written += (span.end - span.start) as u64;
+                crate::gpu::stats::write_buffer(
+                    &queue,
+                    &chunk.buffer,
+                    span.start as u64,
+                    &chunk.staged[span.clone()],
+                );
+                chunk.held[span.clone()].copy_from_slice(&chunk.staged[span]);
+            }
+            if to > known {
+                written += (to - known) as u64;
+                crate::gpu::stats::write_buffer(
+                    &queue,
+                    &chunk.buffer,
+                    known as u64,
+                    &chunk.staged[known..to],
+                );
+                chunk.held.resize(to, 0);
+                chunk.held[known..to].copy_from_slice(&chunk.staged[known..to]);
+            }
         }
+        inner.written += written;
     }
 
     /// Seal exactly the writes the next flush would issue, without touching the queue.
@@ -160,6 +201,8 @@ impl Arena {
         writes.append(&mut inner.writes);
         for chunk in &mut inner.chunks {
             if let Some((offset, bytes)) = checkpoint_bytes(&mut chunk.staged, &mut chunk.flushed) {
+                // A discarded checkpoint never reaches the buffer, so these bytes are not held.
+                chunk.held.truncate(offset as usize);
                 writes.push((chunk.buffer.clone(), offset, bytes));
             }
         }
@@ -348,6 +391,7 @@ impl Inner {
                 }),
                 staged: Vec::with_capacity(bytes as usize),
                 flushed: 0,
+                held: Vec::new(),
             };
             if replace {
                 self.chunks[self.current] = chunk;

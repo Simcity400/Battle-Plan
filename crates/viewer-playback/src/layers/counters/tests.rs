@@ -20,7 +20,6 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
-    time::Duration,
 };
 use viewer_counters::map::counters::Member;
 use viewer_foundation::map::perspective::{Choice, Country, Sight, Vision};
@@ -83,10 +82,15 @@ fn column(table: TableId, field: &str) -> usize {
 /// The recording's schema, the layer's tables written over `hours` hours from hour 0 by `hour`,
 /// every table complete unless `status` says otherwise; hour `n` names string `n`. Steps race
 /// ahead of the first compose, so tests change things from hour 200.
-fn record(hours: u32, status: impl Fn(u32, TableId) -> Status, mut hour: impl FnMut(u32, &mut Store)) -> Units {
+fn record(hours: u32, status: impl Fn(u32, TableId) -> Status, hour: impl FnMut(u32, &mut Store)) -> Units {
+    record_writing(hours, Writing::at(3), status, hour)
+}
+
+/// [`record`] written with `writing`.
+fn record_writing(hours: u32, writing: Writing, status: impl Fn(u32, TableId) -> Status, mut hour: impl FnMut(u32, &mut Store)) -> Units {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut store = Store::new(kinds.clone(), vec![false; kinds.len()]);
-    store.attach(Encoder::new(&kinds, Writing::at(3)).unwrap());
+    store.attach(Encoder::new(&kinds, writing).unwrap());
     let mut memory = Memory::default();
     store.begin_run(0);
     for at in 0..hours {
@@ -166,7 +170,7 @@ fn order(store: &mut Store, slot: u32, province: u32, units: &[u64]) {
 
 /// Four hours a step, a frame a second.
 fn quick() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
 fn fog_off() -> View {
@@ -301,8 +305,7 @@ fn a_division_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no budget, a unit a frame to the newest.
-    side.set_budget(Duration::ZERO);
+    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
@@ -577,6 +580,10 @@ fn reading(side: &MapSide) -> &Counters {
     side.parts().unwrap().1[1].any().downcast_ref::<Counters>().unwrap()
 }
 
+fn reading_sight(side: &MapSide) -> &crate::layers::vision::Vision {
+    side.parts().unwrap().1[0].any().downcast_ref::<crate::layers::vision::Vision>().unwrap()
+}
+
 /// Whole settles, at most eight (the vision layer's waits for its worker), until no layer carries
 /// anything.
 fn reading_settled(side: &mut MapSide) {
@@ -619,6 +626,31 @@ fn the_counters_reading_the_vision_layer_follow_a_change_of_the_viewing_country_
     reading_equals_composed(&side);
 }
 
+/// The hour the enemy country's tag is written again: a whole part the vision rereads (the tags its
+/// shares are keyed from) that no part of the sight key holds and no province or unit mark names, so
+/// the vision layer publishes nothing but a whole change. Every division is marked again. On the
+/// base the layer read only the provinces and units named, so it marked none.
+#[test]
+fn a_whole_vision_publish_with_the_sight_key_unchanged_marks_every_division_again() {
+    const RENAMED: u32 = 25;
+    let mut side = reading_side_with(false, |at, store| {
+        if at == RENAMED {
+            write(store, TableId::Countries, 1, "tag", Cell::Bytes(0));
+        }
+    });
+    reach(&mut side, RENAMED as i32 - 5);
+    reading_settled(&mut side);
+    assert_eq!(reading(&side).refused(), None);
+    let (epoch, marked) = (reading_sight(&side).sight_epoch(), reading(&side).marked());
+    reach(&mut side, RENAMED as i32 + 4);
+    reading_settled(&mut side);
+    assert_eq!(reading_sight(&side).sight_epoch(), epoch, "no part of the sight key moved");
+    // The host keeps the change until every dependent has settled, so a settle that waits whole
+    // marks them again each pass; before the fix neither was marked at all.
+    assert!(reading(&side).marked() - marked >= 2, "both divisions are marked again, not {}", reading(&side).marked() - marked);
+    reading_equals_composed(&side);
+}
+
 fn phase(side: &MapSide, name: &str) -> u64 {
     layer(side).phases().find(|(held, _, _)| *held == name).map_or(0, |(_, entities, _)| entities)
 }
@@ -626,7 +658,7 @@ fn phase(side: &MapSide, name: &str) -> u64 {
 /// Division 100 changed in three steps (its strength, its status, then its place in its province's
 /// array) and 102, outside the view, in one, while every settle is held: `apply` reads no row (on the
 /// base it read each division's province to admit it, and each status row's key) and makes nothing,
-/// the work is carried, and released with no budget, a unit a frame makes 100 once, from its newest
+/// the work is carried, and released with no settling, a unit a frame makes 100 once, from its newest
 /// values.
 #[test]
 fn steps_mark_their_divisions_reading_no_row_and_a_division_changed_in_several_is_made_once() {
@@ -653,7 +685,6 @@ fn steps_mark_their_divisions_reading_no_row_and_a_division_changed_in_several_i
     reach(&mut side, 150);
     side.settle_all().unwrap();
     let made = (phase(&side, "whole members"), phase(&side, "strength"));
-    side.set_budget(Duration::ZERO);
     let settles = side.hold_settles();
     reach(&mut side, 208);
     assert_eq!(layer(&side).applied_reads(), 0, "apply marks; it reads no row");
@@ -745,7 +776,7 @@ fn fed(side: &MapSide) -> &super::fed::Fed {
 /// The window's product, current at the hour applied, against the counters composed anew on this
 /// thread from the same mirrors and vision layer.
 fn fed_equals_composed(side: &MapSide) {
-    use crate::layers::{Budget, Published, Upstream};
+    use crate::layers::{Settling, Published, Upstream};
     let (mirrors, layers) = side.parts().unwrap();
     let layer = fed(side);
     assert!(matches!(layer.published(), Published::Current), "settled whole, the product is the hour applied's");
@@ -753,8 +784,8 @@ fn fed_equals_composed(side: &MapSide) {
     let upstream = Upstream::new(&layers[..1]);
     let mut fresh = layer.fresh();
     fresh.compose_with(mirrors, &upstream).unwrap();
-    fresh.settle_with(mirrors, &upstream, &mut Budget::unlimited()).unwrap();
-    fresh.publish(&mut Budget::unlimited());
+    fresh.settle_with(mirrors, &upstream, Settling::Whole).unwrap();
+    fresh.publish();
     assert_eq!(**layer.stacks().unwrap(), *fresh.published);
 }
 
@@ -786,8 +817,13 @@ fn step_a_frame(side: &mut MapSide, steps: u32, mut each: impl FnMut(&MapSide, i
     let mut before = fed(side).applied_hour().unwrap();
     let mut target = before + 4;
     let mut applied_steps = 0;
+    let mut stood = 0u64;
     for _ in 0..50_000_000u64 {
-        let head = side.entry().playhead().newest().unwrap_or(0).min(target);
+        // Each frame is given the step to its target, built before it asks: no frame stands still
+        // for want of a step the playhead has not built yet.
+        let playhead = side.entry().playhead();
+        playhead.wait_for(|| playhead.newest().is_some_and(|newest| newest >= target)).unwrap();
+        let head = playhead.newest().unwrap_or(0).min(target);
         let frame = side.frame(head).unwrap();
         let applied = fed(side).applied_hour().unwrap();
         each(side, before, &frame);
@@ -801,6 +837,8 @@ fn step_a_frame(side: &mut MapSide, steps: u32, mut each: impl FnMut(&MapSide, i
         } else if frame.steps == 0 {
             std::thread::yield_now();
         }
+        stood = if applied > before { 0 } else { stood + 1 };
+        assert!(stood < 2_000_000, "the map side stood at {applied} for its step to {target}: newest {:?}, composing {}, {:?}", side.entry().playhead().newest(), side.composing(), side.entry().playhead().held().2);
         before = applied;
     }
     panic!("the map side applied {applied_steps} steps of {steps}");
@@ -810,10 +848,19 @@ fn step_a_frame(side: &mut MapSide, steps: u32, mut each: impl FnMut(&MapSide, i
 fn with_the_worker_answering_within_a_frame_the_counters_show_the_step_before() {
     let mut side = fed_side(|at, _| (at >= 200).then_some(3 + i64::from(at % 5)));
     reach(&mut side, 196);
+    // Frames with their settles held leave the product at the bound; the whole settle after
+    // them makes it current, so no frame after it waits on the bound those frames left.
+    let settles = side.hold_settles();
+    step_a_frame(&mut side, crate::layers::BOUND, |_, _, _| {});
+    drop(settles);
     reading_settled(&mut side);
-    side.set_budget(Duration::ZERO);
     let blocked = fed(&side).blocked();
+    let mut waits = Vec::new();
+    let mut was = blocked;
     step_a_frame(&mut side, 40, |side, before, frame| {
+        let now = fed(side).blocked();
+        waits.push((before, frame.steps, frame.layers[1].shown, now - was));
+        was = now;
         let applied = fed(side).applied_hour().unwrap();
         let shown = frame.layers[1].shown.expect("the counters show an hour");
         assert!(shown >= before && shown <= applied, "applied {applied}, the frame before {before}: the counters show {shown}");
@@ -822,7 +869,7 @@ fn with_the_worker_answering_within_a_frame_the_counters_show_the_step_before() 
             std::thread::yield_now();
         }
     });
-    assert_eq!(fed(&side).blocked(), blocked, "the frame thread never waited for the worker");
+    assert_eq!(fed(&side).blocked(), blocked, "the frame thread never waited for the worker: (hour before, steps, counters shown, waits) {waits:?}");
 }
 
 #[test]
@@ -831,12 +878,13 @@ fn with_the_worker_held_the_frame_never_waits_shows_the_product_it_has_and_catch
     let mut side = fed_side(|at, _| (at >= 200).then_some(3 + i64::from(at % 5)));
     reach(&mut side, 196);
     reading_settled(&mut side);
-    side.set_budget(Duration::ZERO);
     let had = fed(&side).applied_hour().unwrap();
     let product = Arc::clone(fed(&side).stacks().unwrap());
-    let (blocked, late) = (fed(&side).blocked(), fed(&side).tally().late);
+    let blocked = fed(&side).blocked();
     fed(&side).hold_worker(true);
-    let held_steps = 6;
+    // Inside the bound: at it the step waits for the product rather than letting it starve
+    // ([`crate::playhead_host::standing`]).
+    let held_steps = crate::layers::BOUND - 1;
     step_a_frame(&mut side, held_steps, |side, _, frame| {
         assert_eq!(frame.layers[1].shown, Some(had), "held, the counters show the hour of the product they have");
         let layer = fed(side);
@@ -846,7 +894,6 @@ fn with_the_worker_held_the_frame_never_waits_shows_the_product_it_has_and_catch
         assert!(Arc::ptr_eq(layer.stacks().unwrap(), &product));
     });
     assert_eq!(fed(&side).blocked(), blocked, "the frame thread returned at once every frame");
-    assert!(fed(&side).tally().late - late >= u64::from(held_steps) - 1, "each frame after the first counted late");
     let applied = fed(&side).applied_hour().unwrap();
     assert_eq!(applied, had + 4 * held_steps as i32);
     let taken = fed(&side).taken();
@@ -878,6 +925,9 @@ fn a_product_whose_content_changed_has_a_new_address_and_only_the_changed_source
     let changed = Arc::clone(fed(&side).stacks().unwrap());
     assert!(!Arc::ptr_eq(&changed, &first), "a step changing 901's stack: a new product");
     assert_eq!(changed.keys().collect::<Vec<_>>(), first.keys().collect::<Vec<_>>());
+    // The map of all stacks is not copied: it is held in shards of 64 provinces and a publish
+    // copies only the shards its changed sources stand in. Both stacks here stand in the first.
+    assert_eq!((changed.shard_count(), changed.shared_with(&first)), (1, (0, 1)));
     for (source, members) in changed.iter() {
         let held = &first[source];
         if source.0 == 1 {
@@ -887,4 +937,96 @@ fn a_product_whose_content_changed_has_a_new_address_and_only_the_changed_source
         }
     }
     fed_equals_composed(&side);
+}
+
+/// The hours a step moved each division at are read against the mirrors as they stood before
+/// that step, as the map side reads them (`MapSide::moved_before`, then the step applied), over
+/// one batch of the playhead's own steps. Divisions 1 (A) and 2 (B) stand in slots 1 and 2 beside
+/// three rows deleted at hour 1, so the block's end packs them to slots 0 and 1 after A moved at
+/// 717 and B at 718; A moves at 800 and B at 810, then in one later step A is deleted and division
+/// 3 born in its slot in the same hour; B is deleted at 828 and division 4 born in its slot at 829,
+/// in one step or across two as the playhead builds them, which reads the same either way. Read against the batch's last mirror instead, A's 717 went to B, B's 718 was
+/// lost and A's 800 went to 3; read against a slot's kept key, 4's first write went to B. A row
+/// born or gone inside a step moved nobody.
+#[test]
+fn moved_hours_are_read_against_the_mirrors_before_each_step_across_a_pack_and_a_reused_slot() {
+    let writing = Writing { restore_blocks: 1, whole_every: 1, pack_margin: 0, ..Writing::at(3) };
+    let province = |store: &mut Store, slot: u32, value: u32| write(store, TableId::Divisions, slot, "province", Cell::U32(value));
+    let units = record_writing(BLOCK + 120, writing, |_, _| Status::Complete, |at, store| match at {
+        0 => {
+            for (slot, key) in [(0, 90), (1, 1), (2, 2), (3, 93), (4, 94)] {
+                insert(store, TableId::Divisions, slot, key);
+                province(store, slot, 10 + slot);
+            }
+        }
+        1 => {
+            for slot in [0, 3, 4] {
+                store.table(TableId::Divisions.index()).unwrap().delete(slot).unwrap();
+            }
+        }
+        717 => province(store, 1, 21),
+        718 => province(store, 2, 22),
+        800 => province(store, 0, 31),
+        810 => province(store, 1, 32),
+        822 => {
+            store.table(TableId::Divisions.index()).unwrap().delete(0).unwrap();
+            insert(store, TableId::Divisions, 0, 3);
+            province(store, 0, 41);
+        }
+        828 => {
+            store.table(TableId::Divisions.index()).unwrap().delete(1).unwrap();
+        }
+        829 => {
+            insert(store, TableId::Divisions, 1, 4);
+            province(store, 1, 51);
+        }
+        _ => {}
+    });
+    let mut layer = layer_seeing_all();
+    let mut inputs = crate::layers::Inputs::new(&units.kinds, "counters");
+    layer.inputs(&fog_off(), &mut inputs).unwrap();
+    let declared = inputs.into_tables().into_iter().map(|(table, read)| playhead::Declared { table, columns: read.columns, keyed: read.keyed, passing: false, hourly: read.hourly }).collect();
+    let playhead = playhead::Playhead::new(Arc::clone(&units.pages), units.timeline.clone(), quick(), None).unwrap();
+    let mut consumer = playhead.consumer(playhead.declare(declared, Some(crate::playhead_host::mirror::rebuild(Arc::clone(&units.pages)))).unwrap());
+    playhead.seek(0);
+    let last = BLOCK as i32 + 119;
+    let divisions = TableId::Divisions.index();
+    let mut steps: Vec<Arc<playhead::Step>> = Vec::new();
+    let mut head = 0;
+    // Each head is left only once the divisions stand at it: a table stalled for a part not read
+    // yet is caught up by a step of its own, as the frames would wait for, not by a later landing.
+    loop {
+        playhead.wait_for(|| {
+            consumer.advance(head);
+            consumer.take(head, &mut steps);
+            playhead.newest().is_some_and(|newest| newest >= head) && steps.iter().rev().find_map(|step| step.table(divisions)).is_some_and(|changes| changes.short() == 0)
+        }).unwrap();
+        if head == last {
+            break;
+        }
+        head = (head + 4).min(last);
+    }
+    playhead.wait_for(|| {
+        consumer.take(last, &mut steps);
+        steps.last().is_some_and(|step| step.last() >= last)
+    }).unwrap();
+    assert!(steps.iter().any(|step| step.table(divisions).and_then(|changes| changes.renumber()) == Some(&[1, 2][..])), "the block's end packed A and B to slots 0 and 1");
+    assert!(
+        steps.iter().filter_map(|step| step.table(divisions)).any(|changes| changes.deleted().keys() == Some(&[1][..]) && changes.inserted().keys() == Some(&[3][..])),
+        "A's deletion and 3's birth in its slot, written in one hour, are one step"
+    );
+    let mut mirrors = crate::playhead_host::mirror::Mirrors::default();
+    let mut moved = viewer_foundation::map::counter_move::MovedHours::default();
+    for step in &steps {
+        layer.moved_at(step, &mirrors, &mut moved);
+        for changes in step.tables().iter().filter(|changes| changes.reset()) {
+            if let Some(Ok(rebuilt)) = consumer.state(step, changes.table()).map(|state| state.downcast::<crate::playhead_host::mirror::Mirror>()) {
+                mirrors.insert(rebuilt);
+            }
+        }
+        mirrors.apply(step);
+    }
+    let moves: Vec<(u64, i32, u32)> = moved.divisions.iter().flat_map(|(&unit, hours)| hours.iter().map(move |&(hour, to)| (unit, hour, to))).collect();
+    assert_eq!(moves, [(1, 717, 21), (1, 800, 31), (2, 718, 22), (2, 810, 32)], "each move is its own division's at the hour it moved");
+    assert!(moved.task_forces.is_empty());
 }

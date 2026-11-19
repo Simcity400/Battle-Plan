@@ -9,7 +9,6 @@
 
 #[cfg(test)]
 mod tests;
-mod today;
 
 use super::{
     Viewer,
@@ -17,7 +16,7 @@ use super::{
 };
 use crate::{
     document::Document,
-    playhead_host::rows::{AtHead, Cadence},
+    playhead_host::views::AtHead,
 };
 use eframe::egui;
 use replay_data::rows::TableId;
@@ -29,7 +28,7 @@ use std::{
 use viewer_combat::{Prepared, Selector, division_panel, land_marker_tooltips, naval_marker_tooltips, reads::Reads, terrain_mode};
 use viewer_foundation::{
     engagement_history::History,
-    map::perspective::{Choice, Country, Vision},
+    map::perspective::{Choice, Vision},
     tooltip_text::Tooltip,
 };
 use viewer_raids::map::raids::tooltips::{Key, lane::Lane};
@@ -50,12 +49,6 @@ impl PartialEq for Hovered {
     }
 }
 
-/// Where a hover reads: rows at the head of the open map, or today's frame with none open.
-enum From<'a> {
-    Head(Head<'a>),
-    Today(&'a Arc<DecodedFrame>),
-}
-
 /// A hover made on its worker, which ends with the hover so it holds no frame.
 pub(crate) struct Hover<T> {
     name: &'static str,
@@ -69,32 +62,26 @@ pub(crate) struct Hover<T> {
 
 impl<T: Clone + Send + 'static> Hover<T> {
     fn new(name: &'static str) -> Self {
-        Self { name, at: AtHead::default(), reads: None, loading: Loading::default(), asked: false, times: None }
+        Self { name, at: AtHead::learning(name), reads: None, loading: Loading::default(), asked: false, times: None }
     }
 
     /// The hover's newest result for `target` at any hour, while the one over the newest rows is
     /// made; none before the first. Rows at the head that lack a table its build read make no
     /// result: the table is learned and the hover is loading until it joins.
-    fn ask(&mut self, from: From<'_>, (target, exact): ([u64; 3], impl FnOnce(&DecodedFrame) -> u64), build: impl FnOnce(&DecodedFrame) -> T + Send + 'static, wake: impl Fn() + Send + 'static) -> Option<T> {
+    fn ask(&mut self, views: Head<'_>, (target, exact): ([u64; 3], impl FnOnce(&DecodedFrame) -> u64), build: impl FnOnce(&DecodedFrame) -> T + Send + 'static, wake: impl Fn() + Send + 'static) -> Option<T> {
         self.asked = true;
-        let frame = match from {
-            From::Head((entry, recording)) => {
-                let missed = self.reads.as_mut().map(Reads::take_missed).unwrap_or_default();
-                if !missed.is_empty() {
-                    self.at.learn(&missed);
-                    self.loading.learned(&missed);
-                }
-                let Some(rows) = self.at.frame(entry, recording) else {
-                    self.loading.no_rows();
-                    return self.latest(target);
-                };
-                self.loading.joined();
-                rows
+        let frame = {
+            let missed = self.reads.as_mut().map(Reads::take_missed).unwrap_or_default();
+            if !missed.is_empty() {
+                self.at.learn(&missed);
+                self.loading.learned(&missed);
             }
-            From::Today(today) => {
-                self.loading = Loading::default();
-                Arc::clone(today)
-            }
+            let Some(rows) = self.at.frame(views) else {
+                self.loading.no_rows();
+                return self.latest(target);
+            };
+            self.loading.joined();
+            rows
         };
         let key = Hovered { target, exact: exact(&frame), frame: Arc::downgrade(&frame) };
         let (name, timing) = (self.name, self.times.is_some());
@@ -169,18 +156,18 @@ pub(crate) struct CombatRows {
 impl Default for CombatRows {
     fn default() -> Self {
         Self {
-            window: AtHead::default(),
+            window: AtHead::learning("combat window"),
             window_loading: Loading::default(),
             window_asked: false,
             pending: None,
-            selector: AtHead::default(),
+            selector: AtHead::learning("combat selector"),
             land_marker: Hover::new("land marker hover"),
             naval_marker: Hover::new("naval marker hover"),
             division_panel: Hover::new("division panel"),
             extended: None,
             terrain: Hover::new("terrain hover"),
             infrastructure: Hover::new("infrastructure hover"),
-            raid: AtHead::default(),
+            raid: AtHead::learning("raid tooltip"),
             raid_lane: Lane::default(),
             raid_asked: false,
             raid_loading: Loading::default(),
@@ -221,9 +208,9 @@ impl CombatRows {
     }
 
     /// The window's rows at the head; none, loading by name, while they do not hold what it reads.
-    pub(crate) fn window_rows(&mut self, (entry, recording): Head<'_>) -> Option<Arc<DecodedFrame>> {
+    pub(crate) fn window_rows(&mut self, views: Head<'_>) -> Option<Arc<DecodedFrame>> {
         self.window_asked = true;
-        let rows = self.window.frame(entry, recording);
+        let rows = self.window.frame(views);
         match rows {
             Some(_) => self.window_loading.joined(),
             None => self.window_loading.no_rows(),
@@ -242,7 +229,7 @@ impl CombatRows {
             "infrastructure" => &mut self.infrastructure.at,
             _ => return,
         };
-        *at = AtHead::new(tables, Cadence::PerSecond(4));
+        at.learn(tables);
     }
 
     /// Times the hovers' builds on their workers from now on (the proof tool).
@@ -275,20 +262,20 @@ impl CombatRows {
 
     #[allow(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
     pub(crate) fn land_marker(&mut self, head: Head<'_>, document: &Document, viewer: u32, id: u64, index: Option<Arc<History>>, nato: bool, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
-        self.land_marker_from(From::Head(head), document, viewer, id, index, nato, wake)
+        self.land_marker_from(head, document, viewer, id, index, nato, wake)
     }
 
     #[allow(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
-    fn land_marker_from(&mut self, from: From<'_>, document: &Document, viewer: u32, id: u64, index: Option<Arc<History>>, nato: bool, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
+    fn land_marker_from(&mut self, from: Head<'_>, document: &Document, viewer: u32, id: u64, index: Option<Arc<History>>, nato: bool, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
         let (content, covering) = (Arc::clone(&document.combat), index.clone());
         self.land_marker.ask(from, ([u64::from(viewer), id, u64::from(nato)], |frame| covered(covering.as_deref(), frame)), move |frame| Arc::new(land_marker_tooltips::build(&content, frame, viewer, id, index.as_deref(), nato)), wake)
     }
 
     pub(crate) fn naval_marker(&mut self, head: Head<'_>, document: &Document, viewer: u32, id: u64, index: Option<Arc<History>>, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
-        self.naval_marker_from(From::Head(head), document, viewer, id, index, wake)
+        self.naval_marker_from(head, document, viewer, id, index, wake)
     }
 
-    fn naval_marker_from(&mut self, from: From<'_>, document: &Document, viewer: u32, id: u64, index: Option<Arc<History>>, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
+    fn naval_marker_from(&mut self, from: Head<'_>, document: &Document, viewer: u32, id: u64, index: Option<Arc<History>>, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
         let (content, covering) = (Arc::clone(&document.combat), index.clone());
         self.naval_marker.ask(from, ([u64::from(viewer), id, 0], |frame| covered(covering.as_deref(), frame)), move |frame| Arc::new(naval_marker_tooltips::build(&content, frame, viewer, id, index.as_deref())), wake)
     }
@@ -296,10 +283,10 @@ impl CombatRows {
     /// The land counter's tooltip `base` with the division panel of its one division `id`, once
     /// the panel is made; `base` alone before.
     pub(crate) fn division_panel(&mut self, head: Head<'_>, document: &Document, base: Arc<Tooltip>, id: u64, wake: impl Fn() + Send + 'static) -> Arc<Tooltip> {
-        self.division_panel_from(From::Head(head), document, base, id, wake)
+        self.division_panel_from(head, document, base, id, wake)
     }
 
-    fn division_panel_from(&mut self, from: From<'_>, document: &Document, base: Arc<Tooltip>, id: u64, wake: impl Fn() + Send + 'static) -> Arc<Tooltip> {
+    fn division_panel_from(&mut self, from: Head<'_>, document: &Document, base: Arc<Tooltip>, id: u64, wake: impl Fn() + Send + 'static) -> Arc<Tooltip> {
         let content = Arc::clone(&document.combat);
         let Some(panel) = self.division_panel.ask(from, ([id, 0, 0], |_| 0), move |frame| Arc::new(division_panel(&content, frame, id)), wake) else {
             return base;
@@ -316,20 +303,20 @@ impl CombatRows {
     }
 
     pub(crate) fn terrain(&mut self, head: Head<'_>, document: &Document, province: u32, vision: &Arc<Vision>, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
-        self.terrain_from(From::Head(head), document, province, vision, wake)
+        self.terrain_from(head, document, province, vision, wake)
     }
 
-    fn terrain_from(&mut self, from: From<'_>, document: &Document, province: u32, vision: &Arc<Vision>, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
+    fn terrain_from(&mut self, from: Head<'_>, document: &Document, province: u32, vision: &Arc<Vision>, wake: impl Fn() + Send + 'static) -> Option<Arc<Tooltip>> {
         let (content, vision) = (Arc::clone(&document.combat), Arc::clone(vision));
         self.terrain.ask(from, ([u64::from(province), u64::from(vision.ours()), 0], |_| 0), move |frame| Arc::new(terrain_mode::hover(&content, frame, province, &vision)), wake)
     }
 
     /// The infrastructure mode's level at `province`; refused by name until the first read.
     pub(crate) fn infrastructure(&mut self, head: Head<'_>, document: &Document, province: u32, wake: impl Fn() + Send + 'static) -> Result<i32, String> {
-        self.infrastructure_from(From::Head(head), document, province, wake)
+        self.infrastructure_from(head, document, province, wake)
     }
 
-    fn infrastructure_from(&mut self, from: From<'_>, document: &Document, province: u32, wake: impl Fn() + Send + 'static) -> Result<i32, String> {
+    fn infrastructure_from(&mut self, from: Head<'_>, document: &Document, province: u32, wake: impl Fn() + Send + 'static) -> Result<i32, String> {
         let modes = Arc::clone(&document.map_modes);
         let level = self.infrastructure.ask(from, ([u64::from(province), 0, 0], |_| 0), move |frame| modes.infrastructure.hover_level(frame, province), wake);
         level.unwrap_or_else(|| {
@@ -343,14 +330,14 @@ impl CombatRows {
     /// The raid tooltip, built on its worker from rows at the head; none until the first build for
     /// this icon is done. While its rows load, the text last shown for the icon.
     #[allow(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
-    pub(crate) fn raid(&mut self, (entry, recording): Head<'_>, document: &Document, ours: u32, nato: bool, key: Key, ctx: &egui::Context) -> Option<Arc<Tooltip>> {
+    pub(crate) fn raid(&mut self, views: Head<'_>, document: &Document, ours: u32, nato: bool, key: Key, ctx: &egui::Context) -> Option<Arc<Tooltip>> {
         self.raid_asked = true;
         let missed = self.raid_lane.take_missed();
         if !missed.is_empty() {
             self.raid.learn(&missed);
             self.raid_loading.learned(&missed);
         }
-        let Some(frame) = self.raid.frame(entry, recording) else {
+        let Some(frame) = self.raid.frame(views) else {
             self.raid_loading.no_rows();
             return self.raid_shown.as_ref().filter(|(held, viewer, naming, _)| *held == key && *viewer == ours && *naming == nato).map(|(.., text)| Arc::clone(text));
         };
@@ -402,13 +389,10 @@ impl Viewer {
     /// open map; the combat named at load is opened first, once its rows resolve it. Nothing is
     /// asked while no window is open; while the window's rows load it keeps what it shows.
     pub(super) fn combat_prepared(&mut self, document: &Document, perspective: &Choice, engaged: Option<Arc<History>>, ctx: &egui::Context) -> io::Result<Prepared> {
-        if self.open_map().is_none() {
-            return self.combat_prepared_today(document, perspective, engaged, ctx);
-        }
-        let Some((entry, recording)) = self.rows_head() else { return Ok(Prepared::Kept) };
+        let Some(views) = self.rows_head() else { return Ok(Prepared::Kept) };
         if let Some(selector) = self.combat_rows.pending.take() {
             let at = &mut self.combat_rows.selector;
-            let resolved = at.frame(&entry, recording).and_then(|rows| at.discover(|| selector.resolve(&rows)));
+            let resolved = at.frame(&views).and_then(|rows| at.discover(|| selector.resolve(&rows)));
             match resolved {
                 None => self.combat_rows.pending = Some(selector),
                 Some(Ok(selection)) => {
@@ -421,7 +405,7 @@ impl Viewer {
         if self.combat.selection.is_none() {
             return Ok(Prepared::Closed);
         }
-        let Some(rows) = self.combat_rows.window_rows((&entry, recording)) else { return Ok(Prepared::Kept) };
+        let Some(rows) = self.combat_rows.window_rows(&views) else { return Ok(Prepared::Kept) };
         let (branch, hour) = (rows.branch, rows.hour);
         let wake = ctx.clone();
         let prepared = self.combat.ask(&document.combat, branch, hour, Ok(rows), perspective, engaged, self.counter_view.settings.nato, move || wake.request_repaint());
@@ -431,36 +415,17 @@ impl Viewer {
     }
 
     /// The engaged index the open map's engagements layer reads, the one held while its layers
-    /// compose; none with no map open.
-    fn layer_history(&self) -> Option<Arc<History>> {
+    /// compose; none with no map open. What the engaged byte check reads, without keeping it.
+    pub(super) fn layer_history(&self) -> Option<Arc<History>> {
         let side = self.open_map()?;
-        let layer = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::engagements::Engagements>()));
-        layer.and_then(crate::layers::engagements::Engagements::history).cloned().or_else(|| self.combat_rows.engaged.clone())
+        side.products().engaged.clone().or_else(|| self.combat_rows.engaged.clone())
     }
 
-    /// [`Self::layer_history`], kept for the frames its layers compose.
+    /// [`Self::layer_history`], kept for the frames its layers compose: the index the marker
+    /// hovers and the combat window read.
     pub(super) fn layer_engaged(&mut self) -> Option<Arc<History>> {
         let history = self.layer_history();
         self.combat_rows.engaged.clone_from(&history);
         history
-    }
-
-    /// The engaged index the marker hovers, the combat window and the byte check read: the
-    /// engagements layer's while the playhead's map is open, today's pipeline's for `country`
-    /// otherwise.
-    pub(super) fn engaged_history(&mut self, country: &Country) -> io::Result<Option<Arc<History>>> {
-        if self.open_map().is_none() {
-            self.combat_rows.engaged = None;
-            return self.engaged_today(country);
-        }
-        Ok(self.layer_engaged())
-    }
-
-    /// [`Self::engaged_history`] without keeping it.
-    pub(super) fn engaged_shown(&self, country: &Country) -> io::Result<Option<Arc<History>>> {
-        if self.open_map().is_none() {
-            return self.engaged_today(country);
-        }
-        Ok(self.layer_history())
     }
 }

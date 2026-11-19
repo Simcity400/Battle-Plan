@@ -234,20 +234,26 @@ impl LabelContent {
     }
 }
 
-/// Everything one frame of labels needs besides the decoded hour.
+/// Everything the labels' layout needs besides the decoded hour. Nothing here moves with the
+/// camera: [`PreparedLabels::project`] applies that.
 pub struct LabelInputs<'a> {
     pub content: &'a LabelContent,
     pub localisation: &'a Localisation,
     pub map: &'a MapData,
+    /// What the view's map mode shows: the raids mode keeps only the capitals, and the
+    /// resources mode draws no names.
+    pub visibility: Visibility,
+}
+
+/// Where the labels laid out for an hour and view stand this frame.
+#[derive(Clone, Copy)]
+pub struct LabelProjection {
     pub camera: Camera,
     /// The frame in device pixels, which the projection uses.
     pub viewport: [u32; 2],
     /// Device pixels per interface pixel; the labels are laid out in interface
     /// pixels. See [`super::ui_scale`].
     pub ui_scale: f32,
-    /// What the view's map mode shows: the raids mode keeps only the capitals, and the
-    /// resources mode draws no names.
-    pub visibility: Visibility,
 }
 
 /// What one frame of labels drew, for reporting.
@@ -307,18 +313,15 @@ fn mode_label(capital: bool, visibility: &Visibility) -> Option<bool> {
     (capital || visibility.province_icons).then_some(visibility.label_text)
 }
 
-/// Pushes one hour's victory-point and capital labels onto `batch`.
+/// Lays out one hour's victory-point and capital labels, for every camera: the candidate's
+/// content, its world anchor and the distances its dot and its name are cut off at.
+/// [`PreparedLabels::project`] then places them for the camera of a frame.
 pub fn prepare(
     inputs: &LabelInputs<'_>,
     tables: &map_display_data::landscape::Labels,
 ) -> io::Result<PreparedLabels> {
     let defines = &inputs.content.defines;
-    let mut report = LabelReport {
-        perspective: tables.perspective.clone(),
-        ..Default::default()
-    };
-    let mut placed = Vec::with_capacity(tables.candidates.len());
-    let viewport = gui_resources_viewport(inputs.viewport, inputs.ui_scale);
+    let mut candidates = Vec::with_capacity(tables.candidates.len());
     for province in tables.candidates.iter() {
         let Some(definition) = inputs.map.definitions.get(&province.province) else {
             continue;
@@ -337,50 +340,15 @@ pub fn prepare(
         let Some(anchor) = inputs.content.anchors.get(&province.province) else {
             continue;
         };
-        let world = *anchor;
-        // The camera's height, or a free eye's distance to this label.
-        let height = inputs.camera.icon_distance(world);
-        let dot = dot_cutoff(capital, victory_points, defines);
-        if height >= dot {
-            continue;
-        }
-        let text = text_cutoff(capital, victory_points, defines);
-        let Some(projection) = inputs
-            .camera
-            .project_map_icon(world, inputs.viewport, viewport)
-        else {
-            continue;
-        };
         let shape = shape_group(capital, victory_points, defines);
         let icon = if capital {
             PriorityIcon::Capital
         } else {
             PriorityIcon::VictoryPoints
         };
-        let priority = defines.priorities.get(inputs.visibility.priorities, icon);
-        let name = if !named || height >= text {
-            None
-        } else {
-            match &province.name {
-                map_display_data::landscape::LabelName::Value { text } => {
-                    text.as_deref().map(Arc::from)
-                }
-                map_display_data::landscape::LabelName::Refused { reason: refusal } => {
-                    report.refused_names += 1;
-                    *report
-                        .refused_localisation
-                        .entry(refusal.clone())
-                        .or_default()
-                        .entry(province.province)
-                        .or_default() += 1;
-                    None
-                }
-            }
-        };
-        placed.push(Label {
+        candidates.push(Candidate {
             province: province.province,
-            screen: projection.position,
-            depth: projection.depth,
+            world: *anchor,
             capital,
             frame: (shape * FRAMES_PER_SHAPE
                 + province
@@ -388,25 +356,45 @@ pub fn prepare(
                     .and_then(|slot| tables.allegiances.get(&slot).copied())
                     .unwrap_or(Allegiance::Other.index())) as i32
                 + 1,
-            priority,
-            text: name,
-            anchors: [
-                IconAnchor {
-                    world,
-                    cutoff: dot,
-                    family: IconFamily::Labels,
-                },
-                IconAnchor {
-                    world,
-                    cutoff: text,
-                    family: IconFamily::Labels,
-                },
-            ],
+            priority: defines.priorities.get(inputs.visibility.priorities, icon),
+            dot: dot_cutoff(capital, victory_points, defines),
+            text: text_cutoff(capital, victory_points, defines),
+            name: match &province.name {
+                _ if !named => Ok(None),
+                map_display_data::landscape::LabelName::Value { text } => {
+                    Ok(text.as_deref().map(Arc::from))
+                }
+                map_display_data::landscape::LabelName::Refused { reason } => Err(reason.clone()),
+            },
         });
     }
-    Ok(PreparedLabels { placed, report })
+    Ok(PreparedLabels {
+        perspective: tables.perspective.clone(),
+        candidates,
+        placed: Vec::new(),
+        report: LabelReport {
+            perspective: tables.perspective.clone(),
+            ..Default::default()
+        },
+    })
 }
 
+/// One label the hour and view call for, at every camera.
+struct Candidate {
+    province: u32,
+    world: [f32; 3],
+    capital: bool,
+    frame: i32,
+    priority: i8,
+    /// The distances the dot and the name are gone by.
+    dot: f32,
+    text: f32,
+    /// The name the mode draws, `None` where it draws none; `Err` where the game's localiser
+    /// cannot produce it, which is reported for the frames that would have shown it.
+    name: Result<Option<Arc<str>>, String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct Label {
     province: u32,
     screen: [f32; 2],
@@ -421,15 +409,86 @@ struct Label {
 }
 
 /// A prepared hour's label values. Preparing never changes a presented window.
+#[derive(Default)]
 pub struct PreparedLabels {
+    candidates: Vec<Candidate>,
     placed: Vec<Label>,
+    perspective: Option<String>,
     pub report: LabelReport,
+}
+
+impl PreparedLabels {
+    /// Places the laid-out labels for one camera: each candidate nearer than its dot's distance,
+    /// projected, with its name while it stands nearer than the name's distance.
+    pub fn project(&mut self, at: &LabelProjection) {
+        let extent = gui_resources_viewport(at.viewport, at.ui_scale);
+        self.report = LabelReport {
+            perspective: self.perspective.clone(),
+            ..Default::default()
+        };
+        self.placed.clear();
+        self.placed.reserve(self.candidates.len());
+        for candidate in &self.candidates {
+            let world = candidate.world;
+            // The camera's height, or a free eye's distance to this label.
+            let height = at.camera.icon_distance(world);
+            if height >= candidate.dot {
+                continue;
+            }
+            let Some(projection) = at.camera.project_map_icon(world, at.viewport, extent) else {
+                continue;
+            };
+            let text = if height >= candidate.text {
+                None
+            } else {
+                match &candidate.name {
+                    Ok(name) => name.clone(),
+                    Err(reason) => {
+                        self.report.refused_names += 1;
+                        *self
+                            .report
+                            .refused_localisation
+                            .entry(reason.clone())
+                            .or_default()
+                            .entry(candidate.province)
+                            .or_default() += 1;
+                        None
+                    }
+                }
+            };
+            self.placed.push(Label {
+                province: candidate.province,
+                screen: projection.position,
+                depth: projection.depth,
+                capital: candidate.capital,
+                frame: candidate.frame,
+                priority: candidate.priority,
+                text,
+                anchors: [candidate.dot, candidate.text].map(|cutoff| IconAnchor {
+                    world,
+                    cutoff,
+                    family: IconFamily::Labels,
+                    moves: None,
+                }),
+            });
+        }
+    }
 }
 
 /// Native window histories and cached text; the name cache belongs to each reused slot.
 #[derive(Debug, Default)]
 pub struct LabelView {
     pools: [PoolView; 2],
+    /// The labels the kept draw drew and the projection it read: a draw of the same labels from
+    /// the same projection draws and reports the same again.
+    shown: Vec<Label>,
+    /// The dirty bits the kept draw read, one per kept label.
+    shown_dirty: Vec<bool>,
+    projected: LabelReport,
+    /// What the kept draw drew and reported. A draw that finds nothing changed leaves them
+    /// standing.
+    drawn: Batch,
+    report: LabelReport,
     texts: [BTreeMap<SlotId, String>; 2],
     /// What each pool's update last wrote to each live owner's window: the same again is no
     /// change ([`PoolView::present_kept`]).
@@ -449,6 +508,16 @@ struct Written {
 }
 
 impl LabelView {
+    /// What the last draw drew, which a draw that found nothing changed left standing.
+    pub fn drawn(&self) -> &Batch {
+        &self.drawn
+    }
+
+    /// What the last draw reported.
+    pub fn report(&self) -> &LabelReport {
+        &self.report
+    }
+
     /// Presents the next frames for the pools' passes alone ([`PoolView::set_quiet`]).
     pub fn set_quiet(&mut self, quiet: bool) {
         for pool in &mut self.pools {
@@ -485,9 +554,8 @@ impl PreparedLabels {
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
         schedule: &Schedule,
         view: &mut LabelView,
-        batch: &mut Batch,
-    ) -> LabelReport {
-        self.draw_scheduled(context, &self.dirty(schedule), view, batch)
+    ) {
+        self.draw_scheduled(context, &self.dirty(schedule), view);
     }
 
     /// Snapshot just this layer's dirty bits before borrowed workers read the schedule.
@@ -509,10 +577,17 @@ impl PreparedLabels {
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
         dirty: &[bool],
         view: &mut LabelView,
-        batch: &mut Batch,
-    ) -> LabelReport {
+    ) {
         assert_eq!(dirty.len(), self.placed.len());
         use viewer_foundation::map::icon_windows::{Owner, Plan};
+        if self.nothing_due(context, dirty, view) {
+            viewer_foundation::map::redraws::note("labels.nothing_due", 1);
+            for (pool, name) in view.pools.iter_mut().zip([VICTORY_POINT_WINDOW, CAPITAL_WINDOW]) {
+                pool.stood_still(name);
+            }
+            return;
+        }
+        view.drawn.clear();
         let mut report = self.report.clone();
         view.labels.clear();
         for (index, name) in [VICTORY_POINT_WINDOW, CAPITAL_WINDOW]
@@ -620,9 +695,11 @@ impl PreparedLabels {
         }
         // A quiet frame ran the passes; what the labels drew before stands.
         if view.pools[0].quiet() {
-            return report;
+            view.report = report;
+            return;
         }
         let labels = &view.labels;
+        let batch = &mut view.drawn;
         let mut drawn: Vec<_> = view
             .pools
             .iter()
@@ -640,7 +717,11 @@ impl PreparedLabels {
             // The name stands with the dot and fades by the name's cutoff.
             batch.at_part_anchor(TEXT_PART, label.anchors[1]);
             let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
-            match painted[pool].paint(drawn.owner, generation, layer, label.anchors, batch, draw) {
+            match painted[pool]
+                .paint(
+                    sprites::WindowKey::new(sprites::WindowPool::Label, pool as u32, drawn.owner),
+                    drawn.owner, generation, drawn.origin, layer, label.anchors, batch, draw)
+            {
                 Ok(()) => {
                     report.icons += 1;
                     report.texts +=
@@ -661,7 +742,49 @@ impl PreparedLabels {
         for painted in painted {
             painted.finish();
         }
-        report
+        view.shown.clone_from(&self.placed);
+        view.shown_dirty.clear();
+        view.shown_dirty.extend_from_slice(dirty);
+        view.projected.clone_from(&self.report);
+        view.report = report;
+    }
+
+    /// Whether this draw would draw and report what the kept draw drew and reported, so the frame
+    /// draws nothing: the same labels placed from the same projection with the same dirty bits,
+    /// both pools standing still with every window they showed kept ([`PoolView::stands_still`]),
+    /// and every one of those windows showing what its label offers. The owners of both passes
+    /// are then the kept draw's owners, each at the same screen point with the same dirty bit, so
+    /// neither pass has anything to do and every window draws what it drew.
+    fn nothing_due(
+        &self,
+        context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
+        dirty: &[bool],
+        view: &LabelView,
+    ) -> bool {
+        if view.shown_dirty != dirty {
+            viewer_foundation::map::redraws::note("labels.due.dirty", 1);
+            return false;
+        }
+        if view.shown != self.placed {
+            viewer_foundation::map::redraws::note("labels.due.placed", 1);
+            return false;
+        }
+        if view.projected != self.report {
+            viewer_foundation::map::redraws::note("labels.due.projection", 1);
+            return false;
+        }
+        view.pools.iter().enumerate().all(|(index, pool)| {
+            pool.stands_still(context)
+                && pool.kept_windows().all(|(owner, slot)| {
+                    view.written[index].get(&owner).is_some_and(|written| {
+                        written.slot == slot
+                            && view.labels.get(&owner).is_some_and(|&at| {
+                                written.frame == self.placed[at].frame
+                                    && written.text == self.placed[at].text
+                            })
+                    })
+                })
+        })
     }
 }
 
@@ -679,10 +802,71 @@ pub(crate) mod tests {
         world: [0.0; 3],
         cutoff: f32::INFINITY,
         family: IconFamily::Labels,
+        moves: None,
     };
     use viewer_foundation::map::native_resources;
 
     use viewer_foundation::map::test_support::localisation::loaded;
+
+    /// The labels laid out once stand where each camera puts them, with the dot and the name cut
+    /// off at their own distances and the refusals counted for that camera alone.
+    #[test]
+    fn one_hour_s_labels_are_placed_for_each_camera_and_report_only_that_camera_s_refusals() {
+        use viewer_foundation::map::camera::{MapDefines, MapSize, Placement, WATER_HEIGHT};
+        let candidate = |province: u32, x: f32, dot: f32, text: f32, name: Result<Option<Arc<str>>, String>| Candidate {
+            province,
+            world: [x, WATER_HEIGHT, 1000.0],
+            capital: false,
+            frame: 1,
+            priority: 5,
+            dot,
+            text,
+            name,
+        };
+        let mut labels = PreparedLabels {
+            candidates: vec![
+                candidate(1, 2000.0, 400.0, 200.0, Ok(Some(Arc::from("Rome")))),
+                candidate(2, 2100.0, 100.0, 80.0, Ok(Some(Arc::from("Milan")))),
+                candidate(3, 2200.0, 400.0, 200.0, Err("no name".to_owned())),
+            ],
+            ..Default::default()
+        };
+        let at = |height: f32| LabelProjection {
+            camera: Placement::map([2100.0, 1000.0], height).on(MapSize::TEST, MapDefines::test()),
+            viewport: [2560, 1440],
+            ui_scale: 1.0,
+        };
+        // Near: every dot, every name, and the one refused name counted once.
+        labels.project(&at(60.0));
+        assert_eq!(labels.placed.len(), 3);
+        assert_eq!(labels.placed.iter().filter(|label| label.text.is_some()).count(), 2);
+        assert_eq!(labels.report.refused_names, 1);
+        assert_eq!(labels.report.refused_localisation["no name"][&3], 1);
+        // Projected again at the same height: the report stands for this projection, not both.
+        let screens: Vec<[f32; 2]> = labels.placed.iter().map(|label| label.screen).collect();
+        labels.project(&at(60.0));
+        assert_eq!(labels.report.refused_names, 1, "the report is this camera's, never a sum");
+        assert_eq!(labels.placed.iter().map(|label| label.screen).collect::<Vec<_>>(), screens);
+        // Higher: Milan's dot and every name are gone, so nothing is refused.
+        labels.project(&at(300.0));
+        assert_eq!(labels.placed.iter().map(|label| label.province).collect::<Vec<_>>(), vec![1, 3]);
+        assert!(labels.placed.iter().all(|label| label.text.is_none()));
+        assert_eq!(labels.report.refused_names, 0);
+        // Higher still: no label stands at all.
+        labels.project(&at(500.0));
+        assert!(labels.placed.is_empty());
+        // Moving the camera moves every label and keeps what each shows.
+        labels.project(&at(60.0));
+        let near = labels.placed.iter().map(|label| (label.province, label.text.clone())).collect::<Vec<_>>();
+        let mut moved = at(60.0);
+        moved.camera.center[0] += 40.0;
+        labels.project(&moved);
+        assert_eq!(labels.placed.iter().map(|label| (label.province, label.text.clone())).collect::<Vec<_>>(), near);
+        assert!(
+            labels.placed.iter().zip(&screens).all(|(label, before)| label.screen[0] != before[0]),
+            "a pan moves every label on screen"
+        );
+    }
     #[test]
     fn label_candidates_keep_province_order_and_chosen_capitals() {
         use replay_data::rows::{
@@ -881,7 +1065,6 @@ pub(crate) mod tests {
             time: Some(0.),
         };
         let labels = PreparedLabels {
-            report: Default::default(),
             placed: vec![
                 Label {
                     province: 1,
@@ -904,13 +1087,15 @@ pub(crate) mod tests {
                     anchors: [UNANCHORED; 2],
                 },
             ],
+            ..Default::default()
         };
         let mut view = LabelView::default();
-        let mut batch = Batch::default();
-        let report = labels.draw(&context, &Schedule::default(), &mut view, &mut batch);
+        labels.draw(&context, &Schedule::default(), &mut view);
+        let report = view.report().clone();
         assert_eq!(report.icons, 2, "{:?}", report.refused_gui);
-        assert_eq!(batch.quads.len(), 2);
-        let corners: Vec<_> = batch
+        assert_eq!(view.drawn().quads.len(), 2);
+        let corners: Vec<_> = view
+            .drawn()
             .quads
             .iter()
             .map(|quad| quad.exact.as_ref().unwrap().corners)
@@ -923,7 +1108,7 @@ pub(crate) mod tests {
             corners[1],
             [[100., 90.], [120., 90.], [120., 100.], [100., 100.]]
         );
-        assert!(batch.quads[0].layer < batch.quads[1].layer);
+        assert!(view.drawn().quads[0].layer < view.drawn().quads[1].layer);
 
         // The borrowed-worker path snapshots dirty bits before any GUI/resource work.
         // Compare complete batches/reports from independent retained pools, not a redraw
@@ -935,13 +1120,13 @@ pub(crate) mod tests {
         let outputs: [_; 2] = std::array::from_fn(|_| std::sync::Mutex::new(None));
         workers.run(2, &|index| {
             let mut view = LabelView::default();
-            let mut batch = Batch::default();
-            let report = if index == 0 {
-                labels.draw(&context, &Schedule::default(), &mut view, &mut batch)
+            if index == 0 {
+                labels.draw(&context, &Schedule::default(), &mut view);
             } else {
-                labels.draw_scheduled(&context, &dirty, &mut view, &mut batch)
-            };
-            *outputs[index].lock().unwrap() = Some((batch, report));
+                labels.draw_scheduled(&context, &dirty, &mut view);
+            }
+            *outputs[index].lock().unwrap() =
+                Some((view.drawn().clone(), view.report().clone()));
         });
         let [
             (serial_batch, serial_report),
@@ -986,7 +1171,6 @@ pub(crate) mod tests {
             anchors: [UNANCHORED; 2],
         };
         let hour = |berlin: &str| PreparedLabels {
-            report: Default::default(),
             placed: vec![
                 label(1, [100., 100.], false, 1, Some(berlin)),
                 label(2, [200., 200.], false, 1, None),
@@ -994,6 +1178,7 @@ pub(crate) mod tests {
                 // Off screen: requested and erased on every frame, kept off screen while dirty.
                 label(4, [-5000., 150.], true, 1, None),
             ],
+            ..Default::default()
         };
         // (Berlin's name, the off-screen capital's province dirty, why each pool laid out)
         let frames = [
@@ -1009,16 +1194,31 @@ pub(crate) mod tests {
         for (at, (berlin, dirty, unkept)) in frames.into_iter().enumerate() {
             let labels = hour(berlin);
             let dirty = [false, false, false, dirty];
-            let mut batch = Batch::default();
-            let report = labels.draw_scheduled(&context, &dirty, &mut view, &mut batch);
+            labels.draw_scheduled(&context, &dirty, &mut view);
             assert_eq!(view.pools.each_ref().map(PoolView::unkept), unkept, "frame {at}");
             // The same hour drawn by a view with no history.
-            let mut fresh = Batch::default();
-            let fresh_report =
-                labels.draw_scheduled(&context, &dirty, &mut LabelView::default(), &mut fresh);
-            assert_eq!(report, fresh_report, "frame {at}");
-            assert_eq!(format!("{:?}", batch.quads), format!("{:?}", fresh.quads), "frame {at}");
+            let mut fresh = LabelView::default();
+            labels.draw_scheduled(&context, &dirty, &mut fresh);
+            assert_eq!(view.report(), fresh.report(), "frame {at}");
+            assert_eq!(
+                format!("{:?}", view.drawn().quads),
+                format!("{:?}", fresh.drawn().quads),
+                "frame {at}"
+            );
         }
+        // The same hour and camera again: nothing is due, so nothing is drawn and what stands is
+        // what a view with no history draws.
+        let labels = hour("Potsdam");
+        let dirty = [false; 4];
+        labels.draw_scheduled(&context, &dirty, &mut view);
+        assert!(labels.nothing_due(&context, &dirty, &view), "nothing is due");
+        let mut fresh = LabelView::default();
+        labels.draw_scheduled(&context, &dirty, &mut fresh);
+        assert_eq!(view.report(), fresh.report());
+        assert_eq!(
+            format!("{:?}", view.drawn().quads),
+            format!("{:?}", fresh.drawn().quads)
+        );
     }
 
     #[test]
@@ -1043,9 +1243,9 @@ pub(crate) mod tests {
             world: [100.0, 10.0, 200.0],
             cutoff,
             family: IconFamily::Labels,
+            moves: None,
         };
         let labels = PreparedLabels {
-            report: Default::default(),
             placed: vec![Label {
                 province: 1,
                 screen: [100., 100.],
@@ -1056,17 +1256,19 @@ pub(crate) mod tests {
                 text: Some("Berlin".into()),
                 anchors: [at(400.0), at(250.0)],
             }],
+            ..Default::default()
         };
         let mut view = LabelView::default();
-        let mut batch = Batch::default();
-        let report = labels.draw(&context, &Schedule::default(), &mut view, &mut batch);
+        labels.draw(&context, &Schedule::default(), &mut view);
+        let report = view.report().clone();
         assert_eq!(
             (report.icons, report.texts),
             (1, 1),
             "{:?}",
             report.refused_gui
         );
-        let cutoffs: Vec<f32> = batch
+        let cutoffs: Vec<f32> = view
+            .drawn()
             .quads
             .iter()
             .map(|quad| {
@@ -1082,6 +1284,7 @@ pub(crate) mod tests {
             "{cutoffs:?}"
         );
         // Later pushes are screen interface again.
+        let mut batch = view.drawn().clone();
         batch.push(batch.quads[0].clone());
         assert_eq!(batch.quads.last().unwrap().anchor, None);
     }
@@ -1107,7 +1310,6 @@ pub(crate) mod tests {
         };
         let count = MapIconPool::Label.initial() + 2 * 16 + 1;
         let labels = PreparedLabels {
-            report: Default::default(),
             placed: (1..=count)
                 .map(|province| Label {
                     province: province as u32,
@@ -1120,24 +1322,24 @@ pub(crate) mod tests {
                     anchors: [UNANCHORED; 2],
                 })
                 .collect(),
+            ..Default::default()
         };
         let mut view = LabelView::default();
         let mut frames = DumpFrames::default();
-        let mut batch = Batch::default();
         let mut presentations = 0;
-        let report = loop {
-            batch.clear();
-            let report = labels.draw(&context, &Schedule::default(), &mut view, &mut batch);
+        loop {
+            labels.draw(&context, &Schedule::default(), &mut view);
             presentations += 1;
             if !frames.next(&view.retries()) {
-                break report;
+                break;
             }
-        };
+        }
+        let report = view.report().clone();
         assert_eq!(report.icons, count, "{:?}", report.refused_gui);
-        assert_eq!(batch.quads.len(), count);
+        assert_eq!(view.drawn().quads.len(), count);
         assert_eq!(
-            presentations, 4,
-            "33 missed requests take three growth/re-ask rounds"
+            presentations, 2,
+            "one growth builds a window for each of the 33 missed requests, which ask again once"
         );
         assert!(view.retries().is_empty());
     }
@@ -1155,7 +1357,6 @@ pub(crate) mod tests {
             time: Some(0.),
         };
         let labels = PreparedLabels {
-            report: LabelReport::default(),
             placed: [false, true, true]
                 .map(|capital| Label {
                     province: 1,
@@ -1168,13 +1369,11 @@ pub(crate) mod tests {
                     anchors: [UNANCHORED; 2],
                 })
                 .into(),
+            ..Default::default()
         };
-        let report = labels.draw(
-            &context,
-            &Schedule::default(),
-            &mut LabelView::default(),
-            &mut Batch::default(),
-        );
+        let mut view = LabelView::default();
+        labels.draw(&context, &Schedule::default(), &mut view);
+        let report = view.report();
         assert_eq!(
             report.refused_gui["victory_point_mapicon is not drawn: no GUI template is registered"],
             1

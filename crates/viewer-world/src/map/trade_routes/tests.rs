@@ -396,6 +396,7 @@ fn a_bad_naval_line_takes_the_hotspot_variant_where_the_viewed_country_is_ineffi
             bad,
             reverse: false,
             convoys_assigned: 0,
+            assigned: super::Assigned::None,
             client: 0,
         }
     }
@@ -444,6 +445,25 @@ fn convoy_counts_round_the_scaled_assignment_into_one_to_the_maximum() {
     assert!(!convoys_shown(120.0, &defines, true, true));
     assert!(!convoys_shown(50.0, &defines, false, true));
     assert!(!convoys_shown(50.0, &defines, true, false));
+}
+
+/// The convoys made again from the lines a build kept are the ones a whole build pushes: each
+/// line's count from the row it assigns now, the lines assigned none left out, and the ordinals
+/// running over what is left. With no entity kept, none is made: the lines are built whole.
+#[test]
+fn convoys_made_again_from_the_lines_kept_are_counted_and_numbered_as_a_whole_build_does() {
+    let defines = ConvoyDefines { scale_factor: 0.3, max: 4, speed: 0.6, sleep: 3.0, route_offset: 0.5, cutoff: 120.0 };
+    let sailing = |assigned| Sailing { assigned, points: vec![[1., 2.], [3., 4.]], map_width: 8. };
+    let kept = TradeRoutes {
+        sailing: vec![sailing(Assigned::Origin(0)), sailing(Assigned::Client(1)), sailing(Assigned::Client(0)), sailing(Assigned::None)],
+        convoy_entity: Some("convoy".to_owned()),
+        ..TradeRoutes::default()
+    };
+    let made = sailed(&kept, &defines, &[0], &[4, 10]).expect("the entity the build resolved");
+    assert_eq!(made.iter().map(|line| (line.seed, line.count)).collect::<Vec<_>>(), [(0, convoy_count(10, &defines)), (1, convoy_count(4, &defines))]);
+    assert!(made.iter().all(|line| line.entity == "convoy" && line.points == [[1., 2.], [3., 4.]] && line.map_width == 8.));
+    assert!(sailed(&TradeRoutes { sailing: kept.sailing.clone(), ..TradeRoutes::default() }, &defines, &[0], &[4, 10]).is_none());
+    assert_eq!(sailed(&kept, &defines, &[0], &[0, 0]).expect("no line sails"), []);
 }
 
 #[test]

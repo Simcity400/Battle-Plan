@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use super::{NavalMarkers, Shore, TABLES};
 use crate::{
     layers::{
@@ -11,7 +12,6 @@ use crate::{
 use installed_content_core::map::ProvinceKind;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, NavalCombatSideDetails, NavalProvinceCombatRow, Opaque, TableId};
-use std::{sync::Arc, time::Duration};
 use viewer_counters::map::counters::NavalMarkerValues;
 use viewer_foundation::{
     engaged::Engaged,
@@ -112,8 +112,7 @@ fn history() -> Arc<History> {
     covered.last = 399;
     covered.viewers.push((0, 0));
     for (combat, flag) in [(500, Engaged::Yes), (501, Engaged::No)] {
-        covered.points[NAVAL].insert((combat, 0), vec![(0, flag)]);
-        covered.points[NAVAL].insert((combat, 1), vec![(0, flag)]);
+        covered.fold(false).record(NAVAL, 0, &[((combat, 0), flag), ((combat, 1), flag)], &[]);
     }
     history.branches.lock().unwrap().insert(0, covered);
     history
@@ -237,8 +236,7 @@ fn a_part_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no budget, a unit a frame to the newest.
-    side.set_budget(Duration::ZERO);
+    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
@@ -336,4 +334,21 @@ fn the_layer_declares_against_this_schema() {
     layer.inputs(&View::default(), &mut inputs).unwrap();
     assert_eq!(inputs.upstream(), ["engagements"]);
     assert_eq!(inputs.into_tables().len(), TABLES.len());
+}
+
+/// Hours alone move the layer's head: on the base every stepped hour read every live combat's
+/// kept frame from the index and compared the whole map with the one the last make used. A
+/// stretch of hours that changes no row and no kept frame reads no frame and makes nothing.
+#[test]
+fn hours_that_change_no_combat_read_no_frame_and_make_nothing() {
+    let units = campaign("naval markers quiet hours", |_, _| Status::Complete, |_, _| {});
+    let mut side = side_for(units);
+    reach(&mut side, 150);
+    side.settle_all().unwrap();
+    assert_eq!(icon_combats(&values(&side)), [Ok(500)], "the engaged combat's icon is drawn before the quiet hours");
+    let held = (layer(&side).made(), layer(&side).frames_read());
+    reach(&mut side, 260);
+    side.settle_all().unwrap();
+    assert_eq!((layer(&side).made(), layer(&side).frames_read()), held, "110 hours changed nothing");
+    settled_equals_composed(&mut side);
 }

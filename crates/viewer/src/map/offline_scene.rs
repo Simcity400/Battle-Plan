@@ -219,15 +219,17 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         layers,
         &defines,
         [map.width, map.height],
+        viewer_world::map::weather_effects::RegionProvinces::new(&regions, |province| {
+            map_data.definitions.contains_key(&province)
+        }),
         decode,
     )?;
-    if !weather.unresolved.is_empty() {
-        warnings.push(format!(
-            "{} unresolved particle declarations: {}",
-            weather.unresolved.len(),
-            weather.unresolved.join(", ")
-        ));
-    }
+    warnings.extend(
+        weather
+            .withheld
+            .iter()
+            .map(|why| format!("Withheld, draws nothing: {why}")),
+    );
     pollster::block_on(async {
         let lifecycle = shader_pipeline::gpu::device_lifecycle();
         let instance = shader_pipeline::gpu::instance();
@@ -258,6 +260,8 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
             &tree_field,
         )?;
         scene.set_map_frame(&device, &queue, &frame_assets)?;
+        // Every view this dump saves poses its figures on the frame that draws them.
+        scene.settle_poses(true);
         scene.warm_weather(&device, &queue, weather)?;
         scene.set_rivers(&device, &queue, &river_assets, &river_mesh)?;
         let impacts = synthetic_impacts(layers, &input.impacts)?;

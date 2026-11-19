@@ -17,6 +17,9 @@ pub struct Step {
     pub(crate) piece: Option<usize>,
     pub(crate) reset: bool,
     pub(crate) tables: Vec<Changes>,
+    /// The hours of the step that wrote a table read hour by hour ([`crate::Declared::hourly`]),
+    /// in table order and rising hours.
+    pub(crate) hours: Vec<Changes>,
     /// The states rebuilt for the tables it resets, each until its reader takes it.
     pub(crate) states: Mutex<Vec<Rebuilt>>,
     pub(crate) built: Built,
@@ -77,11 +80,29 @@ impl Step {
         self.tables.binary_search_by_key(&table, Changes::table).ok().map(|at| &self.tables[at])
     }
 
+    /// Each hour of the step that wrote `table`, oldest first, for a table its readers declared
+    /// hourly ([`crate::Declared::hourly`]): one change set an hour, of the same columns as the
+    /// step's own, holding the cells written at that hour with the values it left them and the
+    /// rows born and gone in it; [`Changes::head`] is the hour. An hour that wrote nothing is not
+    /// there, and a step whose hours are nobody's picture — a seek's reset, a piece's crossing, or
+    /// a lane covering more hours than the pace's own step (a catch-up, or a table taking up the
+    /// hours a stall left) — carries none, its one change set standing for its whole span as
+    /// before. A table that was short reaches back before [`Step::first`], as its own change set
+    /// does.
+    ///
+    /// An hour's set names no string and carries no status, no renumber and no passing rows: those
+    /// are the step's own change set's, over the same hours.
+    pub fn hours_of(&self, table: usize) -> &[Changes] {
+        let from = self.hours.partition_point(|changes| changes.table() < table);
+        let to = from + self.hours[from..].partition_point(|changes| changes.table() == table);
+        &self.hours[from..to]
+    }
+
     /// A copy the ring changes in its place while a consumer that looked ahead holds this one; the
     /// states rebuilt for it move to the copy.
     pub(crate) fn copied(&self) -> Self {
         let states = std::mem::take(&mut *self.states.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        Self { charge: Mutex::default(), epoch: self.epoch, seq: self.seq, restep: self.restep, first: self.first, last: self.last, piece: self.piece, reset: self.reset, tables: self.tables.clone(), states: Mutex::new(states), built: self.built }
+        Self { charge: Mutex::default(), epoch: self.epoch, seq: self.seq, restep: self.restep, first: self.first, last: self.last, piece: self.piece, reset: self.reset, tables: self.tables.clone(), hours: self.hours.clone(), states: Mutex::new(states), built: self.built }
     }
 
     pub fn built(&self) -> &Built {
@@ -90,12 +111,12 @@ impl Step {
 
     /// The bytes its change sets carry.
     pub fn payload(&self) -> usize {
-        self.tables.iter().map(Changes::payload).sum()
+        self.tables.iter().chain(&self.hours).map(Changes::payload).sum()
     }
 
     /// The bytes it holds, buffers included.
     pub fn bytes_held(&self) -> usize {
-        self.tables.iter().map(Changes::bytes_held).sum::<usize>() + self.tables.capacity() * size_of::<Changes>()
+        self.tables.iter().chain(&self.hours).map(Changes::bytes_held).sum::<usize>() + (self.tables.capacity() + self.hours.capacity()) * size_of::<Changes>()
     }
 }
 
@@ -104,6 +125,9 @@ impl Step {
 pub struct Built {
     /// The stepper's wall time: lanes stepped and change sets filled.
     pub ns: u64,
+    /// The stepper thread's own CPU in that wall time (none while it is off a core, and none of a
+    /// helper thread's own work on a split step), zero unless accounting is on.
+    pub cycles: u64,
     /// Threads that stepped lanes.
     pub threads: u32,
     pub cells: u64,

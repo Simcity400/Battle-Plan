@@ -124,26 +124,24 @@ mod tests {
 
     #[test]
     fn incomplete_weather_names_its_unknown_snow_and_mud_in_the_status_line() {
+        // The status line is the only place the gap is worded; ordinary viewing hatches it.
         let whole = Summary {
             complete: true,
             ..Summary::default()
         };
-        assert_eq!(whole.note(), None);
-        assert!(!whole.line().contains("not recorded"));
-        let partial = Summary::default();
-        let note = "Snow and mud not recorded for some provinces this hour";
-        assert_eq!(partial.note(), Some(note));
-        assert!(partial.line().ends_with(note));
+        assert!(!whole.line().contains("incomplete"));
+        assert!(!whole.line().contains("unavailable"));
+        assert!(Summary::default().line().contains("(incomplete)"));
         let edges = Summary {
             complete: true,
             missing_edges: 5,
             ..Summary::default()
         };
-        assert_eq!(
-            edges.note(),
-            Some("Snow and mud not recorded at the map's edge this hour")
+        assert!(
+            edges
+                .line()
+                .ends_with("5 retained snow/mud edge cells unavailable")
         );
-        assert!(edges.line().contains("5 retained snow/mud edge cells unavailable"));
     }
 }
 
@@ -152,7 +150,9 @@ mod tests {
 pub struct SnowMud {
     pub width: u32,
     pub height: u32,
-    /// `width * height` RGBA8 texels, row 0 at world `z = 0`.
+    /// `width * height` RGBA8 texels, row 0 at world `z = 0`. A cell is the mud, snow, snow and
+    /// mud it draws, so it reads the same backwards: its planes are its bytes, whichever maker
+    /// wrote it.
     pub texels: Paged<u8>,
     /// One byte per cell in texel order: 1 where the hour's observation leaves the cell's snow
     /// and mud unknown, so its texels hold no observed value; else 0.
@@ -201,10 +201,11 @@ product_codec::product! {
 }
 
 impl Summary {
-    /// One line for the status bar and the headless dump.
+    /// One line for the status bar and the headless dump. Ordinary viewing shows no notice
+    /// over the map: the scene hatches the cells this line calls incomplete or unavailable.
     pub fn line(&self) -> String {
         format!(
-            "{} provinces{}, {} with snow, {} drawn snowed, {} drawn muddy{}{}",
+            "{} provinces{}, {} with snow, {} drawn snowed, {} drawn muddy{}",
             self.provinces,
             if self.complete { "" } else { " (incomplete)" },
             self.with_snow,
@@ -218,20 +219,7 @@ impl Summary {
                     self.missing_edges
                 )
             },
-            self.note().map_or(String::new(), |note| format!("; {note}"))
         )
-    }
-
-    /// The notice normal viewing shows when part of the hour's snow and mud is unknown.
-    pub fn note(&self) -> Option<&'static str> {
-        match (self.complete, self.missing_edges == 0) {
-            (true, true) => None,
-            (true, false) => Some("Snow and mud not recorded at the map's edge this hour"),
-            (false, true) => Some("Snow and mud not recorded for some provinces this hour"),
-            (false, false) => Some(
-                "Snow and mud not recorded for some provinces or at the map's edge this hour",
-            ),
-        }
     }
 }
 

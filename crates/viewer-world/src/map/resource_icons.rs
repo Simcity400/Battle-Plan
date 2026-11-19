@@ -419,6 +419,7 @@ pub fn lay_out(inputs: &ResourceIconInputs<'_>, icons: &HourIcons) -> PreparedRe
                 world,
                 cutoff: defines.icons_cutoff,
                 family: IconFamily::Resources,
+                moves: None,
             },
             priority,
             text,

@@ -995,7 +995,9 @@ fn sort_port_units(
 pub(super) struct PortTables {
     anchors: Vec<(u32, [f32; 3])>,
     unanchored: usize,
-    rosters: BTreeMap<u32, Vec<(usize, u32)>>,
+    /// Each base province's port roster: the task forces by handle, in ordinal order. Handles,
+    /// never row positions: the hour drawn is not always the hour these were read from.
+    rosters: BTreeMap<u32, Vec<(u64, u32)>>,
     undecided: BTreeMap<u32, Cow<'static, str>>,
     refused: BTreeMap<&'static str, BTreeSet<u64>>,
 }
@@ -1038,7 +1040,7 @@ impl PortTables {
             movement,
             world: None,
         };
-        for (index, force) in context.forces.iter().enumerate() {
+        for force in context.forces {
             let joins = naval_members::HourJoins {
                 land: tables,
                 context,
@@ -1057,7 +1059,7 @@ impl PortTables {
                     out.rosters
                         .entry(force.province)
                         .or_default()
-                        .push((index, ordinal));
+                        .push((force.id, ordinal));
                 }
             }
         }
@@ -1231,6 +1233,10 @@ pub(super) const PORT_OWNER_UNLINKED: &str = "task-force roster owner not a link
 /// a task force whose row is absent from the incomplete `TaskForces` census.
 pub(super) const PORT_FORCE_UNRECORDED: &str = "task-force row absent from an incomplete census";
 
+/// A task force a port roster admitted for its hour whose row the hour drawn no longer holds: its
+/// base's port items are not reproduced.
+pub(super) const PORT_FORCE_GONE: &str = "a task force the port roster admitted has no row at the hour drawn";
+
 /// Why a base's port roster is undecided, for a task force's `reason`.
 pub(super) fn port_undecided(reason: &str) -> Cow<'static, str> {
     format!("port items are not reproduced: {reason}").into()
@@ -1269,7 +1275,7 @@ pub(super) struct PortPlans(BTreeMap<u32, PortPlan>);
 
 struct PortPlan {
     grouping: PortGrouping,
-    roster: Vec<(usize, u32)>,
+    roster: Vec<(u64, u32)>,
     flotillas: Vec<Flotilla>,
 }
 
@@ -1312,6 +1318,10 @@ fn port_items(
     };
     let air_census = (inputs.visibility.priorities == PriorityTable::StrategicAir)
         .then(|| air_grid::Census::new(frame));
+    // The task-force rows of the hour drawn, by handle: a port roster read at another hour names
+    // its task forces, and a row of this hour is never found by that hour's position.
+    let by_handle: BTreeMap<u64, &replay_data::rows::TaskForceRow> =
+        context.forces.iter().map(|force| (force.id, force)).collect();
     let mut ports: naval_windows::PortItems = cached
         .undecided
         .iter()
@@ -1343,12 +1353,25 @@ fn port_items(
         let flotillas = if hit {
             before.unwrap().flotillas.clone()
         } else {
-            let mut units: Vec<_> = roster
-                .iter()
-                .filter_map(|&(index, ordinal)| {
-                    context.unit(&context.forces[index], owner, ordinal, None)
-                })
-                .collect();
+            let mut units = Vec::with_capacity(roster.len());
+            let mut gone = None;
+            for &(force, ordinal) in roster {
+                match by_handle.get(&force) {
+                    Some(row) => units.extend(context.unit(row, owner, ordinal, None)),
+                    None => {
+                        gone = Some(force);
+                        break;
+                    }
+                }
+            }
+            if let Some(force) = gone {
+                out.report.refuse_task_forces(PORT_FORCE_GONE, [force]);
+                ports.insert(province, Err(port_undecided(PORT_FORCE_GONE)));
+                if let Some(memo) = retained.as_deref_mut() {
+                    memo.0.remove(&province);
+                }
+                continue;
+            }
             let keys = match naval_regional::sort_own(
                 &mut units,
                 inputs.selected,

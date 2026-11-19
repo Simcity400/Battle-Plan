@@ -1,5 +1,6 @@
 //! Radar range symbols in the shared map-arrow manager. Station icons and
 //! this display switch are independent; an icon hover keeps one range visible.
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use super::{arrow_shader::Arrow, order_pass::NativeInputs};
 use eframe::wgpu;
 use replay_data::rows::tables;
@@ -12,6 +13,34 @@ use viewer_foundation::map::{
     textures::{ColorSpace, upload},
     visibility::Families,
 };
+
+/// Hundred-thousandths of a radian: the fixed point an angle is carried in, recorded
+/// ([`Symbol::angle`]) or pooled here.
+const FIXED5: f64 = 100_000.0;
+
+/// The game's presentation frame period, which a page's `rotation` is one frame's turn at
+/// ([`viewer_foundation::map::ribbon_content::SymbolPage::rotation`]: "fixed5 angular step per
+/// presentation frame"). Thirty frames a second, the same period this repository already takes
+/// for the game's frame-stepped presentation in the aircraft easing (`EASING_FRAME_MS`). The
+/// sweep turns by the elapsed presentation time at this rate, so a 240 Hz display shows it
+/// turning exactly as fast as a 60 Hz one does.
+const GAME_FRAME: f32 = 1.0 / 30.0;
+
+/// Turns each pooled slot's angle by what `elapsed` seconds of presentation time make at the
+/// game's frame rate ([`GAME_FRAME`]); `flip` turns every other slot the other way, as the air
+/// ranges do. The fraction a frame leaves is kept in the angle itself, so no display rate loses
+/// it and the same wall time gives the same angle at every rate.
+fn turn(angles: &mut [f64], rotation: i64, flip: bool, elapsed: f32) {
+    if rotation == 0 || !elapsed.is_finite() || elapsed <= 0.0 {
+        return;
+    }
+    let whole = FIXED5 * f64::from(std::f32::consts::TAU);
+    let step = rotation as f64 * f64::from(elapsed) / f64::from(GAME_FRAME);
+    for (slot, angle) in angles.iter_mut().enumerate() {
+        let step = if flip && slot % 2 == 1 { -step } else { step };
+        *angle = (*angle + step).rem_euclid(whole);
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Symbol {
@@ -257,7 +286,8 @@ pub struct Pass {
     size: f32,
     colors: [[f32; 4]; 3],
     step: i64,
-    angles: Vec<i64>,
+    /// Each pooled slot's angle in [`FIXED5`], its fraction kept.
+    angles: Vec<f64>,
     field: Field,
     random: super::entity_animation::Random,
     pub shown: bool,
@@ -329,7 +359,9 @@ impl Pass {
     }
 
     /// Pooled wrappers retain angles by draw slot, including when their group changes.
-    pub fn advance(&mut self) {
+    /// `elapsed` is the presentation seconds since the last frame: the sweep turns by what that
+    /// time makes at the game's frame rate ([`turn`]), never by one step a display frame.
+    pub fn advance(&mut self, elapsed: f32) {
         let count = self
             .field
             .symbols
@@ -343,20 +375,9 @@ impl Pass {
             } else {
                 (self.random.next_word() as f32 / 2_147_483_648.) * std::f32::consts::TAU
             };
-            self.angles
-                .push(((if angle >= 0. { 1. } else { 0. }) + angle * 100_000. - 0.5) as i64);
+            self.angles.push(f64::from(angle) * FIXED5);
         }
-        if self.step != 0 {
-            for (slot, angle) in self.angles.iter_mut().enumerate() {
-                let step = if self.label == "Air ranges" && slot % 2 == 1 {
-                    self.step.wrapping_neg()
-                } else {
-                    self.step
-                };
-                let value = (angle.wrapping_add(step) as f32 / 100_000.) % std::f32::consts::TAU;
-                *angle = ((if value >= 0. { 1. } else { 0. }) + value * 100_000. - 0.5) as i64;
-            }
-        }
+        turn(&mut self.angles, self.step, self.label == "Air ranges", elapsed);
     }
 
     // Keep native frame inputs and the existing render targets borrowed for this draw.
@@ -419,11 +440,10 @@ impl Pass {
                     time,
                     0.,
                     0.,
-                    symbol
+                    (symbol
                         .angle
-                        .unwrap_or_else(|| self.angles.get(slot).copied().unwrap_or(0))
-                        as f32
-                        / 100_000.,
+                        .map_or_else(|| self.angles.get(slot).copied().unwrap_or(0.), |angle| angle as f64)
+                        / FIXED5) as f32,
                 ],
             ];
             let constants = bytemuck::cast_slice(&constants);
@@ -446,7 +466,7 @@ impl Pass {
         if draws.is_empty() {
             return Ok(());
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("radar coverage map symbols"),
             color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
             depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
@@ -489,6 +509,41 @@ impl Pass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sweep's angle is a function of elapsed presentation time, not of the frames a display
+    /// draws: one second of presentation gives the same angle at 60, 120 and 240 frames a second,
+    /// and that angle is what the game's own frame rate makes of a second.
+    #[test]
+    fn a_sweep_turns_by_elapsed_time_whatever_the_display_s_rate() {
+        let rotation = 700;
+        let over_a_second = |rate: u32| {
+            let mut angles = vec![0.0_f64, 0.0];
+            for _ in 0..rate {
+                turn(&mut angles, rotation, true, 1.0 / rate as f32);
+            }
+            angles
+        };
+        let sixty = over_a_second(60);
+        for rate in [120, 240] {
+            for (slot, (at_sixty, at_rate)) in sixty.iter().zip(&over_a_second(rate)).enumerate() {
+                assert!(
+                    (at_sixty - at_rate).abs() < 1.0,
+                    "slot {slot} stands at {at_rate} after a second at {rate} Hz, {at_sixty} at 60 Hz"
+                );
+            }
+        }
+        // A second is thirty of the game's frames, each one `rotation`; every other slot of the
+        // air ranges turns the other way.
+        let whole = FIXED5 * f64::from(std::f32::consts::TAU);
+        assert!((sixty[0] - 30.0 * rotation as f64).abs() < 1.0, "{}", sixty[0]);
+        assert!((sixty[1] - (whole - 30.0 * rotation as f64)).abs() < 1.0, "{}", sixty[1]);
+        // A clock that stood still turns nothing, and a page with no rotation never turns.
+        let mut standing = vec![5.0_f64];
+        turn(&mut standing, rotation, false, 0.0);
+        turn(&mut standing, 0, false, 1.0);
+        assert_eq!(standing, vec![5.0]);
+    }
+
     #[test]
     fn host_centres_choose_the_narrower_wrapped_integer_box_and_keep_ordinary_ties() {
         let bounds = BTreeMap::from([

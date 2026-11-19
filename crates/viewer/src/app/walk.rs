@@ -4,7 +4,7 @@
 
 use crate::controls::Frame;
 use crate::controls::walker::{FALLBACK_FIGURE, Start, Walker, World};
-use viewer_foundation::map::camera::Camera;
+use viewer_foundation::map::camera::{Camera, Placement};
 use viewer_foundation::map::perspective::Choice;
 use viewer_world::map::models::ModelLibrary;
 use viewer_world::map::scene::PlayerModel;
@@ -25,6 +25,8 @@ pub(super) struct Walk {
     start: Option<Start>,
     /// The capture clock a placed walk last advanced to.
     clock: Option<f32>,
+    /// The eye the last frame was drawn through, which a harness run's record names.
+    eye: Option<Placement>,
 }
 
 impl Walk {
@@ -35,6 +37,7 @@ impl Walk {
             figure: None,
             start,
             clock: None,
+            eye: None,
         }
     }
 
@@ -46,6 +49,13 @@ impl Walk {
     /// Leaves the mode: the next start places the figure afresh, at the scale the user chose.
     pub(super) fn leave(&mut self) {
         self.walker = None;
+    }
+
+    /// Where the figure stands on the map, `None` while no walk runs.
+    pub(super) fn standing(&self) -> Option<[f32; 2]> {
+        self.walker
+            .as_ref()
+            .map(|walker| [walker.feet[0], walker.feet[2]])
     }
 
     /// Forgets the figure and the walker for another recording or content.
@@ -107,7 +117,14 @@ impl Walk {
         });
         walker.update(controls, wheel, height, world);
         self.scale = walker.scale;
-        walker.camera(map, height, world)
+        let eye = walker.camera(map, height, world);
+        self.eye = Some(eye.placement());
+        eye
+    }
+
+    /// The eye the last frame walked through.
+    pub(super) fn eye(&self) -> Option<Placement> {
+        self.eye
     }
 
     /// The figure as the scene draws it, while walking with one.

@@ -11,7 +11,7 @@
 //! host's roster history ([`AirMissionCounters::set_passes`]); until it answers, an alert that
 //! depends on it is undecided and its region stays marked.
 
-use super::{Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, Published, View, owned::opaque};
+use super::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Published, View, owned::opaque};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
@@ -28,6 +28,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
+    time::{Duration, Instant},
 };
 use viewer_counters::map::counters::{
     AirPasses, AirValues, CounterContent, Ground,
@@ -42,6 +43,9 @@ use viewer_foundation::map::{
 
 /// The window today's interception aggregate reads, in hours.
 const WINDOW: i32 = 24;
+
+/// How long a settle that waits however long the daily air passes take gives them.
+const WHOLE: Duration = Duration::from_secs(60);
 const TIMEOUT_UNKNOWN: &str = "NGame.AIR_LOG_TIMEOUT_HOURS is unavailable";
 const ENABLED_UNKNOWN: &str = "Ground Crews writer certificate or enabled-byte read is unavailable";
 const CENSUS: &str = "the regional combat census is incomplete";
@@ -60,7 +64,7 @@ impl Content {
         Self { timeout: counters.air_log_timeout().map_err(str::to_owned), ground: counters.ground_crew_defines().map_err(str::to_owned) }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn of(timeout: Result<i32, String>, ground: Result<(i64, i64), String>) -> Self {
         Self { timeout, ground }
     }
@@ -126,7 +130,8 @@ impl Asker {
         let shared: Arc<(Mutex<Answers>, Condvar)> = Arc::default();
         let held = Arc::clone(&shared);
         let spawned = std::thread::Builder::new().name("air mission passes".into()).spawn(move || {
-            viewer_foundation::worker_priority::background_priority();
+            // The step's settle joins its product: at the head's priority, never below normal.
+            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
             while let Ok(question) = take.recv() {
                 let (branch, pass, slot) = question;
                 let answer = passes.visited(branch, pass, slot);
@@ -627,16 +632,20 @@ impl AirMissionCounters {
         self.waiting.entry(question).or_default().insert(region);
     }
 
-    /// Regions whose question was answered marked again; with no limit, waits for every answer.
-    fn take_answers(&mut self, budget: &Budget) {
+    /// Regions whose question was answered marked again, the answers still out waited for within
+    /// the settling's budget.
+    fn take_answers(&mut self, settling: &Settling) {
         let Some(asker) = &self.asker else { return };
         let shared = Arc::clone(&asker.shared);
         let (answers, signal) = &*shared;
         let mut held = lock(answers);
-        if budget.unlimited_now() {
-            while self.waiting.keys().any(|question| held.asked.contains(question)) {
-                held = signal.wait(held).unwrap_or_else(|error| error.into_inner());
+        let until = Instant::now() + settling.waiting(WHOLE);
+        while self.waiting.keys().any(|question| held.asked.contains(question)) {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
             }
+            held = signal.wait_timeout(held, left).unwrap_or_else(|error| error.into_inner()).0;
         }
         let answered: Vec<(BranchId, Hour, u32)> = self.waiting.keys().filter(|question| held.given.contains_key(*question)).copied().collect();
         drop(held);
@@ -747,8 +756,8 @@ impl AirMissionCounters {
 }
 
 impl AirMissionCounters {
-    /// Recomputes what is dirty: registrations and holder rows whole, then regions within `budget`.
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    /// Recomputes what is dirty: registrations and holder rows whole, then regions within `settling`.
+    fn settle_dirty(&mut self, mirrors: &Mirrors, settling: Settling) {
         self.frame += 1;
         let core = if self.hidden { Err("not drawn at this view".to_owned()) } else { self.core(mirrors) };
         let ours = match core {
@@ -780,7 +789,7 @@ impl AirMissionCounters {
         let began = std::time::Instant::now();
         let mut dirty = std::mem::take(&mut self.registrations_dirty);
         self.phases[0].0 += dirty.len() as u64;
-        let _ = dirty.settle(&mut Budget::unlimited(), |slot| {
+        let _ = dirty.settle(|slot| {
             self.settle_registration(mirrors, slot, ours);
             Ok(())
         });
@@ -811,19 +820,19 @@ impl AirMissionCounters {
             (self.hour, self.day) = (Some(hour), day);
             self.phases[3].1 += began.elapsed().as_nanos() as u64;
         }
-        self.take_answers(budget);
+        self.take_answers(&settling);
         let began = std::time::Instant::now();
         let mut dirty = std::mem::take(&mut self.regions);
         let taken = dirty.len() as u64;
-        let _ = dirty.settle(budget, |region| {
+        let _ = dirty.settle(|region| {
             self.settle_region(mirrors, region, ours, hour);
             Ok(())
         });
         self.phases[2].0 += taken - dirty.len() as u64;
         self.regions = dirty;
         self.phases[2].1 += began.elapsed().as_nanos() as u64;
-        if budget.unlimited_now() && !self.waiting.is_empty() {
-            self.settle_dirty_again(mirrors, ours, hour);
+        if !self.waiting.is_empty() {
+            self.settle_dirty_again(mirrors, ours, hour, settling);
         }
         if self.waiting.is_empty() && self.marks() == 0 {
             self.product_hour = Some(hour);
@@ -835,16 +844,20 @@ impl AirMissionCounters {
         self.regions.len() + self.registrations_dirty.len() + self.combat_changed.len() + usize::from(self.all)
     }
 
-    /// With no limit, the regions waiting for an answer are made again once it is given.
-    fn settle_dirty_again(&mut self, mirrors: &Mirrors, ours: u32, hour: Hour) {
+    /// The regions waiting for an answer are made again once it is given, within the budget.
+    fn settle_dirty_again(&mut self, mirrors: &Mirrors, ours: u32, hour: Hour, settling: Settling) {
         while !self.waiting.is_empty() {
-            self.take_answers(&Budget::unlimited());
+            let before = self.waiting.len();
+            self.take_answers(&settling);
+            if self.waiting.len() == before && settling.waiting(WHOLE).is_zero() {
+                break;
+            }
             let mut dirty = std::mem::take(&mut self.regions);
             if dirty.len() == 0 {
                 self.regions = dirty;
                 break;
             }
-            let _ = dirty.settle(&mut Budget::unlimited(), |region| {
+            let _ = dirty.settle(|region| {
                 self.settle_region(mirrors, region, ours, hour);
                 Ok(())
             });
@@ -977,7 +990,7 @@ impl Layer for AirMissionCounters {
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         let (marked, phases) = (self.marked, self.phases);
         self.all = true;
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors, Settling::Whole);
         self.publish();
         (self.marked, self.phases) = (marked, phases);
         Ok(())
@@ -997,21 +1010,17 @@ impl Layer for AirMissionCounters {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors, settling);
         self.publish();
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         // A region waiting for the daily pass worker's answer is the worker's, not carried.
         let entities = self.marks();
-        let since = [self.regions.since(), self.registrations_dirty.since()].into_iter().flatten().min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     /// Current while no question is out; while one is, the newest hour the counts stand for, or

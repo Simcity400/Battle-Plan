@@ -13,8 +13,15 @@ use viewer_foundation::map::test_support::test_tga_rgba8;
 #[derive(Default)]
 pub(super) struct Sprite {
     pub(super) origin: [f32; 2],
+    /// How far these quads stand from where the painting drew them: a plate whose stack and
+    /// style did not change is moved to a new origin rather than drawn again
+    /// ([`viewer_foundation::map::anchored::shift`]), and the batch records where it stands.
+    pub(super) stood: [i32; 2],
     /// The column priority its quads' layers were ranked with.
     pub(super) priority: i8,
+    /// The painting these quads came from, which the batch records so the sprite pass knows the
+    /// plate draws what it drew ([`viewer_foundation::map::sprites::next_painting`]).
+    pub(super) painting: u64,
     pub(super) batch: Batch,
     pub(super) presented: Presented,
 }

@@ -528,6 +528,8 @@ fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         })],
+        instanced: 0,
+        stream: None,
     };
     let clear = |encoder: &mut wgpu::CommandEncoder| {
         let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -797,6 +799,8 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
             blend: None,
             write_mask: wgpu::ColorWrites::ALL,
         })],
+        instanced: 0,
+        stream: None,
     };
     // Each path owns its frame arena. An intentional upload refusal ends that frame,
     // so the next retry resets it before staging rather than continuing a failed frame.

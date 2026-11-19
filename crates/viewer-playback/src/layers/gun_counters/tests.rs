@@ -20,7 +20,6 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
-    time::Duration,
 };
 use viewer_counters::map::counters::{Gun, GunMember};
 use viewer_foundation::{
@@ -183,7 +182,7 @@ fn world(store: &mut Store) {
 
 /// Four hours a step, a frame a second.
 fn quick() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
 fn fog_off() -> View {
@@ -321,8 +320,7 @@ fn a_gun_changed_twice_before_it_settles_shows_its_newest_values() {
     let mut side = side_for(units);
     reach(&mut side, 150);
     side.settle_all().unwrap();
-    // Both changes marked before any settle; then, with no budget, a unit a frame to the newest.
-    side.set_budget(Duration::ZERO);
+    // Both changes marked before any settle; then, with no settling, a unit a frame to the newest.
     let settles = side.hold_settles();
     reach(&mut side, 204);
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
@@ -387,7 +385,7 @@ fn tables_not_wholly_recorded_draw_as_today_draws_them() {
     let mut side = side_for(units);
     reach(&mut side, 204);
     settled_equals_composed(&mut side);
-    assert_eq!(gun_of(&side, 501), Some(Gun::Unnamed("token 8 is not in LexicalTokens".into())));
+    assert_eq!(gun_of(&side, 501), Some(Gun::Unnamed("token 8 is not in lexical tokens".into())));
     reach(&mut side, 212);
     settled_equals_composed(&mut side);
     assert_eq!(gun_of(&side, 500), Some(Gun::Unnamed("sub-unit Other is not authored".into())));

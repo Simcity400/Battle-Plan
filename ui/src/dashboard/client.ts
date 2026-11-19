@@ -59,6 +59,9 @@ export interface DashboardMapView {
   sequence: number;
   /** Changes only on a seek; omitted for pinned targets. */
   seekSequence?: number;
+  /** When the page composed this target, on its own monotonic clock: the map places its anchor
+   * by that time, so delivery delay moves no clock. */
+  composedAt: number;
   bounds: MapBounds;
   clip: MapBounds;
   visible: boolean;

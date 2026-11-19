@@ -348,6 +348,8 @@ impl Renderer {
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+                instanced: 0,
+                stream: None,
             },
             compiled: OnceLock::new(),
         }

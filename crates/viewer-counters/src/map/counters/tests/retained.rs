@@ -234,7 +234,8 @@ fn a_new_land_product_lays_out_and_draws_again_only_the_column_whose_members_cha
                 ((2, STANDSTILL), source(&[12])),
                 ((3, STANDSTILL), source(&[13])),
             ]
-            .into();
+            .into_iter()
+            .collect();
             // Division 10 weakens: only its source is a new allocation, as the counters layer publishes.
             let mut weaker = first.clone();
             let mut members = weaker[&(1, STANDSTILL)].to_vec();
@@ -306,7 +307,7 @@ fn land_stacks(extra: &[u64]) -> LandStacks {
         units.iter().map(|&id| (land_unit(id, 1, 10, 10, true).member(), Ok(1))).collect::<Vec<_>>().into()
     };
     let second: Vec<u64> = std::iter::once(12).chain(extra.iter().copied()).collect();
-    [((1, STANDSTILL), source(&[10, 11])), ((2, STANDSTILL), source(&second)), ((3, STANDSTILL), source(&[13]))].into()
+    [((1, STANDSTILL), source(&[10, 11])), ((2, STANDSTILL), source(&second)), ((3, STANDSTILL), source(&[13]))].into_iter().collect()
 }
 
 /// Each frame drawn by a retained preparation against a fresh preparation; the two must be equal
@@ -493,7 +494,8 @@ fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
                 ((2, STANDSTILL), source(&[12])),
                 ((3, STANDSTILL), source(&[13])),
             ]
-            .into();
+            .into_iter()
+            .collect();
             // Division 10 weakens: only its source is a new allocation, as the counters layer publishes.
             let mut weaker = first.clone();
             let mut members = weaker[&(1, STANDSTILL)].to_vec();
@@ -557,7 +559,9 @@ fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
 }
 
 /// `batch` with the frame's clock set aside: each draw's `Time` constant and its time since its
-/// state's restart, which only a program that has not settled reads.
+/// state's restart, which only a program that has not settled reads. A native draw's rectangle
+/// is set aside with it: it has no size and holds only how far its window was moved since it
+/// was painted, which its corners and world matrix carry.
 fn clockless(batch: &Batch) -> Batch {
     use viewer_foundation::map::native_shader::draw::SPRITE_TIME;
     let mut batch = batch.clone();
@@ -565,6 +569,7 @@ fn clockless(batch: &Batch) -> Batch {
         if let Some(exact) = &mut quad.exact {
             exact.inputs[0] = 0.;
             if let Some(native) = &mut exact.native {
+                (quad.rect[0], quad.rect[1]) = (0., 0.);
                 let native = Arc::make_mut(native);
                 if let Some(time) = native.constants.get_mut(SPRITE_TIME as usize / 4) {
                     *time = 0.;
@@ -925,16 +930,30 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                             _ => Engaged::No,
                         };
                         for (kind, id) in [(LAND, 61), (NAVAL, 81)] {
-                            covered.points[kind].insert((id, 0), vec![(frame.hour, flag)]);
-                            covered.points[kind].insert((id, 1), vec![(frame.hour, flag)]);
-                            covered.recording[kind]
-                                .insert((id, 0), vec![(frame.hour, Engaged::Yes)]);
+                            covered.fold(false).record(
+                                kind,
+                                frame.hour,
+                                &[((id, 0), flag), ((id, 1), flag)],
+                                &[],
+                            );
+                            covered.fold(true).record(
+                                kind,
+                                frame.hour,
+                                &[((id, 0), Engaged::Yes)],
+                                &[],
+                            );
                         }
                         for (kind, id) in [(LAND_ICON, 61), (NAVAL_ICON, 81)] {
-                            covered.icons[kind]
-                                .insert(id, vec![(frame.hour, Some(Kept::Frame(7)))]);
-                            covered.recording_icons[kind]
-                                .insert(id, vec![(frame.hour, Some(Kept::Frame(2)))]);
+                            covered.fold(false).record_icons(
+                                kind,
+                                frame.hour,
+                                &[(id, Some(Kept::Frame(7)))],
+                            );
+                            covered.fold(true).record_icons(
+                                kind,
+                                frame.hour,
+                                &[(id, Some(Kept::Frame(2)))],
+                            );
                         }
                         if case == 5 {
                             covered.players.push((frame.hour, Some(1)));
@@ -1601,7 +1620,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
 
 /// The base windows' pools keep what they laid out while they stand still, and a changed offer
 /// lays out its own family's windows alone, kept again once the window it changed settles on the
-/// clock; every frame equals a view whose pools lay out every frame (its `art` moves each frame,
+/// clock; a moved camera lays none out (a window stands at its owner's new origin); every frame equals a view whose pools lay out every frame (its `art` moves each frame,
 /// which writes every window again). Before, the clock stood still, and a window changed by its
 /// offer never settled.
 #[test]
@@ -1637,7 +1656,7 @@ fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_
             (true, false, Some(2)),
             (false, false, Some(1)),
             (false, false, None),
-            (false, true, Some(0)),
+            (false, true, Some(2)),
             (false, true, None),
         ];
         let mut views = [BaseView::default(), BaseView::default()];

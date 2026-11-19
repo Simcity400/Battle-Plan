@@ -14,6 +14,7 @@ test-support = ["replay-derive/test-support", "installed-content-core/test-suppo
 
 [dependencies]
 job-priority.workspace = true
+rayon.workspace = true
 map-display-data.workspace = true
 map-snow.workspace = true
 replay.workspace = true

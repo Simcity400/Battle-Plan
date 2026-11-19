@@ -29,7 +29,9 @@ pub enum NativeCommand {
     },
     Open {
         path: String,
-        revision: String,
+        /// The revision the page's analysis read, which the map refuses to open anything else at;
+        /// none when the user chose the file and the map reads the revision itself.
+        revision: Option<String>,
     },
     Seek {
         path: String,
@@ -145,6 +147,11 @@ pub const MAP_UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 /// The manual map interface scales the settings offer, in percent.
 pub const MAP_UI_SCALE_CHOICES: [u32; 11] = [50, 75, 90, 100, 110, 125, 150, 175, 200, 250, 300];
 
+/// The frame rate limits the maps accept, in frames a second. The floor is one frame a second,
+/// below which a map cannot be watched at all; the ceiling is above every rate a display shows,
+/// so the limit caps nothing a display can do. `RangeInclusive::contains` is false for NaN.
+pub const MAP_FRAME_LIMIT_RANGE: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
+
 /// Small, explicit map controls. No raw tables or image pixels cross this channel.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
@@ -155,6 +162,11 @@ pub enum MapAction {
     },
     Vsync {
         enabled: bool,
+    },
+    /// Frames a second every map presents at most, evenly spaced; `None` draws as the display
+    /// and VSync allow.
+    FrameLimit {
+        hz: Option<f64>,
     },
     /// The screen-space map interface's scale; `None` matches the game on screen.
     UiScale {
@@ -432,6 +444,11 @@ impl MapAction {
                     return Err("Invalid aircraft name");
                 }
             }
+            Self::FrameLimit { hz } => {
+                if hz.is_some_and(|hz| !MAP_FRAME_LIMIT_RANGE.contains(&hz)) {
+                    return Err("Invalid map frame rate limit");
+                }
+            }
             Self::Inspect
             | Self::MapSettingsSaved
             | Self::RefreshVisualMods
@@ -565,12 +582,18 @@ pub struct MapPlayback {
     pub fraction: f64,
     /// The host clock's exact rate, in recorded hours per wall-clock second.
     pub hours_per_second: f64,
+    /// The page's own monotonic clock (`performance.now()`), in milliseconds, when it composed
+    /// this anchor: the map places the anchor by that time, so delivery delay moves no clock.
+    pub composed_at: f64,
 }
 
 impl MapPlayback {
     pub fn validate(self) -> Result<(), &'static str> {
         if !self.fraction.is_finite() || !(0.0..1.0).contains(&self.fraction) {
             return Err("Map hour fraction must be finite and in [0, 1)");
+        }
+        if !self.composed_at.is_finite() || self.composed_at < 0.0 {
+            return Err("Map anchor compose time must be finite and not negative");
         }
         if !self.hours_per_second.is_finite() || self.hours_per_second <= 0.0 {
             return Err("Map playback speed must be finite and positive");
@@ -607,6 +630,9 @@ pub struct DashboardMapView {
     /// their hour changes start a new animation history.
     #[serde(default)]
     pub seek_sequence: Option<u64>,
+    /// The page's own monotonic clock (`performance.now()`), in milliseconds, when it composed
+    /// this target: the map places its anchor by that time, so delivery delay moves no clock.
+    pub composed_at: f64,
     pub bounds: ViewBounds,
     pub clip: ViewBounds,
     pub visible: bool,
@@ -637,6 +663,9 @@ impl DashboardMapView {
         }
         if !self.hours_per_second.is_finite() || self.hours_per_second <= 0.0 {
             return Err("Map playback speed must be finite and positive");
+        }
+        if !self.composed_at.is_finite() || self.composed_at < 0.0 {
+            return Err("Map anchor compose time must be finite and not negative");
         }
         if self.sequence > MAX_EXACT_JS_INTEGER
             || self
@@ -695,7 +724,8 @@ pub struct DashboardMapState {
     pub sequence: u64,
     pub requested_sequence: u64,
     pub loading: bool,
-    /// Playing, how many hours the rendered frame trails the map's clock; none when paused.
+    /// Playing, how many hours the rendered frame trails the map's clock; none when paused, and
+    /// none for a frame of an hour the clock has not reached, which trails it by no hours at all.
     pub behind: Option<u32>,
     /// Playing, why a newer hour the clock passed is not shown: it failed or waits for memory.
     pub behind_reason: Option<String>,
@@ -807,12 +837,14 @@ mod tests {
             seek_sequence: 7,
             fraction: 0.375,
             hours_per_second: 1440.25,
+            composed_at: 12_345.5,
         };
         let json = serde_json::to_value(clock).unwrap();
         assert_eq!(
             json,
             serde_json::json!({
                 "playing": true, "seekSequence": 7, "fraction": 0.375, "hoursPerSecond": 1440.25,
+                "composedAt": 12_345.5,
             })
         );
         let decoded: super::MapPlayback = serde_json::from_value(json).unwrap();
@@ -839,6 +871,25 @@ mod tests {
             .validate()
             .is_err()
         );
+        for composed_at in [-0.001, f64::NAN, f64::INFINITY] {
+            assert!(
+                super::MapPlayback {
+                    composed_at,
+                    ..clock
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        assert!(
+            super::MapPlayback {
+                composed_at: 0.0,
+                ..clock
+            }
+            .validate()
+            .is_ok(),
+            "a page that composed its first anchor at its clock's origin"
+        );
     }
 
     #[test]
@@ -846,7 +897,7 @@ mod tests {
         let input = serde_json::json!({
             "id": "map", "sourceId": "source", "path": "replay.battleplan",
             "revision": "1", "branchId": "1", "playing": true, "hoursPerSecond": 0.25,
-            "hour": 20, "fraction": 0.0, "sequence": 8, "seekSequence": 2,
+            "hour": 20, "fraction": 0.0, "sequence": 8, "seekSequence": 2, "composedAt": 9.5,
             "bounds": { "x": 0, "y": 0, "width": 640, "height": 360 },
             "clip": { "x": 0, "y": 0, "width": 640, "height": 360 },
             "visible": true

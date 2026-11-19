@@ -1,6 +1,6 @@
 use super::{Place, Strikes};
 use crate::{
-    layers::{Budget, Inputs, Layer, View, sounds::tests::{column, complete, play, quick, record, sought, units}},
+    layers::{Inputs, Layer, View, sounds::tests::{column, complete, play, quick, record, sought, units}},
     playhead_host::{
         MapSide,
         mirror::{self, Mirror, Mirrors},
@@ -69,7 +69,7 @@ fn a_row_appended_or_forgotten_updates_the_impacts_at_the_head_as_composed() {
         let mut fresh = layer(side).fresh();
         fresh.compose(mirrors).unwrap();
         assert_eq!(layer(side).differ(&fresh), (0, None), "settled equals composed at hour {hour}");
-        fresh.settle(mirrors, &mut Budget::unlimited()).unwrap();
+        fresh.settle(mirrors, crate::layers::Settling::Whole).unwrap();
         assert_eq!(layer(side).notes(), fresh.notes(), "the notes settled equal those composed at hour {hour}");
         seen.push((hour, layer(side).product()));
         hour >= 19
@@ -109,7 +109,7 @@ fn a_strike_appended_and_forgotten_inside_a_step_reaches_the_layer_in_birth_orde
         appended += changes.log().map_or(0, |log| log.len());
         let held = mirrors(&lane);
         layer.apply_changes(&changes, &held);
-        layer.settle(&held, &mut Budget::unlimited()).unwrap();
+        layer.settle(&held, crate::layers::Settling::Whole).unwrap();
         if head == to {
             to += 4;
         }

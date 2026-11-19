@@ -8,7 +8,7 @@
 //! vision layer, the proof gives a vision whole ([`Convoys::set_vision`]); without one the layer is
 //! refused by name.
 
-use super::{Budget, Carried, Gpu, Inputs, Layer, List, Num, Published, Text, Upstream, View};
+use super::{Carried, Settling, Inputs, Layer, List, Num, Published, Text, Upstream, View};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors, UNREAD_REASON};
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
@@ -580,7 +580,9 @@ pub struct Convoys {
     /// Rows a step changed, by table index: slots written or inserted, keys deleted.
     pending: Vec<(usize, Vec<u32>, Vec<u128>)>,
     stale: bool,
-    product: TradeRoutes,
+    /// Made whole by the worker and shared from there: the frame's window takes it by reference
+    /// count and the scene reads that one.
+    product: Arc<TradeRoutes>,
     statuses: HashMap<usize, Status>,
     /// The map mode draws no trade route: it declares, holds and carries nothing.
     hidden: bool,
@@ -626,7 +628,7 @@ impl Convoys {
             culture: None,
             pending: Vec::new(),
             stale: false,
-            product: TradeRoutes::default(),
+            product: Arc::default(),
             statuses: HashMap::new(),
             hidden: false,
             frame: 0,
@@ -685,6 +687,11 @@ impl Convoys {
     /// The lines, convoys and report at the head.
     pub fn product(&self) -> &TradeRoutes {
         &self.product
+    }
+
+    /// The product the frame's window takes: the same one, by reference count.
+    pub fn product_shared(&self) -> Arc<TradeRoutes> {
+        Arc::clone(&self.product)
     }
 
     /// Rows changed, products made, ribbons kept and made, and the products' microseconds.
@@ -996,7 +1003,7 @@ impl Convoys {
             let next = if wait { made.recv().ok() } else { made.try_recv().ok() };
             let Some(made) = next else { break };
             self.in_flight = self.in_flight.saturating_sub(made.jobs);
-            self.product = made.product;
+            self.product = Arc::new(made.product);
             self.product_hour = made.hour;
             self.product_seq += 1;
             self.marked[2] += made.reused;
@@ -1008,7 +1015,7 @@ impl Convoys {
         self.stale |= self.moved && self.product.report.unavailable.is_some();
     }
 
-    fn settle_dirty(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    fn settle_dirty(&mut self, mirrors: &Mirrors, wait: bool) {
         self.frame += 1;
         // A table back after a view that drew none returns as a reset, which composes the layer.
         if self.columns.is_none() || TABLES.iter().any(|&table| mirrors.get(table).is_none()) {
@@ -1053,11 +1060,11 @@ impl Convoys {
             }
             self.stale |= changed;
         }
-        self.exchange(budget.unlimited_now());
-        if self.stale && budget.left() {
+        self.exchange(wait);
+        if self.stale {
             self.stale = false;
             self.make(mirrors);
-            self.exchange(budget.unlimited_now());
+            self.exchange(wait);
         }
         self.since = self.stale.then(|| self.since.unwrap_or(self.frame));
     }
@@ -1155,7 +1162,7 @@ impl Layer for Convoys {
         }
         let marked = self.marked;
         self.refused = Some("composing".into());
-        self.settle_dirty(mirrors, &mut Budget::unlimited());
+        self.settle_dirty(mirrors, true);
         self.marked = marked;
         Ok(())
     }
@@ -1200,12 +1207,12 @@ impl Layer for Convoys {
         self.stale |= self.product.report.unavailable.is_some();
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_dirty(mirrors, budget);
+    fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        self.settle_dirty(mirrors, settling.waits());
         Ok(())
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
         // Only whose lines or plan are drawn: the viewing country, taken when it changes.
         if self.window
             && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()
@@ -1216,18 +1223,15 @@ impl Layer for Convoys {
             self.vision = Some((vision.choice().clone(), ours));
             self.stale |= self.columns.is_some();
         }
-        self.settle_dirty(mirrors, budget);
+        self.settle_dirty(mirrors, settling.waits());
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         // A job out is the worker's: counted here it froze the shown hour while playing.
         let entities = self.pending.iter().map(|(_, slots, deleted)| slots.len() + deleted.len()).sum::<usize>() + usize::from(self.stale);
-        Carried { entities, frames: self.since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        Carried { entities }
     }
 
     /// Current once no job is out; while one is, the newest hour its product stands for, or

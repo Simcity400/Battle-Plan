@@ -12,7 +12,7 @@
 use super::{Columns, Content, Global};
 use crate::layers::owned::{Delta as Changes, Table as Mirror, Tables as Mirrors, complete, opaque, owner_rows, u32s};
 use crate::{
-    layers::{Budget, Dirty},
+    layers::Dirty,
     playhead_host::mirror::Cell,
 };
 use replay_data::rows::{Recorded, ReservedCountryIntelSample, ReservedReverseVisibilityInputs, ReverseZeroVisibilityInputs, TableId, ZeroSubjectInputs};
@@ -1241,8 +1241,8 @@ impl Fold {
         self.set_errors(Owner::Sea(division), errors);
     }
 
-    /// Sources, then provinces, then divisions at sea, within the budget; the rest carried.
-    pub(super) fn settle(&mut self, content: &Content, global: &Global, columns: &Columns, mirrors: &Mirrors, budget: &mut Budget, frame: u64) {
+    /// Sources, then provinces, then divisions at sea, within the settling; the rest carried.
+    pub(super) fn settle(&mut self, content: &Content, global: &Global, columns: &Columns, mirrors: &Mirrors, frame: u64) {
         let reads = Reads { content, global, columns, mirrors, provinces: mirrors.get(TableId::Provinces) };
         if self.rebuild {
             self.start_over(&reads, frame);
@@ -1251,14 +1251,14 @@ impl Fold {
             return;
         }
         let started = std::time::Instant::now();
-        if self.cutoffs_stale && budget.left() {
+        if self.cutoffs_stale {
             self.cutoffs_stale = false;
             self.zero_stale = true;
             self.intel_changed.clear();
             self.tables_errors(&reads);
             self.reread_cutoffs(&reads, frame, |_, _| true);
         }
-        if (self.zero_stale || !self.intel_changed.is_empty()) && budget.left() {
+        if self.zero_stale || !self.intel_changed.is_empty() {
             let zero = std::mem::take(&mut self.zero_stale);
             let mut changed: Vec<(u32, u32)> = std::mem::take(&mut self.intel_changed).into_iter().filter_map(|(owner, target)| Some((*global.links.get(&owner)?, target))).collect();
             changed.sort_unstable();
@@ -1271,9 +1271,6 @@ impl Fold {
         self.spent[0] += (cutoffs - started).as_nanos() as u64;
         let mut done = 0;
         while done < self.source_dirty.len() {
-            if done % 16 == 0 && !budget.left() {
-                break;
-            }
             let source = self.source_dirty[done];
             self.source_marked.remove(&source);
             done += 1;
@@ -1283,7 +1280,7 @@ impl Fold {
         let sources = std::time::Instant::now();
         self.spent[1] += (sources - cutoffs).as_nanos() as u64;
         let mut dirty = std::mem::take(&mut self.province_dirty);
-        let _ = dirty.settle(budget, |province| {
+        let _ = dirty.settle(|province| {
             self.refold(province, &reads);
             Ok(())
         });
@@ -1291,9 +1288,6 @@ impl Fold {
         let provinces = std::time::Instant::now();
         self.spent[2] += (provinces - sources).as_nanos() as u64;
         while let Some(&division) = self.sea_dirty.first() {
-            if !budget.left() {
-                break;
-            }
             self.sea_dirty.remove(&division);
             self.settle_sea(division, &reads);
         }

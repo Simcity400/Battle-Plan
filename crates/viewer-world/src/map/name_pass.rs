@@ -1388,22 +1388,16 @@ impl NamePass {
                 compiled.bindings(arena, frame, draw.alpha_offset, page)
             })
             .collect::<io::Result<_>>()?;
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("compiled map names"),
-            color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
-            depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        compiled.begin(&mut pass);
+        let mut pass = super::scene::world_pass(encoder, targets, "compiled map names");
+        let pass = &mut pass;
+        compiled.begin(pass);
         let buffers = draws
             .iter()
             .map(|draw| self.chunk(draw.chunk))
             .collect::<io::Result<Vec<_>>>()?;
         let mut previous = None;
         for ((draw, binding), buffer) in draws.iter().zip(&bindings).zip(buffers) {
-            binding.bind_after(&mut pass, previous);
+            binding.bind_after(pass, previous);
             previous = Some(binding);
             shader_pipeline::gpu::stats::state();
             pass.set_vertex_buffer(0, buffer.slice(..));

@@ -135,7 +135,7 @@ fn run(shared: Shared, ctx: egui::Context) {
             .is_some_and(|wanted| wanted.same(request))
         {
             publish(&mut state, built);
-            ctx.request_repaint();
+            viewer_foundation::worker_priority::at_least(Some(0), || ctx.request_repaint());
         }
     }
 }

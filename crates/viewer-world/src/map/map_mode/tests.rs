@@ -1014,7 +1014,7 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
         refused
             .warnings
             .iter()
-            .any(|warning| warning.contains("CountryStabilityInputs")
+            .any(|warning| warning.contains("country stability inputs")
                 && warning.contains("3 targets")),
         "{:?}",
         refused.warnings
@@ -1141,7 +1141,7 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
             let roster_refusals: Vec<_> = refused
                 .warnings
                 .iter()
-                .filter(|why| why.contains("ResearchModifiers"))
+                .filter(|why| why.contains("research modifiers"))
                 .collect();
             if missing_witness {
                 // Three countries have three distinct missing local inputs;
@@ -1151,7 +1151,7 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
                     assert_eq!(
                         roster_refusals
                             .iter()
-                            .filter(|why| why.contains(&format!("Country({country})"))
+                            .filter(|why| why.contains(&format!("of country {country}"))
                                 && why.contains("1 targets"))
                             .count(),
                         1,
@@ -1265,7 +1265,7 @@ fn scripted_callbacks_count_one_roster_input_across_iterator_and_array_reads() {
     let result =
         colour_script::borders("test", "top", &layer, &inputs, None, true, &mut Vec::new());
     assert_eq!(result.refusals.len(), 1, "{:?}", result.refusals);
-    assert!(result.refusals[0].contains("CountryCounterInputs.owned_states"));
+    assert!(result.refusals[0].contains("country counter inputs, owned states"));
     assert!(
         result.refusals[0].contains("3 targets"),
         "{:?}",
@@ -1335,11 +1335,11 @@ fn scripted_callbacks_count_the_global_lexical_failure_once_across_country_scope
         assert_eq!(refused.refusals.len(), 1, "{:?}", refused.refusals);
         let why = &refused.refusals[0];
         assert!(
-            why.contains("LexicalTokens") && why.contains("3 targets"),
+            why.contains("lexical tokens") && why.contains("3 targets"),
             "{why}"
         );
         assert!(
-            !why.contains("ResearchModifiers") && !why.contains("Country("),
+            !why.contains("research modifiers") && !why.contains("of country"),
             "{why}"
         );
         assert!(
@@ -1436,7 +1436,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
             set_temp_variable = { blue = 0 } set_temp_variable = { alpha = 1 }
             set_temp_variable = { highlighted = 0 }
         "#,
-            vec!["ResearchModifiers"],
+            vec!["research modifiers"],
         ),
         (
             "optional division destination insertion without store",
@@ -1444,7 +1444,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
             set_temp_variable = { alpha = 1 }
             if = { limit = { has_stability > 0.5 } divide_temp_variable = { var = red?1 value = 0 } }
         "#,
-            vec!["CountryStabilityInputs"],
+            vec!["country stability inputs"],
         ),
         (
             "optional modulo destination insertion without store",
@@ -1452,7 +1452,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
             set_temp_variable = { alpha = 1 }
             if = { limit = { has_stability > 0.5 } modulo_temp_variable = { var = red?1 value = 0 } }
         "#,
-            vec!["CountryStabilityInputs"],
+            vec!["country stability inputs"],
         ),
         (
             "later iteration cannot erase an uncertain earlier stop",
@@ -1463,7 +1463,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
                 if = { limit = { state = 65 } set_temp_variable = { red = 1 } }
             }
         "#,
-            vec!["CountryStabilityInputs"],
+            vec!["country stability inputs"],
         ),
         (
             "one input affects two outputs and several reads",
@@ -1475,7 +1475,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
             if = { limit = { has_stability > 0.7 } set_temp_variable = { green = 1 } }
             set_temp_variable = { red = stability }
         "#,
-            vec!["CountryStabilityInputs"],
+            vec!["country stability inputs"],
         ),
         (
             "two independent inputs",
@@ -1484,7 +1484,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
             if = { limit = { has_stability > 0.5 } set_temp_variable = { red = 1 } }
             if = { limit = { is_in_tech_sharing_group = mod_group } set_temp_variable = { blue = 1 } }
         "#,
-            vec!["CountryStabilityInputs", "ResearchModifiers"],
+            vec!["country stability inputs", "research modifiers"],
         ),
     ] {
         let refused = render(&format!("FROM = {{ {body} }}"), Some(&previous));
@@ -1525,7 +1525,7 @@ fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
     );
     assert_eq!(one_target.refusals.len(), 1, "{:?}", one_target.refusals);
     assert!(one_target.refusals[0].contains("1 targets"));
-    assert!(one_target.refusals[0].contains("CountryStabilityInputs"));
+    assert!(one_target.refusals[0].contains("country stability inputs"));
     assert_eq!(
         one_target
             .borders
@@ -1659,7 +1659,7 @@ fn scripted_target_filters_refuse_uncertainty_before_colour_capture_on_cold_and_
                             let input = if scenario == "missing templates" {
                                 "character templates"
                             } else {
-                                "CountryStabilityInputs"
+                                "country stability inputs"
                             };
                             assert!(warnings[0].contains(input), "{warnings:?}");
                             assert!(warnings[0].contains("1 layer"), "{warnings:?}");
@@ -2633,9 +2633,9 @@ fn scripted_invasion_failures_withhold_colours_on_cold_and_warm_caches() {
             assert_eq!(refused.refusals.len(), 1, "{:?}", refused.refusals);
             assert!(
                 refused.refusals[0].contains(if missing_province {
-                    "Provinces"
+                    "provinces"
                 } else {
-                    "CountryLinks"
+                    "country links"
                 }) && refused.refusals[0].contains("3 targets"),
                 "{:?}",
                 refused.refusals
@@ -2671,6 +2671,8 @@ fn a_map_recording_offers_only_the_modes_whose_tables_it_records() {
         Stock::Terrain,
         Stock::Players,
         Stock::Ideology,
+        // Its limits are read from the States rows Map records.
+        Stock::Infrastructure,
         // Map records Factions for the land figures' graphics pools.
         Stock::Factions,
         // Its wing grids and mission regions are Map's air view.

@@ -50,12 +50,11 @@ pub fn published(side: &MapSide) -> Layered {
     }
 }
 
-/// Gives the counter layers the window's vision of the hour on screen, its type-icon relations,
-/// its guns' destination hostility and the recording's daily air rosters with the branch played,
-/// until they read the layers and the host that own them; the rosters only for a branch not given
-/// yet, as each `passes()` is a new history. Whether any vision was new.
-pub fn give(side: &MapSide, choice: &Choice, vision: &Arc<Vision>, tables: &HourTables, branch: BranchId, passes: impl FnOnce() -> Passes) -> bool {
-    let Some((_, layers)) = side.parts() else { return false };
+/// Gives the counter layers in `layers` the vision the map shows at the step's hour, its type-icon
+/// relations, its guns' destination hostility and the recording's daily air rosters with the branch
+/// played; the rosters only for a branch not given yet, as each `passes()` is a new history. Run on
+/// the side's thread inside the step, before those layers settle. Whether any vision was new.
+pub fn give(layers: &[Box<dyn Layer>], choice: &Choice, vision: &Arc<Vision>, tables: &HourTables, branch: BranchId, passes: impl FnOnce() -> Passes) -> bool {
     let new = |held: Option<(Choice, Arc<Vision>)>| held.is_none_or(|(_, held)| !Arc::ptr_eq(&held, vision));
     let mut any = false;
     if let Some(layer) = find::<LandMarkers>(layers) {

@@ -1,7 +1,9 @@
-//! Where the flying and walking modes start: chosen from the map. Choosing either mode keeps the
-//! map camera and its interface until the map is clicked; the flight or walk then starts over the
-//! ground clicked, by the mode's own rules for height and heading. The controller's South button
-//! starts it over the ground at the middle of the view, and Escape goes back to the map.
+//! Where the flying and walking modes start when they are chosen from the map camera: choosing
+//! either mode keeps the map camera and its interface until the map is clicked; the flight or walk
+//! then starts over the ground clicked, by the mode's own rules for height and heading. The
+//! controller's South button starts it over the ground at the middle of the view, and Escape goes
+//! back to the map. A mode chosen while the other free mode runs takes over the ground that one
+//! stands on instead, so it waits for nothing.
 //!
 //! The ground under the pointer is where its ray first meets the drawn surface: the ground's
 //! triangles, or the water over them ([`ground_at`]).

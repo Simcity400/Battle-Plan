@@ -382,6 +382,9 @@ pub struct Lane {
     /// Cursor calls the step took: more than one may name a slot twice.
     pieces: u32,
     marks: Vec<u64>,
+    /// Per selected column, what [`Self::written`] held before the hour under way, while the step
+    /// walks an hour at a time ([`Self::step_hours`]).
+    marks_at: Vec<usize>,
     passage: Option<Box<Passage>>,
     /// A log table's state at the head and the part under it: such a lane holds no cell.
     log: Option<Box<log::Logs>>,
@@ -432,6 +435,7 @@ impl Lane {
             inserts: Vec::new(),
             pieces: 0,
             marks: Vec::new(),
+            marks_at: Vec::new(),
             passage: None,
             log,
             #[cfg(test)]
@@ -635,7 +639,7 @@ impl Lane {
         let replaying = Instant::now();
         let (fetch_ns, parts) = self.fetch_through(self.game(target))?;
         (sought.fetch_ns, sought.parts) = (fetch_ns, parts as u64);
-        if target >= next && self.advance(target, false)? != Stop::Reached {
+        if target >= next && self.advance(target, false, None)? != Stop::Reached {
             return Err(invalid(format!("Table {} cannot be replayed to hour {hour}: a part is missing", self.table)));
         }
         self.retired.clear();
@@ -674,6 +678,13 @@ impl Lane {
         self.texts.clear();
     }
 
+    /// Every string named since the seek moves to a change set: a crossing's cells are this run's
+    /// ids, so the reader is given the texts a rebuild would have read here.
+    pub(crate) fn texts_into(&mut self, out: &mut Changes) {
+        std::mem::swap(&mut out.texts, &mut self.texts);
+        self.texts.clear();
+    }
+
     /// [`Self::texts`] becomes every string named since the seek, for a reader rebuilt from the lane
     /// in memory; the strings since the last change set are given back to [`Self::hide_known`].
     pub(crate) fn show_known(&mut self) -> Texts {
@@ -688,6 +699,19 @@ impl Lane {
     /// `out` with the step's change set; the head reached. A step that reaches a packed block's
     /// end stops there with the renumber.
     pub fn step(&mut self, to: Hour, out: &mut Changes) -> io::Result<Hour> {
+        self.step_hours(to, out, None)
+    }
+
+    /// [`Self::step`], with each hour of the step that wrote the table appended to `hours` as its
+    /// own change set, in rising hour order ([`Changes::head`] is the hour): the cells written at
+    /// that hour with the values it left them, and the rows born and gone in it. The step's own
+    /// change set is filled as always, so a reader of the interval and a reader of its hours take
+    /// the same walk of the file.
+    ///
+    /// An hour's set names no string and carries no status, no renumber and no passing rows: those
+    /// are the step's own, which covers the same hours. Its slots are the step's, before any
+    /// renumber the step ends with.
+    pub fn step_hours(&mut self, to: Hour, out: &mut Changes, hours: Option<&mut Vec<Changes>>) -> io::Result<Hour> {
         if self.log.is_some() {
             return self.step_log(to, out);
         }
@@ -699,7 +723,7 @@ impl Lane {
         }
         let last = self.pages.runs()[self.run].hours() - 1;
         let target = (i64::from(to) - i64::from(self.game(0))).clamp(0, i64::from(last)) as u32;
-        let stop = if target >= next { self.advance(target, true)? } else { Stop::Reached };
+        let stop = if target >= next { self.advance(target, true, hours)? } else { Stop::Reached };
         if let Some(passage) = &mut self.passage {
             let first = self.pages.runs()[self.run].first_hour;
             passage.write(&mut out.passing, self.keyed, &self.cells, &self.columns, &self.inserts, &self.deletes, |hour| first + hour as Hour)?;
@@ -719,8 +743,9 @@ impl Lane {
 
     /// Applies every hour through run hour `target` the parts given reach. With `collect` the
     /// slots written and the lives go to the change set; without, a packed block's end is
-    /// renumbered at once.
-    fn advance(&mut self, target: u32, collect: bool) -> io::Result<Stop> {
+    /// renumbered at once. With `hours` the cursor walks an hour at a time and each hour that
+    /// wrote something leaves its own change set there ([`Self::step_hours`]).
+    fn advance(&mut self, target: u32, collect: bool, mut hours: Option<&mut Vec<Changes>>) -> io::Result<Stop> {
         let pages = Arc::clone(&self.pages);
         let run = &pages.runs()[self.run];
         let mut next = self.next.expect("sought");
@@ -750,28 +775,46 @@ impl Lane {
                     let given = self.ahead.pop_front().expect("held");
                     self.enter(given, hour);
                 }
-                let under = self.under.as_mut().expect("entered");
-                let to = end.min(start + u32::from(under.last));
+                let to = end.min(start + u32::from(self.under.as_ref().expect("entered").last));
                 let (from, last) = (hour, (to - start) as u16);
-                let reached = match self.passage.as_deref_mut().filter(|_| collect) {
-                    None => under.cursor.advance(last, last - from + 1, &mut self.cells, &mut self.written, &mut self.lives)?,
-                    Some(passage) => {
-                        let columns = &self.columns;
-                        let mut gone = |hour: u16, slot: u32, key: u128, cells: &TableState| passage.see(start + u32::from(hour), slot, key, cells, columns);
-                        under.cursor.advance_seeing(last, last - from + 1, &mut self.cells, &mut self.written, &mut self.lives, &mut gone)?
+                let reached = {
+                    let Self { under, cells, written, lives, passage, columns, marks, marks_at, table, keyed, .. } = self;
+                    let cursor = &mut under.as_mut().expect("entered").cursor;
+                    let mut passage = passage.as_deref_mut().filter(|_| collect);
+                    match hours.as_deref_mut().filter(|_| collect) {
+                        None => cursor_advance(cursor, last, last - from + 1, cells, written, lives, passage, columns, start)?,
+                        Some(out) => {
+                            let mut reached = Advanced::Reached;
+                            let first = run.first_hour + start as Hour;
+                            for at in from..=last {
+                                marks_at.clear();
+                                marks_at.extend(written.iter().map(Vec::len));
+                                let lived = (lives.deleted.len(), lives.inserted.len());
+                                reached = cursor_advance(cursor, at, 1, cells, written, lives, passage.as_deref_mut(), columns, start)?;
+                                hour_changes(out, *table, columns, *keyed, first + Hour::from(at), cells, written, marks_at, marks, lives, lived, first)?;
+                                if reached != Advanced::Reached {
+                                    break;
+                                }
+                            }
+                            reached
+                        }
                     }
                 };
                 if reached != Advanced::Reached {
                     return Err(invalid(format!("Table {}'s cursor misses hours its part holds", self.table)));
                 }
                 next = to + 1;
-                for id in under.texts.drain(..) {
-                    if let Some(text) = under.cursor.text(id) {
-                        self.texts.push(id, text);
-                        self.known.note(id, text);
+                {
+                    let Self { under, texts, known, .. } = self;
+                    let under = under.as_mut().expect("entered");
+                    for id in under.texts.drain(..) {
+                        if let Some(text) = under.cursor.text(id) {
+                            texts.push(id, text);
+                            known.note(id, text);
+                        }
                     }
                 }
-                if last == under.last {
+                if last == self.under.as_ref().expect("entered").last {
                     self.pass()?;
                 }
                 if collect {
@@ -868,11 +911,30 @@ impl Lane {
         std::mem::swap(&mut out.texts, &mut self.texts);
         self.texts.clear();
         let held = self.status;
+        out.status_left = self.status_left(held.0)?;
         self.read_status()?;
         if self.status != held {
             out.status = Some(self.status);
         }
         Ok(())
+    }
+
+    /// The first game hour through the head at which the table's status is not `held`, the status
+    /// it held up to the last status read; none when every hour since kept it.
+    fn status_left(&self, held: Status) -> io::Result<Option<Hour>> {
+        let head = self.next.expect("sought") - 1;
+        let mut hour = self.status_until;
+        while hour <= head {
+            let block = (hour / BLOCK) as usize;
+            let page = &self.pages.runs()[self.run].pages[block];
+            let start = block as u32 * BLOCK;
+            let (status, _, _, change) = reader::status(&page.tables[self.table], (hour - start) as u16, self.game(start))?;
+            if status != held {
+                return Ok(Some(self.game(hour)));
+            }
+            hour = start + u32::from(change.unwrap_or(page.hours));
+        }
+        Ok(None)
     }
 
     /// The rows live before the step and gone after it, and those live after it and new, from the
@@ -934,6 +996,58 @@ impl Lane {
         self.status = (status, sampled);
         Ok(())
     }
+}
+
+/// The part under the head brought to block hour `to` in steps of `span` hours, a declared passing
+/// table's rows handed over as they go.
+#[expect(clippy::too_many_arguments, reason = "the lane's fields, borrowed apart")]
+fn cursor_advance(cursor: &mut Cursor, to: u16, span: u16, cells: &mut TableState, written: &mut [Vec<u32>], lives: &mut Lives, passage: Option<&mut Passage>, columns: &[usize], start: u32) -> io::Result<Advanced> {
+    match passage {
+        None => cursor.advance(to, span, cells, written, lives),
+        Some(passage) => {
+            let mut gone = |hour: u16, slot: u32, key: u128, cells: &TableState| passage.see(start + u32::from(hour), slot, key, cells, columns);
+            cursor.advance_seeing(to, span, cells, written, lives, &mut gone)
+        }
+    }
+}
+
+/// One hour's own change set appended to `out`, from what the cursor wrote in it: the slots each
+/// column took past `at`, and the slots the hour inserted (whose cells the reader puts straight
+/// into the lane and names in no write), each once, with the values the hour left them; and the
+/// rows it deleted and inserted past `lived`. An hour that wrote nothing leaves nothing. A slot
+/// the hour wrote and left dead is not a cell of it: its row's delete says what became of it.
+#[expect(clippy::too_many_arguments, reason = "the lane's fields, borrowed apart")]
+fn hour_changes(out: &mut Vec<Changes>, table: usize, columns: &[usize], keyed: bool, hour: Hour, cells: &TableState, written: &[Vec<u32>], at: &[usize], marks: &mut Vec<u64>, lives: &Lives, lived: (usize, usize), first: Hour) -> io::Result<()> {
+    let wrote = written.iter().zip(at).any(|(held, &mark)| held.len() > mark);
+    let (deleted, inserted) = (&lives.deleted[lived.0.min(lives.deleted.len())..], &lives.inserted[lived.1.min(lives.inserted.len())..]);
+    if !wrote && deleted.is_empty() && inserted.is_empty() {
+        return Ok(());
+    }
+    let words = (cells.slots() as usize).div_ceil(64);
+    if marks.len() < words {
+        marks.resize(words, 0);
+    }
+    let mut changes = Changes::default();
+    changes.begin(table, columns, keyed, false);
+    let live = cells.live();
+    for ((changed, held), &mark) in changes.columns.iter_mut().zip(written).zip(at) {
+        for &slot in held[mark.min(held.len())..].iter().chain(inserted.iter().map(|(_, slot, _)| slot)) {
+            if live.get(slot) && !self::mark(marks, slot) {
+                changed.slots.push(slot);
+            }
+        }
+        changed.slots.iter().for_each(|&slot| unmark(marks, slot));
+        changed.fill(cells.column(changed.column()).expect("a selected column"))?;
+    }
+    for &(at, slot, key) in deleted {
+        changes.deleted.push(first + Hour::from(at), slot, key);
+    }
+    for &(at, slot, key) in inserted {
+        changes.inserted.push(first + Hour::from(at), slot, key);
+    }
+    changes.set_head(hour, 0, false);
+    out.push(changes);
+    Ok(())
 }
 
 #[inline]

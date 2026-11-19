@@ -17,13 +17,13 @@ fn fills(layer: &dyn Layer) -> &ModeFills {
 }
 
 pub(super) fn make(document: &Document) -> Box<dyn Layer> {
-    Box::new(crate::layers::mode_fills::new(Arc::clone(&document.content) as Arc<dyn Paint>, false, true).expect("the mode fills layer's worker starts"))
+    Box::new(crate::layers::mode_fills::new(Arc::clone(&document.content) as Arc<dyn Paint>, true).expect("the mode fills layer's worker starts"))
 }
 
 /// Gives the layer the playhead whose rows it reads and the perspective it builds for.
 pub(super) fn give(layer: &dyn Layer, side: &crate::playhead_host::MapSide, document: &Document, choice: &Choice) -> io::Result<()> {
     if let Some(fills) = layer.any().downcast_ref::<ModeFills>() {
-        let recording = crate::playhead_host::rows::Recording { branch: document.playback.branch() };
+        let recording = crate::playhead_host::views::Recording { branch: document.playback.branch() };
         fills.rebuilt().set_source(Arc::clone(side.entry()), recording, (choice.clone(), None))?;
     }
     Ok(())

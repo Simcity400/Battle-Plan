@@ -10,7 +10,7 @@
 use crate::{
     document::{Document, InitialHour},
     layers::{
-        Budget, Carried, Gpu, Inputs, Layer, View,
+        Carried, Inputs, Layer, Settling, View,
         counters::{fed::Fed, proof as counters_line},
         resource_icons::proof as resource_icons_line,
         occupation_marks::proof as occupation_marks_line,
@@ -51,7 +51,7 @@ mod p6;
 mod naval;
 mod highlight;
 
-const USAGE: &str = "viewer --playhead-proof <recording.battleplan> --out <dir> [--layers political] [--select <file>] [--every 6] [--seeks 20] [--seek-to H,...] [--from-hour H] [--hours N] [--timing] [--budget-ms 3] [--speed 1440] [--fog on|off] [--rows units,combat,world,triggers,all,details] [--camera fit|x,z,height] [--viewport 2048x1152] [--hovers all|none] [--map-mode operatives] [--scripts on|off[@tables.txt]] [--paced]";
+const USAGE: &str = "viewer --playhead-proof <recording.battleplan> --out <dir> [--layers political] [--select <file>] [--every 6] [--seeks 20] [--seek-to H,...] [--from-hour H] [--hours N] [--timing] [--speed 1440] [--fog on|off] [--rows units,combat,world,triggers,all,details] [--camera fit|x,z,height] [--viewport 2048x1152] [--hovers all|none] [--map-mode operatives] [--scripts on|off[@tables.txt]] [--paced]";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
@@ -91,8 +91,8 @@ const LINES: &[Line] = &[
     Line { name: "ships", make: p8c::ships_make, today: p8c::ships_today, fresh: p8c::ships_fresh, marked: p8c::ships_marked },
     Line { name: "aircraft", make: p8c::aircraft_make, today: p8c::aircraft_today, fresh: p8c::aircraft_fresh, marked: p8c::aircraft_marked },
     Line { name: "mode_fills", make: mode_fills::make, today: mode_fills::today, fresh: mode_fills::fresh, marked: mode_fills::marked },
-    Line { name: "counters", make: counters_line::make, today: counters_line::today, fresh: counters_line::fresh, marked: counters_line::marked },
     Line { name: "relations", make: crate::layers::relations::proof::make, today: crate::layers::relations::proof::today, fresh: crate::layers::relations::proof::fresh, marked: crate::layers::relations::proof::marked },
+    Line { name: "counters", make: counters_line::make, today: counters_line::today, fresh: counters_line::fresh, marked: counters_line::marked },
     Line { name: "trains", make: p7::trains_make, today: p7::trains_today, fresh: p7::trains_fresh, marked: p7::trains_marked },
     Line { name: "resource_icons", make: resource_icons_line::make, today: resource_icons_line::today, fresh: resource_icons_line::fresh, marked: resource_icons_line::marked },
     Line { name: "occupation_marks", make: occupation_marks_line::make, today: occupation_marks_line::today, fresh: occupation_marks_line::fresh, marked: occupation_marks_line::marked },
@@ -117,7 +117,7 @@ mod p8c;
 
 mod mode_fills;
 
-pub(crate) use viewer_playback::comparison::Compared;
+pub(crate) use viewer_playback::comparison::{Compared, behind_at};
 
 struct Options {
     recording: PathBuf,
@@ -132,9 +132,10 @@ struct Options {
     from: Option<Hour>,
     hours: Option<u32>,
     timing: bool,
-    budget: Duration,
     speed: f64,
-    /// `--engaged-fold`: the viewing countries the engaged index is folded and compared for.
+    /// `--engaged-fold`: the viewing countries the engaged index is folded and compared for. The
+    /// recorded viewer by default: three lines (engagements, land and naval markers) compare
+    /// against today's markers refined with that fold, and without it they refuse.
     engaged: Option<String>,
     rows: Option<String>,
     /// `--rows details`: the detail report's lines against today's, compared at every sample.
@@ -166,9 +167,8 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
         from: None,
         hours: None,
         timing: false,
-        budget: playhead_host::BUDGET,
         speed: 1440.0,
-        engaged: None,
+        engaged: Some("recorded".to_owned()),
         rows: None,
         details: false,
         combat: None,
@@ -189,7 +189,6 @@ fn parse(args: &[OsString]) -> io::Result<Options> {
             "--seek-to" => options.seek_to = value()?.split(',').map(|hour| number(hour.to_owned()).map(|hour| hour as Hour)).collect::<io::Result<_>>()?,
             "--from-hour" => options.from = Some(number(value()?)? as Hour),
             "--hours" => options.hours = Some(number(value()?)? as u32),
-            "--budget-ms" => options.budget = Duration::from_secs_f64(number(value()?)? / 1e3),
             "--speed" => options.speed = number(value()?)?,
             "--timing" => options.timing = true,
             "--engaged-fold" => options.engaged = Some(value()?),
@@ -313,7 +312,6 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     entry.set_capture(document.capture_mode());
     document.playback.read_rosters_of(&entry);
     let mut side = MapSide::new(Arc::clone(&entry), layers, options.view.clone())?;
-    side.set_budget(options.budget);
     if let Some((name, why)) = side.refusals().next() {
         return Err(invalid(format!("The {name} layer is refused: {why}")));
     }
@@ -335,45 +333,40 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         told: Instant::now(),
         hz,
         rows: match &options.rows {
-            Some(sets) => Some(playhead_host::rows::proof::Line::open(&entry, playhead_host::rows::Recording { branch: document.playback.branch() }, sets, options.timing, &document.source_path, &resolve)?),
+            Some(sets) => Some(playhead_host::views::proof::Line::open(side.views().handle(), document.playback.branch(), sets, options.timing, &document.source_path, &resolve)?),
             None => None,
         },
         hovers: match &options.hovers {
-            Some(which) => Some(crate::app::hover_rows::proof::Line::open(&entry, playhead_host::rows::Recording { branch: document.playback.branch() }, &document, which, options.timing, hz)?),
+            Some(which) => Some(crate::app::hover_rows::proof::Line::open(&entry, side.views().handle(), &document, which, options.timing, hz)?),
             None => None,
         },
         scripts: match &options.scripts {
-            Some((on, primed)) => Some(crate::layers::scripts::proof::Line::open(&entry, playhead_host::rows::Recording { branch: document.playback.branch() }, *on, primed.as_deref())?),
+            Some((on, primed)) => Some(crate::layers::scripts::proof::Line::open(&entry, playhead_host::views::Recording { branch: document.playback.branch() }, *on, primed.as_deref())?),
             None => None,
         },
         combat: match options.combat.as_deref().map(|value| value.split_once('@').unwrap_or((value, ""))) {
             None | Some(("none", _)) => None,
             Some((readers, learned)) => {
-                use playhead_host::rows::combat::TIMED;
+                use playhead_host::views::combat::TIMED;
                 let timed: Vec<&'static str> = match readers {
                     "all" | "-" => TIMED.to_vec(),
                     names => names.split(',').map(|name| TIMED.iter().copied().find(|timed| *timed == name).ok_or_else(|| invalid(format!("No timed combat reader {name}; they are {TIMED:?}")))).collect::<io::Result<_>>()?,
                 };
-                Some(playhead_host::rows::combat::Line::open(&entry, playhead_host::rows::Recording { branch: document.playback.branch() }, &timed, (!learned.is_empty()).then_some(learned), options.timing, hz)?)
+                Some(playhead_host::views::combat::Line::open(side.views().handle(), &timed, (!learned.is_empty()).then_some(learned), options.timing, hz)?)
             }
         },
         stepper: match &options.combat {
-            Some(_) => Some(playhead_host::rows::combat::StepTimer::open(&entry)?),
+            Some(_) => Some(playhead_host::views::combat::StepTimer::open(&entry)?),
             None => None,
         },
     };
     let branch = document.playback.branch();
     for layer in side.parts().map_or(&[][..], |(_, layers)| layers) {
-        if let Some(orders) = layer.any().downcast_ref::<crate::layers::orders::Orders>() {
-            orders.attach(playhead_host::rows::Rows::of(&entry, playhead_host::rows::Recording { branch })?);
-        }
         if let Some(text) = layer.any().downcast_ref::<crate::layers::map_text::MapText>() {
-            text.attach(playhead_host::rows::Rows::of(&entry, playhead_host::rows::Recording { branch })?);
+            text.attach(Arc::clone(&entry));
         }
     }
     give_vision(&side, &document, &options.view.perspective)?;
-    // The rows' readers are declared to the playhead before the first seek, so their tables are in its reset.
-    playhead_host::rows::Rows::of(&entry, playhead_host::rows::Recording { branch })?.settled();
     side.anchor(first, true, options.speed, true);
     let flat = proof.play_flat(&mut side, &mut document, branch, &timeline, first, last)?;
     let seeks = proof.seek_all(&mut side, &mut document, branch, &timeline, last)?;
@@ -383,7 +376,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     let summary = json!({
         "recording": options.recording, "playhead": playhead, "first": first, "last": last,
         "layers": options.layers.iter().map(|line| line.name).collect::<Vec<_>>(), "select": options.select,
-        "timing": options.timing, "fog": options.view.fog, "budget_ms": options.budget.as_secs_f64() * 1e3, "load_seconds": load_seconds,
+        "timing": options.timing, "fog": options.view.fog, "load_seconds": load_seconds,
         "flat": flat, "seeks": seeks, "steps": proof.steps, "skipped_samples": proof.skipped,
         "frames": proof.distributions(), "compared": proof.totals.iter().map(|(name, (entries, differing, samples))| {
             let [compared, loading] = proof.sampled.get(name).copied().unwrap_or_default();
@@ -403,7 +396,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         "stepper": proof.stepper.as_ref().map(|stepper| stepper.summary(super::distribution)),
         "hovers": proof.hovers.as_ref().map(|hovers| hovers.summary(super::distribution)),
         "intel_icons": intel_icons::summary(&side),
-        "scripts": proof.scripts.as_ref().map(|scripts| scripts.summary(super::distribution)),
+        "scripts": proof.scripts.as_ref().map(|scripts| scripts.summary(&side, super::distribution)),
     });
     let mut file = File::create_new(out.join("summary.json"))?;
     serde_json::to_writer_pretty(&mut file, &summary)?;
@@ -441,9 +434,9 @@ struct Proof<'a> {
     told: Instant,
     /// The cycle counter's rate, cycles a second.
     hz: f64,
-    rows: Option<playhead_host::rows::proof::Line>,
-    combat: Option<playhead_host::rows::combat::Line>,
-    stepper: Option<playhead_host::rows::combat::StepTimer>,
+    rows: Option<playhead_host::views::proof::Line>,
+    combat: Option<playhead_host::views::combat::Line>,
+    stepper: Option<playhead_host::views::combat::StepTimer>,
     hovers: Option<crate::app::hover_rows::proof::Line>,
     scripts: Option<crate::layers::scripts::proof::Line>,
 }
@@ -454,7 +447,7 @@ struct Record {
     mirror_cycles: u64,
     /// Per layer: apply and settle cycles.
     cycles: Vec<(u64, u64)>,
-    layers: Vec<(u64, u64, usize, usize, u64)>,
+    layers: Vec<(u64, u64, usize)>,
     marked: Vec<Vec<(&'static str, u64)>>,
 }
 
@@ -482,7 +475,7 @@ impl Proof<'_> {
     /// block end.
     fn play_flat(&mut self, side: &mut MapSide, document: &mut Document, branch: replay_data::BranchId, timeline: &Timeline, first: Hour, last: Hour) -> io::Result<Value> {
         let started = Instant::now();
-        let quantum = (self.options.speed / 60.0).max(1.0) as Hour;
+        let quantum = (self.options.speed / playhead_host::settings().rate).max(1.0) as Hour;
         let mut applied = None;
         let mut progress = Instant::now();
         let mut since = 0;
@@ -503,14 +496,8 @@ impl Proof<'_> {
             if let Some(rows) = &mut self.rows {
                 rows.drive(head);
             }
-            if let Some(combat) = &self.combat {
-                combat.drive(head);
-            }
-            if let Some(hovers) = &self.hovers {
-                hovers.drive(head);
-            }
             if let Some(scripts) = &mut self.scripts {
-                scripts.frame(document, head, true);
+                scripts.frame(side, head, true);
             }
             let began = Instant::now();
             let frame = side.frame(head)?;
@@ -592,18 +579,14 @@ impl Proof<'_> {
                 if let Some(rows) = &mut self.rows {
                     rows.drive(target);
                 }
-                if let Some(combat) = &self.combat {
-                    combat.drive(target);
-                }
                 if let Some(stepper) = &mut self.stepper {
                     stepper.frame(target);
                 }
                 if let Some(hovers) = &mut self.hovers {
-                    hovers.drive(target);
                     hovers.frame(target);
                 }
                 if let Some(scripts) = &mut self.scripts {
-                    scripts.frame(document, target, false);
+                    scripts.frame(side, target, false);
                 }
                 let began = Instant::now();
                 let frame = side.frame(target)?;
@@ -656,7 +639,7 @@ impl Proof<'_> {
             .map(|(at, now)| now.iter().map(|&(name, count)| (name, count - self.marked_before.get(at).and_then(|before| before.iter().find(|held| held.0 == name)).map_or(0, |held| held.1).min(count))).collect())
             .collect();
         self.marked_before = marked;
-        let layers: Vec<(u64, u64, usize, usize, u64)> = frame.layers.iter().map(|part| (part.apply_ns, part.settle_ns, part.dirty, part.carried, part.late)).collect();
+        let layers: Vec<(u64, u64, usize)> = frame.layers.iter().map(|part| (part.apply_ns, part.settle_ns, part.dirty)).collect();
         if frame.steps > 0 && frame.swapped.is_none() && frame.resets == 0 {
             for (table, &(ns, _)) in frame.mirror_tables.iter().enumerate().filter(|(_, (ns, _))| *ns > 0) {
                 let held = self.mirror_tables.entry(table).or_default();
@@ -691,6 +674,22 @@ impl Proof<'_> {
                 // By name: which layers still carry work, how much, and whether each draws.
                 let carrying: Vec<String> = side.layer_states().into_iter().zip(side.parts().map(|(_, layers)| layers).unwrap_or_default()).filter(|(_, layer)| layer.carried().entities > 0).map(|((name, draws, ..), layer)| format!("{name} carries {} ({})", layer.carried().entities, if draws { "drawn" } else { "not drawn" })).collect();
                 return Err(io::Error::other(format!("The layers did not settle at hour {hour} within a minute: {}", carrying.join(", "))));
+            }
+            std::thread::sleep(Duration::from_micros(200));
+            side.settle_all()?;
+        }
+        // A layer whose own worker holds work newer than the product it has published stands at
+        // an older hour and says so ([`crate::layers::Published`]): the sample waits for it, as it
+        // waits for the settles, so the comparison is of the picture whole at the hour and never
+        // of one half arrived.
+        let progress = Instant::now();
+        loop {
+            let waiting = behind_at(side, hour);
+            if waiting.is_empty() {
+                break;
+            }
+            if progress.elapsed() > Duration::from_secs(60) {
+                return Err(io::Error::other(format!("The layers' products did not reach hour {hour} within a minute: {}", waiting.join(", "))));
             }
             std::thread::sleep(Duration::from_micros(200));
             side.settle_all()?;
@@ -733,16 +732,14 @@ impl Proof<'_> {
         // The whole list: today's limitation lines of the document's hour, every line, against the
         // map's at the head, and the layers' own notes against the layers composed anew.
         let today = document.limitations(&self.options.view.perspective)?.into_lines();
-        let ours = side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::vision::Vision>())).and_then(crate::layers::vision::Vision::ours);
-        let raids = self.scripts.as_ref().zip(ours).and_then(|(scripts, ours)| scripts.raid_notes(ours));
-        let compared = playhead_host::limitations::differ(side, &every, &today, raids.as_deref().map(Vec::as_slice));
+        let compared = playhead_host::limitations::differ(side, &every, &today);
         let total = self.totals.entry("limitations:today".into()).or_default();
         (total.0, total.1, total.2) = (total.0 + compared.entries, total.1 + compared.differing, total.2 + 1);
         for (owner, &count) in &compared.not_registered {
             *self.not_registered.entry(owner.clone()).or_default() += count as u64;
         }
         let apart: Vec<String> = compared.apart.iter().map(|table| format!("{table:?}")).collect();
-        writeln!(self.compares, "{}", json!({"hour": hour, "why": why, "compare": "limitations:today", "entries": compared.entries, "differing": compared.differing, "first": compared.first, "notes": {"missing_at_the_head": compared.missing, "not_today": compared.extra, "apart_not_in_the_units": apart, "not_given": compared.not_given, "not_registered": compared.not_registered, "raid_lines_apart_no_scripts_reader": compared.raids_apart, "refused_layers": compared.refused_layers, "today_lines": today.len()}}))?;
+        writeln!(self.compares, "{}", json!({"hour": hour, "why": why, "compare": "limitations:today", "entries": compared.entries, "differing": compared.differing, "first": compared.first, "notes": {"missing_at_the_head": compared.missing, "not_today": compared.extra, "apart_not_in_the_units": apart, "not_given": compared.not_given, "not_registered": compared.not_registered, "raid_lines_apart_no_scripts_layer": compared.raids_apart, "refused_layers": compared.refused_layers, "today_lines": today.len()}}))?;
         // The same lines in another order are their own count: the order is what the user reads.
         let total = self.totals.entry("limitations:order".into()).or_default();
         (total.0, total.1, total.2) = (total.0 + compared.matched, total.1 + compared.reordered, total.2 + 1);
@@ -761,7 +758,7 @@ impl Proof<'_> {
             hovers.compare(document, hour, why, &mut self.compares)?;
         }
         if let Some(scripts) = &mut self.scripts {
-            scripts.compare(document, hour, why, &mut self.compares)?;
+            scripts.compare(side, document, hour, why, &mut self.compares)?;
         }
         Ok(true)
     }
@@ -785,8 +782,6 @@ impl Proof<'_> {
                 "apply_settle_ms": take(both),
                 "apply_settle_cpu_ms": take(frames.iter().map(|record| (record.cycles[at].0 + record.cycles[at].1) as f64 / self.hz * 1e3).collect()),
                 "dirty": take(frames.iter().map(|record| record.layers[at].2 as f64).collect()),
-                "carried": take(frames.iter().map(|record| record.layers[at].3 as f64).collect()),
-                "late_frames": take(frames.iter().map(|record| record.layers[at].4 as f64).collect()),
                 "marked_per_frame": marked.into_iter().map(|(name, counts)| json!({name: take(counts)})).collect::<Vec<_>>(),
             }));
         }
@@ -872,7 +867,7 @@ fn source_check(mirrors: &Mirrors, document: &Document) -> io::Result<Value> {
 }
 
 fn political_make(document: &Document) -> Box<dyn Layer> {
-    Box::new(Political::new(Arc::new(political::Content::new(Arc::clone(&document.content.map), &document.border_meshes))))
+    Box::new(Political::new(Arc::new(political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)))))
 }
 
 fn political(layer: &dyn Layer) -> &Political {
@@ -1005,7 +1000,6 @@ fn political_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::laye
 /// Gives the units, convoys and counters layers today's vision of the document's hour, until they
 /// read the vision layer's.
 fn give_vision(side: &MapSide, document: &Document, choice: &perspective::Choice) -> io::Result<()> {
-    intel_icons::give_head(side, document);
     for layer in side.parts().map_or(&[][..], |(_, layers)| layers) {
         if let Some(units) = layer.any().downcast_ref::<Units>() {
             units.set_vision(choice.clone(), document.vision(choice)?);
@@ -1327,13 +1321,10 @@ impl Layer for Declare {
 
     fn apply(&mut self, _step: &Step, _mirrors: &Mirrors) {}
 
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
         Carried::default()

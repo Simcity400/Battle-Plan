@@ -279,12 +279,42 @@ impl PreparedLand {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             let settled = history.clock_unavailable();
-            for ((icon, position), &unit) in
-                self.icons.iter_mut().zip(&self.positions).zip(&self.units)
-            {
-                icon.anchor = history
-                    .sample(unit, position)
-                    .map_or_else(|| position.at(), |drawn| drawn.motion.position());
+            // The hour a track's first place stands at is the hour of the rows this layout was
+            // made from, never the hour the window has on screen: a publication is prepared ahead
+            // of what the frame draws, and a track read against that hour would place every mover
+            // one publication further along its route than its own rows do.
+            // The hour of the rows this layout was made from, as an integer: the track's own
+            // second place stands at it, and a display frame's head is differenced against it
+            // before anything is cast to `f32` (a replay hour is about sixty million, where
+            // neighbouring `f32` values are four hours apart).
+            let hour = inputs.hour;
+            let width = inputs.content.map.x();
+            let world = inputs.route_world();
+            let mut places: Vec<viewer_foundation::map::free_icons::Place> = Vec::new();
+            for ((icon, position), &unit) in self.icons.iter_mut().zip(&self.positions).zip(&self.units) {
+                // Where this hour's rows put the stack, which is what its plate is laid out at.
+                // The stack carries that place and the place the publication before it read, so
+                // the display frame interpolates between the two at its own head and offsets this
+                // plate's window: the counter is placed at the frame's hour on every display frame
+                // and its motion never asks for the overlay to be painted.
+                let drawn = history.sample(unit, position);
+                let placed = drawn.map_or_else(|| position.at(), |drawn| drawn.motion.position());
+                icon.anchor = placed;
+                // The places of the hours this publication's own rows moved the stack at, oldest
+                // first, and this hour's own last: the display frame then stands the counter where
+                // the recording had it at the frame's hour instead of gliding it evenly over the
+                // whole interval, and holds it still over the hours the recording held it still.
+                places.clear();
+                for &(at, province) in inputs.moved.of(unit) {
+                    if at >= hour {
+                        continue;
+                    }
+                    if let Some(there) = place_in(inputs, unit, province, position, world.as_ref()) {
+                        places.push(viewer_foundation::map::free_icons::Place { hour: at, at: there });
+                    }
+                }
+                places.push(viewer_foundation::map::free_icons::Place { hour, at: placed });
+                icon.track = history.track(unit, &places, hour, width);
                 if settled && position.motion.is_some() {
                     *report
                         .land_counter_gaps
@@ -361,6 +391,7 @@ impl PreparedLand {
         let mut placed_columns = Vec::with_capacity(self.groups.len());
         let roots = [LAND_WINDOW, GUN_WINDOW, NAVY_WINDOW]
             .map(|name| window(&inputs.windows.guis, name).map_err(|why| why.to_string()));
+        let styles = [false, true].map(|gun| PlateStyle::read(inputs, gun));
         let mut plates = Vec::new();
         let mut sizes = Vec::new();
         let mut items = Vec::new();
@@ -378,11 +409,17 @@ impl PreparedLand {
                 .content
                 .defines
                 .level_priority(level, inputs.visibility.priorities);
-            let icon = inputs.icon_anchor(
-                IconFamily::Columns,
-                world,
-                inputs.content.defines.icons_cutoff,
-            );
+            // Where the group stands over the hours this publication covers goes into the batch,
+            // and its plate's anchor stands on it: the display frame places the plate at its own
+            // head from there, without the overlay being painted again.
+            let moving = self.groups[index].track.clone().map(|track| batch.add_track(track));
+            let icon = inputs
+                .icon_anchor(
+                    IconFamily::Columns,
+                    world,
+                    inputs.content.defines.icons_cutoff,
+                )
+                .map(|anchor| anchor.moving(moving));
             // Sum every item: an unknown size refuses the whole column.
             plates.clear();
             sizes.clear();
@@ -448,7 +485,7 @@ impl PreparedLand {
                 continue;
             };
             let representative = self.groups[index].members[0];
-            let source = self.icons[representative];
+            let source = &self.icons[representative];
             let column = Arc::new(ColumnPlacement {
                 hovered: self.hovered[index],
                 priority,
@@ -484,7 +521,7 @@ impl PreparedLand {
                     }
                     Plate::Naval(_) => true,
                 };
-                let (drawn, opacity) = match plate {
+                let (drawn, opacity, plate_member) = match plate {
                     Plate::Land(member) => {
                         let opacity =
                             plate_opacity(&inputs.visibility, self.stacks[member].gun.is_some());
@@ -496,8 +533,9 @@ impl PreparedLand {
                             origin,
                             size,
                             priority,
+                            &styles,
                         )?;
-                        (drawn, opacity)
+                        (drawn, opacity, member)
                     }
                     Plate::Naval(member) => {
                         // The presented frame draws it through its window's instance.
@@ -525,13 +563,26 @@ impl PreparedLand {
                     self.pointer_drawn.set(false);
                     continue;
                 }
-                batch.quads.extend(sprite.quads.iter().map(|quad| {
+                batch.at_window_standing(
+                    viewer_foundation::map::sprites::WindowKey::new(
+                        viewer_foundation::map::sprites::WindowPool::LandCounter,
+                        0,
+                        plate_member as u64,
+                    ),
+                    viewer_foundation::map::sprites::WindowStamp {
+                        painting: sprite.painting,
+                        taken: taken(offset, icon, opacity),
+                    },
+                    sprite.stood,
+                );
+                batch.quads.extend(sprite.batch.quads.iter().map(|quad| {
                     let mut quad = quad.clone();
                     quad.layer += offset;
                     quad.anchor = icon;
                     quad.color[3] *= opacity;
                     quad
                 }));
+                batch.no_window();
                 if self.pointer_drawn.take() && opacity > 0.0 {
                     report.pointed = self.pointer.map(|pointer| pointer.unit);
                 }
@@ -541,7 +592,8 @@ impl PreparedLand {
     }
 
     /// Draws one land plate at `origin` into its cached sprite and reports it; `None` when it is
-    /// off screen. `priority` is its column's.
+    /// off screen. `priority` is its column's. `styles` are the kinds' template values
+    /// ([`PlateStyle`]).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn land_plate(
         &mut self,
@@ -552,9 +604,10 @@ impl PreparedLand {
         origin: [f32; 2],
         size: [f32; 2],
         priority: i8,
-    ) -> io::Result<Option<&Batch>> {
+        styles: &[PlateStyle<'_>; 2],
+    ) -> io::Result<Option<&hovers::Sprite>> {
         let stack = &self.stacks[member];
-        if !on_screen(origin, size, inputs.extent()) && !abilities_on_screen(inputs, stack, origin)
+        if !admitted(origin, size, inputs.extent()) && !abilities_on_screen(inputs, stack, origin)
         {
             return Ok(None);
         }
@@ -613,21 +666,10 @@ impl PreparedLand {
         }
         // The game observes both the root and its actually presented children.
         let ours = stack.owner == self.vision.ours();
+        let style = &styles[usize::from(stack.gun.is_some())];
         let hover = CounterHover {
             control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
-            authored: inputs
-                .windows
-                .guis
-                .template(if stack.gun.is_some() {
-                    GUN_WINDOW
-                } else {
-                    LAND_WINDOW
-                })
-                .and_then(|root| {
-                    viewer_foundation::map::counter_hovers::gui_authored::Authored::read(
-                        root, false,
-                    )
-                }),
+            authored: style.authored.clone(),
             rect: [origin[0], origin[1], size[0], size[1]],
             remaining: stack
                 .moving
@@ -641,26 +683,7 @@ impl PreparedLand {
             members: Arc::clone(&stack.divisions),
             timing: Arc::clone(&stack.timing),
         };
-        // The `count_bg` as drawn: its layout child and the sprite the code sets on it.
-        let plate_child = if stack.gun.is_some() {
-            inputs.assets.layouts.gun.as_ref().ok().map(|gun| &gun.plate)
-        } else {
-            inputs.assets.layouts.land.as_ref().ok().map(|land| &land.plate)
-        };
-        // A `count_bg` button that is `alwaystransparent` or disabled takes no pointer state.
-        let plate_window = if stack.gun.is_some() {
-            GUN_WINDOW
-        } else {
-            LAND_WINDOW
-        };
-        let plate_takes_pointer = inputs
-            .windows
-            .guis
-            .template(plate_window)
-            .and_then(|root| root.find(installed_content_core::gui::native::Kind::Button, "count_bg"))
-            .and_then(installed_content_core::gui::native::Element::button)
-            .is_some_and(|button| !button.always_transparent && button.enabled);
-        let plate_rect = plate_child.filter(|_| plate_takes_pointer).and_then(|child| {
+        let plate_rect = style.child.filter(|_| style.takes_pointer).and_then(|child| {
             let hq = stack.hq && stack.gun.is_none() && !stack.coarse;
             let sprite = if hq {
                 "GFX_onmap_unit_counter_empty"
@@ -710,7 +733,31 @@ impl PreparedLand {
             stack.flag_owner,
             stack.coarse,
         );
-        if self.pointed(member).is_some()
+        // A plate whose quads are the ones it drew, standing where the hours and the camera now
+        // put it: what a draw at the new origin would put there is its own quads moved by the
+        // whole interface pixels between the two origins
+        // ([`viewer_foundation::map::anchored::shift`]), so the plate is moved, not drawn again.
+        let step = self.pointed(member).is_none().then_some(()).and_then(|()| {
+            let sprite = self.sprites[member].as_ref()?;
+            (sprite.priority == priority).then_some(())?;
+            let step = [0, 1].map(|axis| origin[axis] - sprite.origin[axis]);
+            (step != [0.0; 2] && step.iter().all(|value| value.fract() == 0.0))
+                .then(|| step.map(|value| value as i32))
+        });
+        if let Some(step) = step {
+            viewer_foundation::map::redraws::note("plates.moved", 1);
+            let sprite = self.sprites[member].as_mut().expect("the step found the plate");
+            for quad in &mut sprite.batch.quads {
+                viewer_foundation::map::anchored::shift(quad, step);
+            }
+            let by = step.map(|value| value as f32);
+            for (_, rect, _) in &mut sprite.presented.controls {
+                rect[0] += by[0];
+                rect[1] += by[1];
+            }
+            sprite.origin = origin;
+            sprite.stood = [0, 1].map(|axis| sprite.stood[axis] + step[axis]);
+        } else if self.pointed(member).is_some()
             || self.sprites[member]
                 .as_ref()
                 .is_none_or(|sprite| sprite.origin != origin || sprite.priority != priority)
@@ -726,6 +773,8 @@ impl PreparedLand {
             sprite.clear();
             let presented = draw_land_counter(inputs, &mut sprite, 0, origin, self, member, priority)?;
             self.sprites[member] = Some(hovers::Sprite {
+                painting: viewer_foundation::map::sprites::next_painting(),
+                stood: [0; 2],
                 // A pointed draw never stands for the plate without the pointer.
                 origin: if self.pointed(member).is_some() {
                     [f32::NAN; 2]
@@ -766,7 +815,7 @@ impl PreparedLand {
                 });
             }
         }
-        Ok(self.sprites[member].as_ref().map(|sprite| &sprite.batch))
+        Ok(self.sprites[member].as_ref())
     }
 
     /// A naval item's counts; its moving window can reach the screen from an off-screen slot.
@@ -814,6 +863,37 @@ impl PreparedLand {
             } else {
                 missing_owners.push(owner);
             }
+        }
+    }
+}
+
+/// What every plate of one counter kind takes from the GUI templates alone, read once a draw
+/// rather than once a plate: the window's authored tooltip, whether its `count_bg` button takes
+/// the pointer, and the plate child the code sets a sprite on.
+pub(super) struct PlateStyle<'a> {
+    authored: Option<viewer_foundation::map::counter_hovers::gui_authored::Authored>,
+    takes_pointer: bool,
+    child: Option<&'a Child>,
+}
+
+impl<'a> PlateStyle<'a> {
+    pub(super) fn read(inputs: &CounterInputs<'a>, gun: bool) -> Self {
+        let name = if gun { GUN_WINDOW } else { LAND_WINDOW };
+        let root = inputs.windows.guis.template(name);
+        Self {
+            authored: root.and_then(|root| {
+                viewer_foundation::map::counter_hovers::gui_authored::Authored::read(root, false)
+            }),
+            // A `count_bg` button that is `alwaystransparent` or disabled takes no pointer state.
+            takes_pointer: root
+                .and_then(|root| root.find(installed_content_core::gui::native::Kind::Button, "count_bg"))
+                .and_then(installed_content_core::gui::native::Element::button)
+                .is_some_and(|button| !button.always_transparent && button.enabled),
+            child: if gun {
+                inputs.assets.layouts.gun.as_ref().ok().map(|gun| &gun.plate)
+            } else {
+                inputs.assets.layouts.land.as_ref().ok().map(|land| &land.plate)
+            },
         }
     }
 }
@@ -999,6 +1079,17 @@ pub struct StatusFields {
 
 /// A native source bucket: province and recorded visual stack kind.
 pub(super) type StackKey = (u32, u32);
+
+/// What a batch does to a plate's drawn quads as it takes them: the offset added to their sort
+/// key, the icon they stand on and the opacity they are drawn at.
+fn taken(offset: u64, icon: Option<IconAnchor>, opacity: f32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    offset.hash(&mut hasher);
+    icon.map(|anchor| anchor.key()).hash(&mut hasher);
+    opacity.to_bits().hash(&mut hasher);
+    hasher.finish()
+}
 
 /// One admitted unit, retained until the geographic group's first-fit rebuild. Its route is
 /// borrowed from the hour's [`Movements`].
@@ -2159,6 +2250,7 @@ pub(super) fn land_counters<'a>(
             state: geography.state_of.get(&province).copied(),
             region: inputs.content.region(province),
             anchor: position.at(),
+            track: None,
         });
         source_kinds.push(kind);
         units.push(match &source.units[0] {
@@ -3161,7 +3253,7 @@ fn abilities_on_screen(inputs: &CounterInputs<'_>, stack: &Stack, origin: [f32; 
             .ability_sheet(&token.token)
             .is_some_and(|sheet| {
                 let rect = ability_rect(sheet, grid, origin, position);
-                on_screen([rect[0], rect[1]], [rect[2], rect[3]], inputs.extent())
+                admitted([rect[0], rect[1]], [rect[2], rect[3]], inputs.extent())
             })
     })
 }
@@ -3354,6 +3446,32 @@ fn draw_gun_children(
 /// A stack in a combat stand-off kind snaps to that anchor slot; everything
 /// else stands at its route's settled point ([`counter_move::Motion`]). Without the content
 /// movement map it stands on its province.
+/// Where `unit`'s stack stood in `province`, on the route this publication read for it: the route
+/// walked from there and settled as its counter is, or the province's own standstill anchor for its
+/// class without one. The route is the publication's and the province the hour's, because a unit's
+/// place at an hour is where its province's anchor and its route put it then, and the route
+/// columns only bend the path between the anchors.
+fn place_in(
+    inputs: &CounterInputs<'_>,
+    unit: Unit,
+    province: u32,
+    position: &counter_move::Position,
+    world: Option<&counter_move::RouteWorld<'_>>,
+) -> Option<[f32; 3]> {
+    let anchor = |id, kind| inputs.content.anchor(id, kind);
+    if let (Some(route), Some(world)) = (position.movement.as_deref(), world)
+        && let Some(there) = route.place_in(province, world, &anchor)
+    {
+        return Some(there);
+    }
+    let class = match unit {
+        Unit::Division(_) => viewer_foundation::unit_class::CounterClass::Division,
+        Unit::RailwayGun(_) => viewer_foundation::unit_class::CounterClass::RailwayGun,
+        Unit::TaskForce(_) => viewer_foundation::unit_class::CounterClass::TaskForce,
+    };
+    anchor(province, class.standstill(naval::is_land(inputs, province)))
+}
+
 pub(super) fn stack_position(
     inputs: &CounterInputs<'_>,
     province: u32,

@@ -1,23 +1,17 @@
-//! The snow upload writes the bands of rows a step changed, a run of neighbouring bands a budget
-//! check, and ends with the scene holding what taking the grid whole leaves.
+//! The snow upload writes the bands of rows a step changed, a run of neighbouring bands a piece,
+//! and ends with the scene holding what taking the grid whole leaves. The frame's upload is the
+//! only writer: what the worker folds reaches the scene through it and nowhere else.
 
-use super::{BAND, Back, Changed, Lease, Made, Plane, RUN, Snow, Target, Written, pick, write_back};
-use crate::layers::{Budget, Layer};
+use super::{BAND, Changed, Made, RUN, Snow, Target};
+use crate::layers::Layer;
 use map_snow::SnowMud;
-use std::{
-    collections::VecDeque,
-    io,
-    ops::Range,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{io, ops::Range, sync::Arc, time::Duration};
 use viewer_foundation::map::presentation::Continuity;
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 200;
 
-/// A stand-in for the scene: its texture's bytes, and what each call wrote; the texture no pass
-/// binds, by the number of the lend that made it, and the swaps made.
+/// A stand-in for the scene: its texture's bytes, and what each call wrote.
 #[derive(Default)]
 struct Counted {
     texels: Vec<u8>,
@@ -27,25 +21,6 @@ struct Counted {
     written: usize,
     begun: usize,
     finished: usize,
-    back: Option<(u64, Arc<Mutex<Vec<u8>>>)>,
-    lends: u64,
-    swaps: usize,
-}
-
-/// A lent texture's bytes, shared with the stand-in scene, and which it is.
-struct Lent {
-    id: u64,
-    bytes: Arc<Mutex<Vec<u8>>>,
-}
-
-impl Plane for Lent {
-    fn write(&mut self, first: usize, bytes: &[u8]) {
-        self.bytes.lock().unwrap()[first * 4..first * 4 + bytes.len()].copy_from_slice(bytes);
-    }
-
-    fn any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 impl Target for Counted {
@@ -84,25 +59,6 @@ impl Target for Counted {
     fn finish(&mut self, _grid: &Arc<SnowMud>, _continuity: Continuity) -> io::Result<()> {
         self.finished += 1;
         Ok(())
-    }
-
-    fn lend(&mut self) -> io::Result<Option<Box<dyn Plane>>> {
-        if self.back.as_ref().is_none_or(|(_, bytes)| bytes.lock().unwrap().len() != self.texels.len()) {
-            self.lends += 1;
-            self.back = Some((self.lends, Arc::new(Mutex::new(vec![0; self.texels.len()]))));
-        }
-        let (id, bytes) = self.back.clone().unwrap();
-        Ok(Some(Box::new(Lent { id, bytes })))
-    }
-
-    fn swap(&mut self, back: &dyn Plane, grid: &Arc<SnowMud>, _mismatched: Vec<usize>) -> io::Result<bool> {
-        let lent = back.any().downcast_ref::<Lent>().unwrap();
-        if self.back.as_ref().is_none_or(|(id, _)| *id != lent.id) || !self.takes_parts(grid, Continuity::Continue) {
-            return Ok(false);
-        }
-        std::mem::swap(&mut self.texels, &mut *lent.bytes.lock().unwrap());
-        self.swaps += 1;
-        Ok(true)
     }
 }
 
@@ -145,7 +101,7 @@ fn layer() -> Snow {
 fn sent(first: &Arc<SnowMud>, scene: &mut Counted) -> Snow {
     let mut layer = layer();
     layer.take(made(first, None));
-    layer.push(scene, &mut Budget::unlimited()).unwrap();
+    layer.push(scene).unwrap();
     assert!(layer.uploaded(), "an unlimited upload sends everything");
     assert_eq!(scene.texels, first.texels.to_vec(), "the scene holds the first grid");
     layer
@@ -166,7 +122,7 @@ fn snow_upload_writes_only_the_band_a_changed_cell_lies_in() {
     let (rects, written) = (scene.rects.len(), scene.written);
     layer.take(made(&second, Some(&[cell])));
     assert!(!layer.uploaded(), "the changed band is owed to the scene");
-    layer.push(&mut scene, &mut Budget::unlimited()).unwrap();
+    layer.push(&mut scene).unwrap();
     assert_eq!(&scene.rects[rects..], [(8..16, 10..11)], "one band's one column, of {} bands", HEIGHT.div_ceil(BAND));
     assert_eq!(scene.written - written, BAND as usize * 4, "{} bytes, not the grid's {}", BAND * 4, first.texels.len());
     assert_eq!((scene.wholes, scene.finished), (0, 2));
@@ -185,21 +141,21 @@ fn snow_a_step_that_changes_no_cell_writes_no_band() {
     let (rects, written, finished) = (scene.rects.len(), scene.written, scene.finished);
     layer.take(made(&first, Some(&[])));
     assert!(layer.uploaded(), "the grid the scene holds is owed nothing");
-    layer.push(&mut scene, &mut Budget::unlimited()).unwrap();
+    layer.push(&mut scene).unwrap();
     assert_eq!((scene.rects.len(), scene.written, scene.finished), (rects, written, finished), "nothing is written");
 
     let words = Arc::new(SnowMud { province_snow: vec![Some(5)].into(), ..SnowMud::clone(&first) });
     layer.take(made(&words, Some(&[])));
-    layer.push(&mut scene, &mut Budget::new(Duration::ZERO).first_free()).unwrap();
+    layer.push(&mut scene).unwrap();
     assert_eq!((scene.rects.len(), scene.written, scene.finished), (rects, written, finished + 1), "taken as one piece, no band written");
     assert!(layer.uploaded());
 }
 
-/// With every band changed and its budget spent, each upload writes one piece (the first band
-/// with the run's start, a band, or the finish) and carries the rest; a grid arriving during the
-/// run adds its bands, and the scene ends with the newest grid, as taking it whole would.
+/// With every band changed, one upload writes every band owed, a run of neighbouring bands a
+/// piece, and ends with the scene holding the grid as taking it whole would. A grid taken after it
+/// writes its own bands, and no upload is ever one indivisible write.
 #[test]
-fn snow_a_whole_change_is_carried_across_spent_budgets_and_ends_equal_to_whole() {
+fn snow_a_whole_change_is_written_in_runs_of_bands_and_ends_equal_to_whole() {
     let first = grid(1);
     let mut scene = Counted::default();
     let mut layer = sent(&first, &mut scene);
@@ -207,26 +163,21 @@ fn snow_a_whole_change_is_carried_across_spent_budgets_and_ends_equal_to_whole()
     let second = edited(&first, &every, 9);
     layer.take(made(&second, Some(&every)));
     let pieces = HEIGHT.div_ceil(BAND).div_ceil(RUN) as usize;
-    let mut uploads = 0;
-    let mut third = None;
-    while !layer.uploaded() {
-        let (rects, finished) = (scene.rects.len(), scene.finished);
-        layer.push(&mut scene, &mut Budget::new(Duration::ZERO).first_free()).unwrap();
-        uploads += 1;
-        assert_eq!(scene.rects.len() - rects + scene.finished - finished, 1, "upload {uploads} writes one piece");
-        assert_eq!(scene.wholes, 0, "never one indivisible write");
-        if uploads == 2 {
-            let cell = 2 * WIDTH + 3;
-            let newest = edited(&second, &[cell], 44);
-            layer.take(made(&newest, Some(&[cell])));
-            third = Some(newest);
-        }
-        assert!(uploads <= pieces + 2, "the upload never finished");
-    }
-    let third = third.unwrap();
-    assert_eq!(uploads, pieces + 2, "a run an upload, band 0 written again for the grid that came during the run, then the finish");
-    assert_eq!(scene.texels, third.texels.to_vec(), "the pieces leave the newest grid, as a whole upload does");
-    assert_eq!(scene.begun, 2, "one run for the composed grid, one for the change");
+    let (rects, finished) = (scene.rects.len(), scene.finished);
+    layer.push(&mut scene).unwrap();
+    assert_eq!(scene.rects.len() - rects, pieces, "every band owed, a run of bands a piece");
+    assert_eq!((scene.finished - finished, scene.wholes), (1, 0), "finished once, never one indivisible write");
+    assert!(layer.uploaded(), "one upload owes nothing after it");
+    assert_eq!(scene.texels, second.texels.to_vec(), "the pieces leave the grid, as a whole upload does");
+
+    let cell = 2 * WIDTH + 3;
+    let third = edited(&second, &[cell], 44);
+    layer.take(made(&third, Some(&[cell])));
+    let rects = scene.rects.len();
+    layer.push(&mut scene).unwrap();
+    assert_eq!(&scene.rects[rects..], [(0..8, 3..4)], "the grid after it writes its own band");
+    assert_eq!(scene.texels, third.texels.to_vec(), "the scene holds the newest grid");
+    assert_eq!(scene.begun, 3, "a run for the composed grid, one for the change, one for the grid after it");
 }
 
 /// Two steps folded ahead, each grid with the bands where it differs from the one before it; the
@@ -248,7 +199,7 @@ fn snow_two_grids_taken_in_one_frame_upload_the_union_of_their_bands() {
     layer.fed.applied_through(8);
     layer.exchange(false);
     let rects = scene.rects.len();
-    layer.push(&mut scene, &mut Budget::unlimited()).unwrap();
+    layer.push(&mut scene).unwrap();
     let mut written = scene.rects[rects..].to_vec();
     written.sort_by_key(|(rows, _)| rows.start);
     assert_eq!(written, [(0..8, 4..5), (24..32, 50..51)], "the first grid's band and the second's, not only the second's");
@@ -267,137 +218,69 @@ fn snow_changed_sets_join_and_are_written_in_runs_of_neighbouring_bands() {
     changed.join(Changed::of_cells(&[WIDTH * 17 + 40], WIDTH));
     assert_eq!(changed, Changed::Bands(vec![3..4, 5..31, 40..41, 0..0, 63..64]), "a third band, joined");
     let size = [WIDTH, 40];
-    assert_eq!(changed.run(size), Some((0..24, 3..41)), "bands 0 to 2 together, their columns' bound");
+    assert_eq!(changed.run_in(size, None), Some((0..24, 3..41)), "bands 0 to 2 together, their columns' bound");
     changed.written(0..24, size);
-    assert_eq!(changed.run(size), Some((32..40, 63..64)));
+    assert_eq!(changed.run_in(size, None), Some((32..40, 63..64)));
     changed.written(32..40, size);
-    assert_eq!((changed.run(size), changed.bands(40)), (None, 0));
+    assert_eq!((changed.run_in(size, None), changed.bands(40)), (None, 0));
     changed.join(Changed::Unknown);
     assert_eq!(changed, Changed::Unknown, "not known absorbs");
     changed.join(Changed::of_cells(&[1], WIDTH));
-    assert_eq!((changed.run(size), changed.bands(40)), (Some((0..40, 0..WIDTH)), 5), "not known is written whole");
+    assert_eq!((changed.run_in(size, None), changed.bands(40)), (Some((0..40, 0..WIDTH)), 5), "not known is written whole");
 }
 
-/// The back texture, lent and written as the worker writes it ([`write_back`]) with `grid`, made
-/// of `epoch`'s steps through `stamp`.
-fn written(scene: &mut Counted, holds: Option<&Arc<SnowMud>>, grid: &Arc<SnowMud>, epoch: u64, stamp: i32) -> Written {
-    let plane = scene.lend().unwrap().unwrap();
-    let held = holds.cloned();
-    if let Some(held) = &held {
-        // What the texture holds: the worker writes only where the grid differs from it.
-        scene.back.as_ref().unwrap().1.lock().unwrap().copy_from_slice(&held.texels.to_vec());
-    }
-    let mut back = Back { plane, holds: held };
-    let pages = write_back(&mut back, grid);
-    Written { epoch, stamp: Some(stamp), back, mismatched: Vec::new(), pages }
-}
-
-/// The worker wrote the grid of hour 4 into the back texture; the frame applies hours 4 and 8 and
-/// takes both grids: the back is swapped in, and the frame writes only the band of the grid after
-/// it, not the hour-4 grid's band. Before, the frame wrote both grids' bands into the drawn texture.
+/// Only the bands the camera shows are written: a change inside the view is written at once and a
+/// change outside it stays owed, so the layer still owes an install while the view holds one;
+/// a view across the world's seam shows the columns at both ends, and both are written.
 #[test]
-fn snow_a_grid_written_to_the_back_is_swapped_in_and_the_frame_writes_only_what_came_after_it() {
+fn snow_writes_the_bands_the_camera_shows_and_owes_the_rest() {
+    let shown = super::Shown { rows: 80..100, columns: [20..30, 0..0] };
+    let mut changed = Changed::of_cells(&[90 * WIDTH + 25], WIDTH);
+    changed.join(Changed::of_cells(&[8 * WIDTH + 25], WIDTH));
+    let size = [WIDTH, HEIGHT];
+    assert_eq!(
+        changed.run_in(size, Some(&shown)),
+        Some((88..96, 25..26)),
+        "the band of the row in view, and nothing of the band at row 8",
+    );
+    changed.written(88..96, size);
+    assert_eq!(changed.run_in(size, Some(&shown)), None, "what is left is outside the view");
+    assert_eq!(changed.run_in(size, None), Some((8..16, 25..26)), "and is written when nothing limits it");
+
+    let seam = super::Shown { rows: 0..HEIGHT, columns: [60..WIDTH, 0..4] };
+    let changed = Changed::of_cells(&[WIDTH + 2, WIDTH + 40, WIDTH + 62], WIDTH);
+    assert_eq!(
+        changed.run_in(size, Some(&seam)),
+        Some((0..8, 2..63)),
+        "a view across the seam shows the columns at both ends",
+    );
+    assert!(!seam.shows(0, &(40..41)), "and not the columns between them");
+}
+
+/// Every texel the scene is shown is written by the upload, from the grid the worker handed over:
+/// taking what the worker made writes nothing, and the upload alone leaves the scene holding that
+/// grid. Before, the worker wrote the grid due next into a texture of the scene's with a queue of
+/// its own, which the frame swapped in: descheduled, it held the queue against the frame.
+#[test]
+fn snow_only_the_frames_upload_writes_what_the_worker_folded() {
     let first = grid(1);
     let mut scene = Counted::default();
     let mut layer = sent(&first, &mut scene);
-    let (early, late) = (3 * WIDTH + 4, 30 * WIDTH + 50);
-    let second = edited(&first, &[early], 70);
-    let third = edited(&second, &[late], 90);
-    layer.lease = Lease::Home(written(&mut scene, None, &second, layer.epoch, 4));
-    layer.fed.receive(Some(4), made_at(Some(4), &second, Some(&[early])));
-    layer.fed.receive(Some(8), made_at(Some(8), &third, Some(&[late])));
-    layer.fed.applied_through(8);
-    layer.exchange(false);
-    let (rects, wrote) = (scene.rects.len(), scene.written);
-    layer.push(&mut scene, &mut Budget::unlimited()).unwrap();
-    assert_eq!(scene.swaps, 1, "the hour-4 grid is swapped in");
-    assert_eq!(&scene.rects[rects..], [(24..32, 50..51)], "the frame writes the hour-8 grid's band alone");
-    assert_eq!(scene.written - wrote, BAND as usize * 4);
-    assert_eq!(scene.texels, third.texels.to_vec(), "the scene ends holding the hour-8 grid, as a whole write would");
-    assert!(layer.uploaded());
+    let cell = 101 * WIDTH + 17;
+    let second = edited(&first, &[cell], 88);
+    let (wholes, rects, written, finished) = (scene.wholes, scene.rects.len(), scene.written, scene.finished);
 
-    // The grid due next is written where it differs from what the swapped-out texture holds.
-    let fourth = edited(&third, &[early], 120);
-    let next = written(&mut scene, Some(&third), &fourth, layer.epoch, 12);
-    assert_eq!(next.pages, 1, "one page differs from what the texture held");
-    layer.home(next);
-    layer.fed.receive(Some(12), made_at(Some(12), &fourth, Some(&[early])));
-    layer.fed.applied_through(12);
-    layer.exchange(false);
-    let (rects, wrote) = (scene.rects.len(), scene.written);
-    layer.push(&mut scene, &mut Budget::unlimited()).unwrap();
-    assert_eq!((scene.swaps, scene.rects.len() - rects, scene.written - wrote), (2, 0, 0), "swapped in, nothing written on the frame");
-    assert_eq!(scene.texels, fourth.texels.to_vec());
-}
-
-/// A grid written to the back for steps voided since (a change of pace restarted the worker) is
-/// never swapped in, even taken at its hour: the frame writes its bands as before.
-#[test]
-fn snow_a_back_written_for_steps_voided_since_is_never_swapped_in() {
-    let first = grid(1);
-    let mut scene = Counted::default();
-    let mut layer = sent(&first, &mut scene);
-    let cell = 9 * WIDTH + 2;
-    let second = edited(&first, &[cell], 33);
-    layer.lease = Lease::Home(written(&mut scene, None, &second, layer.epoch, 4));
-    layer.epoch += 1;
-    layer.fed.void();
-    let mut made = made_at(Some(4), &second, Some(&[cell]));
-    made.epoch = layer.epoch;
-    layer.fed.receive(Some(4), made);
+    layer.fed.receive(Some(4), made_at(Some(4), &second, Some(&[cell])));
     layer.fed.applied_through(4);
     layer.exchange(false);
-    let rects = scene.rects.len();
-    layer.push(&mut scene, &mut Budget::unlimited()).unwrap();
-    assert_eq!(scene.swaps, 0, "a plane of another epoch is never drawn");
-    assert_eq!(&scene.rects[rects..], [(8..16, 2..3)], "the frame writes the band");
-    assert_eq!(scene.texels, second.texels.to_vec());
-    assert!(!matches!(layer.lease, Lease::Home(_)), "the plane is lent again, not kept");
-}
+    assert_eq!(
+        (scene.wholes, scene.rects.len(), scene.written, scene.finished),
+        (wholes, rects, written, finished),
+        "taking the worker's grid writes no texel: only the upload does",
+    );
 
-/// The worker writes the grid due next: past the hour applied, the newest within the frames' pace,
-/// never the one the texture holds; and only the pages where it differs from that one.
-#[test]
-fn snow_the_back_takes_the_grid_due_next_and_the_pages_that_differ() {
-    let grids: VecDeque<(Option<i32>, Arc<SnowMud>)> = [4, 8, 12, 16].into_iter().enumerate().map(|(at, hour)| (Some(hour), grid(at as u8 + 2))).collect();
-    assert_eq!(pick(&grids, None, Some(6), 0), Some(1), "no pace known: the oldest past the hour applied");
-    assert_eq!(pick(&grids, None, Some(6), 7), Some(2), "the newest the next frame reaches");
-    assert_eq!(pick(&grids, Some(&grids[2].1), Some(6), 7), Some(1), "not the grid it holds");
-    assert_eq!(pick(&grids, None, Some(16), 24), None, "none past the hour applied");
-    assert_eq!(pick(&grids, None, Some(2), 100), Some(3));
-
-    let first = grid(1);
-    let cell = 150 * WIDTH + 7;
-    let second = edited(&first, &[cell], 5);
-    let bytes = Arc::new(Mutex::new(vec![0; first.texels.len()]));
-    let mut back = Back { plane: Box::new(Lent { id: 1, bytes: Arc::clone(&bytes) }), holds: None };
-    assert_eq!(write_back(&mut back, &first), first.texels.pages().len() as u64, "holding nothing known, every page");
-    assert_eq!(write_back(&mut back, &second), 1, "the changed cell's page alone");
-    assert_eq!(*bytes.lock().unwrap(), second.texels.to_vec());
-    assert!(Arc::ptr_eq(back.holds.as_ref().unwrap(), &second));
-}
-
-/// The back written with the hour-4 grid comes home after the frame took the hour-4 and hour-8
-/// grids: it is swapped in all the same, and the frame writes the hour-8 grid's band alone. Before,
-/// a back plane home with any grid but the newest taken was lent again and the frame wrote both.
-#[test]
-fn snow_a_back_home_after_its_grid_was_taken_is_swapped_in_with_the_bands_after_it() {
-    let first = grid(1);
-    let mut scene = Counted::default();
-    let mut layer = sent(&first, &mut scene);
-    let (early, late) = (3 * WIDTH + 4, 30 * WIDTH + 50);
-    let second = edited(&first, &[early], 70);
-    let third = edited(&second, &[late], 90);
-    layer.fed.receive(Some(4), made_at(Some(4), &second, Some(&[early])));
-    layer.fed.receive(Some(8), made_at(Some(8), &third, Some(&[late])));
-    layer.fed.applied_through(8);
-    layer.exchange(false);
-    let home = written(&mut scene, None, &second, layer.epoch, 4);
-    layer.home(home);
-    let (rects, wrote) = (scene.rects.len(), scene.written);
-    layer.push(&mut scene, &mut Budget::unlimited()).unwrap();
-    assert_eq!(scene.swaps, 1, "the hour-4 grid, taken before its plane came home, is swapped in");
-    assert_eq!(&scene.rects[rects..], [(24..32, 50..51)], "the frame writes the hour-8 grid's band alone");
-    assert_eq!(scene.written - wrote, BAND as usize * 4);
-    assert_eq!(scene.texels, third.texels.to_vec());
+    layer.push(&mut scene).unwrap();
+    assert_eq!(&scene.rects[rects..], [(96..104, 17..18)], "the upload writes the band the fold changed");
+    assert_eq!(scene.texels, second.texels.to_vec(), "the scene holds the grid the worker made");
+    assert!(layer.uploaded());
 }

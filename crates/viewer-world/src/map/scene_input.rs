@@ -1,12 +1,7 @@
 //! Scene inputs preserve setter order, returned products and refusal boundaries.
 
 use super::*;
-use crate::map::{
-    aircraft::{AircraftAssets, AircraftPlan},
-    animated_map_text::events,
-    railways::PreparedRailGeometry,
-    trains::{TrainAssets, TrainPlan},
-};
+use crate::map::{aircraft::AircraftAssets, trains::TrainAssets};
 use viewer_foundation::map::{native_resources::GuiResources, province_map::HeightField};
 
 /// Unboxed hour products move directly into their setters without another allocation.
@@ -48,71 +43,10 @@ pub enum SceneInput<'a> {
         assets: &'a crate::map::animated_map_text::Assets,
         gui: &'a GuiResources,
     },
-    SetPreparedRailways {
-        assets: &'a RailAssets,
-        geometry: Arc<PreparedRailGeometry>,
-    },
-    SetBridges {
-        bridges: &'a Bridges,
-        field: ModelField,
-    },
-    SetMapBuildings {
-        assets: &'a MapBuildingAssets,
-        prepared: map_display_data::buildings::Buildings,
-        passed: Option<&'a [&'a map_display_data::buildings::Buildings]>,
-    },
-    SetTrains {
-        assets: Arc<TrainAssets>,
-        plan: TrainPlan,
-        continuity: Continuity,
-    },
-    SetAircraft {
-        assets: Arc<AircraftAssets>,
-        plan: AircraftPlan,
-        continuity: Continuity,
-    },
-    RestartUnitModels(Option<&'a BTreeSet<u32>>),
     /// The order field by its producers' parts (plan, raid arrows, trade routes, air orders).
     SetOrders {
         assets: &'a OrderAssets,
         parts: [Option<&'a OrderField>; crate::map::order_pass::ORDER_PARTS],
-    },
-    SetPreparedWeatherEffects {
-        assets: Arc<crate::map::weather_effects::Assets>,
-        prepared: crate::map::weather_effects::Prepared,
-        continuity: Continuity,
-    },
-    SetPolitical(&'a Arc<Regions>),
-    /// An hour's independent layers, installed at once ([`Scene::set_hour_layers`]).
-    SetHourLayers(crate::map::scene::HourLayers<'a>),
-    SetBorderPlans {
-        classes: &'a crate::map::border_pass::ClassPlan,
-        zone: &'a crate::map::demilitarized::ZonePlan,
-    },
-    SetSnowMud {
-        snow: &'a Arc<crate::map::weather::SnowMud>,
-        continuity: Continuity,
-    },
-    SetFogOfWar {
-        texels: &'a map_display_data::Paged<u8>,
-        fog: bool,
-    },
-    PresentHours {
-        at: (replay_data::BranchId, i32),
-        seek: bool,
-        hours: Vec<(
-            &'a crate::map::strike_effects::Impacts,
-            &'a events::Prepared,
-        )>,
-        continuity: Continuity,
-        anchor: &'a dyn Fn(u32) -> Option<[f32; 3]>,
-        heights: HeightField<'a>,
-        gui: &'a GuiResources,
-    },
-    MissingMapTextEvents {
-        at: (replay_data::BranchId, i32),
-        seek: bool,
-        reason: String,
     },
     /// Draws the hour's figures where the view's presentation history moves them this frame:
     /// each figure's unit, hour placement, root rotation and scale.
@@ -129,12 +63,6 @@ pub enum SceneInput<'a> {
         >,
         history: &'a viewer_foundation::map::counter_move::SharedMovement,
     },
-    SetUnitModels {
-        assets: &'a UnitModelAssets,
-        field: crate::map::unit_history::Field,
-        steady: bool,
-    },
-    UseWorkers(viewer_foundation::parallel::Workers),
     ShareProvinceSchedule(&'a Shared),
     AdvanceProvinces {
         camera: Camera,
@@ -200,24 +128,8 @@ impl SceneInput<'_> {
             Self::SetSprawl { .. } => "SetSprawl",
             Self::SetMapFrame { .. } => "SetMapFrame",
             Self::InstallAnimatedText { .. } => "InstallAnimatedText",
-            Self::SetPreparedRailways { .. } => "SetPreparedRailways",
-            Self::SetBridges { .. } => "SetBridges",
-            Self::SetMapBuildings { .. } => "SetMapBuildings",
-            Self::SetTrains { .. } => "SetTrains",
-            Self::SetAircraft { .. } => "SetAircraft",
-            Self::RestartUnitModels { .. } => "RestartUnitModels",
             Self::SetOrders { .. } => "SetOrders",
-            Self::SetPreparedWeatherEffects { .. } => "SetPreparedWeatherEffects",
-            Self::SetPolitical { .. } => "SetPolitical",
-            Self::SetHourLayers { .. } => "SetHourLayers",
-            Self::SetBorderPlans { .. } => "SetBorderPlans",
-            Self::SetSnowMud { .. } => "SetSnowMud",
-            Self::SetFogOfWar { .. } => "SetFogOfWar",
-            Self::PresentHours { .. } => "PresentHours",
-            Self::MissingMapTextEvents { .. } => "MissingMapTextEvents",
             Self::SetUnitMovement { .. } => "SetUnitMovement",
-            Self::SetUnitModels { .. } => "SetUnitModels",
-            Self::UseWorkers { .. } => "UseWorkers",
             Self::ShareProvinceSchedule { .. } => "ShareProvinceSchedule",
             Self::AdvanceProvinces { .. } => "AdvanceProvinces",
             Self::SetMovementArrows { .. } => "SetMovementArrows",
@@ -240,96 +152,42 @@ impl SceneInput<'_> {
     }
 }
 
-/// What an applied input returns to its host: the replaced product a setter hands back, if any.
-#[allow(clippy::large_enum_variant, reason = "a product moves into its setter unboxed, with no second allocation")]
-pub enum SceneOutput {
-    Applied,
-    PreparedRailways(Arc<PreparedRailGeometry>),
-    Trains(Option<TrainPlan>),
-    Aircraft(Option<AircraftPlan>),
-    WeatherEffects(crate::map::weather_effects::Retired),
-}
-
-impl SceneOutput {
-    /// What [`SceneInput::SetPreparedRailways`] replaced.
-    pub fn into_prepared_railways(self) -> Arc<PreparedRailGeometry> {
-        match self {
-            Self::PreparedRailways(geometry) => geometry,
-            _ => unreachable!("only SetPreparedRailways returns railway geometry"),
-        }
-    }
-
-    /// What [`SceneInput::SetTrains`] replaced.
-    pub fn into_trains(self) -> Option<TrainPlan> {
-        match self {
-            Self::Trains(plan) => plan,
-            _ => unreachable!("only SetTrains returns a train plan"),
-        }
-    }
-
-    /// What [`SceneInput::SetAircraft`] replaced.
-    pub fn into_aircraft(self) -> Option<AircraftPlan> {
-        match self {
-            Self::Aircraft(plan) => plan,
-            _ => unreachable!("only SetAircraft returns an aircraft plan"),
-        }
-    }
-
-    /// What [`SceneInput::SetPreparedWeatherEffects`] retired.
-    pub fn into_weather_effects(self) -> crate::map::weather_effects::Retired {
-        match self {
-            Self::WeatherEffects(retired) => retired,
-            _ => unreachable!("only SetPreparedWeatherEffects returns retired effects"),
-        }
-    }
-}
-
 impl Scene {
-    /// Returns the original setter's replaced product or refusal unchanged.
+    /// Returns the setter's refusal unchanged.
     pub fn apply(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         input: SceneInput<'_>,
-    ) -> io::Result<SceneOutput> {
+    ) -> io::Result<()> {
         let _cost = replay_frame::cpu::scope(input.name(), Some("upload"));
-        let applied = SceneOutput::Applied;
-        Ok(match input {
+        match input {
             SceneInput::WarmTrains(assets) => {
                 self.warm_trains(device, queue, assets)?;
-                applied
             }
             SceneInput::WarmUnitModels(assets) => {
                 self.warm_unit_models(device, queue, assets)?;
-                applied
             }
             SceneInput::WarmAircraft(assets) => {
                 self.warm_aircraft(device, queue, assets)?;
-                applied
             }
             SceneInput::WarmMapBuildings(assets) => {
                 self.warm_map_buildings(device, queue, assets)?;
-                applied
             }
             SceneInput::WarmBridges(bridges) => {
                 self.warm_bridges(device, queue, bridges)?;
-                applied
             }
             SceneInput::WarmRailways(assets) => {
                 self.warm_railways(device, queue, assets)?;
-                applied
             }
             SceneInput::WarmOrders(assets) => {
                 self.warm_orders(device, queue, assets)?;
-                applied
             }
             SceneInput::WarmWeather(assets) => {
                 self.warm_weather(device, queue, assets)?;
-                applied
             }
             SceneInput::WarmPipelines => {
                 self.warm_pipelines(device);
-                applied
             }
             SceneInput::WarmPolitical {
                 map,
@@ -338,7 +196,6 @@ impl Scene {
                 cache,
             } => {
                 self.warm_political(device, queue, map, strategic_regions, field, cache)?;
-                applied
             }
             SceneInput::SetBorders {
                 assets,
@@ -346,11 +203,9 @@ impl Scene {
                 straits,
             } => {
                 self.set_borders(device, queue, assets, meshes, straits)?;
-                applied
             }
             SceneInput::SetRivers { assets, mesh } => {
                 self.set_rivers(device, queue, assets, mesh)?;
-                applied
             }
             SceneInput::SetTrees {
                 assets,
@@ -358,123 +213,27 @@ impl Scene {
                 field,
             } => {
                 self.set_trees(device, queue, assets, geometry, field)?;
-                applied
             }
             SceneInput::SetSprawl(sprawl) => {
                 self.set_sprawl(device, queue, sprawl)?;
-                applied
             }
             SceneInput::SetMapFrame(assets) => {
                 self.set_map_frame(device, queue, assets)?;
-                applied
             }
             SceneInput::InstallAnimatedText { assets, gui } => {
                 self.install_animated_text(assets, gui);
-                applied
-            }
-            SceneInput::SetPreparedRailways { assets, geometry } => SceneOutput::PreparedRailways(
-                self.set_prepared_railways(device, queue, assets, geometry)?,
-            ),
-            SceneInput::SetBridges { bridges, field } => {
-                self.set_bridges(device, queue, bridges, field)?;
-                applied
-            }
-            SceneInput::SetMapBuildings {
-                assets,
-                prepared,
-                passed,
-            } => {
-                self.set_map_buildings(device, queue, assets, prepared, passed)?;
-                applied
-            }
-            SceneInput::SetTrains {
-                assets,
-                plan,
-                continuity,
-            } => SceneOutput::Trains(self.set_trains(assets, plan, continuity)?),
-            SceneInput::SetAircraft {
-                assets,
-                plan,
-                continuity,
-            } => {
-                let replaced = self.set_aircraft(assets, plan, continuity)?;
-                self.warm_added_aircraft(device)?;
-                SceneOutput::Aircraft(replaced)
-            }
-            SceneInput::RestartUnitModels(provinces) => {
-                self.restart_unit_models(provinces);
-                applied
             }
             SceneInput::SetOrders { assets, parts } => {
                 self.set_order_parts(device, queue, assets, parts)?;
-                applied
-            }
-            SceneInput::SetPreparedWeatherEffects {
-                assets,
-                prepared,
-                continuity,
-            } => SceneOutput::WeatherEffects(
-                self.set_prepared_weather_effects(device, queue, assets, prepared, continuity)?,
-            ),
-            SceneInput::SetHourLayers(layers) => {
-                self.set_hour_layers(device, queue, layers)?;
-                applied
-            }
-            SceneInput::SetPolitical(regions) => {
-                self.set_political(device, queue, regions)?;
-                applied
-            }
-            SceneInput::SetBorderPlans { classes, zone } => {
-                self.set_border_plans(device, classes, zone)?;
-                applied
-            }
-            SceneInput::SetSnowMud { snow, continuity } => {
-                self.set_snow_mud(device, queue, snow, continuity)?;
-                applied
-            }
-            SceneInput::SetFogOfWar { texels, fog } => {
-                self.set_fog_of_war(queue, texels, fog)?;
-                applied
-            }
-            SceneInput::PresentHours {
-                at,
-                seek,
-                hours,
-                continuity,
-                anchor,
-                heights,
-                gui,
-            } => {
-                self.present_hours(at, seek, hours, continuity, anchor, heights, gui);
-                applied
-            }
-            SceneInput::MissingMapTextEvents { at, seek, reason } => {
-                self.missing_map_text_events(at, seek, reason);
-                applied
             }
             SceneInput::SetUnitMovement { positions, history } => {
                 self.unit_history.set_movement(positions, history);
-                applied
-            }
-            SceneInput::SetUnitModels {
-                assets,
-                field,
-                steady,
-            } => {
-                self.set_unit_models(device, queue, assets, field, steady)?;
-                applied
-            }
-            SceneInput::UseWorkers(workers) => {
-                self.use_workers(workers);
-                applied
             }
             SceneInput::ShareProvinceSchedule(schedule) => {
                 self.share_province_schedule(schedule);
-                applied
             }
             SceneInput::AdvanceProvinces { camera, size } => {
                 self.advance_provinces(camera, size);
-                applied
             }
             SceneInput::SetMovementArrows {
                 epoch,
@@ -486,23 +245,18 @@ impl Scene {
             } => {
                 self.movement_arrows
                     .set(epoch, routes, warnings, heights, width, selected);
-                applied
             }
             SceneInput::PrepareArrowBounds { map, known } => {
                 self.unit_history.prepare_arrow_bounds(map, known);
-                applied
             }
             SceneInput::SetUnitSelection(selected) => {
                 self.unit_history.set_selection(selected);
-                applied
             }
             SceneInput::SelectProvinces(provinces) => {
                 self.unit_history.select_provinces(provinces);
-                applied
             }
             SceneInput::SetRaidUnits(raids) => {
                 self.set_raid_units(raids);
-                applied
             }
             SceneInput::SetFactionHighlight {
                 plan,
@@ -510,15 +264,12 @@ impl Scene {
                 color,
             } => {
                 self.set_faction_highlight(device, plan, strategic_regions, color)?;
-                applied
             }
             SceneInput::SetAirRanges(field) => {
                 self.set_air_ranges(field);
-                applied
             }
             SceneInput::SetAirTransfers(field) => {
                 self.set_air_transfers(field);
-                applied
             }
             SceneInput::SetRadar {
                 field,
@@ -526,36 +277,29 @@ impl Scene {
                 hovered,
             } => {
                 self.set_radar(field, shown, hovered);
-                applied
             }
             SceneInput::SetAirAssignment(field) => {
                 self.set_air_assignment(queue, field)?;
-                applied
             }
             SceneInput::SetStrategicStyles(styles) => {
                 self.set_strategic_styles(device, queue, styles)?;
-                applied
             }
             SceneInput::SetGraphics(graphics) => {
                 self.set_graphics(graphics);
-                applied
             }
             SceneInput::SetPlayer(player) => {
                 self.set_player(device, queue, player)?;
-                applied
             }
             SceneInput::SetVisibility(visibility) => {
                 self.set_visibility(visibility);
-                applied
             }
             SceneInput::LabelFrame(frame) => {
                 self.label_frame(frame);
-                applied
             }
             SceneInput::CutProvinceFrame(animation_time) => {
                 self.cut_province_frame(animation_time);
-                applied
             }
-        })
+        }
+        Ok(())
     }
 }

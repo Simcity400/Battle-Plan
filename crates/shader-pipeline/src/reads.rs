@@ -243,6 +243,21 @@ pub(crate) fn reflect(
 }
 
 impl super::Buffer {
+    /// The bytes of `block` this binding's programs read, in the order they are declared,
+    /// appended to `out`. Bytes beyond the block read zero on the device and are appended as
+    /// zero, so a shorter block that holds the same values gives the same bytes. This is what a
+    /// pass drawn only while its inputs change keys on: a byte no program reads never reaches
+    /// `out`.
+    pub fn read_bytes(&self, block: &[u8], out: &mut Vec<u8>) {
+        for range in &self.reads {
+            let held =
+                (range.start as usize).min(block.len())..(range.end as usize).min(block.len());
+            let zeros = (range.end - range.start) as usize - held.len();
+            out.extend_from_slice(&block[held]);
+            out.extend(std::iter::repeat_n(0u8, zeros));
+        }
+    }
+
     /// Bytes beyond the physical D3D11 binding read zero. Unknown bytes *inside*
     /// that allocation cannot be replaced by zero when the shader consumes them.
     pub fn check_initialized(&self, physical: u32, known: &[Range<u32>]) -> Result<(), String> {

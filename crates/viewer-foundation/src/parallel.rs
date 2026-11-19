@@ -7,10 +7,19 @@
 //! machine's parallelism and return the results in input order, so callers
 //! merge them exactly as a serial load would.
 //!
-//! [`Workers`] lends a batch an existing bounded pool. Synchronous frame work
-//! can use protected idle helpers before borrowing hour builders.
+//! [`Workers`] lends a batch an existing bounded pool. The thread that draws
+//! the map never lends: it holds no pool, so every batch it runs is its own.
 
 mod turn_profile;
+
+/// Names rayon's shared pool, which the recording's lanes and the content loaders fan out on, so
+/// every thread of the process answers for itself in a measured run. Called once, before any
+/// rayon work; a pool already built keeps the name it has.
+pub fn name_shared_pool() {
+    let _ = rayon::ThreadPoolBuilder::new()
+        .thread_name(|at| format!("shared rayon {at}"))
+        .build_global();
+}
 
 use job_priority::SpawnCarried as _;
 use std::sync::MutexGuard;
@@ -25,50 +34,6 @@ use std::{
     thread,
 };
 use turn_profile::{Batch, Counts};
-
-/// Coarse caller work and join time for one borrowed turn batch. No scheduling changes.
-#[derive(Clone, Copy, Default)]
-pub struct RunProfile {
-    pub own: std::time::Duration,
-    pub wait: std::time::Duration,
-}
-thread_local! {
-    static RUN_PROFILE: std::cell::Cell<Option<RunProfile>> = const { std::cell::Cell::new(None) };
-}
-
-pub fn profile_run<R>(enabled: bool, work: impl FnOnce() -> R) -> (R, RunProfile) {
-    if !enabled {
-        return (work(), RunProfile::default());
-    }
-    struct Restore(Option<RunProfile>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            RUN_PROFILE.set(self.0);
-        }
-    }
-    let _restore = Restore(RUN_PROFILE.replace(Some(RunProfile::default())));
-    let result = work();
-    (result, RUN_PROFILE.get().unwrap_or_default())
-}
-
-fn profile_clock() -> Option<std::time::Instant> {
-    RUN_PROFILE.get().map(|_| std::time::Instant::now())
-}
-
-fn profile_elapsed(clock: Option<std::time::Instant>, wait: bool) {
-    if let Some(clock) = clock {
-        RUN_PROFILE.with(|slot| {
-            slot.set(slot.get().map(|mut profile| {
-                if wait {
-                    profile.wait += clock.elapsed();
-                } else {
-                    profile.own += clock.elapsed();
-                }
-                profile
-            }));
-        });
-    }
-}
 
 /// Maps `items` through `work` on at most `available_parallelism` threads,
 /// returning the results in input order.
@@ -134,120 +99,10 @@ pub fn usable_processors() -> usize {
 /// tasks are all done.
 pub type Beside<'a> = dyn Fn(&dyn Fn() -> bool) + Sync + 'a;
 
-/// Owned helper work; joining runs untaken work, dropping discards it.
-pub struct Detached<T> {
-    job: Arc<DetachedJob<T>>,
-}
-
-struct DetachedJob<T> {
-    state: Mutex<DetachedState<T>>,
-    done: Condvar,
-}
-
-enum DetachedState<T> {
-    Pending(Box<dyn FnOnce() -> T + Send>),
-    Running,
-    Finished(thread::Result<T>),
-    Taken,
-}
-
-/// The helper's side of a [`Detached`] job, whatever it returns.
-trait Detach: Send + Sync {
-    /// Runs the job here unless it was already taken, calling `taken` first if it was not.
-    fn take_and_run(&self, taken: &dyn Fn());
-}
-
-impl<T> DetachedJob<T> {
-    fn lock(&self) -> MutexGuard<'_, DetachedState<T>> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-}
-
-impl<T: Send> Detach for DetachedJob<T> {
-    fn take_and_run(&self, taken: &dyn Fn()) {
-        let job = {
-            let mut state = self.lock();
-            match std::mem::replace(&mut *state, DetachedState::Running) {
-                DetachedState::Pending(job) => job,
-                other => {
-                    *state = other;
-                    return;
-                }
-            }
-        };
-        taken();
-        let result = catch_unwind(AssertUnwindSafe(job));
-        *self.lock() = DetachedState::Finished(result);
-        self.done.notify_all();
-    }
-}
-
-impl<T: Send + 'static> Detached<T> {
-    fn new(job: impl FnOnce() -> T + Send + 'static) -> Self {
-        Self {
-            job: Arc::new(DetachedJob {
-                state: Mutex::new(DetachedState::Pending(Box::new(job_priority::carry(job)))),
-                done: Condvar::new(),
-            }),
-        }
-    }
-
-    /// The job's result: computed here if no helper took the job, else once its helper is done.
-    pub fn join(self) -> T {
-        let mut state = self.job.lock();
-        loop {
-            match std::mem::replace(&mut *state, DetachedState::Taken) {
-                DetachedState::Pending(job) => {
-                    drop(state);
-                    return job();
-                }
-                DetachedState::Running => {
-                    *state = DetachedState::Running;
-                    state = self
-                        .job
-                        .done
-                        .wait(state)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                }
-                DetachedState::Finished(Ok(value)) => return value,
-                DetachedState::Finished(Err(panic)) => resume_unwind(panic),
-                DetachedState::Taken => unreachable!("a detached job is joined once"),
-            }
-        }
-    }
-}
-
-impl<T> Drop for Detached<T> {
-    fn drop(&mut self) {
-        let mut state = self.job.lock();
-        if matches!(*state, DetachedState::Pending(_)) {
-            *state = DetachedState::Taken;
-        }
-    }
-}
-
-/// The service that accepted a helper, for opt-in per-batch accounting.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HelperSource {
-    Protected,
-    Builder,
-}
-
 /// A pool that takes jobs without waiting.
 pub trait Spawn: Send + Sync {
     /// Queues `job`, or gives it back when the pool cannot take it now.
     fn try_spawn(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), Box<dyn FnOnce() + Send>>;
-    /// The same admission operation, identifying protected frame capacity.
-    #[doc(hidden)]
-    fn try_spawn_classified(
-        &self,
-        job: Box<dyn FnOnce() + Send>,
-    ) -> Result<HelperSource, Box<dyn FnOnce() + Send>> {
-        self.try_spawn(job).map(|()| HelperSource::Builder)
-    }
     /// The pool's threads.
     fn threads(&self) -> usize;
 }
@@ -361,8 +216,8 @@ impl Workers {
         if let Some(pool) = &self.pool {
             for _ in 0..admitted.capacity.saturating_sub(1) {
                 let gate = Arc::clone(&admitted.gate);
-                match pool.try_spawn_classified(Box::new(job_priority::carry(move || gate.help()))) {
-                    Ok(source) => admitted.profile.accepted(source),
+                match pool.try_spawn(Box::new(job_priority::carry(move || gate.help()))) {
+                    Ok(()) => admitted.profile.accepted(),
                     Err(_) => break,
                 }
             }
@@ -398,12 +253,12 @@ impl Workers {
                 return;
             }
         };
-        let turns = Turns::new(count, task, beside, None, profile.counts.clone());
+        let turns = Turns::new(count, task, beside, profile.counts.clone());
         let spawned = catch_unwind(AssertUnwindSafe(|| {
             for _ in 0..helpers {
                 let turn = Arc::clone(&turns);
-                match pool.try_spawn_classified(Box::new(job_priority::carry(move || turn.help()))) {
-                    Ok(source) => profile.accepted(source),
+                match pool.try_spawn(Box::new(job_priority::carry(move || turn.help()))) {
+                    Ok(()) => profile.accepted(),
                     Err(_) => break,
                 }
             }
@@ -457,19 +312,7 @@ impl Admitted {
         task: &(dyn Fn(usize, usize) + Sync),
         beside: Option<&Beside<'_>>,
     ) -> usize {
-        self.run_turns(maximum, task, beside, None)
-    }
-
-    /// Joins borrowed tasks here, but leaves owned work for [`Detached::join`].
-    pub fn run_detached<T: Send + 'static>(
-        &self,
-        maximum: usize,
-        task: &(dyn Fn(usize, usize) + Sync),
-        job: impl FnOnce() -> T + Send + 'static,
-    ) -> (usize, Detached<T>) {
-        let detached = Detached::new(job);
-        let helper: Arc<dyn Detach> = detached.job.clone();
-        (self.run_turns(maximum, task, None, Some(helper)), detached)
+        self.run_turns(maximum, task, beside)
     }
 
     fn run_turns(
@@ -477,7 +320,6 @@ impl Admitted {
         maximum: usize,
         task: &(dyn Fn(usize, usize) + Sync),
         beside: Option<&Beside<'_>>,
-        detached: Option<Arc<dyn Detach>>,
     ) -> usize {
         let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
         assert!(state.open, "admitted batch already run");
@@ -488,14 +330,12 @@ impl Admitted {
                 .admitted
                 .store(count.saturating_sub(1), Ordering::Relaxed);
         }
-        let turns = Turns::new(count, &task, beside, detached, self.profile.counts.clone());
+        let turns = Turns::new(count, &task, beside, self.profile.counts.clone());
         state.open = false;
         state.turns = Some(Arc::clone(&turns));
         drop(state);
         self.gate.ready.notify_all();
-        let own = profile_clock();
         let result = catch_unwind(AssertUnwindSafe(|| turns.work(true)));
-        profile_elapsed(own, false);
         turns.finish(result);
         count
     }
@@ -550,8 +390,6 @@ struct Turns {
     /// Run beside the tasks by the first pool thread that takes a turn.
     beside: Option<*const Beside<'static>>,
     beside_taken: AtomicBool,
-    /// Owned, so run before the turn registers: [`Self::finish`] does not wait for it.
-    detached: Option<Arc<dyn Detach>>,
     /// Tasks run to their end.
     completed: AtomicUsize,
     /// A task panicked: the rest may never complete.
@@ -581,7 +419,6 @@ impl Turns {
         count: usize,
         task: &(dyn Fn(usize) + Sync),
         beside: Option<&Beside<'_>>,
-        detached: Option<Arc<dyn Detach>>,
         profile: Option<Arc<Counts>>,
     ) -> Arc<Self> {
         // SAFETY: the lifetime is erased only for the pool's jobs, which run
@@ -603,7 +440,6 @@ impl Turns {
             task,
             beside,
             beside_taken: AtomicBool::new(false),
-            detached,
             completed: AtomicUsize::new(0),
             failed: AtomicBool::new(false),
             priority: crate::worker_priority::current_priority(),
@@ -618,7 +454,6 @@ impl Turns {
         if own.is_err() {
             self.failed.store(true, Ordering::Release);
         }
-        let wait = profile_clock();
         let mut state = self.lock();
         state.closed = true;
         while state.running > 0 {
@@ -629,7 +464,6 @@ impl Turns {
         }
         let helper = state.panic.take();
         drop(state);
-        profile_elapsed(wait, true);
         if let Err(panic) = own {
             resume_unwind(panic);
         }
@@ -669,15 +503,6 @@ impl Turns {
     /// A pool thread's turn: tasks until none remains, unless the run is
     /// already over.
     fn help(&self) {
-        if let Some(detached) = &self.detached {
-            crate::worker_priority::at_least(self.priority, || {
-                detached.take_and_run(&|| {
-                    if let Some(counts) = &self.profile {
-                        counts.beside.fetch_add(1, Ordering::Relaxed);
-                    }
-                })
-            });
-        }
         {
             let mut state = self.lock();
             if state.closed {
@@ -963,129 +788,6 @@ pub(crate) mod tests {
             }));
             assert!(caught.is_err());
         }
-    }
-
-    /// The detached job cannot finish until after its borrowed batch returns.
-    #[test]
-    fn admitted_detached_job_runs_on_a_helper_after_the_batch_returns() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let workers = super::Workers::new(threads(3));
-        let count = workers.threads();
-        // Keep the batch open until a helper takes the owned job, without timing assumptions.
-        if count < 3 {
-            return;
-        }
-        let tasks = count - 1;
-        let barrier = std::sync::Barrier::new(tasks);
-        let caller = std::thread::current().id();
-        let (release, released) = std::sync::mpsc::channel::<()>();
-        let ran = AtomicUsize::new(0);
-        let detached = workers.with_admitted(count, |admitted| {
-            admitted.wait_for_helpers(count - 1);
-            let (actual, detached) = admitted.run_detached(
-                tasks,
-                &|_, _| {
-                    barrier.wait();
-                    ran.fetch_add(1, Ordering::Relaxed);
-                },
-                move || {
-                    released.recv().unwrap();
-                    std::thread::current().id()
-                },
-            );
-            assert_eq!(actual, tasks);
-            detached
-        });
-        assert_eq!(ran.into_inner(), tasks);
-        release.send(()).unwrap();
-        assert_ne!(detached.join(), caller);
-        // The helpers are free again.
-        let barrier = std::sync::Barrier::new(count);
-        workers.run(count, &|_| {
-            barrier.wait();
-        });
-    }
-
-    /// A late helper must not run owned work that was already joined or dropped.
-    #[test]
-    fn detached_jobs_no_helper_took_run_once_on_the_joining_thread_or_not_at_all() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        #[derive(Default)]
-        struct Queued(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
-        impl super::Spawn for Queued {
-            fn try_spawn(
-                &self,
-                job: Box<dyn FnOnce() + Send>,
-            ) -> Result<(), Box<dyn FnOnce() + Send>> {
-                self.0.lock().unwrap().push(job);
-                Ok(())
-            }
-            fn threads(&self) -> usize {
-                3
-            }
-        }
-        let caller = std::thread::current().id();
-        for join in [true, false] {
-            let pool = Arc::new(Queued::default());
-            let queued = super::Workers::new(pool.clone());
-            for workers in [super::Workers::default(), queued] {
-                let runs = Arc::new(AtomicUsize::new(0));
-                let seen = AtomicUsize::new(0);
-                let detached = workers.with_admitted(workers.threads(), |admitted| {
-                    let job_runs = Arc::clone(&runs);
-                    let (count, detached) = admitted.run_detached(
-                        workers.threads(),
-                        &|_, _| {
-                            seen.fetch_add(1, Ordering::Relaxed);
-                        },
-                        move || {
-                            job_runs.fetch_add(1, Ordering::Relaxed);
-                            std::thread::current().id()
-                        },
-                    );
-                    assert_eq!(count, 1);
-                    detached
-                });
-                assert_eq!(seen.into_inner(), 1);
-                if join {
-                    assert_eq!(detached.join(), caller);
-                } else {
-                    drop(detached);
-                }
-                for job in std::mem::take(&mut *pool.0.lock().unwrap()) {
-                    job();
-                }
-                assert_eq!(runs.load(Ordering::Relaxed), usize::from(join));
-            }
-        }
-    }
-
-    /// Panic propagation must not leave the pool unusable.
-    #[test]
-    fn a_detached_job_panic_reaches_the_join() {
-        let workers = super::Workers::new(threads(3));
-        let count = workers.threads();
-        for helper in [true, false] {
-            let pool = if helper {
-                workers.clone()
-            } else {
-                super::Workers::default()
-            };
-            let detached = pool.with_admitted(count, |admitted| {
-                if helper {
-                    admitted.wait_for_helpers(count - 1);
-                }
-                admitted
-                    .run_detached(count, &|_, _| {}, || -> u32 { panic!("detached job") })
-                    .1
-            });
-            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| detached.join()));
-            assert!(caught.is_err());
-        }
-        let barrier = std::sync::Barrier::new(count);
-        workers.run(count, &|_| {
-            barrier.wait();
-        });
     }
 
     #[test]

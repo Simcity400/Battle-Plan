@@ -8,11 +8,15 @@ import type { VideoOptions } from './videoOptions';
 interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null; gameMapUiScale: number | null; mapUiScaleChoices: number[] }
 
 const VSYNC = 'VSync';
+const FRAME_LIMIT = 'Frame rate limit';
 const INTERFACE_SCALE = 'Interface scale';
 const MAP_UI_SCALE = 'Map UI scale';
 /** Option row labels, in order; settings search reveals rows by these. */
-export const VIDEO_OPTION_LABELS = [VSYNC, INTERFACE_SCALE, MAP_UI_SCALE];
+export const VIDEO_OPTION_LABELS = [VSYNC, FRAME_LIMIT, INTERFACE_SCALE, MAP_UI_SCALE];
 const MATCH_GAME = 'match';
+/** The frame rate limits the maps accept (`MAP_FRAME_LIMIT_RANGE`). */
+const MIN_FRAME_LIMIT = 1;
+const MAX_FRAME_LIMIT = 1000;
 
 export function useVideoSettings(enabled: boolean, userFolder?: string) {
   const [reply, setReply] = useState<VideoReply | null>(null);
@@ -52,6 +56,16 @@ export default function VideoControls({ video, busy }: { video: ReturnType<typeo
     <label className="map-option-row"><span>{VSYNC} <span className="folder-info" tabIndex={0} role="img" aria-label="About VSync" data-tooltip="Synchronizes all native maps to the display to reduce tearing. This is a global graphics setting; browser preview uses the browser's presentation settings."><Icon name="info" /></span></span>
       {desktopAvailable ? <input type="checkbox" role="switch" disabled={!enabled} aria-checked={video.draft ? video.draft.vsync : 'mixed'} checked={video.draft?.vsync ?? false} onChange={event => video.update({ vsync: event.currentTarget.checked })} /> : <span className="graphics-unavailable">Desktop only</span>}
     </label>
+    <div className="map-option-row"><span>{FRAME_LIMIT} <span className="folder-info" tabIndex={0} role="img" aria-label="About the frame rate limit" data-tooltip="Holds every native map to at most this many evenly spaced frames a second, which a weaker machine can draw steadily and a laptop on battery pays less for. Empty draws as the display and VSync allow."><Icon name="info" /></span></span>
+      {desktopAvailable ? <span className="frame-limit-field"><input type="number" min={MIN_FRAME_LIMIT} max={MAX_FRAME_LIMIT} step={1} placeholder="Off" aria-label={FRAME_LIMIT} disabled={!enabled || !video.draft}
+        value={video.draft?.mapFrameLimit ?? ''}
+        onChange={event => {
+          // Cleared means no limit, as the setting starts.
+          const hz = event.currentTarget.value === '' ? null : Math.round(Number(event.currentTarget.value));
+          if (hz === null || (hz >= MIN_FRAME_LIMIT && hz <= MAX_FRAME_LIMIT)) video.update({ mapFrameLimit: hz });
+        }} /><small>frames a second</small></span>
+        : <span className="graphics-unavailable">Desktop only</span>}
+    </div>
     <div className="map-option-row"><span>{INTERFACE_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About interface scale" data-tooltip="Changes the size of app text, menus and buttons. Map widget sizes still use the dashboard Edit handles. In browser preview, use browser zoom."><Icon name="info" /></span></span>
       {desktopAvailable ? <Select label={INTERFACE_SCALE} disabled={!enabled} value={String(video.draft?.uiScale ?? '')} onChange={value => video.update({ uiScale: Number(value) })}
         options={[...(video.draft ? [] : [{ value: '', label: video.error ? 'Unavailable' : 'Loading...' }]),

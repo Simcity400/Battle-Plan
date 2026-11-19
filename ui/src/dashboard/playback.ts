@@ -68,6 +68,10 @@ export class PlaybackController {
     if (!playing || !bounds) return position;
     return Math.min(bounds.lastHour, position + Math.max(0, now - this.lastTime) / 1000 * hoursPerSecond);
   };
+  /** When the published position was taken, on the page's monotonic clock: what a native map
+   * places an anchor composed from this snapshot by, so delivery delay adds no error. A clock
+   * that is not playing stands still, so its position is current whenever it is read. */
+  composedAt = () => this.snapshot.playing ? this.lastTime : performance.now();
   getHour = () => this.snapshot.hour;
   getMotion = () => this.snapshot.playing ? this.snapshot.hoursPerSecond : undefined;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };

@@ -3,7 +3,7 @@ against the bars of "completely smooth", and the dashboard judged from a desktop
 
     python tools/e2e/playback.py map --viewer <viewer.exe> --recording <file> --from-hour H --hours N --out <dir>
         [--speed 1440] [--refresh-hz 60] [--seeks 10] [--cores 0x55] [--repeat 1]
-        [--only floor,today,layers,layers-only,layers-seeks,layers-only-seeks,proof] [--repeat-roles layers-only] [--today-off "<flag>"]
+        [--only floor,layers,layers-seeks,proof] [--repeat-roles layers]
         [--oversized-recording <file> [--oversized-factor K]]
     python tools/e2e/playback.py harness --viewer <viewer.exe> --out <run dir> [--cores 0x55]
         [--minutes 30] [--stop-after S] [--label NAME] -- <viewer arguments, without --out>
@@ -39,8 +39,8 @@ MEMORY_TO_START = 8 << 30
 FLOOR_FRAMES = 600
 FLOOR_PAN = 8
 SEEK_FRAMES = 15
-ROLES = ("floor", "today", "layers", "layers-only", "layers-seeks", "layers-only-seeks", "proof")
-DEFAULT_ROLES = "floor,today,layers,layers-only,layers-seeks,layers-only-seeks"
+ROLES = ("floor", "layers", "layers-seeks", "proof")
+DEFAULT_ROLES = "floor,layers,layers-seeks"
 
 k = c.WinDLL("kernel32", use_last_error=True)
 psapi = c.WinDLL("psapi", use_last_error=True)
@@ -210,14 +210,13 @@ def check_shader_compiler(viewer):
 
 
 def harness_run(viewer, arguments, folder, *, cores=0, minutes=30, stop_after=None, label=None, page="map",
-                role=None, repeat=None, today_off=False):
+                role=None, repeat=None):
     """One harness run into `folder` (new): the viewer writes `folder/harness`, the runner `folder/run.json`."""
     folder.mkdir(parents=True)
     environment = dict(os.environ)
     environment["BATTLE_PLAN_CAPTURES"] = str(folder)
     check_shader_compiler(viewer)
-    for name in ("BATTLE_PLAN_VIEWER_PAGE_GRID", "BATTLE_PLAN_PERF_LOG"):
-        environment.pop(name, None)
+    environment.pop("BATTLE_PLAN_PERF_LOG", None)
     kind = "proof" if "--playhead-proof" in arguments else "paced" if "--paced" in arguments else "step"
     command = [str(viewer), *arguments, "--out", str(folder / "harness")]
     waited = held = 0.0
@@ -232,7 +231,7 @@ def harness_run(viewer, arguments, folder, *, cores=0, minutes=30, stop_after=No
     result = spawn(command, environment, folder, cores, minutes, stop_after)
     after = machine_load()
     record = {"label": label or folder.name, "page": page, "role": role, "repeat": repeat, "kind": kind, "viewer": str(viewer),
-              "playhead": "--no-playhead" not in arguments, "todayOff": today_off or "--layers-only" in arguments or "--today-off" in arguments, "args": arguments, "command": command,
+              "args": arguments, "command": command,
               "cores": f"{cores:#x} ({', '.join(map(str, cores_of(cores)))})" if cores else None,
               "lock_wait": {"seconds": waited, "still_held": still}, "memory_wait_seconds": held, "load": {"before": before, "after": after}, **result}
     (folder / "run.json").write_text(json.dumps(record, indent=1), encoding="utf-8")
@@ -244,27 +243,24 @@ def node(*arguments):
 
 
 def phase_runs(args, recording, page):
-    """The phase's runs on one recording: (role, viewer arguments, today off). The map draws from the recording's
-    playhead unless a run passes --no-playhead (the floor and today's runs)."""
+    """The phase's runs on one recording: (role, viewer arguments). Every map draws from the recording's playhead."""
     span = ["--from-hour", str(args.from_hour), "--hours", str(args.hours), "--refresh-hz", str(args.refresh_hz)]
     paced = ["--playback-cost", str(recording), *span, "--paced", str(args.speed)]
     floor = ["--playback-cost", str(recording), "--from-hour", str(args.from_hour), "--hours", str(FLOOR_FRAMES),
-             "--refresh-hz", str(args.refresh_hz), "--paced", str(args.speed), "--paused", "--pan", str(FLOOR_PAN), "--no-playhead"]
-    # The floor holds the hour with the playhead off: its paused runs fail the harness's CPU reconciliation.
-    runs = [("floor", floor, False), ("today", [*paced, "--no-playhead"], False)]
+             "--refresh-hz", str(args.refresh_hz), "--paced", str(args.speed), "--paused", "--pan", str(FLOOR_PAN)]
+    # The floor holds the hour: its paused runs fail the harness's CPU reconciliation.
+    runs = [("floor", floor), ("layers", paced)]
     missing = []
     frames = args.hours / args.speed * args.refresh_hz
     # The harness spreads the seeks over the frames the run would take, at least SEEK_FRAMES apart.
     seeks = min(args.seeks, int(frames / SEEK_FRAMES) - 1)
-    off = args.today_off.split()
-    runs += [("layers", paced, False), ("layers-only", [*paced, *off], True)]
     if seeks > 0:
-        runs += [("layers-seeks", [*paced, "--seeks", str(seeks)], False), ("layers-only-seeks", [*paced, *off, "--seeks", str(seeks)], True)]
+        runs.append(("layers-seeks", [*paced, "--seeks", str(seeks)]))
     else:
         missing.append({"page": page, "run": "layers-seeks", "bar": "seek: sought hour on screen",
                         "why": f"the span plays {frames:.0f} frames; the harness seeks at least {SEEK_FRAMES} apart"})
     runs.append(("proof", ["--playhead-proof", str(recording), "--timing", "--seeks", str(args.seeks),
-                           "--speed", str(args.speed), "--hours", str(args.hours)], False))
+                           "--speed", str(args.speed), "--hours", str(args.hours)]))
     wanted = set((args.only or DEFAULT_ROLES).split(","))
     return [run for run in runs if run[0] in wanted], missing
 
@@ -287,13 +283,12 @@ def map_phase(args):
         missing += absent
         repeated = set(args.repeat_roles.split(",")) if args.repeat_roles else None
         for repeat in range(1, args.repeat + 1):
-            for role, arguments, today_off in runs:
+            for role, arguments in runs:
                 if repeat > 1 and repeated is not None and role not in repeated:
                     continue
                 slug = f"{'o-' if page != 'map' else ''}{repeat}-{role}"
                 record = harness_run(args.viewer, arguments, out / slug, cores=cores, minutes=args.minutes,
-                                     label=role if args.repeat == 1 else f"{role} #{repeat}", page=page, role=role, repeat=repeat,
-                                     today_off=today_off)
+                                     label=role if args.repeat == 1 else f"{role} #{repeat}", page=page, role=role, repeat=repeat)
                 print(f"{page} {record['label']}: exit {record['exit']}{' (' + record['stopped'] + ')' if record['stopped'] else ''}, "
                       f"{record['seconds']} s, CPU {record['load']['before']['cpu_percent']}% -> {record['load']['after']['cpu_percent']}%", flush=True)
     (out / "phase.json").write_text(json.dumps({"recording": args.recording, "from": args.from_hour, "hours": args.hours,
@@ -317,7 +312,6 @@ def parse(argv):
     phase.add_argument("--repeat", type=int, default=1)
     phase.add_argument("--only", help=f"runs to make, of {','.join(ROLES)} (default {DEFAULT_ROLES})")
     phase.add_argument("--repeat-roles", help="the runs --repeat repeats; all by default")
-    phase.add_argument("--today-off", default="--layers-only", help="the harness flag that runs without today's pipeline")
     phase.add_argument("--oversized-recording")
     phase.add_argument("--oversized-factor")
     phase.add_argument("--minutes", type=float, default=30)

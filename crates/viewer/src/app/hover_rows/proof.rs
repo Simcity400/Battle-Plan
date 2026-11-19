@@ -15,7 +15,7 @@ use crate::{
     document::Document,
     playhead_host::{
         Entry,
-        rows::{Cadence, Recording, RowReader, Rows},
+        views::{Need, Pace, Reader as ViewReader, Views},
     },
 };
 use playhead::Step;
@@ -72,7 +72,7 @@ struct Targets {
 struct Reader {
     family: Family,
     /// Compared: the family's rows; timed, the window's hovers read them instead.
-    reader: Option<RowReader>,
+    reader: Option<ViewReader>,
     /// Timed: the target it hovers, its key and job, made once.
     timed: Option<(Key, MakeJob)>,
     tables: Vec<TableId>,
@@ -83,9 +83,8 @@ struct Reader {
 }
 
 pub(crate) struct Line {
-    /// None for `none`: no rows worker at all, the run the others are compared with.
-    rows: Option<Arc<Rows>>,
-    recording: Recording,
+    /// None for `none`: no reader at all, the run the others are compared with.
+    views: Views,
     readers: Vec<Reader>,
     /// Timed: the window's hovers and the targets they hover.
     hovers: Option<(HoverRows, Targets)>,
@@ -118,7 +117,7 @@ const COUNTRIES: usize = 4;
 
 impl Line {
     /// `all` or one family's name: those readers; `none`: only the stepper's steps.
-    pub(crate) fn open(entry: &Arc<Entry>, recording: Recording, document: &Document, which: &str, timing: bool, cycle_hz: f64) -> io::Result<Self> {
+    pub(crate) fn open(entry: &Arc<Entry>, views: Views, document: &Document, which: &str, timing: bool, cycle_hz: f64) -> io::Result<Self> {
         let (which, seeded) = match which.split_once('@') {
             Some((which, file)) => (which, seeds(file)?),
             None => (which, BTreeMap::new()),
@@ -129,14 +128,20 @@ impl Line {
             name => vec![Family::ALL.into_iter().find(|family| family.name() == name).ok_or_else(|| io::Error::other(format!("--hovers takes all, none or a family ({}), not {name}", Family::ALL.map(Family::name).join(", "))))?],
         };
         let seed = |family: Family| seeded.get(family.name()).cloned().unwrap_or_default();
-        let (rows, readers) = if families.is_empty() {
-            (None, Vec::new())
+        let readers: Vec<Reader> = if families.is_empty() || timing {
+            Vec::new()
         } else {
-            let rows = Rows::of(entry, recording)?;
-            rows.time();
-            let readers = if timing { Vec::new() } else { families.iter().map(|&family| Reader { family, reader: Some(rows.reader(&seed(family), Cadence::EveryStep)), timed: None, tables: seed(family), frames: Vec::new(), ages: Vec::new() }).collect() };
-            rows.settled();
-            (Some(rows), readers)
+            families
+                .iter()
+                .map(|&family| Reader {
+                    family,
+                    reader: Some(views.reader_at(family.name(), &seed(family).into_iter().map(Need::every).collect::<Vec<Need>>(), Pace::Step)),
+                    timed: None,
+                    tables: seed(family),
+                    frames: Vec::new(),
+                    ages: Vec::new(),
+                })
+                .collect()
         };
         let steps = timing.then(|| {
             let playhead = entry.playhead();
@@ -151,7 +156,7 @@ impl Line {
                 (Arc::clone(&lanes), RosterHistory::of(Arc::new(Sampler::new(Arc::clone(&replay), Box::new(Shared(lanes))))), RosterHistory::of(Arc::new(Sampler::today(replay, None))))
             });
         let scan = if which == "scan-naval" { Some(scan_naval(document)?) } else { None };
-        let mut line = Self { rows, recording, readers, hovers: None, steps: steps.transpose()?, entry: Arc::clone(entry), geometry: ProvinceGeometry::build(&document.map), caches: Caches::default(), today_caches: Caches::default(), totals: BTreeMap::new(), cycle_hz, rosters, scan };
+        let mut line = Self { views, readers, hovers: None, steps: steps.transpose()?, entry: Arc::clone(entry), geometry: ProvinceGeometry::build(&document.map), caches: Caches::default(), today_caches: Caches::default(), totals: BTreeMap::new(), cycle_hz, rosters, scan };
         if timing && !families.is_empty() {
             let targets = line.targets(document, None)?;
             let made = inputs(document, &targets);
@@ -163,12 +168,6 @@ impl Line {
             line.hovers = Some((HoverRows::seeded(&seed), targets));
         }
         Ok(line)
-    }
-
-    pub(crate) fn drive(&self, hour: Hour) {
-        if let Some(rows) = &self.rows {
-            rows.drive(hour);
-        }
     }
 
     /// One frame of the window, timed: every open family asked as the hovered one is; the
@@ -191,7 +190,7 @@ impl Line {
             }
         }
         let Some((hovers, _)) = &mut self.hovers else { return };
-        let head_at = (&self.entry, self.recording);
+        let head_at = &self.views;
         for reader in &mut self.readers {
             let Some((key, job)) = &reader.timed else { continue };
             let (began, cycles) = (Instant::now(), replay_frame::cpu::thread_cycles());
@@ -255,12 +254,9 @@ impl Line {
                 reader.tables.sort_unstable_by_key(|table| table.index());
                 reader.tables.dedup();
                 if let Some(rows) = &reader.reader {
-                    rows.declare(&reader.tables);
+                    rows.declare_only(&reader.tables);
                 }
                 let declared = reader.tables.len();
-                if let Some(rows) = &self.rows {
-                    rows.settled();
-                }
                 self.note(format!("{name}:declared"), (0, 0, None), json!({"declared": declared, "named": named}), hour, why, out)?;
                 continue;
             }
@@ -382,14 +378,12 @@ impl Line {
         self.totals.values().map(|(_, differing, _)| differing).sum()
     }
 
-    /// What was compared; per family the tables it reads and the bytes the rows worker holds for
+    /// What was compared; per family the tables it reads and the bytes the side's views hold for
     /// them; timed, the window thread's wall and CPU time per frame and the shown text's age; the
     /// stepper's steps and the tables whose events fill them.
     pub(crate) fn summary(&self, distribution: fn(Vec<f64>) -> Value) -> Value {
-        let timings = self.rows.as_ref().and_then(|rows| rows.timings()).unwrap_or_default();
-        let held = self.rows.as_ref().map(|rows| rows.held()).unwrap_or_default();
+        let held = self.views.held();
         let bytes = |list: &[(TableId, usize)], tables: &[TableId]| list.iter().filter(|(table, _)| tables.contains(table)).map(|(_, bytes)| bytes).sum::<usize>();
-        let builds = |tables: &[TableId]| -> Vec<f64> { tables.iter().flat_map(|table| timings.builds.get(&table.index()).into_iter().flatten()).map(|&(ns, _)| ns as f64 / 1e6).collect() };
         let hz = self.cycle_hz;
         let families: Vec<Value> = self
             .readers
@@ -397,8 +391,7 @@ impl Line {
             .map(|reader| {
                 json!({
                     "family": reader.family.name(), "tables": reader.tables.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>(),
-                    "mirror_bytes": bytes(&held.mirrors, &reader.tables), "rows_bytes": bytes(&held.rows, &reader.tables),
-                    "build_ms": distribution(builds(&reader.tables)),
+                    "rows_bytes": bytes(&held, &reader.tables),
                     "window_ms": distribution(reader.frames.iter().map(|&(ns, _)| ns as f64 / 1e6).collect()),
                     "window_cpu_ms": distribution(reader.frames.iter().map(|&(_, cycles)| cycles as f64 / hz * 1e3).collect()),
                     "age_hours": distribution(reader.ages.clone()), "frames": reader.frames.len(), "frames_with_text": reader.ages.len(),
@@ -416,12 +409,12 @@ impl Line {
         json!({
             "compared": self.totals.iter().map(|(name, (entries, differing, samples))| json!({"compare": name, "samples": samples, "entries": entries, "differing": differing})).collect::<Vec<_>>(),
             "families": families,
-            "mirror_bytes": all(&held.mirrors), "rows_bytes": all(&held.rows),
+            "rows_bytes": all(&held),
             "step_ms": self.steps.as_ref().map(|(_, _, built, _)| distribution(built.0.iter().map(|&ns| ns as f64 / 1e6).collect())),
             "steps": self.steps.as_ref().map(|(_, _, built, _)| built.0.len()),
             "reset_step_ms": self.steps.as_ref().map(|(_, _, built, _)| distribution(built.1.iter().map(|&ns| ns as f64 / 1e6).collect())),
             "events_by_table": events,
-            "playhead_held_peak": peak.total, "untold_text_cells": timings.untold, "error": self.rows.as_ref().and_then(|rows| rows.error()),
+            "playhead_held_peak": peak.total,
             "naval_scan": self.scan,
             "rosters": self.rosters.as_ref().map(|(lanes, by_lanes, today)| {
                 let reads = lanes.reads();
@@ -505,7 +498,7 @@ fn seeds(file: &str) -> io::Result<BTreeMap<String, Vec<TableId>>> {
 }
 
 /// The reader's frame at `hour`; none when its rows are already past it.
-fn at_hour(reader: &RowReader, hour: Hour) -> io::Result<Option<Arc<DecodedFrame>>> {
+fn at_hour(reader: &ViewReader, hour: Hour) -> io::Result<Option<Arc<DecodedFrame>>> {
     match reader.wait(|frame| frame.hour >= hour, LIMIT) {
         Ok(frame) => Ok((frame.hour == hour).then_some(frame)),
         Err(error) => Err(io::Error::other(format!("{error} ({hour}); its newest rows are at {:?}", reader.frame().map(|frame| frame.hour)))),

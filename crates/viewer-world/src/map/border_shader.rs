@@ -1,4 +1,5 @@
 //! Border uses authored program/blend/samplers and forced map depth/raster.
+use viewer_foundation::map::gpu_contract::Targets;
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
 
@@ -22,11 +23,6 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
     library
         .load(b"gfx/FX/border.shader", &defines)
         .map_err(refuse)
-}
-
-pub struct Target<'a> {
-    pub color: wgpu::RenderPassColorAttachment<'a>,
-    pub depth: wgpu::RenderPassDepthStencilAttachment<'a>,
 }
 
 pub struct Inputs<'a> {
@@ -153,7 +149,7 @@ impl Border {
         &self,
         arena: &gpu::Arena,
         encoder: &mut wgpu::CommandEncoder,
-        target: Target<'_>,
+        targets: &Targets,
         inputs: Inputs<'_>,
         batches: &[Batch<'_>],
         visible: bool,
@@ -216,21 +212,15 @@ impl Border {
         if !visible {
             return Ok(retained);
         }
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("compiled borders"),
-            color_attachments: &[Some(target.color)],
-            depth_stencil_attachment: Some(target.depth),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = super::scene::world_pass(encoder, targets, "compiled borders");
+        let pass = &mut pass;
         shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
         shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
         let mut previous = None;
         for (batch, binding) in &bound {
-            binding.bind_after(&mut pass, previous);
+            binding.bind_after(pass, previous);
             previous = Some(binding);
             for run in &batch.runs {
                 shader_pipeline::gpu::stats::state();

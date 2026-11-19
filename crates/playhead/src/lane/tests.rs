@@ -85,7 +85,8 @@ pub(crate) fn record_run(settings: Settings, tables: usize, first: i32, hours: u
     let mut states = vec![Vec::new(); tables];
     store.begin_run(first);
     for at in 0..hours {
-        let text = format!("text {at}");
+        // A run past the first spells its strings its own way, as every run numbers them anew.
+        let text = if first == 0 { format!("text {at}") } else { format!("text {first}/{at}") };
         store.begin_hour(first + at as i32, &[text.as_bytes()]).unwrap();
         for table in 0..tables {
             store.status(table, Status::Complete, true, Some(first + at as i32), true).unwrap();
@@ -454,7 +455,8 @@ fn a_lane_reads_ahead_by_hours_and_lets_passed_parts_go() {
 }
 
 /// A status and sample hour that hold for days are reported on the step they change and on no
-/// other; a sample hour that moves every hour is reported every step.
+/// other; a sample hour that moves every hour is reported every step. A status that leaves and
+/// comes back inside one step is reported at the hour it left, though the step ends where it began.
 #[test]
 fn status_is_reported_only_when_it_changes() {
     let mut store = Store::new(vec![KINDS.to_vec()], vec![false]);
@@ -465,7 +467,7 @@ fn status_is_reported_only_when_it_changes() {
     for at in 0..BLOCK {
         store.begin_hour(at as i32, &[]).unwrap();
         let (status, sampled) = match at {
-            100..150 => (Status::NotRecorded, None),
+            100..150 | 201..203 => (Status::NotRecorded, None),
             400..500 => (Status::Complete, Some(at as i32)),
             _ => (Status::Complete, Some((at - at % 48) as i32)),
         };
@@ -484,13 +486,17 @@ fn status_is_reported_only_when_it_changes() {
     give_all(&mut lane);
     let mut previous = held[0];
     let mut reported = 0;
+    let mut from = 1;
     for to in (5..BLOCK).step_by(6) {
         lane.step(to as i32, &mut changes).unwrap();
         let now = held[to as usize];
         assert_eq!(lane.status(), now, "hour {to}");
         assert_eq!(changes.status(), (now != previous).then_some(now), "hour {to}");
+        let left = (from..=to).find(|&hour| held[hour as usize].0 != previous.0).map(|hour| hour as i32);
+        assert_eq!(changes.status_left(), left, "hour {to}");
         reported += u32::from(now != previous);
         previous = now;
+        from = to + 1;
     }
     assert!(reported > 20);
 }
@@ -821,4 +827,59 @@ fn a_columns_raw_view_gives_the_cells_each_gives() {
     }
     assert!([1, 2, 4, 8].iter().all(|width| widths.contains(width)), "widths seen: {widths:?}");
     assert!(missing > 0 && unrecorded > 0 && texts > 0 && lists > 0 && passing > 0);
+}
+
+/// The hours of a step and the step itself are one walk of the rows: a mirror kept from the hours
+/// alone — with the strings, the status and the renumber an hour's set does not carry taken from
+/// the step's own — equals the lane after every step, at every step size, over births, deaths,
+/// slot reuse, part boundaries and a packed block's renumber; and so across a seek, whose reset
+/// carries no hour and whose steps after it do.
+#[test]
+fn an_hours_change_sets_fold_to_the_steps_own() {
+    let (recording, states) = record(Settings { cap: 256, ..Settings::at(3) }, 2, events);
+    for step in [48_u32, 12, 1] {
+        for sought in [0_u32, 377] {
+            let mut lane = lane(&recording);
+            lane.seek(sought as i32).unwrap();
+            let mut mirror = Mirror::rebuilt(&lane);
+            lane.clear_texts();
+            mirror.assert_holds(&lane);
+            give_all(&mut lane);
+            let (mut changes, mut hours) = (Changes::default(), Vec::new());
+            let mut to = sought + step;
+            let mut dated = 0;
+            while (to as usize) < states.len() {
+                hours.clear();
+                let before = lane.head().expect("sought") + 1;
+                let head = lane.step_hours(to as i32, &mut changes, Some(&mut hours)).unwrap();
+                let mut last = before - 1;
+                for set in &hours {
+                    let hour = set.head().expect("an hour's set stands at its hour");
+                    assert!(hour > last && hour <= head, "hour {hour} of the step {before}..={head} is in it and after {last}");
+                    assert_eq!(set.table(), changes.table());
+                    assert!(set.texts().is_empty() && set.status().is_none() && set.renumber().is_none(), "an hour's set carries only its cells and rows");
+                    last = hour;
+                    mirror.apply(set);
+                    dated += 1;
+                }
+                // What the step's own change set says and an hour's does not.
+                mirror.texts.extend(changes.texts().iter().map(|(id, text)| (id, text.to_vec())));
+                if let Some(status) = changes.status() {
+                    mirror.status = Some(status);
+                }
+                if let Some(old) = changes.renumber() {
+                    let mut moved = BTreeMap::new();
+                    for (new, &from) in old.iter().enumerate() {
+                        moved.insert(new as u32, mirror.rows.remove(&from).expect("a live row renumbered"));
+                    }
+                    assert!(mirror.rows.is_empty(), "every live row is renumbered");
+                    mirror.rows = moved;
+                }
+                mirror.assert_holds(&lane);
+                assert_eq!(rows(lane.cells()), rows(&states[head as usize]), "step {step} from {sought}");
+                to += step;
+            }
+            assert!(dated > 20, "the hours of {step} from {sought} dated {dated} change sets");
+        }
+    }
 }

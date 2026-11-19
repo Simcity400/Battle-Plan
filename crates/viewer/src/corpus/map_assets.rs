@@ -6,7 +6,11 @@ use installed_content_core::{
     terrain::{DefaultMap, TerrainDefinitions},
 };
 use installed_content_image::native::Decode;
-use std::{collections::BTreeSet, io};
+use installed_content_regions::regions::StrategicRegion;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 use viewer_foundation::map::camera::MapSize;
 use viewer_world::map::{border_pass::BorderAssets, railways::RailAssets, rivers::RiverAssets};
 
@@ -16,6 +20,7 @@ pub(super) fn read(
     defines: Option<&Defines>,
     terrain: Option<&(TerrainDefinitions, DefaultMap)>,
     map: Option<&MapData>,
+    regions: Option<&BTreeMap<u32, StrategicRegion>>,
     decode: Decode,
 ) {
     let (Some(defines), Some((terrain, default_map)), Some(map)) = (defines, terrain, map) else {
@@ -90,11 +95,26 @@ pub(super) fn read(
     log.read("viewer.rail_assets", || {
         RailAssets::load(layers, size, decode).map(|_| ())
     });
-    if let Some(assets) = log.read("viewer.weather_assets", || {
-        viewer_world::map::weather_effects::Assets::load(layers, defines, size, decode)
-            .map(|assets| assets.unresolved.clone())
-    }) {
-        log.notes("viewer.weather_assets", Kind::Refused, &assets);
+    match regions {
+        Some(regions) => {
+            let region_provinces = viewer_world::map::weather_effects::RegionProvinces::new(
+                regions,
+                |province| map.definitions.contains_key(&province),
+            );
+            if let Some(withheld) = log.read("viewer.weather_assets", || {
+                viewer_world::map::weather_effects::Assets::load(
+                    layers,
+                    defines,
+                    size,
+                    region_provinces,
+                    decode,
+                )
+                .map(|assets| assets.withheld.clone())
+            }) {
+                log.notes("viewer.weather_assets", Kind::Refused, &withheld);
+            }
+        }
+        None => log.not_run(&["viewer.weather_assets"], "strategic regions"),
     }
     shaders(log, layers, size, decode);
 }

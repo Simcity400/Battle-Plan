@@ -10,7 +10,7 @@
 use super::{Columns, Content};
 use crate::{
     layers::{
-        Budget, Dirty,
+        Dirty,
         owned::{Delta, Table},
     },
     playhead_host::mirror::Cell,
@@ -379,7 +379,6 @@ impl Fold {
     /// Everything marked settled from `table`, whatever it costs: the fold runs off the frame.
     pub(super) fn settle(&mut self, table: Option<&Table>) {
         self.frame += 1;
-        let budget = &mut Budget::unlimited();
         let rows = held(table);
         let complete = table.is_some_and(Table::complete);
         if rows.is_some() != self.usable || complete != self.complete || self.provinces.is_empty() {
@@ -397,7 +396,7 @@ impl Fold {
             }
         }
         let mut dirty = std::mem::take(&mut self.province_dirty);
-        let _ = dirty.settle(budget, |id| {
+        let _ = dirty.settle(|id| {
             self.settle_province(id, rows);
             Ok(())
         });
@@ -406,13 +405,13 @@ impl Fold {
             self.settle_edges(rows);
         }
         let mut dirty = std::mem::take(&mut self.cell_dirty);
-        let _ = dirty.settle(budget, |cell| {
+        let _ = dirty.settle(|cell| {
             self.settle_cell(cell as usize);
             Ok(())
         });
         self.cell_dirty = dirty;
         let mut dirty = std::mem::take(&mut self.volume_dirty);
-        let _ = dirty.settle(budget, |volume| {
+        let _ = dirty.settle(|volume| {
             self.settle_volume(volume as usize);
             Ok(())
         });

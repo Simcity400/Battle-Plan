@@ -1,3 +1,4 @@
+use std::{io, sync::Arc};
 use super::Sounds;
 use crate::{
     layers::{Layer, View},
@@ -15,11 +16,8 @@ use replay_columnar::{
     unit::{BLOCK, BlockPage, Encoder, PartSink, Settings as Writing, reader::Extents},
 };
 use replay_data::rows::{Field, NativeValue, Opaque, TableId, TemplateGrids, TemplateSubunit};
-use std::{io, sync::Arc};
 #[cfg(test)]
 use crate::layers::Inputs;
-#[cfg(test)]
-use std::time::Duration;
 use viewer_audio::battle::Battles;
 
 #[derive(Default)]
@@ -114,15 +112,16 @@ pub fn units(recording: Arc<Recording>, name: &str) -> Units {
 
 /// Four hours a step.
 pub fn quick() -> Settings {
-    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0 }
+    Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
-/// Seeks to `hour` and frames at it until its reset is composed and swapped in.
+/// Seeks to `hour` and frames at it until its reset is composed and swapped in: a swap of a reset
+/// from before the seek is not it.
 pub fn sought(side: &mut MapSide, hour: replay_data::Hour) {
     side.entry().playhead().seek(hour);
     for _ in 0..50_000_000u64 {
         let frame = side.frame(hour).unwrap();
-        if frame.swapped.is_some() && !side.composing() {
+        if frame.swapped.is_some() && !side.composing() && side.applied() == Some(hour) {
             return;
         }
         std::thread::yield_now();
@@ -295,7 +294,7 @@ fn the_newest_values_of_a_combat_changed_twice_show_once_settled() {
 }
 
 #[test]
-fn a_table_not_recorded_is_drawn_as_today_and_out_of_budget_settles_late_with_the_newest() {
+fn a_table_not_recorded_is_drawn_as_today_and_a_held_settle_catches_up_with_the_newest() {
     let entry = open(units(record(24, campaign), "sounds gap"), quick()).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Sounds::new(Some(audio(true))))], View::default()).unwrap();
     sought(&mut side, 0);
@@ -310,16 +309,14 @@ fn a_table_not_recorded_is_drawn_as_today_and_out_of_budget_settles_late_with_th
     let gap = gap.expect("a step ended inside the stretch");
     assert_eq!(gap.refusals, ["the recorded LandCombats table is unavailable (not recorded at this hour)"]);
     assert_eq!(gap.battles[0].divisions, 0, "no combats are read from a table not recorded, never the last rows");
-    side.set_budget(Duration::ZERO);
     let settles = side.hold_settles();
     let before = product(&side).unwrap().battles;
     let at = side.parts().unwrap().0.get(TableId::LandCombats).unwrap().head().unwrap();
-    play(&mut side, at, |_, frame| frame.layers[0].carried > 0);
+    play(&mut side, at, |_, frame| frame.layers[0].dirty > 0);
     assert_eq!(product(&side).unwrap().battles, before, "nothing is made while the settles are held");
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
-    side.set_budget(Duration::from_secs(1));
     let at = side.parts().unwrap().0.get(TableId::LandCombats).unwrap().head().unwrap();
-    play(&mut side, at, |_, frame| frame.layers[0].carried == 0);
+    play(&mut side, at, |_, frame| frame.layers[0].dirty == 0);
     assert_eq!(product(&side), composed(&side));
     assert_eq!(product(&side).unwrap().battles[0].divisions, 1);
 }
@@ -497,7 +494,7 @@ fn a_battle_carried_between_slots_while_its_front_changes_is_made_again() {
     let (mirrors, _) = side.parts().unwrap();
     stepped.mark_combat(0);
     stepped.mark_battle(1);
-    stepped.settle_dirty(mirrors, &mut crate::layers::Budget::unlimited());
+    stepped.settle_dirty(mirrors);
     let battles = stepped.product().unwrap();
     assert_eq!(battles.battles.iter().map(|battle| (battle.key, battle.divisions)).collect::<Vec<_>>(), [(88, 0), (77, 3)], "battle 77 counts the division that joined while it moved");
     assert_eq!(battles.battles[1].sub_units["name 0"], 9);

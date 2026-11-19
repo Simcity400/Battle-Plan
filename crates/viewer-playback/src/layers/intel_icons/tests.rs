@@ -1,7 +1,7 @@
 use super::{Evaluate, Icons, drawn};
 use crate::{
     layers::{Inputs, Layer, View, sounds::tests::{complete, put, quick, record, sought, units}},
-    playhead_host::{MapSide, open, rows::{Cadence, Recording}},
+    playhead_host::{MapSide, open, views::{Pace, Recording}},
 };
 use replay_columnar::{state::Cell, store::Store};
 use replay_data::rows::{TableId, tables};
@@ -57,15 +57,17 @@ fn layer(side: &MapSide) -> &Icons {
 fn side(name: &str) -> MapSide {
     let entry = open(units(record(HOURS, campaign), name), quick()).unwrap();
     // The window's cadence: a reader made rows when it says it is ready.
-    let mut icons = Icons::new(Arc::new(Count), Some((Arc::clone(&entry), RECORDING)), Cadence::Ready);
-    icons.drive();
-    MapSide::new(entry, vec![Box::new(icons)], operatives()).unwrap()
+    let icons = Icons::new(Arc::new(Count), Pace::Ready);
+    let mut side = MapSide::new(entry, vec![Box::new(icons)], operatives()).unwrap();
+    // The branch an open map takes from its recording, which its rows are stamped with.
+    side.set_branch(RECORDING.branch);
+    side
 }
 
 /// The layer's state, for a failure's message.
 fn state(side: &MapSide) -> String {
     let layer = layer(side);
-    let open = layer.open.as_ref().map(|open| (open.busy, open.handed, open.seen.as_ref().map(|seen| seen.hour), open.reader.frame().map(|frame| frame.hour), open.rows.error()));
+    let open = layer.open.as_ref().map(|open| (open.busy, open.handed, open.seen.as_ref().map(|seen| seen.hour), open.reader.frame().map(|frame| frame.hour)));
     format!("icons {:?}, applied {:?}, open (busy, handed, seen, rows, error) {open:?}, tables {:?}, {:?}", layer.icons().map(|(_, hour)| hour), layer.applied, layer.tables(), layer.stats())
 }
 
@@ -88,7 +90,6 @@ fn at(side: &mut MapSide, hour: replay_data::Hour, what: &str, done: impl Fn(&Ic
 /// Seeks to `hour` once the rows have declared every table their reader names (a table declared
 /// while the head is held joins only past it), and frames there until the icons are of the hour.
 fn icons_at(side: &mut MapSide, hour: replay_data::Hour, what: &str) {
-    layer(side).rows().expect("open while drawn").settled();
     sought(side, hour);
     at(side, hour, what, |layer| layer.icons().is_some_and(|(_, at)| *at == hour));
 }
@@ -98,7 +99,6 @@ fn learned_at(side: &mut MapSide, hour: replay_data::Hour) {
     sought(side, hour);
     at(side, hour, "the reader opens", Icons::is_open);
     assert!(read(side).is_none() && drawn(side).is_none(), "while its tables load the window keeps today's icons");
-    layer(side).rows().unwrap().settled();
     sought(side, hour);
     at(side, hour, "the table the content reads is learned", |layer| layer.tables().contains(&TableId::HumanControllers));
     icons_at(side, hour, "the icons of the hour");
@@ -161,24 +161,17 @@ fn the_icons_are_evaluated_over_rows_at_the_head_on_their_worker_learning_the_ta
 fn in_another_map_mode_it_declares_nothing_and_holds_nothing_and_opens_again_with_the_tables_it_learned() {
     let mut side = side("intel icons closed");
     learned_at(&mut side, 2);
-    let rows = Arc::downgrade(layer(&side).rows().expect("open while drawn"));
     let learned = layer(&side).stats().learning;
     side.set_view(View::default()).unwrap();
     let mut declared = Inputs::new(side.entry().kinds(), "intel icons");
-    let mut probe = Icons::new(Arc::new(Count), None, Cadence::PerSecond(4));
+    let mut probe = Icons::new(Arc::new(Count), Pace::PerSecond(4));
     probe.inputs(&View::default(), &mut declared).unwrap();
     assert!(declared.into_tables().is_empty(), "another mode declares no table");
     assert!(!layer(&side).is_open(), "no reader and no worker");
     assert!(layer(&side).icons().is_none() && drawn(&side).is_none(), "no icons");
     assert!(layer(&side).held() <= 64 * std::mem::size_of::<TableId>(), "only the names of the tables it learned: {}", layer(&side).held());
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while rows.upgrade().is_some() {
-        assert!(std::time::Instant::now() < until, "the rows at the head were never let go");
-        std::thread::yield_now();
-    }
     side.set_view(operatives()).unwrap();
     at(&mut side, 2, "the reader opens again", Icons::is_open);
-    assert!(drawn(&side).is_none(), "opened again, today's icons show while the rows load");
     icons_at(&mut side, 40, "the icons opened again");
     let stats = layer(&side).stats();
     assert_eq!(stats.learning, learned, "opened with the tables it learned, nothing is discarded");

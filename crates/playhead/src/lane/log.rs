@@ -358,6 +358,7 @@ impl Lane {
         std::mem::swap(&mut out.texts, &mut self.texts);
         self.texts.clear();
         let held = self.status;
+        out.status_left = self.status_left(held.0)?;
         self.read_status()?;
         if self.status != held {
             out.status = Some(self.status);

@@ -136,6 +136,7 @@ fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
                 state: None,
                 region: Some(206),
                 anchor,
+                track: None,
             })
             .collect();
         assert_eq!(defines.grouping(height), level);
@@ -667,6 +668,97 @@ fn cached_naval_operands_equal_fresh_joins_and_share_the_model_column() {
     );
 }
 
+/// A base's port roster is read once for its hour and drawn over the rows of whatever hour the
+/// window shows, so it names its task forces by handle and the draw joins them to that hour's
+/// rows. A task force those rows no longer hold refuses the base's items by name; it is never
+/// another row taken at the gone one's place, and never a read past the rows. On the base the
+/// roster held positions into the hour it was read from and the draw indexed the drawn hour's
+/// rows with them, which panicked in zoomed playback ("len is 68 but the index is 68").
+#[test]
+fn a_port_roster_drawn_over_another_hours_task_forces_joins_them_by_handle() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let guis = native::Guis::new(vec![(
+        MAPICONS_GUI.into(),
+        native::read(
+            br#"guiTypes={
+        containerWindowType={name=unit_counter_navy size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+        containerWindowType={name=naval_combat_mapicon}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+    }"#,
+        ),
+    )]);
+    crate::map::counters::tests::with_counter_inputs_fixture(
+        guis,
+        |_| {},
+        |content| {
+            content.defines.coarse_distance = [100., 160.];
+            content.defines.groups.strategic_distance = 200.;
+        },
+        |mut inputs| {
+            inputs.settings.color_mode = CounterColorMode::Allegiance;
+            inputs.visibility.political_mode = false;
+            inputs.camera.height = 50.;
+            let forces: Vec<TaskForceRow> = (1..=3)
+                .map(|id| TaskForceRow { id, ..Default::default() })
+                .collect();
+            let countries = Arc::new(Countries {
+                sides: [(0, Allegiance::Ours)].into(),
+                ..Default::default()
+            });
+            let vision = Arc::new(Vision::default());
+            let frame = DecodedFrame {
+                branch: 1,
+                hour: 1,
+                metrics: Default::default(),
+                tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
+            };
+            // The hour the roster was read at: task forces 1, 2 and 3 docked at base 7.
+            let ports = PortTables {
+                rosters: [(7, vec![(1, 0), (2, 1), (3, 2)])].into(),
+                ..Default::default()
+            };
+            // Drawn over `held` of those rows, as the window draws an hour's tables over the rows
+            // at the head: every one of them, then an hour that has lost the last two.
+            let items = |held: usize| {
+                with_port_context(&forces[..held], |context| {
+                    context.ships = Arc::new(forces.iter().map(|force| (force.id, (1, 100_000))).collect());
+                    let tables = CounterTables {
+                        type_tints: context.type_tints,
+                        countries: &countries,
+                        icons: &Arc::new(TemplateIcons::default()),
+                        status: &Default::default(),
+                        movement: &Default::default(),
+                        actions: &Default::default(),
+                        vision: &vision,
+                        order: None,
+                        native: context.native,
+                        orders: &Default::default(),
+                        guns: &Default::default(),
+                        abilities: &Default::default(),
+                        task_forces: &Default::default(),
+                        hq_providers: &Default::default(),
+                        portraits: &Default::default(),
+                        icon_inputs: &Default::default(),
+                    };
+                    let mut out = CounterFrame::default();
+                    let ports = port_items(&inputs, &frame, &|raw| Some(raw), &tables, context, &ports, None, &mut out).unwrap();
+                    (ports.get(&7).unwrap().clone(), out.report.unplaced_task_forces.clone())
+                })
+            };
+            let (whole, refused) = items(3);
+            assert!(whole.is_ok_and(|items| !items.is_empty()), "every task force of the roster joins the rows that hold it");
+            assert!(refused.is_empty(), "nothing refused while the rows hold them all");
+            let (gone, refused) = items(1);
+            assert_eq!(gone.err().as_deref(), Some(port_undecided(PORT_FORCE_GONE).as_ref()), "a task force the drawn rows do not hold refuses the base's items by name");
+            assert_eq!(refused, [(PORT_FORCE_GONE, BTreeSet::from([2]))].into(), "named with the handle the drawn rows lack");
+        },
+    );
+}
+
 /// The semantic memo may skip the sort/fold, never the resource-bearing update generation.
 #[test]
 fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occurrences() {
@@ -749,8 +841,9 @@ fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occur
                     tables: TableId::ALL
                         .map(|table| TableView::Complete(TableRows::empty(table)).into()),
                 };
+                // The task forces by handle (ids 1 to 3), in ordinal order; handle 3 twice.
                 let mut ports = PortTables {
-                    rosters: [(7, vec![(2, 0), (0, 1), (2, 2), (1, 3)])].into(),
+                    rosters: [(7, vec![(3, 0), (1, 1), (3, 2), (2, 3)])].into(),
                     ..Default::default()
                 };
                 let mut memo = PortPlans::default();
@@ -878,7 +971,7 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
                 ));
                 frame
             };
-            let tables = |frame: &DecodedFrame, rosters: BTreeMap<u32, Vec<(usize, u32)>>| {
+            let tables = |frame: &DecodedFrame, rosters: BTreeMap<u32, Vec<(u64, u32)>>| {
                 let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
                 let mut tables = hour_tables(
                     frame,
@@ -916,11 +1009,11 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
                     .collect()
             };
             // Three task forces in port at the later hour; one, the third, at the earlier hour. Port 8's
-            // roster holds the first row at both hours, a different task force at each.
+            // roster names a different task force at each.
             let late = frame(60_800_559, &[1, 2, 3]);
             let early = frame(60_798_213, &[3]);
-            let late_tables = tables(&late, [(7, vec![(1, 0), (2, 1)]), (8, vec![(0, 0)])].into());
-            let early_tables = tables(&early, [(8, vec![(0, 0)])].into());
+            let late_tables = tables(&late, [(7, vec![(2, 0), (3, 1)]), (8, vec![(1, 0)])].into());
+            let early_tables = tables(&early, [(8, vec![(3, 0)])].into());
             let mut memo = Preparation::default();
             // Played, then sought back: the view lays out the later hour's tables again (art loaded
             // meanwhile) until the earlier hour's arrive, and nothing of their plans is taken over.

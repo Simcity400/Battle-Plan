@@ -9,7 +9,7 @@
 //! Vision is an input set from outside until the vision layer can be read.
 
 use super::{
-    Budget, Carried, Dirty, Gpu, Inputs, Layer, List, Num, Upstream, View,
+    Carried, Change, Settling, Dirty, Inputs, KeptAt, Keys, Layer, List, Num, Upstream, View,
     counters::{Rows, key_of},
     engagements::{Engagements, Index},
     naval_counters::Admits,
@@ -467,6 +467,16 @@ pub struct LandMarkers {
     member_slots: Dirty,
     /// `LandCombats` slots marked, admitted or not: a settle leaves one outside the view in `out`.
     combats: Dirty,
+    /// Per made combat whose marker is not seen, its `LandCombats` slot: an unseen marker draws
+    /// the frame the index keeps, so a change of that frame makes it again.
+    unseen: HashMap<u64, u32>,
+    /// Each live combat's kept frame as the index keeps it at the head, and where that stands.
+    kept: HashMap<u64, Kept>,
+    kept_at: KeptAt,
+    /// Combats whose row a step changed: their kept frame is read again.
+    kept_owed: Keys,
+    /// Combats whose kept frame was read, since the layer was made.
+    frames_read: usize,
     /// Rows the steps changed, resolved by a settle to the combats they name: the sides and
     /// details, and per division-keyed table ([`BY_DIVISION`]).
     side_rows: [Rows; 2],
@@ -495,9 +505,9 @@ pub struct LandMarkers {
     /// The markers as the window's counters draw them, and the version they were made at.
     published: Option<(u64, Arc<Product>)>,
     /// Combats made since the layer was made, and rows its `apply` read: none, by the contract.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     made: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
 
@@ -517,6 +527,11 @@ impl LandMarkers {
             member_rows: Vec::new(),
             member_slots: Dirty::default(),
             combats: Dirty::default(),
+            unseen: HashMap::new(),
+            kept: HashMap::new(),
+            kept_at: KeptAt::Unread,
+            kept_owed: Keys::default(),
+            frames_read: 0,
             side_rows: Default::default(),
             division_rows: Default::default(),
             flags: None,
@@ -538,20 +553,20 @@ impl LandMarkers {
             outside: 0,
             version: 1,
             published: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             made: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             applied_reads: 0,
         }
     }
 
     /// Combats made, and rows `apply` read, since the layer was made.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn made(&self) -> usize {
         self.made
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
     }
@@ -593,6 +608,12 @@ impl LandMarkers {
 
     pub fn marked(&self) -> usize {
         self.marked
+    }
+
+    /// Combats whose kept frame was read from the index, since the layer was made.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn frames_read(&self) -> usize {
+        self.frames_read
     }
 
     /// Every made combat: its id, province and outcome.
@@ -643,12 +664,12 @@ impl LandMarkers {
         self.admits.as_ref().is_none_or(|admits| admits(province))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn admit_only(&mut self, admits: impl Fn(u32) -> bool + Send + Sync + 'static) {
         self.admits = Some(Arc::new(admits));
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn outside(&self) -> usize {
         self.outside
     }
@@ -662,11 +683,17 @@ impl LandMarkers {
     }
 
     fn readmit(&mut self) {
-        self.version += 1;
         self.camera_dirty = false;
+        // The product holds the markers of the combats the view admits: a move that admits the
+        // same ones publishes nothing new, so the overlay laid out over it is not asked again.
+        let admitted = |layer: &Self| -> Vec<u64> { layer.outcomes.iter().flatten().filter(|made| layer.admitted(made.province)).map(|made| made.id).collect() };
+        let before = admitted(self);
         self.admits = self.camera.and_then(|(placement, viewport)| self.field.admits(placement, viewport));
         self.asked.clear();
         self.admitted.clear();
+        if admitted(self) != before {
+            self.version += 1;
+        }
         let out: Vec<u32> = ones(&self.out).collect();
         self.out.clear();
         self.outside = 0;
@@ -718,12 +745,12 @@ impl LandMarkers {
         self.side_rows.iter().chain(&self.division_rows).map(Rows::len).sum()
     }
 
-    /// The rows the steps changed resolved to the combats they name, within `budget`.
-    fn resolve(&mut self, mirrors: &Mirrors, budget: &mut Budget) {
+    /// The rows the steps changed resolved to the combats they name, within `settling`.
+    fn resolve(&mut self, mirrors: &Mirrors) {
         for (which, table) in [TableId::LandCombatSides, TableId::LandCombatDetails].into_iter().enumerate() {
             let mirror = mirrors.get(table);
             let mut rows = std::mem::take(&mut self.side_rows[which]);
-            rows.settle(budget, |row| {
+            rows.settle(|row| {
                 if let Some(key) = key_of(mirror, row) {
                     self.mark_combat(mirrors, key as u64);
                 }
@@ -733,7 +760,7 @@ impl LandMarkers {
         for (which, table) in BY_DIVISION.into_iter().enumerate() {
             let mirror = mirrors.get(table);
             let mut rows = std::mem::take(&mut self.division_rows[which]);
-            rows.settle(budget, |row| {
+            rows.settle(|row| {
                 if let Some(key) = key_of(mirror, row) {
                     self.mark_division(key as u64);
                 }
@@ -794,7 +821,7 @@ impl LandMarkers {
         (self.index, self.columns, self.hidden, self.flags, self.frame, self.marked) = (kept.index, kept.columns, kept.hidden, kept.flags, kept.frame, kept.marked);
         (self.camera, self.camera_dirty, self.admits) = (kept.camera, kept.camera_dirty, kept.admits);
         (self.vision, self.vision_new) = (kept.vision, kept.vision_new);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             (self.made, self.applied_reads) = (kept.made, kept.applied_reads);
         }
@@ -812,6 +839,10 @@ impl LandMarkers {
     fn recompose(&mut self, mirrors: &Mirrors) {
         self.version += 1;
         self.outcomes.clear();
+        self.unseen.clear();
+        self.kept.clear();
+        self.kept_at = KeptAt::Unread;
+        self.kept_owed.clear();
         self.by_division.clear();
         self.members.clear();
         self.member_rows.clear();
@@ -833,8 +864,15 @@ impl LandMarkers {
         self.mark_all(mirrors);
     }
 
+    /// The live combats at the head, in key order.
+    fn live(&self, mirrors: &Mirrors) -> Vec<u64> {
+        let mut live: Vec<u64> = held(mirrors.get(TableId::LandCombats)).map(|combats| combats.rows().filter_map(|slot| combats.key(slot)).map(|key| key as u64).collect()).unwrap_or_default();
+        live.sort_unstable();
+        live
+    }
+
     /// Each unseen icon's frame as the index keeps it at the head, for `combats`.
-    fn kept(&self, mirrors: &Mirrors, vision: &Vision, combats: &[u64]) -> HashMap<u64, Kept> {
+    fn kept_of(&self, mirrors: &Mirrors, vision: &Vision, combats: &[u64]) -> HashMap<u64, Kept> {
         let head = mirrors.get(TableId::LandCombats).and_then(Mirror::head);
         let found = match (&self.index, head) {
             (Some(index), Some(head)) if !combats.is_empty() => index.history.lookup_icons(LAND_ICON, index.branch, head, vision.ours(), combats).ok(),
@@ -846,8 +884,59 @@ impl LandMarkers {
         }
     }
 
+    /// The kept frames brought to the head: the hours the steps moved through name the icons the
+    /// index changed and the steps' own rows the combats that began or ended, while a change of
+    /// where the index answers from reads every live combat's again. A marker not seen draws the
+    /// frame it was made with, so one whose frame moved is made again. The map is taken out for
+    /// the settle to read and put back after it.
+    fn take_kept(&mut self, mirrors: &Mirrors, vision: &Vision) -> HashMap<u64, Kept> {
+        let index = self.index.as_ref().map(|index| (&index.history, index.branch));
+        let now = KeptAt::of(index, mirrors.get(TableId::LandCombats).and_then(Mirror::head), vision.ours());
+        let advanced = self.kept_at.advance(now, index, LAND_ICON, vision.ours());
+        self.kept_at = now;
+        let mut owed = std::mem::take(&mut self.kept_owed);
+        let mut combats: Vec<u64> = match advanced {
+            Some(changed) => owed.take().into_iter().chain(changed).collect(),
+            None => {
+                self.kept.clear();
+                owed.clear();
+                self.live(mirrors)
+            }
+        };
+        self.kept_owed = owed;
+        combats.sort_unstable();
+        combats.dedup();
+        let rows = mirrors.get(TableId::LandCombats);
+        let live = |combat: u64| held(rows).is_some_and(|rows| rows.slot(u128::from(combat)).is_some());
+        let (asked, gone): (Vec<u64>, Vec<u64>) = combats.into_iter().partition(|&combat| live(combat));
+        let found = self.kept_of(mirrors, vision, &asked);
+        self.frames_read += asked.len();
+        for combat in gone {
+            self.kept.remove(&combat);
+            self.mark_unseen(combat);
+        }
+        for combat in asked {
+            match found.get(&combat).copied() {
+                Some(kept) => self.kept.insert(combat, kept),
+                None => self.kept.remove(&combat),
+            };
+            self.mark_unseen(combat);
+        }
+        std::mem::take(&mut self.kept)
+    }
+
+    /// A combat whose made marker is not seen is made again when the frame it was made with is no
+    /// longer the one the index keeps.
+    fn mark_unseen(&mut self, combat: u64) {
+        let Some(&slot) = self.unseen.get(&combat) else { return };
+        let used = self.outcomes.get(slot as usize).and_then(Option::as_ref).map(|made| made.kept);
+        if used != Some(self.kept.get(&combat).copied().unwrap_or(Kept::Undecided)) {
+            self.mark(slot);
+        }
+    }
+
     fn settle_combat(&mut self, tables: &Tables<'_>, joins: (&Vision, &BTreeMap<u64, Engaged>, &HashMap<u64, Kept>), slot: u32) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.made += 1;
         }
@@ -856,6 +945,7 @@ impl LandMarkers {
             self.outcomes.resize(at + 1, None);
         }
         let old = self.outcomes[at].take();
+        let held_id = old.as_ref().map(|made| made.id);
         self.make_combat(tables, joins, slot);
         // Made again to what it was, the published markers do not change: no new version.
         fn laid(made: &Option<Made>) -> Option<(u64, u32, &MarkerOutcome)> {
@@ -878,6 +968,16 @@ impl LandMarkers {
             for &division in &made.divisions {
                 self.by_division.entry(division).or_default().push(slot);
             }
+        }
+        if let Some(id) = held_id
+            && self.unseen.get(&id) == Some(&slot)
+        {
+            self.unseen.remove(&id);
+        }
+        if let Some(made) = &self.outcomes[at]
+            && made.outcome.marker.as_ref().is_some_and(|marker| !marker.seen)
+        {
+            self.unseen.insert(made.id, slot);
         }
     }
 
@@ -910,12 +1010,12 @@ impl LandMarkers {
     /// composed from the flags its original took.
     /// Marks made while it settles (rows resolved, groups and plans expanded) carry the frame of the
     /// steps that brought them: the frame advances once the settle is done.
-    fn settle_dirty(&mut self, mirrors: &Mirrors, upstream: Option<(&Engagements, &[u32], bool, bool)>, budget: &mut Budget) {
-        self.settle_marks(mirrors, upstream, budget);
+    fn settle_dirty(&mut self, mirrors: &Mirrors, upstream: Option<(&Engagements, &[u32], bool, bool)>) {
+        self.settle_marks(mirrors, upstream);
         self.frame += 1;
     }
 
-    fn settle_marks(&mut self, mirrors: &Mirrors, upstream: Option<(&Engagements, &[u32], bool, bool)>, budget: &mut Budget) {
+    fn settle_marks(&mut self, mirrors: &Mirrors, upstream: Option<(&Engagements, &[u32], bool, bool)>) {
         // Hidden, it holds not even the engagement layer's flags: shown again, it takes them anew.
         if self.hidden {
             self.flags = None;
@@ -970,42 +1070,22 @@ impl LandMarkers {
             self.version += 1;
             self.limit = limit;
         }
-        self.resolve(mirrors, budget);
+        self.resolve(mirrors);
         let mut dirty = std::mem::take(&mut self.member_slots);
-        let _ = dirty.settle(&mut Budget::unlimited(), |slot| {
+        let _ = dirty.settle(|slot| {
             self.member_row(mirrors, slot);
             Ok(())
         });
         self.member_slots = dirty;
-        let combats = mirrors.get(TableId::LandCombats);
         let stepped = std::mem::take(&mut self.stepped);
-        if !stepped && self.combats.len() == 0 {
+        if !stepped && self.combats.len() == 0 && self.kept_owed.len() == 0 {
             self.flags = Some((flags, provenance));
             return;
         }
-        let mut live: Vec<u64> = held(combats).map(|combats| combats.rows().filter_map(|slot| combats.key(slot)).map(|key| key as u64).collect()).unwrap_or_default();
-        live.sort_unstable();
-        let kept = self.kept(mirrors, &vision, &live);
-        if stepped {
-            let unseen: Vec<(u32, u64, Kept)> = self
-                .outcomes
-                .iter()
-                .enumerate()
-                .filter_map(|(slot, made)| {
-                    let made = made.as_ref()?;
-                    made.outcome.marker.as_ref().filter(|marker| !marker.seen)?;
-                    Some((slot as u32, made.id, made.kept))
-                })
-                .collect();
-            for (slot, combat, used) in unseen {
-                if kept.get(&combat).copied().unwrap_or(Kept::Undecided) != used {
-                    self.mark(slot);
-                }
-            }
-        }
+        let kept = self.take_kept(mirrors, &vision);
         let mut dirty = std::mem::take(&mut self.combats);
         let tables = Tables::of(mirrors);
-        let _ = dirty.settle(budget, |slot| {
+        let _ = dirty.settle(|slot| {
             if self.inside(tables.combats, slot) {
                 self.settle_combat(&tables, (&vision, &flags, &kept), slot);
             } else if set(&mut self.out, slot) {
@@ -1014,6 +1094,7 @@ impl LandMarkers {
             Ok(())
         });
         self.combats = dirty;
+        self.kept = kept;
         self.flags = Some((flags, provenance));
     }
 
@@ -1023,7 +1104,12 @@ impl LandMarkers {
         let frame = self.frame;
         let slots = || changes.deleted().slots().iter().chain(changes.inserted().slots()).chain(changes.columns().iter().flat_map(|written| written.slots())).copied();
         match table {
-            TableId::LandCombats => slots().for_each(|slot| self.mark(slot)),
+            TableId::LandCombats => {
+                for &key in changes.deleted().keys().unwrap_or_default().iter().chain(changes.inserted().keys().unwrap_or_default()) {
+                    self.kept_owed.mark(key as u64, frame);
+                }
+                slots().for_each(|slot| self.mark(slot));
+            }
             TableId::LandCombatSides => self.side_rows[0].take(changes, frame, |column| columns.reads(table, column)),
             TableId::LandCombatDetails => self.side_rows[1].take(changes, frame, |column| columns.reads(table, column)),
             TableId::LandCombatDivisions => slots().for_each(|slot| {
@@ -1148,7 +1234,7 @@ impl Layer for LandMarkers {
         let marked = self.marked;
         self.all = true;
         let engagements = upstream.get::<Engagements>();
-        self.settle_dirty(mirrors, engagements.map(|layer| (layer, &[][..], false, false)), &mut Budget::unlimited());
+        self.settle_dirty(mirrors, engagements.map(|layer| (layer, &[][..], false, false)));
         self.publish();
         self.marked = marked;
         Ok(())
@@ -1158,7 +1244,7 @@ impl Layer for LandMarkers {
         if step.gap() || self.columns.is_none() || self.hidden || self.refused.is_some() {
             return;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let reads = crate::playhead_host::mirror::probe::reads();
         self.stepped = true;
         let columns = self.columns();
@@ -1169,7 +1255,7 @@ impl Layer for LandMarkers {
             }
             self.apply_table(TableId::ALL[changes.table()], changes, columns);
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.applied_reads += crate::playhead_host::mirror::probe::reads() - reads;
         }
@@ -1181,30 +1267,28 @@ impl Layer for LandMarkers {
         }
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_with(mirrors, &Upstream::new(&[]), budget)
+    fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        self.settle_with(mirrors, &Upstream::new(&[]), settling)
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
-        let changed = upstream.changed::<Engagements>();
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
         // The engagements name a changed combat by its id; one whose row is gone is marked by its own delete.
         let combats = mirrors.get(TableId::LandCombats);
-        let entities: Vec<u32> = changed.of("land").iter().filter_map(|&combat| combats?.slot(u128::from(combat))).collect();
-        let engagements = upstream.get::<Engagements>().map(|layer| (layer, &entities[..], !changed.of("land").is_empty(), changed.all()));
-        self.settle_dirty(mirrors, engagements, budget);
+        let (whole, named): (bool, &[u64]) = match upstream.changed::<Engagements>() {
+            Change::Whole => (true, &[]),
+            Change::Marked(changed) => (false, changed.of("land")),
+        };
+        let entities: Vec<u32> = named.iter().filter_map(|&combat| combats?.slot(u128::from(combat))).collect();
+        let engagements = upstream.get::<Engagements>().map(|layer| (layer, &entities[..], !named.is_empty(), whole));
+        self.settle_dirty(mirrors, engagements);
         self.publish();
         Ok(())
     }
 
-    fn upload(&mut self, _gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
-        Ok(())
-    }
 
     fn carried(&self) -> Carried {
-        let entities = self.combats.len() + self.member_slots.len() + self.rows_carried() + usize::from(self.all);
-        let rows = self.side_rows.iter().chain(&self.division_rows).filter_map(Rows::since);
-        let since = [self.combats.since(), self.member_slots.since()].into_iter().flatten().chain(rows).min();
-        Carried { entities, frames: since.map_or(0, |since| self.frame.saturating_sub(since)) }
+        let entities = self.combats.len() + self.member_slots.len() + self.rows_carried() + self.kept_owed.len() + usize::from(self.all);
+        Carried { entities }
     }
 
     fn held(&self) -> usize {

@@ -126,7 +126,7 @@ use replay_data::{
     rows::AIR_MISSION_ZERO_PLANE_FLAGS, rows::AirBaseRow, rows::AirCountryRelationRow,
     rows::AirMissionInputRow, rows::AirWingRow, rows::ShipRow, rows::TaskForceRow, rows::tables,
 };
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, ViewIdentity};
 use scenarios::{RegionGroups, ScenarioWing};
 
 use {
@@ -145,6 +145,7 @@ use {
     viewer_foundation::map::air_reachability::NavalOccupantSources,
     viewer_foundation::map::air_reachability::PortTargetSources,
     viewer_foundation::map::air_reachability::RegionFractions,
+    viewer_foundation::map::air_reachability::RegionStates,
     viewer_foundation::map::air_reachability::ScoutTargetSources,
     viewer_foundation::map::air_reachability::StrategicTargetSources,
     viewer_foundation::map::air_reachability::TacticalTargetSources,
@@ -2145,9 +2146,10 @@ struct Flight {
 #[derive(Clone, Default)]
 pub struct AircraftPlan {
     flights: Vec<Flight>,
+    /// Each flight's and each launch's animation seed, drawn from its own identity
+    /// ([`AircraftPlan::assign_seeds`]).
     flight_seeds: Vec<u32>,
     launch_seeds: Vec<u32>,
-    next_seed: u64,
     /// Each placed scenario's run on the viewer's frames.
     runs: Vec<Run>,
     /// The presentation time the runs last advanced to.
@@ -2181,6 +2183,11 @@ pub struct AircraftPlan {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Marks {
     pub sources: u64,
+    pub src_core: u64,
+    pub src_missions: u64,
+    pub src_wars: u64,
+    pub src_scans: u64,
+    pub src_tail: u64,
     pub admission: u64,
     pub generation: u64,
     pub training: u64,
@@ -2202,6 +2209,38 @@ pub struct Marks {
 #[derive(Default)]
 pub struct Kept {
     placed: HashMap<Placing, Vec<Flight>>,
+    /// The regions' states, what the Provinces rows they were read from read (every province's
+    /// state, in row order) and the view those came from: the strategic and scout scans read the
+    /// states of every region of every build, and nothing but those two columns decides them
+    /// ([`RegionStates`]).
+    regions: Option<(ViewIdentity, Arc<Vec<u64>>, Arc<RegionStates>)>,
+}
+
+impl Kept {
+    /// The regions' states of `frame`, read again only when the provinces' own rows move: a view
+    /// made anew in another column reads the same.
+    fn regions(&mut self, frame: &DecodedFrame, region_provinces: &BTreeMap<u32, Vec<u32>>) -> io::Result<Arc<RegionStates>> {
+        let view = &frame.tables[replay_data::rows::TableId::Provinces.index()];
+        if let Some((identity, _, held)) = &self.regions
+            && identity.is(view)
+        {
+            viewer_foundation::view_record::add("air scans", "regions kept", 1);
+            return Ok(Arc::clone(held));
+        }
+        let read = Arc::new(RegionStates::states_read(frame)?);
+        if let Some((identity, before, held)) = &mut self.regions
+            && *before == read
+        {
+            viewer_foundation::view_record::add("air scans", "regions stand", 1);
+            let held = Arc::clone(held);
+            (*identity, *before) = (view.identity(), read);
+            return Ok(held);
+        }
+        viewer_foundation::view_record::add("air scans", "regions read", 1);
+        let states = Arc::new(RegionStates::read(frame, region_provinces)?);
+        self.regions = Some((view.identity(), read, Arc::clone(&states)));
+        Ok(states)
+    }
 }
 
 /// Everything a scenario's placement reads that can differ from build to build; the rest (the
@@ -2262,9 +2301,14 @@ impl Keeping {
 
 impl Marks {
     /// Each timed part by name, in the order a build runs them.
-    pub fn parts(&self) -> [(&'static str, u64); 7] {
+    pub fn parts(&self) -> [(&'static str, u64); 12] {
         [
             ("sources", self.sources),
+            ("src_core", self.src_core),
+            ("src_missions", self.src_missions),
+            ("src_wars", self.src_wars),
+            ("src_scans", self.src_scans),
+            ("src_tail", self.src_tail),
             ("admission", self.admission),
             ("generation", self.generation),
             ("training", self.training),
@@ -3313,6 +3357,51 @@ fn training_draws<'a, B>(
     draws
 }
 
+/// SplitMix64's finaliser over `value` into `state`: the stable mix the animation seeds are drawn
+/// with, so a seed is the same in every build of a plan and on every machine.
+fn mix(state: u64, value: u64) -> u64 {
+    let mut z = state ^ value.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// `hash`'s seed, or the next seed derived from it that nothing in the plan has taken.
+fn claim(taken: &mut BTreeSet<u32>, mut hash: u64) -> u32 {
+    loop {
+        let seed = hash as u32;
+        if taken.insert(seed) {
+            return seed;
+        }
+        hash = mix(hash, 1);
+    }
+}
+
+/// A flight's identity ([`FlightKey`]) mixed: its wing, region, rig, track, anchor and heading.
+fn flight_identity(flight: &Flight) -> u64 {
+    let mut hash = mix(0, u64::from(flight.region));
+    hash = mix(hash, flight.wing);
+    hash = mix(hash, flight.track as u64);
+    for byte in flight.rig.as_bytes() {
+        hash = mix(hash, u64::from(*byte));
+    }
+    for bits in flight.origin.map(f32::to_bits) {
+        hash = mix(hash, u64::from(bits));
+    }
+    mix(hash, u64::from(flight.yaw.to_bits()))
+}
+
+/// A launch's identity mixed: everything [`launches::Launch::same_source`] reads of its source.
+fn launch_identity(launch: &launches::Launch) -> u64 {
+    let mut hash = mix(1, launch.wing);
+    hash = mix(hash, launch.mesh as u64);
+    for bits in launch.position.map(f32::to_bits) {
+        hash = mix(hash, u64::from(bits));
+    }
+    hash = mix(hash, u64::from(launch.spawn.to_bits()));
+    mix(hash, u64::from(launch.seed))
+}
+
 impl AircraftPlan {
     /// One scenario of `batch` at `province`: the game anchors it at the
     /// province's integer pixel mean.
@@ -3498,6 +3587,7 @@ impl AircraftPlan {
         impact_place: &dyn Fn(u32) -> Option<([f32; 3], [f32; 4])>,
         kept: &mut Kept,
     ) -> io::Result<Self> {
+        let regions = kept.regions(frame, &assets.region_provinces)?;
         let mut keeping = Keeping {
             before: std::mem::take(&mut kept.placed),
             now: HashMap::new(),
@@ -3547,53 +3637,89 @@ impl AircraftPlan {
             Available::Complete([features]) => Some(features.dlc_mask),
             _ => None,
         };
+        out.marks.src_core = since(started);
+        let mut source_lap = Instant::now();
         let mission_countries =
             air_reachability::MissionCountrySources::read(frame, &links, &registry)?;
+        out.marks.src_missions = since(source_lap);
+        source_lap = Instant::now();
         // Shared by every scan: one war census and one family set per hour.
         let wars = Wars::read(frame, &links)?;
         let families = Families::read(frame, &links).ok();
         let fog_families = families
             .clone()
             .and_then(|families| families.with_attaches(frame, &links).ok());
+        out.marks.src_wars = since(source_lap);
+        source_lap = Instant::now();
         let needs = |bits: u32| {
             wings
                 .iter()
                 .any(|wing| air_reachability::scanned_bits(wing.mission_mask) & bits != 0)
         };
+        let scan_lap = |name: &'static str, started: Instant| viewer_foundation::view_record::add("air scans", name, since(started));
         let scans = Scans {
             tactical: needs(1 << 1)
-                .then(|| TacticalTargetSources::read(frame, &wars))
+                .then(|| {
+                    let started = Instant::now();
+                    let read = TacticalTargetSources::read(frame, &wars);
+                    scan_lap("tactical ns", started);
+                    read
+                })
                 .transpose()?,
             port: needs(1 << 8)
-                .then(|| PortTargetSources::read(frame, &wars))
+                .then(|| {
+                    let started = Instant::now();
+                    let read = PortTargetSources::read(frame, &wars);
+                    scan_lap("port ns", started);
+                    read
+                })
                 .transpose()?,
             strategic: needs(0x1_0008)
-                .then(|| StrategicTargetSources::read(frame, &wars, &assets.region_provinces))
+                .then(|| {
+                    let started = Instant::now();
+                    let read = StrategicTargetSources::read(frame, &wars, &regions);
+                    scan_lap("strategic ns", started);
+                    read
+                })
                 .transpose()?,
             scout: needs(1 << 14)
                 .then(|| {
-                    ScoutTargetSources::read(
-                        frame,
-                        &links,
-                        &wars,
-                        fog_families.as_ref(),
-                        &assets.region_provinces,
-                    )
+                    let started = Instant::now();
+                    let read = ScoutTargetSources::read(frame, &links, &wars, fog_families.as_ref(), &regions);
+                    scan_lap("scout ns", started);
+                    read
                 })
                 .transpose()?,
             naval_combat: needs(0x90)
-                .then(|| NavalCombatTargetSources::read(frame, &links, &wars, families.as_ref()))
+                .then(|| {
+                    let started = Instant::now();
+                    let read = NavalCombatTargetSources::read(frame, &links, &wars, families.as_ref());
+                    scan_lap("naval combat ns", started);
+                    read
+                })
                 .transpose()?,
             occupants: needs(0x90)
-                .then(|| NavalOccupantSources::read(frame, &wars, &assets.province_kinds))
+                .then(|| {
+                    let started = Instant::now();
+                    let read = NavalOccupantSources::read(frame, &wars, &assets.province_kinds);
+                    scan_lap("occupants ns", started);
+                    read
+                })
                 .transpose()?,
             mine: needs(AIR_MISSION_LAY_MINES)
-                .then(|| MineTargetSources::read(frame, &links))
+                .then(|| {
+                    let started = Instant::now();
+                    let read = MineTargetSources::read(frame, &links);
+                    scan_lap("mine ns", started);
+                    read
+                })
                 .transpose()?,
             fractions: &assets.region_fractions,
             dlc_mask,
             mine_maximum_raw: defines.mine_maximum_raw,
         };
+        out.marks.src_scans = since(source_lap);
+        source_lap = Instant::now();
         let flight_defines = match &assets.flight_defines {
             Ok(defines) => defines,
             Err(error) => {
@@ -3629,6 +3755,7 @@ impl AircraftPlan {
             models.set(models.get() + since(chosen));
             mesh
         };
+        out.marks.src_tail = since(source_lap);
         out.marks.sources = since(started);
         let mut lap = Instant::now();
         let mut refusals = Refusals::default();
@@ -4033,6 +4160,7 @@ impl AircraftPlan {
         out.diagnostics.extend(refusals.diagnostics());
         out.marks.requests = since(lap);
         (out.marks.models, out.marks.placement) = (models.get(), placing.get());
+        out.assign_seeds(&|mesh, seed| assets.launch_lifetime(mesh, seed));
         Ok(out)
     }
 
@@ -4464,6 +4592,27 @@ impl AircraftPlan {
         placed
     }
 
+    /// Every flight's and launch's animation seed, each drawn from its own identity alone, and
+    /// each launch's clip length from its seed. A plan built for an hour then holds the same
+    /// seeds whichever plans came before it, so a flight that goes on across an install keeps its
+    /// player, and a viewer that played to the hour, one that sought to it and one that opened at
+    /// it draw the same aircraft. Two entries whose identity hashes alike take the next derived
+    /// seed, so no two share a player.
+    pub fn assign_seeds(&mut self, launch_lifetime: &dyn Fn(usize, u32) -> f32) {
+        let mut taken = BTreeSet::new();
+        self.flight_seeds = self
+            .flights
+            .iter()
+            .map(|flight| claim(&mut taken, flight_identity(flight)))
+            .collect();
+        self.launch_seeds = Vec::with_capacity(self.launches.len());
+        for index in 0..self.launches.len() {
+            let seed = claim(&mut taken, launch_identity(&self.launches[index]));
+            self.launches[index].length = launch_lifetime(self.launches[index].mesh, seed);
+            self.launch_seeds.push(seed);
+        }
+    }
+
     fn flight_seed(&self, index: usize) -> u32 {
         self.flight_seeds
             .get(index)
@@ -4482,24 +4631,10 @@ impl AircraftPlan {
         &mut self,
         previous: &mut Self,
         continuity: viewer_foundation::map::presentation::Continuity,
-        launch_lifetime: &dyn Fn(usize, u32) -> f32,
     ) -> io::Result<()> {
         if continuity == viewer_foundation::map::presentation::Continuity::Reset {
             return Ok(());
         }
-        let mut next_seed = previous.next_seed.max(
-            (0..previous.flights.len())
-                .map(|index| previous.flight_seed(index))
-                .chain((0..previous.launches.len()).map(|index| previous.launch_seed(index)))
-                .max()
-                .map_or(0, |seed| u64::from(seed) + 1),
-        );
-        let mut fresh = || -> io::Result<u32> {
-            let seed = u32::try_from(next_seed)
-                .map_err(|_| io::Error::other("aircraft animation seed space exhausted"))?;
-            next_seed += 1;
-            Ok(seed)
-        };
         let mut prior: BTreeMap<Vec<FlightKey>, Vec<usize>> = BTreeMap::new();
         for (index, run) in previous.runs.iter().enumerate() {
             prior
@@ -4512,7 +4647,6 @@ impl AircraftPlan {
                 .or_default()
                 .push(index);
         }
-        self.flight_seeds.resize(self.flights.len(), 0);
         let mut retained = BTreeSet::new();
         // Each run's run of the plan before: the same flights.
         let mut matched: Vec<Option<usize>> = vec![None; self.runs.len()];
@@ -4531,9 +4665,6 @@ impl AircraftPlan {
             match matched {
                 Some(index) => {
                     let old = &previous.runs[index];
-                    for (next, old) in run.flights.clone().zip(old.flights.clone()) {
-                        self.flight_seeds[next] = previous.flight_seed(old);
-                    }
                     run.start = old.start;
                     run.cycle = old.cycle;
                     run.initialized = old.initialized;
@@ -4542,54 +4673,9 @@ impl AircraftPlan {
                     }
                     retained.extend(self.flights[run.flights.clone()].iter().map(Flight::key));
                 }
-                None => {
-                    self.restarts += 1;
-                    for index in run.flights.clone() {
-                        self.flight_seeds[index] = fresh()?;
-                    }
-                }
+                None => self.restarts += 1,
             }
         }
-        let mut launches: BTreeMap<(u64, usize, [u32; 3], u32), Vec<usize>> = BTreeMap::new();
-        for (index, launch) in previous.launches.iter().enumerate() {
-            launches
-                .entry((
-                    launch.wing,
-                    launch.mesh,
-                    launch.position.map(f32::to_bits),
-                    launch.seed,
-                ))
-                .or_default()
-                .push(index);
-        }
-        self.launch_seeds.clear();
-        for launch in &mut self.launches {
-            let key = (
-                launch.wing,
-                launch.mesh,
-                launch.position.map(f32::to_bits),
-                launch.seed,
-            );
-            let old = launches.get_mut(&key).and_then(|candidates| {
-                let at = candidates
-                    .iter()
-                    .position(|&index| launch.same_source(&previous.launches[index]))?;
-                Some(candidates.remove(at))
-            });
-            let seed = match old {
-                Some(index) => {
-                    launch.length = previous.launches[index].length;
-                    previous.launch_seed(index)
-                }
-                None => {
-                    let seed = fresh()?;
-                    launch.length = launch_lifetime(launch.mesh, seed);
-                    seed
-                }
-            };
-            self.launch_seeds.push(seed);
-        }
-        self.next_seed = next_seed;
         self.ran_at = previous.ran_at;
         self.finished.append(&mut previous.finished);
         self.carry_opening(previous);

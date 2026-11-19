@@ -12,8 +12,7 @@
 //!
 //! MapEvents is one row rewritten every hour, not a log: a step hands over its last hour's
 //! interval only. A step of one hour presents every interval in turn; a longer step presents its
-//! last hour's, and the scene's consumer names the intervals in between as a discontinuity, as it
-//! does today for the hours today's pipeline did not build.
+//! last hour's, and the scene's consumer names the intervals in between as a discontinuity.
 
 #[cfg(test)]
 mod tests;
@@ -21,10 +20,11 @@ mod tests;
 pub mod proof;
 mod worker;
 
-use super::{Budget, Carried, Gpu, Inputs, Layer, Published, Upstream, View, vision::Vision};
+use super::{Carried, Settling, Gpu, Inputs, Layer, Published, Upstream, View, vision::Vision};
 use crate::playhead_host::{
+    Entry,
     mirror::{Mirror, Mirrors},
-    rows::{Rows, Stepped, view},
+    views::{Stepped, view},
 };
 use installed_content_localisation::localisation::Localisation;
 use playhead::{Step, changes::Changes};
@@ -117,7 +117,7 @@ impl Presented {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn seek(&self) -> bool {
         match self {
             Self::Hour { seek, .. } | Self::Missing { seek, .. } => *seek,
@@ -140,8 +140,6 @@ struct Due {
     hour: Hour,
     seek: bool,
     interval: Option<SharedView>,
-    /// The frame it was marked at: the first due is the oldest owed.
-    frame: u64,
     /// The playhead's seek of its step.
     epoch: u64,
 }
@@ -182,10 +180,10 @@ pub struct MapText {
     presented: Option<Hour>,
     order: Vec<(u128, u32)>,
     frame: u64,
-    /// The playhead's rows it was attached to, and the context tables the worker steps (declared at
+    /// The playhead it was attached to, and the context tables the worker steps (declared at
     /// once, so they come with the next seek's reset) until the worker takes them; why not, when
     /// they could not be declared.
-    rows: Mutex<Option<(Arc<Rows>, Option<Result<Stepped, String>>)>>,
+    rows: Mutex<Option<(Arc<Entry>, Option<Result<Stepped, String>>)>>,
     worker: Option<worker::Worker>,
     /// Steps that brought a new interval; intervals made in place (none holding an event);
     /// intervals made on the worker.
@@ -214,21 +212,21 @@ impl MapText {
         }
     }
 
-    /// Reads the events' context from `rows`' playhead from now on, through tables of its own.
-    pub fn attach(&self, rows: Arc<Rows>) {
-        let stepped = Stepped::new(rows.entry(), &worker_tables()).map_err(|error| format!("map text context: its tables cannot be declared: {error}"));
-        *self.rows.lock().unwrap_or_else(PoisonError::into_inner) = Some((rows, Some(stepped)));
+    /// Reads the events' context from `entry`'s playhead from now on, through tables of its own.
+    pub fn attach(&self, entry: Arc<Entry>) {
+        let stepped = Stepped::new(&entry, &worker_tables()).map_err(|error| format!("map text context: its tables cannot be declared: {error}"));
+        *self.rows.lock().unwrap_or_else(PoisonError::into_inner) = Some((entry, Some(stepped)));
     }
 
-    pub fn with_rows(self, rows: Arc<Rows>) -> Self {
-        self.attach(rows);
+    pub fn with_rows(self, entry: Arc<Entry>) -> Self {
+        self.attach(entry);
         self
     }
 
     pub fn fresh(&self) -> Self {
         let fresh = Self { kinds: self.kinds.clone(), ..Self::new(Arc::clone(&self.source), self.branch) };
-        if let Some((rows, _)) = &*self.rows.lock().unwrap_or_else(PoisonError::into_inner) {
-            fresh.attach(Arc::clone(rows));
+        if let Some((entry, _)) = &*self.rows.lock().unwrap_or_else(PoisonError::into_inner) {
+            fresh.attach(Arc::clone(entry));
         }
         fresh
     }
@@ -239,7 +237,7 @@ impl MapText {
     }
 
     /// The intervals made and not yet handed to the scene, in order, up to the first on the worker.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn pending(&self) -> Vec<&Presented> {
         self.queue
             .iter()
@@ -251,13 +249,13 @@ impl MapText {
     }
 
     /// Whether intervals are on the worker.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn waiting(&self) -> bool {
         self.queue.iter().any(|slot| matches!(slot, Slot::Pending { .. }))
     }
 
     /// Its worker's liveness, for a test that drops the layer.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn worker_alive(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
         self.worker.as_ref().map(worker::Worker::alive)
     }
@@ -277,7 +275,7 @@ impl MapText {
 
     fn mark(&mut self, hour: Hour, seek: bool, interval: Option<SharedView>) {
         self.marked[0] += 1;
-        self.due.push_back(Due { hour, seek, interval, frame: self.frame, epoch: self.epoch });
+        self.due.push_back(Due { hour, seek, interval, epoch: self.epoch });
     }
 
     /// The worker, started once: with the context tables when attached, refusing them by name
@@ -323,7 +321,7 @@ impl MapText {
 
     /// The playhead's entry the context is read from, when attached.
     fn entry(&self) -> Option<Arc<crate::playhead_host::Entry>> {
-        self.rows.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|(rows, _)| Arc::clone(rows.entry()))
+        self.rows.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(|(entry, _)| Arc::clone(entry))
     }
 
     /// The worker's finished intervals put in their places, and those of a seek since superseded
@@ -444,7 +442,7 @@ impl Layer for MapText {
         let stepped = self.marked[0];
         self.mark(hour, true, interval);
         self.marked[0] = stepped;
-        self.settle_with(mirrors, upstream, &mut Budget::unlimited())
+        self.settle_with(mirrors, upstream, Settling::Whole)
     }
 
     fn apply(&mut self, step: &Step, mirrors: &Mirrors) {
@@ -484,13 +482,12 @@ impl Layer for MapText {
         self.own = own;
     }
 
-    fn settle(&mut self, mirrors: &Mirrors, budget: &mut Budget) -> io::Result<()> {
-        self.settle_with(mirrors, &Upstream::new(&[]), budget)
+    fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
+        self.settle_with(mirrors, &Upstream::new(&[]), settling)
     }
 
-    /// Hands on the due intervals within the budget; an unlimited settle (a compose, the proof, the
-    /// stepped harness) waits for the worker's.
-    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+    /// Hands on the due intervals within the settling, then joins the worker's within its budget.
+    fn settle_with(&mut self, _mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
         self.frame += 1;
         let entry = self.entry();
         // A seek since superseded abandoned these intervals' steps: no rows decide them.
@@ -498,7 +495,7 @@ impl Layer for MapText {
             self.due.retain(|due| due.epoch >= newest);
         }
         let vision = upstream.get::<Vision>();
-        while !self.due.is_empty() && budget.left() {
+        while !self.due.is_empty() {
             let due = self.due.pop_front().expect("not empty");
             self.hand_on(due, vision)?;
         }
@@ -510,13 +507,18 @@ impl Layer for MapText {
         {
             self.worker()?.through(hour, epoch);
         }
-        self.take(budget.unlimited_now().then_some(WAIT))
+        // Out of the step's budget, the intervals it holds stay pending and the step after joins
+        // them; only a settle that waits however long it takes is refused by name.
+        match self.take(Some(settling.waiting(WAIT))) {
+            Err(error) if settling.strict() => Err(error),
+            _ => Ok(()),
+        }
     }
 
     /// The finished intervals in order through the scene's own input, up to the first still on the
     /// worker; the impacts are the strikes layer's. Its continuity is the consumer's, from the hour
     /// and whether it was sought.
-    fn upload(&mut self, gpu: &mut Gpu<'_>, _budget: &mut Budget) -> io::Result<()> {
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         self.take(None)?;
         let content = gpu.content;
         let none = Impacts::default();
@@ -532,7 +534,7 @@ impl Layer for MapText {
     }
 
     fn carried(&self) -> Carried {
-        Carried { entities: self.due.len(), frames: self.due.front().map_or(0, |due| self.frame.saturating_sub(due.frame)) }
+        Carried { entities: self.due.len() }
     }
 
     /// While the worker holds an interval: the hour of the newest made before it, or presented

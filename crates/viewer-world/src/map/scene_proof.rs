@@ -47,18 +47,16 @@ pub struct SceneProof {
     pub last_animation_time: Option<u32>,
     pub grading: String,
     pub shadows: bool,
-    pub grid: ([u32; 2], u32, [u32; 2]),
+    pub terrain: (usize, u64),
     pub targets: Option<([u32; 2], [u32; 2])>,
     pub overlays: (u32, u32),
     pub submissions: u64,
     pub attempted: Vec<passes::Pass>,
     pub reached: Vec<crate::map::scene_faults::Point>,
     pub timer_present: bool,
-    pub native_batches: Vec<(usize, Option<usize>)>,
 }
 impl Scene {
     pub fn frame_proof_for_tests(&self) -> SceneProof {
-        let grid = self.grid();
         let mut owner_keys = BTreeMap::new();
         for (layer, model) in model_passes!(self).into_iter().enumerate() {
             if let Some(model) = model {
@@ -86,18 +84,13 @@ impl Scene {
             last_animation_time: self.last_animation_time.map(f32::to_bits),
             grading: format!("{:?}", self.post.last_grading()),
             shadows: self.shadows(),
-            grid: (
-                grid.origin.map(f32::to_bits),
-                grid.step.to_bits(),
-                grid.counts,
-            ),
+            terrain: self.terrain_drawn(),
             targets: self.targets().map(|t| (t.size(), t.world_size())),
             overlays: self.overlay_counts(),
             submissions: self.test_faults.submissions.get(),
             attempted: self.test_faults.attempted.borrow().clone(),
             reached: self.test_faults.reached.borrow().clone(),
             timer_present: self.pass_timer.is_some(),
-            native_batches: self.test_faults.native_batches.borrow().clone(),
         }
     }
 }

@@ -1,4 +1,5 @@
 //! The post triangle and retained raster state.
+use shader_pipeline::gpu::stats::CountedPasses as _;
 use std::{collections::BTreeMap, sync::Arc};
 
 use eframe::wgpu::{self, util::DeviceExt};
@@ -19,6 +20,9 @@ pub(super) fn select(effect: &Arc<Effect>, name: &str) -> Result<Selection, Stri
 pub(super) struct Fullscreen {
     pipeline: Arc<gpu::Pipeline>,
     vertices: wgpu::Buffer,
+    /// Whether a blend of this program reads the pass's blend constant, which a pass start
+    /// resets: one that reads none is drawn without setting it.
+    blend_constant: bool,
 }
 
 impl Fullscreen {
@@ -77,6 +81,18 @@ impl Fullscreen {
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
+        let blend_constant = pass.targets.iter().flatten().any(|target| {
+            target.blend.is_some_and(|blend| {
+                [blend.color, blend.alpha].iter().any(|component| {
+                    [component.src_factor, component.dst_factor].iter().any(|factor| {
+                        matches!(
+                            factor,
+                            wgpu::BlendFactor::Constant | wgpu::BlendFactor::OneMinusConstant
+                        )
+                    })
+                })
+            })
+        });
         let pipeline = gpu::Cache::default().get_pass(device, selection, state, &pass)?;
         // Initialize all 24 bytes of triangle vertices.
         let vertices: [[i16; 4]; 3] = [[3, -1, 0, 0], [-1, -1, 1, 0], [-1, 3, 2, 0]];
@@ -85,17 +101,41 @@ impl Fullscreen {
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        Ok(Self { pipeline, vertices })
+        Ok(Self {
+            pipeline,
+            vertices,
+            blend_constant,
+        })
     }
 
-    pub(super) fn bindings(
+    /// Bindings over a block the caller keeps at `offset` in `buffer`, made once for as long as
+    /// the block's operands and `sources` stand: the pass then records its draw and nothing else.
+    pub(super) fn kept(
         &self,
-        arena: &gpu::Arena,
+        device: &wgpu::Device,
+        buffer: &wgpu::Buffer,
         slot: u32,
+        offset: u32,
         bytes: &[u8],
-        source: &wgpu::TextureView,
+        sources: &[&wgpu::TextureView],
     ) -> Result<gpu::Bindings, String> {
-        self.bind_textures(arena, slot, bytes, &[source])
+        self.pipeline.kept_bindings(
+            device,
+            buffer,
+            |register| {
+                [Stage::Vertex, Stage::Pixel]
+                    .iter()
+                    .any(|stage| binding(slot, *stage) == register)
+                    .then_some((offset, bytes))
+            },
+            |register| {
+                sources
+                    .iter()
+                    .enumerate()
+                    .find(|(slot, _)| binding(*slot as u32, Stage::Pixel) == register)
+                    .map(|(_, source)| *source)
+            },
+        )
     }
 
     pub(super) fn check_initialized(
@@ -139,7 +179,7 @@ impl Fullscreen {
         bindings: &gpu::Bindings,
         viewport: Option<[u32; 2]>,
     ) {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compiled post triangle"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
@@ -161,11 +201,13 @@ impl Fullscreen {
         self.render(&mut pass, bindings);
     }
 
+    /// The bindings set the effective pipeline, which a shader-filtered view may vary, so the
+    /// pass's own commands are the blend constant a blend of this program reads and the triangle.
     pub(super) fn render(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &gpu::Bindings) {
-        shader_pipeline::gpu::stats::pipeline();
-        pass.set_pipeline(&self.pipeline.pipeline);
-        shader_pipeline::gpu::stats::state();
-        pass.set_blend_constant(wgpu::Color::WHITE);
+        if self.blend_constant {
+            shader_pipeline::gpu::stats::state();
+            pass.set_blend_constant(wgpu::Color::WHITE);
+        }
         bindings.bind(pass);
         shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, self.vertices.slice(..));

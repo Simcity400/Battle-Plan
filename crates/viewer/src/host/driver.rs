@@ -104,6 +104,8 @@ pub(crate) fn run(
     lost: &Lost,
     make: impl FnOnce(&egui::Context, &egui_wgpu::RenderState) -> Result<app::Viewer, String>,
 ) -> Result<(), String> {
+    // The map steps its clock at the refresh of the display this window is on.
+    let _followed = viewer_foundation::map::display_refresh::follow_window(window.hwnd());
     let (state, surface) = map_device(Some(window))?;
     let state = Released(Some(state));
     let mut surface = Released(Some(renderer_host::WindowSurface::new(surface.ok_or("The map's window gave no surface")?)));
@@ -118,6 +120,7 @@ pub(crate) fn run(
     frame.wgpu_render_state = Some(state.clone());
     let started = Instant::now();
     let mut due = Some(Instant::now());
+    let mut limited = viewer_foundation::map::frame_limit::Grid::default();
     let mut focused = false;
     let mut events = Vec::new();
     let max_texture_side = state.device.limits().max_texture_dimension_2d as usize;
@@ -159,10 +162,18 @@ pub(crate) fn run(
         if due.is_none_or(|at| at > Instant::now()) {
             continue;
         }
-        due = None;
         if lost.reason().is_some() {
             return Ok(());
         }
+        // The frame rate limit holds this map's frames on its own grid of deadlines, so a frame
+        // due now waits for its deadline and the input that asked for it is drawn then.
+        let waiting = limited.until(Instant::now());
+        if !waiting.is_zero() {
+            due = Some(Instant::now() + waiting);
+            continue;
+        }
+        limited.take(Instant::now());
+        due = None;
         let (size, pixels_per_point) = window.metrics();
         let rect = egui::Rect::from_min_size(
             egui::Pos2::ZERO,

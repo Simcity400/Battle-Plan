@@ -25,7 +25,7 @@ mod store;
 pub use maker::PlanRows;
 
 use super::{
-    Budget, Carried, Due, Fed, Gpu, Inputs, Layer, List, Num, Published, Text, Upstream, View,
+    Carried, Change, Settling, Due, Fed, Gpu, Inputs, Layer, List, Num, Published, Text, Upstream, View,
     owned::{Delta, Shape, Standing, Tables},
     rails::Rails,
 };
@@ -634,7 +634,7 @@ pub struct Trains {
     quiet: Option<Hour>,
     whole: Option<u32>,
     /// Mirror rows `apply` read.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     applied_reads: u64,
 }
 
@@ -665,7 +665,7 @@ impl Trains {
             made: ("nothing", None, None),
             quiet: None,
             whole: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             applied_reads: 0,
         }
     }
@@ -689,7 +689,7 @@ impl Trains {
     }
 
     /// The newest hour its worker has made a product of, as received on the frame.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn made_through(&self) -> Option<Hour> {
         self.fed.made_through()
     }
@@ -737,7 +737,7 @@ impl Trains {
         self.stats.timed
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn applied_reads(&self) -> u64 {
         self.applied_reads
     }
@@ -801,19 +801,21 @@ impl Trains {
 
     /// The rails layer's redrawn strips: the worker's curves through them go.
     fn forward_redraws(&mut self, upstream: &Upstream<'_>) {
-        let redrawn = upstream.changed::<Rails>();
-        let forget = if redrawn.all() {
-            if self.curved.is_empty() {
-                return;
+        let forget = match upstream.changed::<Rails>() {
+            Change::Whole => {
+                if self.curved.is_empty() {
+                    return;
+                }
+                self.curved.clear();
+                Forget { all: true, provinces: BTreeSet::new() }
             }
-            self.curved.clear();
-            Forget { all: true, provinces: BTreeSet::new() }
-        } else {
-            let provinces: BTreeSet<u32> = redrawn.of("province").iter().map(|&id| id as u32).filter(|province| self.curved.contains(province)).collect();
-            if provinces.is_empty() {
-                return;
+            Change::Marked(redrawn) => {
+                let provinces: BTreeSet<u32> = redrawn.of("province").iter().map(|&id| id as u32).filter(|province| self.curved.contains(province)).collect();
+                if provinces.is_empty() {
+                    return;
+                }
+                Forget { all: false, provinces }
             }
-            Forget { all: false, provinces }
         };
         self.send(Job::Rails { epoch: self.epoch, forget });
     }
@@ -956,7 +958,7 @@ impl Layer for Trains {
         Err(io::Error::other("the trains layer reads the rails layer: composed with its upstream"))
     }
 
-    fn settle(&mut self, _mirrors: &Mirrors, _budget: &mut Budget) -> io::Result<()> {
+    fn settle(&mut self, _mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
         Ok(())
     }
 
@@ -1046,7 +1048,7 @@ impl Layer for Trains {
         self.send(Job::Restart { epoch: self.epoch, mirrors: Box::new(held), stamp });
     }
 
-    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, budget: &mut Budget) -> io::Result<()> {
+    fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, _settling: Settling) -> io::Result<()> {
         self.frame += 1;
         // Every step applied was handed before this settle (the host hands them first).
         self.fed.publish();
@@ -1064,7 +1066,7 @@ impl Layer for Trains {
         }
         // Read before anything returns: the host clears these once this layer has settled.
         self.forward_redraws(upstream);
-        self.exchange(budget.unlimited_now());
+        self.exchange(true);
         if let Some(owed) = self.stalled.take() {
             return Err(io::Error::other(format!("The trains' plan of the hour applied did not come within {} s: {owed}", WAIT.as_secs())));
         }
@@ -1077,11 +1079,8 @@ impl Layer for Trains {
 
     /// The plan into the scene's train pass, which carries the fleet it runs into it as today's
     /// install does (anew after a compose); hidden or refused, an empty plan.
-    fn upload(&mut self, gpu: &mut Gpu<'_>, budget: &mut Budget) -> io::Result<()> {
+    fn upload(&mut self, gpu: &mut Gpu<'_>) -> io::Result<()> {
         let Some(continuity) = self.drawn_stale else { return Ok(()) };
-        if !budget.left() {
-            return Ok(());
-        }
         let drawn = self.shown && self.refused.is_none();
         let plan = match self.to_scene.take() {
             Some(plan) if drawn => plan,

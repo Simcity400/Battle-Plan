@@ -23,6 +23,7 @@ dashboard-follow = { path = "../dashboard-follow" }
 shader-pipeline = { path = "../shader-pipeline" }
 # The map, which renders inside this process.
 viewer = { path = "../viewer" }
+viewer-foundation = { path = "../viewer-foundation" }
 engine-heap.workspace = true
 rfd.workspace = true
 tokio = { version = "1", features = ["sync"] }

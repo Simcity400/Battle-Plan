@@ -461,7 +461,7 @@ where P::Params: Sync, P::Context: Sync {
         let recording = query.replay.recording();
         P::tables(&params).into_iter().filter(|t| recording.withheld_reason(t.index()).is_none()).map(|table| {
             let columns = P::columns(table).unwrap_or_else(|| recording.read_columns(table.index()));
-            Declared { table: table.index(), columns, keyed: true, passing: false }
+            Declared { table: table.index(), columns, keyed: true, passing: false, hourly: false }
         }).collect()
     } else { Vec::new() };
     let params = Arc::new(params);

@@ -578,7 +578,7 @@ impl Viewer {
                 .is_some_and(|known| std::ptr::eq(known.as_ptr(), Arc::as_ptr(&document.content)))
         {
             self.picker.modes_for = Some(Arc::downgrade(&document.content));
-            let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map), document), document);
+            let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map)), document);
             let modes = choosable_modes(document, four)
                 .iter()
                 .map(|mode| {
@@ -654,7 +654,7 @@ impl Viewer {
         } else {
             self.picker_toggles()
         };
-        let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map), document), document);
+        let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map)), document);
         Some(self.picker.draw(
             document,
             &self.map_mode,
@@ -705,11 +705,7 @@ impl Viewer {
         match name {
             "button_radar" => self.picker.radar = !self.picker.radar,
             "button_fog" if !hosted => self.perspective.fog = !self.perspective.fog,
-            "player_counters_toggle" => {
-                self.player_counters = !self.player_counters;
-                // The counters' owners are chosen with the overlay's layout.
-                self.overlay_at = None;
-            }
+            "player_counters_toggle" => self.player_counters = !self.player_counters,
             "button_counters_color_mode" => {
                 use viewer_counters::map::counters::CounterColorMode;
                 self.counter_view.settings.color_mode =
@@ -725,7 +721,7 @@ impl Viewer {
 
     /// The picker's authored keys pressed this frame, as clicks.
     pub(crate) fn picker_keys(&mut self, ui: &egui::Ui, document: &Document, extent: [f32; 2]) {
-        let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map), document), document);
+        let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map)), document);
         let Ok(shortcuts) = picker::shortcuts(&document.combat, extent, four, DEFAULT_SLOTS.len())
         else {
             return;
@@ -941,6 +937,7 @@ mod tests {
                 fraction: 0.,
                 sequence: 1,
                 seek_sequence: None,
+                composed_at: 0.0,
                 bounds,
                 clip: bounds,
                 visible: true,

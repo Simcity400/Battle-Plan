@@ -256,8 +256,8 @@ mod tests {
         .unwrap();
         assert!(Arc::ptr_eq(&known, &renamed));
         for (number, captured, reason) in [
-            (3, Recorded::Value(None), "original_tag capture refused"),
-            (4, Recorded::NotRecorded, "original_tag not recorded"),
+            (3, Recorded::Value(None), "original tag of country appearance capture refused"),
+            (4, Recorded::NotRecorded, "original tag of country appearance not recorded"),
             (5, Recorded::Value(Some(vec![0xff])), "not UTF-8"),
         ] {
             let refused = CountryIndex::settled(&memo, &hour(number, b"GEN", captured)).unwrap();
@@ -267,7 +267,9 @@ mod tests {
                     .1
                     .as_ref()
                     .unwrap_err()
-                    .contains(reason)
+                    .contains(reason),
+                "{:?}",
+                refused.flag_tags()[&1].1
             );
             assert_eq!(refused.tags(), known.tags());
             assert_eq!(refused.links(), known.links());
@@ -278,9 +280,9 @@ mod tests {
         for (captured, reason) in [
             (
                 Recorded::Value(None),
-                "original_tag_reference capture refused",
+                "original tag reference of country appearance capture refused",
             ),
-            (Recorded::NotRecorded, "original_tag_reference not recorded"),
+            (Recorded::NotRecorded, "original tag reference of country appearance not recorded"),
         ] {
             let mut frame = hour(7, b"GEN", Recorded::Value(Some(b"ORI".to_vec())));
             let TableView::Complete(TableRows::CountryAppearance(rows)) =

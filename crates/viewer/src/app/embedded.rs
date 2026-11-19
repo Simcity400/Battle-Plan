@@ -15,7 +15,9 @@ impl Viewer {
         let Some(embedded) = self.embedded.as_mut() else {
             return;
         };
+        let commands = replay_frame::cpu::scope("frame.commands", Some("other"));
         let pending = embedded.poll(ctx);
+        drop(commands);
         if pending.close {
             return;
         }
@@ -30,17 +32,17 @@ impl Viewer {
             if self.dashboard.is_none() {
                 let service = embedded.service();
                 let created = self
-                    .shared_resources
+                    .shared_pool
                     .as_ref()
                     .cloned()
                     .ok_or_else(|| std::io::Error::other("Native map workers are unavailable"))
-                    .and_then(|resources| {
+                    .and_then(|pool| {
                         crate::dashboard_maps::DashboardMaps::new(
                             self.config.clone(),
                             self.options.clone(),
                             service,
                             self.gpu.clone(),
-                            resources,
+                            pool,
                         )
                     });
                 match created {
@@ -71,18 +73,27 @@ impl Viewer {
             .as_ref()
             .expect("embedded controller")
             .service();
-        self.follow_campaign_preferences(&service, ctx);
+        {
+            let _other_cost = replay_frame::cpu::scope("frame.preferences", Some("other"));
+            self.follow_campaign_preferences(&service, ctx);
+        }
         if let Some(message) = pending.gamepad {
             self.input.gamepad(message);
             ctx.request_repaint();
         }
-        self.follow_visual_checks(ctx, Some(&*frame));
+        {
+            let _other_cost = replay_frame::cpu::scope("frame.visual-checks", Some("other"));
+            self.follow_visual_checks(ctx, Some(&*frame));
+        }
         let actions = pending.actions;
         // The web shell owns these controls and changes the map's own state.
         for action in actions {
             self.host_map_action(action, ctx, frame);
         }
-        self.poll_fly_aircraft(ctx);
+        {
+            let _other_cost = replay_frame::cpu::scope("frame.fly-aircraft", Some("other"));
+            self.poll_fly_aircraft(ctx);
+        }
         if self.dashboard_active {
             // Full-map loading may have started before the tab changed. Finish
             // it once and lend its verified content to dashboard maps.
@@ -100,7 +111,7 @@ impl Viewer {
             }
             dashboard.poll(ctx);
             if let Some(embedded) = &mut self.embedded {
-                embedded.report_maps(dashboard.states());
+                embedded.report_maps(dashboard.states(), ctx);
             }
             return;
         }
@@ -130,7 +141,10 @@ impl Viewer {
         // A host can select files faster than their content can load. Retain
         // one pending path and finish the active loader before starting it.
         // Each pending seek is tied to its requested file, never the old map.
-        self.poll(ctx);
+        {
+            let _other_cost = replay_frame::cpu::scope("frame.load", Some("other"));
+            self.poll(ctx);
+        }
         if self.loading.is_none()
             && let Some(request) = self.embedded_open.take()
         {
@@ -186,9 +200,6 @@ impl Viewer {
                             .map_animation_target
                             .is_none_or(|old| animation_target.seeks_from(old));
                     self.animation_seek |= sought;
-                    if sought && let Some(hours) = &mut self.hours {
-                        hours.seek();
-                    }
                     self.map_animation_target = Some(animation_target);
                     let playing = seek.playback.is_some_and(|clock| clock.playing);
                     let target = Playhead {
@@ -199,7 +210,8 @@ impl Viewer {
                     let speed = seek
                         .playback
                         .map_or(self.speed, |clock| clock.hours_per_second);
-                    self.anchor_playback(target, playing, speed, sought, now, last);
+                    let composed_at = seek.playback.map(|clock| clock.composed_at);
+                    self.anchor_playback(target, playing, speed, sought, composed_at, now, last);
                 }
                 Err(error) => {
                     self.error = Some(error);
@@ -316,8 +328,8 @@ impl Viewer {
             self.check_visual_mods(false, ctx);
         }
         // The Campaign map's visual mod fallback: its frame's report goes to the one owner
-        // ([`crate::visual_fallback`]), and content that is no longer what its key holds loads
-        // again, without the mods or with them back, as the owner decided.
+        // ([`crate::visual_fallback`]), and content that is not what its key holds loads again,
+        // without the mods or with them back, as the user chose.
         if let Some(report) = self.take_visual_report() {
             crate::visual_fallback::lock(&self.visual_fallbacks).reduce(vec![report]);
         }
@@ -370,6 +382,9 @@ impl Viewer {
                     };
                     frame.set_wgpu_surface_config(config);
                 }
+            }
+            MapAction::FrameLimit { hz } => {
+                viewer_foundation::map::frame_limit::limit_to(hz);
             }
             MapAction::UiScale { scale } => {
                 self.ui_scale = Setting::from_stored(scale);
@@ -432,7 +447,7 @@ impl Viewer {
                 self.config.user_dir = PathBuf::from(user);
                 self.awaiting_folders = self.config.resolve_options().is_err();
                 self.error = None;
-                self.configure_service();
+                // The host configured its service's content before it sent these folders.
                 if self.error.is_none()
                     && let Some(path) = self.options.replay.clone()
                 {
@@ -629,7 +644,7 @@ impl Viewer {
                 _ if self.playhead_map.is_some() => messages.extend(
                     self.playhead_map
                         .iter()
-                        .flat_map(crate::playhead_host::details::of_map),
+                        .flat_map(|side| side.with_side(crate::playhead_host::details::of_map)),
                 ),
                 crate::playback::Current::Gap { reason, .. } => {
                     messages.push(format!("Gap: {reason}"))
@@ -659,12 +674,6 @@ impl Viewer {
                 }
             }
         }
-        if let Some(shown) = &self.shown {
-            messages.push(format!(
-                "Political region tables {:.2} ms",
-                shown.political_build.as_secs_f64() * 1000.0
-            ));
-        }
         messages.extend(self.visual_check_note.iter().cloned());
         let mut seen = HashSet::new();
         messages.retain(|message| seen.insert(message.clone()));
@@ -684,11 +693,8 @@ impl Viewer {
     }
 
     pub(super) fn report_embedded(&mut self, ctx: &egui::Context) {
-        // With the playhead's map open, the hour its layers show; today's installed hour otherwise.
-        let shown = match &self.playhead_map {
-            Some(_) => self.layers_on_screen(),
-            None => self.shown.as_ref().filter(|shown| shown.epoch == self.epoch).map(|shown| (shown.branch, shown.hour)),
-        };
+        // The hour the frame drew everything at, as the map's details report it too.
+        let shown = self.rendered.map(|head| (head.branch, head.hour)).or_else(|| self.layers_on_screen());
         let Some(embedded) = self.embedded.as_mut() else {
             return;
         };

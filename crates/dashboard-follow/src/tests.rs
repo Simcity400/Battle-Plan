@@ -232,7 +232,7 @@ fn stepping(pages: &Arc<Recording>, every: Hour) -> Harness {
     });
     // A seek reads every part its read-ahead covers before its reset: the whole run, so no step
     // waits on a read and every step's hours are the table's.
-    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: RING, speed: f64::from(every), rate: 1.0 };
+    let settings = Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: RING, speed: f64::from(every), rate: 1.0, ..Settings::default() };
     let playhead = Arc::new(Playhead::new(Arc::clone(pages) as Arc<dyn Pages>, Timeline::whole(&**pages).unwrap(), settings, Some(hook)).unwrap());
     let reader = playhead.declare(Vec::new(), None).unwrap();
     let consumer = playhead.consumer(reader);
@@ -732,7 +732,7 @@ fn a_follow_for_a_table_the_playhead_lacks_answers_not_available_and_makes_no_re
     assert_eq!(alone["available"], false, "a process with no playheads follows nothing");
     let followed = registry.answer(path, "follow", &follow_request(4, "country-measure", "politicalPower"), |_| Ok(nobody()), Box::new(|_| None)).unwrap();
     assert_eq!(followed["available"], true);
-    assert_eq!(held.follow.declared().unwrap(), vec![playhead::Declared { table: TABLE, columns: vec![2], keyed: false, passing: false }]);
+    assert_eq!(held.follow.declared().unwrap(), vec![playhead::Declared { table: TABLE, columns: vec![2], keyed: false, passing: false, hourly: false }]);
     assert_eq!(registry.followed(), 1);
 }
 
@@ -1213,7 +1213,7 @@ fn a_followed_feed_of_a_log_pushes_what_its_span_gives() {
     for every in [1, 24, 240] {
         let mut harness = stepping(&pages, every);
         harness.follow.follow(1, Query::Cells { table: TABLE, columns: columns.clone(), rows: Rows::Appended }).unwrap();
-        assert_eq!(harness.follow.declared().unwrap(), vec![playhead::Declared { table: TABLE, columns: columns.clone(), keyed: true, passing: false }]);
+        assert_eq!(harness.follow.declared().unwrap(), vec![playhead::Declared { table: TABLE, columns: columns.clone(), keyed: true, passing: false, hourly: false }]);
         let mut stretches: Vec<(Hour, Hour, Vec<LogRow>)> = Vec::new();
         for (seek, to) in [(0, 400), (1000, 1250), (600, 900), (1300, HOURS as Hour - 1)] {
             harness.seek(seek);

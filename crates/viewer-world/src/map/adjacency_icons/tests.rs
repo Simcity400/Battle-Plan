@@ -175,6 +175,7 @@ fn a_free_eye_shows_each_icon_by_its_own_distance() {
             world,
             cutoff: 100.,
             family: IconFamily::AdjacencyRules,
+            moves: None,
         }
     );
 }

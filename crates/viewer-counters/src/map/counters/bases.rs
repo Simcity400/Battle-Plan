@@ -1333,6 +1333,17 @@ impl BaseTables {
         Ok(Self { values, ..Self::rest(frame, vision, content)? })
     }
 
+    /// Nothing read at all: no icon of the base families is drawn at this camera, so every part
+    /// is empty and the allowances say by name that they were not read.
+    pub(super) fn none() -> Self {
+        Self {
+            values: BaseValues::default(),
+            locations: BTreeMap::new(),
+            location_notes: Vec::new(),
+            volunteers: Arc::new(Err("no base, headquarters, facility or strategic-location icon is drawn at this camera, so the air volunteer allowances were not read".to_owned())),
+        }
+    }
+
     /// The parts the base counters layer does not keep: the strategic-location icons and the air
     /// volunteer allowances. Its site parts are empty: the layer's are drawn.
     pub(super) fn rest(frame: &DecodedFrame, vision: &Vision, content: &CounterContent) -> io::Result<Self> {

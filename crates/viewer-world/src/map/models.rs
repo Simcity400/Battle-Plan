@@ -37,7 +37,7 @@ use installed_content_image::{Rgba8Image, dds, native::Decode};
 use {
     super::shadow::DEPTH_MAP_FORMAT,
     viewer_foundation::map::{
-        camera::Camera,
+        camera::{Camera, MapSize},
         gpu_contract::{DEPTH_FORMAT, Targets},
         textures::{Bound, ColorSpace, upload},
     },
@@ -1928,12 +1928,27 @@ impl ModelField {
     }
 }
 
+/// World units a figure standing above the water plane leans past its own ground position, per
+/// unit of its height: the cotangent of the shallowest pitch the game's camera allows (53.5
+/// degrees below the horizon), rounded up. The visible rectangle is already grown by
+/// [`crate::map::terrain::MARGIN`], which is the lean of everything that stands on the ground, so
+/// only what flies higher than that carries a lean of its own.
+const LEAN: f32 = 0.75;
+
+/// How far past its ground position a figure at `height` can appear, beyond the margin the
+/// visible rectangle already carries.
+fn lean(height: f32) -> f32 {
+    (height.max(0.0) * LEAN - crate::map::terrain::MARGIN).max(0.0)
+}
+
 /// The world bounds, `[x0, z0, x1, z1]`, of `instances` of an entity reaching `radius` around
-/// its origin at their scale.
+/// its origin at their scale, widened where an instance stands above the plane by how far it can
+/// lean past its own ground position: the ground rectangle must never drop a figure the game's
+/// own cull admits.
 fn reach_bounds<'a>(radius: f32, instances: impl Iterator<Item = &'a ModelInstance>) -> [f32; 4] {
     let mut bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
     for instance in instances {
-        let reach = radius * instance.scale;
+        let reach = radius * instance.scale + lean(instance.position[1]);
         bounds[0] = bounds[0].min(instance.position[0] - reach);
         bounds[1] = bounds[1].min(instance.position[2] - reach);
         bounds[2] = bounds[2].max(instance.position[0] + reach);
@@ -1971,8 +1986,12 @@ pub struct ModelFrame<'a> {
     pub camera: Camera,
     /// World x translations of the wrap copies to submit.
     pub offsets: &'a [f32],
-    /// The visible ground rectangle groups are culled against.
+    /// The visible ground rectangle groups are culled against: the padded one a kept list is
+    /// admitted against ([`viewer_foundation::map::camera::Hold`]).
     pub visible: Option<[f32; 4]>,
+    /// The ground rectangle the frame's own camera reaches, which the judge holds a kept list
+    /// to: everything it admits the list must hold.
+    pub seen: Option<[f32; 4]>,
     /// Layer opacity. Every gate in `00_graphics.lua` is a hard switch rather
     /// than a fade, so this is 1.0 for the mesh layers; the railway layer has
     /// a real fade and does not use this pass.
@@ -1985,11 +2004,15 @@ pub struct ModelFrame<'a> {
 /// distance and the sphere is inside all four planes: no near or far plane, as the game tests.
 /// `x` is the x of the camera it was made for: a traversal whose camera stands on another map copy
 /// moves its figures onto this one before the test ([`ModelPass::game_culled`]).
+/// `pad` moves every side out and the cull distance further by that many world units, so a camera
+/// that travels up to `pad` from this one culls in nothing this cull leaves out
+/// ([`viewer_foundation::map::camera::Hold`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GameCull {
     pub eye: [f32; 3],
     pub sides: [[f32; 4]; 4],
     pub x: f32,
+    pub pad: f32,
 }
 
 /// Why a figure is not drawn by the game's cull.
@@ -2002,20 +2025,27 @@ pub enum Culled {
 impl GameCull {
     /// The frame's cull for `camera` seen through `viewport`.
     pub fn of(camera: &Camera, viewport: [u32; 2]) -> Self {
+        Self::padded(camera, viewport, 0.0)
+    }
+
+    /// [`Self::of`] with every side and the cull distance `pad` further out.
+    pub fn padded(camera: &Camera, viewport: [u32; 2], pad: f32) -> Self {
         let planes = view_cone(camera, viewport);
-        Self { eye: camera.eye(), sides: [planes[0], planes[1], planes[2], planes[3]], x: camera.center[0] }
+        Self { eye: camera.eye(), sides: [planes[0], planes[1], planes[2], planes[3]], x: camera.center[0], pad }
     }
 
     /// Whether a figure whose bounding sphere has `centre` and `radius`, of a mesh culled beyond
     /// `cull_distance_squared`, is culled, and why.
     pub fn test(&self, centre: [f32; 3], radius: f32, cull_distance_squared: f32) -> Option<Culled> {
         let [dx, dy, dz] = [centre[0] - self.eye[0], centre[1] - self.eye[1], centre[2] - self.eye[2]];
-        if dx * dx + dy * dy + dz * dz >= cull_distance_squared {
+        let distance = cull_distance_squared.sqrt() + self.pad;
+        if dx * dx + dy * dy + dz * dz >= distance * distance {
             return Some(Culled::Distance);
         }
+        let reach = radius + self.pad;
         self.sides
             .iter()
-            .any(|[a, b, c, d]| a * centre[0] + b * centre[1] + c * centre[2] + d < -radius)
+            .any(|[a, b, c, d]| a * centre[0] + b * centre[1] + c * centre[2] + d < -reach)
             .then_some(Culled::Planes)
     }
 }
@@ -2258,8 +2288,12 @@ pub struct ModelPass {
     keyed: Vec<KeyedInstance>,
     alive: Vec<(usize, u32, u32)>,
     drawn: Cell<u32>,
-    /// This frame's game cull, set by the scene ([`ModelPass::set_cull`]).
+    /// This frame's game cull, set by the scene ([`ModelPass::set_cull`]): the padded one every
+    /// list is admitted against.
     cull: Cell<Option<GameCull>>,
+    /// The frame's own camera's cull, which the judge holds a kept list to: every figure it
+    /// admits the list must hold.
+    seen: Cell<Option<GameCull>>,
     refusals: RefCell<(u64, ActorRefusals)>,
     /// Actor refusals made, ever: a caster walk that made one is walked again.
     refused: Cell<u64>,
@@ -2279,6 +2313,22 @@ pub struct ModelPass {
     /// Actor poses by instance for one arena frame: animation happens before encoding, so
     /// the caster, regular and alternate queues and every wrap view share them.
     poses: RefCell<(u64, Vec<Option<ActorPoses>>)>,
+    /// This pass among the scene's, which the pose worker's batches are keyed by.
+    id: u64,
+    /// The animation history this pass stands in, raised whenever one starts again: a pose batch
+    /// in flight for the history that ended is of other samples, so it is never installed over
+    /// the new one's figures ([`Self::reset_animation`]).
+    history: u64,
+    /// Whether this pass's figures are posed on the frame that draws them rather than taken from
+    /// the worker ([`Self::pose_on_the_frame`]).
+    pose_on_the_frame: bool,
+    /// The poses the worker last finished for this pass, and which of its sets it is: a frame
+    /// takes them by this swap and never waits ([`crate::map::poses`]). An actor the set does
+    /// not hold is posed where it is read.
+    posed: Arc<super::poses::Set>,
+    /// Raised by every set installed: the rows of standing figures are written again when it
+    /// moves, and not otherwise.
+    pose_epoch: u64,
     /// Actor-local results for an immutable rig without a live player, keyed by
     /// mesh slot and whether its frozen animation is played. Placements are separate.
     static_actors: RefCell<BTreeMap<(usize, bool), ActorPoses>>,
@@ -2308,6 +2358,10 @@ pub struct ModelPass {
     falling_back: RefCell<BTreeMap<usize, String>>,
     /// Each redirected entity's name and why, for its warning line.
     from_recording: BTreeMap<String, String>,
+    /// Whether its lit queues are drawn straight into a pass of their own, rather than kept as
+    /// retained lists: such a pass stages each draw's constants in the frame's arena and so
+    /// reads none of them per instance ([`ModelPass::drawn_directly`]).
+    direct: bool,
 }
 
 fn event_namespace() -> u64 {
@@ -2335,14 +2389,19 @@ impl ModelPass {
     fn actors(
         &self,
         mesh: usize,
+        key: (usize, u32, u32),
         rig: &Rig,
         player: Option<&entity_animation::Player>,
         frozen_animation: bool,
     ) -> ActorPoses {
         use viewer_foundation::view_record::add;
-        // What a figure's actors cost this frame: evaluated, held from an earlier frame (its
-        // samples draw the same), or its mesh's static actors.
+        // What a figure's actors cost this frame: taken from the worker's set, evaluated here,
+        // held from an earlier frame (its samples draw the same), or its mesh's static actors.
         if let Some(player) = player {
+            if let Some(posed) = self.posed.get((key, mesh)) {
+                add(self.label, "poses_worked", 1);
+                return posed;
+            }
             let (actors, held) = player.native_actors_held(rig);
             add(self.label, if held { "poses_held" } else { "poses_evaluated" }, 1);
             return actors;
@@ -2354,6 +2413,135 @@ impl ModelPass {
                 .entry((mesh, frozen_animation))
                 .or_insert_with(|| super::mesh_pose::actors(rig, None, frozen_animation)),
         )
+    }
+
+    /// Every placed actor whose group the view reaches, as this frame shows it: its player's
+    /// key, its root on the map copy the view reaches, and a number that changes when its play's
+    /// samples do. The first gate's count reads it ([`crate::map::actor_motion`]).
+    pub(crate) fn shown_actors(
+        &self,
+        rectangle: Option<[f32; 4]>,
+        offsets: &[f32],
+        into: &mut Vec<crate::map::actor_motion::Shown>,
+    ) {
+        for (group_at, index) in self.field.source_order() {
+            let (Some(group), Some(instance)) =
+                (self.field.groups.get(group_at), self.field.instances.get(index))
+            else {
+                continue;
+            };
+            let Some(offset) = offsets
+                .iter()
+                .copied()
+                .find(|offset| visible(group, *offset, rectangle))
+            else {
+                continue;
+            };
+            let (seed, identity) = instance.animation_key();
+            let key = (self.drawn_slot(group.mesh), seed, identity);
+            into.push(crate::map::actor_motion::Shown {
+                key,
+                at: [
+                    instance.position[0] + offset,
+                    instance.position[1],
+                    instance.position[2],
+                ],
+                samples: self
+                    .players
+                    .get(&key)
+                    .map_or(0, entity_animation::Player::sample_bits),
+            });
+        }
+    }
+
+    /// The player an instance placed in `mesh` is animated by ([`ModelInstance::animation_key`]).
+    fn player_key(&self, mesh: usize, instance: &ModelInstance) -> (usize, u32, u32) {
+        let (seed, identity) = instance.animation_key();
+        (self.drawn_slot(mesh), seed, identity)
+    }
+
+    /// This pass and the animation history it stands in, which the pose worker's jobs and sets
+    /// are keyed by ([`crate::map::poses::Pass`]).
+    pub(crate) fn pose_pass(&self) -> super::poses::Pass {
+        (self.id, self.history)
+    }
+
+    /// Whether this pass's figures are posed on the frame that draws them, from exactly the
+    /// samples it draws, rather than taken from the worker's newest set by a swap: a stopped
+    /// picture (a saved frame, a picture the hours have stopped on) is exact, and the worker's
+    /// set is of the frame that asked for it ([`crate::map::poses`]). Turning it on drops the set
+    /// standing, so nothing of an earlier frame is left to draw.
+    pub(crate) fn pose_on_the_frame(&mut self, on: bool) {
+        if self.pose_on_the_frame == on {
+            return;
+        }
+        self.pose_on_the_frame = on;
+        if on {
+            self.install_poses(Default::default());
+        }
+    }
+
+    /// Takes `made`'s set for this pass, which it holds only when the batch was made for the
+    /// animation history the pass stands in now. Nothing while its figures are posed on the
+    /// frame that draws them.
+    pub(crate) fn take_poses(&mut self, made: &super::poses::Made) {
+        if self.pose_on_the_frame {
+            return;
+        }
+        self.install_poses(made.set_for(self.pose_pass()));
+    }
+
+    /// Every pose this pass's placed actors need, for the worker to make: one job a placement.
+    /// An actor placed many times is asked for many times and posed once, by the worker, so the
+    /// frame does not pay to find that out. An actor whose player holds samples of another rig
+    /// is left to be posed where it is read, as one with no player is. A pass whose figures are
+    /// posed on the frame asks for none.
+    ///
+    /// `rectangle` is the ground this frame admits its figures against and `offsets` its wrap
+    /// copies ([`ModelFrame`]): an actor whose group no copy of the view reaches is not asked for,
+    /// because no draw of this frame reads its limbs. One the camera reaches before the worker
+    /// has it is posed where it is read, as a figure an hour has just brought is.
+    pub(crate) fn pose_jobs(
+        &self,
+        into: &mut super::poses::Jobs,
+        rectangle: Option<[f32; 4]>,
+        offsets: &[f32],
+    ) {
+        if self.pose_on_the_frame {
+            return;
+        }
+        for (group_at, index) in self.field.source_order() {
+            let (Some(group), Some(instance)) =
+                (self.field.groups.get(group_at), self.field.instances.get(index))
+            else {
+                continue;
+            };
+            if !offsets.iter().any(|offset| visible(group, *offset, rectangle)) {
+                continue;
+            }
+            let key = (self.player_key(group.mesh, instance), group.mesh);
+            let (Some(rig), Some(player)) = (self.rigs.get(group.mesh), self.players.get(&key.0))
+            else {
+                continue;
+            };
+            if player.samples().len() < rig.nodes.len() {
+                continue;
+            }
+            into.push(self.pose_pass(), key, rig, player.samples());
+        }
+    }
+
+    /// Takes a finished set of poses: the worker's, or an empty one where the poses are made on
+    /// the frame. Every standing figure's row is written again for the set once, and not again
+    /// until the next one.
+    pub(crate) fn install_poses(&mut self, posed: Arc<super::poses::Set>) {
+        self.posed = posed;
+        self.pose_epoch += 1;
+    }
+
+    /// The bound judge of this pass's poses ([`crate::map::poses::judge`]).
+    pub(crate) fn judge_poses(&self, animation_time: f32, interval: f32) {
+        super::poses::judge(self.label, &self.posed, animation_time, interval);
     }
 
     /// Which of the renderer's shader libraries the entity in `mesh` draws with: 1, the
@@ -2524,6 +2712,8 @@ impl ModelPass {
     /// records are shared. Times use the same single f32 subtraction as ordinary producer clocks.
     /// Duplicate keys retain the last source record, just as collecting them into a map does.
     pub fn set_clock_records(&mut self, records: &Arc<[ClockRecord]>, time: f32) {
+        let _span = viewer_foundation::profiling::span("set_clock_records");
+        viewer_foundation::view_record::add(self.label, "clock_records", records.len() as u64);
         if !self.redirects.is_empty() {
             // Collect duplicate producer keys first, then resolve redirects in producer order.
             self.set_clocks(
@@ -2584,19 +2774,8 @@ impl ModelPass {
     }
 
     /// Samples visible entity palettes; meshes and material buffers are immutable.
+    /// Placements, event packets and palette ranges keep their traversal order.
     pub fn animate(&mut self, time: f32, rectangle: Option<[f32; 4]>, offsets: &[f32]) {
-        self.animate_with_workers(time, rectangle, offsets, &Default::default());
-    }
-
-    /// Independent players borrow the hour builders' idle turns; placements,
-    /// event packets and palette ranges retain their original traversal order.
-    pub fn animate_with_workers(
-        &mut self,
-        time: f32,
-        rectangle: Option<[f32; 4]>,
-        offsets: &[f32],
-        workers: &viewer_foundation::parallel::Workers,
-    ) {
         self.fall_back();
         static PROFILE: OnceLock<bool> = OnceLock::new();
         let profile = *PROFILE.get_or_init(|| std::env::var_os("BATTLE_PLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some());
@@ -2621,21 +2800,30 @@ impl ModelPass {
                 .iter()
                 .any(|offset| visible(group, *offset, rectangle))
         };
+        if viewer_foundation::view_record::on() {
+            use viewer_foundation::view_record::add;
+            add(self.label, "animate_instances", self.field.instances.len() as u64);
+            add(self.label, "animate_groups", self.field.groups.len() as u64);
+            add(
+                self.label,
+                "animate_groups_shown",
+                self.field.groups.iter().filter(|group| shown(group)).count() as u64,
+            );
+        }
         let born = self.born.get_mut();
-        let palette = if matches!(self.label, "unit models" | "map buildings")
-            && self.animation_dispatch.animate(
-                &mut self.players,
-                &self.rigs,
-                self.default_palette.len(),
-                &mut self.field,
-                time,
-                &shown,
-                &mut self.events,
-                workers,
-            ) {
+        let palette = if self.animation_dispatch.animate(
+            &mut self.players,
+            &self.rigs,
+            self.default_palette.len(),
+            &mut self.field,
+            time,
+            &shown,
+            &mut self.events,
+            self.label,
+        ) {
             Vec::new()
         } else {
-            animate_players_with_workers(
+            animate_players_native(
                 &mut self.players,
                 &self.rigs,
                 &self.default_palette,
@@ -2643,7 +2831,6 @@ impl ModelPass {
                 time,
                 &shown,
                 &mut self.events,
-                workers,
                 true,
                 born,
             )
@@ -2750,10 +2937,79 @@ impl ModelPass {
     /// A seek or a branch change starts new entity histories.
     pub fn reset_animation(&mut self) {
         self.event_namespace = event_namespace();
+        self.history += 1;
         self.refresh_hidden_actors();
         self.players.clear();
         self.default_appeared.clear();
         self.events.clear();
+        // A new history poses nothing yet: the worker's set, and any batch still in flight, are
+        // of the history that ended, and its generation leaves them behind.
+        self.install_poses(Default::default());
+    }
+
+    /// A display frame's placements where figures move between the ones their hours give: the
+    /// whole field where [`Moving::standing`] carries it, then the parts the frame moves written
+    /// at their own place in the field, which a frame that moves none leaves as it stands.
+    pub fn update_moving(&mut self, placed: Moving, tile: f32) {
+        match placed.standing {
+            Some(standing) => self.update_placed(standing, tile),
+            // The field stands; what a placement makes afresh for the frame does not.
+            None => {
+                self.events.clear();
+                self.field.default_states.clear();
+            }
+        }
+        self.move_placed(&placed.moved);
+    }
+
+    /// Writes `moved`'s parts, each at its own ordinal in the field's walk order, and the bounds
+    /// and centroid of the groups they stand in. A part's group, its order, its actor and its
+    /// pose are its hour's and do not move with it, so nothing of them is made again.
+    fn move_placed(&mut self, moved: &[(usize, ModelInstance)]) {
+        if moved.is_empty() {
+            return;
+        }
+        let _span = viewer_foundation::profiling::span("model_move_placed");
+        let mut groups: Vec<usize> = Vec::with_capacity(moved.len());
+        for &(ordinal, instance) in moved {
+            let Some(&(group, index)) = self.field.native_order.get(ordinal) else {
+                continue;
+            };
+            let Some(held) = self.field.instances.get_mut(index) else {
+                continue;
+            };
+            // Animation's own palette offset is this frame's; a root that moves does not move it.
+            *held = ModelInstance {
+                palette_offset: held.palette_offset,
+                ..instance
+            };
+            if groups.last() != Some(&group) {
+                groups.push(group);
+            }
+        }
+        groups.sort_unstable();
+        groups.dedup();
+        for at in groups {
+            let Some(group) = self.field.groups.get(at) else {
+                continue;
+            };
+            let radius = self.meshes.get(group.mesh).map_or(0.0, |mesh| mesh.radius);
+            let range = group.range.start as usize..group.range.end as usize;
+            let instances = &self.field.instances[range];
+            let bounds = reach_bounds(radius, instances.iter());
+            let mut sum = [0.0f64; 3];
+            for instance in instances {
+                for (axis, total) in sum.iter_mut().enumerate() {
+                    *total += f64::from(instance.position[axis]);
+                }
+            }
+            let count = instances.len() as f64;
+            let group = &mut self.field.groups[at];
+            group.bounds = bounds;
+            group.centroid = std::array::from_fn(|axis| (sum[axis] / count) as f32);
+        }
+        viewer_foundation::view_record::add(self.label, "field_moved_parts", moved.len() as u64);
+        self.written.set(true);
     }
 
     /// Replaces placements while preserving the players of surviving actors.
@@ -2846,6 +3102,7 @@ impl ModelPass {
             alive: Vec::new(),
             drawn: Cell::new(0),
             cull: Cell::new(None),
+            seen: Cell::new(None),
             refusals: Default::default(),
             refused: Cell::new(0),
             revision: 0,
@@ -2854,6 +3111,11 @@ impl ModelPass {
             written: Cell::new(true),
             frame_change: RefCell::default(),
             poses: Default::default(),
+            id: event_namespace(),
+            history: 0,
+            pose_on_the_frame: false,
+            posed: Default::default(),
+            pose_epoch: 0,
             static_actors: Default::default(),
             label,
             alternatives: library.alternatives.clone(),
@@ -2870,7 +3132,15 @@ impl ModelPass {
             event_namespace: event_namespace(),
             hidden: BTreeSet::new(),
             hidden_actors: BTreeSet::new(),
+            direct: false,
         }
+    }
+
+    /// The pass's lit queues are drawn straight into a pass of their own, from constants staged
+    /// in the frame's arena: its lit draws read nothing per instance. Its casters are retained as
+    /// every pass's are, and read their rows per instance.
+    pub fn drawn_directly(&mut self) {
+        self.direct = true;
     }
 
     /// A pass over `rigs` with no meshes, for stepping animation events without a GPU.
@@ -3171,8 +3441,9 @@ impl ModelPass {
     }
 
     /// This frame's game cull: every figure is tested by it before anything is prepared for it.
-    pub fn set_cull(&self, cull: Option<GameCull>) {
+    pub fn set_cull(&self, cull: Option<GameCull>, seen: Option<GameCull>) {
         self.cull.set(cull);
+        self.seen.set(seen);
     }
 
     /// Whether the figure of `instance` (of `mesh`, in the view moved by `offset` from the
@@ -3515,6 +3786,19 @@ impl Default for FrameChange {
     }
 }
 
+/// A display frame's placements for a field whose figures move between the ones their hours
+/// give ([`ModelPass::update_moving`]).
+#[derive(Default)]
+pub struct Moving {
+    /// Every part where its hour places it, as `(mesh, instance)`: given only where the hours'
+    /// own placements changed, so the field is built again for them and for nothing else.
+    pub standing: Option<Vec<(usize, ModelInstance)>>,
+    /// The parts this frame places elsewhere, as `(ordinal, instance)`, by their ordinal in the
+    /// field's walk order. A part the frame before moved and this one does not carries the
+    /// placement its hour gives, so it stands again.
+    pub moved: Vec<(usize, ModelInstance)>,
+}
+
 /// The instances whose own values changed, and the groups whose bounds moved (in a whole
 /// change, every group is new and none is listed).
 #[derive(Default)]
@@ -3815,7 +4099,7 @@ pub fn animate_players(
     shown: &dyn Fn(&ModelGroup) -> bool,
     events: &mut Vec<entity_animation::Event>,
 ) -> Vec<PaletteJoint> {
-    animate_players_with_workers(
+    animate_players_native(
         players,
         rigs,
         default_palette,
@@ -3823,17 +4107,15 @@ pub fn animate_players(
         time,
         shown,
         events,
-        &Default::default(),
         false,
         &mut Vec::new(),
     )
 }
 
-/// [`animate_players`] with independent players on borrowed turns (serial `workers` run
-/// them in place), and, when `native_only`, without sampling the name-joined palette of
-/// a rig every node of which draws natively.
+/// [`animate_players`] and, when `native_only`, without sampling the name-joined palette
+/// of a rig every node of which draws natively.
 #[allow(clippy::too_many_arguments)]
-fn animate_players_with_workers(
+fn animate_players_native(
     players: &mut BTreeMap<(usize, u32, u32), entity_animation::Player>,
     rigs: &[Arc<Rig>],
     default_palette: &[PaletteJoint],
@@ -3841,7 +4123,6 @@ fn animate_players_with_workers(
     time: f32,
     shown: &dyn Fn(&ModelGroup) -> bool,
     events: &mut Vec<entity_animation::Event>,
-    workers: &viewer_foundation::parallel::Workers,
     native_only: bool,
     created: &mut Vec<(usize, u32, u32)>,
 ) -> Vec<PaletteJoint> {
@@ -3984,22 +4265,15 @@ fn animate_players_with_workers(
                 });
             }
         }
-        // A repeated animation key shares one player: its calls remain serial
-        // in their original order, even when other players run on pool turns.
-        let tasks: Vec<_> = players
+        // A repeated animation key shares one player: its calls stay in their original order.
+        let mut tasks: Vec<_> = players
             .iter_mut()
-            .filter_map(|(key, player)| {
-                by_player
-                    .remove(key)
-                    .map(|work| std::sync::Mutex::new((player, work)))
-            })
+            .filter_map(|(key, player)| by_player.remove(key).map(|work| (player, work)))
             .collect();
         drop(plan_span);
         run_span = viewer_foundation::profiling::span("animation_dispatch_run_commit");
-        workers.run(tasks.len(), &|at| {
-            let mut task = tasks[at].lock().unwrap_or_else(|error| error.into_inner());
-            let (player, work) = &mut *task;
-            for work in work {
+        for (player, work) in &mut tasks {
+            for work in work.iter_mut() {
                 let palette = if work.palette.is_empty() {
                     &mut []
                 } else {
@@ -4007,7 +4281,7 @@ fn animate_players_with_workers(
                 };
                 player.evaluate(work.rig, work.instance, time, palette, work.events);
             }
-        });
+        }
     }
     for call in calls {
         events.extend(call.events.into_iter().map(|mut event| {
@@ -4138,37 +4412,52 @@ pub(crate) mod tests;
 #[cfg(test)]
 mod parallel_animation_tests {
     use super::*;
-    use viewer_foundation::parallel::{Spawn, Workers};
 
-    struct Pool(std::sync::Mutex<std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>>);
-    impl Spawn for Pool {
-        fn try_spawn(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), Box<dyn FnOnce() + Send>> {
-            self.0.lock().unwrap().send(job).map_err(|error| error.0)
+    /// The pose worker makes a figure's limbs away from its player, from the rig and the samples
+    /// the play left and nothing else ([`crate::map::poses`]): the pose it makes is bit for bit
+    /// the pose the player makes, on every frame of a play.
+    #[test]
+    fn a_pose_made_from_its_samples_is_the_pose_its_player_makes() {
+        use super::super::mesh_pose;
+        let matrix = |value: mesh_pose::Matrix| value.map(|column| column.map(f32::to_bits));
+        let bits = |actors: &[mesh_pose::Actor]| {
+            actors
+                .iter()
+                .map(|actor| {
+                    (
+                        actor.world.as_ref().map(|world| matrix(*world)).map_err(Clone::clone),
+                        actor
+                            .pose
+                            .as_ref()
+                            .map(|pose| {
+                                (
+                                    pose.joints.iter().copied().map(matrix).collect::<Vec<_>>(),
+                                    pose.bones.iter().copied().map(matrix).collect::<Vec<_>>(),
+                                )
+                            })
+                            .map_err(Clone::clone),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let rig = entity_animation::pose_tests::rig(0.7, true, true);
+        let mut player = entity_animation::Player::new(&rig);
+        let instance = ModelInstance {
+            animation: entity_animation::IDLE,
+            ..Default::default()
+        };
+        let mut moved = false;
+        let mut last = None;
+        for frame in 1..=8_u32 {
+            player.evaluate(&rig, instance, f32::from(frame as u16) / 60.0, &mut [], &mut Vec::new());
+            let worked = bits(&mesh_pose::actors_at(&rig, player.samples()));
+            assert_eq!(worked, bits(&mesh_pose::actors(&rig, Some(&player), false)), "frame {frame}");
+            moved |= last.is_some_and(|last| last != worked);
+            last = Some(worked);
         }
-        fn threads(&self) -> usize {
-            3
-        }
-    }
-    pub(super) fn workers() -> Workers {
-        let (sender, receiver) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
-        let receiver = Arc::new(std::sync::Mutex::new(receiver));
-        for _ in 0..3 {
-            let receiver = Arc::clone(&receiver);
-            job_priority::spawn(move || {
-                loop {
-                    let job = receiver.lock().unwrap().recv();
-                    match job {
-                        Ok(job) => job(),
-                        Err(_) => return,
-                    }
-                }
-            });
-        }
-        let builders = Arc::new(Pool(std::sync::Mutex::new(sender)));
-        let assist =
-            viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(builders, 1)
-                .unwrap();
-        Workers::new(Arc::new(assist))
+        assert!(moved, "the fixture never poses differently, so it proves nothing");
+        // Samples of another rig play nothing rather than reaching past their end.
+        assert_eq!(mesh_pose::actors_at(&rig, &[]).len(), rig.nodes.len());
     }
 
     #[test]
@@ -4247,7 +4536,7 @@ mod parallel_animation_tests {
             let instance = &pass.field.instances[0];
             let rig = &pass.rigs[0];
             for frozen in [false, true] {
-                let cached = pass.actors(0, rig, pass.player(0, instance), frozen);
+                let cached = pass.actors(0, pass.player_key(0, instance), rig, pass.player(0, instance), frozen);
                 let fresh = mesh_pose::actors(rig, None, frozen);
                 assert_eq!(bits(&cached), bits(&fresh));
                 let transform = instance.native_transform().unwrap();
@@ -4283,7 +4572,7 @@ mod parallel_animation_tests {
         library.rigs.push(Arc::clone(&library.rigs[0]));
         pass.sync(&library);
         assert!(pass.static_actors.borrow().is_empty());
-        let installed = pass.actors(0, &pass.rigs[0], None, true);
+        let installed = pass.actors(0, (0, 0, 0), &pass.rigs[0], None, true);
         assert!(!Arc::ptr_eq(&retained[1], &installed));
         assert_eq!(bits(&retained[1]), bits(&installed));
     }
@@ -4314,7 +4603,6 @@ mod parallel_animation_tests {
             Arc::new(event_then_quiet),
         ];
         let default = vec![PaletteJoint::IDENTITY; rigs[0].end];
-        let workers = workers();
         let (mut serial, mut borrowed) = (BTreeMap::new(), BTreeMap::new());
         for (frame, time) in [0., 0.13, 0.7, 0.71, 1.2, 2.1, 4.9, 0.2, 1.3]
             .into_iter()
@@ -4368,7 +4656,7 @@ mod parallel_animation_tests {
                 &|_| true,
                 &mut a,
             );
-            let unused = animate_players_with_workers(
+            let unused = animate_players_native(
                 &mut borrowed,
                 &rigs,
                 &default,
@@ -4376,7 +4664,6 @@ mod parallel_animation_tests {
                 time,
                 &|_| true,
                 &mut b,
-                &workers,
                 true,
                 &mut Vec::new(),
             );
@@ -4454,7 +4741,6 @@ mod parallel_animation_tests {
             .collect();
         let default = vec![PaletteJoint::IDENTITY; rigs[0].end];
         let (mut expected, mut parallel) = (BTreeMap::new(), BTreeMap::new());
-        let workers = workers();
         for frame in 0..32 {
             let time = frame as f32 * 0.13;
             let mut field = ModelField::default();
@@ -4508,7 +4794,7 @@ mod parallel_animation_tests {
                 &|_| true,
                 &mut a,
             );
-            let b_palette = animate_players_with_workers(
+            let b_palette = animate_players_native(
                 &mut parallel,
                 &rigs,
                 &default,
@@ -4516,7 +4802,6 @@ mod parallel_animation_tests {
                 time,
                 &|_| true,
                 &mut b,
-                &workers,
                 false,
                 &mut Vec::new(),
             );

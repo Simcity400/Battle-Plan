@@ -652,6 +652,7 @@ pub struct Changes {
     pub(crate) deleted: Lives,
     pub(crate) inserted: Lives,
     pub(crate) status: Option<(Status, Option<Hour>)>,
+    pub(crate) status_left: Option<Hour>,
     pub(crate) renumbered: bool,
     pub(crate) renumber: Vec<u32>,
     pub(crate) texts: Texts,
@@ -702,6 +703,12 @@ impl Changes {
     /// The table's status and sample hour, when the step changed them (always on a reset).
     pub fn status(&self) -> Option<(Status, Option<Hour>)> {
         self.status
+    }
+
+    /// The first hour inside the step at which the table's status left the one it held before
+    /// the step, whether or not the step ends back at it; none on a reset.
+    pub fn status_left(&self) -> Option<Hour> {
+        self.status_left
     }
 
     /// When the step ended at a packed block's end: each new slot's old one.
@@ -766,6 +773,7 @@ impl Changes {
         self.deleted.clear(keyed);
         self.inserted.clear(keyed);
         self.status = None;
+        self.status_left = None;
         self.renumbered = false;
         self.renumber.clear();
         self.texts.clear();

@@ -213,6 +213,7 @@ impl AdjacencyIcons {
                         world,
                         cutoff,
                         family: IconFamily::AdjacencyRules,
+                        moves: None,
                     },
                     area: self.areas.get(&icon.province).cloned().unwrap_or_default(),
                 },
@@ -292,7 +293,11 @@ impl PreparedAdjacencyIcons {
             batch.at_layer(layer);
             batch.at_anchor(anchor);
             let draw = |batch: &mut Batch| native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch);
-            if let Err(why) = painted.paint(drawn.owner, generation, layer, anchor, batch, draw) {
+            if let Err(why) =
+                painted.paint(
+                    sprites::WindowKey::new(sprites::WindowPool::AdjacencyIcon, 0, drawn.owner),
+                    drawn.owner, generation, drawn.origin, layer, anchor, batch, draw)
+            {
                 count_refused(report, ADJACENCY_RULE_WINDOW, &[why]);
                 continue;
             }
