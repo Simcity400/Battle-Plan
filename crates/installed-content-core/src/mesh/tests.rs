@@ -2135,3 +2135,35 @@ fn a_mesh_s_cull_distance_is_squared_after_each_assignment_and_is_the_engine_s_w
     assert_eq!(squared("twice"), 50.0 * 50.0, "the last assignment");
     assert_eq!(squared("bad"), 400.0 * 400.0, "a failed conversion squares the value it keeps");
 }
+
+#[test]
+fn collision_keeps_the_last_collision_shaded_mesh_and_narrows_its_indices() {
+    let mesh = |shader: &str, p: Vec<f32>, tri: Vec<i32>| Node {
+        name: "mesh".into(),
+        properties: vec![("p".into(), Value::Floats(p)), ("tri".into(), Value::Ints(tri))],
+        children: vec![Node {
+            name: "material".into(),
+            properties: vec![("shader".into(), Value::Strings(vec![shader.into()]))],
+            ..Node::default()
+        }],
+    };
+    let shape = |meshes: Vec<Node>| Node { name: "shape".into(), children: meshes, ..Node::default() };
+    let root = |shapes: Vec<Node>| Node {
+        children: vec![Node { name: "object".into(), children: shapes, ..Node::default() }],
+        ..Node::default()
+    };
+    let triangle = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    let found = collision(&root(vec![
+        shape(vec![mesh("Collision", vec![9.0; 9], vec![0, 1, 2])]),
+        shape(vec![
+            mesh("PdxMeshStandard", vec![5.0; 9], vec![0, 1, 2]),
+            mesh("Collision", triangle.clone(), vec![2, 1, 0x1_0000, 1]),
+        ]),
+    ]))
+    .unwrap()
+    .unwrap();
+    assert_eq!(found.positions, [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
+    assert_eq!(found.indices, [2, 1, 0]);
+    assert_eq!(collision(&root(vec![shape(vec![mesh("PdxMeshStandard", triangle.clone(), vec![0, 1, 2])])])).unwrap(), None);
+    assert!(collision(&root(vec![shape(vec![mesh("Collision", triangle, vec![0, 1, 3])])])).is_err());
+}

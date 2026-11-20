@@ -5,7 +5,7 @@ import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
 import { logSettings } from '../../charts/log/logOptions';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatchFilter } from '../../dashboard/groups';
 import { partyTags } from '../../dashboard/market.ts';
@@ -42,7 +42,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   // A group lists every country it held over the branch, by the tags they held at their rows' hours.
   const tags = useMemo<string[] | null | undefined>(() => {
     if (widget.countries.kind === 'all') return null;
-    if (!needsGroups) return [...selectedTags(widget.countries, track)].sort();
+    if (!needsGroups) return [...selectedCountryKeys(widget.countries, track)].sort();
     if (!groups.data) return undefined;
     const filter = countryMatchFilter(widget.countries, [], groups.data, track?.branch.lastHour ?? 0, undefined, track?.branch.firstHour);
     return [...new Set(filter.membership?.map(run => run.tag) ?? [])].sort();

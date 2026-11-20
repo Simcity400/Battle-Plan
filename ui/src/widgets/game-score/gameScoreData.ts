@@ -1,6 +1,8 @@
 /** The Game score widget's data: every country's six end-screen scores at an hour (`game-score`): the rows and why a
  * score is not recorded are the reply, each recorded score a live cell (row the tag, column the part) in score points;
  * the multipliers and the hints; a faction by the shared groups. */
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import type { TableGroup } from '../../charts/table/logic';
 import type { MeasureParts } from '../../charts/race/measureParts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
@@ -68,8 +70,10 @@ export function scoreRows(reply: GameScoreReply, choice: { all: boolean; tags: r
 /** The faction `tag` belonged to at `hour`, by the groups' recorded memberships. */
 export function factionGroup(groups: CountryGroupReply | undefined, tag: string, hour: number): TableGroup {
   if (!groups) return { key: 'faction-not-recorded', label: 'Faction not known yet', order: 2 };
+  const index = countryIdentityIndex(groups.countryIdentities);
+  const tags = new Set(typeof countryFromKey(tag) === 'number' ? index.aliasesAt(index.selected([tag]), hour) : [tag]);
   for (const faction of groups.factions) {
-    if (!faction.members.some(run => run.tag === tag && run.firstHour <= hour && hour <= run.lastHour)) continue;
+    if (!faction.members.some(run => tags.has(run.tag) && run.firstHour <= hour && hour <= run.lastHour)) continue;
     const name = faction.names.find(run => run.firstHour <= hour && hour <= run.lastHour)?.name ?? faction.name;
     return { key: `faction:${faction.id}`, label: name ?? 'Faction name unavailable', order: name === null ? 1 : 0, orderKey: BigInt(faction.id) };
   }

@@ -47,6 +47,6 @@ test('mines read exactly on their scale; regions order by most mines or by name'
 });
 
 test('an unknown stretch of history breaks the line and draws nothing', () => {
-  assert.deepEqual(historyRuns({ tag: 'GER', runs: [[0, 9, '0'], [10, 19, null], [20, 29, '200000']] }, 100000),
+  assert.deepEqual(historyRuns({ country: 'GER', runs: [[0, 9, '0'], [10, 19, null], [20, 29, '200000']] }, 100000),
     [{ firstHour: 0, lastHour: 9, value: 0, breakBefore: true }, { firstHour: 20, lastHour: 29, value: 2, breakBefore: true }]);
 });

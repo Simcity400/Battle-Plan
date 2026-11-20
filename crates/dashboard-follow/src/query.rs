@@ -1,11 +1,11 @@
 //! What a followed query asks: a table, columns and rows (keys, all, the top N by a column, or
-//! those appended since the last push), or a declared series' measure for tags through the one
-//! identity rule. Its declaration to the playhead is its table and columns.
+//! those appended since the last push), or a declared series' measure for countries through the
+//! one identity rule. Its declaration to the playhead is its table and columns.
 
 use crate::{invalid, table_name};
 use dashboard_declare::{Measure, Series};
 use dashboard_query::{
-    identity::{Holder, Holders},
+    identity::{Country, Holder, Holders, NOT_IN_HISTORY},
     timeline::Timeline,
 };
 use replay_columnar::summary::Source;
@@ -32,7 +32,7 @@ pub enum Rows {
     Listed,
 }
 
-/// The identity a series' tags are read through: the query layer's holders and timeline.
+/// The identity a series' countries are read through: the query layer's holders and timeline.
 #[derive(Clone)]
 pub struct Identity {
     pub holders: Arc<Holders>,
@@ -42,12 +42,12 @@ pub struct Identity {
 #[derive(Clone)]
 pub enum Query {
     Cells { table: usize, columns: Vec<usize>, rows: Rows },
-    /// A declared series' measure at the head for each tag, as `series-state` answers it; with
+    /// A declared series' measure at the head for each country, as `series-state` answers it; with
     /// `top`, the `top` tags greatest in it (a tie by tag in byte order, as the UI ranks), greatest first, of every tag held, each
-    /// row named by its tag. With `parts` (a sub-keyed series), each tag's parts at the head in
+    /// row named by its tag. With `parts` (a sub-keyed series), each country's parts at the head in
     /// key order, or with `top` its `top` parts greatest in it (ties by key), each row named by
-    /// its tag. With `least`, an owners' top is the `top` least instead, least first.
-    Series { series: &'static Series, measure: &'static Measure, tags: Vec<String>, top: Option<usize>, least: bool, parts: bool, identity: Identity },
+    /// its country ([`Country::key`]). With `least`, an owners' top is the `top` least instead, least first.
+    Series { series: &'static Series, measure: &'static Measure, countries: Vec<Country>, top: Option<usize>, least: bool, parts: bool, identity: Identity },
     /// A value its owner makes from its own source ([`crate::head`]).
     Head(crate::head::Head),
 }
@@ -157,14 +157,14 @@ impl Query {
 
     /// The series' measure over every tag held, its `n` greatest at the head.
     pub fn series_top(series: &'static Series, measure: &'static Measure, n: usize, identity: Identity) -> Self {
-        let tags = identity.holders.tags.keys().cloned().collect();
-        Self::Series { series, measure, tags, top: Some(n), least: false, parts: false, identity }
+        let countries = identity.holders.tags.keys().map(Country::from).collect();
+        Self::Series { series, measure, countries, top: Some(n), least: false, parts: false, identity }
     }
 
     /// An owners' top as its `n` least instead, least first.
     pub fn least(self) -> Self {
         match self {
-            Self::Series { series, measure, tags, top, parts, identity, .. } => Self::Series { series, measure, tags, top, least: true, parts, identity },
+            Self::Series { series, measure, countries, top, parts, identity, .. } => Self::Series { series, measure, countries, top, least: true, parts, identity },
             other => other,
         }
     }
@@ -196,23 +196,28 @@ pub(crate) fn tags_at(query: &Query, hour: Hour) -> Tags {
 
 /// Each of a series' tags at `hour`, through the one identity rule; none for a query of cells.
 fn tag_rows(query: &Query, hour: Hour) -> Vec<TagRow> {
-    let Query::Series { series, tags, identity, .. } = query else { return Vec::new() };
+    let Query::Series { series, measure, countries, identity, .. } = query else { return Vec::new() };
     let unheld = identity.timeline.at(hour).is_none().then(|| identity.timeline.reason(hour));
     let unknown = identity.holders.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last).map(|(_, _, reason)| reason);
-    tags.iter()
-        .map(|tag| {
+    countries
+        .iter()
+        .map(|country| {
             if let Some(reason) = &unheld {
                 return TagRow::Absent(reason.clone());
             }
             if series.key.unowned() {
-                return series.key.fixed(tag).map_or_else(|| TagRow::Absent(format!("{tag} names no row of {}", series.kind)), TagRow::Key);
+                return country.tag().and_then(|tag| series.key.fixed(tag)).map_or_else(|| TagRow::Absent(identity.holders.say(country, hour, |name| format!("{name} names no row of {}", series.kind))), TagRow::Key);
             }
+            let Some(name) = identity.holders.label(country, hour) else { return TagRow::Absent(NOT_IN_HISTORY.to_owned()) };
             if let Some(reason) = unknown {
-                return TagRow::Absent(format!("Who holds {tag} is not known: {reason}"));
+                return TagRow::Absent(format!("Who holds {name} is not known: {reason}"));
             }
-            match identity.holders.at(tag, hour).map(|run| run.holder) {
-                None => TagRow::Absent(format!("{tag} is held by no country")),
-                Some(Holder::Unresolved) => TagRow::Absent(format!("No link resolves the country holding {tag}")),
+            match identity.holders.at(country, hour).map(|run| run.holder) {
+                None => TagRow::Absent(match country {
+                    Country::Tag(tag) => format!("{tag} is held by no country"),
+                    Country::Slot(_) => format!("{name}'s {} was not recorded at this hour", measure.name),
+                }),
+                Some(Holder::Unresolved) => TagRow::Absent(format!("No link resolves the country holding {name}")),
                 Some(Holder::Found { slot, id }) => TagRow::Key(holder_key(series, slot, id)),
             }
         })
@@ -224,22 +229,21 @@ pub(crate) fn holder_key(series: &Series, slot: u32, id: u32) -> u128 {
     series.key.of(slot, id)
 }
 
-/// The next hour after `hour` at which who holds any of `tags`, or whether the timeline holds the
-/// hour, changes: the answer cannot change from identity before it.
-pub(crate) fn identity_until(identity: &Identity, tags: &[String], hour: Hour) -> Hour {
+/// The next hour after `hour` at which who holds any of `countries`, or whether the timeline holds
+/// the hour, changes: the answer cannot change from identity before it.
+pub(crate) fn identity_until(identity: &Identity, countries: &[Country], hour: Hour) -> Hour {
     let mut until = Hour::MAX;
     let mut after = |edge: Hour| {
         if edge > hour {
             until = until.min(edge);
         }
     };
-    for tag in tags {
-        if let Some(runs) = identity.holders.tags.get(tag) {
-            let at = runs.partition_point(|run| run.last < hour);
-            if let Some(run) = runs.get(at) {
-                after(run.first);
-                after(run.last.saturating_add(1));
-            }
+    for country in countries {
+        let runs = identity.holders.runs(country);
+        let at = runs.partition_point(|run| run.last < hour);
+        if let Some(run) = runs.get(at) {
+            after(run.first);
+            after(run.last.saturating_add(1));
         }
     }
     for &(first, last, _) in &identity.holders.unknown {

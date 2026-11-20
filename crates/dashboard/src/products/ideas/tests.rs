@@ -64,7 +64,7 @@ fn span(token: &str, first: i32, last: i32, advisor: Option<(u32, &str, &str)>) 
 fn a_countrys_ideas_are_spans_of_held_tokens_and_an_advisor_span_keeps_its_seat_and_character() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let ideas = read(&query, "GER", &AtomicBool::new(false)).unwrap();
+    let ideas = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
     let a = Some((501, "CHAR_A", "Saved A"));
     let b = Some((502, "", "Saved B"));
     assert_eq!(
@@ -93,7 +93,7 @@ fn a_countrys_ideas_are_spans_of_held_tokens_and_an_advisor_span_keeps_its_seat_
 fn identity_starts_are_named_through_one_seeker_as_each_hour_alone_names_them() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let read = super::history(&source, 1, "GER", &AtomicBool::new(false)).unwrap();
+    let read = super::history(&source, 1, &"GER".into(), &AtomicBool::new(false)).unwrap();
     assert_eq!(read.0.identity_starts, [100, 116]);
     for (named, &hour) in read.1.iter().zip(&read.0.identity_starts) {
         let mut alone = crate::products::at_hour::Frames::new(&query).unwrap();

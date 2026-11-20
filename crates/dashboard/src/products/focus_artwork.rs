@@ -1,5 +1,6 @@
 //! Hour-specific focus presentation; history consumers share the native selector.
-use super::{LoadContext, Product, artwork, validate_tag};
+use dashboard_base::products::{Country, validate_country};
+use super::{LoadContext, Product, artwork};
 use crate::{
     Artwork, FocusDatabase, Source,
     metadata::check_cancel,
@@ -23,7 +24,7 @@ pub struct FocusArtwork;
 pub struct FocusArtworkParams {
     pub branch_id: String,
     pub hour: i32,
-    pub tag: String,
+    pub country: Country,
     /// The database every token is looked up in.
     pub database: FocusDatabase,
     pub tokens: Vec<String>,
@@ -281,7 +282,7 @@ impl Product for FocusArtwork {
         ]
     }
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_tag(&params.tag)?;
+        validate_country(&params.country)?;
         params
             .branch_id
             .parse::<u64>()
@@ -354,7 +355,8 @@ impl Product for FocusArtwork {
         // Reconstruction misses never hold the cache lock needed by cached icons.
         let decoded = frame.at(&replay, branch, params.hour, needs_frame, cancelled)?;
         check_cancel(cancelled)?;
-        present_decoded(art, params, &decoded, cancelled)
+        let tag = crate::answer::query(source, branch)?.holders.name(&params.country, params.hour);
+        present_decoded(art, params, &tag, &decoded, cancelled)
     }
 }
 
@@ -362,6 +364,7 @@ impl Product for FocusArtwork {
 pub(crate) fn present_decoded(
     art: &mut artwork::Context,
     params: &FocusArtworkParams,
+    tag: &str,
     decoded: &DecodedFrame,
     cancelled: &AtomicBool,
 ) -> io::Result<FocusArtworkReply> {
@@ -369,12 +372,13 @@ pub(crate) fn present_decoded(
     let tokens: BTreeSet<_> = params.tokens.iter().map(String::as_str).collect();
     let requests: Vec<_> = tokens
         .into_iter()
-        .map(|token| (token, params.tag.as_str()))
+        .map(|token| (token, tag))
         .collect();
     let warnings = art.standing_warnings();
     let collect = |items: &mut dyn Iterator<Item = artwork::ResolvedArt>| {
         reply_within(
             params,
+            tag,
             warnings,
             items,
             cancelled,
@@ -399,6 +403,7 @@ pub(crate) fn present_decoded(
 /// Measure the actual escaped JSON before retaining each lazy artwork item.
 fn reply_within(
     params: &FocusArtworkParams,
+    tag: &str,
     warnings: Vec<String>,
     mut items: impl Iterator<Item = artwork::ResolvedArt>,
     cancelled: &AtomicBool,
@@ -407,7 +412,7 @@ fn reply_within(
     let mut reply = FocusArtworkReply {
         branch_id: params.branch_id.clone(),
         hour: params.hour,
-        tag: params.tag.clone(),
+        tag: tag.to_owned(),
         database: params.database,
         items: Vec::new(),
         warnings,
@@ -573,14 +578,14 @@ mod tests {
     #[test]
     fn icon_only_requests_preserve_defaults_and_reject_conflicting_fields() {
         let old: FocusArtworkParams = serde_json::from_value(serde_json::json!({
-            "branchId": "1", "hour": 100, "tag": "synthetic", "database": "national", "tokens": ["static"]
+            "branchId": "1", "hour": 100, "country": "synthetic", "database": "national", "tokens": ["static"]
         }))
         .unwrap();
         assert_eq!(old.database, FocusDatabase::National);
         // Every request names the database its tokens are looked up in.
         assert!(
             serde_json::from_value::<FocusArtworkParams>(serde_json::json!({
-                "branchId": "1", "hour": 100, "tag": "synthetic", "tokens": ["static"]
+                "branchId": "1", "hour": 100, "country": "synthetic", "tokens": ["static"]
             }))
             .is_err()
         );
@@ -622,7 +627,7 @@ mod tests {
         let params = FocusArtworkParams {
             branch_id: "1".into(),
             hour: 100,
-            tag: String::from_utf8(scale_tag(12)).unwrap(),
+            country: Country::from(String::from_utf8(scale_tag(12)).unwrap()),
             database: FocusDatabase::National,
             tokens: vec!["static".into()],
             text_only: Some(false),
@@ -632,7 +637,7 @@ mod tests {
         let reply = FocusArtwork::load(&source, &params, &context, &cancelled).unwrap();
         assert_eq!(
             (reply.branch_id.as_str(), reply.hour, &reply.tag),
-            ("1", 100, &params.tag)
+            ("1", 100, &params.country.to_string())
         );
         let item = &reply.items[0];
         assert_eq!(item.artwork.token, "static");
@@ -706,7 +711,7 @@ mod tests {
             let params = FocusArtworkParams {
                 branch_id: "1".into(),
                 hour: 100,
-                tag: String::from_utf8(scale_tag(2)).unwrap(),
+                country: Country::from(String::from_utf8(scale_tag(2)).unwrap()),
                 database: FocusDatabase::National,
                 tokens: vec!["unauthored".into()],
                 text_only,
@@ -777,7 +782,7 @@ mod tests {
                     &FocusArtworkParams {
                         branch_id: "1".into(),
                         hour: 100,
-                        tag: tag.clone(),
+                        country: Country::from(tag.clone()),
                         database,
                         tokens: vec!["national_only".into(), "shared".into()],
                         text_only: Some(text_only),
@@ -866,7 +871,7 @@ mod tests {
             let (source, context) = product_source_with_catalogue(replay, catalogue, &folder.0);
             let params = CountryParams {
                 branch_id: "1".into(),
-                tag: String::from_utf8(scale_tag(2)).unwrap(),
+                country: Country::from(String::from_utf8(scale_tag(2)).unwrap()),
             };
             let reply =
                 NationalFocus::load(&source, &params, &context, &AtomicBool::new(false)).unwrap();
@@ -963,7 +968,7 @@ mod tests {
             let params = FocusArtworkParams {
                 branch_id: "1".into(),
                 hour,
-                tag: String::from_utf8(scale_tag(12)).unwrap(),
+                country: Country::from(String::from_utf8(scale_tag(12)).unwrap()),
                 database: FocusDatabase::National,
                 tokens: vec!["conditional".into()],
                 text_only: Some(false),
@@ -1304,7 +1309,7 @@ mod tests {
         FocusArtworkParams {
             branch_id: "1".into(),
             hour: 10,
-            tag: "synthetic".into(),
+            country: "synthetic".into(),
             database: FocusDatabase::National,
             tokens: vec!["focus".into()],
             text_only: None,
@@ -1338,7 +1343,7 @@ mod tests {
             resolved
         });
         let error =
-            reply_within(&params, Vec::new(), items, &AtomicBool::new(false), 1024).unwrap_err();
+            reply_within(&params, "synthetic", Vec::new(), items, &AtomicBool::new(false), 1024).unwrap_err();
         assert!(error.to_string().contains("transport reply budget"));
         assert!(
             produced.get() < 5_000,
@@ -1353,6 +1358,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let reply = reply_within(
             &params,
+            "synthetic",
             vec!["A \"quoted\" warning".into()],
             items(),
             &cancelled,
@@ -1360,10 +1366,11 @@ mod tests {
         )
         .unwrap();
         let size = crate::transport::json_len(&reply, usize::MAX).unwrap();
-        assert!(reply_within(&params, reply.warnings.clone(), items(), &cancelled, size).is_ok());
+        assert!(reply_within(&params, "synthetic", reply.warnings.clone(), items(), &cancelled, size).is_ok());
         assert!(
             reply_within(
                 &params,
+                "synthetic",
                 reply.warnings.clone(),
                 items(),
                 &cancelled,

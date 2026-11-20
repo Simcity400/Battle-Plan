@@ -7,7 +7,7 @@ import type { DashboardClient } from './client';
 import { countryLineColours } from './countryLineColours.ts';
 import { FAILED_FACT, MAX_NAME_HOURS, nameKey } from './countryFacts.ts';
 import type { NameAt } from './countryFacts';
-import { useCountryFactsRead } from './countryNamesAt.ts';
+import { useCountryFactsByKey } from './countryNamesAt.ts';
 import { STYLES } from './useCountriesAt.ts';
 import type { BoundTrack } from './model';
 
@@ -69,7 +69,7 @@ export function holderLooks(holders: readonly HolderAt[], styles: ReadonlyMap<st
 export function useHolderLooks(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, holders: readonly HolderAt[], active: boolean,
   tokens: Pick<ChartTokens, 'surface' | 'muted' | 'countryColours'>): HolderLooks {
   const plan = useMemo(() => holderReads(holders), [holders]);
-  const styles = useCountryFactsRead(client, track, plan.wanted, active, STYLES, plan.maxHours);
+  const styles = useCountryFactsByKey(client, track, plan.wanted, active, STYLES, plan.maxHours);
   return useMemo(() => holderLooks(holders, active && track ? styles
     : new Map(plan.wanted.map(item => { const key = nameKey(item.hour, item.tag); return [key, styles.get(key) ?? null]; })), tokens),
   [holders, styles, active, track, plan, tokens.surface, tokens.muted, tokens.countryColours]); // eslint-disable-line react-hooks/exhaustive-deps

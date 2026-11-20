@@ -241,14 +241,14 @@ pub fn query() -> Query<'static> {
         unheld: vec![Unheld { first: FIRST + FIRST_HOURS, last: SECOND - 1, reason: GAP_REASON.into() }],
     };
     let run = |first: i32, last: i32, slot: u32, id: u32| HolderRun { first, last, holder: Holder::Found { slot, id }, starts_segment: true };
-    let holders = Holders {
-        tags: [
+    let holders = Holders::new(
+        [
             ("GER".to_owned(), vec![run(FIRST, FIRST + FIRST_HOURS - 1, 7, 9001), run(SECOND, LAST, 7, 9001)]),
             ("ITA".to_owned(), vec![run(ITA_FROM, FIRST + FIRST_HOURS - 1, 8, 9002), run(SECOND, LAST, 8, 9002)]),
         ]
         .into(),
-        unknown: Vec::new(),
-    };
+        Vec::new(),
+    );
     Query { replay, timeline: Arc::new(timeline), holders: Arc::new(holders) }
 }
 

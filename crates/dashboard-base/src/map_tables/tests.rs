@@ -46,7 +46,11 @@ fn map_selection_keeps_every_authored_trigger_operand_and_omits_product_only_inp
         TableId::ResourceOrigins,
         TableId::ResourceRights,
         TableId::StateTemporaryResources,
+        TableId::StrategicRegionWeights,
         TableId::TradeRoutes,
+        // The model picker's unit order and the state view's building inputs.
+        TableId::LandUnitOrder,
+        TableId::StateBuildingInputs,
     ] {
         assert!(selected.contains(&table));
     }

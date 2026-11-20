@@ -77,3 +77,76 @@ fn the_hovers_read_the_vision_the_maps_vision_layer_shows_and_are_loading_by_nam
     let again = viewer.shown_vision().unwrap_or_else(|why| panic!("still shown: {why}"));
     assert!(Arc::ptr_eq(&vision, &again), "the same value while nothing the layer shows moves");
 }
+
+/// A text belongs to its target at the branch and hour its rows were made at: at another hour it
+/// is not shown, and a new copy of the same country's vision within the hour keeps it up.
+#[test]
+fn a_text_shows_only_for_its_target_at_the_presented_hour() {
+    use super::{Family, Hover, Key, Made, What};
+    let key = |what: What, sources: [usize; 4], seen: (u32, bool)| Key { seen, ..Key::new(what, sources, (false, false)) };
+    let made = key(What::Mines(7), [1, 10, 2, 3], (5, true));
+    let mut hover = Hover::new(Family::Naval);
+    hover.keep(Made { key: made.clone(), frame: 0, text: Some(Arc::default()), branch: 1, hour: 5, missed: Vec::new() });
+    assert!(hover.shown_for(&made, Some((1, 5))).is_some());
+    assert!(hover.shown_for(&made, Some((1, 6))).is_none(), "made at another hour");
+    assert!(hover.shown_for(&made, Some((2, 5))).is_none(), "made on another branch");
+    let settled = key(What::Mines(7), [1, 11, 2, 3], (5, true));
+    assert!(hover.shown_for(&settled, Some((1, 5))).is_some(), "a new copy of the same vision within the hour");
+    assert!(hover.shown_for(&settled, None).is_none(), "without a presented hour, only its own key");
+    assert!(hover.shown_for(&key(What::Mines(7), [1, 11, 2, 3], (6, true)), Some((1, 5))).is_none(), "another country's vision");
+    assert!(hover.shown_for(&key(What::Mines(8), [1, 10, 2, 3], (5, true)), Some((1, 5))).is_none(), "another target");
+    assert!(hover.shown_for(&key(What::Mines(7), [1, 10, 4, 3], (5, true)), Some((1, 5))).is_none(), "another selection");
+}
+
+/// Texts made ahead of the presented hour are kept for it: a newer text does not replace the one
+/// the display reaches next.
+#[test]
+fn texts_made_ahead_wait_for_their_hour() {
+    use super::{Family, Hover, Key, Made, What};
+    let key = Key::new(What::Mines(7), [1, 10, 2, 3], (false, false));
+    let mut hover = Hover::new(Family::Naval);
+    for hour in [6, 7, 8] {
+        hover.keep(Made { key: key.clone(), frame: hour as usize, text: Some(Arc::default()), branch: 1, hour, missed: Vec::new() });
+    }
+    for hour in [6, 7, 8] {
+        assert!(hover.shown_for(&key, Some((1, hour))).is_some(), "hour {hour}'s text is kept");
+    }
+    assert!(hover.shown_for(&key, Some((1, 9))).is_none());
+}
+
+/// Played fast, with the side preparing rows `lead` hours ahead and a text taking one presented
+/// hour to make, every presented hour has its text when it is presented once the first text made
+/// ahead arrives; making the presented hour's text instead never catches up.
+#[test]
+fn played_fast_each_presented_hour_has_its_text_when_presented() {
+    use super::next_hour;
+    use std::collections::BTreeSet;
+    let play = |ahead: bool, lead: i32| {
+        let mut made: BTreeSet<i32> = BTreeSet::new();
+        let mut making: Option<i32> = None;
+        let mut shown = Vec::new();
+        for presented in 0..48 {
+            // The text begun at the last presented hour is done now.
+            if let Some(hour) = making.take() {
+                made.insert(hour);
+            }
+            shown.push(made.contains(&presented));
+            let prepared: Vec<i32> = (presented + 1..=presented + lead).collect();
+            making = if ahead {
+                next_hour(presented, &prepared, |hour| made.contains(&hour))
+            } else {
+                (!made.contains(&presented)).then_some(presented)
+            };
+        }
+        shown
+    };
+    for lead in [1, 2, 4] {
+        assert!(play(true, lead)[1..].iter().all(|&shown| shown), "lead {lead}: {:?}", play(true, lead));
+        assert!(play(false, lead).iter().all(|&shown| !shown), "the presented hour's text always arrives an hour late");
+    }
+    // Still, nothing is prepared ahead: the presented hour's text is made, and shows once made.
+    assert_eq!(next_hour(5, &[], |_| false), Some(5));
+    assert_eq!(next_hour(5, &[], |_| true), None);
+    // Ahead texts already made: the earliest missing one is next.
+    assert_eq!(next_hour(5, &[6, 7, 8], |hour| hour == 6), Some(7));
+}

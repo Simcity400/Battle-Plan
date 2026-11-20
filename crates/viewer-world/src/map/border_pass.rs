@@ -60,6 +60,9 @@ pub struct BorderAssets {
     /// Unsupported definitions withhold this highlight alone.
     pub faction_highlight_color: Result<[f32; 4], String>,
     pub adjacency_highlight_color: Result<[f32; 4], String>,
+    /// `NGraphics.BORDER_COLOR_SELECTION_PROVINCE_*` and `_STATE_*`, palette entries 1 and 2: the
+    /// selected provinces' outline and the selected state's.
+    pub selection_colors: Result<[[f32; 4]; 2], String>,
 }
 
 impl BorderAssets {
@@ -104,6 +107,13 @@ impl BorderAssets {
             adjacency_highlight_color: (|| -> io::Result<_> {
                 let channel = |name| defines.number("NGraphics", &format!("BORDER_COLOR_SELECTION_ADJACENCY_RULE_AREA_{name}")).map(|value| value as f32);
                 Ok([channel("R")?, channel("G")?, channel("B")?, channel("A")?])
+            })().map_err(|why| why.to_string()),
+            selection_colors: (|| -> io::Result<_> {
+                let color = |what: &str| -> io::Result<[f32; 4]> {
+                    let channel = |name| defines.number("NGraphics", &format!("BORDER_COLOR_SELECTION_{what}_{name}")).map(|value| value as f32);
+                    Ok([channel("R")?, channel("G")?, channel("B")?, channel("A")?])
+                };
+                Ok([color("PROVINCE")?, color("STATE")?])
             })().map_err(|why| why.to_string()),
         })
     }

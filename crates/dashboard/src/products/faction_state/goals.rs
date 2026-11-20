@@ -56,11 +56,26 @@ pub(super) struct Texts<'a> {
     definitions: Result<std::sync::Arc<Catalog>, String>,
     art: &'a Art,
     lexical: faction_names::LexicalNames<'a>,
+    viewpoint: Option<&'a dashboard_base::products::Country>,
     viewer_text: OnceCell<Result<ScriptedText<'a>, String>>,
 }
 
-/// The selected country's canonical slot, which goal names and descriptions expand in.
-pub(super) fn viewer(frame: &DecodedFrame) -> Result<u32, String> {
+/// The selected country's canonical slot, which goal names and descriptions expand in: the
+/// view's chosen country, else the recording client's playing or observer country.
+pub(super) fn viewer(frame: &DecodedFrame, viewpoint: Option<&dashboard_base::products::Country>) -> Result<u32, String> {
+    if let Some(dashboard_base::products::Country::Slot(slot)) = viewpoint {
+        let countries = frame.complete::<tables::Countries>().map_err(|why| why.to_string())?;
+        return countries.iter().any(|country| country.canonical_slot == *slot).then_some(*slot).ok_or_else(|| "Faction text's selected country has no country at this hour".to_owned());
+    }
+    if let Some(dashboard_base::products::Country::Tag(tag)) = viewpoint {
+        let countries = frame.complete::<tables::Countries>().map_err(|why| why.to_string())?;
+        return countries
+            .iter()
+            .filter(|country| country.tag.eq_ignore_ascii_case(tag.as_bytes()))
+            .map(|country| country.canonical_slot)
+            .min()
+            .ok_or_else(|| format!("Faction text's selected country {tag} has no country at this hour"));
+    }
     let raw = frame
         .complete::<tables::LocalPlayer>()
         .map_err(|why| why.to_string())?
@@ -72,7 +87,7 @@ pub(super) fn viewer(frame: &DecodedFrame) -> Result<u32, String> {
 }
 
 impl<'a> Texts<'a> {
-    pub(super) fn new(frame: &'a DecodedFrame, faction: u64, cat: &'a Catalogue, art: &'a Art) -> Self {
+    pub(super) fn new(frame: &'a DecodedFrame, faction: u64, cat: &'a Catalogue, art: &'a Art, viewpoint: Option<&'a dashboard_base::products::Country>) -> Self {
         Self {
             frame,
             faction,
@@ -80,6 +95,7 @@ impl<'a> Texts<'a> {
             definitions: installed_content_core::faction_goals::cached(&cat.content.layers),
             art,
             lexical: faction_names::LexicalNames::from_source(frame),
+            viewpoint,
             viewer_text: OnceCell::new(),
         }
     }
@@ -93,7 +109,10 @@ impl<'a> Texts<'a> {
     }
 
     fn scripted<'s>(&'s self, root: Result<u32, String>, held: &'s OnceCell<Result<ScriptedText<'a>, String>>) -> Result<&'s ScriptedText<'a>, String> {
-        held.get_or_init(|| Ok(ScriptedText::new(self.frame, &self.cat.localisation, self.cat.scripted_content()?, root?)))
+        held.get_or_init(|| {
+            let root = root?;
+            Ok(ScriptedText::new(self.frame, &self.cat.localisation, self.cat.scripted_content()?, root).viewing(root))
+        })
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -105,7 +124,7 @@ impl<'a> Texts<'a> {
 
     /// `text` with its scripted parts expanded in the selected country's scope.
     pub(super) fn expand(&self, text: &str) -> Result<String, String> {
-        self.scripted(viewer(self.frame), &self.viewer_text)?.expand_faction(text, self.faction)
+        self.scripted(viewer(self.frame, self.viewpoint), &self.viewer_text)?.expand_faction(text, self.faction)
     }
 
     /// The goal `token` names, as the game shows it at the frame's hour.

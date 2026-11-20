@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { asFailure } from '../../dashboard/queryError.ts';
 import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { NarrowTable } from '../../charts/table/options';
@@ -22,7 +23,7 @@ import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryFactsAt } from '../../dashboard/countryNamesAt';
@@ -111,7 +112,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'casualty-pairs',
-    params: { branchId: track.branch.id, tags: [], between: false, window: null } } : null;
+    params: { branchId: track.branch.id, countries: [], between: false, window: null } } : null;
   const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs, track?.source);
   // Following, the widget renders when the head enters another window (the chord paints the hours inside one from the
   // clock).
@@ -139,7 +140,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const grouped = widget.countries.kind === 'group';
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const fallbackTags = useMemo(() => fallback ? [fallback] : [], [fallback]);
   const branchEnd = track?.branch.lastHour ?? 0;
   const filterQuery = useMemo(() => worldFilterQuery(widget.countries, fallbackTags, groups.data, branchEnd),
@@ -155,7 +156,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const identity = useMemo(() => track && selection.ready
     ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, selection.tags, between]) : null, [track, selection, between]);
   const histories = useProductWindows<CasualtyPairsReply>(runtime.client, identity, index => ({ ...request!,
-    params: { branchId: track!.branch.id, tags: selection.tags, between, window: index }, asksFrom: manifest.data?.windows[index]?.firstHour }), wanted, active && manifest.data?.available === true,
+    params: { branchId: track!.branch.id, countries: selection.tags.map(countryFromKey), between, window: index }, asksFrom: manifest.data?.windows[index]?.firstHour }), wanted, active && manifest.data?.available === true,
     validateCasualtyPairs, track?.source, true);
   const data = currentWindows.length ? histories.data.get(currentWindows[0]) : undefined;
   const through = hour;

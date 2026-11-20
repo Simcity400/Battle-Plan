@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import CountryPicker from '../../components/CountryPicker';
@@ -10,7 +11,7 @@ import { CLOSED_PARTS_RACE, partsRaceDrillActors, reducePartsRaceDrill } from '.
 import { countryPartsSelection, pinCountryParts, pinNativeCountryParts, savedCountryPartsSelection } from './countryPartsDrillData';
 import WidgetState from '../../components/WidgetState';
 import type { IconName } from '../../components/Icons';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -93,7 +94,7 @@ function useRaceLines(config: PartsRaceViewConfig, options: Readonly<Record<stri
   const totals = config.totals?.(options) ?? null;
   const ranked = params?.top != null;
   const tiles = useTiles(runtime.client, track && params && totals && !ranked ? { source: track.source, branchId: params.branchId,
-    family: { kind: totals.kind, measure: totals.measure }, tags: params.tags, lastHour: track.branch.lastHour } : null, active);
+    family: { kind: totals.kind, measure: totals.measure }, tags: params.countries.map(countryKey), lastHour: track.branch.lastHour } : null, active);
   const [view, setView] = useState<{ key: string; from: number; to: number; width: number }>();
   const [ranking, setRanking] = useState<{ key: string; lines: Map<string, ChartSummary>; unrecorded: string | null }>();
   const key = JSON.stringify([track?.source.id, track?.source.revision, params, totals]);
@@ -162,7 +163,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const lastHour = track?.branch.lastHour ?? 0;
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, lastHour]);
   const params = track && (resolved.top || resolved.tags.length) ? config.request(track.branch.id, resolved, options) : null;

@@ -2,7 +2,7 @@
 //! and the recorded content ([`AtHour::reply`]). The same function answers a request for an hour,
 //! from the rows the product names read at that hour ([`AtHour::reads`]), and a panel at the head
 //! under the product's key (`{"panel": <key>, ..params}`), from the playhead's rows, pushed only
-//! when the reply differs. The adapter resolves the hour's run and the asked tag's holder by the
+//! when the reply differs. The adapter resolves the hour's run and the asked country's holder by the
 //! one identity rule; a product never resolves either.
 //!
 //! A reply carries structure (rows, names, art) and the keys it shows. Numbers that move every
@@ -23,7 +23,7 @@ use dashboard_follow::{
 };
 use dashboard_query::{
     Query,
-    identity::{Holder, Holders},
+    identity::{Country, Holder, Holders},
 };
 use replay_data::rows::TableId;
 use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
@@ -86,7 +86,7 @@ pub fn field_columns(table: TableId, fields: &[&str]) -> Vec<usize> {
     fields.iter().map(|field| dashboard_declare::field(table, field).expect("a declared product field")).collect()
 }
 
-/// The holder of the tag a reply is about at its hour: canonical slot and raw country id.
+/// The holder of the country a reply is about at its hour: canonical slot and raw country id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Owner {
     pub slot: u32,
@@ -95,7 +95,7 @@ pub struct Owner {
 
 /// What a reply is given beside its frame and params.
 pub struct At<'a, C> {
-    /// The asked tag's holder, when the product names one ([`AtHour::owner`]).
+    /// The asked country's holder, when the product names one ([`AtHour::owner`]).
     pub owner: Option<Owner>,
     /// Every tag's holders on the timeline, for a reply about several tags; each is resolved at
     /// `hour` by the one identity rule, never by the product.
@@ -146,8 +146,8 @@ pub trait AtHour: 'static {
         vec![Self::Params::decl(), Self::Reply::decl()]
     }
 
-    /// The tag whose holder the reply is about; refused by name where no country holds it.
-    fn owner(_params: &Self::Params) -> Option<&str> {
+    /// The country the reply is about; refused by name at an hour it does not hold.
+    fn owner(_params: &Self::Params) -> Option<&Country> {
         None
     }
 
@@ -210,8 +210,8 @@ pub trait AtHour: 'static {
 }
 
 fn holder<P: AtHour>(holders: &Holders, params: &P::Params, hour: i32) -> io::Result<Option<Owner>> {
-    let Some(tag) = P::owner(params) else { return Ok(None) };
-    match holders.at(tag, hour).map(|run| run.holder) {
+    let Some(country) = P::owner(params) else { return Ok(None) };
+    match holders.at(country, hour).map(|run| run.holder) {
         Some(Holder::Found { slot, id }) => Ok(Some(Owner { slot, id })),
         Some(Holder::Unresolved) | None => Err(dashboard_core::refused(format!("{} country is unavailable at this hour", P::TITLE))),
     }

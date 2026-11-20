@@ -1,7 +1,8 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { tableSortChoices } from '../../charts/table/options';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
@@ -18,8 +19,8 @@ const structure = (reply: AirMissionsReply) => JSON.stringify([reply.missions, r
 export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
-  const params = track && tag ? { tag } : null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
+  const params = track && tag ? { country: countryFromKey(tag) } : null;
   const product = useHeadProduct<AirMissionsReply>(runtime, widget, 'air-missions', params, { active, validate: validateAirMissions, structure });
   return { track, tag, options, ...product };
 }

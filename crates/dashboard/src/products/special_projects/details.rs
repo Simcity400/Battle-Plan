@@ -8,6 +8,7 @@
 //! (`special-project-effects`), asked when the reader opens a project: it reads every table scripted
 //! effects can name.
 
+use dashboard_base::products::Country;
 use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, country_key, needs_scope, scoped_at};
 use crate::{
     Source,
@@ -51,7 +52,7 @@ pub struct SpecialProjectEffectsAt;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecialProjectDetailsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -59,7 +60,7 @@ pub struct SpecialProjectDetailsParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecialProjectEffectsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// The project's raw owner id and its id within it.
     pub owner: u32,
     pub project: u32,
@@ -263,7 +264,7 @@ fn spelled(frame: &DecodedFrame, id: u32) -> Result<String, String> {
 }
 
 /// Whether the holder at `hour` of `tag` held it through every hour from `read`.
-fn held_since(query: &Query<'_>, tag: &str, holder: Owner, read: i32, hour: i32) -> bool {
+fn held_since(query: &Query<'_>, tag: &Country, holder: Owner, read: i32, hour: i32) -> bool {
     let mut at = hour;
     while let Some(run) = query.holders.at(tag, at) {
         if run.holder != (Holder::Found { slot: holder.slot, id: holder.id }) {
@@ -286,7 +287,7 @@ struct Coverage {
 struct Reads<'r, 'q> {
     query: &'r Query<'q>,
     coverage: &'r std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
-    tag: &'r str,
+    tag: &'r Country,
     holder: Owner,
     run: u32,
     hour: i32,
@@ -490,7 +491,7 @@ impl AtHour for SpecialProjectDetailsAt {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        dashboard_base::products::validate_tag(&params.tag)
+        dashboard_base::products::validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -514,8 +515,8 @@ impl AtHour for SpecialProjectDetailsAt {
         ]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn uses_sample(_table: TableId) -> bool { false }
@@ -536,7 +537,7 @@ impl AtHour for SpecialProjectDetailsAt {
         if !edits.only_columns(TableId::SliceReads, dashboard_base::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"])) || at.context.scoped_details.load(std::sync::atomic::Ordering::Relaxed) { return Ok(false); }
         let Some(holder) = at.owner else { return Ok(false) };
         let q = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
-        let reads = Reads { query: &q, coverage: &at.context.coverage, tag: &params.tag, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
+        let reads = Reads { query: &q, coverage: &at.context.coverage, tag: &params.country, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
         let Some(previous) = data["hour"].as_i64().and_then(|h| i32::try_from(h).ok()) else { return Ok(false) };
         for (table, group, what) in [(TableId::ProjectPrograms, "programs", "Program assignments"), (TableId::ProjectBreakthroughs, "breakthroughs", "Specialization progress points")] {
             let Some(read) = reads.continued(previous, table, what) else { return Ok(false) };
@@ -631,7 +632,7 @@ impl AtHour for SpecialProjectDetailsAt {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project details name no country"))?;
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project details hour is not recorded"))?.run;
-        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.tag, holder: owner, run, hour: at.hour };
+        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder: owner, run, hour: at.hour };
         let mut namer = Namer::new(&at.context.content, &query, at.hour, owner.slot);
         let mut out = SpecialProjectDetails { hour: at.hour, scientists: None, programs: None, breakthroughs: None, projects: None, unavailable: Vec::new(), warnings: Vec::new() };
         if let Some(why) = &namer.missing {
@@ -647,7 +648,7 @@ impl AtHour for SpecialProjectDetailsAt {
         out.scientists = scientists(frame, &owners, &reads, &mut namer, at.context, &mut out.unavailable)?;
         out.breakthroughs = breakthroughs(frame, &owners, &reads, &mut namer, &mut out.unavailable);
         out.programs = programs(frame, &owners, &reads, &mut namer, &mut out.unavailable);
-        out.projects = projects(frame, &owners, &reads, &mut namer, &params.tag, &mut out.unavailable);
+        out.projects = projects(frame, &owners, &reads, &mut namer, &at.holders.name(&params.country, at.hour), &mut out.unavailable);
         if !namer.scoped.is_empty() { at.context.scoped_details.store(true, std::sync::atomic::Ordering::Relaxed); }
         out.warnings = namer.warnings();
         Ok(out)
@@ -976,7 +977,7 @@ impl AtHour for SpecialProjectEffectsAt {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        dashboard_base::products::validate_tag(&params.tag)
+        dashboard_base::products::validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -984,8 +985,8 @@ impl AtHour for SpecialProjectEffectsAt {
         vec![SpecialProjectEffectsParams::decl(), SpecialProjectEffects::decl(), ProjectEffects::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     /// Every table scripted effects and their scopes name, whole.
@@ -1024,7 +1025,7 @@ impl AtHour for SpecialProjectEffectsAt {
         };
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
-        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.tag, holder: owner, run, hour: at.hour };
+        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder: owner, run, hour: at.hour };
         // The game reads the program's scientist as it stood at its daily read: only that hour knows it.
         let scientist = (|| {
             if project.program_reference as u32 != PROGRAM_REFERENCE {

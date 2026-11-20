@@ -18,6 +18,26 @@ use viewer_foundation::map::icon_windows::PoolView;
 
 const BUTTON_CONTAINER: &str = "raid_map_icon_button_container";
 const FRAME: &str = "raid_map_icon_frame";
+/// An offer bubble's frame state: selected while its target details window shows, else hovered
+/// under the pointer, else the icon's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum FrameState {
+    Own,
+    Hovered,
+    Selected,
+}
+
+impl FrameState {
+    /// The zero-based strip frame the game draws for the state: selected is frame 2 and hovered
+    /// frame 3, one-based.
+    fn frame(self, own: u32) -> u32 {
+        match self {
+            Self::Own => own,
+            Self::Hovered => 2,
+            Self::Selected => 1,
+        }
+    }
+}
 const GLYPH: &str = "raid_map_icon_button";
 const PLUS: &str = "plus_icon";
 
@@ -117,6 +137,7 @@ pub(crate) fn update(
     instance: &mut native_gui::lifecycle::Instance,
     root: &native::Element,
     icon: &RaidIcon,
+    state: FrameState,
     controls: Controls<'_>,
     resources: &dyn native_gui::Resources,
 ) -> Result<(), String> {
@@ -127,7 +148,8 @@ pub(crate) fn update(
         FRAME_SPRITE,
         SpriteSetter::ButtonStandard,
     )?;
-    instance.set_frame(root, controls.frame, icon.frame.wrapping_add(1) as i32)?;
+    let frame = state.frame(icon.frame);
+    instance.set_frame(root, controls.frame, frame.wrapping_add(1) as i32)?;
     if icon.frame == 0 {
         // Offers enable or disable the frame only.
         instance.control(root, controls.frame)?.enabled = Some(icon.enabled);
@@ -177,6 +199,8 @@ impl PreparedRaids {
         batch: &mut Batch,
         hits: &mut Vec<tooltips::Hit>,
         report: &mut RaidReport,
+        details: Option<&(u32, std::sync::Arc<tooltips::Details>)>,
+        hovered: Option<u32>,
     ) -> usize {
         use viewer_foundation::map::icon_windows::{Owner, Plan};
         hits.clear();
@@ -196,6 +220,17 @@ impl PreparedRaids {
             .map(|(ordinal, placed)| (placed.icon.group, (ordinal, placed)))
             .collect();
         let bindings = context.windows.gui_type(WINDOW.as_bytes()).map(controls);
+        let state = |icon: &RaidIcon| {
+            if !matches!(icon.tooltip, Some(tooltips::Key::Offer(_))) {
+                FrameState::Own
+            } else if details.is_some_and(|(province, _)| *province == icon.province) {
+                FrameState::Selected
+            } else if hovered == Some(icon.province) {
+                FrameState::Hovered
+            } else {
+                FrameState::Own
+            }
+        };
         let frame = bindings
             .as_ref()
             .and_then(|bound| bound.as_ref().ok())
@@ -220,17 +255,12 @@ impl PreparedRaids {
                     .expect("the helper found the template")
                     .as_ref()
                     .map_err(Clone::clone)?;
-                update(
-                    instance,
-                    root,
-                    &placed[&owner].1.icon,
-                    controls,
-                    context.resources,
-                )
+                let icon = &placed[&owner].1.icon;
+                update(instance, root, icon, state(icon), controls, context.resources)
             },
             |owner| {
                 let icon = &placed[owner].1.icon;
-                (icon.frame, icon.enabled, icon.glyph.clone(), icon.plus)
+                (icon.frame, state(icon), icon.enabled, icon.glyph.clone(), icon.plus)
             },
             false,
             &mut report.reasons,
@@ -272,9 +302,43 @@ impl PreparedRaids {
                     origin: [hit.rect[0], hit.rect[1]],
                     size: [hit.rect[2], hit.rect[3]],
                     key: key.clone(),
+                    province: placed.icon.province,
                     layer: sprites::layer(priority, ordinal as u32, 0),
                     supported: hit.supported,
                 });
+            }
+            if let Some((province, shown)) = details
+                && placed.icon.province == *province
+                && let Some(key @ tooltips::Key::Offer(_)) = &placed.icon.tooltip
+            {
+                let layer = sprites::layer(priority, ordinal as u32, 1);
+                batch.at_layer(layer);
+                // The open window's panel takes the pointer where it draws a part that does, and
+                // does nothing with it.
+                if let Some((panel, buttons)) = super::details::draw(context, shown, drawn.origin, batch, &mut report.reasons) {
+                    if let Some(rect) = panel {
+                        hits.push(tooltips::Hit {
+                            origin: [rect[0], rect[1]],
+                            size: [rect[2], rect[3]],
+                            key: key.clone(),
+                            province: *province,
+                            layer,
+                            supported: false,
+                        });
+                    }
+                    // Each type button hovers above the panel; its click stays inert.
+                    for button in buttons {
+                        let Some(target) = button.target(shown) else { continue };
+                        hits.push(tooltips::Hit {
+                            origin: [button.rect[0], button.rect[1]],
+                            size: [button.rect[2], button.rect[3]],
+                            key: tooltips::Key::Type(std::sync::Arc::new(target)),
+                            province: *province,
+                            layer,
+                            supported: button.supported,
+                        });
+                    }
+                }
             }
         }
         batch.at_anchor(None);
@@ -358,7 +422,7 @@ mod tests {
                 &mut PoolView::default(),
                 &mut batch,
                 &mut hits,
-                &mut report
+                &mut report, None, None
             ),
             1
         );
@@ -440,7 +504,7 @@ mod tests {
                     &mut view,
                     &mut batch,
                     &mut hits,
-                    &mut report,
+                    &mut report, None, None,
                 ),
                 2
             );
@@ -593,7 +657,7 @@ mod tests {
                     &mut view,
                     &mut batch,
                     &mut hits,
-                    &mut report,
+                    &mut report, None, None,
                 ),
                 3
             );
@@ -710,7 +774,7 @@ mod tests {
                 &mut PoolView::default(),
                 &mut batch,
                 &mut Vec::new(),
-                &mut report
+                &mut report, None, None
             ),
             0
         );
@@ -764,7 +828,7 @@ mod tests {
                 &mut PoolView::default(),
                 &mut Batch::default(),
                 &mut Vec::new(),
-                &mut report
+                &mut report, None, None
             ),
             2,
             "{:?}",
@@ -810,7 +874,7 @@ mod tests {
                 &mut view,
                 &mut batch,
                 &mut Vec::new(),
-                &mut report
+                &mut report, None, None
             ),
             1
         );
@@ -826,7 +890,7 @@ mod tests {
                     &mut view,
                     &mut batch,
                     &mut Vec::new(),
-                    &mut report
+                    &mut report, None, None
                 ),
                 usize::from(decided)
             );
@@ -865,11 +929,16 @@ mod tests {
             tooltip: None,
         };
         let controls = controls(root).unwrap();
-        update(&mut instance, root, &icon, controls, &resources).unwrap();
+        update(&mut instance, root, &icon, FrameState::Own, controls, &resources).unwrap();
         assert_eq!(
             instance.control(root, controls.frame).unwrap().enabled,
             Some(false)
         );
+        assert_eq!(instance.control(root, controls.frame).unwrap().frame, Some(1));
+        // The game draws a hovered offer on strip frame 3.
+        update(&mut instance, root, &icon, FrameState::Hovered, controls, &resources).unwrap();
+        assert_eq!(instance.control(root, controls.frame).unwrap().frame, Some(3));
+        update(&mut instance, root, &icon, FrameState::Own, controls, &resources).unwrap();
         let layout = instance.layout(root, &resources, None).unwrap().unwrap();
         let frame = layout
             .parts
@@ -892,10 +961,14 @@ mod tests {
             &mut instance,
             root,
             &RaidIcon { plus: true, ..icon },
+            FrameState::Selected,
             controls,
             &resources,
         )
         .unwrap();
+        // An open details window draws the frame in its selected state, still an offer's.
+        assert_eq!(instance.control(root, controls.frame).unwrap().frame, Some(2));
+        assert_eq!(instance.control(root, controls.frame).unwrap().enabled, Some(false));
         let layout = instance.layout(root, &resources, None).unwrap().unwrap();
         assert!(
             layout

@@ -8,6 +8,7 @@ use crate::adjacency_rules::AdjacencyRule;
 
 mod advance_warning;
 mod area;
+pub mod cursor;
 pub mod transport;
 pub use area::AreaNode;
 
@@ -150,6 +151,50 @@ pub trait CommonMoveWorld: MoveWorld {
     fn railway_cooldown(&self, province: u32) -> Fact<Option<i32>>;
     /// Raw railway pair count, zero cooldown and positive selected building.
     fn railway_accessible(&self, province: u32) -> Fact<bool>;
+}
+
+/// The can-move check's caller options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MoveOptions {
+    /// Try the transport admission after a failed class route.
+    pub transport_fallback: bool,
+    /// Admit a retreating unit.
+    pub retreat_bypass: bool,
+    /// Refuse an army moving into a controller it is at war with.
+    pub avoid_enemy: bool,
+}
+
+/// The text of a caller that asks for no rejection message: every line is empty.
+pub struct Silent;
+
+impl CommonMoveText for Silent {
+    fn plain(&self, _: &str) -> Fact<String> {
+        Ok(String::new())
+    }
+    fn state(&self, _: &str, _: u32) -> Fact<String> {
+        Ok(String::new())
+    }
+    fn owner(&self, _: &str, _: u32) -> Fact<String> {
+        Ok(String::new())
+    }
+    fn rule(&self, _: &str, _: &AdjacencyRule) -> Fact<String> {
+        Ok(String::new())
+    }
+    fn warning(&self, _: &str, _: i64) -> Fact<String> {
+        Ok(String::new())
+    }
+    fn days(&self, _: &str, _: i32) -> Fact<String> {
+        Ok(String::new())
+    }
+    fn transport_stock(&self, _: i32, _: i32) -> Fact<String> {
+        Ok(String::new())
+    }
+    fn transport_risk(&self, _: i64) -> Fact<String> {
+        Ok(String::new())
+    }
+    fn transport_description(&self, _: i32, _: bool) -> Fact<String> {
+        Ok(String::new())
+    }
 }
 
 /// Narrow content binding, implemented by the viewer's existing localiser
@@ -596,9 +641,8 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         self.common_enter_message(unit, to, text, content)
     }
 
-    /// Selected callers enable transport fallback and disable other route
-    /// options. Common admission, class admission and army/railway route gates
-    /// run before the class route and optional transport fallback.
+    /// The selected tooltip's move check: transport fallback on, a retreating unit not refused,
+    /// enemies not avoided.
     pub fn selected_move_message(
         &self,
         unit: &CommonUnit<'_>,
@@ -606,10 +650,31 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         text: &mut String,
         content: &impl CommonMoveText,
     ) -> Fact<bool> {
+        let options = MoveOptions {
+            transport_fallback: true,
+            retreat_bypass: true,
+            avoid_enemy: false,
+        };
+        self.selected_move(unit, to, options, text, content)
+    }
+
+    /// The class's can-move check: common admission, class admission and army/railway route
+    /// gates run before the class route and the optional transport fallback.
+    pub fn selected_move(
+        &self,
+        unit: &CommonUnit<'_>,
+        to: u32,
+        options: MoveOptions,
+        text: &mut String,
+        content: &impl CommonMoveText,
+    ) -> Fact<bool> {
         let army = unit.army;
         let world = self.world;
-        // Selected transport fallback bypasses the common no-move-retreat arm.
         if army.location != to {
+            if army.retreating && !options.retreat_bypass {
+                text.push_str(&content.plain("NO_MOVE_RETREAT")?);
+                return Ok(false);
+            }
             if (unit.combat_count as i32) > 0
                 && !self.common_disengages(unit, &self.common_combats(unit)?)?
                 && !self.raw_at_war(
@@ -669,9 +734,20 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
             if !self.common_advance(unit, text, content)? && self.common_enemy_army(unit, to)? {
                 return Ok(false);
             }
+            if options.avoid_enemy
+                && self.raw_at_war(
+                    world.canonical_country(unit.logical_owner_raw)?,
+                    world.controller_raw(to)?,
+                )?
+            {
+                return Ok(false);
+            }
         }
         if world.selected_path(unit, to, text, content)? {
             return Ok(true);
+        }
+        if !options.transport_fallback {
+            return Ok(false);
         }
         world.selected_transport(unit, to, text, content)
     }
@@ -796,7 +872,16 @@ impl<W: CommonMoveWorld + ?Sized> Mover<'_, W> {
         rule: &AdjacencyRule,
         owner: Country,
     ) -> Fact<Option<crate::adjacency_rules::Verdict>> {
-        self.verdict_with(rule, owner, &|receiver, target, friendly| {
+        Ok(self.common_rule_relation(rule, owner)?.verdict())
+    }
+
+    /// [`Self::common_rule_verdict`] with the branch that decided it.
+    pub fn common_rule_relation(
+        &self,
+        rule: &AdjacencyRule,
+        owner: Country,
+    ) -> Fact<super::RuleReason> {
+        self.relation_with(rule, owner, &|receiver, target, friendly| {
             let target_raw = self.world.actual_country_raw(target)?;
             if friendly {
                 self.common_discloses(receiver, target_raw, true)

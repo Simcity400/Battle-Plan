@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { nameReadFrom, nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
@@ -24,12 +25,12 @@ import { useContentRevision } from '../../dashboard/contentRevision';
 import { flagReadMetadata, useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useCountryFlagsRead } from '../../dashboard/countryFlags';
 import { LOOK_STEP, lookHour } from '../../dashboard/countryLooks';
-import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
+import { nameKey, useCountryFactsByKey } from '../../dashboard/countryNamesAt';
 import type { NameAt } from '../../dashboard/countryNamesAt';
 import { STYLES } from '../../dashboard/useCountriesAt';
 import { sampledLooks } from '../../dashboard/looks';
 import type { Look } from '../../dashboard/looks';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import type { WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
@@ -136,7 +137,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const scale = useMemo(() => options.scale !== 'moment' ? campaignScale(flows, measure, from, extent[1]) : null, [options.scale, flows, measure, from, extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   // Each country's fixed place for ribbons inside the other side's nodes.
   const ranks = useMemo(() => sideRanks(flows, extent[0], extent[1]), [flows, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
 
   // Every trading holder's look, read at the look grid's hour of the moment: one batch of reads per step.
   const lookFacts = useMemo(() => {
@@ -153,7 +154,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const lookHours = Math.max(MAX_NAME_HOURS, new Set(looksWanted.map(item => item.hour)).size);
   const fixed = tokens.countryColours === 'fixed';
   const colourPlan = useMemo(() => tradeColourPlan(trade ?? null, track?.branch, moment, fixed), [trade, track?.branch, moment, fixed]);
-  const styles = useCountryFactsRead(runtime.client, track, fixed ? colourPlan.wanted : looksWanted, active, STYLES, fixed ? colourPlan.maxHours : lookHours);
+  const styles = useCountryFactsByKey(runtime.client, track, fixed ? colourPlan.wanted : looksWanted, active, STYLES, fixed ? colourPlan.maxHours : lookHours);
   const flags = useCountryFlagsRead(runtime.client, track, looksWanted, active);
   const contentRevision = useContentRevision(runtime.client);
   const heldKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, contentRevision]);
@@ -380,7 +381,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const marketFilter = marketView ? worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, moment, lastHour) : null;
   const marketReason = (marketView ? marketLendLeaseWaits() : null) ?? marketFilter?.reason ?? (marketView && !all && groups.data && marketFilter?.known && !marketTags.length ? 'Selected countries are unavailable at this time.' : null);
   const marketReady = !!track && marketView && !marketReason && (all || !!groups.data && marketTags.length > 0);
-  const market = useHeadProduct<MarketLendLeaseReply>(runtime, widget, 'market-lendlease', marketReady ? { tags: marketTags } : null,
+  const market = useHeadProduct<MarketLendLeaseReply>(runtime, widget, 'market-lendlease', marketReady ? { countries: (marketTags).map(countryFromKey)} : null,
     { active: active && marketView, validate: validateMarketReply, hoverHour: !marketView || drill.breakdown === null ? null
       // A breakdown following playback in a widget that does not follows the look grid's hour of the head.
       : drill.follow ? following ? null : clampHour(lookHourNow + axisOffset) : drill.hour });

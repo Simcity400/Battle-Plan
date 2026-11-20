@@ -53,7 +53,7 @@ impl Product for NationalFocus {
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let content = context.content()?;
-        let fold = focus::fold(source, params.branch(), &params.tag, cancelled)?;
+        let fold = focus::fold(source, params.branch(), &params.country, cancelled)?;
         let state = source.state::<State>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         let State { national, continuous } = &mut *state;

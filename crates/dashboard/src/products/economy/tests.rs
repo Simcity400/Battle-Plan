@@ -110,7 +110,7 @@ mod fuel {
     #[test]
     fn fuel_by_branch_is_the_countrys_own_consumers_at_the_hour_on_both_paths() {
         let source = recording();
-        let params = json!({ "branchId": "1", "tag": "GER" });
+        let params = json!({ "branchId": "1", "country": "GER" });
         same_on_both_paths::<FuelBranches>(&source, params.clone());
         let at = asked::<FuelBranches>(&source, params.clone(), 115).unwrap();
         assert_eq!(at["consumers"], json!([
@@ -182,7 +182,7 @@ mod resources {
     #[test]
     fn a_resource_balance_is_the_countrys_pools_and_deals_at_the_hour_on_both_paths() {
         let source = recording();
-        let params = json!({ "branchId": "1", "tag": "GER" });
+        let params = json!({ "branchId": "1", "country": "GER" });
         same_on_both_paths::<ResourceBalance>(&source, params.clone());
         let at = asked::<ResourceBalance>(&source, params.clone(), 125).unwrap();
         let tokens: Vec<&str> = at["resources"].as_array().unwrap().iter().map(|resource| resource["token"].as_str().unwrap()).collect();
@@ -196,7 +196,7 @@ mod resources {
         assert_eq!(cells.len(), 18, "eight pools of each of GER's two rows and each of its two deals' delivery, none of another country's");
         assert_eq!((cell("6", "delivered"), cell("5", "delivered")), (json!(300_000), json!(200_000)));
         // Oil nets 1,199,997 on a 1,200,000 bar, steel 699,997 on 700,000: steel is the smaller surplus, oil the longer bar.
-        let ordered = |order: &str| asked::<ResourceBalance>(&source, json!({ "branchId": "1", "tag": "GER", "order": order }), 125).unwrap()["shown"].clone();
+        let ordered = |order: &str| asked::<ResourceBalance>(&source, json!({ "branchId": "1", "country": "GER", "order": order }), 125).unwrap()["shown"].clone();
         assert_eq!((ordered("game"), ordered("shortfall"), ordered("volume")), (json!([1, 2]), json!([2, 1]), json!([1, 2])));
         assert_eq!(at["deals"], json!([
             { "deal": "6", "resource": 1, "direction": "import", "partner": "FRA", "factories": 1, "convoysAssigned": 2, "convoysRequired": 3 },
@@ -211,7 +211,7 @@ mod resources {
     #[test]
     fn a_resources_campaign_size_is_its_longest_bar_over_the_span() {
         let source = recording();
-        let params = serde_json::from_value(json!({ "branchId": "1", "tag": "GER" })).unwrap();
+        let params = serde_json::from_value(json!({ "branchId": "1", "country": "GER" })).unwrap();
         let reply = ResourceSizes::load(&source, &params, &load(), &AtomicBool::new(false)).unwrap();
         let sizes: Vec<(u32, Option<&str>)> = reply.sizes.iter().map(|size| (size.id, size.longest_raw.as_deref())).collect();
         // Oil's supply is what it produced, 1,300,000 at its largest; its demand is 3. Steel's is 700,000.
@@ -394,7 +394,7 @@ mod market {
     #[test]
     fn the_market_at_an_hour_is_the_rows_a_chosen_country_takes_part_in_on_both_paths() {
         let source = recording();
-        let params = json!({ "branchId": "1", "tags": ["GER"] });
+        let params = json!({ "branchId": "1", "countries": ["GER"] });
         let mut followed_panel = panel(&source, &params);
         for hour in FIRST..=LAST {
             let reply = asked::<MarketLendLease>(&source, params.clone(), hour).unwrap();
@@ -416,7 +416,7 @@ mod market {
     #[test]
     fn purchase_progress_moves_as_live_cells_and_unread_progress_is_named() {
         let source = recording();
-        let params = json!({ "branchId": "1", "tags": ["GER"], "only": "contracts" });
+        let params = json!({ "branchId": "1", "countries": ["GER"], "only": "contracts" });
         let mut contracts = panel(&source, &params);
         let (first, second) = (followed(&source, &mut *contracts, 110), followed(&source, &mut *contracts, 111));
         assert!(first.is_ok());
@@ -426,7 +426,7 @@ mod market {
         assert!(unread["purchasesMissing"].as_str().unwrap().contains("purchases unreadable"));
         assert_eq!(unread["contracts"][0]["purchase"], false);
         assert!(unread["offers"].is_null() && unread["agreements"].is_null(), "only the section asked is read");
-        let every = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "tags": [] }), 110).unwrap();
+        let every = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": [] }), 110).unwrap();
         assert_eq!(every["contracts"].as_array().unwrap().len(), 2);
         assert_eq!(every["contracts"][1]["buyer"], Value::Null, "a buyer with no identity is unnamed, never dropped");
     }

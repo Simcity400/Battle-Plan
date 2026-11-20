@@ -64,9 +64,9 @@ pub struct AirSuperiorityParams {
     pub branch_id: String,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub mode: Option<AirMode>,
-    /// A side's key, or a country's tag with `viewpointCountry`.
+    /// A side's key, or a country (its slot or tag) with `viewpointCountry`.
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub viewpoint: Option<String>,
+    pub viewpoint: Option<dashboard_base::products::Country>,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint_country: Option<bool>,
     /// The side keys compared; all when none.
@@ -80,10 +80,20 @@ pub struct AirSuperiorityParams {
     pub theatres: Option<Vec<String>>,
 }
 
+/// The viewpoint as the scores name it: a side's key, or the tag the viewpoint country goes by at
+/// `hour` (none where it holds none).
+pub(crate) fn viewpoint_name<'a>(viewpoint: Option<&'a dashboard_base::products::Country>, country: bool, holders: &'a Holders, hour: i32) -> &'a str {
+    match viewpoint {
+        Some(viewpoint) if country => holders.tag_at(viewpoint, hour).unwrap_or_default(),
+        Some(viewpoint) => viewpoint.tag().unwrap_or_default(),
+        None => "",
+    }
+}
+
 impl AirSuperiorityParams {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.branch_id.parse::<u64>().map_err(|_| "Invalid air branch")?;
-        if self.mode == Some(AirMode::Viewpoint) && self.viewpoint.as_ref().is_none_or(String::is_empty) {
+        if self.mode == Some(AirMode::Viewpoint) && self.viewpoint.as_ref().is_none_or(|viewpoint| viewpoint.tag() == Some("")) {
             return Err("Viewpoint country or side is required");
         }
         Ok(())
@@ -498,7 +508,7 @@ fn moment(frame: &DecodedFrame, params: &AirSuperiorityParams, holders: &Holders
     let scores = hour_scores(rows, complete, frame.complete::<tables::CountryLinks>().ok(), holders, present, hour);
     let sides: &[AssignedSide] = epoch.and_then(|epoch| epoch.sides.as_deref()).map_or(&[], Vec::as_slice);
     let roster = epoch.and_then(|epoch| epoch.sides.as_ref()).map(|sides| Roster::new(sides));
-    let viewpoint = params.viewpoint.as_deref().unwrap_or_default();
+    let viewpoint = viewpoint_name(params.viewpoint.as_ref(), params.viewpoint_country == Some(true), holders, hour);
     let view = match params.mode.unwrap_or_default() {
         AirMode::Sides => View::Sides,
         AirMode::Viewpoint if params.viewpoint_country == Some(true) => View::Country(viewpoint),

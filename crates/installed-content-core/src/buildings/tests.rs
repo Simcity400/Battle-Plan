@@ -741,3 +741,21 @@ fn infrastructure_is_the_first_flagged_type_and_reads_its_level_cap_forms() {
             .unwrap();
     assert!(repeated.infrastructure().unwrap_err().contains("roads"));
 }
+
+#[test]
+fn state_view_fields_keep_the_landmark_icon_display_gate_dlc_trigger_and_state_modifiers() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let buildings = parse(
+        br#"buildings={ landmark={ only_display_if_exists=yes special_icon="GFX_landmark" dlc_allowed={ always=yes } state_modifiers={ stability_factor=0.1 } } plain={} }"#,
+    )
+    .unwrap();
+    let landmark = &buildings.types["landmark"];
+    assert!(landmark.only_display_if_exists);
+    assert_eq!(landmark.special_icon, "GFX_landmark");
+    assert_eq!(landmark.dlc_allowed.len(), 1);
+    assert_eq!(landmark.state_modifiers.len(), 1);
+    let plain = &buildings.types["plain"];
+    assert!(!plain.only_display_if_exists && plain.special_icon.is_empty());
+    assert!(plain.dlc_allowed.is_empty() && plain.state_modifiers.is_empty());
+}

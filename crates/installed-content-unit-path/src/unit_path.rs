@@ -30,9 +30,10 @@ mod invasion;
 mod selected;
 pub use counter::{CounterClass, CounterRequest};
 pub use selected::transport as selected_transport;
+pub use selected::cursor as order_cursor;
 pub use selected::{
-    AreaNode, CommonClass, CommonCombat, CommonMoveText, CommonMoveWorld, CommonUnit,
-    NativeArmyOccupant,
+    AreaNode, CommonClass, CommonCombat, CommonMoveText, CommonMoveWorld, CommonUnit, MoveOptions,
+    NativeArmyOccupant, Silent,
 };
 
 pub type Fact<T> = Result<T, String>;
@@ -640,6 +641,49 @@ struct Memo {
     rules: Vec<Option<Fact<bool>>>,
 }
 
+/// Which branch of an adjacency rule's relation decided it, with the
+/// countries its reason names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleReason {
+    /// The `is_disabled` trigger holds: no relation.
+    Disabled,
+    /// Two required provinces' controllers are at war: the matched country of
+    /// the first's chain, then of the second's.
+    Contested(Country, Country),
+    /// The verdict's own trigger holds.
+    Held(Verdict),
+    /// Neither of the other two verdicts' triggers holds, which leaves this one.
+    Excluded(Verdict),
+    /// A required province's controller chain is at war with the country's:
+    /// the matched country of the controller's chain.
+    Enemy(Country),
+    /// Neutral, as `is_enemy` has children that did not hold.
+    NotEnemy,
+    /// A required province's controller chain discloses to the country's with
+    /// access: the matched country of the controller's chain.
+    Friend(Country),
+    /// Neutral, as `is_friend` has children that did not hold.
+    NotFriendly,
+    /// No controller is at war with or friendly to the country.
+    Neutral,
+    /// Enemy, as `is_neutral` has children that did not hold.
+    NotNeutral,
+}
+
+impl RuleReason {
+    /// The verdict, or `None` when the rule is disabled.
+    pub fn verdict(self) -> Option<Verdict> {
+        Some(match self {
+            Self::Disabled => return None,
+            Self::Contested(..) => Verdict::Contested,
+            Self::Held(verdict) | Self::Excluded(verdict) => verdict,
+            Self::Enemy(_) | Self::NotNeutral => Verdict::Enemy,
+            Self::Friend(_) => Verdict::Friend,
+            Self::NotEnemy | Self::NotFriendly | Self::Neutral => Verdict::Neutral,
+        })
+    }
+}
+
 pub struct Mover<'a, W: MoveWorld + ?Sized> {
     pub graph: &'a MoveGraph,
     pub world: &'a W,
@@ -1140,7 +1184,12 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
 
     /// The rule verdict, or `None` when disabled.
     pub fn verdict(&self, rule: &AdjacencyRule, country: Country) -> Fact<Option<Verdict>> {
-        self.verdict_with(rule, country, &|first, second, friendly| {
+        Ok(self.relation(rule, country)?.verdict())
+    }
+
+    /// [`Self::verdict`] with the branch that decided it.
+    pub fn relation(&self, rule: &AdjacencyRule, country: Country) -> Fact<RuleReason> {
+        self.relation_with(rule, country, &|first, second, friendly| {
             if friendly {
                 self.discloses(first, second, true)
             } else {
@@ -1149,29 +1198,28 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         })
     }
 
-    /// The selected adapter shares the rule traversal while supplying its
-    /// recorded directed war/disclosure predicates for each reached pair.
-    fn verdict_with(
+    /// The rule's relation for `country`, with the branch that decided it.
+    pub(crate) fn relation_with(
         &self,
         rule: &AdjacencyRule,
         country: Country,
         matches: &impl Fn(Country, Country, bool) -> Fact<bool>,
-    ) -> Fact<Option<Verdict>> {
+    ) -> Fact<RuleReason> {
         let world = self.world;
         let holds = |triggers: &[Item]| -> Fact<bool> {
             Ok(world.has_children(triggers)? && world.evaluate(triggers, country)?)
         };
         if holds(&rule.is_disabled)? {
-            return Ok(None);
+            return Ok(RuleReason::Disabled);
         }
-        if self.contested(rule, matches)? {
-            return Ok(Some(Verdict::Contested));
+        if let Some((first, second)) = self.contested(rule, matches)? {
+            return Ok(RuleReason::Contested(first, second));
         }
         if holds(&rule.is_enemy)? {
-            return Ok(Some(Verdict::Enemy));
+            return Ok(RuleReason::Held(Verdict::Enemy));
         }
         if holds(&rule.is_friend)? {
-            return Ok(Some(Verdict::Friend));
+            return Ok(RuleReason::Held(Verdict::Friend));
         }
         let (enemy, friend, neutral) = (
             self.world.has_children(&rule.is_enemy)?,
@@ -1179,82 +1227,86 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
             self.world.has_children(&rule.is_neutral)?,
         );
         if enemy && friend {
-            return Ok(Some(Verdict::Neutral));
+            return Ok(RuleReason::Excluded(Verdict::Neutral));
         }
         if holds(&rule.is_neutral)? {
-            return Ok(Some(Verdict::Neutral));
+            return Ok(RuleReason::Held(Verdict::Neutral));
         }
-        Ok(Some(if enemy && neutral {
-            Verdict::Friend
+        Ok(if enemy && neutral {
+            RuleReason::Excluded(Verdict::Friend)
         } else if friend && neutral {
-            Verdict::Enemy
+            RuleReason::Excluded(Verdict::Enemy)
         } else {
-            self.fallback_verdict(rule, country, matches)?
-        }))
+            self.fallback_relation(rule, country, matches)?
+        })
     }
 
-    /// Whether required-province controllers oppose one another through
-    /// their country and overlord chains.
+    /// The first two required provinces, in order, whose controllers oppose
+    /// one another through their country and overlord chains, as the pair of
+    /// countries that matched.
     fn contested(
         &self,
         rule: &AdjacencyRule,
         matches: &impl Fn(Country, Country, bool) -> Fact<bool>,
-    ) -> Fact<bool> {
+    ) -> Fact<Option<(Country, Country)>> {
         let provinces = &rule.required_provinces;
         for (index, &first) in provinces.iter().enumerate() {
             let country = self.world.controller(first)?;
             for &second in &provinces[index + 1..] {
-                if self.chain_match(country, self.world.controller(second)?, false, matches)? {
-                    return Ok(true);
+                if let Some(pair) =
+                    self.chain_witness(country, self.world.controller(second)?, false, matches)?
+                {
+                    return Ok(Some(pair));
                 }
             }
         }
-        Ok(false)
+        Ok(None)
     }
 
-    /// Build the rule verdict from required provinces and trigger children.
-    fn fallback_verdict(
+    /// The relation from the required provinces' controllers and the
+    /// triggers' children.
+    fn fallback_relation(
         &self,
         rule: &AdjacencyRule,
         country: Country,
         matches: &impl Fn(Country, Country, bool) -> Fact<bool>,
-    ) -> Fact<Verdict> {
-        let mut friend = false;
+    ) -> Fact<RuleReason> {
+        let mut friend = None;
         for &province in &rule.required_provinces {
             let controller = self.world.controller(province)?;
-            if self.chain_match(country, controller, false, matches)? {
+            if let Some((_, enemy)) = self.chain_witness(country, controller, false, matches)? {
                 return Ok(if !self.world.has_children(&rule.is_enemy)? {
-                    Verdict::Enemy
+                    RuleReason::Enemy(enemy)
                 } else {
-                    Verdict::Neutral
+                    RuleReason::NotEnemy
                 });
             }
-            if !friend && self.chain_match(country, controller, true, matches)? {
-                friend = true;
+            if friend.is_none() {
+                friend = self
+                    .chain_witness(country, controller, true, matches)?
+                    .map(|(_, friend)| friend);
             }
         }
-        Ok(if friend {
-            if !self.world.has_children(&rule.is_friend)? {
-                Verdict::Friend
-            } else {
-                Verdict::Neutral
+        Ok(match friend {
+            Some(friend) if !self.world.has_children(&rule.is_friend)? => {
+                RuleReason::Friend(friend)
             }
-        } else if !self.world.has_children(&rule.is_neutral)? {
-            Verdict::Neutral
-        } else {
-            Verdict::Enemy
+            Some(_) => RuleReason::NotFriendly,
+            None if !self.world.has_children(&rule.is_neutral)? => RuleReason::Neutral,
+            None => RuleReason::NotNeutral,
         })
     }
 
     /// War or disclosure with access, between any of `country` and its
-    /// overlords and any of `other` and its overlords.
-    fn chain_match(
+    /// overlords and any of `other` and its overlords: the first pair that
+    /// matches, `country`'s side first.
+    fn chain_witness(
         &self,
         country: Country,
         other: Country,
         friendly: bool,
         matches: &impl Fn(Country, Country, bool) -> Fact<bool>,
-    ) -> Fact<bool> {
+    ) -> Fact<Option<(Country, Country)>> {
         let world = self.world;
         let mut theirs = vec![other];
         let mut next = world.overlord(other)?;
@@ -1270,13 +1322,13 @@ impl<'a, W: MoveWorld + ?Sized> Mover<'a, W> {
         loop {
             for &candidate in &theirs {
                 if matches(current, candidate, friendly)? {
-                    return Ok(true);
+                    return Ok(Some((current, candidate)));
                 }
             }
             seen.push(current);
             let overlord = world.overlord(current)?;
             if overlord == 0 {
-                return Ok(false);
+                return Ok(None);
             }
             if seen.contains(&overlord) {
                 return Err(format!("country {overlord}'s overlord chain loops"));

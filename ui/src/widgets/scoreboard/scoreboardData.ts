@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { Sort } from '../../charts/table/logic';
 import { noValues } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
@@ -78,8 +79,8 @@ export function scoreboardParams(branchId: string, hour: number, columns: readon
   top: number | null, rank: ScoreboardColumn | undefined, descending = true): ScoreboardParams | null {
   if (!columns.length || (top == null ? !tags.length : !rank)) return null;
   const keys = columns.map(column => column.key);
-  return top == null ? { branchId, hour, columns: keys, tags: [...tags] }
-    : { branchId, hour, columns: keys, tags: [], top: { count: top, sort: rank!.key, descending } };
+  return top == null ? { branchId, hour, columns: keys, countries: tags.map(countryFromKey) }
+    : { branchId, hour, columns: keys, countries: [], top: { count: top, sort: rank!.key, descending } };
 }
 
 /** A country's value of a column: its raw amount, or why there is none. */

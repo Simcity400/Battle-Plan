@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { failureText, type Failure } from '../../dashboard/queryError.ts';
 import { useMemo } from 'react';
 import type { Artwork, DatedFocusArtwork, FocusArtworkParams, FocusDatabase } from '../../generated/dashboard';
@@ -21,7 +22,7 @@ function useFocusFacts(client: DashboardClient, track: BoundTrack | undefined, c
   const spec = useMemo<FactSpec<FocusArtworkFact>>(() => ({
     product: 'focus-artwork', identity: JSON.stringify([country, database, mode]), perRequest: mode === 'images' ? 8 : 256,
     requestOrder: 'wanted',
-    params: (branchId, hour, tokens) => ({ branchId, hour, tag: country, database, tokens,
+    params: (branchId, hour, tokens) => ({ branchId, hour, country: country === undefined ? undefined : countryFromKey(country), database, tokens,
       textOnly: mode !== 'images', includeDescriptions: mode === 'details',
       ...(mode === 'images' ? { iconsOnly: true } : {}) }),
     extract: (data, params) => {

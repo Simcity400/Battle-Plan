@@ -5,7 +5,7 @@ import { countryDrillSpans, countryDrillTagAt } from '../../dashboard/countryIde
 import { NumericReply } from '../../dashboard/numericReply.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import { resolveOptions, sectionFields } from '../../dashboard/options.ts';
-import type { ArmySizeReply } from '../../generated/dashboard';
+import type { ArmySizeReply } from './armySizeData';
 import '../definitions.ts';
 import { armyDrillActors, armyDrillBands, armyDrillIdentityReply, armyDrillNumbers, armyDrillValue, pinArmyDrill } from './armyDrill.ts';
 import { definition, normaliseArmyOptions, OPTIONS } from './definition.ts';

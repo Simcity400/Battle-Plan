@@ -25,9 +25,11 @@ import { widgetDefinition } from './definitions';
 import '../widgets';
 import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { CAMPAIGN_MAP_VIEW, campaignToggled, MapViewsStore, toggleMapSetting } from './geometry';
-import { DEFAULT_MAP_OPTIONS } from './mapPicker';
+import { DEFAULT_MAP_OPTIONS, observedRole, observedSwitches } from './mapPicker';
+import type { CountryChoice } from './mapPicker';
 import { useSourceRoles } from './sources';
 import { PlaybackCountryPicker, PlaybackStrip } from './controls';
+import { useSlotTags } from './countrySlots.ts';
 import ReplayLibraryMenu from './ReplayLibraryMenu';
 import type { ReplayLibraryState } from './replayLibrary';
 import DashboardGrid, { bodiesWaiting } from './DashboardGrid';
@@ -88,7 +90,9 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const campaignsRef = useRef(campaigns);
   campaignsRef.current = campaigns;
   const [defaultRoleId, setDefaultRoleId] = useState<string | null>(null);
-  const [selectedCountries, setSelectedCountries] = useState<Record<string, string | null>>({});
+  // Each campaign's chosen country for this session: reopening the recording clears it, a seek keeps it.
+  const [selectedCountries, setSelectedCountries] = useState<Record<string, CountryChoice | null>>({});
+  const [observed, setObserved] = useState<Record<string, number>>({});
   // Histories chosen by id: indexes shift as a recording grows or its joins change.
   const [selectedBranches, setSelectedBranches] = useState<Record<string, string>>({});
   const [loadErrors, setLoadErrors] = useState<Record<string, Failure>>({});
@@ -108,7 +112,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const merged = useMemo(() => includeCampaigns(draftTemplate, campaigns), [draftTemplate, campaigns]);
   // Roles and tracks keep their identity while their content does: a widget's option or a layout move
   // changes neither, so the tracks bound from them, and the runtime every widget reads, stay the same.
-  const roleList = merged.roles.map((role) => ({ ...role, selectedTag: selectedCountries[role.id] ?? null }));
+  const roleList = merged.roles.map((role) => ({ ...role, selectedTag: selectedCountries[role.id]?.tag ?? null, selectedSlot: selectedCountries[role.id]?.slot ?? null, observed }));
   const rolesKey = JSON.stringify(roleList), tracksKey = JSON.stringify(merged.tracks);
   const templateRoles = useMemo(() => roleList, [rolesKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const templateTracks = useMemo(() => merged.tracks, [tracksKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -221,13 +225,14 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const popoutIssue = popoutProblem(popout) ?? popoutFailures.find(failure => failure.viewer === popoutViewer)?.message ?? null;
   // A pop-out map keeps following the clock from any page.
   useLayoutEffect(() => { if (!active && !mapActive && !popout.open) clock.stop(); }, [active, mapActive, popout.open, clock]);
-  const mapCountry = defaultRoleId ? selectedCountries[defaultRoleId] ?? null : null;
+  const mapChoice = defaultRoleId ? selectedCountries[defaultRoleId] ?? null : null;
+  const mapCountry = mapChoice?.tag ?? null, mapCountrySlot = mapChoice?.slot ?? null, mapObserved = observed[CAMPAIGN_MAP_VIEW] ?? null;
   useEffect(() => {
     if (!mapActive || !mapReady || mapSwitching || defaultLoading || !desktopAvailable) return;
-    const options = { ...mapOptions, ...campaignPicked, country: mapCountry };
+    const options = { ...mapOptions, ...campaignPicked, country: mapCountry, countrySlot: mapCountrySlot, observed: mapObserved };
     commands.send('configure', () => mapAction({ kind: 'configure', options }));
     return () => commands.forget('configure');
-  }, [mapActive, mapReady, mapSwitching, defaultLoading, mapOptions, campaignPicked, mapCountry, commands]);
+  }, [mapActive, mapReady, mapSwitching, defaultLoading, mapOptions, campaignPicked, mapCountry, mapCountrySlot, mapObserved, commands]);
   // The camera mode and its overlay choice are the viewer's own: the control shows what it reports
   // and asks it to change.
   const chooseCameraMode = useCallback((mode: CameraMode) => {
@@ -270,10 +275,10 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   useEffect(() => {
     if (popoutConfig == null || defaultLoading) return;
     let current = true;
-    void configurePopout(popout.generation, { ...mapOptions, country: mapCountry })
+    void configurePopout(popout.generation, { ...mapOptions, country: mapCountry, countrySlot: mapCountrySlot, observed: mapObserved })
       .then(() => { if (current) reportPopout(popoutConfig, 'configure', null); }, cause => { if (current) reportPopout(popoutConfig, 'configure', errorMessage(cause)); });
     return () => { current = false; };
-  }, [popoutConfig, popout.generation, defaultLoading, mapOptions, mapCountry, reportPopout]);
+  }, [popoutConfig, popout.generation, defaultLoading, mapOptions, mapCountry, mapCountrySlot, mapObserved, reportPopout]);
   const popoutClock = popoutClockKey(popout);
   useLayoutEffect(() => {
     const reference = tracks.find(track => track.roleId === defaultRoleId);
@@ -554,9 +559,33 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     }).then(unsubscribe => { if (live) stop = unsubscribe; else unsubscribe(); });
     return () => { live = false; stop?.(); commands.forget(...flips); };
   }, [client, defaultSource, commands]);
+  // A map's Ctrl+click chooses the country its campaign's map and dashboard share, as the game's observer switches.
+  const observeTarget = useRef({ template, defaultRoleId });
+  observeTarget.current = { template, defaultRoleId };
+  useEffect(() => {
+    let live = true;
+    let stop: (() => void) | undefined;
+    void client.onMapObserve?.((event) => {
+      const role = live ? observedRole(event.viewId, observeTarget.current.template, observeTarget.current.defaultRoleId) : null;
+      if (role) setSelectedCountries(previous => ({ ...previous, [role]: { tag: event.country.tag, slot: event.country.slot } }));
+      if (live) setObserved(previous => observedSwitches(previous, event));
+    }).then(unsubscribe => { if (live) stop = unsubscribe; else unsubscribe(); });
+    return () => { live = false; stop?.(); };
+  }, [client]);
+  // A pick is the country holding the picked tag at the playback hour, which the dashboard then follows by its slot.
+  const defaultTrack = tracks.find(track => track.roleId === defaultRoleId);
+  const defaultSlots = useSlotTags(client, defaultTrack, !!defaultTrack);
+  const pickCountry = (tag: string | null, slot: number | null) => {
+    if (!defaultRoleId) return;
+    const hour = defaultTrack ? clock.getHour() + defaultTrack.axisOffset : null;
+    const held = tag == null || hour == null ? null : defaultSlots?.slotOf(tag, hour) ?? null;
+    const chosen = held ?? slot;
+    if (tag != null && chosen == null) return;
+    setSelectedCountries((previous) => ({ ...previous, [defaultRoleId]: tag == null || chosen == null ? null : { tag, slot: chosen } }));
+  };
   const countryTags = useMemo(() => Object.fromEntries(campaigns.map(campaign => {
     const metadata = roles.bindings[campaign.id]?.source?.metadata;
-    return [campaign.id, selectedCountries[campaign.id] ?? metadata?.countries.find(country => country.id === metadata.playerCountryId)?.tag ?? null];
+    return [campaign.id, selectedCountries[campaign.id]?.tag ?? metadata?.countries.find(country => country.id === metadata.playerCountryId)?.tag ?? null];
   })), [campaigns, roles.bindings, selectedCountries]);
   useEffect(() => onMetadata(defaultSource?.metadata ?? null), [defaultSource, onMetadata]);
   useEffect(() => {
@@ -630,10 +659,10 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       return loaded.layouts.find(entry => entry.id === loaded.activeId)!.template;
     })();
     const merged = includeCampaigns(kept, campaigns);
-    const paged = { ...merged, roles: merged.roles.map(role => ({ ...role, selectedTag: selectedCountries[role.id] ?? null })) };
+    const paged = { ...merged, roles: merged.roles.map(role => ({ ...role, selectedTag: selectedCountries[role.id]?.tag ?? null, selectedSlot: selectedCountries[role.id]?.slot ?? null, observed })) };
     const bound = bindTracks(paged, sourceMap, selectedBranches);
     return { id, template: paged, runtime: { ...runtime, client: laneClient, tracks: bound, campaignTracks: paged.tracks, alignment: paged.alignment } };
-  }), [pageOrder, shownPage, draftTemplate, campaigns, selectedCountries, sourceMap, selectedBranches, runtime, laneClient]);
+  }), [pageOrder, shownPage, draftTemplate, campaigns, selectedCountries, observed, sourceMap, selectedBranches, runtime, laneClient]);
 
   /** Opens a campaign's recording again, found by its folder and campaign first. */
   const reconnect = async (campaign: Campaign) => {
@@ -650,12 +679,13 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       slots={campaignSlots(draftTemplate, campaigns)} errors={loadErrors} onLoad={(path, label, slotId) => { void openCampaign(path, label, slotId); }}
       onUnload={unloadCampaign} onDefault={setDefaultRoleId} onRenamed={relocate} relocations={relocations} onOpenReady={onOpenReady} />, campaignHost)}
     {(active || mapActive) && playbackHost && createPortal(<div className="header-workspace-bar">
-    <PlaybackCountryPicker clock={clock} track={tracks.find(track => track.roleId === defaultRoleId)} source={defaultSource} client={client} onCountries={roles.observeCountries} onReconnect={() => {
+    <PlaybackCountryPicker clock={clock} track={defaultTrack} source={defaultSource} client={client} onCountries={roles.observeCountries} onReconnect={() => {
       const campaign = campaignsRef.current.find(campaign => campaign.id === defaultRoleId);
       if (campaign) void reconnect(campaign);
     }} countries={defaultSource?.metadata.countries ?? []} playerCountryId={defaultSource?.metadata.playerCountryId ?? null}
       selectedTag={template.roles.find((role) => role.id === defaultRoleId)?.selectedTag ?? null}
-      onChange={(tag) => { if (defaultRoleId) setSelectedCountries((previous) => ({ ...previous, [defaultRoleId]: tag })); }} />
+      selectedSlot={template.roles.find((role) => role.id === defaultRoleId)?.selectedSlot ?? null}
+      onChange={pickCountry} />
     <PlaybackStrip clock={clock} tracks={tracks} alignment={template.alignment} defaultRoleId={defaultRoleId} />
     <div className="header-workspace-tools">
     {mapActive && mapReady && desktopAvailable && <CameraModeControl value={cameraMode} onChange={chooseCameraMode} overlays={cameraOverlays} onOverlaysChange={chooseOverlays} />}

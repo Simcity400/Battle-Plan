@@ -45,6 +45,7 @@ struct World {
     state_owners: BTreeMap<u32, Fact<u32>>,
     bases: BTreeMap<u32, Fact<bool>>,
     demilitarized: BTreeMap<u32, Fact<bool>>,
+    impassable: Vec<u32>,
     rail_edges: BTreeMap<(u32, u32), Fact<bool>>,
     rail_owners: BTreeMap<(u32, u32, u8), Fact<bool>>,
     route_trace: RefCell<Vec<String>>,
@@ -92,6 +93,7 @@ impl Default for World {
             state_owners: Default::default(),
             bases: Default::default(),
             demilitarized: Default::default(),
+            impassable: Vec::new(),
             rail_edges: Default::default(),
             rail_owners: Default::default(),
             route_trace: Default::default(),
@@ -145,8 +147,8 @@ impl MoveWorld for World {
             .cloned()
             .unwrap_or(Ok(false))
     }
-    fn impassable(&self, _: u32) -> Fact<bool> {
-        Ok(false)
+    fn impassable(&self, province: u32) -> Fact<bool> {
+        Ok(self.impassable.contains(&province))
     }
     fn owner_area_missing(&self, _: u32) -> Fact<bool> {
         Ok(false)
@@ -2025,3 +2027,5 @@ fn railway_integer_newton_heuristic_keeps_truncation_and_wrapped_negative_square
         assert_eq!(railway_heuristic(square), expected);
     }
 }
+
+mod cursor;

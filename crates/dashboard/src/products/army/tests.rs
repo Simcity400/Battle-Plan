@@ -63,7 +63,7 @@ fn recording() -> Source {
 
 /// The composition as it was read before keyed runs: every row of `ArmyMix` and the battalions
 /// column walked hour by hour through each part, a slot's mix rebuilt at each hour either moves.
-fn walked(recording: &Recording, attribution: u128, parts: &BTreeMap<String, Vec<Part>>) -> (HashMap<(u32, i32, i32, u32), MixRuns>, HashMap<u32, String>) {
+fn walked(recording: &Recording, attribution: u128, parts: &BTreeMap<Country, Vec<Part>>) -> (HashMap<(u32, i32, i32, u32), MixRuns>, HashMap<u32, String>) {
     let battalions = dashboard_declare::field(TableId::ArmyTotals, if attribution == 0 { "owner_battalions" } else { "host_battalions" }).unwrap();
     let mut by_stretch: BTreeMap<(u32, i32, i32), BTreeSet<u32>> = BTreeMap::new();
     for part in parts.values().flatten() {
@@ -132,7 +132,7 @@ fn the_army_composition_from_keyed_runs_equals_the_hour_by_hour_walk() {
         let side = u128::from(attribution == ArmyAttribution::Host);
         let line = line(&query, ArmyMeasure::Battalions, attribution).unwrap();
         for (first, last) in [(FIRST, LAST), (FIRST + 300, FIRST + 900), (UNREAD.0 - 10, UNREAD.1 + 10), (1_495, 1_505), (1_719, 1_721)] {
-            let parts: BTreeMap<String, Vec<Part>> = ["GER", "ITA"].map(|tag| (tag.to_owned(), line.parts(tag, first, last))).into();
+            let parts: BTreeMap<Country, Vec<Part>> = ["GER", "ITA"].map(|tag| (Country::from(tag), line.parts(tag, first, last))).into();
             assert!(parts.values().all(|held| !held.is_empty()), "both countries are held through {first}..={last}");
             let found = totals_runs(&query, &line, &parts).unwrap();
             let (ours, names) = mix_runs(recording, side, &parts, &found, |run| dashboard_query::cost::lifetimes(recording, run, TableId::ArmyMix).map(Arc::new), &AtomicBool::new(false)).unwrap();
@@ -150,7 +150,7 @@ fn the_army_composition_from_keyed_runs_equals_the_hour_by_hour_walk() {
     }
     assert!(compared > 20 && changes > 10 && gaps > 0, "{compared} runs, {changes} changes, {gaps} unknown stretches");
     let host = line(&query, ArmyMeasure::Battalions, ArmyAttribution::Host).unwrap();
-    let parts: BTreeMap<String, Vec<Part>> = BTreeMap::from([("ITA".to_owned(), host.parts("ITA", 1_800, 1_800))]);
+    let parts: BTreeMap<Country, Vec<Part>> = BTreeMap::from([(Country::from("ITA"), host.parts("ITA", 1_800, 1_800))]);
     let found = totals_runs(&query, &host, &parts).unwrap();
     let (ours, names) = mix_runs(recording, 1, &parts, &found, |run| dashboard_query::cost::lifetimes(recording, run, TableId::ArmyMix).map(Arc::new), &AtomicBool::new(false)).unwrap();
     let held: Vec<&MixRuns> = ours.values().collect();

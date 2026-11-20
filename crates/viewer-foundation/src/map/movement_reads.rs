@@ -91,6 +91,11 @@ type Index<T> = OnceLock<Result<T, String>>;
 #[path = "movement_reads/selected_common.rs"]
 mod selected_common;
 pub use selected_common::{CommonCells, CommonText};
+#[path = "movement_reads/order_cursor.rs"]
+mod order_cursor;
+pub use installed_content_unit_path::unit_path::order_cursor::OrderCursor;
+pub use order_cursor::{order_cursor, rule_relation};
+pub use installed_content_unit_path::unit_path::RuleReason;
 
 /// One country's `CountryWars` row in canonical slots.
 struct Wars {

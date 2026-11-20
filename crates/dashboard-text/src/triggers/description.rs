@@ -1,6 +1,6 @@
-//! Combat tactic requirements: describe the embedded conjunction
-//! with inversion=false, indent=0, mode=1.
-//! The caller supplies the heading and two-level line indentation.
+//! Trigger descriptions: a combat tactic's requirements describe the embedded conjunction
+//! with inversion=false, indent=0, mode=1 ([`describe`]), and the caller supplies the heading
+//! and two-level line indentation; other callers pass the game's indent and mode ([`describe_at`]).
 
 use installed_content_core::{parser::Item, parser::Operator, scope::Keyword, scope::Scope as Parsed};
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
@@ -36,6 +36,27 @@ pub fn describe<'a>(
     tactic_name: &TacticName<'_>,
     refusals: &mut BTreeMap<String, usize>,
 ) -> Result<String, String> {
+    describe_at(items, evaluator, text, localisation, scopes, phases, tactic_name, 0, 1, refusals)
+}
+
+/// [`describe`] of the conjunction at the game's `indent` and display `mode`: from indent one,
+/// two or more children go under the conjunction's own heading.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the evaluator, scripted text and tactic metadata borrowed separately at the description entrypoint"
+)]
+pub fn describe_at<'a>(
+    items: &[Item],
+    evaluator: &Evaluator<'_, 'a>,
+    text: &ScriptedText<'a>,
+    localisation: &Localisation,
+    scopes: Scopes,
+    phases: &[Vec<u8>],
+    tactic_name: &TacticName<'_>,
+    indent: usize,
+    mode: u8,
+    refusals: &mut BTreeMap<String, usize>,
+) -> Result<String, String> {
     evaluator.begin_description_in(scopes);
     let result = Formatter {
         evaluator,
@@ -45,7 +66,7 @@ pub fn describe<'a>(
         tactic_name,
         refusals: RefCell::new(refusals),
     }
-    .and(&evaluator.units(items), scopes, false, 0, 1);
+    .and(&evaluator.units(items), scopes, false, indent, mode);
     let ended = evaluator.end_description(scopes);
     match (result, ended) {
         (Err(why), _) => Err(why),

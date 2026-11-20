@@ -6,6 +6,7 @@
 //! named by no cell, never a zero. The air theatres the widget filters by are the owner's theatres
 //! with the mission regions of their member wings at the hour.
 
+use dashboard_base::products::{Country, validate_country};
 use super::LoadContext;
 use crate::{
     Source,
@@ -14,7 +15,6 @@ use crate::{
 };
 use dashboard_base::products::{
     artwork::sprites::{self, SpriteFrame},
-    validate_tag,
 };
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_text::catalogue::View;
@@ -72,7 +72,7 @@ pub struct AirMissionWingsAt;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirMissionsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -80,7 +80,7 @@ pub struct AirMissionsParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirMissionWingsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub region: u32,
 }
 
@@ -443,7 +443,7 @@ impl AtHour for AirMissionsAt {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -451,8 +451,8 @@ impl AtHour for AirMissionsAt {
         vec![AirMissionsParams::decl(), AirMissionsReply::decl(), AirMissionChoice::decl(), AirMissionRegion::decl(), AirMissionTheatre::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -547,7 +547,7 @@ impl AtHour for AirMissionWingsAt {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -555,8 +555,8 @@ impl AtHour for AirMissionWingsAt {
         vec![AirMissionWingsParams::decl(), AirMissionWingsReply::decl(), AirMissionWing::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

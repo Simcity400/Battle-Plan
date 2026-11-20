@@ -91,9 +91,9 @@ fn between_keeps_only_pairs_whose_two_tags_are_chosen() {
     };
     let names = tags(&[(ONE, "ONE", 0, 9), (TWO, "TWO", 0, 9), (THREE, "THREE", 0, 9)]);
     let chosen = ["ONE", "TWO"];
-    let between = fold_pairs(&lifetimes, &reads, &names, 0, 9, |a, b| chosen.contains(&a) && chosen.contains(&b));
+    let between = fold_pairs(&lifetimes, &reads, &names, 0, 9, |a, b| chosen.contains(&a.1) && chosen.contains(&b.1));
     assert_eq!(between.iter().map(|pair| pair.second_country.as_str()).collect::<Vec<_>>(), ["TWO"]);
-    let either = fold_pairs(&lifetimes, &reads, &names, 0, 9, |a, b| chosen.contains(&a) || chosen.contains(&b));
+    let either = fold_pairs(&lifetimes, &reads, &names, 0, 9, |a, b| chosen.contains(&a.1) || chosen.contains(&b.1));
     assert_eq!(either.len(), 2);
 }
 
@@ -109,7 +109,7 @@ fn a_breakdown_lists_what_the_country_took_in_each_lifetime_by_enemy_under_no_wa
         observed: vec![(0, 19)],
     };
     let names = tags(&[(ONE, "ONE", 0, 19), (TWO, "TWO", 0, 19), (THREE, "THREE", 0, 19), ((4, 44), "FOUR", 0, 9), ((4, 44), "FIVE", 10, 19), ((0, 5), "ZERO", 0, 19)]);
-    let (countries, series) = fold_breakdown("THREE", &lifetimes, &reads, &names, 0, 19, &HashMap::new());
+    let (countries, series) = fold_breakdown(&"THREE".into(), &lifetimes, &reads, &names, 0, 19, &HashMap::new());
     assert_eq!(countries, vec![CasualtyBreakdownCountryRun { first_hour: 0, last_hour: 19, identity: "3:33".into(), incomplete: false }]);
     let shown: Vec<(&str, Vec<(i32, i32, &str)>)> = series
         .iter()
@@ -147,7 +147,7 @@ fn a_breakdown_groups_each_lifetime_by_the_war_holding_it_and_an_ended_one_by_it
     let overlap = [held(ONE, THREE, 15, 16)];
     let wars = [("first", first.as_slice()), ("second", second.as_slice()), ("overlap", overlap.as_slice())];
     let groupings = lifetime_groupings(wars, &HashSet::from([west, east]));
-    let (_, series) = fold_breakdown("THREE", &lifetimes, &reads, &names, 0, 19, &groupings);
+    let (_, series) = fold_breakdown(&"THREE".into(), &lifetimes, &reads, &names, 0, 19, &groupings);
     let shown = |enemy: &str| -> Vec<(i32, i32, Option<&str>, Option<&str>, i32, bool)> {
         series
             .iter()
@@ -184,12 +184,12 @@ fn a_window_reply_carries_the_windows_its_index_names() {
     let source = Source::from_replay(crate::SourceKey { source_id: "casualties".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let load = LoadContext { content: None };
     let cancelled = AtomicBool::new(false);
-    let pairs = |window| CasualtyPairs::load(&source, &CasualtyPairsParams { branch_id: "1".into(), tags: Vec::new(), between: false, window }, &load, &cancelled).unwrap();
+    let pairs = |window| CasualtyPairs::load(&source, &CasualtyPairsParams { branch_id: "1".into(), countries: Vec::new(), between: false, window }, &load, &cancelled).unwrap();
     let manifest = pairs(None).windows;
     assert!(!manifest.is_empty());
     let shown = pairs(Some(0));
     assert_eq!((shown.windows, shown.window), (manifest.clone(), Some(0)));
-    let breakdown = |window| CasualtyBreakdown::load(&source, &CasualtyBreakdownParams { branch_id: "1".into(), tag: "GER".into(), window }, &load, &cancelled).unwrap();
+    let breakdown = |window| CasualtyBreakdown::load(&source, &CasualtyBreakdownParams { branch_id: "1".into(), country: "GER".into(), window }, &load, &cancelled).unwrap();
     assert_eq!(breakdown(None).windows, manifest);
     let shown = breakdown(Some(0));
     assert_eq!((shown.windows, shown.window), (manifest, Some(0)));

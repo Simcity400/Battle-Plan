@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import BombingBreakdown from './BombingBreakdown';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -22,7 +22,7 @@ export default function BombingDamageBreakdownWidget({ widget, runtime, active, 
   const identityKey = useIdentityKey(runtime.client, track, following);
   const playbackHour = useHeadHour(runtime.clock, following, position => headKey.current(position));
   const options = resolveOptions(OPTIONS, widget.options);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track);
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track);
   // The country's damage alone is broken down by building and state.
   const { data, pending, error, retry } = useMilitaryAirLedger(widget, runtime, 'bombing', active, { metric: 'total' });
   const index = useMemo(() => data ? militaryAirIndex(data) : null, [data]);

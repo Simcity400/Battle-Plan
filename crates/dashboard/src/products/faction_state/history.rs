@@ -48,6 +48,8 @@ pub enum FactionStateParams {
         #[serde(rename = "branchId")]
         branch_id: String,
         faction: String,
+        /// None follows the recording client's playing or observer country.
+        viewpoint: Option<dashboard_base::products::Country>,
     },
     Manpower {
         #[serde(rename = "branchId")]
@@ -59,7 +61,7 @@ pub enum FactionStateParams {
 impl FactionStateParams {
     fn identity(&self) -> (&str, &str) {
         match self {
-            Self::Rules { branch_id, faction } | Self::Manpower { branch_id, faction } => (branch_id, faction),
+            Self::Rules { branch_id, faction, .. } | Self::Manpower { branch_id, faction } => (branch_id, faction),
         }
     }
 }
@@ -218,9 +220,9 @@ impl Product for FactionState {
         let query = crate::answer::query(source, branch)?;
         let unobserved = query.timeline.unheld.iter().map(|gap| HourSpan { first_hour: gap.first, last_hour: gap.last }).collect();
         Ok(match params {
-            FactionStateParams::Rules { .. } => {
+            FactionStateParams::Rules { viewpoint, .. } => {
                 let cat = context.content().and_then(|options| catalogue::catalogue(source, options)).map_err(|why| why.to_string());
-                let mut reply = rules(&query, faction, cat.as_deref().map_err(Clone::clone), cancelled)?;
+                let mut reply = rules(&query, faction, cat.as_deref().map_err(Clone::clone), viewpoint.as_ref(), cancelled)?;
                 reply.unobserved = unobserved;
                 FactionStateReply::Rules(reply)
             }
@@ -339,6 +341,8 @@ struct Naming<'q, 'r> {
     cat: Result<&'q Catalogue, String>,
     lexicon: Lexicon,
     names: Names,
+    /// The view's chosen tag that scripted names expand in; none follows the recording client.
+    viewpoint: Option<&'q dashboard_base::products::Country>,
     /// The frames a scripted name (true) or a programme (false) was read at, by hour.
     frames: HashMap<(i32, bool), Arc<replay_frame::frame::DecodedFrame>>,
 }
@@ -350,7 +354,7 @@ fn localise(cat: &Catalogue, key: &[u8]) -> Result<String, String> {
 /// The tables a scripted name reads (`scripted`), or a programme's name.
 fn naming_tables(scripted: bool) -> Vec<Read> {
     let mut tables: Vec<TableId> = if scripted { crate::scripted_text::TABLES.to_vec() } else { Vec::new() };
-    tables.extend([TableId::LocalPlayer, TableId::CountryLinks, TableId::LexicalTokens]);
+    tables.extend([TableId::LocalPlayer, TableId::CountryLinks, TableId::Countries, TableId::LexicalTokens]);
     if !scripted {
         tables.extend([TableId::ProjectPrograms, TableId::Projects]);
     }
@@ -378,8 +382,8 @@ impl Naming<'_, '_> {
         }
         let cat = self.cat.clone()?;
         let frame = self.frame(hour, true)?;
-        let root = super::goals::viewer(&frame)?;
-        ScriptedText::new(&*frame, &cat.localisation, cat.scripted_content()?, root).expand_faction(&text, self.faction)
+        let root = super::goals::viewer(&frame, self.viewpoint)?;
+        ScriptedText::new(&*frame, &cat.localisation, cat.scripted_content()?, root).viewing(root).expand_faction(&text, self.faction)
     }
 
     /// A rule's or a doctrine's selection: the token's localised name.
@@ -535,8 +539,8 @@ fn slot_lanes(naming: &mut Naming<'_, '_>, lanes: BTreeMap<u32, Lane>, how: Name
 }
 
 /// The rules view: every selection lane of `faction` over the timeline.
-fn rules(query: &Query<'_>, faction: u64, cat: Result<&Catalogue, String>, cancelled: &AtomicBool) -> io::Result<FactionRulesReply> {
-    let mut naming = Naming { query, faction, cat, lexicon: Lexicon::default(), names: Names::new(&query.holders), frames: HashMap::new() };
+fn rules(query: &Query<'_>, faction: u64, cat: Result<&Catalogue, String>, viewpoint: Option<&dashboard_base::products::Country>, cancelled: &AtomicBool) -> io::Result<FactionRulesReply> {
+    let mut naming = Naming { query, faction, cat, lexicon: Lexicon::default(), names: Names::new(&query.holders), viewpoint, frames: HashMap::new() };
     let field = dashboard_declare::field;
     let mut warnings = BTreeMap::<String, usize>::new();
     let lanes = ordinal_lanes(query, TableId::FactionRules, field(TableId::FactionRules, "token")?, faction, cancelled)?;

@@ -3,9 +3,10 @@
 //! the read gives it (kind, native reference, owner, host, stored name and its refusal), never by
 //! a hash or a later name.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{Content, DAY_HOURS, reason};
 use crate::{Source, products::LoadContext};
-use dashboard_base::products::{Product, validate_tag};
+use dashboard_base::products::Product;
 use dashboard_query::Query;
 use replay_data::rows::{CountryFuelRow, FuelAwardDay, FuelAwardDayRecipient, Recorded, TableId};
 use serde::{Deserialize, Serialize};
@@ -39,7 +40,7 @@ pub(crate) fn recipient_key(part: &FuelAwardDayRecipient) -> String {
 
 /// The holder's raw id of `tag` at `hour`, and the run and read of CountryFuel there: its row and
 /// the hour that row was read.
-pub(crate) fn read_at(query: &Query<'_>, tag: &str, hour: i32) -> io::Result<(u32, Option<i32>, CountryFuelRow)> {
+pub(crate) fn read_at(query: &Query<'_>, tag: &Country, hour: i32) -> io::Result<(u32, Option<i32>, CountryFuelRow)> {
     use crate::products::at_hour::{Keys, Read};
     let id = super::demand::holder_id(query, tag, hour)?;
     let key = u128::from(id);
@@ -60,7 +61,7 @@ pub(crate) fn read_at(query: &Query<'_>, tag: &str, hour: i32) -> io::Result<(u3
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelAwardsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// Any hour the read holds: the reply names the read.
     pub hour: i32,
 }
@@ -145,7 +146,7 @@ impl Product for CountryFuelAwards {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -155,7 +156,7 @@ impl Product for CountryFuelAwards {
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let query = crate::answer::query(source, branch(&params.branch_id)?)?;
-        let (_, read_hour, row) = read_at(&query, &params.tag, params.hour)?;
+        let (_, read_hour, row) = read_at(&query, &params.country, params.hour)?;
         let read_hour = read_hour.ok_or_else(|| dashboard_core::refused("The fuel read holding this hour is not known"))?;
         let day = award_day(&row, read_hour).map_err(dashboard_core::refused)?;
         crate::metadata::check_cancel(cancelled)?;
@@ -163,7 +164,7 @@ impl Product for CountryFuelAwards {
         let (recipients, mut warnings) = recipients(day, &content)?;
         warnings.extend(content.warnings.iter().cloned());
         let reply = FuelAwardsReply {
-            tag: params.tag.clone(),
+            tag: query.holders.name(&params.country, params.hour),
             read_hour,
             country: row.country,
             country_instance: day.country_instance,
@@ -181,7 +182,7 @@ impl Product for CountryFuelAwards {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelAwardHistoryParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// The hour the recipient was picked at: the country is its holder then.
     pub hour: i32,
     /// The window: hours `window * detailHours` through the next window's first less one.
@@ -258,7 +259,7 @@ impl Product for CountryFuelAwardHistory {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)?;
+        validate_country(&params.country)?;
         if params.recipient_key.is_empty() { Err("Invalid fuel recipient") } else { Ok(()) }
     }
 
@@ -269,12 +270,12 @@ impl Product for CountryFuelAwardHistory {
 
     fn load(source: &Source, params: &Self::Params, _load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let query = crate::answer::query(source, branch(&params.branch_id)?)?;
-        let id = super::demand::holder_id(&query, &params.tag, params.hour)?;
+        let id = super::demand::holder_id(&query, &params.country, params.hour)?;
         let (first, last) = super::demand::window_span(params.window)?;
         let reads = super::demand::country_reads(&query, id, first, last, None, cancelled)?;
         let runs = award_runs(&reads.reads, &params.recipient_key, first, last);
         Ok(FuelAwardHistoryReply {
-            tag: params.tag.clone(),
+            tag: query.holders.name(&params.country, params.hour),
             country: id,
             window: params.window,
             recipient_key: params.recipient_key.clone(),

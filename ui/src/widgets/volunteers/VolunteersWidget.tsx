@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
@@ -23,7 +24,7 @@ import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import { useHolderLooks } from '../../dashboard/holderLooks.ts';
 import { nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { lookHour } from '../../dashboard/countryLooks';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -61,7 +62,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   // whose forces count; a group by hour counts a member only while it belongs.
   const all = widget.countries.kind === 'all';
   const groups = useCountryGroups(runtime, track, active && !all);
-  const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));
+  const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
   const lastHour = track?.branch.lastHour ?? 0;
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
@@ -71,7 +72,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   const tags = useMemo(() => requestTags(all, chosen.membership), [all, chosen.membership]);
   const requestable = all || (match.ready && !match.reason && !!tags?.length);
   const reply = useProduct<VolunteersExpeditionariesReply>(runtime.client, track && requestable ? { sourceId: track.source.id, revision: track.source.revision, product: 'volunteers-expeditionaries',
-    params: { branchId: track.branch.id, kind, tags } } : null, active, undefined, track?.source);
+    params: { branchId: track.branch.id, kind, countries: tags?.map(countryFromKey) ?? null } } : null, active, undefined, track?.source);
   const keep = useMemo(() => linkFilter(all ? null : match.matches, options.between === 'between'), [all, match, options.between]);
   const current = useMemo(() => reply.data ? linksAt(reply.data, at, keep) : { links: [], unknown: 0 }, [reply.data, at, keep]);
   linksKey.current = hour => {

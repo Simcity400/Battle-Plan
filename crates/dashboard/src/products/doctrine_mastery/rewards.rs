@@ -2,6 +2,7 @@
 //! country then (its scripted values and flags read at that hour): asked when a reward is hovered.
 //! An effect may read any scope, so the effect operands' tables are read whole at the hour.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{LoadContext, Owner, owner_reads, spelled};
 use crate::{
     Source,
@@ -10,7 +11,6 @@ use crate::{
     products::at_hour::{At, AtHour, Read},
     scripted_text::{EventObject, EventScope, EventScopes, ScriptedText},
 };
-use dashboard_base::products::validate_tag;
 use installed_content_core::{doctrines::Database, tokens::Token};
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -26,7 +26,7 @@ pub struct DoctrineRewards;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoctrineRewardsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// The folder's and the track's ordinals, as `doctrine-mastery` lists them.
     pub folder: u32,
     pub track: u32,
@@ -101,7 +101,7 @@ impl AtHour for DoctrineRewards {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -109,8 +109,8 @@ impl AtHour for DoctrineRewards {
         vec![DoctrineRewardsParams::decl(), DescribedReward::decl(), DoctrineRewardsReply::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

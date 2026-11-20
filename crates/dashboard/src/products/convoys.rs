@@ -9,12 +9,13 @@
 //! - A region or deal not read is not shown: never 100% and never zero. Lend-lease clients record
 //!   their route's bad flag and convoys, but no numeric efficiency: that is never invented.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     LoadContext, Product,
     country_ids::{Names, RunLinks},
 };
 use crate::{Source, catalogue, span::HourSpan};
-use dashboard_base::products::{resources::ResourceNaming, validate_tag};
+use dashboard_base::products::{resources::ResourceNaming};
 use dashboard_query::{Query, identity::Holder, read};
 use replay::{
     columnar_frames::Recording,
@@ -128,7 +129,7 @@ pub struct ConvoyHealthParams {
     pub branch_id: String,
     pub view: ConvoyView,
     /// The one country shown.
-    pub tag: String,
+    pub country: Country,
     /// The hours read; the whole timeline when not given.
     #[serde(default)]
     pub from: Option<i32>,
@@ -419,7 +420,7 @@ fn gather(source: &Source, query: &Query<'_>, params: &ConvoyHealthParams, (from
             ConvoyView::Regions => (None, None),
             ConvoyView::Trade => (Some(crate::answer::links(source, run)?), Some(crate::answer::convoys(source, run)?)),
         };
-        for holder in query.holders.within(&params.tag, stretch.first, stretch.last) {
+        for holder in query.holders.within(&params.country, stretch.first, stretch.last) {
             let Holder::Found { id, .. } = holder.holder else { continue };
             let (first, last) = (holder.first, holder.last);
             held.push((first, last));
@@ -533,7 +534,7 @@ impl Product for ConvoyHealth {
         {
             return Err("Invalid convoy health hours");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -588,7 +589,7 @@ impl Product for ConvoyHealth {
         Ok(ConvoyHealthReply {
             branch_id: params.branch_id.clone(),
             view: params.view,
-            tag: params.tag.clone(),
+            tag: query.holders.name(&params.country, query.timeline.last),
             first_hour: from,
             last_hour: to,
             scale: SCALE,

@@ -1,6 +1,7 @@
 /** A ranked measure's parts: what a race bar is split into, and what one country's breakdown stacks. A part is either
  * a declared measure of its own (a factory group's count beside the count of every group) or one of a sub-keyed
  * series' parts (a weapon type's stockpile). Missing is never zero: a bar with any part not known is drawn whole. */
+import { countryKey } from '../../dashboard/countryKey.ts';
 import type { CountryRaceEntry } from './countryRace';
 import type { RankedMeasure } from './measureRaceData';
 import { CELL, cellNumber, cellState, cellValue, rowKey, rowName } from '../../dashboard/follow/message.ts';
@@ -66,7 +67,7 @@ export function keyedAnswer(answer: FollowedAnswer | undefined, partBits: number
 /** Each tag's value at `hour` in a state reply of one measure; a state with no run is null. */
 export function measureStates(reply: SeriesStateReply | undefined, hour: number): Map<string, number | null> {
   const out = new Map<string, number | null>();
-  for (const state of reply?.states ?? []) if (state.hour === hour) out.set(state.tag, state.run ? NUMBER(BigInt(state.run.valueRaw), reply!.decimals) : null);
+  for (const state of reply?.states ?? []) if (state.hour === hour) out.set(countryKey(state.country), state.run ? NUMBER(BigInt(state.run.valueRaw), reply!.decimals) : null);
   return out;
 }
 
@@ -75,9 +76,9 @@ export function keyedStates(reply: SeriesStateReply | undefined, hour: number): 
   const out = new Map<string, Map<string, number | null>>();
   for (const state of reply?.states ?? [] as SeriesState[]) {
     if (state.hour !== hour || state.part == null) continue;
-    const parts = out.get(state.tag) ?? new Map<string, number | null>();
+    const parts = out.get(countryKey(state.country)) ?? new Map<string, number | null>();
     parts.set(state.part, state.run ? NUMBER(BigInt(state.run.valueRaw), reply!.decimals) : null);
-    out.set(state.tag, parts);
+    out.set(countryKey(state.country), parts);
   }
   return out;
 }

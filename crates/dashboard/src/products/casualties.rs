@@ -14,6 +14,7 @@
 //! lifetimes and the changes in them, never the hours of the campaign. Identities are named by
 //! the one identity rule; an hour an identity holds no tag is left out, never named by a guess.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     BranchParams, LoadContext, Product,
     army::windows,
@@ -74,6 +75,14 @@ fn identity_text((slot, id): Identity) -> String {
     format!("{slot}:{id}")
 }
 
+/// Whether `identity`, holding `tag`, is `country`.
+pub fn matches(country: &Country, identity: Identity, tag: &str) -> bool {
+    match country {
+        Country::Tag(chosen) => chosen == tag,
+        Country::Slot(slot) => identity.0 == *slot,
+    }
+}
+
 /// Each holder identity's tags over a timeline, from the identity layer's holder runs.
 #[derive(Default)]
 pub struct HolderTags {
@@ -118,14 +127,23 @@ impl HolderTags {
         }
     }
 
-    /// The identities that held `tag` within `first..=last`, each with its hours there.
-    pub fn holding(&self, tag: &str, first: i32, last: i32) -> Vec<(Identity, i32, i32)> {
-        let mut out: Vec<(Identity, i32, i32)> = self
+    /// The identities that were `country` within `first..=last`, each with its hours there: a
+    /// tag's holders, or a slot's own identities whatever tags they held.
+    pub fn holding(&self, country: &Country, first: i32, last: i32) -> Vec<(Identity, i32, i32)> {
+        let mut held: Vec<(Identity, i32, i32)> = self
             .by
             .iter()
-            .flat_map(|(identity, runs)| runs.iter().filter(|run| run.0 == tag).map(move |run| (*identity, run.1.max(first), run.2.min(last))))
+            .flat_map(|(identity, runs)| runs.iter().filter(move |run| matches(country, *identity, &run.0)).map(move |run| (*identity, run.1.max(first), run.2.min(last))))
             .filter(|(_, a, b)| a <= b)
             .collect();
+        held.sort_unstable();
+        let mut out: Vec<(Identity, i32, i32)> = Vec::with_capacity(held.len());
+        for run in held {
+            match out.last_mut() {
+                Some(last) if last.0 == run.0 && i64::from(last.2) + 1 >= i64::from(run.1) => last.2 = last.2.max(run.2),
+                _ => out.push(run),
+            }
+        }
         out.sort_unstable_by_key(|run| run.1);
         out
     }
@@ -240,7 +258,7 @@ pub struct CasualtyPairs;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CasualtyPairsParams {
     pub branch_id: String,
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     /// Otherwise each chosen country's casualties with every enemy.
     pub between: bool,
     /// None asks for the window manifest.
@@ -299,7 +317,7 @@ pub fn fold_pairs(
     tags: &HolderTags,
     first: i32,
     last: i32,
-    keep: impl Fn(&str, &str) -> bool,
+    keep: impl Fn((Identity, &str), (Identity, &str)) -> bool,
 ) -> Vec<CasualtyPairSeries> {
     let mut by_pair: BTreeMap<(Identity, Identity), Vec<(u128, i64, i64)>> = BTreeMap::new();
     for &(key, born, gone) in lifetimes {
@@ -328,7 +346,7 @@ pub fn fold_pairs(
                 continue;
             }
             let (Some(first_tag), Some(second_tag)) = (tags.tag_at(a, from), tags.tag_at(b, from)) else { continue };
-            if !keep(first_tag, second_tag) {
+            if !keep((a, first_tag), (b, second_tag)) {
                 continue;
             }
             let (Some(first_taken), Some(second_taken)) = (summed(&taken_a, &lives, from), summed(&taken_b, &lives, from)) else { continue };
@@ -525,7 +543,7 @@ impl Product for CasualtyPairs {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         branch(&params.branch_id)?;
-        params.tags.iter().try_for_each(|tag| super::validate_tag(tag))
+        params.countries.iter().try_for_each(validate_country)
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -545,8 +563,8 @@ impl Product for CasualtyPairs {
         let window = window(source, &query, &windows, index)?;
         crate::metadata::check_cancel(cancelled)?;
         let tags = HolderTags::new(&query);
-        let chosen: HashSet<&str> = params.tags.iter().map(String::as_str).collect();
-        let keep = |a: &str, b: &str| chosen.is_empty() || if params.between { chosen.contains(a) && chosen.contains(b) } else { chosen.contains(a) || chosen.contains(b) };
+        let chosen = |(identity, tag): (Identity, &str)| params.countries.iter().any(|country| matches(country, identity, tag));
+        let keep = |a: (Identity, &str), b: (Identity, &str)| params.countries.is_empty() || if params.between { chosen(a) && chosen(b) } else { chosen(a) || chosen(b) };
         // A lifetime is read only when some tag its identities held in the window is kept.
         let names = |identity: Identity| -> BTreeSet<&str> {
             let mut out = BTreeSet::new();
@@ -565,7 +583,7 @@ impl Product for CasualtyPairs {
             .filter(|&&(key, ..)| {
                 let lifetime = Lifetime::of(key);
                 let (a, b) = (names(lifetime.a), names(lifetime.b));
-                a.iter().any(|first| b.iter().any(|second| keep(first, second)))
+                a.iter().any(|first| b.iter().any(|second| keep((lifetime.a, first), (lifetime.b, second))))
             })
             .copied()
             .collect();
@@ -594,7 +612,7 @@ pub struct CasualtyBreakdown;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CasualtyBreakdownParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub window: Option<usize>,
 }
 
@@ -693,7 +711,7 @@ pub struct CasualtyBreakdownReply {
 /// where the enemy's tag or the lifetime's war changes), and the identities' runs. An ended
 /// lifetime stays in the war that held it at its last hour.
 pub fn fold_breakdown(
-    tag: &str,
+    tag: &Country,
     lifetimes: &[(u128, i64, i64)],
     reads: &WindowReads,
     tags: &HolderTags,
@@ -847,7 +865,7 @@ impl Product for CasualtyBreakdown {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         branch(&params.branch_id)?;
-        super::validate_tag(&params.tag)
+        super::validate_country(&params.country)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -856,7 +874,7 @@ impl Product for CasualtyBreakdown {
         let windows = manifest(&query)?;
         let mut reply = CasualtyBreakdownReply {
             branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
+            tag: query.holders.name(&params.country, query.timeline.last),
             available: true,
             windows: windows.clone(),
             window: params.window,
@@ -874,7 +892,7 @@ impl Product for CasualtyBreakdown {
         let window = window(source, &query, &windows, index)?;
         crate::metadata::check_cancel(cancelled)?;
         let tags = HolderTags::new(&query);
-        let holding: Vec<Identity> = tags.holding(&params.tag, window.first, window.last).into_iter().map(|run| run.0).collect();
+        let holding: Vec<Identity> = tags.holding(&params.country, window.first, window.last).into_iter().map(|run| run.0).collect();
         let asked: Vec<(u128, i64, i64)> = window
             .lifetimes
             .iter()
@@ -890,11 +908,11 @@ impl Product for CasualtyBreakdown {
         let (groupings, view) = if asked.is_empty() {
             (HashMap::new(), None)
         } else {
-            let view = wars::viewpoint_wars(source, branch_id, &params.tag, context, cancelled)?;
+            let view = wars::viewpoint_wars(source, branch_id, &params.country, context, cancelled)?;
             let keys: HashSet<u128> = asked.iter().map(|life| life.0).collect();
             (lifetime_groupings(view.wars.iter().map(|war| (war.id.as_str(), war.relations.as_slice())), &keys), Some(view))
         };
-        let (countries, series) = fold_breakdown(&params.tag, &asked, &reads, &tags, window.first, window.last, &groupings);
+        let (countries, series) = fold_breakdown(&params.country, &asked, &reads, &tags, window.first, window.last, &groupings);
         if let Some(view) = view {
             reply.wars = shown_wars(&view, &series, window.last);
             reply.warnings.extend(view.warnings.iter().cloned());

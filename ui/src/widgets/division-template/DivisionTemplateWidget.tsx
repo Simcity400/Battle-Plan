@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
@@ -55,7 +56,7 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
   const countFor = options.countFor === 'host' ? 'host' : 'owner';
-  const state = useHeadProduct(runtime, widget, 'division-templates', track && window && tag ? { tag, countFor } : null,
+  const state = useHeadProduct(runtime, widget, 'division-templates', track && window && tag ? { country: countryFromKey(tag), countFor } : null,
     { active, validate: validateDivisionTemplates, structure: templateStructure });
   useShownEachFrame(runtime.clock, state.shownAt, state.live);
   const data = state.data;

@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import type { LabelAt } from '../../charts/race/lines';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
@@ -23,7 +24,7 @@ const raw = (v: unknown) => v === null || (typeof v === 'string' && /^-?\d{1,19}
 
 export function validateOccupationDetail(data: unknown): OccupationDetailReply {
   if (!object(data) || !text(data.collaborationMissing) || !Array.isArray(data.warnings) || !data.warnings.every(item => typeof item === 'string')
-    || !Array.isArray(data.occupiers) || !data.occupiers.every(row => object(row) && typeof row.tag === 'string' && text(row.missing) && Array.isArray(row.collaboration)
+    || !Array.isArray(data.occupiers) || !data.occupiers.every(row => object(row) && (typeof row.country === 'string' || typeof row.country === 'number') && text(row.missing) && Array.isArray(row.collaboration)
       && row.collaboration.every(item => object(item) && Number.isInteger(item.slot) && text(item.tag) && raw(item.progressRaw)))) {
     throw new Error('The occupation reply is malformed.');
   }
@@ -73,7 +74,7 @@ export function occupationTooltip(tag: string, hour: number, detail: DetailAt | 
   const label = labelAt(hour)(tag);
   const base = { ...countryNameDetails(label), title: label.name, subtitle: formatDateTime(hour) };
   if (!detail || detail.hour !== hour) return { ...base, rows: [{ label: 'Reading this hour…', tone: 'muted' }] };
-  const row = detail.reply.occupiers.find(item => item.tag === tag);
+  const row = detail.reply.occupiers.find(item => countryKey(item.country) === tag);
   const totals = totalsOf(detail.values, tag);
   if (!totals) return { ...base, rows: [{ label: 'Not recorded', value: row?.missing ?? totalsMissing(detail.values, tag), tone: 'muted' }] };
   return { ...base, rows: [
@@ -98,7 +99,7 @@ export function occupationLineTooltip(hour: number, tags: readonly string[], det
     return [{ label: label.name, value: value(rank), swatch: colour(tag), strong: true, countryFlag: label },
       ...(shown === 'both' ? [{ label: `Average ${measureName(otherMeasure(rank)).toLowerCase()}`, value: value(otherMeasure(rank)) }] : []),
       { label: 'States', value: heldCoverage(totals) },
-      ...(collaboration ? collaborationRows(detail.reply.occupiers.find(item => item.tag === tag), detail.reply, hour, labelAt) : [])];
+      ...(collaboration ? collaborationRows(detail.reply.occupiers.find(item => countryKey(item.country) === tag), detail.reply, hour, labelAt) : [])];
   });
   return { ...title, rows: rows.length ? rows : [{ label: 'Not recorded', tone: 'muted' }] };
 }

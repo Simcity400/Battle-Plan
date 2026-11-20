@@ -23,10 +23,10 @@ fn groups(last: i32) -> Groups {
 }
 
 fn holders(last: i32) -> Holders {
-    Holders {
-        tags: TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![HolderRun { first: 0, last, holder: Holder::Found { slot: *id, id: *id }, starts_segment: true }])).collect(),
-        unknown: vec![],
-    }
+    Holders::new(
+        TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![HolderRun { first: 0, last, holder: Holder::Found { slot: *id, id: *id }, starts_segment: true }])).collect(),
+        vec![],
+    )
 }
 
 fn score(country: u32, region: u32, friendly: i64, enemy: i64) -> RaidAirScoreRow {
@@ -109,6 +109,10 @@ fn a_viewpoint_reads_friendly_and_enemy_of_its_side_s_leader_or_its_country() {
     let live = cells.finish();
     let kinds: BTreeSet<_> = live.json(&[])["kinds"].as_array().unwrap().iter().map(|kind| kind["id"].as_str().unwrap().to_owned()).collect();
     assert!(kinds.contains("enemy"), "a viewpoint shows both scores: {kinds:?}");
+    // The dashboard's selected country by slot reads as the tag it goes by at the hour.
+    country.viewpoint = Some(dashboard_base::products::Country::Slot(4));
+    let (by_slot, _) = moment_of(&frame(scores(), true), &country);
+    assert_eq!(by_slot.regions.iter().find(|region| region.id == 11).unwrap().cell, quiet.cell);
     let mut absent = params(AirMode::Viewpoint);
     absent.viewpoint = Some("f:99".into());
     let (reply, _) = moment_of(&frame(scores(), true), &absent);

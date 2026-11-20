@@ -19,7 +19,9 @@ import { CHART_LAYOUT } from '../../charts/tokens';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { countryCapitulationBadges } from '../../dashboard/countryCapitulations';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { countryTagAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import DatedCountryChip, { ChooseCountryChip } from '../../dashboard/DatedCountryChip';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -41,7 +43,8 @@ import { NumericReply } from '../../dashboard/numericReply';
 import { useProduct } from '../../dashboard/products';
 import { useFrameWindows } from './frameWindows.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { ArmyAttribution, ArmySizeReply, CountryGroupReply } from '../../generated/dashboard';
+import type { ArmyAttribution, CountryGroupReply } from '../../generated/dashboard';
+import type { ArmySizeReply } from './armySizeData';
 import { armyAbsent, armyMeasure, armyMetadataRequest, armySizeRequest, armyTooltips, armyWindows,
   formatArmyValue, formatArmyRaw, formatArmyPart, measureName, mergeArmyWindows, offersMeasure, typeName, validateArmySizeReply,
   validateArmyWindow } from './armySizeData.ts';
@@ -137,7 +140,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const groupData = stores.groups.update(sourceScope, incomingGroups.data, groupNumbers);
   const groupWarnings = stores.groupWarnings.update(sourceScope, incomingGroups.data?.warnings, reply => reply);
   const groupReply = { ...incomingGroups, data: groupData };
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupReply.data, lastHour, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groupReply.data, lastHour]);
   const metadataRequest = armyMetadataRequest(track);
@@ -278,6 +281,9 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const drillAt = Math.floor((drill.breakdown === null && choices === null ? moment : drillHour(drill, clockHour)) ?? moment);
   const drillPlayhead = drill.breakdown !== null && drill.follow ? clockHour : playhead;
   const originHour = drillOrigin?.tag === drillTag ? drillOrigin.hour : drillAt;
+  // A pin keeps the tag the drilled country went by at its origin; a stored selection holds tags.
+  const pinSlots = useSlotTags(runtime.client, track, active && !!drillTag && isSlotKey(drillTag));
+  const pinTag = drillTag && isSlotKey(drillTag) ? countryTagAt(pinSlots, countryFromKey(drillTag), originHour) : drillTag;
   const follow = () => { if (active && track) dispatchDrill({ type: 'follow' }); };
   useEffect(() => {
     if (!pinned || invalidSavedSelection || !window || drill.breakdown !== null || drill.choices !== null || !model) return;
@@ -326,7 +332,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
       const series = model.series.get(tag);
       return series ? [{ ...series, membership: membershipOf(tag) }] : [];
     });
-    return [...countryCapitulationBadges(groupReply.data, countries, extent).values()].flat();
+    return [...countryCapitulationBadges(groupReply.data, countries, extent, groupReply.data?.countryIdentities).values()].flat();
   }, [model, view, lineTags, mixTag, groupReply.data, resolved.membership, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const segmentAt = useCallback((tag: string, hour: number) => countryValueSegmentAt(model, tag, hour), [model]);
   const parts = useMemo(() => (data?.types ?? []).map(type => ({ id: type.key, label: typeName(type) })), [data]);
@@ -456,8 +462,8 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
       title="Army breakdown" day={drillFollowing && track ? <LiveText live={dayLive} at="day" /> : dayLabel(drillAt)} following={drill.follow} canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas" onClose={() => dispatchDrill({ type: 'close' })} onFollow={follow}
-      onPin={track && drillTag ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(
-        widget, track, drillTag, drillFollowing ? Math.floor(runtime.clock.getHour()) + track.axisOffset : drillAt, originHour, measure, drill.follow)) : undefined}
+      onPin={track && pinTag ? () => runtime.addWidgetBelow(widget.id, pinArmyDrill(
+        widget, track, pinTag, drillFollowing ? Math.floor(runtime.clock.getHour()) + track.axisOffset : drillAt, originHour, measure, drill.follow)) : undefined}
       main={main}>
       {choice}
     </DrillHost>

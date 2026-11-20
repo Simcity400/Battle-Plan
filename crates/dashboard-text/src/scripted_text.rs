@@ -669,6 +669,9 @@ pub struct ScriptedText<'a> {
     /// Raw zero's tag, read on first use.
     reserved_tag: std::sync::OnceLock<Result<String, String>>,
     root: u32,
+    /// The viewing country's slot, which `Player` and tag aliases resolve to, as the game's
+    /// observer does; `None` reads the recording client's from LocalPlayer.
+    viewer: Option<u32>,
     pub(crate) nato_counters: bool,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
 }
@@ -919,6 +922,7 @@ impl<'a> ScriptedText<'a> {
             frame,
             reserved_tag: std::sync::OnceLock::new(),
             root,
+            viewer: None,
             nato_counters: installed_content_settings::settings::MapOptions::DEFAULT.nato_counters,
             world: std::sync::OnceLock::new(),
         };
@@ -960,6 +964,7 @@ impl<'a> ScriptedText<'a> {
             frame: self.frame,
             reserved_tag: std::sync::OnceLock::new(),
             root,
+            viewer: self.viewer,
             nato_counters: self.nato_counters,
             world: std::sync::OnceLock::new(),
         }
@@ -969,6 +974,12 @@ impl<'a> ScriptedText<'a> {
     /// Unit-bonus icons, including nested effect descriptions, follow the view.
     pub fn with_nato_counters(mut self, nato: bool) -> Self {
         self.nato_counters = nato;
+        self
+    }
+
+    /// `Player` and tag aliases resolve to the viewing country `viewer`, a canonical slot.
+    pub fn viewing(mut self, viewer: u32) -> Self {
+        self.viewer = Some(viewer);
         self
     }
 
@@ -2119,10 +2130,13 @@ impl<'a> ScriptedText<'a> {
         })
     }
 
-    /// The local player's country when signed-positive, else the observer
-    /// country, through CountryLinks; refused by name where the hour
-    /// does not say.
+    /// The viewing country: the one the view chose, else the local player's country when
+    /// signed-positive, else the observer country, through CountryLinks; refused by name where
+    /// the hour does not say.
     fn local_player(&self) -> Result<u32, String> {
+        if let Some(viewer) = self.viewer {
+            return Ok(viewer);
+        }
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::LocalPlayer),
             || self.local_player_unrecorded(),

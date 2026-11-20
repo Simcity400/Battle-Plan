@@ -5,6 +5,7 @@
 //! and their participants' changes over its hours ([`replay::lanes::history`]); the ranking reads
 //! each battle's last state ([`replay::lanes::at_each`]) and the sides of the rows it shows.
 
+use dashboard_base::products::Country;
 use super::super::{LoadContext, Product, country_ids, groups::MembershipRun};
 use super::sunk;
 use crate::Source;
@@ -60,7 +61,7 @@ pub struct NavalBattlesManifestParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NavalBattleCountryFilter {
-    pub tags: Option<Vec<String>>,
+    pub countries: Option<Vec<Country>>,
     pub membership: Option<Vec<MembershipRun>>,
     pub unobserved: Vec<HourSpan>,
 }
@@ -68,13 +69,13 @@ pub struct NavalBattleCountryFilter {
 impl NavalBattleCountryFilter {
     /// Whether a battle whose sides hold these countries at `hour` is chosen: a side not known
     /// whole is never left out, as its countries may be.
-    pub fn matches(&self, sides: &[BattleSide], hour: i32) -> bool {
-        if self.tags.is_none() && self.membership.is_none() || sides.iter().any(|side| side.countries_unknown.is_some()) {
+    pub fn matches(&self, holders: &dashboard_query::identity::Holders, sides: &[BattleSide], hour: i32) -> bool {
+        if self.countries.is_none() && self.membership.is_none() || sides.iter().any(|side| side.countries_unknown.is_some()) {
             return true;
         }
         let unobserved = self.unobserved.iter().any(|span| span.first_hour <= hour && hour <= span.last_hour);
         sides.iter().flat_map(|side| &side.countries).any(|country| {
-            self.tags.as_ref().is_none_or(|tags| tags.contains(&country.tag))
+            self.countries.as_ref().is_none_or(|countries| countries.iter().any(|chosen| holders.goes_by(chosen, &country.tag, hour)))
                 && self.membership.as_ref().is_none_or(|runs| unobserved || runs.iter().any(|run| run.tag == country.tag && run.first_hour <= hour && hour <= run.last_hour))
         })
     }
@@ -631,7 +632,7 @@ impl Product for NavalBattlesRanking {
             let sides = battle.cells.peak.is_some().then(|| sides_at(cells.iter().map(|(key, cells)| (*key, Some(cells.as_slice()))), &|raw| named.at(raw, battle.hour)));
             let id = battle_id(battle.combat, battle.cells.first_hour);
             let run = live_run(&id, &battle.cells, sides.as_ref(), battle.hour, battle.hour);
-            if !params.countries.matches(&run.row.sides, battle.hour) {
+            if !params.countries.matches(&query.holders, &run.row.sides, battle.hour) {
                 continue;
             }
             let province = read::at(recording, battle.run, &[read::Read { table: TableId::NavalCombats, columns: Some(&[0][..]), keys: Keys::These(&[u128::from(battle.combat)][..]) }], battle.hour)?;

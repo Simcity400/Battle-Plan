@@ -3,6 +3,7 @@
 //! bank, gains and unlocked rewards as recorded. A rows-at-an-hour product ([`AtHour`]): names,
 //! icons and thresholds come from the recorded content, the numbers from `DoctrineTracks`.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     LoadContext,
     at_hour::{At, AtHour, Keys, Owner, Read},
@@ -11,7 +12,6 @@ use crate::{
     Source,
     catalogue::{self, Refusals, View},
 };
-use dashboard_base::products::validate_tag;
 use dashboard_follow::live::{Cells, Source as Cell};
 use installed_content_core::{content::ResolvedContent, doctrines::Database, tokens::Token};
 use installed_content_localisation::localisation::Localisation;
@@ -33,7 +33,7 @@ pub struct DoctrineMastery;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoctrineMasteryParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// A grand doctrine or subdoctrine: its token's spelling, and its name and sprite where the
@@ -316,7 +316,7 @@ impl AtHour for DoctrineMastery {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -324,8 +324,8 @@ impl AtHour for DoctrineMastery {
         vec![DoctrineMasteryParams::decl(), MasteryChoice::decl(), MasteryReward::decl(), MasteryTrack::decl(), MasteryFolder::decl(), DoctrineMasteryReply::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn uses_sample(_table: TableId) -> bool { false }

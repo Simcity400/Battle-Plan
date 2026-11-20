@@ -5,6 +5,7 @@
 //! is not recorded refuses the selection by name instead of drawing a guessed design. Pictures are
 //! drawn once per source and catalogue. Other widgets show a design's art through this product.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{Content, archetype_of};
 use crate::{
     Source,
@@ -17,7 +18,6 @@ use crate::{
 use dashboard_base::products::{
     artwork::ICON_EDGE,
     equipment_icon::{self, IconChoice, IconContent, IconHour},
-    validate_tag,
 };
 use dashboard_text::{
     metadata::link_slot,
@@ -56,7 +56,7 @@ const TABLES: [TableId; 13] = [
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileArtworkParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// Designs that need their own pictures, instead of a type's best.
     #[serde(default)]
     pub variants: Vec<String>,
@@ -185,8 +185,8 @@ fn picture(catalogue: &Arc<Catalogue>, state: &Mutex<Held>, choice: IconChoice, 
     made
 }
 
-fn reply(frame: &DecodedFrame, params: &StockpileArtworkParams, owner: Owner, context: &ArtContext, cancelled: &AtomicBool) -> io::Result<StockpileArtworkReply> {
-    let mut reply = StockpileArtworkReply { tag: params.tag.clone(), entries: Vec::new(), warnings: Vec::new() };
+fn reply(frame: &DecodedFrame, params: &StockpileArtworkParams, tag: String, owner: Owner, context: &ArtContext, cancelled: &AtomicBool) -> io::Result<StockpileArtworkReply> {
+    let mut reply = StockpileArtworkReply { tag, entries: Vec::new(), warnings: Vec::new() };
     let (catalogue, units, state) = match (&context.content.catalogue, &context.content.units, &context.held) {
         (Ok(catalogue), Ok(units), Some(state)) => (catalogue, units, state),
         (Err(why), _, _) | (_, Err(why), _) => {
@@ -282,15 +282,15 @@ impl AtHour for StockpileArtwork {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)?;
+        validate_country(&params.country)?;
         if params.variants.iter().any(|id| id.parse::<u64>().is_err()) {
             return Err("Invalid stockpile artwork design");
         }
         Ok(())
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -309,6 +309,6 @@ impl AtHour for StockpileArtwork {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Stockpile artwork country is unavailable at this hour"))?;
-        reply(frame, params, owner, at.context, at.cancelled)
+        reply(frame, params, at.holders.name(&params.country, at.hour), owner, at.context, at.cancelled)
     }
 }

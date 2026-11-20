@@ -245,6 +245,9 @@ pub fn open_clocked(units: Units, settings: Settings, clock: Hour, side: Side) -
 /// mirrors are declared again, and the rows of a table a maker declared since arrive, only in a step.
 const HANDS_BACK: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long after a change of viewing country its publications are made at the frame's pace.
+const HURRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// How long a stepped frame's picture is caught up to before it is refused by name.
 const CATCHING_UP: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -930,6 +933,13 @@ pub struct MapSide {
     /// no work left since the view's map mode last changed.
     mode: Option<viewer_world::map::map_mode::MapMode>,
     mode_settled: Vec<bool>,
+    /// The view its drawn picture was made at: while a compose for a new one runs, the one before.
+    view_shown: View,
+    /// The perspective and viewing country of the last overlay layout handed to the frame, which it
+    /// holds.
+    handed_viewer: Option<(viewer_foundation::map::perspective::Choice, u32)>,
+    /// When the view's viewing country last changed ([`Self::hurrying`]).
+    switched: Option<Instant>,
     /// Its frames come from the stepped harness, which holds each frame's hour until it is drawn.
     stepped: bool,
     /// A test holds every settle while a [`SettlesHeld`] it took lives.
@@ -1012,7 +1022,9 @@ fn offer(applied: &[Arc<Step>], later: &[Arc<Step>], epoch: u64, reads: &BTreeSe
 fn join_overlay(overlay: Option<&mut overlay::Overlay>, layers: &[Box<dyn Layer>], perspective: &viewer_foundation::map::perspective::Choice, branch: Option<replay_data::BranchId>, settling: Settling) -> bool {
     let Some(overlay) = overlay else { return false };
     let at_hour = overlay.join(settling);
-    if let (Some(branch), Some((tables, rosters))) = (branch, overlay.tables().map(Arc::clone).zip(overlay.rosters())) {
+    // Only tables made for this perspective: the counters never settle one country's units over
+    // another's vision.
+    if let (Some(branch), Some((tables, rosters))) = (branch, overlay.tables_of(perspective).map(Arc::clone).zip(overlay.rosters())) {
         crate::layers::counter_kinds::give(layers, perspective, tables.vision(), tables.counters(), branch, move || rosters as crate::layers::air_mission_counters::Passes);
     }
     at_hour
@@ -1091,6 +1103,9 @@ impl MapSide {
             resets_shown: 0,
             mode: None,
             mode_settled: Vec::new(),
+            view_shown: View::default(),
+            handed_viewer: None,
+            switched: None,
             stepped: false,
             #[cfg(any(test, feature = "test-support"))]
             settles_held: Arc::default(),
@@ -1160,10 +1175,15 @@ impl MapSide {
         self.overlay.as_deref()
     }
 
-    /// The vision its layers show, as the step that settled the vision layer copied it out; why
-    /// there is none, by name.
+    /// The vision its layers show, as the step that settled the vision layer copied it out, while it
+    /// is the vision of the picture on screen's viewing country; why there is none, by name.
     pub fn vision(&self) -> Result<Arc<viewer_foundation::map::perspective::Vision>, String> {
-        self.vision.kept()
+        self.vision.kept_for(&self.view_shown.perspective)
+    }
+
+    /// The view its drawn picture was made at: while a compose for a new one runs, the one before.
+    pub fn view_shown(&self) -> &View {
+        &self.view_shown
     }
 
     /// The frame's newest ask of the overlay, taken at the next step.
@@ -1175,7 +1195,13 @@ impl MapSide {
 
     /// The overlay the last step made; the frame holds it from then on.
     pub fn take_overlay(&mut self) -> Option<overlay::Made> {
-        self.overlay.as_deref_mut().and_then(overlay::Overlay::take)
+        let made = self.overlay.as_deref_mut().and_then(overlay::Overlay::take);
+        // One asked over the vision kept before it refused is not the picture's.
+        let made = made.filter(|_| self.vision_refused().is_none());
+        if let Some(made) = &made {
+            self.handed_viewer = Some((self.view_shown.perspective.clone(), made.tables.ours()));
+        }
+        made
     }
 
     /// The step asks the overlay's maker for the overlay of its hour, at its apply: its rows, its
@@ -1280,6 +1306,13 @@ impl MapSide {
         })
     }
 
+    /// The frame holds a layout handed for `choice` and viewing country `ours`, as
+    /// [`Self::take_overlay`] notes one.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hand_viewer(&mut self, choice: viewer_foundation::map::perspective::Choice, ours: u32) {
+        self.handed_viewer = Some((choice, ours));
+    }
+
     /// No layer settles until the guard returned is dropped: a test then keeps a layer's marks
     /// across several steps and sees the settle after them make the newest values.
     #[cfg(any(test, feature = "test-support"))]
@@ -1350,6 +1383,18 @@ impl MapSide {
         let Declaring { union: declared, reads, upstream, each } = declare(&self.entry, &mut self.layers, &view);
         if view.map_mode != self.view.map_mode {
             self.mode_settled.clear();
+        }
+        if view.perspective != self.view.perspective {
+            // Another viewing country: the vision and every layer reading it compose again from the
+            // mirrors, as at a seek, so none shows what it made for the country before, and the
+            // overlay made for that country is never installed after it.
+            if let Some(at) = self.names.iter().position(|name| *name == "vision").filter(|&at| self.reads[at].is_ok()) {
+                (self.ready[at], self.recompose[at]) = (false, true);
+            }
+            if let Some(overlay) = self.overlay.as_deref_mut() {
+                overlay.reset();
+            }
+            self.switched = Some(Instant::now());
         }
         self.view = view;
         for (at, read) in reads.iter().enumerate() {
@@ -1839,6 +1884,7 @@ impl MapSide {
         frame.composing = self.composing || self.superseded;
         if !frame.composing {
             self.resets_shown = self.resets_taken;
+            self.view_shown.clone_from(&self.view);
             self.update_shown();
         }
         for ((part, shown), fresh) in frame.layers.iter_mut().zip(&self.shown).zip(&self.fresh) {
@@ -1965,6 +2011,30 @@ impl MapSide {
         self.names.iter().enumerate().map(|(at, &name)| (name, self.reads[at].is_ok() && self.ready[at], self.last.layers.get(at).is_some_and(|part| part.upload_carried))).collect()
     }
 
+    /// Each drawn layer as it stands after the last step: what the viewpoint-switch harness times
+    /// each layer by.
+    pub fn caught_up(&self) -> Vec<CaughtUp> {
+        use crate::layers::Published;
+        (0..self.layers.len())
+            .filter(|&at| self.reads[at].is_ok() && self.ready[at])
+            .map(|at| {
+                let layer = &self.layers[at];
+                let published = layer.published();
+                let current = match published {
+                    Published::Current => true,
+                    Published::At(hour) | Published::Cadence(hour) => self.applied.is_some_and(|applied| hour >= applied),
+                    Published::Nothing => false,
+                };
+                CaughtUp {
+                    name: self.names[at],
+                    caught: current && layer.uploaded() && layer.carried().entities == 0,
+                    withheld: matches!(published, Published::Nothing),
+                    viewer: held_viewer(layer.as_ref()),
+                }
+            })
+            .collect()
+    }
+
     /// Why the map's drawn hour is what it is: the hour applied, the drawn hour, whether a reset
     /// composes, and per declared layer not refused its name, whether it is composed, the hour it
     /// shows, what it publishes, what it carries and whether its upload is done.
@@ -2058,8 +2128,7 @@ impl MapSide {
     fn copy_vision(&mut self, exact: bool) -> Result<Arc<viewer_foundation::map::perspective::Vision>, String> {
         let applied = self.applied;
         let home = self.mirrors.is_some() && !self.composing && !self.superseded;
-        let at = self.names.iter().position(|name| *name == "vision").filter(|&at| self.reads[at].is_ok() && self.ready[at]);
-        let layer = at.and_then(|at| self.layers[at].any().downcast_ref::<crate::layers::vision::Vision>());
+        let layer = vision_of(&self.names, &self.reads, &self.ready, &self.layers, self.composing || self.superseded);
         self.vision.shown(layer, applied, home, exact)
     }
 
@@ -2077,6 +2146,10 @@ impl MapSide {
         let until = Instant::now() + HANDS_BACK;
         for lay in [false, true] {
             loop {
+                // A settled vision refusal is the hour's whole answer: no overlay is laid out without one.
+                if self.vision_refused().is_some() {
+                    return Ok(true);
+                }
                 // The maker's rows are made from the mirrors by the view store, which a step posts
                 // to at its apply. This settle advances no step, so it posts to it itself: before
                 // the ask for the hour's sets, and again after it, because the ask is what opens
@@ -2113,6 +2186,47 @@ impl MapSide {
         let Some(hour) = self.applied else { return };
         let (store, held) = (&mut self.views, self.mirrors.as_ref().expect("the mirrors are home while not composing"));
         store.post(held, hour, self.branch.unwrap_or_default(), self.epoch, true);
+    }
+
+    /// The vision layer while it is drawn and home ([`vision_of`]).
+    fn vision_layer(&self) -> Option<&crate::layers::vision::Vision> {
+        vision_of(&self.names, &self.reads, &self.ready, &self.layers, self.composing || self.superseded)
+    }
+
+    /// The viewing country the vision layer shows; none while it is refused, not drawn or away.
+    pub fn viewer(&self) -> Option<u32> {
+        self.vision_layer()?.ours()
+    }
+
+    /// Whether the layout the frame holds is to be let go: it was handed for another chosen country
+    /// than the picture's, made for another viewer than the vision's once it has one, or the
+    /// vision has answered with a refusal (the chosen tag absent at the hour sought). A seek's
+    /// vision being made again is none of these: the layout before stands until the next. Taken once.
+    pub fn take_overlay_withdrawal(&mut self) -> bool {
+        if self.composing || self.superseded {
+            return false;
+        }
+        let viewer = self.viewer();
+        let refused = self.vision_refused().is_some();
+        let other = self.handed_viewer.as_ref().is_some_and(|(choice, ours)| refused || *choice != self.view_shown.perspective || viewer.is_some_and(|viewer| viewer != *ours));
+        if other {
+            self.handed_viewer = None;
+        }
+        other
+    }
+
+    /// The vision's refusal once its fold has answered, by name: every part that needs it is
+    /// withheld. None while it is being made or the layers are away.
+    pub fn vision_refused(&self) -> Option<String> {
+        let vision = self.vision_layer()?;
+        vision.made().then(|| vision.refused()).flatten()
+    }
+
+    /// For a while after the view's viewing country changed, its publications are made as soon as
+    /// the frame has taken the one before: the new country's parts reach the screen at the frame's
+    /// pace rather than the simulation's.
+    pub fn hurrying(&self) -> bool {
+        self.switched.is_some_and(|at| at.elapsed() < HURRY)
     }
 
     /// Settles every layer whole, the products made from rows at the head waited for: what a
@@ -2545,6 +2659,66 @@ impl Drop for MapSide {
     fn drop(&mut self) {
         self.entry.maps.fetch_sub(1, Ordering::AcqRel);
         self.entry.playhead.retire(self.reader);
+    }
+}
+
+/// The vision layer of `layers` while it is drawn and home: none while a compose has the layers
+/// away or came back superseded (`away`), when what they hold is no answer.
+fn vision_of<'a>(names: &[&'static str], reads: &[Result<BTreeSet<usize>, String>], ready: &[bool], layers: &'a [Box<dyn Layer>], away: bool) -> Option<&'a crate::layers::vision::Vision> {
+    if away {
+        return None;
+    }
+    let at = names.iter().position(|name| *name == "vision")?;
+    if !(reads.get(at)?.is_ok() && *ready.get(at)?) {
+        return None;
+    }
+    layers.get(at)?.any().downcast_ref()
+}
+
+/// One drawn layer as [`MapSide::caught_up`] finds it.
+#[derive(Clone, Copy, Debug)]
+pub struct CaughtUp {
+    pub name: &'static str,
+    /// Nothing carried, uploaded whole, and its product current with the hour applied.
+    pub caught: bool,
+    /// It has published nothing yet: its product is withheld.
+    pub withheld: bool,
+    /// The viewing country's canonical slot it holds, for a layer that holds one.
+    pub viewer: Option<u32>,
+}
+
+/// The viewing country's canonical slot `layer` holds: the vision's own, or the vision it was
+/// given or made from; none for a layer that holds no viewing country or is hidden.
+fn held_viewer(layer: &dyn Layer) -> Option<u32> {
+    use crate::layers::{air_mission_counters, base_counters, counters, gun_counters, labels, land_markers, naval_markers, radar, trains, vision};
+    let any = layer.any();
+    let given = |held: Option<(viewer_foundation::map::perspective::Choice, Arc<viewer_foundation::map::perspective::Vision>)>| held.map(|(_, vision)| vision.ours());
+    if let Some(layer) = any.downcast_ref::<vision::Vision>() {
+        layer.ours()
+    } else if let Some(layer) = any.downcast_ref::<labels::Labels>() {
+        layer.ours().filter(|_| layer.shown())
+    } else if let Some(layer) = any.downcast_ref::<radar::Radar>() {
+        layer.ours()
+    } else if let Some(layer) = any.downcast_ref::<trains::Trains>() {
+        layer.ours().filter(|_| layer.shown())
+    } else if let Some(layer) = any.downcast_ref::<counters::Counters>() {
+        given(layer.perspective())
+    } else if let Some(layer) = any.downcast_ref::<counters::fed::Fed>() {
+        given(layer.perspective())
+    } else if let Some(layer) = any.downcast_ref::<land_markers::LandMarkers>() {
+        given(layer.perspective())
+    } else if let Some(layer) = any.downcast_ref::<naval_markers::NavalMarkers>() {
+        given(layer.perspective())
+    } else if let Some(layer) = any.downcast_ref::<base_counters::BaseCounters>() {
+        given(layer.perspective())
+    } else if let Some(layer) = any.downcast_ref::<base_counters::fed::BaseCountersFed>() {
+        given(layer.perspective())
+    } else if let Some(layer) = any.downcast_ref::<gun_counters::GunCounters>() {
+        given(layer.perspective())
+    } else if let Some(layer) = any.downcast_ref::<air_mission_counters::AirMissionCounters>() {
+        given(layer.perspective())
+    } else {
+        None
     }
 }
 

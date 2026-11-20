@@ -88,8 +88,10 @@ export function pinLosses(widget: WidgetSpec, track: BoundTrack, tag: string, ho
   delete options.lossSelection;
   delete options.lossCountry;
   if (country) options.lossCountry = JSON.stringify(country);
-  if (keys) options.lossSelection = JSON.stringify({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag, keys });
-  return { ...pinned, countries: { kind: 'tags', tags: [tag] },
+  // Pinned by the tag the chosen country went by, which a stored selection keeps; the drill country names its slot.
+  const pinnedTag = country?.tag ?? tag;
+  if (keys) options.lossSelection = JSON.stringify({ campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: pinnedTag, keys });
+  return { ...pinned, countries: { kind: 'tags', tags: [pinnedTag] },
     time: from != null ? { mode: 'range', firstOffset: from - track.branch.firstHour, lastOffset: offset }
       : following ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
     options };

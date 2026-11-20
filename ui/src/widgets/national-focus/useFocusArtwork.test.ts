@@ -80,7 +80,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     let detailsWanted: readonly NameAt[] = [];
     const params = (call: typeof calls[number]) => call.input.params as FocusArtworkParams;
     const answer = (call: typeof calls[number], details = false) => call.answer({
-      branchId: params(call).branchId, hour: params(call).hour, tag: params(call).tag, database: params(call).database,
+      branchId: params(call).branchId, hour: params(call).hour, tag: String(params(call).country), database: params(call).database,
       items: params(call).tokens.map(token => ({ artwork: { token,
         name: params(call).iconsOnly ? null : details ? 'Detail title' : token === 'empty' ? '' : token === 'equal' ? 'equal' : 'Authored literal title',
         description: details ? '' : null, baseDurationDays: 10, icon: params(call).textOnly ? null : 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' }, reason: null })),
@@ -209,7 +209,7 @@ test('known static focus titles omit dated title work, retaining empty and key-e
     const client = { product: (input: ProductRequest) => new Promise<ProductReply<unknown>>(resolve => {
       const params = input.params as FocusArtworkParams;
       calls.push({ params, answer: (name, description) => resolve({ ...input, data: {
-        branchId: params.branchId, hour: params.hour, tag: params.tag, database: params.database, warnings: [],
+        branchId: params.branchId, hour: params.hour, tag: String(params.country), database: params.database, warnings: [],
         items: params.tokens.map(token => ({ artwork: { token, name, description: description ?? null,
           baseDurationDays: 10, icon: params.textOnly ? null : 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' }, reason: null })),
       } }) });
@@ -287,7 +287,7 @@ test('a continuous focus is read from its own database, never from a national fo
       const params = input.params as FocusArtworkParams;
       const name = params.database === 'national' ? 'National title' : 'Continuous title';
       calls.push({ params, answer: () => resolve({ ...input, data: {
-        branchId: params.branchId, hour: params.hour, tag: params.tag, database: params.database, warnings: [],
+        branchId: params.branchId, hour: params.hour, tag: String(params.country), database: params.database, warnings: [],
         items: params.tokens.map(token => ({ artwork: { token, name: params.iconsOnly ? null : name, description: null,
           baseDurationDays: null, icon: params.textOnly ? null : 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' }, reason: null })),
       } }) });

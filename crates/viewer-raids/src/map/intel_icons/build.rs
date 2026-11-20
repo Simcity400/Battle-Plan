@@ -174,10 +174,17 @@ impl<'h, 'f> Hour<'h, 'f> {
             Err(why) => report.note(format!("operative icons are not drawn: {why}")),
         }
         // Admission is the retained client UI buffer, not the saved instance roster.
-        // Visit all four buckets before sorting the entries for display. The game
-        // does not filter the retained buffer to a newly selected perspective.
-        match &tables.buffers {
-            Ok(buffers) if buffers.len() == 1 && buffers[0].snapshot == 0 => {
+        // Visit all four buckets before sorting the entries for display. Only the
+        // recording client's buffer is recorded: another viewpoint's is not known.
+        let withheld = match frame.complete::<tables::LocalPlayer>() {
+            Ok([player]) if player.viewing_country().and_then(|raw| self.slot(raw)) == Some(self.ours) => None,
+            Ok([_]) => Some("operation and offer entries are withheld: AgencyOperationBuffers holds only the recording client's buffer, and the map is viewed as another country".to_owned()),
+            Ok(rows) => Some(format!("operation and offer entries are withheld: LocalPlayer holds {} rows where the game holds one", rows.len())),
+            Err(why) => Some(format!("operation and offer entries are withheld: the recording client's viewpoint is unknown: {why}")),
+        };
+        match (&tables.buffers, withheld) {
+            (_, Some(why)) => report.note(why),
+            (Ok(buffers), None) if buffers.len() == 1 && buffers[0].snapshot == 0 => {
                 let buffer = &buffers[0];
                 let by_id: Result<HashMap<u64, &'f OperationRow>, _> = tables.operations.as_ref()
                     .map(|rows| rows.iter().map(|row| (row.id, row)).collect());
@@ -217,7 +224,7 @@ impl<'h, 'f> Hour<'h, 'f> {
                     entry.items.push(Item::Offer(offer));
                 }
             }
-            Err(why) => report.note(format!("operation entries are withheld: AgencyOperationBuffers are unavailable: {why}")),
+            (Err(why), None) => report.note(format!("operation entries are withheld: AgencyOperationBuffers are unavailable: {why}")),
             _ => report.note("operation entries are withheld: AgencyOperationBuffers has no shared client snapshot"),
         }
         let shared = Shared {

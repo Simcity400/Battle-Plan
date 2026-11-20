@@ -956,3 +956,18 @@ fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
         }
     }
 }
+
+#[test]
+fn details_put_launchable_types_first_and_name_the_only_one() {
+    let order = |types: &[(usize, Result<bool>)]| detail_order(types);
+    let (named, buttons) = order(&[(4, Ok(false)), (2, Ok(true)), (9, Ok(false))]);
+    assert_eq!(named, Ok(Some(2)));
+    assert_eq!(buttons, Ok(vec![(2, true), (4, false), (9, false)]));
+    let (named, buttons) = order(&[(1, Ok(true)), (3, Ok(true)), (5, Err("unread".into()))]);
+    assert_eq!(named, Ok(None));
+    assert!(buttons.is_err());
+    let (named, _) = order(&[(1, Ok(true)), (5, Err("unread".into()))]);
+    assert!(named.is_err());
+    let (named, buttons) = order(&[(1, Ok(false))]);
+    assert_eq!((named, buttons), (Ok(None), Ok(vec![(1, false)])));
+}

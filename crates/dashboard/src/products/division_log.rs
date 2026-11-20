@@ -297,8 +297,8 @@ impl Product for DivisionLog {
             columns: None,
         };
         let names = Names::new(&query.holders);
-        let tagged = params.facets.iter().any(|filter| !filter.tags.is_empty());
-        let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.map(str::to_owned)))?;
+        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
+        let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
         let art = Content::load(source, context);
         let mut refused = Refused::default();
         let mut ambiguous = 0usize;
@@ -312,7 +312,7 @@ impl Product for DivisionLog {
                 hour: row.hour,
                 key: row.key.to_string(),
                 ordinal: ordinal.to_string(),
-                tag,
+                country: tag,
                 own_ordinal: tagged.then(|| own.to_string()),
                 cells: mapped.cells,
             });

@@ -27,6 +27,20 @@ pub(super) fn effects(
     definitions: &Definitions<'_>,
     province: u32,
 ) -> Result<String, String> {
+    section(
+        content.assets.as_ref(),
+        &content.localisation,
+        accumulator(content, frame, definitions, province)?,
+    )
+}
+
+/// The province's accumulator described alone, without the section heading.
+pub(super) fn accumulator(
+    content: &Content,
+    frame: &DecodedFrame,
+    definitions: &Definitions<'_>,
+    province: u32,
+) -> Result<String, String> {
     let rows = frame
         .complete::<tables::WeatherProvinces>()
         .map_err(|why| why.to_string())?;
@@ -38,16 +52,32 @@ pub(super) fn effects(
         .require("WeatherProvinces.modifiers")?
         .as_ref()
         .ok_or("the province's weather modifier accumulator was refused when recorded")?;
-    describe(
-        definitions,
-        content.assets.as_ref(),
-        &content.localisation,
-        modifiers,
-    )
+    plain(definitions, content.assets.as_ref(), &content.localisation, modifiers)
 }
 
 /// The section for one accumulator.
+#[cfg(test)]
 pub(super) fn describe(
+    definitions: &Definitions<'_>,
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+    modifiers: &replay_data::rows::ProvinceWeatherModifiers,
+) -> Result<String, String> {
+    section(icons, loc, plain(definitions, icons, loc, modifiers)?)
+}
+
+fn section(icons: &dyn TextIcons, loc: &Localisation, text: String) -> Result<String, String> {
+    if text.is_empty() {
+        return Ok(text);
+    }
+    Ok(format!(
+        "{}\n{text}",
+        builtin(icons, loc, LOCAL_PROVINCE_MODIFIERS, &[])?
+    ))
+}
+
+/// One accumulator's entries as the game's modifier list describes them.
+fn plain(
     definitions: &Definitions<'_>,
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -63,14 +93,7 @@ pub(super) fn describe(
         custom_tooltips: Vec::new(),
         added: false,
     };
-    let text = block
+    block
         .describe(definitions, icons, loc, ONE, "", u32::MAX)
-        .map_err(|why| why.to_string())?;
-    if text.is_empty() {
-        return Ok(text);
-    }
-    Ok(format!(
-        "{}\n{text}",
-        builtin(icons, loc, LOCAL_PROVINCE_MODIFIERS, &[])?
-    ))
+        .map_err(|why| why.to_string())
 }

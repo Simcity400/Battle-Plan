@@ -11,7 +11,7 @@ import { jumpItem } from '../../charts/jump';
 import { mapLive } from '../../charts/live';
 import { countryNameDetails } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -58,7 +58,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const top = countries.kind === 'group' && countries.group.type === 'top' ? countries.group.count : null;
   const filtered = countries.kind === 'tags' || countries.kind === 'selected' || countries.kind === 'group' && top === null;
   const groups = useCountryGroups(runtime, track, active && filtered);
-  const chosen = useMemo(() => countries.kind === 'tags' || countries.kind === 'selected' ? selectedTags(countries, track) : null, [countries, track]);
+  const chosen = useMemo(() => countries.kind === 'tags' || countries.kind === 'selected' ? selectedCountryKeys(countries, track) : null, [countries, track]);
   const selection = useMemo(() => filtered ? countryMatch(countries, chosen ?? [], groups.data, track?.branch.lastHour ?? hour) : null,
     [filtered, countries, chosen, groups.data, track?.branch.lastHour, hour]);
   const shown = top ?? (Number(options.mostCountries) || 12);

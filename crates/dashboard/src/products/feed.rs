@@ -303,7 +303,7 @@ pub struct EventFeedPageRow {
     pub ordinal: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub tag: Option<String>,
+    pub country: Option<dashboard_base::products::Country>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub own_ordinal: Option<String>,
@@ -368,7 +368,7 @@ pub(crate) struct Paged {
     pub key: u128,
     pub ordinal: u64,
     pub own: u64,
-    pub tag: Option<String>,
+    pub tag: Option<dashboard_base::products::Country>,
 }
 
 pub(crate) fn page(source: &Source, query: &Query<'_>, params: &FeedPageParams) -> io::Result<(log::Page, Vec<Paged>, Vec<MissingSpan>)> {
@@ -386,7 +386,7 @@ pub(crate) fn page(source: &Source, query: &Query<'_>, params: &FeedPageParams) 
         columns: None,
     };
     let columns = Columns::new()?;
-    let (page, rows, missing) = logs::page(query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.map(str::to_owned)))?;
+    let (page, rows, missing) = logs::page(query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
     let rows = rows
         .into_iter()
         .map(|(row, ordinal, own, tag)| Ok(Paged { event: columns.read(&row)?, hour: row.hour, key: row.key, ordinal, own, tag }))
@@ -563,7 +563,7 @@ impl Product for EventFeed {
         let names = Names::new(&query.holders);
         let mut notices = Notices::default();
         let presenter = Presenter::new(&query, content(source, context, &mut notices), kept_naming(source));
-        let tagged = params.facets.iter().any(|filter| !filter.tags.is_empty());
+        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
         let events: Vec<&FeedEvent> = rows.iter().map(|paged| &paged.event).collect();
         let presented = present_all(&events, &names, &presenter, &mut notices, cancelled)?;
         let out: Vec<EventFeedPageRow> = rows
@@ -573,7 +573,7 @@ impl Product for EventFeed {
                 hour: paged.hour,
                 key: paged.key.to_string(),
                 ordinal: paged.ordinal.to_string(),
-                tag: paged.tag,
+                country: paged.tag,
                 own_ordinal: tagged.then(|| paged.own.to_string()),
                 cells: Vec::new(),
                 row,
@@ -605,7 +605,7 @@ pub(crate) fn annexations(query: &Query<'_>) -> io::Result<Vec<super::politics::
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = log::Reader::new(query, declared)?;
     let annexed = EventFeedKind::Annexed.code().map(i64::from).ok_or_else(|| invalid("An annexation has no feed code"))?;
-    let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![annexed], tags: Vec::new() }], query.timeline.first, query.timeline.last)?;
+    let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![annexed], countries: Vec::new() }], query.timeline.first, query.timeline.last)?;
     let (columns, names) = (Columns::new()?, Names::new(&query.holders));
     let mut out = Vec::new();
     let mut cursor = 0;

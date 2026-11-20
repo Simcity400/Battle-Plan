@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo } from 'react';
 import type { RefObject } from 'react';
 import type { LiveDrillParts } from '../../charts/drill/DrillParts';
@@ -15,7 +16,7 @@ const NO_VALUES: LiveValues<number> = { get: () => undefined, missing: () => 'No
 export function useSupplyHead(store: FollowStore | null, following: boolean, branchId: string | undefined, tag: string | null,
   root: RefObject<Element | null>, colors: readonly string[]): LiveDrillParts | undefined {
   const query = (measure: string) => following && branchId && tag ? { product: 'series-state', params: { branchId,
-    family: { kind: SUPPLY_FAMILY, measure }, reads: [{ tag, hour: 0 }] } } : null;
+    family: { kind: SUPPLY_FAMILY, measure }, reads: [{ country: countryFromKey(tag), hour: 0 }] } } : null;
   const queries = useMemo(() => STATES.map(query), [following, branchId, tag]); // eslint-disable-line react-hooks/exhaustive-deps
   const keys = useMemo(() => tag ? [tag] : [], [tag]);
   const read = (entry: FollowEntry) => answerValues(entry.answer, keys);

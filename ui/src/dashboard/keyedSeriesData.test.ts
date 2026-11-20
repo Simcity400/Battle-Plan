@@ -11,8 +11,8 @@ const keys = [{ tag: 'ENG', part: '7' }, { tag: 'ENG', part: '12' }];
 
 test('a tile reply for parts names each line by its key, and one for other keys is refused', () => {
   const reply = { binHours: 6, index: 0, firstHour: 0, immutable: true, filled: null, decimals: 3, rawValues: true, hourBytes: 1, bins: '',
-    lines: keys.map(key => ({ ...key, missing: [], parts: [] })) } as unknown as TileReply & { lines: { tag: string; part: string }[] };
-  assert.deepEqual(keyedTileReply(reply, keys).lines.map(line => line.tag), keys.map(keyId));
+    lines: keys.map(key => ({ country: key.tag, part: key.part, missing: [], parts: [] })) } as unknown as TileReply & { lines: { country: string; part: string }[] };
+  assert.deepEqual(keyedTileReply(reply, keys).lines.map(line => line.country), keys.map(keyId));
   assert.throws(() => keyedTileReply(reply, [...keys].reverse()), /malformed/, 'lines in another order');
   assert.throws(() => keyedTileReply(reply, [{ tag: 'ENG', part: '7' }]), /malformed/, 'another number of lines');
   assert.notEqual(keyId({ tag: 'A', part: 'BC' }), keyId({ tag: 'AB', part: 'C' }), 'a key id never runs owner and part together');
@@ -20,11 +20,11 @@ test('a tile reply for parts names each line by its key, and one for other keys 
 
 test('reached lines keep each key apart, its runs once each in hour order, its drops and why an hour has no value', () => {
   const states = validateKeyedStates({ branchId: 'b', decimals: 3, states: [
-    { tag: 'ENG', part: '12', hour: 30, run: run(20, 40, '5000'), drop: null, missing: null },
-    { tag: 'ENG', part: '7', hour: 50, run: run(45, 60, '2000'), drop: { hour: 45, beforeRaw: '3000', afterRaw: '2000' }, missing: null },
-    { tag: 'ENG', part: '7', hour: 10, run: run(0, 20, '3000'), drop: null, missing: null },
-    { tag: 'ENG', part: '7', hour: 55, run: run(45, 60, '2000'), drop: null, missing: null },
-    { tag: 'ENG', part: '12', hour: 70, run: null, drop: null, missing: 'The yards were not recorded' },
+    { country: 'ENG', part: '12', hour: 30, run: run(20, 40, '5000'), drop: null, missing: null },
+    { country: 'ENG', part: '7', hour: 50, run: run(45, 60, '2000'), drop: { hour: 45, beforeRaw: '3000', afterRaw: '2000' }, missing: null },
+    { country: 'ENG', part: '7', hour: 10, run: run(0, 20, '3000'), drop: null, missing: null },
+    { country: 'ENG', part: '7', hour: 55, run: run(45, 60, '2000'), drop: null, missing: null },
+    { country: 'ENG', part: '12', hour: 70, run: null, drop: null, missing: 'The yards were not recorded' },
   ] });
   const [seven, twelve] = reachedKeyLines(keys, states);
   assert.deepEqual(seven.runs.map(item => [item.firstHour, item.valueRaw]), [[0, '3000'], [45, '2000']]);
@@ -34,8 +34,8 @@ test('reached lines keep each key apart, its runs once each in hour order, its d
 });
 
 test('states without a part and parts lists that repeat a part or name another owner are refused', () => {
-  assert.throws(() => validateKeyedStates({ branchId: 'b', decimals: 3, states: [{ tag: 'ENG', hour: 1, run: null, drop: null, missing: null }] }), /malformed/);
-  const owner = { tag: 'ENG', parts: [{ part: '7', id: 'battleship', firstHour: 0, lastHour: 90 }, { part: '12', firstHour: 40, lastHour: 50 }],
+  assert.throws(() => validateKeyedStates({ branchId: 'b', decimals: 3, states: [{ country: 'ENG', hour: 1, run: null, drop: null, missing: null }] }), /malformed/);
+  const owner = { country: 'ENG', parts: [{ part: '7', id: 'battleship', firstHour: 0, lastHour: 90 }, { part: '12', firstHour: 40, lastHour: 50 }],
     missing: [{ firstHour: 91, lastHour: 99, reason: 'No country holds ENG' }] };
   const reply = (owners: unknown[]) => ({ branchId: 'b', partBits: 32, owners });
   assert.deepEqual(validateSeriesParts(reply([owner]), 'ENG'), { tag: 'ENG', partBits: 32, missing: owner.missing,
@@ -48,10 +48,10 @@ test('states without a part and parts lists that repeat a part or name another o
 });
 
 test('tile lines name each key, and the lines of a tag share the spans they are drawn over', () => {
-  assert.deepEqual(keyedTileParams(keys, undefined), { lines: keys });
+  assert.deepEqual(keyedTileParams(keys, undefined), { lines: keys.map(({ tag, part }) => ({ country: tag, part })) });
   const spans = [{ firstHour: 0, lastHour: 9 }];
   const within = { [keyId(keys[0])]: spans, [keyId(keys[1])]: spans };
-  assert.deepEqual(keyedTileParams(keys, within), { lines: keys, within: { ENG: spans } });
+  assert.deepEqual(keyedTileParams(keys, within), { lines: keys.map(({ tag, part }) => ({ country: tag, part })), within: [['ENG', spans]] });
   assert.throws(() => keyedTileParams(keys, { [keyId(keys[0])]: spans }), /one set of spans/, 'one key of a tag drawn whole beside another clipped');
 });
 

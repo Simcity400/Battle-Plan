@@ -3,7 +3,7 @@ pub(super) mod combat;
 mod equipment;
 pub(super) mod history;
 mod power;
-mod summary;
+pub(crate) mod summary;
 
 use super::{binding::Bindings, content::Content};
 use installed_content_localisation::localisation::Argument;

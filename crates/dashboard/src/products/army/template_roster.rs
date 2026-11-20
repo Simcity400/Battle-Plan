@@ -2,12 +2,12 @@
 //! hour, as plain sections: a rows-at-an-hour product ([`AtHour`]), requested for an hour and
 //! followed as a panel at the head. Roster ownership, never deployed membership, selects
 //! definitions and groups.
+use dashboard_base::products::{Country, validate_country};
 use super::LoadContext;
 use crate::{
     Source,
     products::at_hour::{At, AtHour, Owner, Read},
 };
-use dashboard_base::products::validate_tag;
 use dashboard_text::{metadata::link_slot, template_facts};
 use installed_content_localisation::localisation::Localisation;
 use replay_data::rows::{CountryLinkRow, TableId, tables};
@@ -51,7 +51,7 @@ pub struct TemplateRoster;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TemplateRosterParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -117,11 +117,11 @@ impl AtHour for TemplateRoster {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

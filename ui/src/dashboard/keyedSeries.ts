@@ -1,3 +1,4 @@
+import { countryFromKey } from './countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChartSummary } from '../charts/chartSummary';
 import type { MarkSummary } from '../charts/markSummary';
@@ -115,7 +116,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
   // The head: followed while following, else read with the other reached hours.
   const store: FollowStore | null = useMemo(() => spec ? followStore(client, spec.source, clock, spec.axisOffset) : null, [client, clock, spec?.source, spec?.axisOffset]);
   const headQuery = useMemo(() => following && active && enabled ? { product: 'series-state', params: { branchId: spec!.branchId, family: spec!.family,
-    reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ tag, hour: 0 })) } } : null,
+    reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
   // `ownerKey` names the keys and family.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [following, active, enabled, ownerKey]);
@@ -125,7 +126,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
   // Never an hour of the view's moving edge: while playing it is a new read every frame.
   const reads = (spec?.keys ?? []).flatMap(key => {
     const hours = new Set([...(headFollowed || headHour === null ? [] : [Math.floor(headHour)]), ...(hoverHour === null ? [] : [Math.floor(hoverHour)])]);
-    return [...hours].map(hour => ({ tag: key.tag, part: key.part, hour }));
+    return [...hours].map(hour => ({ country: countryFromKey(key.tag), part: key.part, hour }));
   });
   const stateRead = useViewRead<typeof reads, KeyedStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
     reads, JSON.stringify(reads), active, (at, signal, publish, restart) => loadProduct(client, request('series-state', { reads: at }),
@@ -156,7 +157,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
     if (!held || !held.keys.length || !active) return;
     navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { lines: held.keys.map(({ tag, part }) => ({ tag, part })),
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { lines: held.keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part })),
       key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }), controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) throw new Error('The keyboard reply is malformed.');
@@ -189,7 +190,7 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
 export function useSeriesParts(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined,
   family: Readonly<Record<string, unknown>> | null, tag: string | null, span: HourSpan | null, active: boolean) {
   const request = source && branchId && family && tag && span ? { sourceId: source.id, revision: source.revision, product: 'series-parts',
-    params: { branchId, family, tags: [tag], from: span.firstHour, to: span.lastHour } } : null;
+    params: { branchId, family, countries: [countryFromKey(tag)], from: span.firstHour, to: span.lastHour } } : null;
   const validate = useCallback((value: unknown) => validateSeriesParts(value, tag ?? ''), [tag]);
   return useProduct<SeriesParts>(client, request, active, validate, source);
 }

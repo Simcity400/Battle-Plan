@@ -104,7 +104,7 @@ fn step(first: i32, last: i32, starts: bool, variant: &str, active: i32) -> line
 fn a_countrys_lines_follow_its_holder_through_aliases_and_end_with_their_published_count() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let params = ProductionLinesParams { branch_id: "1".into(), tag: "GER".into() };
+    let params = ProductionLinesParams { branch_id: "1".into(), country: "GER".into() };
     let reply = lines_reply(&source, &query, &params, &no_content(), &AtomicBool::new(false)).unwrap();
     let keys: Vec<&str> = reply.lines.iter().map(|line| line.key.as_str()).collect();
     assert_eq!(keys, ["1#1", "2#1"], "ITA's line is not GER's; a line the alias produced is");
@@ -133,7 +133,7 @@ fn a_countrys_lines_follow_its_holder_through_aliases_and_end_with_their_publish
 fn a_detail_window_holds_every_value_and_each_output_change_of_the_lines_in_it() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let params = ProductionDetailParams { branch_id: "1".into(), tag: "GER".into(), window: 1 };
+    let params = ProductionDetailParams { branch_id: "1".into(), country: "GER".into(), window: 1 };
     let reply = detail_reply(&source, &query, &params, &AtomicBool::new(false)).unwrap();
     assert_eq!((reply.first_hour, reply.last_hour), (720, 1_439));
     let keys: Vec<&str> = reply.lines.iter().map(|line| line.key.as_str()).collect();
@@ -195,7 +195,7 @@ fn cell(cells: &std::collections::BTreeMap<(String, String), Result<f64, String>
 #[test]
 fn the_live_table_lists_the_countrys_lines_in_queue_order_and_says_when_they_are_not_read() {
     let source = recording();
-    let reply = asked(&source, entry::<ProductionLinesAt>(), json!({ "branchId": "1", "tag": "GER", "hour": 1_120 }));
+    let reply = asked(&source, entry::<ProductionLinesAt>(), json!({ "branchId": "1", "country": "GER", "hour": 1_120 }));
     let handles = |reply: &Value| reply["lines"].as_array().unwrap().iter().map(|line| line["handle"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
     assert_eq!(handles(&reply), ["2", "1"], "queue order; ITA's line is not GER's");
     assert!(reply["lines"][0]["output"]["parts"][0].get("units").is_none(), "units made move: they are a cell, not the reply's");
@@ -206,11 +206,11 @@ fn the_live_table_lists_the_countrys_lines_in_queue_order_and_says_when_they_are
     assert_eq!((cell(&values, "1", "speed"), cell(&values, "1", "cost"), cell(&values, "1", "efficiency")), (Ok(200_000.0), Ok(700_000.0), Ok(1_638_400.0)));
     assert!(values.keys().all(|(row, _)| row == "1" || row == "2"), "no cell of ITA's line");
     assert!(reply["missing"].is_null());
-    let by_factories = asked(&source, entry::<ProductionLinesAt>(), json!({ "branchId": "1", "tag": "GER", "hour": 1_120, "order": "factories" }));
+    let by_factories = asked(&source, entry::<ProductionLinesAt>(), json!({ "branchId": "1", "country": "GER", "hour": 1_120, "order": "factories" }));
     assert_eq!(handles(&by_factories), ["1", "2"], "most factories first");
-    let by_output = asked(&source, entry::<ProductionLinesAt>(), json!({ "branchId": "1", "tag": "GER", "hour": 1_120, "order": "output" }));
+    let by_output = asked(&source, entry::<ProductionLinesAt>(), json!({ "branchId": "1", "country": "GER", "hour": 1_120, "order": "output" }));
     assert_eq!(handles(&by_output), ["2", "1"], "equal speeds keep the queue's order");
-    let unread = asked(&source, entry::<ProductionLinesAt>(), json!({ "branchId": "1", "tag": "GER", "hour": 1_245 }));
+    let unread = asked(&source, entry::<ProductionLinesAt>(), json!({ "branchId": "1", "country": "GER", "hour": 1_245 }));
     assert!(unread["lines"].as_array().unwrap().is_empty());
     assert!(unread["missing"].as_str().is_some_and(|why| why.contains("not recorded")), "unread lines are missing, never none");
 }
@@ -227,9 +227,9 @@ fn followed(source: &Source, entry: crate::products::at_hour::Entry, params: &Va
 fn a_request_reading_the_owners_rows_and_tokens_by_key_answers_as_the_panel_over_whole_tables() {
     let source = recording();
     let products = [
-        (entry::<ProductionLinesAt>(), json!({ "branchId": "1", "tag": "GER" })),
-        (entry::<ProductionLinesAt>(), json!({ "branchId": "1", "tag": "GER", "order": "factories" })),
-        (entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "tag": "GER" })),
+        (entry::<ProductionLinesAt>(), json!({ "branchId": "1", "country": "GER" })),
+        (entry::<ProductionLinesAt>(), json!({ "branchId": "1", "country": "GER", "order": "factories" })),
+        (entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "country": "GER" })),
         (entry::<ProductionLicences>(), json!({ "branchId": "1" })),
     ];
     for (product, params) in products {
@@ -254,13 +254,13 @@ fn licences_name_both_parties_by_their_countries_and_organisations_say_when_thei
     assert_eq!((licences[0]["licensor"]["tag"].as_str(), licences[0]["licensee"]["tag"].as_str()), (Some("ITA"), Some("GER")), "the alias is GER");
     assert_eq!((licences[0]["lent"].as_i64(), licences[0]["since"].as_i64()), (Some(2), Some(i64::from(FIRST))));
     assert!(licences[1]["licensor"]["slot"].is_null() && licences[1]["licensor"]["tag"].is_null(), "an unlinked party is unknown, not another country");
-    let early = asked(&source, entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "tag": "GER", "hour": 1_050 }));
+    let early = asked(&source, entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "country": "GER", "hour": 1_050 }));
     let organisations = early["organisations"].as_array().unwrap();
     assert_eq!(organisations.len(), 1, "ITA's organisation is not GER's");
     assert!(organisations[0]["size"].is_null() && early["detailsMissing"].as_str().is_some());
     let early_cells = cells(&early);
     assert!(cell(&early_cells, "40", "funds").is_err(), "funds not read are missing, never zero");
-    let later = asked(&source, entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "tag": "GER", "hour": 1_150 }));
+    let later = asked(&source, entry::<IndustrialOrganisations>(), json!({ "branchId": "1", "country": "GER", "hour": 1_150 }));
     let organisation = &later["organisations"][0];
     assert_eq!((organisation["size"].as_i64(), organisation["traits"].as_i64()), (Some(3), Some(2)));
     assert!(organisation.get("fundsRaw").is_none(), "funds move daily: they are a cell, not the reply's");
@@ -272,7 +272,7 @@ fn licences_name_both_parties_by_their_countries_and_organisations_say_when_thei
 #[test]
 fn a_countrys_designs_are_its_creators_hours_with_their_obsolete_flags() {
     let source = recording();
-    let params = EquipmentDesignsParams { branch_id: "1".into(), tag: "GER".into() };
+    let params = EquipmentDesignsParams { branch_id: "1".into(), country: "GER".into() };
     let reply = EquipmentDesigns::load(&source, &params, &load(), &AtomicBool::new(false)).unwrap();
     let designs: Vec<(&str, Vec<(i32, i32)>, Vec<(i32, i32)>)> = reply
         .designs

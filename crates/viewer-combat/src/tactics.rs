@@ -1592,6 +1592,7 @@ fn scripted_text<'a>(
         .as_ref()
         .map(|content| {
             dashboard_text::scripted_text::ScriptedText::new(frame, loc, content, ours)
+                .viewing(ours)
                 .with_nato_counters(nato)
         })
         .map_err(Clone::clone)

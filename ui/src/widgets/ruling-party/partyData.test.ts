@@ -8,7 +8,7 @@ import { settledHour } from '../../dashboard/settledHour.ts';
 import type { PartyHistoryReply } from '../../generated/dashboard';
 
 const REPLY: PartyHistoryReply = {
-  branchId: '1', tag: 'GER', decimals: 5, warnings: [],
+  branchId: '1', tag: 'GER', asked: 'GER', decimals: 5, warnings: [],
   unobserved: [{ firstHour: 103, lastHour: 103 }],
   ideologies: [{ token: 'democratic', name: 'Democratic', color: [0, 0, 255] }, { token: 'fascism', name: 'Fascist', color: [150, 75, 0] }],
   parties: [{ token: 'mod_ideology', parts: [3] }, { token: 'fascism', parts: [1] }, { token: 'democratic', parts: [0, 4] }],

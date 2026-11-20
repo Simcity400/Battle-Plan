@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -34,7 +35,7 @@ export default function BalanceChanges({ client, source, branchId, measure, tags
     const controller = new AbortController();
     const count = end === null ? Number(DROP_LIST_PAGE) : Number(end - first < DROP_LIST_PAGE ? end - first : DROP_LIST_PAGE);
     void loadTransientProduct<unknown>(client, { sourceId: source.id, revision: source.revision, product: 'events-page',
-      params: { branchId, family: { kind: 'country-measure', measure }, tags: [tag], cursor: first.toString(), pageSize: count, to: Math.floor(visibleThrough) } }, controller.signal)
+      params: { branchId, family: { kind: 'country-measure', measure }, countries: ([tag]).map(countryFromKey), cursor: first.toString(), pageSize: count, to: Math.floor(visibleThrough) } }, controller.signal)
       .then(value => { if (!controller.signal.aborted) setReply({ owner, data: validateMeasureDrops(value) }); })
       // Only this page's own earlier reply is kept beside its failure, never another page's rows.
       .catch(error => { if (!controller.signal.aborted) setReply(previous => previous?.owner === owner ? { ...previous, error: asFailure(error) } : { owner, error: asFailure(error) }); });

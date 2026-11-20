@@ -5,9 +5,10 @@
 //! every identity operand there, so the same position in another read is the same consumer only
 //! when every operand still matches.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{Content, DETAIL_HOURS, FuelConsumptionAt, reason};
 use crate::{Source, products::LoadContext};
-use dashboard_base::products::{Product, validate_tag};
+use dashboard_base::products::Product;
 use dashboard_query::{Query, identity::Holder};
 use engine_fuel::fuel_demand::daily_required;
 use replay_data::rows::{
@@ -24,7 +25,7 @@ use std::{
 use ts_rs::TS;
 
 /// The raw country id of `tag`'s holder at `hour`; refused by name where none holds it.
-pub(crate) fn holder_id(query: &Query<'_>, tag: &str, hour: i32) -> io::Result<u32> {
+pub(crate) fn holder_id(query: &Query<'_>, tag: &Country, hour: i32) -> io::Result<u32> {
     match query.holders.at(tag, hour).map(|run| run.holder) {
         Some(Holder::Found { id, .. }) => Ok(id),
         _ => Err(dashboard_core::refused("Fuel country is unavailable at this hour")),
@@ -504,7 +505,7 @@ pub struct FuelDemandAirSite {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelDemandParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// Any hour the read holds: the reply names the read.
     pub hour: i32,
 }
@@ -514,6 +515,8 @@ pub struct FuelDemandParams {
 #[serde(rename_all = "camelCase")]
 pub struct FuelDemandReply {
     pub tag: String,
+    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    pub asked: dashboard_base::products::Country,
     /// The read the pack is of.
     pub read_hour: i32,
     pub country: u32,
@@ -590,7 +593,7 @@ fn counted(reasons: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 
 /// The reply for a pack read at `hour` of country `country`.
-pub fn demand_reply(tag: &str, read: &FuelDemandRead, hour: i32, country: u32, content: &Content, cancelled: &AtomicBool) -> io::Result<FuelDemandReply> {
+pub fn demand_reply(asked: &dashboard_base::products::Country, tag: &str, read: &FuelDemandRead, hour: i32, country: u32, content: &Content, cancelled: &AtomicBool) -> io::Result<FuelDemandReply> {
     let pack = Pack::of(read);
     let mut parts = Vec::new();
     for row in occurrences(&pack) {
@@ -653,6 +656,7 @@ pub fn demand_reply(tag: &str, read: &FuelDemandRead, hour: i32, country: u32, c
     warnings.extend(content.warnings.iter().cloned());
     Ok(FuelDemandReply {
         tag: tag.to_owned(),
+        asked: asked.clone(),
         read_hour: hour,
         country,
         country_instance: read.country_instance,
@@ -682,7 +686,7 @@ impl Product for CountryFuelDemand {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -700,7 +704,7 @@ impl Product for CountryFuelDemand {
 
     fn load(source: &Source, params: &Self::Params, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let query = crate::answer::query(source, branch(&params.branch_id)?)?;
-        let id = holder_id(&query, &params.tag, params.hour)?;
+        let id = holder_id(&query, &params.country, params.hour)?;
         let key = u128::from(id);
         use crate::products::at_hour::{Keys, Read, frame};
         let frame = frame(
@@ -719,7 +723,7 @@ impl Product for CountryFuelDemand {
         let parts = frame.complete::<tables::FuelDemandParts>().map_err(|_| PARTS_UNAVAILABLE);
         let pack = pack_at(row, parts, read_hour).map_err(dashboard_core::refused)?;
         let content = Content::read(source, load);
-        let reply = demand_reply(&params.tag, &pack, read_hour, id, &content, cancelled)?;
+        let reply = demand_reply(&params.country, &query.holders.name(&params.country, params.hour), &pack, read_hour, id, &content, cancelled)?;
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
@@ -730,7 +734,7 @@ impl Product for CountryFuelDemand {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelDemandHistoryParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// The hour the consumers were picked at: the country is its holder then.
     pub hour: i32,
     pub window: i32,
@@ -822,7 +826,7 @@ impl Product for CountryFuelDemandHistory {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)?;
+        validate_country(&params.country)?;
         if params.keys.is_empty() { Err("Choose a fuel consumer") } else { Ok(()) }
     }
 
@@ -838,11 +842,11 @@ impl Product for CountryFuelDemandHistory {
             .map(|key| serde_json::from_str::<Key>(key).map_err(|_| dashboard_core::invalid("Invalid fuel consumer key")))
             .collect::<io::Result<Vec<Key>>>()?;
         let query = crate::answer::query(source, branch(&params.branch_id)?)?;
-        let id = holder_id(&query, &params.tag, params.hour)?;
+        let id = holder_id(&query, &params.country, params.hour)?;
         let (first, last) = window_span(params.window)?;
         let reads = country_reads(&query, id, first, last, Some(()), cancelled)?;
         let parts = demand_runs(&reads.reads, &keys, first, last).into_iter().zip(&params.keys).map(|(runs, key)| FuelDemandHistoryPart { key: key.clone(), runs }).collect();
-        let reply = FuelDemandHistoryReply { tag: params.tag.clone(), country: id, window: params.window, first_hour: first, last_hour: last, parts, warnings: reads.warnings };
+        let reply = FuelDemandHistoryReply { tag: query.holders.name(&params.country, params.hour), country: id, window: params.window, first_hour: first, last_hour: last, parts, warnings: reads.warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }

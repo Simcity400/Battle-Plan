@@ -279,8 +279,17 @@ struct Stream {
 pub(super) fn reader<P: AtHour>(source: &Source, params: Arc<P::Params>, context: Arc<P::Context>, query: Query<'_>, warnings: Vec<String>) -> ProductReader
 where P::Context: Sync, P::Params: Sync {
     let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
-    let mut identity_edges: Vec<i32> = holders.tags.iter().filter(|(tag, _)| P::owner(&params).is_none_or(|owner| owner == tag.as_str()))
-        .flat_map(|(_, runs)| runs.iter().flat_map(|r| [Some(r.first), r.last.checked_add(1)].into_iter().flatten())).collect();
+    use dashboard_query::identity::{Country, Holder};
+    let owner = P::owner(&params);
+    // A slot's identity moves where any tag it holds starts or ends, so its name at the hour is read anew.
+    let owned = |tag: &str, run: &dashboard_query::identity::HolderRun| match owner {
+        None => true,
+        Some(Country::Tag(owned)) => owned == tag,
+        Some(Country::Slot(slot)) => matches!(run.holder, Holder::Found { slot: held, .. } if held == *slot),
+    };
+    let mut identity_edges: Vec<i32> = holders.tags.iter()
+        .flat_map(|(tag, runs)| runs.iter().filter(move |run| owned(tag, run)))
+        .flat_map(|r| [Some(r.first), r.last.checked_add(1)].into_iter().flatten()).collect();
     identity_edges.sort_unstable();
     identity_edges.dedup();
     let stream = Mutex::new(None::<Stream>);

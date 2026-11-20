@@ -242,7 +242,7 @@ fn the_province_hover_is_made_only_from_rows_its_worker_prepared() {
     let gate = Arc::new(Gate::new(until));
     let mut hovers = HoverRows::default();
     let head = &views;
-    let what = What::Province { province: 5, mode: viewer_counter_products::map::province_tooltips::ModeHover::Nothing };
+    let what = What::Province { province: 5, mode: viewer_counter_products::map::province_tooltips::ModeHover::Nothing, routes: Vec::new() };
     let leaf = |gate: &Arc<Gate>| {
         job(|frame, _| {
             let _ = frame.complete::<tables::WeatherProvinces>();

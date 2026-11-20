@@ -11,12 +11,12 @@
 //! that overlaps one kept, is left out with why. Gains are fixed5, the level, capacity, what was
 //! burned and the transfers /32768.
 
+use dashboard_base::products::{Country, validate_country};
 use super::super::LoadContext;
 use crate::{
     Source,
     products::at_hour::{At, AtHour, Keys, Owner, Read},
 };
-use dashboard_base::products::validate_tag;
 use dashboard_text::catalogue::{Catalogue, View};
 use engine_fuel::ccountry_fuel_status::{HISTORY_RING_ENTRIES, MODIFIER_SCALE, QUANTITY_SCALE};
 use replay_data::rows::{CountryFuelRow, FuelDayRow, FuelDemandTotalRow, Recorded, TableId, tables};
@@ -248,7 +248,7 @@ pub struct FuelConsumptionAt {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryFuelParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -418,7 +418,7 @@ impl AtHour for CountryFuel {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -435,8 +435,8 @@ impl AtHour for CountryFuel {
         ]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -459,6 +459,6 @@ impl AtHour for CountryFuel {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Fuel country is unavailable at this hour"))?;
-        Ok(reply(frame, &params.tag, owner.id, at.context))
+        Ok(reply(frame, &at.holders.name(&params.country, at.hour), owner.id, at.context))
     }
 }

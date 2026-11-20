@@ -5,12 +5,12 @@
 //! time are the declared series `country-experience` (banked) and `country-experience-daily`.
 //! A value not recorded says why, never zero.
 
+use dashboard_base::products::{Country, validate_country};
 use super::LoadContext;
 use crate::{
     Source,
     products::at_hour::{At, AtHour, Owner, Read},
 };
-use dashboard_base::products::validate_tag;
 use replay_data::rows::{CountryExperienceDailyRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ pub struct CountryExperience;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExperienceParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// The three branches, each in the game's units as decimal text.
@@ -98,11 +98,11 @@ impl AtHour for CountryExperience {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -124,7 +124,7 @@ impl AtHour for CountryExperience {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Experience country is unavailable at this hour"))?;
         let mut reply = ExperienceReply {
-            tag: params.tag.clone(),
+            tag: at.holders.name(&params.country, at.hour),
             scale: SCALE,
             day_hours: DAY_HOURS,
             read_hour: read_hour(frame),
@@ -140,7 +140,7 @@ impl AtHour for CountryExperience {
             Err(error) => reply.banked_missing = Some(format!("Banked experience is not recorded at this hour: {error}")),
             Ok(rows) => match rows.iter().find(|row| row.country == owner.id) {
                 Some(row) => reply.banked = Some(ExperienceValues { army_raw: row.army_raw.to_string(), navy_raw: row.navy_raw.to_string(), air_raw: row.air_raw.to_string() }),
-                None => reply.banked_missing = Some(format!("{} has no experience row at this hour", params.tag)),
+                None => reply.banked_missing = Some(at.holders.say(&params.country, at.hour, |name| format!("{name} has no experience row at this hour"))),
             },
         }
         let daily: Option<&CountryExperienceDailyRow> = match frame.complete::<tables::CountryExperienceDaily>() {
@@ -162,7 +162,7 @@ impl AtHour for CountryExperience {
                 reply.gain_missing = Some("The day before this read lacks a complete hourly interval".into());
             }
         } else if reply.change_missing.is_none() {
-            let why = format!("{} has no daily experience row at this hour", params.tag);
+            let why = at.holders.say(&params.country, at.hour, |name| format!("{name} has no daily experience row at this hour"));
             reply.change_missing = Some(why.clone());
             reply.gain_missing = Some(why);
         }

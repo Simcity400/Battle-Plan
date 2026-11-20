@@ -998,7 +998,8 @@ pub(super) fn append<'f>(
                 hour.localisation,
                 scripted,
                 hour.ours,
-            );
+            )
+            .viewing(hour.ours);
             let effects = scripted.effects()?;
             let context = dashboard_text::effect_description::Context::new(
                 &script,

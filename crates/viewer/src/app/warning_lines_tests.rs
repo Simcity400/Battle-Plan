@@ -44,3 +44,29 @@ fn before_the_head_reaches_an_hour_the_lines_are_the_maps_whole_list() {
     assert!(lines.contains(&note), "the strikes layer's own note, in today's words: {lines:?}");
     assert!(!lines.iter().any(|line| line.contains("not given by the playhead's layers")), "no general line in place of the notes: {lines:?}");
 }
+
+/// A viewing country whose vision is refused withholds the overlay; the map names the refusal with
+/// its diagnostics off, from the open map alone, never only in the warnings a diagnostics frame builds.
+#[test]
+fn a_refused_vision_is_named_on_the_map_without_diagnostics() {
+    use crate::layers::vision::{Content, Vision};
+    let units = record("refused vision", 4, |_, _| {});
+    let vision = Vision::new(Arc::new(Content::new(Err("no fog content".into()))));
+    let side = MapSide::new(open(units, hourly_steps()).unwrap(), vec![Box::new(vision)], View::default()).unwrap();
+    let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::new(Mutex::new(None)), None, None);
+    assert!(!viewer.diagnostics, "the diagnostics are off");
+    let mut side = crate::playhead_host::side::SideThread::new(side).unwrap();
+    side.anchor(2, false, 0.0, true);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while side.products().vision_refused.is_none() || side.on_screen().is_none() {
+        let frame = side.driven(|side| side.frame(2)).unwrap();
+        assert!(Instant::now() < deadline, "the vision refused within 120 s: applied {:?}, composing {}", side.applied(), side.composing());
+        if frame.steps == 0 && frame.swapped.is_none() {
+            std::thread::yield_now();
+        }
+    }
+    let why = side.products().vision_refused.clone().unwrap();
+    viewer.playhead_map = Some(side);
+    let line = viewer.vision_refusal_line().expect("the refusal is named on the map");
+    assert!(line.contains(&why) && line.starts_with(limitations::NOT_GIVEN), "{line}");
+}

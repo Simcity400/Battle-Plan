@@ -67,6 +67,7 @@ fn map_battle_windows_read_only_recorded_tables() {
         trigger_content: Arc::new(
             viewer_foundation::map::movement_reads::test_support::unnamed_assets().trigger_content,
         ),
+        occupation: Arc::new(Err("not loaded".into())),
     };
     let mut frame = complete_frame(11, |table| {
         replay_data::rows::sample_extended_table(table, 0)
@@ -122,7 +123,7 @@ fn map_battle_windows_read_only_recorded_tables() {
             let vision =
                 Vision::read(&frame, &links, &tags, &Choice::default(), Err("no fog")).unwrap();
             let engaged = combat_flags(&frame, vision.ours(), None).unwrap();
-            Bindings::read(&content, &frame, selection, &vision, &engaged, true, false)
+            Bindings::read(&content, &frame, selection, &vision, &engaged, true, false, &Err("no dominance sources in this test".into()), None)
                 .unwrap_or_else(|error| panic!("{selection:?}: {error}"))
         });
         if let Selection::Land(_) = selection {

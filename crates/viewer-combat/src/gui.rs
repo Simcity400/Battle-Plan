@@ -40,8 +40,8 @@ pub struct Windows {
     pending: Vec<ScrollAction>,
     /// Where the tactics popup drew last frame: the pointer over it is not the window's.
     popup_rect: Option<[f32; 4]>,
-    /// Where the window drew last frame.
-    root_rect: Option<[f32; 4]>,
+    /// Where the window and each of its windows and controls drew last frame.
+    root_areas: Vec<[f32; 4]>,
 }
 
 pub(crate) struct Retained {
@@ -666,12 +666,16 @@ impl Retained {
                                 continue;
                             }
                         }
+                    } else if let Some(place) = grid.position_type() {
+                        // The code sets each window it places here to the position's place.
+                        let at = holder.position.unwrap_or(place.position);
+                        rows.iter().map(|(row_index, _, _)| (*row_index, at)).collect()
                     } else {
                         count(
                             refused,
                             &group.path,
                             format!(
-                                "is a {}, not a native grid or overlapping list",
+                                "is a {}, not a native grid, overlapping list or position",
                                 grid.kind.keyword()
                             ),
                         );
@@ -1307,6 +1311,9 @@ fn apply(
                 bound.frame = None;
                 bound.offset = None;
                 bound.rotation = None;
+                bound.stretch = None;
+                bound.scale = None;
+                bound.caret = None;
                 bound.color = None;
                 bound.shield = None;
                 bound.texture = None;
@@ -1401,6 +1408,9 @@ fn apply(
                 bound.progress = progress;
                 bound.offset = Some(widget.offset.map(truncate_f32));
                 bound.rotation = widget.rotation;
+                bound.stretch = widget.stretch;
+                bound.scale = widget.scale;
+                bound.caret = widget.caret;
                 bound.color = widget
                     .color
                     .or_else(|| widget.opacity.map(|opacity| [1.0, 1.0, 1.0, opacity]));
@@ -1452,6 +1462,8 @@ pub(super) fn window_name(selection: Selection) -> &'static str {
         Selection::Naval(_) => "navalcombatview",
         Selection::NavalResult(_) => "navalcombatresultswindow",
         Selection::AirRegion(_) => "strategicairview",
+        Selection::State(_) => "countrystateview",
+        Selection::NavalRegion(_) => "navalregionview",
     }
 }
 
@@ -1463,6 +1475,7 @@ fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hov
     // instant-text hit testing rejects the constructor's
     // always-transparent bit, even with a handler.
     let mut transparent = BTreeSet::new();
+    let mut anchors = BTreeMap::new();
     let mut pending = vec![root];
     while let Some(element) = pending.pop() {
         if element
@@ -1470,6 +1483,9 @@ fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hov
             .is_some_and(|text| text.always_transparent)
         {
             transparent.insert(element.path.as_str());
+        }
+        if element.common.tooltip_anchor.set {
+            anchors.insert(element.path.as_str(), element.common.tooltip_anchor);
         }
         pending.extend(element.nested());
     }
@@ -1503,7 +1519,13 @@ fn hover_regions(root: &Element, regions: &[Region], values: &Values) -> Vec<Hov
                 text: widget.tooltip.clone(),
                 description: widget.tooltip_description.clone(),
                 shortcut: widget.tooltip_shortcut.clone(),
-                anchor: widget.tooltip_anchor,
+                // A producer's anchor replaces the authored one, as the game sets it after.
+                anchor: match (widget.tooltip_anchor, anchors.get(region.path.as_str())) {
+                    (super::TooltipAnchor::Pointer, Some(&authored)) => {
+                        super::TooltipAnchor::Authored(authored)
+                    }
+                    (anchor, _) => anchor,
+                },
             })
         })
         .collect()
@@ -1569,7 +1591,7 @@ impl Windows {
         let name = window_name(selection);
         let mut drawn = Drawn::default();
         let popup_rect = self.popup_rect.take();
-        let root_rect = self.root_rect.take();
+        let root_areas = std::mem::take(&mut self.root_areas);
         // A press the window or its popup holds, or lands on, keeps the pointer from the other.
         let holder = if self.popup.as_ref().is_some_and(Retained::holding) {
             Some(true)
@@ -1580,8 +1602,9 @@ impl Windows {
             if popup_rect.is_some_and(|rect| gui_windows::contains(rect, at)) {
                 Some(true)
             } else {
-                root_rect
-                    .is_some_and(|rect| gui_windows::contains(rect, at))
+                root_areas
+                    .iter()
+                    .any(|&rect| gui_windows::contains(rect, at))
                     .then_some(false)
             }
         };
@@ -1613,15 +1636,9 @@ impl Windows {
             .partition(|action| !action.target.popup);
         retained.pending.extend(actions);
         self.pending = popup_actions;
-        let frame = native_gui::container_frame(root, Some(viewport)).map_err(super::invalid)?;
-        let origin = [
-            frame.at[0].wrapping_add(truncate_f32(offset[0])),
-            frame.at[1].wrapping_add(truncate_f32(offset[1])),
-        ];
-        retained
-            .instance
-            .set_position(root, root, origin)
-            .map_err(super::invalid)?;
+        // The window stands where its show movement has brought it, moved by the drag.
+        let dragged = |at: [i32; 2]| [0, 1].map(|axis| at[axis].wrapping_add(truncate_f32(offset[axis])));
+        let origin = dragged(retained.instance.position());
         let mut groups = Vec::new();
         if matches!(selection, Selection::Land(_)) {
             // combat selection and list refill preserve producer membership order.
@@ -1686,15 +1703,17 @@ impl Windows {
                 .map(|input| input.local(origin.map(|value| value as f32))),
             &mut drawn.refused,
         ) {
-            drawn.sounds.extend(prepared.sounds.iter().cloned());
+            // The pointer was read where the last frame drew the window; this frame draws it where
+            // the tick moved it.
             clicked_at(&prepared, origin, &mut drawn.clicks);
+            let origin = dragged(retained.instance.position());
+            drawn.sounds.extend(prepared.sounds.iter().cloned());
             drawn.rect = [
                 origin[0] as f32,
                 origin[1] as f32,
                 prepared.layout.size[0] as f32,
                 prepared.layout.size[1] as f32,
             ];
-            self.root_rect = Some(drawn.rect);
             if draw_prepared(
                 &prepared.layout,
                 &prepared.items,
@@ -1717,6 +1736,7 @@ impl Windows {
                     append_hovers(&mut drawn.tooltips, prepared.hovers, origin);
                 }
             }
+            self.root_areas = std::iter::once(drawn.rect).chain(drawn.areas.iter().copied()).collect();
         }
         if tactics_open && matches!(selection, Selection::Land(_)) {
             let popup_name = "tactics_list_view";
@@ -1856,9 +1876,26 @@ pub(crate) fn append_hovers(target: &mut Vec<TooltipHit>, hovers: Vec<Hover>, or
             text: hit.text,
             description: hit.description,
             shortcut: hit.shortcut,
-            anchor: hit.anchor,
+            anchor: resolved(hit.anchor, &hit.region, origin),
         })
     }));
+}
+
+/// An authored anchor on screen: absolute, or from the control's unclipped top-left.
+fn resolved(anchor: super::TooltipAnchor, region: &Region, origin: [i32; 2]) -> super::TooltipAnchor {
+    let super::TooltipAnchor::Authored(authored) = anchor else {
+        return anchor;
+    };
+    let [x, y] = if authored.relative {
+        [region.rect[0] as i32 + origin[0], region.rect[1] as i32 + origin[1]]
+    } else {
+        [0, 0]
+    };
+    super::TooltipAnchor::At {
+        x: x.saturating_add(authored.x),
+        y: y.saturating_add(authored.y),
+        below: authored.below,
+    }
 }
 
 fn controls(root: &Element, regions: &[Region], origin: [i32; 2], drawn: &mut Drawn, popup: bool) {
@@ -1871,13 +1908,10 @@ fn controls(root: &Element, regions: &[Region], origin: [i32; 2], drawn: &mut Dr
             continue;
         };
         let name = indexed.get(region.path.as_str()).map(|path| path.as_str());
+        if !popup {
+            drawn.areas.push(rect);
+        }
         if root.is_named("strategicairview") {
-            if name == Some("air_combat_wnd") {
-                drawn.air_combat_rect = Some(rect);
-            }
-            if name == Some("details_wnd") {
-                drawn.air_details_rect = Some(rect);
-            }
             if let Some(action) = name.and_then(super::air_menu::Action::from_path) {
                 drawn.air_controls.push((region.path.clone(), action));
             }
@@ -1886,9 +1920,6 @@ fn controls(root: &Element, regions: &[Region], origin: [i32; 2], drawn: &mut Dr
             match name {
                 Some("dismiss_button") => drawn.dismiss = Some(rect),
                 Some("open_details") => drawn.result_details_button = Some(rect),
-                Some("attacker_details" | "defender_details") => {
-                    drawn.result_details_rects.push(rect)
-                }
                 _ => {}
             }
         }

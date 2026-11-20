@@ -13,7 +13,7 @@ mod rules;
 mod success;
 
 use super::offers::TooltipTarget;
-pub use recorded::build;
+pub use recorded::{build, details};
 #[cfg(any(test, feature = "test-support"))]
 pub use recorded::{Inputs, build_from};
 use std::sync::Arc;
@@ -36,6 +36,27 @@ pub enum Key {
         incoming: bool,
     },
     Offer(Arc<[TooltipTarget]>),
+    /// A details window's type button: its target with that one type.
+    Type(Arc<TooltipTarget>),
+}
+
+/// The raid target details window an offer bubble's click opens: its header and one entry per
+/// target, as the click built them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Details {
+    pub header: Result<String, String>,
+    pub entries: Vec<DetailEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetailEntry {
+    /// The target the click built this row for, which its type buttons describe.
+    pub scope: replay_data::rows::RaidScope,
+    pub name: Result<String, String>,
+    /// Each shown type's catalog index, glyph and whether its button is enabled: the launchable
+    /// types first, then the others, each in the target's type order; or why the row cannot be
+    /// ordered.
+    pub icons: Result<Vec<(usize, Arc<str>, bool)>, String>,
 }
 
 /// Interface pixels in window paint order; reverse iteration selects the
@@ -45,6 +66,8 @@ pub struct Hit {
     pub origin: [f32; 2],
     pub size: [f32; 2],
     pub key: Key,
+    /// The province whose icon this is.
+    pub province: u32,
     pub layer: u64,
     /// Unsupported native hit shapes block lower windows without dispatching observers.
     pub supported: bool,
@@ -74,6 +97,7 @@ mod basics {
                 origin: [1., 2.],
                 size: [8., 9.],
                 key: key(1),
+                province: 0,
                 layer: 0,
                 supported: true,
             },
@@ -81,6 +105,7 @@ mod basics {
                 origin: [3., 4.],
                 size: [8., 9.],
                 key: key(2),
+                province: 0,
                 layer: 0,
                 supported: true,
             },

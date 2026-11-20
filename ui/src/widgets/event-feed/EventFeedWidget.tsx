@@ -15,7 +15,7 @@ import { useChartTokens } from '../../charts/useChartTokens';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { Icon } from '../../components/Icons';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryScope } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -64,7 +64,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const categories = useMemo<ReadonlySet<string>>(() => new Set(JSON.parse(categoriesKey)), [categoriesKey]);
   const artwork = options.artwork !== false;
   const groups = useCountryGroups(runtime, track, active && filtered);
-  const tagsKey = JSON.stringify(selectedTags(widget.countries, track));
+  const tagsKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(tagsKey), [tagsKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);

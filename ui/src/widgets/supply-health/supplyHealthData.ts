@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { LiveShares, ShareRun } from '../../charts/share';
 import type { TiledLine } from '../../dashboard/tiles/view';
@@ -96,7 +97,7 @@ export function mostDivisions(line: ChartSummary | undefined): number | null {
  * reason a count gives, undefined while an hour is not read. */
 export function supplyAt(replies: readonly (readonly SeriesState[])[] | undefined, tag: string, hour: number): SupplyAt {
   if (!replies || replies.length !== STATES.length) return undefined;
-  const found = replies.map(states => states.find(state => state.tag === tag && state.hour === hour));
+  const found = replies.map(states => states.find(state => countryKey(state.country) === tag && state.hour === hour));
   if (found.some(state => !state)) return undefined;
   const missing = found.find(state => !state!.run);
   if (missing) return { missing: missing!.missing ?? 'Not recorded at this hour' };

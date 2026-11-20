@@ -464,7 +464,7 @@ mod tests {
             assert_eq!(
                 CountryParams {
                     branch_id: "1".into(),
-                    tag,
+                    country: tag.into(),
                 }
                 .validate(),
                 Ok(())

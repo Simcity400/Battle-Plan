@@ -1,5 +1,6 @@
+import { countryFromKey } from './countryKey.ts';
 import { useMemo } from 'react';
-import { defaultCountryTag } from './countrySelection.ts';
+import { defaultCountryKey } from './countrySelection.ts';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
 import { settledHour, trackHourOf } from './settledHour.ts';
@@ -11,8 +12,8 @@ import type { IdeaHistoryReply } from '../generated/dashboard';
 /** One country's idea history over the branch, read once (`idea-history`): no read follows the playhead. */
 export function useIdeaHistory(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'idea-history', params: { branchId: track.branch.id, tag } } : null;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
+  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'idea-history', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
   const { data, error, retry } = useProduct<IdeaHistoryReply>(runtime.client, request, active, validateIdeaHistoryReply);
   return { track, tag, data, error, retry };
 }

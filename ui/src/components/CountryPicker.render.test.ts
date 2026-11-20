@@ -46,7 +46,7 @@ test('renaming an open recording retains the top-bar and list flags without re-r
     ...pickerHooks(),
     async product(_client: unknown, request: ProductRequest, _signal: unknown, _validate: unknown, source: unknown) {
       requests.push(request);
-      if (request.product === 'land-owners') { ownerSource = source; return { countries: [], warnings: [] }; }
+      if (request.product === 'land-owners') { ownerSource = source; return { countries: [{ id: '1', tag: 'mod-country', name: 'Country', observedBranchId: '1', observedHour: 12 }], warnings: [] }; }
       if (request.product === 'country-facts') return timeline((request.params as { branchId: string }).branchId, 'mod-country');
       assert.equal(request.product, 'country-flags');
       return drawing(request.params as CountryFlagParams);
@@ -97,9 +97,12 @@ test('renaming an open recording retains the top-bar and list flags without re-r
     fixture.reads.set('', { kind: 'value', value: 'Dated name' });
     await settle();
     assert.ok(texts(output).includes('Dated name'), 'the top bar names the country at the playback day');
+    assert.equal(texts(output).filter(text => text === 'Dated name').length, 2, 'its list names it as the top bar does, never by its catalogue entry');
     fixture.reads.set('', { kind: 'absent' });
     await settle();
     assert.ok(texts(output).includes('Country name unavailable'), 'a day without a recorded name says so');
+    // The field's own label reads 'Country' too.
+    assert.equal(texts(output).filter(text => text === 'Country').length, 2, 'a country with no name at the hour is listed by its catalogue entry');
   } finally { fixture.unmount(); await vite.close(); delete host.__pickerRename; }
 });
 

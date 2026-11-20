@@ -55,8 +55,8 @@ pub fn viewer<F: Tables + ?Sized>(frame: &F, links: &BTreeMap<u32, u32>, tags: &
 }
 
 /// The viewing country from values: the client's stored viewpoint (`recorded`), the slots' tags,
-/// and the country asked for. A tag compares case-insensitively; an absent one falls back to the
-/// recorded viewpoint, else the lowest slot. None when there is no country at all. The one rule
+/// and the country asked for. A tag compares case-insensitively and a slot must hold a country;
+/// an absent one falls back to the recorded viewpoint, else the lowest slot. None when there is no country at all. The one rule
 /// `perspective::viewer`, the vision layer and the engagement folds should share.
 pub fn resolve(recorded: Option<u32>, tags: &BTreeMap<u32, String>, country: &Country) -> Option<(u32, Resolution)> {
     let default = || match recorded {
@@ -69,5 +69,7 @@ pub fn resolve(recorded: Option<u32>, tags: &BTreeMap<u32, String>, country: &Co
             Some((&slot, _)) => Some((slot, Resolution::Requested)),
             None => default().map(|(slot, _)| (slot, Resolution::Absent(tag.clone()))),
         },
+        Country::Slot { slot, .. } if tags.contains_key(slot) => Some((*slot, Resolution::Requested)),
+        Country::Slot { .. } => default().map(|(slot, _)| (slot, Resolution::Absent(country.to_string()))),
     }
 }

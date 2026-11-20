@@ -9,7 +9,7 @@ use crate::Source;
 use dashboard_follow::live::Source as Cell;
 use dashboard_base::{
     catalogue::{self, Catalogue, View},
-    products::{check_reply_budget, validate_tag},
+    products::{Country, check_reply_budget, validate_country},
 };
 use dashboard_text::metadata::{TaggedCountry, tagged_country};
 use replay_data::rows::{self, TableId, tables};
@@ -29,13 +29,15 @@ pub struct Wargoals;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WargoalsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 /// What an inventory is asked: the country's tag at an hour of a branch.
 struct WargoalsAsk {
     branch_id: String,
     hour: i32,
+    /// The tag the country goes by at the hour.
     tag: String,
+    country: Country,
 }
 #[derive(Clone, Debug, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
@@ -99,6 +101,8 @@ pub enum WargoalStanding {
 pub struct WargoalsReply {
     pub branch_id: String,
     pub tag: String,
+    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    pub asked: dashboard_base::products::Country,
     pub standings: Vec<WargoalPair>,
     pub goals: Vec<WargoalEntry>,
     pub justifications: Vec<WargoalJustification>,
@@ -142,7 +146,7 @@ impl AtHour for Wargoals {
     type Context = WargoalContent;
 
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
-        validate_tag(&p.tag)?;
+        validate_country(&p.country)?;
         p.branch_id.parse::<u64>().map_err(|_| "Invalid war-goal branch")?;
         Ok(())
     }
@@ -160,8 +164,8 @@ impl AtHour for Wargoals {
         ]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -175,7 +179,7 @@ impl AtHour for Wargoals {
 
     fn reply(frame: &DecodedFrame, p: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("War goals country is unavailable at this hour"))?;
-        let reply = reply(frame, &WargoalsAsk { branch_id: p.branch_id.clone(), hour: at.hour, tag: p.tag.clone() }, owner.slot, &at.context.catalogue)?;
+        let reply = reply(frame, &WargoalsAsk { branch_id: p.branch_id.clone(), hour: at.hour, tag: at.holders.name(&p.country, at.hour), country: p.country.clone() }, owner.slot, &at.context.catalogue)?;
         let progress = dashboard_declare::field(TableId::WargoalJustifications, "progress_raw")?;
         for justification in &reply.justifications {
             let key = justification.id.parse::<u128>().map_err(|_| invalid("War-goal justification key is not a number"))?;
@@ -262,9 +266,9 @@ fn invalid(why: impl Into<String>) -> io::Error {
 fn selected_country<'a>(
     countries: &'a [rows::CountryRow],
     links: &[rows::CountryLinkRow],
-    tag: &str,
+    country: &Country,
 ) -> io::Result<(&'a rows::CountryRow, u32)> {
-    match tagged_country(countries, links, tag) {
+    match dashboard_base::products::country_in_frame(countries, links, country) {
         TaggedCountry::Found(country, slot) => Ok((country, slot)),
         TaggedCountry::Absent => Err(invalid("War-goal country is absent at this hour")),
         TaggedCountry::Unresolved => Err(invalid(
@@ -371,7 +375,7 @@ fn inventory(
 ) -> io::Result<WargoalsReply> {
     let countries = frame.complete::<tables::Countries>()?;
     let links = frame.complete::<tables::CountryLinks>()?;
-    let (selected, selected_slot) = selected_country(countries, links, &p.tag)?;
+    let (selected, selected_slot) = selected_country(countries, links, &p.country)?;
     let slots: BTreeMap<_, _> = links.iter().map(|r| (r.id, r.canonical_slot)).collect();
     let tags: BTreeMap<_, _> = countries
         .iter()
@@ -530,6 +534,7 @@ fn inventory(
     Ok(WargoalsReply {
         branch_id: p.branch_id.clone(),
         tag: p.tag.clone(),
+        asked: p.country.clone(),
         standings,
         goals: out,
         justifications: just,
@@ -603,6 +608,7 @@ mod tests {
             branch_id: "1".into(),
             hour: 43820001,
             tag: "ONE".into(),
+            country: "ONE".into(),
         };
         let reply = inventory(&frame, &p, |name, actor, recipient| {
             assert_eq!((actor, recipient), (1, 2));
@@ -840,6 +846,7 @@ mod tests {
             branch_id: "1".into(),
             hour: 100,
             tag: "ONE".into(),
+            country: "ONE".into(),
         };
         // The earlier row has no country link: the linked slot-1 country is the selection.
         let reply = inventory(&frame, &p, |_, _, _| Ok("name".into())).unwrap();
@@ -907,6 +914,7 @@ mod tests {
                 branch_id: "1".into(),
                 hour: 100,
                 tag: "ONE".into(),
+                country: "ONE".into(),
             },
             1,
             &Ok(Arc::new(cat)),

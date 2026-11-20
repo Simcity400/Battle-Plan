@@ -46,6 +46,46 @@ pub fn build(
     })
 }
 
+/// The details window of an offer bubble's targets, built at the click's hour.
+pub fn details(
+    content: &super::Content,
+    frame: &DecodedFrame,
+    ours: u32,
+    targets: &[offers::TooltipTarget],
+) -> super::Details {
+    let flag_exists = |key: &str| content.flags.contains(key);
+    let header = localise(&content.localisation, "MAP_ICON_RAID_TARGET_HEADER", &[]);
+    let world = match World::new(frame, content.assets.trigger_content.facts()) {
+        Ok(world) => world,
+        Err(reason) => {
+            return super::Details {
+                header,
+                entries: targets
+                    .iter()
+                    .map(|target| super::DetailEntry {
+                        scope: target.scope.clone(),
+                        name: Err(reason.to_string()),
+                        icons: Err(reason.to_string()),
+                    })
+                    .collect(),
+            };
+        }
+    };
+    let context = Context {
+        assets: &content.assets,
+        world: &world,
+        loc: &content.localisation,
+        recorded_language: &content.recorded_language,
+        scripted_content: &content.scripted,
+        ours,
+        nato: false,
+        flag_exists: &flag_exists,
+        scripted: Default::default(),
+        countries: installed_content_country_names::country_names::CountryNames::read(frame, &content.localisation),
+    };
+    super::Details { header, entries: context.detail_entries(targets) }
+}
+
 pub struct Inputs<'a> {
     pub assets: &'a RaidAssets,
     pub frame: &'a DecodedFrame,
@@ -96,13 +136,41 @@ pub fn build_from(input: Inputs<'_>) -> Tooltip {
             reference_type,
             incoming,
         } => context.raid(*id, *reference_type, *incoming),
-        Key::Offer(targets) => Ok(context.offers(targets)),
+        Key::Offer(targets) => Ok(context.offers(targets, true)),
+        // The bubble alone appends the quick-start hint.
+        Key::Type(target) => Ok(context.offers(std::slice::from_ref(&**target), false)),
     };
     result.unwrap_or_else(|reason| {
         let mut out = Tooltip::default();
         out.refuse("raid tooltip", reason.to_string());
         out
     })
+}
+
+/// A details entry's order from its shown types' launchability: the type its name reads (the
+/// one launchable type, else none) and its buttons, launchable ones enabled first, then the rest
+/// disabled. An undecided type leaves the buttons unordered, and the name too unless two types
+/// are already launchable.
+fn detail_order(types: &[(usize, Result<bool>)]) -> (Result<Option<usize>>, Result<Vec<(usize, bool)>>) {
+    let undecided: Vec<&str> = types.iter().filter_map(|(_, allowed)| allowed.as_ref().err().map(String::as_str)).collect();
+    let launchable: Vec<usize> = types.iter().filter(|(_, allowed)| *allowed == Ok(true)).map(|&(at, _)| at).collect();
+    let why = || undecided.join("; ");
+    let named = match (launchable.as_slice(), undecided.is_empty()) {
+        ([one], true) => Ok(Some(*one)),
+        (_, true) => Ok(None),
+        (many, false) if many.len() >= 2 => Ok(None),
+        _ => Err(format!("raid details name: a type's launchability is undecided: {}", why())),
+    };
+    let buttons = if undecided.is_empty() {
+        Ok(launchable
+            .iter()
+            .map(|&at| (at, true))
+            .chain(types.iter().filter(|(_, allowed)| *allowed == Ok(false)).map(|&(at, _)| (at, false)))
+            .collect())
+    } else {
+        Err(format!("raid details type buttons: a type's launchability is undecided: {}", why()))
+    };
+    (named, buttons)
 }
 
 struct Context<'a, 'w> {
@@ -227,6 +295,7 @@ impl Context<'_, '_> {
                 content,
                 self.ours,
             )
+            .viewing(self.ours)
             .with_nato_counters(self.nato)
         });
         scripted.expand_in(&text, &event_scopes(scopes))
@@ -563,7 +632,51 @@ impl Context<'_, '_> {
             bare: false,
         })
     }
-    fn offers(&self, targets: &[offers::TooltipTarget]) -> Tooltip {
+    /// Each target's name and type buttons: launchable types enabled, then the rest disabled,
+    /// and the type named when exactly one is launchable.
+    fn detail_entries(&self, targets: &[offers::TooltipTarget]) -> Vec<super::DetailEntry> {
+        let paths = paths::HourPaths::new(self.assets, self.world.frame());
+        let launcher = launch::Launcher::new(self.assets, self.world, self.ours, &paths);
+        let local = launcher.local();
+        targets
+            .iter()
+            .map(|target| {
+                let scope = &target.scope;
+                let template = if scope.building_type == 0 {
+                    Ok(None)
+                } else {
+                    self.assets.building(self.world, scope.building_type).map(|building| Some(building.name.as_str()))
+                };
+                let types: Vec<(usize, Result<bool>)> = target
+                    .types
+                    .iter()
+                    .map(|&at| {
+                        let allowed = match self.assets.catalog.types.get(at) {
+                            Some(kind) => self
+                                .scopes(scope)
+                                .and_then(|s| known(launcher.launchable_in(&local, kind, scope, s))),
+                            None => Err(format!("raid offer type: cached index {at} is outside content catalog")),
+                        };
+                        (at, allowed)
+                    })
+                    .collect();
+                let (named, buttons) = detail_order(&types);
+                let name = named.and_then(|kind| {
+                    self.target_name(scope, kind.and_then(|at| self.assets.catalog.types.get(at)))
+                });
+                let icons = buttons.and_then(|buttons| {
+                    let template = template.clone()?;
+                    Ok(buttons
+                        .into_iter()
+                        .map(|(at, enabled)| (at, self.assets.glyph_key_of(at, template), enabled))
+                        .collect())
+                });
+                super::DetailEntry { scope: scope.clone(), name, icons }
+            })
+            .collect()
+    }
+
+    fn offers(&self, targets: &[offers::TooltipTarget], bubble: bool) -> Tooltip {
         let paths = paths::HourPaths::new(self.assets, self.world.frame());
         let launcher = launch::Launcher::new(self.assets, self.world, self.ours, &paths);
         let local = launcher.local();
@@ -620,7 +733,7 @@ impl Context<'_, '_> {
                 });
             }
             let allowed = known(any);
-            if targets.len() == 1 && target.types.len() == 1 {
+            if bubble && targets.len() == 1 && target.types.len() == 1 {
                 quick = allowed.clone();
             }
             let kind = if target.types.len() == 1 {

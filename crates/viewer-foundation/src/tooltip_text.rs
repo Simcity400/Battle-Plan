@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tooltip {
     pub title: String,
+    /// The game's separate delayed part: the map hover shows it below `title` once
+    /// `NGraphics.TOOLTIP_DELAYED_DELAY` passes, as panel hovers show theirs.
     pub body: String,
     /// Line name and why its input/text cannot be reproduced; no guessed
     /// text stands in for it. Counts are occurrences, not unique reasons.

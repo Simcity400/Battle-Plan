@@ -3,6 +3,7 @@
 //! `complianceSum`, `states`, `heldStates`, `heldComplete`; the means are the series'), and, when
 //! asked, the countries it occupies with their collaboration toward it.
 
+use dashboard_base::products::Country;
 use super::{occupied, slot};
 use crate::{
     Source,
@@ -12,7 +13,6 @@ use crate::{
         intelligence::{Tags, branch, missing},
     },
 };
-use dashboard_base::products::validate_tag;
 use dashboard_follow::live::Source as Cell;
 use dashboard_query::identity::Holder;
 use dashboard_text::metadata::recorded_rows;
@@ -39,7 +39,7 @@ pub struct OccupationDetail;
 pub struct OccupationDetailParams {
     pub branch_id: String,
     /// None asks every occupier with a row at the hour.
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     pub collaboration: bool,
 }
 
@@ -59,7 +59,7 @@ pub struct OccupationCollaboration {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OccupationDetailRow {
-    pub tag: String,
+    pub country: Country,
     /// Why the tag names no occupier at the hour.
     pub missing: Option<String>,
     /// By tag; empty unless asked.
@@ -115,7 +115,7 @@ impl AtHour for OccupationDetail {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         branch(&params.branch_id)?;
-        params.tags.iter().try_for_each(|tag| validate_tag(tag))
+        params.countries.iter().try_for_each(dashboard_base::products::validate_country)
     }
 
     fn tables(params: &Self::Params) -> Vec<TableId> {
@@ -169,26 +169,26 @@ impl AtHour for OccupationDetail {
             }
         }
         // No tag asked: every occupier with a row, by the tag naming its holder at the hour.
-        let every: Vec<String>;
-        let asked = if params.tags.is_empty() {
+        let every: Vec<Country>;
+        let asked = if params.countries.is_empty() {
             let names = crate::products::country_ids::Names::new(at.holders);
             let rows = frame.complete::<tables::OccupierTotals>()?;
             every = rows
                 .iter()
-                .filter_map(|row| names.slot_tag(row.slot, at.hour).filter(|tag| matches!(at.holders.at(tag, at.hour).map(|run| run.holder), Some(Holder::Found { slot, id }) if slot == row.slot && id == row.id)).map(str::to_owned))
+                .filter_map(|row| names.slot_tag(row.slot, at.hour).filter(|tag| matches!(at.holders.at(tag, at.hour).map(|run| run.holder), Some(Holder::Found { slot, id }) if slot == row.slot && id == row.id)).map(Country::from))
                 .collect();
             &every
         } else {
-            &params.tags
+            &params.countries
         };
         let mut occupiers = Vec::with_capacity(asked.len());
         for tag in asked {
-            let mut row = OccupationDetailRow { tag: tag.clone(), missing: None, collaboration: Vec::new() };
+            let mut row = OccupationDetailRow { country: tag.clone(), missing: None, collaboration: Vec::new() };
             match at.holders.at(tag, at.hour).map(|run| run.holder) {
                 Some(Holder::Found { slot, id }) => {
                     let key = u128::from(slot) << 32 | u128::from(id);
                     for ((column, _), &field) in TOTALS.iter().zip(&fields) {
-                        at.live.value(tag, column, Cell { table: TableId::OccupierTotals, column: field, key }, 1.0);
+                        at.live.value(&tag.key(), column, Cell { table: TableId::OccupierTotals, column: field, key }, 1.0);
                     }
                     if let Some(tags) = &tags {
                         row.collaboration = by

@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
@@ -79,7 +80,7 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
   const series = usePartSeries(runtime, track, FUEL_DAYS, ids.map(([name]) => name), tag, undefined, chart.active);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const hovered = useProduct<CountryFuelReply>(runtime.client, hoverHour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'country-fuel', params: { branchId: track.branch.id, tag, hour: hoverHour } } : null, chart.active, validateCountryFuel, track.source);
+    product: 'country-fuel', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverHour } } : null, chart.active, validateCountryFuel, track.source);
   const amountAt = useCallback((id: string, transfer: boolean) => (when: number) => {
     const held = hovered.data && hoverHour === Math.floor(when) ? hovered.data : reply && hour === Math.floor(when) ? reply : null;
     if (!held?.read) return held ? held.missing ?? 'Not recorded' : 'Loading…';
@@ -97,7 +98,7 @@ export default function FuelBreakdown({ runtime, widget, track, tag, measure, ho
   }), [ids, series.summaries, reply, rows, color, tokens.muted, amountAt, measure]);
   const own = parts.filter(part => !part.transfer && part.summary), incoming = parts.filter(part => part.transfer && part.summary);
   const awards = useProduct<FuelAwardsReply>(runtime.client, basis && measure === 'burn' && consumer !== null ? { sourceId: track.source.id,
-    revision: track.source.revision, product: 'country-fuel-awards', params: { branchId: basis.branchId, tag: basis.tag, hour: basis.hour } } : null,
+    revision: track.source.revision, product: 'country-fuel-awards', params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basis.hour } } : null,
   chart.active, validateFuelAwards, track.source);
   const recipients = awards.data && basis && awards.data.readHour === basis.hour && awards.data.tag === basis.tag ? awards.data : null;
   const recipient = selected && recipients?.recipients.find(part => part.key === selected.key);
@@ -167,7 +168,7 @@ function RecipientHistory({ runtime, track, basis, recipientKey, name, hour, det
   const wanted = detailWindows(chart.extent, visible, hour, detailHours);
   const windows = useProductWindows<FuelAwardHistoryReply>(runtime.client, JSON.stringify([track.source.id, track.source.revision, basis, recipientKey]),
     window => ({ sourceId: track.source.id, revision: track.source.revision, product: 'country-fuel-award-history',
-      params: { branchId: basis.branchId, tag: basis.tag, hour: basis.hour, window, recipientKey } }),
+      params: { branchId: basis.branchId, country: countryFromKey(basis.tag), hour: basis.hour, window, recipientKey } }),
     wanted, chart.active, validateFuelAwardHistory, track.source);
   const runs = useMemo(() => joinedRuns([...windows.data.values()].map(reply => reply.runs)), [windows.data]);
   const amount = (at: number) => {

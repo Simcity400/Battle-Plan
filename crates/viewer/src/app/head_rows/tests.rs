@@ -25,7 +25,6 @@ use viewer_foundation::{
     map::{
         counter_hovers::unit_hits::{Hit, Kind as HitKind},
         counter_move::MovementFrame,
-        perspective::Country,
     },
     unit_handle::Unit,
 };
@@ -182,14 +181,14 @@ fn the_unit_selection_observer_reads_rows_at_the_head_and_holds_nothing_with_not
     let mut head_rows = HeadRows::default();
     let both = || {
         let mut selection = viewer_counters::map::unit_selection::Selection::default();
-        selection.context(RECORDING.branch, &Country::Recorded, 0);
+        selection.context(RECORDING.branch);
         let hit = Hit { ours: true, port: false, rect: [0.0; 4], kind: HitKind::Division, members: [1, 2].into(), layer: 0, plate: None };
         selection.click(Some(&hit), false);
         selection
     };
     let observe = |head_rows: &mut HeadRows, head| {
         let mut selection = both();
-        head_rows.units(head, Some(&today), |frame| selection.observe(RECORDING.branch, &Country::Recorded, 0, frame));
+        head_rows.units(head, Some(&today), |frame| selection.observe(RECORDING.branch, frame));
         selection.units().iter().copied().collect::<BTreeSet<Unit>>()
     };
     let all: BTreeSet<Unit> = [Unit::Division(1), Unit::Division(2)].into();
@@ -197,7 +196,7 @@ fn the_unit_selection_observer_reads_rows_at_the_head_and_holds_nothing_with_not
     assert_eq!(observe(&mut head_rows, head), all, "nothing read while its rows load: the selection keeps what it holds");
     let mut seen = None;
     for hour in 2..38 {
-        head_rows.end_frame();
+        head_rows.end_frame(None);
         step(&mut fed, hour);
         let read = observe(&mut head_rows, head);
         if read != all {
@@ -207,8 +206,8 @@ fn the_unit_selection_observer_reads_rows_at_the_head_and_holds_nothing_with_not
     }
     assert_eq!(seen, Some([Unit::Division(1)].into()), "at the head only division 1 lives");
     assert!(held(&fed).contains(&TableId::RailwayGunCounterInputs), "the observer's tables are held while it is asked");
-    head_rows.end_frame();
-    head_rows.end_frame();
+    head_rows.end_frame(None);
+    head_rows.end_frame(None);
     step(&mut fed, 39);
     assert!(!held(&fed).contains(&TableId::RailwayGunCounterInputs), "a frame that did not ask retires its tables");
 }
@@ -226,7 +225,7 @@ fn the_clock_speed_and_the_pickers_feature_read_rows_at_the_head() {
     assert_ne!(read(&mut head_rows, head), (Some(None), Some(true)), "never today's");
     let mut at_head = None;
     for hour in 2..38 {
-        head_rows.end_frame();
+        head_rows.end_frame(None);
         step(&mut fed, hour);
         if let (Some(Some(speed)), Some(four)) = read(&mut head_rows, head) {
             at_head = Some((speed, four));
@@ -236,24 +235,115 @@ fn the_clock_speed_and_the_pickers_feature_read_rows_at_the_head() {
     assert_eq!(at_head, Some((SPEED, false)), "the recorded speed, and features without the fourth button's");
 }
 
+#[test]
+fn a_click_on_an_hour_never_read_is_answered_over_that_hours_rows_once_they_arrive() {
+    let (mut fed, views) = opened("clicks");
+    let head = Some(&views);
+    let mut head_rows = HeadRows::default();
+    head_rows.click_at(Some((RECORDING.branch, 1)));
+    let click = |head_rows: &mut HeadRows| head_rows.clicks(head, None, |frame| (frame.hour, frame.complete::<replay_data::rows::tables::Divisions>().map(|rows| rows.len()).ok()));
+    assert_eq!(click(&mut head_rows), None, "the store has made nothing of hour 1 for the click yet");
+    // Frames pass with the click held and nothing else asking, while the side posts hour 1 and
+    // steps on to hour 2.
+    head_rows.end_frame(head);
+    head_rows.end_frame(head);
+    step(&mut fed, 1);
+    step(&mut fed, 2);
+    assert_eq!(click(&mut head_rows), Some((1, Some(1))), "answered over the rows of the hour it was made at, not the hour after");
+}
+
+/// The click reader makes the rows of no icon family the view cannot click: a view of the ground
+/// alone holds none of the unit counters', the bases', the land combats' or the naval missions'
+/// tables, not even one a click learned at another view, and a family it can click is held while
+/// it can.
+#[test]
+fn the_click_reader_makes_no_family_the_view_cannot_click() {
+    use super::{Clickable, click_tables, hidden_families};
+    let hidden = hidden_families(Clickable::GROUND.shown);
+    assert!(hidden.contains(&TableId::DivisionStatus) && hidden.contains(&TableId::AirWings) && hidden.contains(&TableId::NavalMissionLedgers));
+    let every = Clickable { shown: viewer_counters::map::counters::Shown::EVERY, air: true, divisions: true, raids: true };
+    let mut learning = HeadRows::default();
+    learning.clickable(every);
+    learning.learned = vec![TableId::DivisionStatus, TableId::Characters];
+    assert!(click_tables(every, &learning.learned).contains(&TableId::DivisionStatus), "a learned family table while its family can be clicked");
+    learning.clickable(Clickable::GROUND);
+    let ground = click_tables(Clickable::GROUND, &learning.learned);
+    assert_eq!(ground.iter().filter(|table| hidden.contains(table)).collect::<Vec<_>>(), Vec::<&TableId>::new(), "no hidden family's table");
+    assert!(ground.contains(&TableId::Provinces) && ground.contains(&TableId::Characters), "the ground's tables, and a learned table no family names");
+
+    let (mut fed, views) = opened("families");
+    let head = Some(&views);
+    let mut head_rows = HeadRows::default();
+    head_rows.click_at(Some((RECORDING.branch, 1)));
+    head_rows.clicks(head, None, |frame| frame.hour);
+    head_rows.end_frame(head);
+    step(&mut fed, 2);
+    let on_ground = held(&fed);
+    assert!(on_ground.contains(&TableId::Provinces), "the click reader holds the ground's tables: {on_ground:?}");
+    assert_eq!(on_ground.iter().filter(|table| hidden.contains(table)).collect::<Vec<_>>(), Vec::<&TableId>::new(), "and no hidden family's");
+    head_rows.clickable(Clickable { divisions: true, ..Clickable::GROUND });
+    head_rows.end_frame(head);
+    step(&mut fed, 3);
+    assert!(held(&fed).contains(&TableId::ArmyIconInputs), "divisions that can be clicked: their sounds' tables");
+    head_rows.clickable(Clickable::GROUND);
+    head_rows.end_frame(head);
+    step(&mut fed, 4);
+    assert!(!held(&fed).contains(&TableId::ArmyIconInputs), "let go once they cannot");
+}
+
+/// A click reading a table only a family the view cannot draw names is answered: a raid offer's
+/// details read ModifierDefinitions, the naval missions' table, in the raids mode where no naval
+/// mission is drawn. The table is held from the read that learns it until the view's families
+/// change. Before, the reader learned it and declared every table but it, so the click loaded at
+/// every frame and its window never opened.
+#[test]
+fn a_click_reading_a_hidden_familys_table_is_answered_and_the_table_goes_with_the_view() {
+    use super::{Clickable, hidden_families};
+    let raids = Clickable { raids: true, ..Clickable::GROUND };
+    assert!(hidden_families(raids.shown).contains(&TableId::ModifierDefinitions));
+    let (mut fed, views) = opened("hidden family");
+    let head = Some(&views);
+    let mut head_rows = HeadRows::default();
+    head_rows.clickable(raids);
+    let read = |frame: &DecodedFrame| frame.complete::<replay_data::rows::tables::ModifierDefinitions>().map(|rows| rows.len()).ok();
+    head_rows.click_at(Some((RECORDING.branch, 1)));
+    let mut answered = head_rows.clicks(head, None, read);
+    for hour in 2..38 {
+        if answered.is_some() {
+            break;
+        }
+        head_rows.end_frame(head);
+        step(&mut fed, hour);
+        head_rows.click_at(Some((RECORDING.branch, hour)));
+        answered = head_rows.clicks(head, None, read);
+    }
+    assert!(answered.is_some(), "the click is answered once the table it read is held");
+    assert!(held(&fed).contains(&TableId::ModifierDefinitions), "held while the view stands");
+    head_rows.clickable(Clickable::GROUND);
+    head_rows.end_frame(head);
+    step(&mut fed, 39);
+    assert!(!held(&fed).contains(&TableId::ModifierDefinitions), "let go once the view's families change");
+}
+
 /// Playing, the side's rows run ahead of the hour the display shows: the store stands at 6 while
-/// the display shows 4. A reader the frame asks every frame (the clock's) and one answered once (a
-/// click) both answer from no later than 4. Before, both read hour 6's rows: a division gone at 6
-/// left the selection while the map still drew it.
+/// the display shows 4. A reader the frame asks every frame (the clock's) answers from no later
+/// than 4, and a click made at 4 over 4's rows. Before, both read hour 6's rows: a division gone at
+/// 6 left the selection while the map still drew it.
 #[test]
 fn readers_at_the_head_answer_no_later_than_the_hour_the_display_shows() {
     let (mut fed, views) = opened("through");
     let head = Some(&views);
     let mut head_rows = HeadRows::default();
-    let mut ask = |head_rows: &mut HeadRows| (head_rows.map(head, None, |frame| frame.hour), head_rows.clicks(head, None, |frame| frame.hour));
+    head_rows.click_at(Some((RECORDING.branch, 4)));
+    let ask = |head_rows: &mut HeadRows| (head_rows.map(head, None, |frame| frame.hour), head_rows.clicks(head, None, |frame| frame.hour));
     for hour in 2..=6 {
         ask(&mut head_rows);
-        head_rows.end_frame();
+        head_rows.end_frame(head);
         step(&mut fed, hour);
     }
     assert_eq!(ask(&mut head_rows).0, Some(6), "unbounded, the newest rows");
     views.show_through(Some(4));
     let (clock, click) = ask(&mut head_rows);
     assert!(clock.is_some_and(|hour| (3..=4).contains(&hour)), "the clock's reader at {clock:?}");
-    assert!(click.is_some_and(|hour| (3..=4).contains(&hour)), "the click's reader at {click:?}");
+    assert_eq!(click, Some(4), "the click's reader at the hour it was made");
 }

@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useReducer, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -67,7 +68,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     : (options.equipmentStack === 'armyGroup' ? 'armyGroup' : 'type') as EquipmentStack;
   const tokens = useChartTokens();
   // The chart's reply holds the one measure it draws; the drill asks its month's every part on its own.
-  const state = useHeadProduct(runtime, widget, 'army-losses', track && window && tag ? { tag, view: chartView(measure, ledger) } : null,
+  const state = useHeadProduct(runtime, widget, 'army-losses', track && window && tag ? { country: countryFromKey(tag), view: chartView(measure, ledger) } : null,
     { active, validate: validateArmyLosses, structure: structureOf });
   const reply = state.data;
   useDiagnostics(onDiagnostics, reply?.warnings ?? null);
@@ -115,7 +116,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const caption = measure === 'manpower' ? 'Manpower lost' : LEDGER_LABELS[ledger];
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const month = drill.breakdown === null ? null : Number(drill.breakdown);
-  const drillState = useHeadProduct(runtime, widget, 'army-losses', track && window && tag && month !== null ? { tag, view: monthView(month) } : null,
+  const drillState = useHeadProduct(runtime, widget, 'army-losses', track && window && tag && month !== null ? { country: countryFromKey(tag), view: monthView(month) } : null,
     { active, validate: validateArmyLosses, structure: structureOf });
   const drillReply = drillState.data;
   const drillHour = drillState.at ?? hour;

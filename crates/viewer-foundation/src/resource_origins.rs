@@ -771,6 +771,56 @@ impl Values for Hour<'_> {
     }
 }
 
+/// The state's own amount of every recorded resource, in database order, fixed5: what the
+/// state view lists (the state's `StateResources::amount` under its controller), read without
+/// the origins.
+pub fn state_amounts(
+    frame: &DecodedFrame,
+    content: &Content,
+    state: u32,
+) -> Result<Vec<(Definition, i64)>, String> {
+    let links: BTreeMap<u32, u32> = table::<tables::CountryLinks>(frame)?
+        .iter()
+        .map(|row| (row.id, row.canonical_slot))
+        .collect();
+    let mut folds = Folds::new();
+    let mut spelled = BTreeMap::new();
+    for row in table::<tables::LexicalTokens>(frame)? {
+        spelled.insert(row.token, row.literal.as_slice());
+        fold(&mut folds, row.token, &row.literal);
+    }
+    let (definitions, _) = definitions(
+        content,
+        table::<tables::ResourceDefinitions>(frame)?
+            .iter()
+            .map(|row| (row.id, row.token)),
+        |token| spelled.get(&token).copied(),
+    )?;
+    let controller = table::<tables::States>(frame)?
+        .iter()
+        .find(|row| row.id == state)
+        .map(|row| row.controller)
+        .ok_or_else(|| format!("state {state} has no States row"))?;
+    let controller = links
+        .get(&controller)
+        .copied()
+        .ok_or_else(|| format!("CountryLinks lacks {controller}"))?;
+    let resources = StateResources::new(frame, &content.buildings, content.bonuses);
+    let joins = Joins {
+        links: &links,
+        folds: &folds,
+    };
+    definitions
+        .into_iter()
+        .map(|definition| {
+            let amount = resources
+                .amount(state, definition.token, Some(controller), &joins)
+                .map_err(|why| why.to_string())?;
+            Ok((definition, amount))
+        })
+        .collect()
+}
+
 /// `TradeRoutes`' class of a resource origin's route.
 pub const ORIGIN_ROUTE_CLASS: u8 = 0;
 

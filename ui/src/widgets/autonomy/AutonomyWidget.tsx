@@ -1,3 +1,5 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -14,7 +16,7 @@ import type { ChartTokens } from '../../charts/tokens';
 import type { TooltipRow } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { motionOf } from '../../charts/easing.ts';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { worldFilter } from '../../dashboard/groups';
@@ -107,7 +109,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const bySubject = options.countriesAre === 'subjects';
   const playhead = window && following ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
@@ -137,7 +139,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const headQuery = useMemo(() => followsClock && active && track && tags.length ? { product: 'series-state', params: { branchId: track.branch.id,
-    family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ tag, hour: 0 })) } } : null, [followsClock, active, track?.branch.id, tags]); // eslint-disable-line react-hooks/exhaustive-deps
+    family: { kind: 'autonomy', measure: 'progress' }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null, [followsClock, active, track?.branch.id, tags]); // eslint-disable-line react-hooks/exhaustive-deps
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const entry = followsHead(followed) ? followed.entry : null;
   const places = series.decimals;
@@ -149,12 +151,12 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   // The score and the two it moves at, read only at the hour hovered.
   const hovered = hoverHour === null ? null : Math.floor(hoverHour);
   const scoreRequest = (measure: string) => track && hovered !== null && tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: tags.map(tag => ({ tag, hour: hovered })) } } : null;
+    params: { branchId: track.branch.id, family: { kind: 'autonomy', measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: hovered })) } } : null;
   const scores = useProduct<MeasureStates>(runtime.client, scoreRequest('score'), active, validateMeasureStates, track?.source);
   const lowers = useProduct<MeasureStates>(runtime.client, scoreRequest('lower'), active, validateMeasureStates, track?.source);
   const uppers = useProduct<MeasureStates>(runtime.client, scoreRequest('upper'), active, validateMeasureStates, track?.source);
   const scoreAt = (states: MeasureStates | undefined, tag: string, hour: number) => {
-    const state = states?.states.find(item => item.tag === tag && item.hour === hour);
+    const state = states?.states.find(item => countryKey(item.country) === tag && item.hour === hour);
     return state ? formatScore(state.run?.valueRaw, states?.decimals, state.missing) : 'Loading…';
   };
   const order = useMemo(() => levelOrder(data?.levels ?? []), [data]);
@@ -171,7 +173,8 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   // Each lane is named as its tag's holder at the hour shown, never as a later or earlier holder of the tag.
   const holders = useMemo(() => groups.data ? new Map(groups.data.countryIdentities.map(history => [history.tag, history.identities])) : null, [groups.data]);
   const segmentAt = useCallback((tag: string, hour: number) => holderSince(holders, tag, hour) ?? null, [holders]);
-  const { country, revision } = useCountriesAt(runtime.client, track, flagTags, head, active, tags, holders ? segmentAt : undefined);
+  const { country, revision } = useCountriesAt(runtime.client, track, flagTags, head, active, tags, holders ? segmentAt : undefined, undefined,
+    { clock, on: followsClock, hour: (clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null });
   const laneName = (tag: string) => laneIdentity(tag, holderSince(holders, tag, head), country(tag));
   const identityKey = useIdentityKey(runtime.client, track, active && followsClock);
   const hover = useHoverLabels(runtime.client, track, active, country);

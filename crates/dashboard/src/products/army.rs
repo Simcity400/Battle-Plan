@@ -4,9 +4,9 @@
 //! unit group. A tag reads its holder's totals by the one identity rule; an hour a total is not
 //! recorded is a gap, never zero.
 
+use dashboard_base::products::Country;
 use super::{LoadContext, Product};
 use crate::Source;
-use dashboard_base::products::validate_tag;
 use dashboard_declare::Key;
 use dashboard_query::{
     Query,
@@ -63,7 +63,7 @@ pub enum ArmyAttribution {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArmySizeParams {
     pub branch_id: String,
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     pub top: Option<usize>,
     pub measure: ArmyMeasure,
     pub count_for: ArmyAttribution,
@@ -131,7 +131,7 @@ pub struct ArmySpan {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmySeries {
-    pub tag: String,
+    pub country: Country,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub identities: Option<Vec<ArmyIdentityRun>>,
@@ -223,11 +223,11 @@ impl Product for ArmySize {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        if params.top.is_some_and(|top| top == 0 || !params.tags.is_empty()) {
+        if params.top.is_some_and(|top| top == 0 || !params.countries.is_empty()) {
             return Err("Invalid country selection");
         }
-        for tag in &params.tags {
-            validate_tag(tag)?;
+        for tag in &params.countries {
+            dashboard_base::products::validate_country(tag)?;
         }
         Ok(())
     }
@@ -281,27 +281,27 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
     let (first, last) = (range.first_hour, range.last_hour);
     // A ranked window's members from the summaries' top-N at six-hour bins: no country's runs are
     // read unless it ranks.
-    let ranked: Option<BTreeMap<String, Vec<dashboard_base::span::HourSpan>>> = match params.top {
+    let ranked: Option<BTreeMap<Country, Vec<dashboard_base::span::HourSpan>>> = match params.top {
         Some(top) => {
             let width = ((i64::from(last) - i64::from(first) + 1) / 6).max(1) as u32;
             let lines = line.ranked(first, last, width, top)?;
             Some(
                 lines
                     .into_iter()
-                    .map(|line| (line.tag, line.membership.into_iter().map(|(first_hour, last_hour)| dashboard_base::span::HourSpan { first_hour, last_hour }).collect()))
+                    .map(|line| (Country::from(line.tag), line.membership.into_iter().map(|(first_hour, last_hour)| dashboard_base::span::HourSpan { first_hour, last_hour }).collect()))
                     .collect(),
             )
         }
         None => None,
     };
-    let tags: Vec<String> = match &ranked {
+    let tags: Vec<Country> = match &ranked {
         Some(members) => members.keys().cloned().collect(),
         None => {
             let mut seen = BTreeSet::new();
-            params.tags.iter().filter(|tag| seen.insert((*tag).clone())).cloned().collect()
+            params.countries.iter().filter(|tag| seen.insert((*tag).clone())).cloned().collect()
         }
     };
-    let mut parts: BTreeMap<String, Vec<Part>> = BTreeMap::new();
+    let mut parts: BTreeMap<Country, Vec<Part>> = BTreeMap::new();
     for tag in &tags {
         crate::metadata::check_cancel(cancelled)?;
         let held = line.parts(tag, first, last);
@@ -321,7 +321,7 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
     let (found, mix) = (found?, mix?);
     let runs = runs_by_tag(&found, &parts);
     let membership = ranked;
-    let wanted: Vec<String> = match &membership {
+    let wanted: Vec<Country> = match &membership {
         Some(members) => members.keys().cloned().collect(),
         None => tags.clone(),
     };
@@ -357,7 +357,7 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &ArmySizeParams, con
             })
             .collect();
         reply.series.push(ArmySeries {
-            tag: tag.clone(),
+            country: tag.clone(),
             identities,
             runs,
             segments,
@@ -379,12 +379,12 @@ type Found = HashMap<(u32, i32, i32), HashMap<u128, read::Runs>>;
 
 /// The runs of `line` of every part: one read per run and window for every slot asked.
 #[cfg(test)]
-fn totals_runs(query: &Query<'_>, line: &Line<'_, '_>, parts: &BTreeMap<String, Vec<Part>>) -> io::Result<Found> {
+fn totals_runs(query: &Query<'_>, line: &Line<'_, '_>, parts: &BTreeMap<Country, Vec<Part>>) -> io::Result<Found> {
     totals_of(query, line.source(), parts)
 }
 
 /// [`totals_runs`] of the series column `source`.
-fn totals_of(query: &Query<'_>, source: summary::Source, parts: &BTreeMap<String, Vec<Part>>) -> io::Result<Found> {
+fn totals_of(query: &Query<'_>, source: summary::Source, parts: &BTreeMap<Country, Vec<Part>>) -> io::Result<Found> {
     let recording = query.replay.recording();
     let mut by_run: HashMap<(u32, i32, i32), Vec<u128>> = HashMap::new();
     for part in parts.values().flatten() {
@@ -400,7 +400,7 @@ fn totals_of(query: &Query<'_>, source: summary::Source, parts: &BTreeMap<String
 }
 
 /// Each tag's runs of its parts in `found`.
-fn runs_by_tag(found: &Found, parts: &BTreeMap<String, Vec<Part>>) -> BTreeMap<String, Vec<(i32, i32, Option<i64>)>> {
+fn runs_by_tag(found: &Found, parts: &BTreeMap<Country, Vec<Part>>) -> BTreeMap<Country, Vec<(i32, i32, Option<i64>)>> {
     parts
         .iter()
         .map(|(tag, parts)| {
@@ -415,13 +415,11 @@ fn runs_by_tag(found: &Found, parts: &BTreeMap<String, Vec<Part>>) -> BTreeMap<S
 
 /// `tag`'s identity segments meeting `first..=last`: each keeps its first hour and ends at the
 /// window's end at the latest.
-fn segments(query: &Query<'_>, tag: &str, first: i32, last: i32) -> Vec<ArmySpan> {
+fn segments(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> Vec<ArmySpan> {
     query
         .holders
-        .tags
-        .get(tag)
-        .into_iter()
-        .flatten()
+        .runs(tag)
+        .iter()
         .filter(|run| matches!(run.holder, Holder::Found { .. }) && run.first <= last && run.last >= first)
         .map(|run| ArmySpan { first_hour: run.first, last_hour: run.last.min(last) })
         .collect()
@@ -490,7 +488,7 @@ struct Groups {
 fn composition(
     source: &Source,
     query: &Query<'_>,
-    parts: &BTreeMap<String, Vec<Part>>,
+    parts: &BTreeMap<Country, Vec<Part>>,
     found: &Found,
     mix: &MixReads,
     series: &mut [ArmySeries],
@@ -522,17 +520,17 @@ fn composition(
         warnings.extend(units.warnings().iter().cloned());
     }
     let (slot_runs, names) = mixes_of(query.replay.recording(), parts, found, mix, cancelled)?;
-    let mut mixes: BTreeMap<String, MixRuns> = BTreeMap::new();
+    let mut mixes: BTreeMap<Country, MixRuns> = BTreeMap::new();
     let mut tokens: BTreeSet<u32> = BTreeSet::new();
     for line in series.iter() {
         let mut runs = Vec::new();
-        for part in parts.get(&line.tag).into_iter().flatten() {
+        for part in parts.get(&line.country).into_iter().flatten() {
             for (first, last, held) in slot_runs.get(&(part.run, part.first, part.last, part.slot)).into_iter().flatten() {
                 tokens.extend(held.keys().copied());
                 runs.push((*first, *last, held.clone()));
             }
         }
-        mixes.insert(line.tag.clone(), runs);
+        mixes.insert(line.country.clone(), runs);
     }
     let mut mapping: HashMap<u32, String> = HashMap::new();
     let mut types: BTreeMap<String, ArmyType> = BTreeMap::new();
@@ -558,7 +556,7 @@ fn composition(
     for line in series.iter_mut() {
         let spans: Vec<(i32, i32)> = line.runs.iter().map(|run| (run.first_hour, run.last_hour)).collect();
         let mut out: Vec<ArmyMixRun> = Vec::new();
-        for (first, last, parts) in mixes.get(&line.tag).into_iter().flatten() {
+        for (first, last, parts) in mixes.get(&line.country).into_iter().flatten() {
             let mut values = vec![0i64; types.len()];
             for (token, count) in parts {
                 values[positions[&mapping[token]]] += count;
@@ -597,7 +595,7 @@ type MixRuns = Vec<(i32, i32, BTreeMap<u32, i64>)>;
 fn mix_runs(
     recording: &Recording,
     attribution: u128,
-    parts: &BTreeMap<String, Vec<Part>>,
+    parts: &BTreeMap<Country, Vec<Part>>,
     found: &Found,
     lives: impl Fn(u32) -> io::Result<Arc<Vec<(u128, i64, i64)>>>,
     cancelled: &AtomicBool,
@@ -614,7 +612,7 @@ type MixReads = HashMap<(u32, i32, i32), HashMap<u128, read::Runs>>;
 fn mix_reads(
     recording: &Recording,
     attribution: u128,
-    parts: &BTreeMap<String, Vec<Part>>,
+    parts: &BTreeMap<Country, Vec<Part>>,
     lives: impl Fn(u32) -> io::Result<Arc<Vec<(u128, i64, i64)>>>,
     cancelled: &AtomicBool,
 ) -> io::Result<MixReads> {
@@ -641,7 +639,7 @@ fn mix_reads(
 }
 
 /// Each part's slot and key, by the stretch it lies in.
-fn stretch_slots(parts: &BTreeMap<String, Vec<Part>>) -> BTreeMap<(u32, i32, i32), BTreeMap<u32, u128>> {
+fn stretch_slots(parts: &BTreeMap<Country, Vec<Part>>) -> BTreeMap<(u32, i32, i32), BTreeMap<u32, u128>> {
     let mut by_stretch: BTreeMap<(u32, i32, i32), BTreeMap<u32, u128>> = BTreeMap::new();
     for part in parts.values().flatten() {
         by_stretch.entry((part.run, part.first, part.last)).or_default().insert(part.slot, part.key);
@@ -653,7 +651,7 @@ fn stretch_slots(parts: &BTreeMap<String, Vec<Part>>) -> BTreeMap<(u32, i32, i32
 /// composition known where its battalions total in `found` is recorded, and each token's name.
 fn mixes_of(
     recording: &Recording,
-    parts: &BTreeMap<String, Vec<Part>>,
+    parts: &BTreeMap<Country, Vec<Part>>,
     found: &Found,
     read: &MixReads,
     cancelled: &AtomicBool,
@@ -756,7 +754,7 @@ struct SeriesParams {
     branch_id: String,
     family: Family,
     #[serde(default)]
-    tags: Vec<String>,
+    countries: Vec<Country>,
     from: Option<f64>,
     to: Option<f64>,
     width: Option<u32>,
@@ -769,7 +767,7 @@ struct SeriesParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ArmyChartLine {
-    pub tag: String,
+    pub country: Country,
     pub identities: Vec<ArmyIdentityRun>,
     pub summary: dashboard_query::chart::ChartSummary,
     pub membership: Option<Vec<ArmySpan>>,
@@ -807,7 +805,7 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
             let top = params.family.top.ok_or_else(|| invalid("An army chart of chosen countries is served as tiles"))?;
             let (mut tags, mut charts, mut spans) = (Vec::new(), Vec::new(), Vec::new());
             for ranked in line.ranked(from, to, width, top)? {
-                tags.push(ranked.tag);
+                tags.push(Country::from(ranked.tag));
                 charts.push((ranked.summary, ranked.missing));
                 spans.push(ranked.membership.into_iter().map(|(first_hour, last_hour)| ArmySpan { first_hour, last_hour }).collect::<Vec<_>>());
             }
@@ -818,7 +816,7 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
                 out.push(ArmyChartLine {
                     identities: parts.iter().map(|part| ArmyIdentityRun { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id }).collect(),
                     membership: membership.as_ref().map(|members: &Vec<Vec<ArmySpan>>| members[at].clone()),
-                    tag,
+                    country: tag,
                     summary,
                     missing,
                 });
@@ -837,9 +835,9 @@ pub fn series(_source: &Source, query: &Query<'_>, product: &str, params: &Value
                         (None, NavigationKey::End) => to,
                         (None, _) => from,
                     };
-                    line.rank_at(at, top)?
+                    line.rank_at(at, top)?.into_iter().map(Country::from).collect()
                 }
-                None => params.tags.clone(),
+                None => params.countries.clone(),
             };
             let hour = line.navigate(&tags, &[declared], origin, key, (from, to))?;
             Ok(serde_json::to_value(SeriesKeyReply { hour: hour.map(f64::from) })?)

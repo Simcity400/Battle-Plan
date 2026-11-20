@@ -132,6 +132,11 @@ impl Content {
         }
     }
 
+    /// Whether the recorded content stack defines the terrain category `name`.
+    pub(super) fn has_category(&self, name: &[u8]) -> bool {
+        self.terrain.categories.iter().any(|entry| entry.name == name)
+    }
+
     /// highlighted terrain, minimum sea dominance, registered
     /// ship-class blocks in database order, then the common all-ships block.
     pub(super) fn prefix(

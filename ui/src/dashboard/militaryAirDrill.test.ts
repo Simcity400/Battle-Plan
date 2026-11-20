@@ -150,7 +150,7 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     assert.equal(state.host!.canFollow, false); assert.equal(state.host!.onPin, undefined);
     state.hour = -982; render(); assert.equal(state.picker!.flagAt!.hour, 12, 'the chooser keeps the drawn day while playback moves');
     const staleChooser = state.picker!.onChange;
-    state.picker!.onChange('B'); render();
+    state.picker!.onChange('B', null); render();
     assert.equal(state.detail!.hour, 12); assert.equal(state.detail!.identity, '1:9');
     assert.equal(state.chart!.active, false, 'inline Drill suspends its inert main chart');
     state.detail!.onPick(14.9); render(); assert.equal(state.detail!.hour, 14);
@@ -170,7 +170,7 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     render(); assert.equal(state.chart!.pickOwner, stableOwner); assert.equal(state.detail!.identity, '1:9');
     props.runtime.client = {} as typeof props.runtime.client;
     render(); assert.equal(state.host!.open, false);
-    oldPick(12, 'B'); staleChooser('B'); oldFollow(); oldPin(); render();
+    oldPick(12, 'B'); staleChooser('B', null); oldFollow(); oldPin(); render();
     assert.equal(state.host!.open, false, 'a replaced client cannot reopen an old actor');
     assert.equal(state.added.length, 1, 'a replaced client cannot pin an old actor');
     props.runtime.client = initialClient; render(); oldPick(12, 'B'); oldFollow(); oldPin(); render();
@@ -181,7 +181,7 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     props.widget.options = { ...props.widget.options, drill: 'popout' }; render();
     assert.equal(state.host!.mode, 'popout'); assert.equal(state.chart!.active, true);
     props.widget.time = { mode: 'campaign' }; render();
-    state.playing = false; state.chart!.onPick!(12, undefined, ['B', 'A']); render(); state.picker!.onChange('B'); render();
+    state.playing = false; state.chart!.onPick!(12, undefined, ['B', 'A']); render(); state.picker!.onChange('B', null); render();
     assert.equal(state.detail!.hour, 12); assert.equal(state.host!.canFollow, true, 'Campaign still offers the actual shared clock');
     state.host!.onFollow(); render(); assert.equal(state.detail!.hour, 19, 'Follow is independent of the parent campaign end');
     state.host!.onPin!(); assert.deepEqual(state.added.at(-1)!.time, { mode: 'follow' });
@@ -189,7 +189,7 @@ test('actual Air view opens the witnessed chooser, holds days, follows the clock
     assert.equal(state.host!.canFollow, false); assert.equal(state.host!.onPin, undefined);
     state.hour = -981;
     props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 2, lastOffset: 2 } } }; render();
-    state.chart!.onPick!(12, undefined, ['B', 'A']); render(); state.picker!.onChange('B'); render();
+    state.chart!.onPick!(12, undefined, ['B', 'A']); render(); state.picker!.onChange('B', null); render();
     state.host!.onFollow(); render(); assert.equal(state.detail!.hour, 19, 'a parent Pin does not pin the independent Follow clock');
     props.widget.time = { mode: 'range', firstOffset: 1, lastOffset: 10 }; render();
     state.chart!.onPick!(15, 'B'); render(); state.detail!.onPick(15); render(); state.host!.onPin!();

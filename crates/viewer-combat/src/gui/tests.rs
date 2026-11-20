@@ -1513,3 +1513,117 @@ fn combat_prepare_resolves_bound_control_and_holder_names_without_case() {
     assert_eq!(drawn.close, Some([80.0, 0.0, 20.0, 10.0]));
     assert_eq!(drawn.tactics_button, Some([80.0, 20.0, 20.0, 10.0]));
 }
+
+#[test]
+fn authored_tooltip_anchors_resolve_from_the_controls_unclipped_corner() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use super::super::{TooltipAnchor, tooltips::set_hover};
+    let windows = windows(
+        b"guiTypes={containerWindowType={name=anchored size={width=300 height=60}
+        iconType={name=relative position={x=200 y=10} spriteType=GFX_even
+            pdx_tooltip_anchor={x=-158 y=0}}
+        iconType={name=absolute position={x=10 y=10} spriteType=GFX_even
+            pdx_tooltip_anchor={x=40 y=50 relative=no below=no}}
+        iconType={name=plain position={x=100 y=10} spriteType=GFX_even}}}",
+    );
+    let root = windows.gui_type(b"anchored").unwrap();
+    let resources = fixture();
+    let mut values = Values::new();
+    for name in ["relative", "absolute", "plain"] {
+        set_hover(&mut values, name, Some(name.into()), None);
+    }
+    let mut retained = Retained::new("anchored", root, [800, 600], &resources).unwrap();
+    let mut refused = BTreeMap::new();
+    let prepared = retained
+        .prepare(root, &values, Vec::new(), &windows, &resources, Tick { time: 0., dt: 0. }, 1, true, true, true, None, &mut refused)
+        .unwrap();
+    let mut hits = Vec::new();
+    append_hovers(&mut hits, prepared.hovers, [1000, 500]);
+    let anchor = |text: &str| hits.iter().find(|hit| hit.text.as_deref() == Some(text)).unwrap().anchor;
+    assert_eq!(anchor("relative"), TooltipAnchor::At { x: 1000 + 200 - 158, y: 510, below: true });
+    assert_eq!(anchor("absolute"), TooltipAnchor::At { x: 40, y: 50, below: false });
+    assert_eq!(anchor("plain"), TooltipAnchor::Pointer);
+}
+
+#[test]
+fn an_opened_window_slides_from_its_position_to_its_show_position_and_keeps_its_drag() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let windows = windows(
+        br#"guiTypes={containerWindowType={name=countrystateview position={x=-416 y=-549}
+            show_position={x=-6 y=-655} show_animation_type=decelerated animation_time=300
+            orientation=lower_left size={width=436 height=496}}}"#,
+    );
+    let resources = fixture();
+    let mut gui = Windows::default();
+    let mut draw = |time: f32, dt: f32, offset: [f32; 2]| {
+        gui.draw(
+            &windows,
+            &resources,
+            &Bindings::default(),
+            1,
+            Selection::State(9904),
+            offset,
+            false,
+            &mut None,
+            [1920.0, 1080.0],
+            false,
+            Tick { time, dt },
+            true,
+            None,
+        )
+        .unwrap()
+        .rect
+    };
+    // Opened, it stands at its position, off the screen's left edge.
+    assert_eq!(draw(0.0, 0.0, [0.0; 2])[0], -416.0);
+    // Past the animation time it rests at its show position.
+    let shown = draw(0.5, 0.5, [0.0; 2]);
+    assert_eq!(shown[0], -6.0);
+    // A drag moves it from there.
+    assert_eq!(draw(0.6, 0.1, [10.0, 5.0])[..2], [shown[0] + 10.0, shown[1] + 5.0]);
+}
+
+/// The state view's close button and lower panel stand outside its root's authored size: the
+/// window takes the pointer over them, so a click there never reaches the map beneath.
+#[test]
+fn a_window_takes_the_pointer_over_every_child_it_draws_beyond_its_own_size() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let windows = windows(
+        br#"guiTypes={containerWindowType={name=countrystateview size={width=100 height=50}
+            containerWindowType={name=lower position={x=10 y=48} size={width=60 height=30}
+                iconType={name=terrain_picture spriteType=GFX_even}}
+            buttonType={name=close_button position={x=-6 y=4} quadTextureSprite=GFX_even orientation=UPPER_RIGHT}}}"#,
+    );
+    let resources = fixture();
+    let drawn = Windows::default()
+        .draw(
+            &windows,
+            &resources,
+            &Bindings::default(),
+            1,
+            Selection::State(9904),
+            [0.0; 2],
+            false,
+            &mut None,
+            [1920.0, 1080.0],
+            false,
+            Tick { time: 0.0, dt: 0.0 },
+            true,
+            None,
+        )
+        .unwrap();
+    assert_eq!(drawn.rect, [0.0, 0.0, 100.0, 50.0]);
+    let close = [110.0, 8.0];
+    assert!(drawn.closes(close));
+    assert!(drawn.contains(close), "the close button past the root's right edge");
+    assert!(drawn.contains([40.0, 70.0]), "the lower panel below the root");
+    assert!(!drawn.contains([90.0, 70.0]), "beside the panel, under nothing the window draws");
+    // What the picture on screen keeps of it, for a press after the window moved or closed.
+    let footprint = drawn.footprint();
+    for (point, inside) in [(close, true), ([40.0, 70.0], true), ([90.0, 70.0], false)] {
+        assert_eq!(footprint.contains(point), inside, "{point:?}");
+    }
+}

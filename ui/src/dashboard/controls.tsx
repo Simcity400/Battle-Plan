@@ -6,22 +6,31 @@ import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
 import type { PlaybackController } from './playback';
-import { useIdentityHour } from './atHead.ts';
+import { useAtHead, useIdentityHour } from './atHead.ts';
 import { timelineGaps, timelineHourAt } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
+import { countryNameAt, useSlotTags } from './countrySlots.ts';
 import { useMapMuted } from '../shell/muteSetting';
 import { commitZone } from '../shell/commitCount';
 
 /** The header's country picker, showing the flag the game drew at the playback hour. The flag is read
- * at the hour it last changed (`useIdentityHour`), so the picker renders only when it does. */
-export function PlaybackCountryPicker({ clock, track, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined } & Omit<ComponentProps<typeof CountryPicker>, 'flagAt'>) {
-  const tags = useMemo(() => picker.selectedTag ? [picker.selectedTag] : [], [picker.selectedTag]);
+ * at the hour it last changed (`useIdentityHour`), so the picker renders only when it does. The chosen country is its
+ * slot (`selectedSlot`), named by the tag it goes by at the playback hour. */
+export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined; selectedSlot: number | null }
+  & Omit<ComponentProps<typeof CountryPicker>, 'flagAt'>) {
   const first = track?.branch.firstHour, last = track?.branch.lastHour, offset = track?.axisOffset;
   const trackHour = useCallback((hour: number) => first === undefined || last === undefined || offset === undefined
     || hour + offset < first || hour + offset > last ? null : hour + offset, [first, last, offset]);
+  const slots = useSlotTags(picker.client, track, !!track && selectedSlot !== null);
+  const shown = useAtHead(clock, !!track && selectedSlot !== null, hour => {
+    const at = trackHour(hour);
+    return at === null ? null : countryNameAt(slots, selectedSlot, at);
+  });
+  const selectedTag = selectedSlot === null ? picker.selectedTag : shown ?? picker.selectedTag;
+  const tags = useMemo(() => selectedTag ? [selectedTag] : [], [selectedTag]);
   const raw = useIdentityHour(picker.client, track, tags, clock, !!track, trackHour);
   const flagAt = useMemo(() => track && raw != null ? { branchId: track.branch.id, hour: raw } : null, [track?.branch.id, raw]);
-  return <CountryPicker {...picker} flagAt={flagAt} />;
+  return <CountryPicker {...picker} selectedTag={selectedTag} flagAt={flagAt} />;
 }
 
 /** Mutes or restores the native maps' audio; only the focused map sounds. */

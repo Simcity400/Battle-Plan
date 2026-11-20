@@ -49,4 +49,21 @@ pub struct Content {
     pub large_flags: Arc<LazyFlags>,
     pub lazy: Arc<LazyTextures>,
     pub trigger_content: Arc<TriggerContent>,
+    /// The occupation laws and resistance and compliance modifiers the state view reads.
+    pub occupation: Arc<Result<Occupation, String>>,
+}
+
+/// The recorded content stack's occupation laws and occupation modifier definitions.
+pub struct Occupation {
+    pub laws: installed_content_core::occupation_laws::Laws,
+    pub modifiers: installed_content_core::occupation_modifiers::Definitions,
+}
+
+impl Occupation {
+    pub fn load(layers: &installed_content_core::ResolvedLayers) -> Result<Self, String> {
+        Ok(Self {
+            laws: installed_content_core::occupation_laws::read(layers).map_err(|why| why.to_string())?,
+            modifiers: installed_content_core::occupation_modifiers::read(layers).map_err(|why| why.to_string())?,
+        })
+    }
 }

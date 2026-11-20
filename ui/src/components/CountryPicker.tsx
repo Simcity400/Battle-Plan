@@ -32,7 +32,8 @@ export interface CountryPickerRead { tag: string; branchId: string; hour: number
  * country count. */
 export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads, disabled = false }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
-  onChange: (tag: string | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
+  /** `slot` is the picked row's canonical slot, where the row names one. */
+  onChange: (tag: string | null, slot: number | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
   onCountries?: (sourceId: string, revision: string, countries: CountryMetadata[]) => void;
   onReconnect?: () => void; field?: boolean;
   disabled?: boolean;
@@ -92,15 +93,17 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const visible = open ? filtered.slice(range.start, range.end) : [];
   // Search needs offscreen dated names; flags still load only for visible rows.
   const named = open && query.trim() ? choices : visible;
-  const wantedChoices = allowedTags || choiceReads !== undefined ? [...new Set([...named.map(choice => choice.country.tag), ...(selected ? [selected.tag] : [])])]
+  // The top bar's list names each country present at its hour as then; one absent then keeps its catalogue entry.
+  const datedRoster = !allowedTags && choiceReads === undefined && !!flagAt;
+  const wantedChoices = allowedTags || choiceReads !== undefined || datedRoster ? [...new Set([...named.map(choice => choice.country.tag), ...(selected ? [selected.tag] : [])])]
     .flatMap(displayTag => { const read = choiceRead(displayTag); return read ? [{ displayTag, ...read }] : []; }) : [];
   const wantedNames = wantedChoices.map(({ tag, hour }) => ({ tag, hour }));
-  const names = useCountryNamesAt(client, choiceTrack, wantedNames, (!!allowedTags || choiceReads !== undefined) && (!!flagAt || choiceReads !== undefined),
+  const names = useCountryNamesAt(client, choiceTrack, wantedNames, (!!allowedTags || choiceReads !== undefined || datedRoster) && (!!flagAt || choiceReads !== undefined),
     new Set(wantedNames.map(read => read.hour)).size);
   // Keep names already seen at this held hour searchable after filtering or
   // scrolling releases their visible-row requests. Another context starts empty.
   useEffect(() => {
-    if ((!allowedTags || !flagAt) && choiceReads === undefined) return;
+    if ((!allowedTags || !flagAt) && choiceReads === undefined && !datedRoster) return;
     setCapturedNames(previous => {
       const held = previous.context === nameContext ? previous.names : NO_NAMES;
       const added = wantedChoices.flatMap(({ displayTag, tag, hour }) => {
@@ -112,7 +115,13 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     // `names` changes for the exact visible target set returned by the hook.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [names, nameContext, allowedTags]);
+  const datedName = (country: CountryOption): NameRead | undefined => {
+    const read = choiceRead(country.tag);
+    const dated = read ? names.get(nameKey(read.hour, read.tag)) ?? heldNames.get(country.tag) : undefined;
+    return dated?.kind === 'value' ? dated : undefined;
+  };
   const countryNameRead = (country: CountryOption): NameRead => {
+    if (datedRoster) return datedName(country) ?? { kind: 'value', value: country.name };
     if (choiceReads === undefined && !(allowedTags && flagAt)) return { kind: 'value', value: country.name };
     const read = choiceRead(country.tag);
     if (!read) return ABSENT_NAME;
@@ -127,6 +136,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const headerSize: CountryFlagSize = field ? 'panel' : 'shield';
   const countryAt = (country: CountryOption) => choiceReads !== undefined ? choiceRead(country.tag)
     : allowedTags && flagAt ? choiceRead(country.tag)
+    : datedRoster && datedName(country) ? choiceRead(country.tag)
     : country.observedBranchId != null && country.observedHour != null ? { tag: country.tag, branchId: country.observedBranchId, hour: country.observedHour } : null;
   // Only the rows in view read flags; each distinct flag is drawn once.
   const listReads = source ? visible.flatMap(({ country }) => { const at = countryAt(country); return at ? [at] : []; }) : [];
@@ -207,7 +217,11 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     if (onReconnect && roster.error?.message.includes('source is unavailable or changed')) onReconnect();
     else { if (source && flagFailed) retryFlags(client, source.id); setRetry(value => value + 1); }
   };
-  const choose = (tag: string | null) => { onChange(tag); if (!inline) menu.close(); };
+  const choose = (country: CountryOption | null) => {
+    const slot = country?.id === undefined ? NaN : Number(country.id);
+    onChange(country?.tag ?? null, Number.isSafeInteger(slot) ? slot : null);
+    if (!inline) menu.close();
+  };
   const body = <>
         <div className="country-picker-search"><Icon name="search" /><input data-popover-autofocus aria-label="Search countries" placeholder="Search countries or tags" aria-controls={listId} value={query}
           onChange={(event) => { setQuery(event.currentTarget.value); reset(); }}
@@ -226,7 +240,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
             onFocus={(event) => { if (event.target === event.currentTarget && active < 0 && filtered.length) setActive(Math.min(filtered.length - 1, Math.ceil(view.scrollTop / COUNTRY_ROW_HEIGHT))); }}
             onKeyDown={(event) => {
               if ((event.key === 'Enter' || event.key === ' ') && active >= 0 && active < filtered.length) {
-                event.preventDefault(); choose(filtered[active].country.tag); return;
+                event.preventDefault(); choose(filtered[active].country); return;
               }
               const next = moveIndex(event.key, active, filtered.length);
               if (next == null) return;
@@ -238,7 +252,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
               const ticked = chosen ? chosen.includes(country.tag) : selected?.tag === country.tag;
               return <div key={country.tag} id={optionId(index)} role="option" aria-selected={ticked} aria-setsize={filtered.length} aria-posinset={index + 1}
                 data-detail={nameReadFailure(countryNameRead(country))?.message} className="country-picker-option" data-active={index === active || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
-                onClick={() => choose(country.tag)}>
+                onClick={() => choose(country)}>
                 <CountryFlag image={flagOf(country)} /><span>{countryName(country)}</span><small>{country.tag}</small>{ticked && <Icon name="check" className="country-selected-mark" />}
               </div>;
             })}

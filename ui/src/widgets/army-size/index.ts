@@ -1,7 +1,7 @@
 import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
-import type { ArmySizeReply } from '../../generated/dashboard';
+import type { ArmySizeReply } from './armySizeData';
 import ArmySizeWidget from './ArmySizeWidget';
 import ArmyCountryChip from './ArmyCountryChip';
 import { armyMetadataRequest, measureChoices, validateArmySizeReply } from './armySizeData';

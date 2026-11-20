@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
@@ -43,7 +44,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
   const options = resolveOptions(OPTIONS, widget.options);
   const selection = useCountriesSelectionAt(widget, runtime, hour, active);
   const tags = selection.countries === undefined ? undefined : selection.countries === null ? null : [...selection.countries].sort();
-  const state = useHeadProduct(runtime, widget, 'division-careers', track && window && tags !== undefined && !selection.selectionReason ? { tags } : null,
+  const state = useHeadProduct(runtime, widget, 'division-careers', track && window && tags !== undefined && !selection.selectionReason ? { countries: tags?.map(countryFromKey) ?? null } : null,
     { active, validate: validateDivisionCareers, structure: careersStructure });
   useShownEachFrame(runtime.clock, state.shownAt, state.live);
   const data = state.data;

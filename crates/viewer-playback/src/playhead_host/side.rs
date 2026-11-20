@@ -508,6 +508,12 @@ impl Window<'_> {
         self.products.overlay.take()
     }
 
+    /// Whether the frame lets go of the overlay it holds: made for another viewing country, with
+    /// none of the view's coming ([`MapSide::take_overlay_withdrawal`]). Taken once.
+    pub fn take_overlay_withdrawal(&mut self) -> bool {
+        std::mem::take(&mut self.products.overlay_withdrawn)
+    }
+
     /// Takes the products the frame draws from until its next window.
     pub fn take(&mut self, wants: Wants) {
         let _lap = replay_frame::cpu::scope("frame.refresh.products", Some("other"));
@@ -572,8 +578,10 @@ fn advance(shared: &Shared) {
             at => {
                 let (now, interval) = (Instant::now(), rate::interval());
                 // The rate is the simulation's own: a publication is made when one is due at it,
-                // however many frames the display drew meanwhile.
-                let Some(late) = pace.late(now) else {
+                // however many frames the display drew meanwhile. A new viewing country is due at
+                // once, as the user's own change.
+                let viewpoint = ask.view.perspective != turn.side.view().perspective;
+                let Some(late) = pace.late(now).or((viewpoint || turn.side.hurrying()).then_some(std::time::Duration::ZERO)) else {
                     turn = waiting(shared, turn, pace.until(now).max(UNTIL_DUE).min(IDLE));
                     continue;
                 };
@@ -595,7 +603,7 @@ fn advance(shared: &Shared) {
                 // the one due waits for an hour it has not shown, up to an interval past its due
                 // time. The head standing still, it is made at the rate, since what it answers
                 // then is the frame's newest ask and whatever the last one left behind.
-                if moving.is_some() && late < interval && !turn.side.reaches(head) {
+                if moving.is_some() && late < interval && !viewpoint && !turn.side.reaches(head) {
                     let since = Instant::now();
                     turn = waiting(shared, turn, UNTIL_DUE);
                     waited.for_an_hour_ns += since.elapsed().as_nanos() as u64;
@@ -607,7 +615,9 @@ fn advance(shared: &Shared) {
                 turn.framed = false;
                 turn.ready = None;
                 turn.published = Some(now);
-                let made = if moving.is_some() { Made::Playing } else { Made::Still };
+                // A switch's publications wait for nothing under the lock: the new country's
+                // parts join the publications after as they are made.
+                let made = if moving.is_some() || viewpoint || turn.side.hurrying() { Made::Playing } else { Made::Still };
                 if let Err(error) = toward(&mut turn.side, &ask, head, made) {
                     turn.side.fail(format!("The map's playhead stopped: {error}"));
                     shared.signal.notify_all();
@@ -761,8 +771,8 @@ pub struct Products {
     pub plan: Option<(Hour, Arc<viewer_foundation::map::ribbon_content::OrderField>)>,
     /// The convoys layer's trade routes, with the sequence number of the product.
     pub routes: Option<(u64, Arc<viewer_world::map::trade_routes::TradeRoutes>)>,
-    /// The map's layers' products the overlay's layout laid in, as the side made it.
-    pub lay_ins: Arc<LayIns>,
+    /// The labels the labels layer draws, with the branch and hours they hold for.
+    pub labels: Option<crate::layers::labels::Stamped>,
     /// Which of the overlay's parts the layers draw, so the hour's own are left out.
     pub left: crate::document::LeftToLayers,
     /// The country, state and capital names the names layer placed.
@@ -775,6 +785,8 @@ pub struct Products {
     pub movement: Vec<(viewer_foundation::unit_handle::Unit, viewer_foundation::map::counter_move::Position, f32, f32)>,
     /// The publication [`Self::movement`] was copied from.
     movement_of: Option<u64>,
+    /// Every division in a province where a land figure stands, for the model picker.
+    pub pick_divisions: std::collections::HashMap<u32, Vec<crate::layers::units::PickDivision>>,
     /// The viewing country the vision layer shows.
     pub ours: Option<u32>,
     /// The engaged index the engagements layer reads.
@@ -795,6 +807,10 @@ pub struct Products {
     pub lines: Option<Lines>,
     /// The overlay the step made, taken by the frame once ([`Window::take_overlay`]).
     pub overlay: Option<overlay::Made>,
+    /// The frame lets go of the overlay it holds ([`Window::take_overlay_withdrawal`]).
+    overlay_withdrawn: bool,
+    /// The viewing country's vision refused, by name, once its fold has answered.
+    pub vision_refused: Option<String>,
     /// The hour of the rows the overlay on screen was made from; none before its first.
     pub overlay_hour: Option<Hour>,
     /// The overlay's refusals and what its tables are loading, by name.
@@ -825,7 +841,7 @@ impl Default for Products {
             radar: None,
             plan: None,
             routes: None,
-            lay_ins: Arc::default(),
+            labels: None,
             left: Default::default(),
             placements: None,
             counters: Default::default(),
@@ -834,6 +850,7 @@ impl Default for Products {
             movement: Vec::new(),
             movement_of: None,
             pictures: std::collections::VecDeque::new(),
+            pick_divisions: Default::default(),
             highlight_hour: None,
             ours: None,
             engaged: None,
@@ -842,6 +859,8 @@ impl Default for Products {
             music: None,
             lines: None,
             overlay: None,
+            overlay_withdrawn: false,
+            vision_refused: None,
             overlay_hour: None,
             overlay_loading: Vec::new(),
             overlay_missed: Vec::new(),
@@ -886,13 +905,21 @@ impl Products {
         self.names.iter().zip(&self.drawn).any(|(held, &drawn)| *held == name && drawn)
     }
 
+    /// Whether an overlay layout for the view shown is still to come: not once its vision is
+    /// refused (none is laid out without one), nor once the reader has stopped.
+    pub fn overlay_coming(&self) -> bool {
+        self.vision_refused.is_none() && self.failure.is_none()
+    }
+
     fn take(&mut self, side: &mut MapSide, wants: Wants) {
+        if side.take_overlay_withdrawal() {
+            (self.overlay, self.overlay_withdrawn) = (None, true);
+        }
         if let Some(made) = side.take_overlay() {
             self.overlay = Some(made);
         }
         self.vision = side.vision();
         if let Some(overlay) = side.overlay() {
-            self.lay_ins = overlay.lay_ins();
             self.overlay_hour = overlay.hour();
             if self.overlay_loading != overlay.loading() {
                 self.overlay_loading = overlay.loading().to_vec();
@@ -902,6 +929,7 @@ impl Products {
             }
         }
         let side = &*side;
+        self.labels = crate::layers::labels::stamped(side);
         self.windows += 1;
         if self.names != side.names() {
             self.names = side.names().to_vec();
@@ -911,8 +939,12 @@ impl Products {
         self.on_screen = side.on_screen();
         self.untimed = side.untimed_hours();
         self.failure = side.failure().map(str::to_owned);
-        if self.view != *side.view() {
-            self.view.clone_from(side.view());
+        if self.view != *side.view_shown() {
+            self.view.clone_from(side.view_shown());
+        }
+        // While a compose has the layers away, the refusal the frame last took stands.
+        if !side.composing() {
+            self.vision_refused = side.vision_refused();
         }
         self.composing = side.composing();
         self.applied = side.applied();
@@ -925,19 +957,21 @@ impl Products {
         self.radar = drawn::<crate::layers::radar::Radar>(side, "radar").and_then(crate::layers::radar::Radar::field);
         self.plan = drawn::<crate::layers::orders::Orders>(side, "orders").and_then(|orders| orders.plan().map(|(hour, plan)| (hour, Arc::clone(plan))));
         // The trade routes join the order field only while the units layer draws it.
-        self.routes = side.draws("units").then(|| drawn::<crate::layers::convoys::Convoys>(side, "convoys")).flatten().map(|convoys| (convoys.product_seq(), convoys.product_shared()));
+        self.routes = side.draws("units").then(|| drawn::<crate::layers::convoys::Convoys>(side, "convoys")).flatten().and_then(crate::layers::convoys::Convoys::shown);
         self.left = crate::document::LeftToLayers::of(Some(side));
         self.placements = crate::layers::names::drawn(side);
         self.counters = crate::layers::counter_kinds::published(side);
         self.counter_kinds = crate::layers::counter_kinds::draws(side);
         self.units = crate::layers::units::prepared(side).map(Arc::clone);
-        // Copied once a publication: a window between two takes the list it already holds.
+        // Copied once a publication: a window between two takes the lists it already holds.
         let made = side.last_frame().made;
         if self.movement_of != Some(made) {
             self.movement_of = Some(made);
             self.movement.clear();
+            self.pick_divisions.clear();
             if let Some(units) = crate::layers::units::of(side) {
                 self.movement.extend(units.movement_positions().map(|(unit, place, scale, fade)| (unit, place.clone(), scale, fade)));
+                self.pick_divisions = units.pick_divisions();
             }
         }
         self.ours = crate::layers::vision::drawn(side).and_then(crate::layers::vision::Vision::ours);

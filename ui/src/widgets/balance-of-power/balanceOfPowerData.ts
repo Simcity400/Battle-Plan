@@ -2,7 +2,8 @@
 // and every local lookup the widget draws from them. Every name, range, bound
 // and side comes from the reply (the recording's content stack); nothing here
 // knows a balance, range or side of its own.
-import type { BalanceHistory, BalanceRange, BalanceRecord, BalanceSide, HolderBalances, HourSpan, PoliticsHistoryReply, PoliticsRun, PoliticsStateReply } from '../../generated/dashboard';
+import { answersKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import type { BalanceHistory, CountryRef, BalanceRange, BalanceRecord, BalanceSide, HolderBalances, HourSpan, PoliticsHistoryReply, PoliticsRun, PoliticsStateReply } from '../../generated/dashboard';
 import type { PoliticsStateAt } from '../../dashboard/politicsHistory';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
@@ -84,14 +85,18 @@ export function memberSince(reply: Pick<PoliticsHistoryReply, 'holderBalances'>,
 /** The holder a country view follows at `at`: the one holding `tag` then, else the
  * one that held it last before, else the first to hold it. Its whole history comes
  * with it, through renames; another holder that reuses the tag is never joined. */
-export function countryHolder(reply: Pick<PoliticsHistoryReply, 'holderBalances'>, tag: string, at: number): HolderBalances | null {
+export function countryHolder(reply: Pick<PoliticsHistoryReply, 'holderBalances'> & { asked?: CountryRef | null }, tag: string, at: number): HolderBalances | null {
   const held = reply.holderBalances;
-  const now = held.find(holder => tagAt(holder.tags, at) === tag);
+  // A country asked by its slot is the only one the reply holds, under whichever tags it went by.
+  const bySlot = isSlotKey(tag);
+  if (bySlot && !answersKey(reply.asked, tag)) return null;
+  const matches = (named: string | null) => named !== null && (bySlot || named === tag);
+  const now = held.find(holder => matches(tagAt(holder.tags, at)));
   if (now) return now;
   let before: { holder: HolderBalances; hour: number } | null = null;
   for (const holder of held) for (const entry of holder.tags)
-    if (entry.tag === tag && entry.hour <= at && (!before || entry.hour > before.hour)) before = { holder, hour: entry.hour };
-  return before?.holder ?? held.find(holder => holder.tags.some(entry => entry.tag === tag)) ?? null;
+    if (matches(entry.tag) && entry.hour <= at && (!before || entry.hour > before.hour)) before = { holder, hour: entry.hour };
+  return before?.holder ?? held.find(holder => holder.tags.some(entry => matches(entry.tag))) ?? null;
 }
 
 const nullableFixed5 = (value: unknown) => value === null || typeof value === 'string' && fixed5Text(value);

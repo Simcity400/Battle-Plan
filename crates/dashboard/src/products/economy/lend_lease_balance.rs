@@ -3,12 +3,13 @@
 //! country ids), summed per canonical slot: every country's totals, or one country's record of
 //! each partner. A country on the war rosters (`WarOwnedRelations`) with no row has sent and
 //! received nothing; one off the rosters has no recorded history, which is not zero.
+use dashboard_base::products::validate_country;
+use dashboard_base::products::Country;
 use super::super::LoadContext;
 use crate::{
     Source,
     products::at_hour::{At, AtHour, Read},
 };
-use dashboard_base::products::validate_tag;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -32,7 +33,7 @@ pub struct LendLeaseBalanceParams {
     /// One country's partners; every country's totals when absent.
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub holder: Option<String>,
+    pub holder: Option<Country>,
 }
 
 /// One country's (or partner's) cumulative totals: industry sent, fuel sent, industry received,
@@ -165,7 +166,7 @@ impl AtHour for LendLeaseBalance {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        params.holder.as_deref().map_or(Ok(()), validate_tag)
+        params.holder.as_ref().map_or(Ok(()), validate_country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -173,8 +174,8 @@ impl AtHour for LendLeaseBalance {
         vec![LendLeaseBalanceParams::decl(), LendLeaseBalanceReply::decl(), LendLeaseRow::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        params.holder.as_deref()
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        params.holder.as_ref()
     }
 
     fn uses_sample(_table: TableId) -> bool { false }
@@ -207,7 +208,8 @@ impl AtHour for LendLeaseBalance {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let holder = match (params.holder.as_deref(), at.owner) {
+        let named = params.holder.as_ref().map(|holder| at.holders.name(holder, at.hour));
+        let holder = match (named.as_deref(), at.owner) {
             (Some(tag), Some(owner)) => Some((tag, owner.slot)),
             (Some(_), None) => return Err(dashboard_core::refused("Lend-lease balance country is unavailable at this hour")),
             (None, _) => None,

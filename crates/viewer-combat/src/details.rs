@@ -42,7 +42,7 @@ pub(super) fn bind(
             super::land_details::bind(out, static_content, frame, id)
         }
         Selection::Naval(id) => naval(out, static_content, frame, id, flags, vision),
-        Selection::NavalResult(_) | Selection::AirRegion(_) => Ok(()),
+        Selection::NavalResult(_) | Selection::AirRegion(_) | Selection::State(_) | Selection::NavalRegion(_) => Ok(()),
     }
 }
 

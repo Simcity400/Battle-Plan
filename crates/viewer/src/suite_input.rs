@@ -12,7 +12,8 @@
 //! Lines, with points in the window's client pixels:
 //! `{"move":[x,y]}`, `{"wheel":lines}` (where the pointer last moved, as a wheel turns where the
 //! cursor rests), `{"button":"primary|middle|secondary","at":[x,y],"pressed":b}`, and
-//! `{"key":"ArrowRight","pressed":b}` (an egui key name).
+//! `{"key":"ArrowRight","pressed":b}` (an egui key name), and `{"ctrl":b,"shift":b,"alt":b}`, the
+//! modifiers held from then on.
 
 use eframe::egui;
 use serde::Deserialize;
@@ -32,6 +33,7 @@ enum Line {
     Wheel { wheel: f32 },
     Button { button: String, at: [f32; 2], pressed: bool },
     Key { key: String, pressed: bool },
+    Modifiers { ctrl: bool, shift: bool, alt: bool },
 }
 
 /// Lines received and not yet given to egui.
@@ -40,6 +42,8 @@ static PENDING: Mutex<Vec<Line>> = Mutex::new(Vec::new());
 static ENABLED: OnceLock<bool> = OnceLock::new();
 /// Whether the suite has sent input: from then on the window has the focus a user's would.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+/// The modifiers the suite holds down.
+static HELD: Mutex<egui::Modifiers> = Mutex::new(egui::Modifiers::NONE);
 
 /// The animation clock a map export draws at, when the suite fixes one.
 pub(crate) fn capture_clock() -> Option<f32> {
@@ -91,11 +95,18 @@ pub(crate) fn apply(ctx: &egui::Context, input: &mut egui::RawInput) {
         ACTIVE.store(true, Ordering::Relaxed);
     }
     let scale = ctx.pixels_per_point();
+    let mut held = HELD.lock().unwrap_or_else(|error| error.into_inner());
     for line in lines {
-        if let Some(event) = event(line, scale) {
+        if let Line::Modifiers { ctrl, shift, alt } = line {
+            *held = egui::Modifiers { alt, ctrl, shift, mac_cmd: false, command: ctrl };
+            input.events.push(egui::Event::ModifiersChanged(*held));
+            continue;
+        }
+        if let Some(event) = event(line, scale, *held) {
             input.events.push(event);
         }
     }
+    drop(held);
     // A window a user types into and points at keeps its focus between their inputs, so held keys
     // and captured input last until released.
     if ACTIVE.load(Ordering::Relaxed) {
@@ -103,9 +114,8 @@ pub(crate) fn apply(ctx: &egui::Context, input: &mut egui::RawInput) {
     }
 }
 
-fn event(line: Line, scale: f32) -> Option<egui::Event> {
+fn event(line: Line, scale: f32, modifiers: egui::Modifiers) -> Option<egui::Event> {
     let point = |[x, y]: [f32; 2]| egui::pos2(x / scale, y / scale);
-    let modifiers = egui::Modifiers::default();
     Some(match line {
         Line::Move { r#move } => egui::Event::PointerMoved(point(r#move)),
         Line::Wheel { wheel } => egui::Event::MouseWheel {
@@ -129,6 +139,7 @@ fn event(line: Line, scale: f32) -> Option<egui::Event> {
             let key = egui::Key::from_name(&key)?;
             egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers }
         }
+        Line::Modifiers { .. } => return None,
     })
 }
 
@@ -138,7 +149,7 @@ mod tests {
 
     #[test]
     fn lines_become_egui_events_in_points() {
-        let parse = |text: &str| event(serde_json::from_str(text).unwrap(), 2.0);
+        let parse = |text: &str| event(serde_json::from_str(text).unwrap(), 2.0, egui::Modifiers::NONE);
         assert_eq!(parse(r#"{"move":[100,40]}"#), Some(egui::Event::PointerMoved(egui::pos2(50.0, 20.0))));
         assert!(matches!(parse(r#"{"wheel":-3}"#),
             Some(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Line, delta, .. }) if delta == egui::vec2(0.0, -3.0)));
@@ -148,5 +159,9 @@ mod tests {
             Some(egui::Event::Key { key: egui::Key::ArrowRight, pressed: false, .. })));
         assert_eq!(parse(r#"{"key":"NoSuchKey","pressed":true}"#), None);
         assert!(serde_json::from_str::<Line>(r#"{"jump":1}"#).is_err());
+        assert_eq!(serde_json::from_str::<Line>(r#"{"ctrl":true,"shift":false,"alt":false}"#).unwrap(), Line::Modifiers { ctrl: true, shift: false, alt: false });
+        let ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        let held = event(serde_json::from_str(r#"{"button":"primary","at":[10,10],"pressed":true}"#).unwrap(), 2.0, ctrl);
+        assert!(matches!(held, Some(egui::Event::PointerButton { modifiers, .. }) if modifiers == ctrl));
     }
 }

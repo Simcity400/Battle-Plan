@@ -283,7 +283,7 @@ fn report(held: &Report) -> serde_json::Value {
 /// The requests the widgets send (the stability and army requests), and the page's logs, which no
 /// widget sends yet, as queries: each request, and the query it is followed as when it is one.
 fn service_page(page: &[Query], table: bool) -> (Vec<serde_json::Value>, Vec<Option<Query>>) {
-    let majors: Vec<serde_json::Value> = ["GER", "SOV", "USA", "ENG", "FRA", "ITA", "JAP", "CHI"].iter().map(|tag| json!({ "tag": tag, "hour": 0 })).collect();
+    let majors: Vec<serde_json::Value> = ["GER", "SOV", "USA", "ENG", "FRA", "ITA", "JAP", "CHI"].iter().map(|tag| json!({ "country": tag, "hour": 0 })).collect();
     let mut requests = vec![
         json!({ "product": "series-state", "params": { "branchId": "1", "family": { "kind": "country-stability", "measure": "stability" }, "reads": majors } }),
         json!({ "product": "army-size", "params": { "branchId": "1", "tags": [], "top": 10, "measure": "divisions", "countFor": "owner", "byType": false } }),

@@ -29,6 +29,7 @@ pub mod flag_choices;
 pub mod idea_names;
 pub mod identity;
 pub mod metadata;
+pub mod occupation_law;
 pub mod modifier_text;
 pub mod naval_battle_name;
 pub mod party_names;

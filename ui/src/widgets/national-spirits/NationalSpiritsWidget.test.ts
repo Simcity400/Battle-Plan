@@ -35,7 +35,7 @@ const info = (token: string): IdeaInfo => ({ token, category: 'mod_spirits', slo
   effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null });
 function reply(next = false): IdeaHistoryReply {
   const tokens = next ? ['alpha', 'beta', 'common'] : ['alpha', 'old_only', 'common'];
-  return { branchId: '1', tag: 'mod_country', unobserved: [], identityStarts: [100], modifiers: [], texts: [], warnings: [],
+  return { branchId: '1', tag: 'mod_country', asked: 'mod_country', unobserved: [], identityStarts: [100], modifiers: [], texts: [], warnings: [],
     categories: [{ token: 'mod_spirits', name: 'Mod spirits', kind: 'national_spirit', hidden: false, politicsTab: true, slots: [] }],
     ideas: tokens.map(info), spans: tokens.map(token => ({ token, firstHour: 120,
       lastHour: token === 'common' || token === 'beta' ? 250 : next ? 190 : 160, slot: null, character: null })),

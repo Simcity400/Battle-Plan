@@ -2526,6 +2526,23 @@ fn bound_holder_positions_replace_the_authored() {
     );
 }
 
+/// A positionType holds the window the code places at it, in its parent's content.
+#[test]
+fn a_position_holds_a_code_placed_window() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let gui = gui("size = { width = 100 height = 100 }          containerWindowType = { name = \"c\" position = { x = 20 y = 10 } size = { width = 50 height = 50 }          positionType = { name = \"p\" position = { x = 36 y = 6 } } }");
+    let window = gui.template("w").unwrap();
+    let layout = layout(window, None, &fixture(), &Bindings::default())
+        .unwrap()
+        .unwrap();
+    let [holder] = &layout.holders[..] else {
+        panic!("one holder: {:?}", layout.holders.iter().map(|holder| &holder.path).collect::<Vec<_>>());
+    };
+    assert!(holder.path.ends_with('p'), "{}", holder.path);
+    assert_eq!(holder.content, [50, 50]);
+}
+
 /// The step, compressed to fit, each format's origin and order, and the paint order.
 #[test]
 fn list_places_follow_the_layout() {
@@ -8475,4 +8492,44 @@ fn normalized_progress_uses_double_scaling_and_native_float_half_rounding() {
     assert_eq!(normalized_progress_value(2.0, 12), 12);
     assert_eq!(normalized_progress_value(0.125, -12), -2);
     assert_eq!(normalized_progress_value(1.0, i32::MAX), i32::MIN);
+}
+
+/// A dragged slider stays on its rail, and the value is its share of the range, rounded half away
+/// from zero.
+#[test]
+fn a_dragged_slider_gives_its_share_of_the_range() {
+    let slide = Slide {
+        vertical: true,
+        travel: 100,
+        thumb: 20,
+    };
+    assert_eq!(slide.dragged(0, [0, 400]), 80);
+    assert_eq!(slide.dragged(30, [0, 400]), 200);
+    // Past either end the slider is held on its rail.
+    assert_eq!(slide.dragged(-50, [0, 400]), 0);
+    assert_eq!(slide.dragged(500, [0, 400]), 400);
+    // 0.25 of 2 rounds half away from zero.
+    assert_eq!(slide.dragged(5, [0, 2]), 1);
+    // A rail with no travel gives the range's start.
+    let still = Slide { travel: 0, ..slide };
+    assert_eq!(still.dragged(10, [3, 9]), 3);
+}
+
+/// A clip the code sets on a window bounds what its children draw, though the window itself
+/// would not clip: the minimap's outline stays inside its world picture.
+#[test]
+fn a_clip_the_code_sets_bounds_a_windows_children() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let body = "size = { width = 40 height = 40 } \
+         containerWindowType = { name = \"c\" \
+            iconType = { name = \"i\" spriteType = \"GFX_even\" position = { x = 30 y = 5 } } }";
+    let unbound = laid(body, None).unwrap().unwrap();
+    assert_eq!(unbound.parts[0].clip, None);
+    let layout = laid_bound(body, None, |window, bindings| {
+        bindings.bind(window.path_named("c").unwrap()).clip = Some([2, 3, 20, 30]);
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(layout.parts[0].clip, Some([2, 3, 20, 30]));
 }

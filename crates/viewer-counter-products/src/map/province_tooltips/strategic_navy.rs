@@ -95,21 +95,7 @@ pub(super) fn append(
     }) {
         return;
     }
-    let terrain = (|| -> Result<_, String> {
-        let terrain = context
-            .content
-            .movement_terrain
-            .as_ref()
-            .map_err(Clone::clone)?;
-        let index = region_content
-            .naval_terrain
-            .as_ref()
-            .and_then(|name| terrain.category(name.as_bytes()))
-            .or_else(|| terrain.category(b"ocean"))
-            .ok_or("naval terrain and ocean fallback are absent from recorded content")?;
-        Ok(&terrain.categories[index])
-    })();
-    let terrain = match terrain {
+    let terrain = match terrain_category(context.content, region_content) {
         Ok(terrain) => terrain,
         Err(reason) => {
             out.refuse("naval regional terrain", reason);
@@ -170,13 +156,10 @@ pub(super) fn append(
                     &[],
                 ),
             );
-            let row = snapshot
-                .rows
-                .iter()
-                .find(|row| context.slot(row.country) == Ok(context.vision.ours()))
-                .copied()
-                .cloned()
-                .unwrap_or_default();
+            let row = match own_row(&snapshot.rows, &context.links, context.vision.ours()) {
+                Ok(row) => row,
+                Err(reason) => return out.refuse("naval regional dominance", reason),
+            };
             out.line(
                 false,
                 1,
@@ -189,13 +172,13 @@ pub(super) fn append(
                 false,
                 1,
                 "naval building source explanation",
-                building_text(context, region, &row),
+                building_text(&context.region(), region, &row),
             );
             out.line(
                 false,
                 1,
                 "naval regional source explanation",
-                source_text(context, region, sources),
+                source_text(&context.region(), region, sources),
             );
             out.title.push('\n');
             section(
@@ -244,11 +227,192 @@ pub(super) fn append(
     }
 }
 
+/// The region's naval terrain category, else the ocean category.
+fn terrain_category<'c>(
+    content: &'c super::counter_content::Content,
+    region: &installed_content_regions::regions::StrategicRegion,
+) -> Result<&'c installed_content_core::terrain::TerrainCategory, String> {
+    let terrain = content.movement_terrain.as_ref().map_err(Clone::clone)?;
+    let index = region
+        .naval_terrain
+        .as_ref()
+        .and_then(|name| terrain.category(name.as_bytes()))
+        .or_else(|| terrain.category(b"ocean"))
+        .ok_or("naval terrain and ocean fallback are absent from recorded content")?;
+    Ok(&terrain.categories[index])
+}
+
+/// The observed country's regional dominance: the supremacy snapshot, the control (0 contested,
+/// 1 friendly, 2 enemy) and the region's minimum supremacy, which the share's enemy side floors at.
+pub fn region_dominance<'f>(
+    content: &super::counter_content::Content,
+    frame: &'f replay_frame::frame::DecodedFrame,
+    viewer: u32,
+    region: u32,
+    links: &std::collections::BTreeMap<u32, u32>,
+) -> Result<(Snapshot<'f>, u8, i64), String> {
+    let definition = content
+        .strategic_regions
+        .get(&region)
+        .ok_or("strategic region content is unavailable")?;
+    let minimum = terrain_category(content, definition)?.minimum_seazone_dominance;
+    let snapshot = Snapshot::read(frame, viewer, region, minimum, links)?;
+    let control = snapshot.control(minimum, content.province_hover.navy.ratio.clone()?)?;
+    Ok((snapshot, control, minimum))
+}
+
+/// What the region's dominance texts read: the content, the hour and the viewing country.
+struct Region<'a> {
+    content: &'a super::counter_content::Content,
+    frame: &'a replay_frame::frame::DecodedFrame,
+    viewer: u32,
+    links: &'a std::collections::BTreeMap<u32, u32>,
+}
+
+impl Region<'_> {
+    fn loc(&self, key: &str, args: &[(&str, Arg<'_>)]) -> Result<String, String> {
+        super::localise(&self.content.localisation, key, args)
+    }
+}
+
+impl Context<'_> {
+    fn region(&self) -> Region<'_> {
+        Region {
+            content: self.content,
+            frame: self.frame,
+            viewer: self.vision.ours(),
+            links: &self.links,
+        }
+    }
+}
+
+/// The region's dominance hover the naval region view's bars give: its dominance text, then its
+/// ratio list ([`dominance_parts`]).
+pub fn dominance_hover(
+    content: &super::counter_content::Content,
+    frame: &replay_frame::frame::DecodedFrame,
+    viewer: u32,
+    region: u32,
+    links: &std::collections::BTreeMap<u32, u32>,
+    sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+    marked: impl Fn(u32, u32) -> Result<String, String>,
+) -> Result<String, String> {
+    let (mut text, ratios) = dominance_parts(content, frame, viewer, region, links, sources, marked)?;
+    ensure_newlines(&mut text, 1);
+    text.push_str(&ratios);
+    Ok(text)
+}
+
+/// The region's dominance text and its ratio list, which the strategic region's hover and the
+/// naval region view's bars share: the viewing country's current dominance and its building and
+/// live sources; then the region's minimum and each country's current dominance in roster order,
+/// each named by `marked` from its raw reference and canonical slot (its flag, tag and definite
+/// name).
+pub fn dominance_parts(
+    content: &super::counter_content::Content,
+    frame: &replay_frame::frame::DecodedFrame,
+    viewer: u32,
+    region: u32,
+    links: &std::collections::BTreeMap<u32, u32>,
+    sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+    marked: impl Fn(u32, u32) -> Result<String, String>,
+) -> Result<(String, String), String> {
+    let (snapshot, _, minimum) = region_dominance(content, frame, viewer, region, links)?;
+    let reads = Region { content, frame, viewer, links };
+    let defines = &content.province_hover.navy;
+    let row = own_row(&snapshot.rows, links, viewer)?;
+    let mut text = current_text(&row, snapshot.share()?, defines, |key, args| reads.loc(key, args))?;
+    ensure_newlines(&mut text, 1);
+    text.push_str(&building_text(&reads, region, &row)?);
+    text.push_str(&source_text(&reads, region, sources)?);
+    // The game never fills the dominance object's headquarters value or places in this build.
+    let loc = |key: &str, args: &[(&str, Arg<'_>)]| reads.loc(key, args);
+    let ratios = ratios(loc, &snapshot.rows, links, minimum, defines.ratio.clone()?, marked)?;
+    Ok((text, ratios))
+}
+
+/// A sea province's strategic region hover in the default mode: the viewing country's dominance
+/// text, and the ratio list in the delayed text.
+pub(super) fn default_region(
+    context: &Context<'_>,
+    sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+    out: &mut Tooltip,
+) {
+    let Some(&region) = context.content.region_of.get(&context.province.id) else {
+        return out.refuse("region dominance", "the province has no strategic region".into());
+    };
+    let marked = |_: u32, slot: u32| -> Result<String, String> {
+        let tag = context.countries.tag(slot, "dominance country naming operands are unavailable")?;
+        let name = context.countries.name_with(slot, "_DEF")?;
+        Ok(format!(
+            "{}{tag} {}",
+            viewer_foundation::map::native_text::FLAG,
+            installed_content_localisation::localisation::crt_case_text(&name, true, true)
+        ))
+    };
+    match dominance_parts(context.content, context.frame, context.vision.ours(), region, &context.links, sources, marked) {
+        Ok((text, mut ratios)) => {
+            out.title.push_str(&text);
+            ensure_newlines(&mut ratios, 2);
+            out.body.push_str(&ratios);
+        }
+        Err(why) => out.refuse("region dominance", why),
+    }
+}
+
+/// The viewing country's entry in a region's dominance roster, the null entry when it has none.
+fn own_row(
+    rows: &[&NavalSupremacyRow],
+    links: &std::collections::BTreeMap<u32, u32>,
+    viewer: u32,
+) -> Result<NavalSupremacyRow, String> {
+    let mut own = None;
+    for row in rows {
+        if viewer_foundation::map::naval_region_control::canonical(links, row.country)? == viewer {
+            own = Some(*row);
+        }
+    }
+    Ok(own.cloned().unwrap_or_default())
+}
+
+/// The region's minimum dominance, then each country's current dominance in roster order.
+fn ratios(
+    loc: impl Fn(&str, &[(&str, Arg<'_>)]) -> Result<String, String>,
+    rows: &[&NavalSupremacyRow],
+    links: &std::collections::BTreeMap<u32, u32>,
+    minimum: i64,
+    ratio: i64,
+    marked: impl Fn(u32, u32) -> Result<String, String>,
+) -> Result<String, String> {
+    let mut text = loc(
+        "SEAZONE_MINIMUM_DOMINANCE",
+        &[("VALUE", Arg::Fixed5(minimum_text(minimum, ratio)))],
+    )?;
+    if rows.is_empty() {
+        return Ok(text);
+    }
+    ensure_newlines(&mut text, 2);
+    text.push_str(&loc("NAVAL_DOMINANCE_RATIO_HEADER", &[])?);
+    ensure_newlines(&mut text, 1);
+    let mut ordered = rows.to_vec();
+    ordered.sort_by_key(|row| row.region_slot);
+    for row in ordered {
+        let slot = viewer_foundation::map::naval_region_control::canonical(links, row.country)?;
+        let name = marked(row.country, slot)?;
+        text.push_str(&loc(
+            "NAVAL_DOMINANCE_RATIO",
+            &[("TAG", Arg::Text(&name)), ("VALUE", Arg::Fixed5(row.current))],
+        )?);
+        ensure_newlines(&mut text, 1);
+    }
+    Ok(text)
+}
+
 /// The region's stored state vector is built by unique state identity from
 /// member provinces. Building status rows preserve the active aggregate
 /// vector and its signed total levels, including provincial building types.
 fn building_counts(
-    context: &Context<'_>,
+    context: &Region<'_>,
     region: u32,
 ) -> Result<replay_derive::naval_dominance_derive::BuildingCounts, String> {
     use replay_derive::naval_dominance_derive::BuildingCounts;
@@ -257,7 +421,7 @@ fn building_counts(
         .complete::<tables::Countries>()
         .map_err(|e| e.to_string())?
         .iter()
-        .find(|row| row.canonical_slot == context.vision.ours())
+        .find(|row| row.canonical_slot == context.viewer)
         .ok_or("naval building viewer country is unavailable")?;
     if country.id as i32 <= 0 {
         return Ok(BuildingCounts::default());
@@ -285,38 +449,53 @@ fn building_counts(
     let tokens = viewer_foundation::table_access::TokenNames::new(context.frame)
         .map_err(|e| e.to_string())?;
     let facts = &context.content.building_facts;
-    let mut count = BuildingCounts::default();
     let buildings = context
         .frame
         .complete::<tables::StateBuildings>()
         .map_err(|e| e.to_string())?;
+    count_levels(buildings, states, context.links, context.viewer, |building_type| {
+        let token = tokens.name(building_type).map_err(|e| e.to_string())?;
+        let key = facts
+            .keys
+            .resolve(token)?
+            .ok_or("naval dominance building type is absent from recorded content")?;
+        let kind = facts
+            .index
+            .get(key)
+            .and_then(|&index| facts.ordered.get(index))
+            .ok_or("naval dominance building type definition is unavailable")?;
+        Ok([kind.is_port, kind.air_base, kind.radar])
+    })
+}
+
+/// The levels of `viewer`'s active buildings in `states` by kind (naval base, air base, radar),
+/// a building's country matched as the dominance roster's is.
+fn count_levels(
+    buildings: &[replay_data::rows::BuildingRow],
+    states: std::collections::BTreeSet<u32>,
+    links: &std::collections::BTreeMap<u32, u32>,
+    viewer: u32,
+    kind: impl Fn(u32) -> Result<[bool; 3], String>,
+) -> Result<replay_derive::naval_dominance_derive::BuildingCounts, String> {
+    let mut count = replay_derive::naval_dominance_derive::BuildingCounts::default();
     for state in states {
         let first = buildings.partition_point(|row| row.location < state);
         let end = first + buildings[first..].partition_point(|row| row.location == state);
         for building in &buildings[first..end] {
-            if !building.active || context.slot(building.country)? != context.vision.ours() {
+            if !building.active
+                || viewer_foundation::map::naval_region_control::canonical(links, building.country)? != viewer
+            {
                 continue;
             }
-            let token = tokens
-                .name(building.building_type)
-                .map_err(|e| e.to_string())?;
-            let key = facts
-                .keys
-                .resolve(token)?
-                .ok_or("naval dominance building type is absent from recorded content")?;
-            let kind = facts
-                .index
-                .get(key)
-                .and_then(|&index| facts.ordered.get(index))
-                .ok_or("naval dominance building type definition is unavailable")?;
+            let [port, air_base, radar] = kind(building.building_type)?;
             let level = i32::from(building.level);
-            if kind.is_port {
+            if port {
                 count.naval_base = count.naval_base.wrapping_add(level);
             }
-            if kind.air_base {
+            if air_base {
                 count.air_base = count.air_base.wrapping_add(level);
             }
-            if kind.radar {
+            if radar {
                 count.radar = count.radar.wrapping_add(level);
             }
         }
@@ -325,7 +504,7 @@ fn building_counts(
 }
 
 fn building_text(
-    context: &Context<'_>,
+    context: &Region<'_>,
     region: u32,
     row: &NavalSupremacyRow,
 ) -> Result<String, String> {
@@ -386,7 +565,7 @@ fn building_text(
 }
 
 fn source_text(
-    context: &Context<'_>,
+    context: &Region<'_>,
     region: u32,
     sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
 ) -> Result<String, String> {
@@ -561,6 +740,68 @@ pub(super) fn merge_sections(context: &Context<'_>, out: &mut Tooltip, value: To
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ratio_list_follows_the_minimum_in_roster_order() {
+        let loc: installed_content_localisation::localisation::Localisation = [
+            ("SEAZONE_MINIMUM_DOMINANCE", "min $VALUE|0$"),
+            ("NAVAL_DOMINANCE_RATIO_HEADER", "ratios"),
+            ("NAVAL_DOMINANCE_RATIO", "$TAG$ $VALUE|0$"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect();
+        let localise = |key: &str, args: &[(&str, Arg<'_>)]| loc.localise_with(key.as_bytes(), args).map_err(|e| e.to_string());
+        let row = |country, region_slot, current| NavalSupremacyRow { country, region_slot, current, ..Default::default() };
+        let (later, first) = (row(1, 1, 300_000), row(2, 0, 700_000));
+        let links = [(1, 11), (2, 12)].into();
+        let names = |raw: u32, slot: u32| Ok(format!("C{raw}/{slot}"));
+        assert_eq!(ratios(localise, &[&later, &first], &links, 0, 50_000, names).unwrap(), "min 0\n\nratios\nC2/12 7\nC1/11 3\n");
+        assert_eq!(ratios(localise, &[], &links, 0, 50_000, names).unwrap(), "min 0");
+        // The reserved Country0 holds entries under raw zero, which CountryLinks never lists.
+        let reserved = row(0, 2, 100_000);
+        assert_eq!(
+            ratios(localise, &[&later, &first, &reserved], &links, 0, 50_000, names).unwrap(),
+            "min 0\n\nratios\nC2/12 7\nC1/11 3\nC0/0 1\n"
+        );
+        assert!(ratios(localise, &[&row(3, 0, 0)], &links, 0, 50_000, names).is_err());
+    }
+
+    #[test]
+    fn a_region_state_holding_country0_buildings_counts_only_the_viewers() {
+        use replay_data::rows::BuildingRow;
+        use replay_derive::naval_dominance_derive::BuildingCounts;
+        let building = |location, building_type, country, level, active| BuildingRow { location, building_type, country, level, active, ..Default::default() };
+        let buildings = [
+            building(4, 1, 0, 3, true),
+            building(4, 2, 7, 2, true),
+            building(4, 3, 7, 5, false),
+            building(9, 1, 7, 4, true),
+            building(9, 2, 8, 1, true),
+        ];
+        let links = [(7, 12), (8, 13)].into();
+        let kind = |building_type: u32| -> Result<[bool; 3], String> { Ok([building_type == 1, building_type == 2, building_type == 3]) };
+        assert_eq!(
+            count_levels(&buildings, [4, 9].into(), &links, 12, kind).unwrap(),
+            BuildingCounts { naval_base: 4, air_base: 2, radar: 0 }
+        );
+        assert_eq!(
+            count_levels(&buildings, [4].into(), &links, 0, kind).unwrap(),
+            BuildingCounts { naval_base: 3, air_base: 0, radar: 0 }
+        );
+        assert!(count_levels(&[building(4, 1, 5, 1, true)], [4].into(), &links, 12, kind).is_err());
+    }
+
+    #[test]
+    fn the_viewers_entry_is_found_past_a_country0_entry() {
+        let row = |country, current| NavalSupremacyRow { country, current, ..Default::default() };
+        let links = [(1, 11), (2, 12)].into();
+        let (reserved, ours) = (row(0, 5), row(2, 7));
+        assert_eq!(own_row(&[&reserved, &ours], &links, 12).unwrap().current, 7);
+        assert_eq!(own_row(&[&reserved, &ours], &links, 0).unwrap().current, 5);
+        assert_eq!(own_row(&[&reserved], &links, 11).unwrap(), NavalSupremacyRow::default());
+        assert!(own_row(&[&row(3, 1)], &links, 11).is_err());
+    }
     fn text(row: NavalSupremacyRow) -> String {
         let loc: installed_content_localisation::localisation::Localisation = [
             (

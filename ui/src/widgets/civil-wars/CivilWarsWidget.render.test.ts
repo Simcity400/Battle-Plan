@@ -52,7 +52,8 @@ test('civil-war descriptions request every live side and dated heading beyond th
         const state = globalThis.__civilCoverage; state.dated = wanted; state.maxHours = maxHours;
         return new Map(wanted.flatMap(item => { const key = nameKey(item.hour, item.tag), name = state.names.get(key);
           return name === undefined ? [] : [[key, { tag: item.tag, name, color: null }]]; }));
-      };`,
+      };
+      export const useCountryFactsByKey = (...args) => useCountryFactsRead(...args);`,
     '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = (_client, _track, wanted) => { globalThis.__civilCoverage.datedFlags = wanted; return new Map(); };',
     '/dashboard/useCountriesAt.ts': `export const STYLES = {};
       export const countryReadName = (style, pending) => ({ name: style?.name ?? pending.name });

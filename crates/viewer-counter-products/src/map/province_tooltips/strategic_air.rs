@@ -2,6 +2,7 @@
 //! the shared regional mine summary, with independent named input failures.
 //! Received-damage grids belong to the Air view rather than this map hover.
 mod selection;
+pub use selection::assignment_checks;
 use super::{Arg, Context, Tooltip, line};
 use replay_data::rows::tables;
 use std::{cell::OnceCell, collections::BTreeMap};
@@ -66,6 +67,70 @@ pub(super) fn append(context: &Context<'_>, selected: &[u64], out: &mut Tooltip)
         out,
         super::naval_mines::build(context.content, context.frame, context.vision, region, true),
     );
+}
+
+/// The strategic region the game places a pool's base in (its pool-location query) and whether
+/// its carrier host is on a mission: the base province's region, the first province of its
+/// state's base kind, or the host task force's (its port's sea region while in port);
+/// [`UNRESOLVED_BASE_REGION`] when none resolves.
+pub(crate) fn pool_region(
+    content: &super::counter_content::Content,
+    frame: &replay_frame::frame::DecodedFrame,
+    registry: &viewer_foundation::map::air_registry_sources::AirRegistrySources,
+    base: u64,
+) -> Result<(u32, bool), String> {
+    let provinces = frame.complete::<tables::Provinces>().map_err(|e| e.to_string())?;
+    let movement = content
+        .movement
+        .as_ref()
+        .ok_or("Air occupation needs the content province terrain flags")?;
+    let mut base_region = UNRESOLVED_BASE_REGION;
+    let mut carrier_mission = false;
+    if let Some(base) = registry.bases.get(&base) {
+        let province = if let Some(state) = base.state {
+            match base.province {
+                Some(province) => Some(province),
+                None => content
+                    .air_base_first_provinces
+                    .get(&(state, base.kind as usize))
+                    .copied()
+                    .transpose()
+                    .map_err(str::to_owned)?,
+            }
+        } else {
+            let ships = frame.complete::<tables::Ships>().map_err(|e| e.to_string())?;
+            let force = match keyed(ships, base.host, |row| row.id) {
+                Some(ship) => {
+                    let forces = frame.complete::<tables::TaskForces>().map_err(|e| e.to_string())?;
+                    keyed(forces, ship.task_force, |row| row.id)
+                }
+                None => None,
+            };
+            if let Some(force) = force {
+                carrier_mission = force.mission != 0;
+                let province = keyed(provinces, force.province, |row| row.id)
+                    .ok_or("Air carrier province is unavailable")?;
+                let terrain = movement
+                    .map
+                    .terrain(province.id)
+                    .ok_or("Air carrier terrain flags are unavailable")?;
+                if terrain.flags & 1 != 0 {
+                    u32::try_from(province.port_sea).ok().filter(|&id| id != 0)
+                } else {
+                    Some(province.id)
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(province) = province {
+            base_region = *content
+                .region_of
+                .get(&province)
+                .ok_or("Air pool-base strategic region is unavailable")?;
+        }
+    }
+    Ok((base_region, carrier_mission))
 }
 
 pub struct RegionalDetection<'a> {
@@ -315,61 +380,7 @@ fn calculate(reads: &RegionalDetection<'_>, ours: u32) -> Result<(i64, String), 
             })
             .as_ref()
             .map_err(Clone::clone)?;
-        let base = registry.bases.get(&wing.air_base);
-        let mut base_region = UNRESOLVED_BASE_REGION;
-        let mut carrier_mission = false;
-        if let Some(base) = base {
-            let province = if let Some(state) = base.state {
-                match base.province {
-                    Some(province) => Some(province),
-                    None => context
-                        .content
-                        .air_base_first_provinces
-                        .get(&(state, base.kind as usize))
-                        .copied()
-                        .transpose()
-                        .map_err(str::to_owned)?,
-                }
-            } else {
-                let ships = context
-                    .frame
-                    .complete::<tables::Ships>()
-                    .map_err(|e| e.to_string())?;
-                let force = match keyed(ships, base.host, |row| row.id) {
-                    Some(ship) => {
-                        let forces = context
-                            .frame
-                            .complete::<tables::TaskForces>()
-                            .map_err(|e| e.to_string())?;
-                        keyed(forces, ship.task_force, |row| row.id)
-                    }
-                    None => None,
-                };
-                if let Some(force) = force {
-                    carrier_mission = force.mission != 0;
-                    let province = keyed(provinces, force.province, |row| row.id)
-                        .ok_or("Air carrier province is unavailable")?;
-                    let terrain = movement
-                        .map
-                        .terrain(province.id)
-                        .ok_or("Air carrier terrain flags are unavailable")?;
-                    if terrain.flags & 1 != 0 {
-                        u32::try_from(province.port_sea).ok().filter(|&id| id != 0)
-                    } else {
-                        Some(province.id)
-                    }
-                } else {
-                    None
-                }
-            };
-            if let Some(province) = province {
-                base_region = *context
-                    .content
-                    .region_of
-                    .get(&province)
-                    .ok_or("Air pool-base strategic region is unavailable")?;
-            }
-        }
+        let (base_region, carrier_mission) = pool_region(context.content, context.frame, registry, wing.air_base)?;
         let home = base_region == region;
         let normalized = input
             .normalization

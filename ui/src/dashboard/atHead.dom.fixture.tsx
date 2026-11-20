@@ -15,6 +15,7 @@ import { useIdentityHour } from './atHead.ts';
 import { askTimeline } from './countryTimeline.ts';
 import { useFallbackHour } from './follow/useFollow.ts';
 import { firstHourOfMonth, gameDate, monthNames } from './calendar.ts';
+import { useCountriesAt } from './useCountriesAt.ts';
 
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 async function settle() { for (let i = 0; i < 6; i++) await frame(); }
@@ -37,11 +38,15 @@ const GROUPS = { branchId: '1', warnings: [], humans: [], wars: [], warStarts: [
 const FACTS = { branchId: '1', known: [[0, LAST]], names: ['Germany', 'German Reich'], reasons: [], flags: [], warnings: [],
   countries: [{ tag: 'GER', runs: [[0, 0, 0x336699, -1, -1], [RENAMED, 1, 0x336699, -1, -1]] }] };
 
+/** GER is slot 0 throughout; the catalogue names it as at hour 0. */
+const IDENTITIES = { branchId: '1', countries: [{ tag: 'GER', identities: [{ firstHour: 0, lastHour: LAST, slot: 0, countryId: 0 }], unresolved: [] }] };
+
 const client = {
   available: true, nativeMaps: true,
   product: async (request: ProductRequest) => {
     asked.push(request.product);
     const data = request.product === 'country-groups' ? GROUPS : request.product === 'country-facts' ? FACTS
+      : request.product === 'country-identities' ? IDENTITIES
         : { available: true };
     return { sourceId: request.sourceId, revision: request.revision, product: request.product, data };
   },
@@ -71,6 +76,19 @@ function Fallback({ on }: { on: boolean }) {
 
 const host = document.body.appendChild(document.createElement('div'));
 const root = createRoot(host);
+
+/** A lane timeline's names as `useCountriesAt` gives them, its caller holding the hour its lanes last changed at. */
+function Lanes({ held }: { held: number }) {
+  const { country } = useCountriesAt(client, track, ['GER'], held, true, ['GER'], undefined, undefined, { clock, on: true, hour: sameHour });
+  return <span data-lanes>{country('GER').name}</span>;
+}
+
+const slotTrack = { ...track, selectedTag: null, selectedSlot: 0 } as unknown as BoundTrack;
+const slotRuntime = { ...runtime, tracks: [slotTrack], campaignTracks: [slotTrack] } as unknown as WidgetRuntime;
+const byTag = { ...faction, id: 'by-tag', countries: { kind: 'tags', tags: ['GER'] } } as unknown as WidgetSpec;
+const bySlot = { ...faction, id: 'by-slot', countries: { kind: 'selected' } } as unknown as WidgetSpec;
+const countryHost = document.body.appendChild(document.createElement('div'));
+const countryRoot = createRoot(countryHost);
 
 /** A strip of its own on a clock in the game's calendar (from January 1936), for its date picker. */
 const JANUARY_1936 = 1936 * 12;
@@ -132,6 +150,19 @@ export const fixture = {
     await settle();
     return Object.fromEntries(Object.keys(renders).map(id => [id, (renders[id] ?? 0) - (before[id] ?? 0)]));
   },
+  /** A widget header chip for GER picked by tag, one for the dashboard country chosen by slot, and a lane timeline's
+   * names held at hour `held`. */
+  async mountCountries(held: number) {
+    countryRoot.render(<>
+      <span data-chip="tag">{counted('tagChip', <CountryChip widget={byTag} runtime={runtime} active />)}</span>
+      <span data-chip="slot">{counted('slotChip', <CountryChip widget={bySlot} runtime={slotRuntime} active />)}</span>
+      {counted('lanes', <Lanes held={held} />)}
+    </>);
+    await settle();
+  },
+  countries: () => ({ tag: document.querySelector('[data-chip="tag"] .dash-widget-country')?.textContent ?? '',
+    slot: document.querySelector('[data-chip="slot"] .dash-widget-country')?.textContent ?? '',
+    lanes: document.querySelector('[data-lanes]')?.textContent ?? '' }),
   /** The calendar's strip mounted at the first hour of the month `month` months after January 1936, paused. */
   async mountCalendar(month: number) {
     calendarClock.seek(firstHourOfMonth(JANUARY_1936 + month));

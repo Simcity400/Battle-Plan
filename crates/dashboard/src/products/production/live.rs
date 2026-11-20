@@ -8,6 +8,7 @@
 //! gives the handles whose producing country links to the owner at the hour, so no other
 //! country's lines or output rows are built.
 
+use dashboard_base::products::Country;
 use super::{
     DECIMALS, LineKind, OrganisationName, VariantName,
     names::{self, Named},
@@ -47,7 +48,7 @@ pub enum LineOrder {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionLinesAtParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// The game's queue order when absent.
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -176,11 +177,11 @@ impl AtHour for ProductionLinesAt {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        crate::products::validate_tag(&params.tag)
+        crate::products::validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn uses_sample(_table: TableId) -> bool { false }
@@ -281,7 +282,7 @@ impl AtHour for ProductionLinesAt {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Production lines country is unavailable at this hour"))?;
         let mut reply = ProductionLinesAtReply {
             branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
+            tag: at.holders.name(&params.country, at.hour),
             decimals: DECIMALS,
             lines: Vec::new(),
             missing: None,

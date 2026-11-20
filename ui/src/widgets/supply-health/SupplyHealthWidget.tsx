@@ -19,8 +19,10 @@ import { motionOf } from '../../charts/easing.ts';
 import LiveText, { liveTexts } from '../../charts/LiveText';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import { historyAt } from '../../dashboard/countryIdentity';
+import { isSlotKey } from '../../dashboard/countryKey.ts';
 import { countryCapitulationBadges, countryCapitulationRows } from '../../dashboard/countryCapitulations';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import DatedCountryChip, { ChooseCountryChip } from '../../dashboard/DatedCountryChip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveCountries } from '../../dashboard/groups';
@@ -78,7 +80,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const groupData = stores.groups.update(sourceScope, incomingGroups.data, groupNumbers);
   const groupWarnings = stores.groupWarnings.update(sourceScope, incomingGroups.data?.warnings, reply => reply);
   const groups = { ...incomingGroups, data: groupData };
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const lastHour = track?.branch.lastHour ?? 0;
   const countries = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, definition.countries.max),
     [widget.countries, fallback, groups.data, lastHour]);
@@ -93,7 +95,10 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const playhead = window && (following || widget.time.mode === 'pin') ? window.lastHour : null;
   const head = Math.floor(playhead ?? extent[1]);
   const identities = useMemo(() => new Map((groups.data?.countryIdentities ?? []).map(history => [history.tag, history.identities])), [groups.data]);
-  const hasActor = useCallback((tag: string, hour: number) => runAt(identities.get(tag) ?? [], Math.floor(hour)) !== null, [identities]);
+  const hasActor = useCallback((tag: string, hour: number) => {
+    const at = Math.floor(hour);
+    return runAt((isSlotKey(tag) ? historyAt(groups.data?.countryIdentities ?? [], tag, at)?.identities : identities.get(tag)) ?? [], at) !== null;
+  }, [identities, groups.data]);
   const [tip, setTip] = useChangedState<{ tag: string; hour: number } | null>(null);
   const reads = useMemo(() => tip ? [tip] : [], [tip]);
   const supply = useSupplySeries(runtime.client, runtime.clock, track?.source, track?.branch.id, countries.tags, countries.membership ?? undefined, lastHour, active, reads,
@@ -150,7 +155,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
       pickOwner: { client: runtime.client, source: sourceScope, selection: countryScope, first: extent[0], last: extent[1], tag, drawing } };
   }), [countries.tags, supply.shares, supply.missing, supply.liveShares, following, membershipKey, extent[0], extent[1], runtime.client, sourceScope, countryScope]); // eslint-disable-line react-hooks/exhaustive-deps
   const badgesByTag = useMemo(() => countryCapitulationBadges(groups.data, series.map(country => ({ tag: country.tag, membership: country.membership,
-    identities: identities.get(country.tag), segments: country.drawing })), extent),
+    identities: identities.get(country.tag), segments: country.drawing })), extent, groups.data?.countryIdentities),
   [groups.data, series, identities, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const wanted = useMemo(() => [...visibleTags.map(tag => ({ tag, hour: head })), ...(tip && visibleTags.includes(tip.tag) ? [tip] : [])]
     .filter(({ tag, hour }) => hasActor(tag, hour)), [visibleTags, head, tip, hasActor]);
@@ -233,12 +238,14 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const neutralHeader = pinned && countrySlot && (problem !== undefined || choices !== null || unchosen)
     ? createPortal(unchosen ? <ChooseCountryChip /> : <DatedCountryChip label={null} hour={window ? drillAt : null}
       reason="Selected country unavailable." />, countrySlot) : null;
+  // The breakdown, its header and a pin take the tag the drilled country went by at its origin; its spans follow it on.
+  const drillCountry = drillTag !== null && isSlotKey(drillTag) ? historyAt(groups.data?.countryIdentities ?? [], drillTag, originHour)?.tag ?? null : drillTag;
   const breakdown = <SupplyBreakdown runtime={runtime} track={track} active={active} options={options} extent={extent}
     countrySlot={pinned && problem === undefined && choices === null && !unchosen ? countrySlot : null}
-    headerSelection={hasOrigin || drillTag === null ? savedSelection : { tag: drillTag, hour: originHour }}
+    headerSelection={hasOrigin || drillCountry === null ? savedSelection : { tag: drillCountry, hour: originHour }}
     identities={groups.data?.countryIdentities ?? null}
     playhead={drillPlayhead} liveHead={drillFollows ? clockHead : undefined} dayText={drillFollows ? dayText : undefined}
-    tag={drillTag} hour={drillAt} originHour={originHour} following={drill.follow} pinned={pinned}
+    tag={drillCountry} hour={drillAt} originHour={originHour} following={drill.follow} pinned={pinned}
     onPick={hour => active && dispatchDrill({ type: 'pick', hour })} onFollow={follow} onWarnings={setDrillWarnings} />;
   const choice = choices && track ? <div className="parts-race-details">
     <p className="drill-empty">Choose a country for {formatDateTime(drillAt)}.</p>
@@ -258,9 +265,9 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
       mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={body} title="Supply classification"
       day={drillFollows ? <LiveText live={dayText} at="day" /> : formatDateTime(drillAt)} following={drill.follow} canFollow={choices === null && track !== undefined}
       returnFocus=".supply-health-country-chart" onClose={() => dispatchDrill({ type: 'close' })} onFollow={follow}
-      onPin={track && drillTag ? () => runtime.addWidgetBelow(widget.id, pinPartsRace(
+      onPin={track && drillCountry ? () => runtime.addWidgetBelow(widget.id, pinPartsRace(
         { ...widget, time: drill.follow ? { mode: 'follow' } : widget.time,
-          options: { ...widget.options, drillOriginHour: originHour } }, track, drillTag, drillAt, drill.follow,
+          options: { ...widget.options, drillOriginHour: originHour } }, track, drillCountry, drillAt, drill.follow,
         'Supply classification')) : undefined} main={state}>{choice}</DrillHost>}</div>
   </>;
 }

@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo } from 'react';
 import MeasureRace from '../../charts/race/MeasureRace';
 import MeasureDetails from '../../charts/race/MeasureDetails';
@@ -20,7 +21,7 @@ function FactoryDetails({ widget, runtime, active, tag, hour, types, mode }: Pic
   tag: string; hour: number; types: readonly string[]; mode: ReturnType<typeof countMode> }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'factory-parts',
-    params: { branchId: track.branch.id, tag, hour } } : null;
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour } } : null;
   const parts = useProduct<FactoryPartsReply>(runtime.client, request, active, validateFactoryParts, track?.source);
   return <MeasureDetails title={`${tag}, ${dayLabel(hour)}`} rows={parts.data ? partRows(parts.data, types, mode) : undefined}
     error={parts.error} onRetry={parts.retry} />;

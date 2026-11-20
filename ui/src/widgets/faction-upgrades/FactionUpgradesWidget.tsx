@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
 import { useCallback, useMemo } from 'react';
@@ -36,11 +37,11 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const { groups, pick, hour: chosenAt } = useChosenFaction(widget, runtime, track, active);
+  const { groups, pick, tag: viewpointTag, hour: chosenAt } = useChosenFaction(widget, runtime, track, active);
   const displayNames = useFactionDisplayNames(track?.source);
   const faction = pick?.faction ?? null;
   const reply = useProduct<FactionRulesReply>(runtime.client, track && faction ? { sourceId: track.source.id, revision: track.source.revision, product: 'faction-state',
-    params: { view: 'rules', branchId: track.branch.id, faction: faction.id } } : null, active, undefined, track?.source);
+    params: { view: 'rules', branchId: track.branch.id, faction: faction.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } } : null, active, undefined, track?.source);
   const data = reply.data;
   const following = widget.time.mode === 'follow';
   const { hourAt } = headRead(widget, track, runtime.tracks, null);

@@ -14,12 +14,12 @@ mod naming;
 #[cfg(test)]
 mod tests;
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     LoadContext, Product, check_reply_budget,
     politics::{Holding, holdings},
     ideas::{IdeaInfo, effect_keys, recorded_definitions},
     production::EquipmentIcon,
-    validate_tag,
 };
 use dashboard_base::products::idea_format::{self, LocalisedText, ModifierFormat};
 use dashboard_core::dto::Artwork;
@@ -61,7 +61,7 @@ impl SpendCurrency {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PowerSpendingParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub currency: SpendCurrency,
     /// The span's first and last hour: a payment read in it is listed.
     pub from: i32,
@@ -248,7 +248,7 @@ impl Product for PowerSpending {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid power spending branch")?;
-        validate_tag(&params.tag)?;
+        validate_country(&params.country)?;
         if params.from > params.to {
             return Err("A power spending span ends before it starts");
         }
@@ -282,9 +282,9 @@ pub(super) struct Piece {
 }
 
 /// The pieces of `first..=last` in which `tag`'s holders held it, in hour order.
-pub(super) fn pieces(query: &Query<'_>, tag: &str, first: i32, last: i32) -> io::Result<Vec<Piece>> {
+pub(super) fn pieces(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> io::Result<Vec<Piece>> {
     let held = holdings(&query.holders);
-    let mut tagged: Vec<&Holding> = held.values().flatten().filter(|holding| holding.tag == tag).collect();
+    let mut tagged: Vec<&Holding> = held.values().flatten().filter(|holding| super::casualties::matches(tag, (holding.slot, holding.id), &holding.tag)).collect();
     tagged.sort_by_key(|holding| holding.first);
     let mut out = Vec::new();
     for stretch in &query.timeline.stretches {
@@ -535,7 +535,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let currency = params.currency;
     let mut reply = PowerSpendingReply {
         branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
+        tag: query.holders.name(&params.country, query.timeline.last),
         currency,
         from: params.from,
         to: params.to,
@@ -554,7 +554,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut index: HashMap<(u32, u32, u32), u32> = HashMap::new();
     let mut credits: BTreeMap<u32, u32> = BTreeMap::new();
     let mut unmatched = 0_u64;
-    for piece in pieces(query, &params.tag, params.from, params.to)? {
+    for piece in pieces(query, &params.country, params.from, params.to)? {
         crate::metadata::check_cancel(cancelled)?;
         coverage(query, &piece, currency, &mut reply.coverage)?;
         let items = items_at(query, piece.slot, piece.last)?;

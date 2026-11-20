@@ -22,6 +22,8 @@ pub struct Dynamic {
     /// Scoped modifier token and operand pairs; repeats append and retain
     /// separate description lines.
     pub scoped_modifiers: Vec<(String, Vec<u8>)>,
+    /// `icon`, the last one authored; empty when none is.
+    pub icon: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -138,7 +140,10 @@ fn definition(item: &Item, names: &KeyNames) -> io::Result<Dynamic> {
     };
     for field in item.value.items().unwrap_or_default() {
         match field.keyword().map(|key| key.folded()).as_deref() {
-            Some(b"icon" | b"attacker_modifier" | b"enable" | b"remove_trigger") => {}
+            Some(b"icon") => {
+                result.icon = parser::c_string(field.value.scalar().unwrap_or_default()).to_vec();
+            }
+            Some(b"attacker_modifier" | b"enable" | b"remove_trigger") => {}
             Some(b"custom_modifier_tooltip" | b"hidden_modifier" | b"added_modifier") => {
                 result.modifiers.read(field)
             }

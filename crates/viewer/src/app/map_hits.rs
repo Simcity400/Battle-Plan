@@ -590,6 +590,7 @@ mod tests {
             let [x, y] = at(61.0);
             report.faction_pin_hovers.push(viewer_counters::map::counters::faction_pings::PinHover {
                 rect: [x, y, 24.0, 24.0],
+                theatre: (0, 0),
                 regions: Arc::from([step]),
                 layer: layer(5, step, 0),
             });
@@ -631,7 +632,7 @@ mod tests {
             });
             report.air_mission_hits.push(viewer_counters::map::counters::AirMissionHover {
                 region: step,
-                mission: None,
+                part: viewer_counters::map::counters::AirMissionPart::Supply,
                 rect: [x, y - 30.0, 50.0, 50.0],
                 layer: layer(8, step, 0),
                 text: Arc::default(),
@@ -651,6 +652,7 @@ mod tests {
                 origin: [f32::from(step as u16) * 140.0, 300.0],
                 size: [48.0, 48.0],
                 key: viewer_raids::map::raids::tooltips::Key::Raid { id: step, reference_type: 0, incoming: false },
+                province: 0,
                 layer: layer(15, step, 0),
                 supported: step % 2 == 0,
             })
@@ -818,6 +820,7 @@ mod tests {
             origin: [900.0, 500.0],
             size: [48.0, 48.0],
             key: viewer_raids::map::raids::tooltips::Key::Raid { id: 3, reference_type: 0, incoming: false },
+            province: 0,
             layer: layer(15, 0, 0),
             supported: true,
         };

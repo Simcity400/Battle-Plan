@@ -25,6 +25,7 @@ pub use catalogue::{EquipmentDesigns, IndustrialOrganisations, ProductionLicence
 pub use lines::{ProductionLineDetail, ProductionLines};
 pub use live::ProductionLinesAt;
 
+use dashboard_base::products::Country;
 use crate::span::HourSpan;
 use dashboard_query::{Query, identity::Holder, read};
 use replay::columnar_frames::Recording;
@@ -287,7 +288,7 @@ pub fn link_slots(recording: &Recording, run: u32, hour: i32) -> io::Result<BTre
 /// order first seen; `lines(run)` gives a run's index. A line belongs to the tag where its
 /// producing country links to the tag's holder's slot (the links as the stretch's last hour
 /// holds them).
-pub fn appearances(query: &Query<'_>, tag: &str, from: i32, to: i32, lines: &dyn Fn(u32) -> io::Result<std::sync::Arc<RunLines>>) -> io::Result<Vec<Appearance>> {
+pub fn appearances(query: &Query<'_>, tag: &Country, from: i32, to: i32, lines: &dyn Fn(u32) -> io::Result<std::sync::Arc<RunLines>>) -> io::Result<Vec<Appearance>> {
     let recording = query.replay.recording();
     let mut pieces: BTreeMap<u64, Vec<Piece>> = BTreeMap::new();
     for stretch in query.timeline.within(from, to) {
@@ -338,7 +339,7 @@ pub fn appearances(query: &Query<'_>, tag: &str, from: i32, to: i32, lines: &dyn
 }
 
 /// The hours `tag` had a holder over `from..=to`: outside them its lines are not known.
-pub fn held_hours(query: &Query<'_>, tag: &str, from: i32, to: i32) -> Vec<HourSpan> {
+pub fn held_hours(query: &Query<'_>, tag: &Country, from: i32, to: i32) -> Vec<HourSpan> {
     let mut spans: Vec<HourSpan> = Vec::new();
     for run in query.holders.within(tag, from, to) {
         if !matches!(run.holder, Holder::Found { .. }) {

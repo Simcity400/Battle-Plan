@@ -164,6 +164,20 @@ pub struct Selection {
     pub status: bool,
 }
 
+/// What the model picker reads of one division in a province with a figure
+/// ([`Units::pick_divisions`]): the facts the game's picker and stack-mate rule test, each none
+/// where the hour does not settle it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PickDivision {
+    pub id: u64,
+    /// Its logical owner's canonical slot.
+    pub owner: u32,
+    pub roster: Option<u32>,
+    pub kind: Option<u32>,
+    pub hop: Option<u32>,
+    pub unrouted: Option<bool>,
+}
+
 /// Why a stack has no figure though the selection may choose its model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Withheld {
@@ -273,12 +287,25 @@ struct Member {
     read_at: u32,
     seen: bool,
     stale: bool,
+    /// What the model picker reads of its route, with its roster owner's canonical slot.
+    pick: Option<(PickRoute, Option<u32>)>,
 }
 
 impl Default for Member {
     fn default() -> Self {
-        Self { stack: NONE, at: 0, id: 0, sighted: None, read_at: NONE, seen: false, stale: true }
+        Self { stack: NONE, at: 0, id: 0, sighted: None, read_at: NONE, seen: false, stale: true, pick: None }
     }
+}
+
+/// What the game's model picker and stack-mate rule read of a division's route: its map stack
+/// kind (none where the content cannot place its route), the first hop of its ordinary route or 0
+/// without one (none when the hop is not captured), and whether it rides a naval transfer with no
+/// ordinary route, which the picker passes over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PickRoute {
+    kind: Option<u32>,
+    hop: Option<u32>,
+    unrouted: bool,
 }
 
 /// Where a division's sight is read: the vision layer's arrays in place, or a vision given whole.
@@ -630,6 +657,35 @@ impl Units {
         self.stacks.iter().filter_map(|stack| Some((stack.key, stack.figure.as_ref()?))).collect()
     }
 
+    /// Every division standing in a province where a figure stands, by province, in Divisions
+    /// order: what the model picker reads to find the units behind a figure and their stack mates.
+    pub fn pick_divisions(&self) -> HashMap<u32, Vec<PickDivision>> {
+        let provinces: std::collections::HashSet<u32> =
+            self.stacks.iter().filter(|stack| stack.figure.is_some()).map(|stack| stack.key.0).collect();
+        let mut slots: Vec<u32> = self
+            .stacks
+            .iter()
+            .filter(|stack| provinces.contains(&stack.key.0))
+            .flat_map(|stack| stack.members.iter().copied())
+            .collect();
+        slots.sort_unstable();
+        let mut divisions: HashMap<u32, Vec<PickDivision>> = HashMap::new();
+        for slot in slots {
+            let Some(member) = self.members.get(slot as usize) else { continue };
+            let Some((province, owner)) = member.sighted else { continue };
+            let (route, roster) = member.pick.unzip();
+            divisions.entry(province).or_default().push(PickDivision {
+                id: member.id,
+                owner,
+                roster: roster.flatten(),
+                kind: route.and_then(|route| route.kind),
+                hop: route.and_then(|route| route.hop),
+                unrouted: route.map(|route| route.unrouted),
+            });
+        }
+        divisions
+    }
+
     /// Stacks held, settled or not.
     pub fn stack_count(&self) -> usize {
         self.by_key.len()
@@ -970,11 +1026,12 @@ impl Units {
     }
 
     /// The next two hops of a division's route the content can place from `province`, which key its
-    /// stack; none when it does not move or the route cannot be placed.
-    fn signature(&mut self, mirrors: &Mirrors, id: u64, province: u32) -> Option<[u32; 2]> {
+    /// stack (none when it does not move or the route cannot be placed), and what the model picker
+    /// reads of its route (none without a DivisionMovement row).
+    fn signature(&mut self, mirrors: &Mirrors, id: u64, province: u32) -> (Option<[u32; 2]>, Option<PickRoute>) {
         let columns = self.columns();
-        let movement = rows(mirrors.get(TableId::DivisionMovement))?;
-        let slot = movement.slot(u128::from(id))?;
+        let Some(movement) = rows(mirrors.get(TableId::DivisionMovement)) else { return (None, None) };
+        let Some(slot) = movement.slot(u128::from(id)) else { return (None, None) };
         let number = |column: Num<u32>| movement.number(column, slot).value().unwrap_or(0);
         let byte = |column: Num<u8>| movement.number(column, slot).value().unwrap_or(0);
         let (mut path, mut alternate) = (std::mem::take(&mut self.path), std::mem::take(&mut self.alternate));
@@ -994,11 +1051,16 @@ impl Units {
         };
         let ground = &*self.ground;
         let anchor = |province| ground.anchor(province, STANDSTILL);
-        let resolved = ground.world().and_then(|world| unit.stack_kind(province, world.map, &anchor)).is_some();
+        let kind = ground.world().and_then(|world| unit.stack_kind(province, world.map, &anchor));
         let display = unit.display_path();
-        let signature = resolved.then(|| display.first().map(|&next| [next, display.get(1).copied().unwrap_or(0)])).flatten();
+        let signature = kind.is_some().then(|| display.first().map(|&next| [next, display.get(1).copied().unwrap_or(0)])).flatten();
+        let pick = PickRoute {
+            kind,
+            hop: if unit.path_total == 0 { Some(0) } else { path.first().copied() },
+            unrouted: unit.naval_transfer && unit.path_total == 0,
+        };
         (self.path, self.alternate) = (path, alternate);
-        signature
+        (signature, Some(pick))
     }
 
     /// One division's route from its DivisionMovement row standing in `province`.
@@ -1048,12 +1110,15 @@ impl Units {
             let id = divisions.key(slot)? as u64;
             let province = divisions.number(columns.province, slot).value().unwrap_or(0);
             let owner = divisions.number(columns.owner, slot).value().unwrap_or(0);
-            Some((id, province, owner))
+            let roster = divisions.number(columns.roster, slot).value();
+            Some((id, province, owner, roster))
         });
         let key = match row {
-            Some((id, province, owner)) if province != 0 => match self.links.get(&owner).copied() {
+            Some((id, province, owner, roster)) if province != 0 => match self.links.get(&owner).copied() {
                 Some(owner_slot) => {
-                    let signature = self.signature(mirrors, id, province);
+                    let (signature, route) = self.signature(mirrors, id, province);
+                    let roster = roster.and_then(|raw| self.links.get(&raw).copied());
+                    self.members[at].pick = route.map(|route| (route, roster));
                     let member = &self.members[at];
                     if member.id != id || member.sighted != Some((province, owner_slot)) || member.read_at == NONE {
                         let (seen, read_at) = seer.sees(id, owner_slot, province);

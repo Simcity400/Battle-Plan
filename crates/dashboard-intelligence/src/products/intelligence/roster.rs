@@ -16,7 +16,6 @@ use crate::{
         country_ids::{Names, RunLinks},
     },
 };
-use dashboard_base::products::validate_tag;
 use dashboard_query::identity::{Holder, Holders};
 use installed_content_country_names::country_names::CountryNames;
 use replay_data::rows::{CharacterOperativeRow, CharacterPortraitRow, OperativeMembershipRow, Recorded, TableId, tables};
@@ -258,7 +257,7 @@ pub struct OperativesRoster;
 pub struct OperativesRosterParams {
     pub branch_id: String,
     /// The countries whose agencies are shown, each once.
-    pub tags: Vec<String>,
+    pub countries: Vec<dashboard_base::products::Country>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -283,11 +282,11 @@ pub struct OperativesRosterReply {
 
 dashboard_base::reply_warnings!(OperativesRosterReply, OperativesDepartedReply);
 
-fn validate_tags(tags: &[String]) -> Result<(), &'static str> {
+fn validate_tags(tags: &[dashboard_base::products::Country]) -> Result<(), &'static str> {
     if tags.is_empty() {
         return Err("Choose a country to see its operatives");
     }
-    tags.iter().try_for_each(|tag| validate_tag(tag))?;
+    tags.iter().try_for_each(dashboard_base::products::validate_country)?;
     if tags.iter().collect::<BTreeSet<_>>().len() != tags.len() {
         return Err("A country is asked twice");
     }
@@ -297,14 +296,16 @@ fn validate_tags(tags: &[String]) -> Result<(), &'static str> {
 /// The context of every roster reply: the operative content, or why there is none.
 pub type RosterContext = Result<Arc<OperativeContent>, String>;
 
-/// The asked agencies' active lists at `frame`'s hour, each asked tag's holder resolved at `hour`.
-pub fn roster(frame: &DecodedFrame, tags_asked: &[String], holders: &Holders, hour: i32, context: &RosterContext) -> io::Result<OperativesRosterReply> {
+/// The asked agencies' active lists at `frame`'s hour, each asked country's holder resolved at
+/// `hour`, each operative's roster named by its asked country ([`Country::key`]).
+pub fn roster(frame: &DecodedFrame, countries: &[dashboard_base::products::Country], holders: &Holders, hour: i32, context: &RosterContext) -> io::Result<OperativesRosterReply> {
     let tags = Tags::read(frame)?;
     let rows = frame.complete::<tables::OperativeMemberships>()?;
+    let tags_asked: Vec<String> = countries.iter().map(|country| country.key().into_owned()).collect();
     let mut unheld = Vec::new();
     let mut slots: HashMap<u32, &str> = HashMap::new();
-    for tag in tags_asked {
-        match holders.at(tag, hour).map(|run| run.holder) {
+    for (country, tag) in countries.iter().zip(&tags_asked) {
+        match holders.at(country, hour).map(|run| run.holder) {
             Some(Holder::Found { slot, .. }) => {
                 slots.insert(slot, tag);
             }
@@ -379,7 +380,7 @@ impl AtHour for OperativesRoster {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         branch(&params.branch_id)?;
-        validate_tags(&params.tags)
+        validate_tags(&params.countries)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -423,7 +424,7 @@ impl AtHour for OperativesRoster {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        Ok(match roster(frame, &params.tags, at.holders, at.hour, at.context) {
+        Ok(match roster(frame, &params.countries, at.holders, at.hour, at.context) {
             Ok(reply) => reply,
             Err(error) => OperativesRosterReply {
                 operatives: Vec::new(),
@@ -445,7 +446,7 @@ pub struct OperativesDeparted;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OperativesDepartedParams {
     pub branch_id: String,
-    pub tags: Vec<String>,
+    pub countries: Vec<dashboard_base::products::Country>,
     pub hour: i32,
 }
 
@@ -523,7 +524,7 @@ impl Product for OperativesDeparted {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         branch(&params.branch_id)?;
-        validate_tags(&params.tags)
+        validate_tags(&params.countries)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -531,10 +532,11 @@ impl Product for OperativesDeparted {
         let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let stretch = *query.timeline.at(params.hour).ok_or_else(|| dashboard_core::refused("Operatives roster hour is not recorded"))?;
         let links = crate::answer::links(source, stretch.run)?;
+        let keys: Vec<String> = params.countries.iter().map(|country| country.key().into_owned()).collect();
         let mut slots: HashMap<u32, &str> = HashMap::new();
-        for tag in &params.tags {
-            if let Some(Holder::Found { slot, .. }) = query.holders.at(tag, params.hour).map(|run| run.holder) {
-                slots.insert(slot, tag);
+        for (country, key) in params.countries.iter().zip(&keys) {
+            if let Some(Holder::Found { slot, .. }) = query.holders.at(country, params.hour).map(|run| run.holder) {
+                slots.insert(slot, key);
             }
         }
         let lives = crate::answer::lifetimes(source, stretch.run, TableId::OperativeMemberships)?;
@@ -669,7 +671,7 @@ impl Product for OperativeTenures {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         branch(&params.branch_id)?;
-        validate_tags(&params.tags)
+        validate_tags(&params.countries)
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -687,12 +689,13 @@ impl Product for OperativeTenures {
                 continue;
             }
             let Some(slot) = links.slot_at(raw, last) else { continue };
-            let held = params.tags.iter().find(|tag| query.holders.at(tag, last).is_some_and(|run| matches!(run.holder, Holder::Found { slot: held, .. } if held == slot)));
-            if let Some(tag) = held {
-                tenures.push(Tenure { id: (key >> 40).to_string(), roster: tag.clone(), first_hour: first, last_hour: last });
+            let held = params.countries.iter().find(|tag| query.holders.at(tag, last).is_some_and(|run| matches!(run.holder, Holder::Found { slot: held, .. } if held == slot)));
+            if let Some(country) = held {
+                tenures.push(Tenure { id: (key >> 40).to_string(), roster: country.key().into_owned(), first_hour: first, last_hour: last });
             }
         }
-        let order: HashMap<&str, usize> = params.tags.iter().enumerate().map(|(at, tag)| (tag.as_str(), at)).collect();
+        let keys: Vec<String> = params.countries.iter().map(|country| country.key().into_owned()).collect();
+        let order: HashMap<&str, usize> = keys.iter().enumerate().map(|(at, key)| (key.as_str(), at)).collect();
         tenures.sort_by(|a, b| (order.get(a.roster.as_str()), a.first_hour, &a.id).cmp(&(order.get(b.roster.as_str()), b.first_hour, &b.id)));
         Ok(OperativeTenuresReply { first_hour: stretch.first, last_hour: stretch.last, tenures, warnings: Vec::new() })
     }

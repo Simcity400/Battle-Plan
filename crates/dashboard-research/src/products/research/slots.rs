@@ -6,6 +6,7 @@
 //! after it), so a panel is pushed only when a read changes it; each researching slot's progress
 //! toward its base cost is a live cell (`slot`, `progress`), painted as the head moves.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     BONUSES, INPUTS, Joined, MODIFIERS, ResearchProgress, ResearchSlotState, assignment_keys, coverage_keys,
     grants::{self, GrantInventory},
@@ -20,7 +21,6 @@ use crate::{
         at_hour::{At, AtHour, Keys, Owner, Read},
     },
 };
-use dashboard_base::products::validate_tag;
 use dashboard_follow::live::{Cells, Source as Cell};
 use replay_data::rows::{ResearchAssignmentRow, ResearchCoverageRow, ResearchInputRow, ResearchModifierRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -47,7 +47,7 @@ pub struct ResearchSlots;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResearchSlotsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// One slot at the hour.
@@ -128,11 +128,11 @@ impl AtHour for ResearchSlots {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn compares_previous(table: TableId) -> bool { table == TableId::SliceReads }
@@ -241,7 +241,7 @@ impl AtHour for ResearchSlots {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Research country is unavailable at this hour"))?;
-        let mut reply = ResearchSlotsReply { tag: params.tag.clone(), read_hour: None, missing: None, slots: Vec::new(), grants: GrantInventory::unavailable("No research read covers this hour"), warnings: Vec::new() };
+        let mut reply = ResearchSlotsReply { tag: at.holders.name(&params.country, at.hour), read_hour: None, missing: None, slots: Vec::new(), grants: GrantInventory::unavailable("No research read covers this hour"), warnings: Vec::new() };
         let localise = |key: &str| at.context.as_ref().ok().and_then(|art| art.localise(key));
         if let Err(error) = at.context {
             reply.warnings.push(format!("Research names are unavailable: {error}"));

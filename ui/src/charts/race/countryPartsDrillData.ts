@@ -1,7 +1,7 @@
 import type { CountryRacePart } from './countryRace';
 import type { Run, Span } from '../series';
 import type { TooltipContent } from '../tooltip';
-import { countryDrillSpans, countryDrillTagAt, countryIdentityKey } from '../../dashboard/countryIdentity.ts';
+import { countryDrillSpans, countryDrillTagAt, countryIdentityKey, historyAt } from '../../dashboard/countryIdentity.ts';
 import type { CountryDrillHistory } from '../../dashboard/countryIdentity';
 import { shownRuns } from './lines.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
@@ -28,9 +28,12 @@ export interface CountryPartsSelection { tag: string; hour: number; key: string 
 
 export function countryPartsSelection(histories: readonly CountryDrillHistory[], tag: string, hour: number): CountryPartsSelection | null {
   if (!signed32(hour)) return null;
-  const identity = runAt(histories.find(history => history.tag === tag)?.identities ?? [], hour);
-  const spans = countryDrillSpans(histories, tag, hour);
-  return identity && countryDrillTagAt(spans, hour) === tag ? { tag, hour, key: countryIdentityKey(identity) } : null;
+  // A slot is selected as the tag its country holds then.
+  const held = historyAt(histories, tag, hour)?.tag;
+  if (held === undefined) return null;
+  const identity = runAt(histories.find(history => history.tag === held)?.identities ?? [], hour);
+  const spans = countryDrillSpans(histories, held, hour);
+  return identity && countryDrillTagAt(spans, hour) === held ? { tag: held, hour, key: countryIdentityKey(identity) } : null;
 }
 
 /** An explicitly saved holder must validate against its source, branch and origin. */

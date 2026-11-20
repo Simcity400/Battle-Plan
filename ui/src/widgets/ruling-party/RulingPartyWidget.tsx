@@ -1,3 +1,5 @@
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -17,7 +19,7 @@ import { tiledStackLayer } from '../../charts/tiledStack';
 import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -53,10 +55,11 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const root = useRef<HTMLDivElement>(null);
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'party-history',
-    params: { branchId: track.branch.id, tag } } : null;
+    params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
   const { data, error, retry } = useProduct<PartyHistoryReply>(runtime.client, request, active, validatePartyHistoryReply);
+  const slots = useSlotTags(runtime.client, track, active && !!tag && isSlotKey(tag));
   const live = widget.time.mode === 'follow';
   const following = live || widget.time.mode === 'pin';
   const window = track && !live ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
@@ -145,7 +148,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     };
     if (!track || !keys.length) { land(local); return; }
     void loadTransientProduct<{ hour: unknown }>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change',
-      params: { branchId: track.branch.id, family: POPULARITY_FAMILY, lines: keys.map(({ tag, part }) => ({ tag, part })), key, from,
+      params: { branchId: track.branch.id, family: POPULARITY_FAMILY, lines: keys.map(({ tag, part }) => ({ country: countryFromKey(tag), part })), key, from,
         firstHour: bounds[0], lastHour: bounds[1] } }, controller.signal).then(reply => {
       const remote = typeof reply.hour === 'number' && Number.isSafeInteger(reply.hour) ? reply.hour : null;
       const forward = key === 'Home' || key === 'ArrowRight';
@@ -215,6 +218,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   if (!list.length && !data.leaders.length) return <WidgetState kind="unavailable" message="Party data is unavailable." />;
 
   const ruling = rulingAt(data, head);
+  const countryName = keyNameAt(slots, tag, head);
   const rulingBand = list.find(band => band.token === ruling);
   const leaderRun = leaderAt(data, head);
   const leader = leaderShown(data, leaderRun);
@@ -245,7 +249,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
       return { id: band.token, label: band.name, color: band.color, spokenValue: value === undefined ? 'not read yet' : value ?? 'not recorded' };
     })} />
     <div className="ruling-party-chart">
-      <TimeChart label={`Party popularity in ${tag}`} extent={extent} playhead={playhead} liveHead={liveHead} data={chartData}
+      <TimeChart label={countryName === null ? 'Party popularity' : `Party popularity in ${countryName}`} extent={extent} playhead={playhead} liveHead={liveHead} data={chartData}
         playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={365 * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false }} layers={layers} active={active} notRecorded={popularity.unrecorded} revision={data}

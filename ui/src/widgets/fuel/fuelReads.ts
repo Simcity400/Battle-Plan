@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo } from 'react';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { LiveCell } from '../../charts/live';
@@ -32,10 +33,10 @@ export function useFuelAt(runtime: WidgetRuntime, widget: WidgetSpec, track: Bou
   const live = useMemo(() => new LiveCell<CountryFuelReply | undefined>(undefined), []);
   const spec = useMemo<WidgetSpec>(() => ({ ...widget, time: { mode: 'follow' } } as WidgetSpec), [widget]);
   const paint = useCallback((reply: CountryFuelReply) => live.set(reply), [live]);
-  const head = useHeadProduct<CountryFuelReply>(runtime, spec, COUNTRY_FUEL, follows && tag ? { tag } : null,
+  const head = useHeadProduct<CountryFuelReply>(runtime, spec, COUNTRY_FUEL, follows && tag ? { country: countryFromKey(tag) } : null,
     { active: active && follows, validate: validateCountryFuel, structure, paint });
   const asked = useProduct<CountryFuelReply>(runtime.client, !follows && tag && hour !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: COUNTRY_FUEL, params: { branchId: track.branch.id, tag, hour } } : null, active && !follows, validateCountryFuel, track.source);
+    product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } } : null, active && !follows, validateCountryFuel, track.source);
   useEffect(() => { live.set(follows ? head.data : asked.data); }, [live, follows, head.data, asked.data]);
   return follows
     ? { data: head.data, error: head.error, retry: head.retry, live, root: head.root, followed: true, shownAt: head.shownAt }

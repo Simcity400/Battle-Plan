@@ -30,7 +30,7 @@ use crate::{
     catalogue::{self, Catalogue},
     span::HourSpan,
 };
-use dashboard_base::products::{check_reply_budget, validate_tag};
+use dashboard_base::products::{Country, check_reply_budget, validate_country};
 use dashboard_query::{
     Query,
     identity::{Holder, Holders},
@@ -60,7 +60,7 @@ pub struct WarLosses;
 pub struct WarsParams {
     pub branch_id: String,
     /// None follows the recording client's playing or observer country.
-    pub viewpoint_tag: Option<String>,
+    pub viewpoint: Option<Country>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -200,7 +200,7 @@ pub struct WarsReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WarLossesParams {
     pub branch_id: String,
-    pub viewpoint_tag: Option<String>,
+    pub viewpoint: Option<Country>,
     pub hour: i32,
 }
 
@@ -284,8 +284,8 @@ impl Resolve for Resolved<'_> {
         self.names.at(slot, self.hour)
     }
 
-    fn tag_slot(&self, tag: &str) -> Option<u32> {
-        match self.holders.at(tag, self.hour)?.holder {
+    fn country_slot(&self, country: &Country) -> Option<u32> {
+        match self.holders.at(country, self.hour)?.holder {
             Holder::Found { slot, .. } => Some(slot),
             Holder::Unresolved => None,
         }
@@ -476,7 +476,7 @@ fn observed_hours(inputs: &RunWars, links: &super::country_ids::RunLinks, names:
 }
 
 /// `view`'s wars over `query`'s timeline, named through `cat`.
-fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&str>, cat: Option<&Catalogue>, cancelled: &AtomicBool) -> io::Result<WarsReply> {
+fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&Country>, cat: Option<&Catalogue>, cancelled: &AtomicBool) -> io::Result<WarsReply> {
     let timeline = &query.timeline;
     let names = SlotNames::new(&query.holders);
     let mut walk = Walk::new(timeline.id, timeline.first);
@@ -550,7 +550,7 @@ fn timeline_wars(source: &Source, query: &Query<'_>, view: Option<&str>, cat: Op
 /// Each timeline and viewpoint's walk, with the catalogue it was named through: kept while the
 /// recording is open, every request of the viewpoint answered from it.
 #[derive(Default)]
-struct Walks(HashMap<(u64, Option<String>), (Option<Arc<Catalogue>>, Arc<WarsReply>)>);
+struct Walks(HashMap<(u64, Option<Country>), (Option<Arc<Catalogue>>, Arc<WarsReply>)>);
 
 /// Forgets every walk of `source`: the next request walks again.
 pub(crate) fn forget(source: &Source) {
@@ -563,8 +563,8 @@ fn catalogue_of(source: &Source, context: &LoadContext) -> io::Result<Option<Arc
 }
 
 /// `view`'s walk of timeline `branch`, walked once per timeline, viewpoint and catalogue.
-fn walked(source: &Source, branch: u64, view: Option<&str>, cat: Option<Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<WarsReply>> {
-    let key = (branch, view.map(str::to_owned));
+fn walked(source: &Source, branch: u64, view: Option<&Country>, cat: Option<Arc<Catalogue>>, cancelled: &AtomicBool) -> io::Result<Arc<WarsReply>> {
+    let key = (branch, view.cloned());
     let same = |held: &Option<Arc<Catalogue>>| match (held, &cat) {
         (Some(a), Some(b)) => Arc::ptr_eq(a, b),
         (None, None) => true,
@@ -583,7 +583,7 @@ fn walked(source: &Source, branch: u64, view: Option<&str>, cat: Option<Arc<Cata
 
 /// `view`'s wars of timeline `branch`, named through the request's content: the walk `wars`
 /// answers that viewpoint from.
-pub(crate) fn viewpoint_wars(source: &Source, branch: u64, view: &str, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<WarsReply>> {
+pub(crate) fn viewpoint_wars(source: &Source, branch: u64, view: &Country, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<WarsReply>> {
     walked(source, branch, Some(view), catalogue_of(source, context)?, cancelled)
 }
 
@@ -615,12 +615,12 @@ impl Product for Wars {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid wars branch")?;
-        params.viewpoint_tag.as_deref().map_or(Ok(()), validate_tag)
+        params.viewpoint.as_ref().map_or(Ok(()), validate_country)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let cat = catalogue_of(source, context)?;
-        let reply = walked(source, branch(&params.branch_id)?, params.viewpoint_tag.as_deref(), cat, cancelled)?;
+        let reply = walked(source, branch(&params.branch_id)?, params.viewpoint.as_ref(), cat, cancelled)?;
         check_reply_budget(&*reply)?;
         Ok((*reply).clone())
     }
@@ -674,14 +674,14 @@ impl Product for WarLosses {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid wars branch")?;
-        params.viewpoint_tag.as_deref().map_or(Ok(()), validate_tag)
+        params.viewpoint.as_ref().map_or(Ok(()), validate_country)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let id = branch(&params.branch_id)?;
         let hour = params.hour;
         let cat = catalogue_of(source, context)?;
-        let reply = walked(source, id, params.viewpoint_tag.as_deref(), cat, cancelled)?;
+        let reply = walked(source, id, params.viewpoint.as_ref(), cat, cancelled)?;
         let observed = |war: &&WarTimeline| {
             let at = war.observations.partition_point(|run| run.last_hour < hour);
             war.observations.get(at).is_some_and(|run| run.first_hour <= hour)

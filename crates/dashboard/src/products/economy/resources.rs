@@ -6,6 +6,7 @@
 //! over time is the declared series `resource-balance` (computed columns of one row);
 //! `resource-sizes` gives each resource's longest bar over the timeline, the bars' whole-campaign
 //! scale.
+use dashboard_base::products::{Country, validate_country};
 use super::super::{LoadContext, Product};
 use crate::{
     Source,
@@ -13,7 +14,6 @@ use crate::{
 };
 use dashboard_base::products::{
     resources::{RESOURCE_DECIMALS, ResourceInfo, ResourceNaming},
-    validate_tag,
 };
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_query::series::{Ask, MissingSpan};
@@ -42,7 +42,7 @@ pub struct ResourceContext {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceBalanceParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// The order `shown` lists the resources in; the game's when absent.
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -211,8 +211,7 @@ fn shown_order(order_of: &BTreeMap<u32, usize>, bars: &BTreeMap<u32, Bars>, orde
     ids
 }
 
-fn reply(frame: &DecodedFrame, params: &ResourceBalanceParams, id: u32, naming: &ResourceNaming, live: &Cells, cancelled: &AtomicBool) -> io::Result<ResourceBalanceReply> {
-    let tag = params.tag.as_str();
+fn reply(frame: &DecodedFrame, params: &ResourceBalanceParams, tag: &str, id: u32, naming: &ResourceNaming, live: &Cells, cancelled: &AtomicBool) -> io::Result<ResourceBalanceReply> {
     let mut warnings = Vec::new();
     let (recorded, unnamed) = match recorded_resources(frame) {
         Ok(found) => found,
@@ -306,7 +305,7 @@ impl AtHour for ResourceBalance {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -321,8 +320,8 @@ impl AtHour for ResourceBalance {
         ]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -368,7 +367,7 @@ impl AtHour for ResourceBalance {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Resource balance country is unavailable at this hour"))?;
-        let reply = reply(frame, params, owner.id, &at.context.naming, at.live, at.cancelled)?;
+        let reply = reply(frame, params, &at.holders.name(&params.country, at.hour), owner.id, &at.context.naming, at.live, at.cancelled)?;
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
@@ -382,7 +381,7 @@ pub struct ResourceSizes;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceSizesParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// The span; the whole timeline when absent.
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -421,7 +420,7 @@ impl Product for ResourceSizes {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -442,17 +441,17 @@ impl Product for ResourceSizes {
         let line = dashboard_query::series::Line::new(&query, series, measure)?;
         // Every recorded resource is a part: asked by its index, never found through the lifetimes of every country's rows.
         let Some(last) = query.timeline.stretches.last() else {
-            return Ok(ResourceSizesReply { tag: params.tag.clone(), sizes: Vec::new(), missing: Vec::new(), warnings: Vec::new() });
+            return Ok(ResourceSizesReply { tag: query.holders.name(&params.country, to), sizes: Vec::new(), missing: Vec::new(), warnings: Vec::new() });
         };
         let read = dashboard_query::cost::storage(|| {
             dashboard_query::read::at(query.replay.recording(), last.run, &[dashboard_query::read::Read { table: TableId::ResourceDefinitions, columns: None, keys: dashboard_query::read::Keys::All }], last.last)
         })?;
         crate::metadata::check_cancel(cancelled)?;
-        let asks: Vec<(Ask, Vec<(i32, i32)>)> = read[0].rows.iter().map(|&(key, _)| (Ask { tag: params.tag.clone(), part: parts.key(0, key) }, vec![(from, to)])).collect();
+        let asks: Vec<(Ask, Vec<(i32, i32)>)> = read[0].rows.iter().map(|&(key, _)| (Ask { country: params.country.clone(), part: parts.key(0, key) }, vec![(from, to)])).collect();
         let scale = 10f64.powi(i32::from(measure.decimals));
         let drawn = line.summaries_within(&asks, from, to, 1)?;
         // The tag's hours unheld: a resource's own hours without a row are its size's business, not the reply's.
-        let missing = asks.first().map(|(ask, _)| line.unheld(&ask.tag, from, to, &line.held(ask, from, to))).unwrap_or_default();
+        let missing = asks.first().map(|(ask, _)| line.unheld(&ask.country, from, to, &line.held(ask, from, to))).unwrap_or_default();
         let sizes = drawn
             .into_iter()
             .zip(&asks)
@@ -467,6 +466,6 @@ impl Product for ResourceSizes {
                     .map(|most| format!("{:.0}", most * scale)),
             })
             .collect();
-        Ok(ResourceSizesReply { tag: params.tag.clone(), sizes, missing, warnings: Vec::new() })
+        Ok(ResourceSizesReply { tag: query.holders.name(&params.country, to), sizes, missing, warnings: Vec::new() })
     }
 }

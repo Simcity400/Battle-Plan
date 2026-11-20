@@ -8,7 +8,7 @@ import { countryNameDetails, fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -44,7 +44,7 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   const field: AgencyRankField = options.topMeasure === 'active' || options.topMeasure === 'maximum' ? options.topMeasure : 'defense';
   const needsGroups = widget.countries.kind !== 'all' && top === null;
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const selected = selectedTags(widget.countries, track);
+  const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);

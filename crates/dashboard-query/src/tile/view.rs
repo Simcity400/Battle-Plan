@@ -6,10 +6,11 @@
 use super::{ALPHABET, BINS, FIRST_BREAK, SEAM, SeriesTileReply, TileLine, TilePart, decode, decode_runs};
 use crate::{
     chart::{ChartBucket, ChartRun, ChartSummary, MarkCluster, MarkSummary},
+    identity::Country,
     series::{MissingSpan, grid},
 };
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::{io, ops::RangeInclusive};
 
 /// Keys one tile request names at most, as the UI groups them.
@@ -70,18 +71,18 @@ pub fn requests(chart: &Value) -> io::Result<(View, Vec<Value>)> {
     let view = View::of(chart)?;
     let bin_hours = view.bin_hours();
     let mut base = chart.as_object().cloned().ok_or_else(|| invalid("A chart request is an object"))?;
-    for name in ["from", "to", "width", "tags", "within"] {
+    for name in ["from", "to", "width", "countries", "within"] {
         base.remove(name);
     }
-    let keys = match chart.get("tags") {
+    let keys = match chart.get("countries") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(keys)) => keys.clone(),
-        Some(_) => return Err(invalid("A chart request's tags are a list")),
+        Some(_) => return Err(invalid("A chart request's countries are a list")),
     };
     let within = match chart.get("within") {
         None | Some(Value::Null) => None,
-        Some(Value::Object(within)) => Some(within),
-        Some(_) => return Err(invalid("A chart request's within maps keys to spans")),
+        Some(Value::Array(within)) => Some(within),
+        Some(_) => return Err(invalid("A chart request's within pairs keys with spans")),
     };
     let span = BINS as i64 * bin_hours;
     let mut out = Vec::new();
@@ -91,14 +92,14 @@ pub fn requests(chart: &Value) -> io::Result<(View, Vec<Value>)> {
             let mut request = base.clone();
             request.insert("binHours".into(), bin_hours.into());
             request.insert("index".into(), index.into());
-            request.insert("tags".into(), Value::Array(group.to_vec()));
+            request.insert("countries".into(), Value::Array(group.to_vec()));
             if let Some(within) = within {
-                let mut cut = Map::new();
+                let mut cut = Vec::new();
                 for key in group {
-                    let name = key.as_str().map_or_else(|| key.to_string(), str::to_owned);
-                    cut.insert(name.clone(), Value::Array(spans_within(within.get(&name), read_from, last)?));
+                    let spans = within.iter().find(|pair| pair.get(0) == Some(key)).and_then(|pair| pair.get(1));
+                    cut.push(Value::Array(vec![key.clone(), Value::Array(spans_within(spans, read_from, last)?)]));
                 }
-                request.insert("within".into(), Value::Object(cut));
+                request.insert("within".into(), Value::Array(cut));
             }
             out.push(Value::Object(request));
         }
@@ -125,7 +126,7 @@ fn spans_within(spans: Option<&Value>, from: i64, to: i64) -> io::Result<Vec<Val
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewLine {
-    pub tag: String,
+    pub country: Country,
     /// Its bins cut to the view's whole bins; a view of hours carries its runs cut to its hours.
     pub summary: ChartSummary,
     /// The view's hours it holds no value in, with why.
@@ -189,9 +190,9 @@ pub fn assemble(view: View, replies: &[SeriesTileReply]) -> io::Result<Assembled
     if replies.is_empty() {
         return Ok(AssembledView { measure, decimals, bin_hours, series: Vec::new() });
     }
-    let tags: Vec<&str> = by_tile[0].iter().map(|(line, _)| line.tag.as_str()).collect();
+    let tags: Vec<&Country> = by_tile[0].iter().map(|(line, _)| &line.country).collect();
     for (at, held) in by_tile.iter().enumerate() {
-        if held.len() != tags.len() || held.iter().zip(&tags).any(|((line, _), tag)| line.tag != *tag) {
+        if held.len() != tags.len() || held.iter().zip(&tags).any(|((line, _), country)| line.country != **country) {
             return Err(invalid(format!("Tile {} holds other keys than the view's first", first_tile + at as i64)));
         }
     }
@@ -308,8 +309,8 @@ fn line(view: View, bin_hours: i64, first_tile: i64, tiles: &[&(&TileLine, Bins)
         }
         false => None,
     };
-    let tag = tiles[0].0.tag.clone();
-    Ok(ViewLine { tag, summary, missing, parts, marks })
+    let country = tiles[0].0.country.clone();
+    Ok(ViewLine { country, summary, missing, parts, marks })
 }
 
 /// Standard padded base64 `text` as bytes.

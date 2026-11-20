@@ -376,6 +376,11 @@ pub struct CounterView {
     pub presentation: Arc<Presentation>,
     /// What the view's map mode shows of the counters, icons and labels.
     pub visibility: viewer_foundation::map::mode_visibility::Visibility,
+    /// The province whose raid offer bubble has its target details window open, with what the
+    /// click built: the game fills the window on the click only.
+    pub raid_details: Option<(u32, Arc<viewer_raids::map::raids::tooltips::Details>)>,
+    /// The province whose raid offer bubble is under the pointer, which draws its frame hovered.
+    pub raid_hovered: Option<u32>,
 }
 
 impl CounterView {
@@ -409,10 +414,14 @@ impl CounterView {
             occupation: None,
             presentation: Arc::default(),
             visibility: Default::default(),
+            raid_details: None,
+            raid_hovered: None,
         }
     }
 }
 
+/// Views that lay out the same overlay. A plate's and a raid bubble's state draw on the overlay
+/// laid out ([`crate::document::PreparedOverlay::set_raid_view`]), so they ask for no layout.
 impl PartialEq for CounterView {
     fn eq(&self, other: &Self) -> bool {
         self.settings == other.settings
@@ -516,6 +525,16 @@ mod tests {
         selected = first.clone();
         selected.fleets_selected = Arc::new(vec![11]);
         assert_ne!(first, selected);
+    }
+
+    #[test]
+    fn a_raid_bubble_hovered_or_opened_asks_for_no_new_layout() {
+        let first = CounterView::default();
+        let mut shown = first.clone();
+        shown.raid_hovered = Some(7);
+        assert_eq!(first, shown, "the pointer resting on a bubble");
+        shown.raid_details = Some((7, Arc::new(viewer_raids::map::raids::tooltips::Details { header: Ok("Raid targets".into()), entries: Vec::new() })));
+        assert_eq!(first, shown, "its details window open");
     }
 
     #[test]

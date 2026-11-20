@@ -12,7 +12,7 @@ use crate::products::{
     LoadContext,
     at_hour::{At, AtHour},
 };
-use dashboard_base::products::{check_reply_budget, validate_tag};
+use dashboard_base::products::check_reply_budget;
 use replay_data::{
     rows::{TableId, tables},
     war_participation::Factors,
@@ -31,7 +31,7 @@ pub struct WarContributions;
 pub struct WarContributionsParams {
     pub branch_id: String,
     /// None follows the recording client's playing or observer country.
-    pub viewpoint_tag: Option<String>,
+    pub viewpoint: Option<dashboard_base::products::Country>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -76,7 +76,7 @@ fn available(frame: &DecodedFrame) -> bool {
 
 /// The groups and contributions `view` sees in `frame`, its countries named by `holders`; why
 /// none where the hour cannot be read.
-pub(crate) fn groups(frame: &DecodedFrame, holders: &dashboard_query::identity::Holders, view: Option<&str>, factors: Result<Factors, String>) -> Result<Vec<WarContributionGroup>, String> {
+pub(crate) fn groups(frame: &DecodedFrame, holders: &dashboard_query::identity::Holders, view: Option<&dashboard_base::products::Country>, factors: Result<Factors, String>) -> Result<Vec<WarContributionGroup>, String> {
     let state = State::of_frame(frame)?;
     let links: HashMap<u32, u32> = frame.complete::<tables::CountryLinks>().map_err(|e| e.to_string())?.iter().map(|r| (r.id, r.canonical_slot)).collect();
     let names = SlotNames::new(holders);
@@ -96,7 +96,7 @@ impl AtHour for WarContributions {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid war contributions branch")?;
-        params.viewpoint_tag.as_deref().map_or(Ok(()), validate_tag)
+        params.viewpoint.as_ref().map_or(Ok(()), dashboard_base::products::validate_country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -125,7 +125,7 @@ impl AtHour for WarContributions {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let mut reply = WarContributionsReply { branch_id: params.branch_id.clone(), hour: at.hour, available: available(frame), contributions: Vec::new(), warnings: Vec::new() };
-        match groups(frame, at.holders, params.viewpoint_tag.as_deref(), at.context.factors.clone()) {
+        match groups(frame, at.holders, params.viewpoint.as_ref(), at.context.factors.clone()) {
             Ok(groups) => reply.contributions = groups,
             Err(reason) => reply.warnings.push(reason),
         }

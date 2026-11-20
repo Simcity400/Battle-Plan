@@ -29,7 +29,7 @@ test('market moment respects pin/campaign/range while closed and pins/restores e
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const flagReadMetadata = () => ({}); export const useCountryLabelsAt = () => ({ labelAt: () => () => ({}) });',
     '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = () => ""; export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = () => ""; export const useCountryFactsRead = () => new Map(); export const useCountryFactsByKey = () => new Map();',
     '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: [], surface: "#000000", text: "#ffffff", countryColours: "raw" }); export const useViewportHeight = () => 1000;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',

@@ -7,7 +7,7 @@ const model = (variant: string, typeKey: string, units: number | null, ic: numbe
   variant, rocket: false, typeKey, typeName: typeKey === 'infantry_equipment' ? 'Infantry Equipment' : null, domain: 'land', typeRecorded, name: `Model ${variant}`,
   units: { value: units, reason: units == null ? 'unitsInexact' : null }, ic: { value: ic, reason: ic == null ? 'lostOutput' : null } });
 
-const at = (models: ProducedModelAt[], recorded = true): ProducedAtReply => ({ branchId: '1', tag: 'AAA', hour: 50, measure: 'day', recorded, models,
+const at = (models: ProducedModelAt[], recorded = true): ProducedAtReply => ({ branchId: '1', tag: 'AAA', asked: 'AAA', hour: 50, measure: 'day', recorded, models,
   icTotal: { value: 600000, reason: null }, observation: 0, read: 48, warnings: [] });
 
 test('a type sums its models, names a single model alone, and its IC share is of all equipment', () => {

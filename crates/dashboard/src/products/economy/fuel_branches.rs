@@ -1,12 +1,12 @@
 //! Fuel by military branch: a country's fuel consumers at an hour, as its fuel status holds them
 //! (`CountryFuelConsumers`, keyed by raw country id and consumer index), named from the recorded
 //! content. The consumers' amounts over time are the declared series `fuel-consumers`.
+use dashboard_base::products::{Country, validate_country};
 use super::super::LoadContext;
 use crate::{
     Source,
     products::at_hour::{At, AtHour, Keys, Owner, Read},
 };
-use dashboard_base::products::validate_tag;
 use dashboard_text::catalogue::{View, localised};
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -28,7 +28,7 @@ pub struct FuelBranches;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FuelBranchesParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// One consumer at the hour: fixed5 amounts and the game's priority.
@@ -142,7 +142,7 @@ impl AtHour for FuelBranches {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -150,8 +150,8 @@ impl AtHour for FuelBranches {
         vec![FuelBranchesParams::decl(), FuelBranchesReply::decl(), FuelConsumerRow::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -171,6 +171,6 @@ impl AtHour for FuelBranches {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Fuel by branch country is unavailable at this hour"))?;
-        Ok(reply(frame, &params.tag, owner.id, at.context))
+        Ok(reply(frame, &at.holders.name(&params.country, at.hour), owner.id, at.context))
     }
 }

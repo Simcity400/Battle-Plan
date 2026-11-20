@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -15,7 +16,7 @@ import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipRow } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { reporting } from '../../dashboard/follow/liveCells.ts';
 import { gameWindow, windowDayLabel, withWindowDiagnostics } from '../../dashboard/gameWindows';
@@ -50,8 +51,8 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const options = resolveOptions(OPTIONS, widget.options);
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
-  const head = useHeadProduct(runtime, widget, 'industrial-organisations', tag ? { tag } : null, { active, validate: validateOrganisations });
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
+  const head = useHeadProduct(runtime, widget, 'industrial-organisations', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateOrganisations });
   const data = head.data;
   const hour = head.at ?? head.hour ?? track?.branch.lastHour ?? 0;
   const anchor = useRef<HTMLDivElement>(null);

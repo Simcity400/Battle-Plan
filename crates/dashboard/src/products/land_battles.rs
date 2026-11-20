@@ -5,6 +5,7 @@
 //! (`replay::lanes::history`), the changed lists read at their hours (`lanes::at_each`). A window
 //! is a replay block; the ranking reads the ends in its range and the battles live at its end.
 
+use dashboard_base::products::Country;
 use super::{LoadContext, Product, country_ids::Names};
 use crate::Source;
 use dashboard_base::products::battles::{BattleBound, BattleEnd, BattleMoment, BattleWarning, BattleWindow, BattleWinner};
@@ -166,12 +167,12 @@ pub struct LandBattlesReply {
     pub content_warnings: Vec<String>,
 }
 
-/// Countries chosen by tag, or by membership runs (a tag over hours); every country when neither.
+/// Countries chosen by slot or tag, or by membership runs (a tag over hours); every country when neither.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct BattleCountryFilter {
-    pub tags: Option<Vec<String>>,
+    pub countries: Option<Vec<Country>>,
     pub membership: Option<Vec<super::groups::MembershipRun>>,
     pub unobserved: Vec<dashboard_base::span::HourSpan>,
 }
@@ -179,8 +180,8 @@ pub struct BattleCountryFilter {
 impl BattleCountryFilter {
     /// Whether a side's countries, read at `hour`, are chosen: a side not known whole is never
     /// left out, as its countries may be.
-    pub fn matches(&self, sides: [(&[String], bool); 2], hour: i32) -> bool {
-        if self.tags.is_none() && self.membership.is_none() {
+    pub fn matches(&self, holders: &dashboard_query::identity::Holders, sides: [(&[String], bool); 2], hour: i32) -> bool {
+        if self.countries.is_none() && self.membership.is_none() {
             return true;
         }
         if sides.iter().any(|(_, unknown)| *unknown) {
@@ -189,7 +190,7 @@ impl BattleCountryFilter {
         let unobserved = self.unobserved.iter().any(|span| span.first_hour <= hour && hour <= span.last_hour);
         sides.iter().any(|(countries, _)| {
             countries.iter().any(|tag| {
-                self.tags.as_ref().is_none_or(|tags| tags.contains(tag))
+                self.countries.as_ref().is_none_or(|countries| countries.iter().any(|country| holders.goes_by(country, tag, hour)))
                     && self.membership.as_ref().is_none_or(|runs| unobserved || runs.iter().any(|run| run.tag == *tag && run.first_hour <= hour && hour <= run.last_hour))
             })
         })
@@ -1244,7 +1245,7 @@ impl Product for LandBattlesRanking {
                 }
                 let side = |at: usize| shaped.result.as_ref().filter(|result| !result.countries_unknown[at]).map_or_else(|| shaped.runs.last().map_or((&[][..], true), |run| (&run.countries[at][..], run.countries_unknown[at])), |result| (&result.countries[at][..], false));
                 let hour = shaped.result.as_ref().map_or(read, |result| result.hour);
-                if !params.countries.matches([side(0), side(1)], hour) {
+                if !params.countries.matches(&query.holders, [side(0), side(1)], hour) {
                     continue;
                 }
                 let casualties = shaped.losses.last().and_then(|loss| match &loss.sides {

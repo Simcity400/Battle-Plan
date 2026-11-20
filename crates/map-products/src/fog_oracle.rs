@@ -47,6 +47,8 @@ pub fn viewer(
             Some((slot, _)) => (*slot, Resolution::Requested),
             None => (default()?.0, Resolution::Absent(tag.clone())),
         },
+        Country::Slot { slot, .. } if tags.contains_key(slot) => (*slot, Resolution::Requested),
+        Country::Slot { .. } => (default()?.0, Resolution::Absent(country.to_string())),
     })
 }
 

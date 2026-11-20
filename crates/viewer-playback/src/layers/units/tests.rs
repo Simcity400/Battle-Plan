@@ -1093,6 +1093,20 @@ fn figures_do_not_stand_while_a_stack_handed_to_the_meshes_is_not_chosen() {
     assert_eq!(layer(&side).meshes().and_then(|meshes| meshes.get(&102).copied()), Some(102), "the newest stack's mesh");
 }
 
+#[test]
+fn the_model_picker_reads_every_division_where_a_figure_stands_with_its_route_facts() {
+    let side = side("units-pick");
+    let divisions = layer(&side).pick_divisions();
+    let facts = |province: u32| divisions[&province].iter().map(|d| (d.id, d.owner, d.roster, d.hop, d.unrouted)).collect::<Vec<_>>();
+    assert_eq!(
+        facts(10),
+        [(101, 3, Some(3), None, None), (102, 3, Some(3), None, None), (103, 3, Some(3), None, None), (104, 4, Some(4), Some(0), Some(true))],
+        "a division without a movement row settles no route fact; a transfer with no ordinary route is passed over"
+    );
+    assert!(divisions[&10].iter().all(|d| d.kind.is_none()), "without route geometry no stack kind is placed");
+    assert_eq!(facts(20).iter().map(|fact| fact.0).collect::<Vec<_>>(), [105]);
+}
+
 /// A stack handed to the meshes' worker and withdrawn before the worker takes either ask is not
 /// waited for: its rows are no longer declared, so no frame will hold them. Division 103's stack
 /// is asked and let go in one hand-over, which the worker takes whole, as it takes two steps'

@@ -13,7 +13,7 @@ const bucket = (firstHour: number, lastHour: number, firstValue: number, more: P
   firstValue, lastValue: firstValue, lastValueHour: lastHour, minHour: firstHour, minValue: firstValue, maxHour: firstHour, maxValue: firstValue,
   firstBreak: false, hasBreak: false, ...more });
 const line = (buckets: (ChartBucket | null)[]): ChartSummary => ({ from: 0, to: 100, width: buckets.length, buckets });
-const state = (tag: string, hour: number, value: string | null, missing: string | null = null): SeriesState => ({ tag, hour, drop: null, missing,
+const state = (tag: string, hour: number, value: string | null, missing: string | null = null): SeriesState => ({ country: tag, hour, drop: null, missing,
   run: value === null ? null : { firstHour: hour, lastHour: hour, valueRaw: value, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: hour,
     firstExact: true, lastExact: true } });
 

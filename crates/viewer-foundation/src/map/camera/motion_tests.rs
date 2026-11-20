@@ -418,3 +418,37 @@ fn a_frame_without_motion_leaves_the_camera_fitted() {
     assert_eq!(motion.target(), None);
     assert!(motion.step(&shown, &law, 0.1, VIEWPORT, &edge, &flat));
 }
+
+#[test]
+fn placing_keeps_the_height_and_a_zero_height_lands_on_the_floor() {
+    let mut camera = camera(800.0);
+    let mut motion = Motion::default();
+    motion.place(&mut camera, [100.0, 200.0], None, &flat);
+    let target = motion.target().unwrap();
+    assert_eq!(target.center, [100.0, 200.0]);
+    assert_eq!(target.height, 800.0);
+    motion.place(&mut camera, [100.0, 200.0], Some(0.0), &flat);
+    assert_eq!(motion.target().unwrap().height, 50.0);
+    // The look-at point stays within the map's rows.
+    motion.place(&mut camera, [100.0, -40.0], None, &flat);
+    assert_eq!(motion.target().unwrap().center[1], 0.0);
+}
+
+#[test]
+fn a_minimap_zoom_step_halves_in_and_grows_by_three_quarters_out() {
+    let mut camera = camera(800.0);
+    let mut motion = Motion::default();
+    motion.zoom_step(&mut camera, true, &flat);
+    assert_eq!(motion.target().unwrap().height, 400.0);
+    motion.zoom_step(&mut camera, false, &flat);
+    assert_eq!(motion.target().unwrap().height, 700.0);
+    let mut low = Motion::default();
+    let mut near = self::camera(60.0);
+    low.zoom_step(&mut near, true, &flat);
+    assert_eq!(low.target().unwrap().height, 50.0);
+    // A step the floor shortens below one unit is dropped.
+    let mut floor = Motion::default();
+    let mut grounded = self::camera(50.5);
+    floor.zoom_step(&mut grounded, true, &flat);
+    assert_eq!(floor.target().unwrap().height, 50.5);
+}

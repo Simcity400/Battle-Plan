@@ -16,7 +16,7 @@ import type { LogCounts } from '../../charts/log/logSource';
 import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatchFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -73,7 +73,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   // A group's members over the branch: a country is listed by the tags it held at its rows' hours.
   const tags = useMemo<string[] | null>(() => {
     if (widget.countries.kind === 'all') return null;
-    if (widget.countries.kind !== 'group' && widget.countries.kind !== 'factions') return selectedTags(widget.countries, track);
+    if (widget.countries.kind !== 'group' && widget.countries.kind !== 'factions') return selectedCountryKeys(widget.countries, track);
     if (!groups.data) return null;
     const filter = countryMatchFilter(widget.countries, [], groups.data, last, undefined, track?.branch.firstHour);
     return [...new Set(filter.membership?.map(run => run.tag) ?? [])].sort();
@@ -89,7 +89,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   // Each kind's counts on the list's bins, and the rows that left the census unwitnessed: one request a kind per span.
   const counted = useMemo(() => [...(options.totals === true ? facets[0].values : []), VANISHED], [options.totals, facets]);
   const countRequests = useMemo(() => spec ? counted.map(kind => ({ sourceId: spec.source.id, revision: spec.source.revision, product: 'log-counts',
-    params: { branchId: spec.branchId, log: spec.log, facets: [{ name: 'kind', values: [kind], tags: [] }, ...facets.slice(1)],
+    params: { branchId: spec.branchId, log: spec.log, facets: [{ name: 'kind', values: [kind], countries: [] }, ...facets.slice(1)],
       from: first, to: last, binHours: countBinHours(first, last) } })) : [], [spec, counted, facets, first, last]);
   const validateCounts = useCallback((value: unknown) => validateLogCounts(value, first, last), [first, last]);
   const kindCounts = useProducts<LogCounts>(runtime.client, countRequests, active, validateCounts, track?.source);

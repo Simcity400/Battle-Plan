@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { liveByColumn, liveKey, noValues } from '../../charts/live.ts';
@@ -12,7 +13,7 @@ import { useIdentityHour } from '../../dashboard/atHead';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { looksRead } from '../../dashboard/countryLooks';
 import { trackHourOf } from '../../dashboard/settledHour';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { followStore } from '../../dashboard/follow/connection.ts';
 import { liveFollowed } from '../../dashboard/follow/liveFollowed.ts';
@@ -65,7 +66,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const descending = rankingDescending(sort, rank);
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
-  const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));
+  const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
   const resolved = useMemo(() => resolveCountries(widget.countries, JSON.parse(fallbackKey) as string[], groups.data, lastHour, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallbackKey, groups.data, lastHour]);
   const top = resolved.top ?? null;
@@ -103,7 +104,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const named = useStickyMembers(JSON.stringify([branchId, top, rankFamily, descending, following]), members,
     stickyLimit(top ?? members.length));
   const columnQueries = useMemo<(FollowQuery | null)[]>(() => families.map(family => following && branchId && named.length
-    ? { product: 'series-state', params: { branchId, family, reads: named.map(tag => ({ tag, hour: 0 })) } } : null),
+    ? { product: 'series-state', params: { branchId, family, reads: named.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null),
   [familiesText, following, branchId, named]); // eslint-disable-line react-hooks/exhaustive-deps
   // A new set of members is asked under new queries without a render of its own: each column is painted from its last
   // answered entry until the new one answers, so its values never blank as the rows change.

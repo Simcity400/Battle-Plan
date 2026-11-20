@@ -1,6 +1,7 @@
 
 /** A part's total as of one change: `[hour, readHour, totalRaw]`, the native application hour, the supplying read hour and the exact total. */
 type LedgerPoint = MilitaryAirPart['points'][number];
+import { countryFromKey, isSlotKey } from './countryKey.ts';
 import { clipToSpans, isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Run, Span } from '../charts/series';
 import { formatAmount, formatFixed, formatRate } from '../charts/valueAxis.ts';
@@ -273,8 +274,15 @@ export function militaryAirAt(index: LedgerIndex, from: number, hour: number): L
 }
 
 /** A chosen tag follows its recorded holder through later changes of tag. */
+/** Whether `country` is the one a [`countryKey`] names: its tag, or for a slot any holder of that slot (`slot:id`). */
+export function ledgerNames(key: string, country: Pick<MilitaryAirCountry, 'tag' | 'identity'>): boolean {
+  const slot = countryFromKey(key);
+  return typeof slot === 'number' ? country.identity.startsWith(`${slot}:`) : country.tag === key;
+}
+
 export function ledgerCountryAt(index: LedgerIndex, tag: string, from: number, hour: number, identity?: string): LedgerRow | null {
-  const chosen = identity ?? (index.byTag.get(tag) ?? []).reduce<MilitaryAirCountry | null>((first, series) => {
+  const named = isSlotKey(tag) ? index.series.filter(series => ledgerNames(tag, series.country)) : index.byTag.get(tag) ?? [];
+  const chosen = identity ?? named.reduce<MilitaryAirCountry | null>((first, series) => {
     const country = series.country;
     return !first || (country.present[0]?.firstHour ?? Infinity) < (first.present[0]?.firstHour ?? Infinity) ? country : first;
   }, null)?.identity;
@@ -314,8 +322,7 @@ export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySe
   const chosen = selection.kind === 'tags' ? selection.tags : selection.kind === 'selected' ? fallback : null;
   if (chosen) {
     if (!chosen.length) return { rows: [], reason: 'Choose a country in the widget settings.' };
-    const roots = new Set(chosen);
-    const identities = new Set(countries.filter(country => roots.has(country.tag)).map(country => country.identity));
+    const identities = new Set(countries.filter(country => chosen.some(key => ledgerNames(key, country))).map(country => country.identity));
     return { rows: ranked.filter(row => identities.has(row.identity)),
       reason: identities.size ? null : 'Selected countries are unavailable in this campaign.' };
   }

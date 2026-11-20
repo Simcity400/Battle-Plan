@@ -7,6 +7,9 @@ pub enum Selection {
     Naval(u64),
     NavalResult(u64),
     AirRegion(u32),
+    /// The state view of the clicked province's state.
+    State(u32),
+    NavalRegion(u32),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {

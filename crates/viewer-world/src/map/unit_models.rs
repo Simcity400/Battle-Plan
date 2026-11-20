@@ -3185,6 +3185,11 @@ impl PreparedModels {
         }
     }
 
+    /// No models, withheld for `reason`: none are drawn, and the reason is reported.
+    pub fn withheld(reason: &str) -> Self {
+        Self::disabled(reason)
+    }
+
     /// The hour's ships: candidates, formations, their placements and naval combats.
     pub fn ships(&self) -> &NavalSources {
         &self.ships

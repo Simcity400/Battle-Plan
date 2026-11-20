@@ -5,7 +5,7 @@ import { flagReadMetadata } from './countryFlagsAt.ts';
 import type { CountryLabel } from './countryFlagsAt';
 import { useCountryFlagsRead } from './countryFlags.ts';
 import type { FlagRead } from './countryFlags';
-import { nameKey, useCountryFactsRead } from './countryNamesAt.ts';
+import { nameKey, useCountryFactsByKey } from './countryNamesAt.ts';
 import { FAILED_FACT, MAX_NAME_HOURS, isFailedFact } from './countryFacts.ts';
 import { lookPlan } from './countryLooks.ts';
 import type { NameAt } from './countryFacts';
@@ -49,7 +49,7 @@ export function useHoverLabels(client: DashboardClient, track: Pick<BoundTrack, 
     ...[...samples].flatMap(([tag, hour]) => hour === asked.hour ? [] : [{ hour, tag }])] : [], [asked, samples]);
   const askedTags = useMemo(() => new Set(asked?.tags), [asked]);
   const maxHours = useMemo(() => Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size), [wanted]);
-  const styles = useCountryFactsRead(client, track, wanted, active, STYLES, maxHours);
+  const styles = useCountryFactsByKey(client, track, wanted, active, STYLES, maxHours);
   const flags = useCountryFlagsRead(client, track, wanted, active);
   const readOf = useCallback((tag: string): HoverRead => {
     const at = (hour: number | undefined): HoverRead => hour === undefined ? { style: undefined, flag: undefined }

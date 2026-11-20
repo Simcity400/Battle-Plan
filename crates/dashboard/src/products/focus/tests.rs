@@ -64,7 +64,7 @@ fn entry(ordinal: u32, token: &str, hour: Option<i32>) -> FocusEntry {
 fn a_completion_is_dated_only_where_the_list_grew_at_its_end_read_the_hour_before() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let fold = read(&query, "GER", &AtomicBool::new(false)).unwrap();
+    let fold = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
     let spans: Vec<(i32, i32)> = fold.segments.iter().map(|segment| (segment.first, segment.last)).collect();
     assert_eq!(spans, [(100, 104), (105, 109), (112, 119), (120, 124), (125, 129), (132, LAST)]);
     let order = |at: usize| fold.segments[at].order.completed.clone();
@@ -87,7 +87,7 @@ fn a_completion_is_dated_only_where_the_list_grew_at_its_end_read_the_hour_befor
 fn progress_gains_only_from_the_hour_before_under_the_same_focus_and_replies_read_the_fold() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let fold = read(&query, "GER", &AtomicBool::new(false)).unwrap();
+    let fold = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
     assert_eq!(fold.progress(101), Some((0, None)));
     assert_eq!(fold.progress(102), Some((100_000, Some(100_000))));
     assert_eq!(fold.progress(104), Some((200_000, Some(100_000))));

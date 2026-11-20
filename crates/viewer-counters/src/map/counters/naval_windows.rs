@@ -3804,6 +3804,7 @@ fn draw_ports(
             glyphs.at_layer(key);
             match native_gui::draw(&drawn.layout, drawn.origin, resources, glyphs) {
                 Ok(()) => {
+                    let first = report.base_hits.len();
                     super::base_windows::record_hit(
                         window,
                         &drawn.layout,
@@ -3812,6 +3813,9 @@ fn draw_ports(
                         key,
                         report,
                     );
+                    for index in first..report.base_hits.len() {
+                        report.naval_base_hits.insert(index, *base.owner);
+                    }
                     report.naval_bases += 1;
                 }
                 Err(why) => count_refused(&mut report.icon_gui_notes, NAVAL_BASE_WINDOW, &[why]),

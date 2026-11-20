@@ -1,8 +1,9 @@
+import { countryFromKey, countryKey } from './countryKey.ts';
 import { useMemo } from 'react';
 import type { HourSpan, PowerSpendingReply } from '../generated/dashboard';
 import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
-import { defaultCountryTag } from './countrySelection.ts';
+import { defaultCountryKey } from './countrySelection.ts';
 import { countryMatch, countryMatchFilter, resolveCountries } from './groups.ts';
 import { useProducts } from './products.ts';
 import { categoryChoices, ledgerOf, spendingChunks, spendingSpan, validatePowerSpending } from './powerSpending.ts';
@@ -17,7 +18,7 @@ const NO_WARNINGS: readonly string[] = [];
 export function usePowerSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, currency: PowerCurrency) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const lastHour = track?.branch.lastHour ?? 0;
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, lastHour]);
@@ -39,16 +40,20 @@ export function usePowerSpending(widget: WidgetSpec, runtime: WidgetRuntime, act
   const span = track ? spendingSpan(widget, track, runtime.tracks) : null;
   const requests = useMemo(() => track && span ? tags.flatMap(tag => spendingChunks(span.firstHour, span.lastHour).map(([from, to]) => ({
     sourceId: track.source.id, revision: track.source.revision, product: 'power-spending',
-    params: { branchId: track.branch.id, tag, currency, from, to } }))) : [],
+    params: { branchId: track.branch.id, country: countryFromKey(tag), currency, from, to } }))) : [],
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [track?.source.id, track?.source.revision, track?.branch.id, tags, currency, span?.firstHour, span?.lastHour]);
   const replies = useProducts<PowerSpendingReply>(runtime.client, requests, active, validatePowerSpending, track?.source);
   const ledgers = useMemo(() => {
     if (!replies.data) return undefined;
+    // A reply names its country by the tag it went by, not by the key asked: replies are matched to their requests.
     const byTag = new Map<string, PowerSpendingReply[]>();
-    for (const reply of replies.data) { const held = byTag.get(reply.tag); if (held) held.push(reply); else byTag.set(reply.tag, [reply]); }
+    replies.data.forEach((reply, at) => {
+      const tag = countryKey(requests[at].params.country);
+      const held = byTag.get(tag); if (held) held.push(reply); else byTag.set(tag, [reply]);
+    });
     return tags.map(tag => ledgerOf(tag, currency, byTag.get(tag) ?? []));
-  }, [replies.data, tags, currency]);
+  }, [replies.data, requests, tags, currency]);
   return { track, tags, ledgers, span, selection, ready: match.ready, reason: resolved.reason ?? match.reason,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
     error: replies.error ?? (groups.data ? undefined : groups.error),

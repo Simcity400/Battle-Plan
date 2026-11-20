@@ -10,7 +10,7 @@ import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { resolveOptions } from '../../dashboard/options';
@@ -81,7 +81,7 @@ useShownEachFrame(runtime.clock, () => data && track ? trackHourOf(widget, track
   // Chosen countries or groups keep transfers involving them, matched at each side's own read.
   const filtered = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && filtered);
-  const tagsKey = JSON.stringify(selectedTags(widget.countries, track));
+  const tagsKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(tagsKey), [tagsKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);

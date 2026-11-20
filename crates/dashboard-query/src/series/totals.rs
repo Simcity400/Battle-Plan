@@ -6,7 +6,10 @@
 //! is not, the part named. Each reply reads the hours it shows and the window before them.
 
 use super::{Ask, Line, Part, invalid};
-use crate::{identity::Holder, read};
+use crate::{
+    identity::{Country, Holder},
+    read,
+};
 use dashboard_declare::{Column, RunningTotal};
 use replay::lanes::Runs;
 use replay_columnar::{manifest::Status, summary::Source};
@@ -114,7 +117,7 @@ impl<'q, 'a> Line<'q, 'a> {
     }
 
     /// Each of `tags`' values of set `parts` over `from..=to`: the running total, or with `back` its window.
-    pub fn totals(&self, tags: &[String], parts: Parts<'_>, back: Back<'_>, from: i32, to: i32) -> io::Result<Vec<Vec<TotalRun>>> {
+    pub fn totals<C: Clone + Into<Country>>(&self, tags: &[C], parts: Parts<'_>, back: Back<'_>, from: i32, to: i32) -> io::Result<Vec<Vec<TotalRun>>> {
         if self.series.key.unowned() {
             return Err(invalid(format!("{} is rows no country owns", self.series.kind)));
         }
@@ -124,7 +127,7 @@ impl<'q, 'a> Line<'q, 'a> {
         let mut out = Vec::with_capacity(tags.len());
         for tag in tags {
             // The tag's parts over the whole timeline: a window looks back to its part's first hour.
-            let whole: Vec<Part> = self.held(&Ask::whole(tag), timeline.first, timeline.last);
+            let whole: Vec<Part> = self.held(&Ask::whole(tag.clone()), timeline.first, timeline.last);
             let opening = whole.first().map(|part| part.first);
             let mut runs: Vec<TotalRun> = Vec::new();
             for part in whole.iter().filter(|part| part.first <= to && part.last >= from) {

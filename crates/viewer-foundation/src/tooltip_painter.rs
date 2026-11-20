@@ -69,11 +69,20 @@ pub struct HoverState {
     pub anchor: Option<TooltipPosition>,
 }
 
-/// Pointer plus the naval producer's combat-window rectangle, in interface pixels.
+/// The pointer and an explicit anchor, in interface pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TooltipPosition {
     pub point: [f32; 2],
-    pub naval_window: Option<[f32; 4]>,
+    pub anchor: Option<Explicit>,
+}
+
+/// An anchor the tooltip holds instead of following the pointer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Explicit {
+    /// The naval producer's combat-window rectangle.
+    NavalWindow([f32; 4]),
+    /// A point, which the tooltip hangs below or, with `below` clear, sits above.
+    At { at: [f32; 2], below: bool },
 }
 
 impl HoverState {
@@ -267,12 +276,16 @@ fn placed(
     offsets: [i32; 4],
     wrap_width: f32,
 ) -> [f32; 2] {
-    let Some(window) = at.naval_window else {
-        return position(at.point, size, extent, offsets);
+    let (mut at, below) = match at.anchor {
+        None => return position(at.point, size, extent, offsets),
+        Some(Explicit::NavalWindow(window)) => {
+            (naval_ship_anchor(window, at.point[0], wrap_width, extent[0]), true)
+        }
+        Some(Explicit::At { at, below }) => (at, below),
     };
-    let mut at = naval_ship_anchor(window, at.point[0], wrap_width, extent[0]);
-    // An absolute anchor places the tooltip below its point.
-    // Clamping starts from that anchor.
+    if !below {
+        at[1] -= size[1];
+    }
     for axis in 0..2 {
         at[axis] = at[axis].max(offsets[axis] as f32);
         if at[axis] > extent[axis] - size[axis] - offsets[axis + 2] as f32 {

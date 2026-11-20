@@ -7,7 +7,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
 
 test('spirit tiles keep names and focus access with reserved fallback artwork', async () => {
-  const data: IdeaHistoryReply = { branchId: '1', tag: 'mod_country', unobserved: [], identityStarts: [100], modifiers: [], texts: [], warnings: [],
+  const data: IdeaHistoryReply = { branchId: '1', tag: 'mod_country', asked: 'mod_country', unobserved: [], identityStarts: [100], modifiers: [], texts: [], warnings: [],
     categories: [{ token: 'mod_spirits', name: 'Mod spirits', kind: 'national_spirit', hidden: false, politicsTab: true, slots: [] }],
     ideas: [{ token: 'mod_spirit', category: 'mod_spirits', slot: null, law: false, designer: false, effects: [], targeted: [], equipment: [], research: [],
       traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null }], spans: [{ token: 'mod_spirit', firstHour: 100, lastHour: 200, slot: null, character: null }],

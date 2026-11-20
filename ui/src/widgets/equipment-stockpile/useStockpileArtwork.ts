@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { drawableIcon } from '../../dashboard/artwork';
 import { useHeadProduct } from '../../dashboard/headProduct.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -25,6 +26,6 @@ export function validateStockpileArtwork(data: unknown): StockpileArtworkReply {
  * picture does, else asked for that hour. Other widgets show a design's art through this hook. */
 export function useStockpileArtwork(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, variants: readonly string[], active: boolean,
   hoverHour: number | null = null) {
-  return useHeadProduct<StockpileArtworkReply>(runtime, widget, 'stockpile-artwork', tag ? { tag, variants: [...variants] } : null,
+  return useHeadProduct<StockpileArtworkReply>(runtime, widget, 'stockpile-artwork', tag ? { country: countryFromKey(tag), variants: [...variants] } : null,
     { active, validate: validateStockpileArtwork, hoverHour });
 }

@@ -9,12 +9,14 @@
 //! need follow the logistics record's types, an unresolved type deciding a resolved arm's
 //! completeness. Sums are of exact values, so a type's line is exact at every hour.
 
+use dashboard_base::products::validate_country;
+use dashboard_base::products::Country;
 use super::{
     Content, DECIMALS, Domain, NEED_BOUND_RAW, StockType, StockVariantName, Types, UNRESOLVED_ARM, UNRESOLVED_MARK,
     history::{self, Logistics, Replay, Stock},
 };
 use crate::{Source, span::HourSpan};
-use dashboard_base::products::{LoadContext, Product, validate_tag};
+use dashboard_base::products::{LoadContext, Product};
 use dashboard_query::{
     Query,
     chart::{ChartBucket, ChartRun, ChartSummary, merge},
@@ -34,7 +36,7 @@ use ts_rs::TS;
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileHolder {
-    pub tag: String,
+    pub country: Country,
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub within: Option<Vec<HourSpan>>,
@@ -93,8 +95,8 @@ fn validate(branch_id: &str, holders: &[StockpileHolder]) -> Result<(), &'static
     }
     let mut seen = BTreeSet::new();
     for holder in holders {
-        validate_tag(&holder.tag)?;
-        if !seen.insert(holder.tag.as_str()) {
+        validate_country(&holder.country)?;
+        if !seen.insert(&holder.country) {
             return Err("Invalid stockpile selection");
         }
         if let Some(spans) = &holder.within
@@ -148,7 +150,7 @@ pub struct StockpileCatalogueLogistics {
 #[serde(rename_all = "camelCase")]
 pub struct StockpileCatalogueReply {
     pub branch_id: String,
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     pub campaign_key: String,
     pub decimals: u8,
     /// Every archetype a design or logistics type belongs to, in the equipment database's order.
@@ -626,7 +628,7 @@ struct Kept {
 }
 
 /// The holders' model, built once per timeline, holders, included types and content and kept.
-fn model(source: &Source, query: &Query<'_>, tags: &[String], included: &[String], load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Model>> {
+fn model(source: &Source, query: &Query<'_>, tags: &[Country], included: &[String], load: &LoadContext, cancelled: &AtomicBool) -> io::Result<Arc<Model>> {
     let content = Content::load(source, load)?;
     let binding = content.catalogue.as_ref().map_or(0, |catalogue| Arc::as_ptr(catalogue) as usize);
     let key = serde_json::to_string(&(query.timeline.id, query.timeline.last, tags, included, binding)).map_err(io::Error::other)?;
@@ -674,11 +676,11 @@ fn sorted(mut spans: Vec<HourSpan>) -> Vec<HourSpan> {
 
 /// The holders' catalogue from their model.
 fn catalogue(source: &Source, query: &Query<'_>, params: &StockpileCatalogueParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<StockpileCatalogueReply> {
-    let tags: Vec<String> = params.holders.iter().map(|holder| holder.tag.clone()).collect();
+    let tags: Vec<Country> = params.holders.iter().map(|holder| holder.country.clone()).collect();
     let model = model(source, query, &tags, &params.included, load, cancelled)?;
     let mut reply = StockpileCatalogueReply {
         branch_id: params.branch_id.clone(),
-        tags: tags.clone(),
+        countries: tags.clone(),
         campaign_key: source.campaign_key().to_owned(),
         decimals: DECIMALS,
         types: model.types.clone(),
@@ -716,7 +718,7 @@ fn catalogue(source: &Source, query: &Query<'_>, params: &StockpileCataloguePara
         reply.balance_hours.extend(balance);
         reply.ai_hours.extend(ai);
         if !replay.unresolved.is_empty() {
-            reply.warnings.push(format!("{}: {} stretches of hours have no resolved country; nothing is shown for them.", holder.tag, replay.unresolved.len()));
+            reply.warnings.push(format!("{}: {} stretches of hours have no resolved country; nothing is shown for them.", query.holders.name(&holder.country, query.timeline.last), replay.unresolved.len()));
         }
     }
     for reads in [&mut reply.reads, &mut reply.line_reads, &mut reply.logistics_reads] {
@@ -755,7 +757,7 @@ fn catalogue(source: &Source, query: &Query<'_>, params: &StockpileCataloguePara
         reply.warnings.push("The surplus or shortage is not in this recording: it has no logistics record (logistics equipment).".to_owned());
     }
     if reply.stock_hours.is_empty() {
-        reply.warnings.push(format!("{}: no recorded stockpile in this branch", tags.join(", ")));
+        reply.warnings.push(format!("{}: no recorded stockpile in this branch", tags.iter().map(|country| query.holders.name(country, query.timeline.last)).collect::<Vec<_>>().join(", ")));
     }
     Ok(reply)
 }
@@ -856,7 +858,7 @@ pub(super) fn summary(mut lines: Vec<Drawn>, from: i32, to: i32, width: u32) -> 
 
 /// The holders' groups as chart lines over a view, each in its measure.
 fn chart(source: &Source, query: &Query<'_>, params: &StockpileChartParams, load: &LoadContext, cancelled: &AtomicBool) -> io::Result<StockpileChartReply> {
-    let tags: Vec<String> = params.holders.iter().map(|holder| holder.tag.clone()).collect();
+    let tags: Vec<Country> = params.holders.iter().map(|holder| holder.country.clone()).collect();
     let model = model(source, query, &tags, &params.included, load, cancelled)?;
     let scale = 10_f64.powi(i32::from(DECIMALS));
     let (from, to) = ((params.from.floor() as i32).max(model.first), (params.to.floor() as i32).min(model.last));

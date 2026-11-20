@@ -11,17 +11,34 @@ fn night_picture_uses_viewer_pause_at_max_recorded_speed() {
 #[test]
 fn custom_sea_grid_keeps_active_template_order_and_signed_words() {
     let names = ["reef".into(), "storm".into(), "reef".into(), "ice".into()];
-    let values = [1_i16, 0, -2, 4]
+    let bytes = [1_i16, 0, -2, 4]
         .into_iter()
         .flat_map(i16::to_le_bytes)
         .collect::<Vec<_>>();
+    let values = custom_sea_words(&bytes);
+    assert_eq!(values, [1, 0, -2, 4]);
     assert_eq!(
         active_custom_sea(&names, &values)
             .unwrap()
             .collect::<Vec<_>>(),
         ["reef", "reef", "ice"]
     );
-    assert!(active_custom_sea(&names, &values[..values.len() - 2]).is_none());
+    assert!(active_custom_sea(&names, &values[..values.len() - 1]).is_none());
+}
+
+#[test]
+fn a_regions_custom_sea_comes_from_a_live_combat_else_its_weather_row() {
+    use replay_data::rows::{NavalCombatDetailsRow, TableRows, WeatherRegionRow};
+    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    let region_of = std::collections::BTreeMap::from([(10, 3)]);
+    let weather = |custom_sea| WeatherRegionRow { id: 3, custom_sea, ..Default::default() };
+    let mut frame = test_frame(0);
+    put(&mut frame, TableRows::NavalCombatDetails(Vec::new()));
+    assert_eq!(region_custom_sea(&region_of, &frame, &weather(Recorded::Value(Some(vec![0, 2]))), 3), Ok(vec![0, 2]));
+    assert_eq!(region_custom_sea(&region_of, &frame, &weather(Recorded::Value(None)), 3), Err("the region's custom sea values were refused when read".to_owned()));
+    assert_eq!(region_custom_sea(&region_of, &frame, &weather(Recorded::NotRecorded), 3), Err("the region's custom sea values are not recorded".to_owned()));
+    put(&mut frame, TableRows::NavalCombatDetails(vec![NavalCombatDetailsRow { province: 10, custom_sea: Some(vec![5, 0, 0, 0]), ..Default::default() }]));
+    assert_eq!(region_custom_sea(&region_of, &frame, &weather(Recorded::NotRecorded), 3), Ok(vec![5, 0]));
 }
 
 #[test]

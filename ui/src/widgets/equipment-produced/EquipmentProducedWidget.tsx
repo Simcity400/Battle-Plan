@@ -1,3 +1,4 @@
+import { answersKey, countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import WidgetState from '../../components/WidgetState';
@@ -12,7 +13,7 @@ import { mixCountry } from '../../charts/race/options';
 import type { Span } from '../../charts/series';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import NoMembersState from '../../dashboard/NoMembersState';
@@ -67,7 +68,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const lastHour = track?.branch.lastHour ?? 0;
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, definition.countries.max),
     [widget.countries, fallback, groups.data, lastHour]);
 
@@ -181,7 +182,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
     if (!at) return null;
     const shown = Math.floor(hour);
     point(tag, shown);
-    const detail = hoveredAt.data?.tag === tag && hoveredAt.data.hour === shown ? hoveredAt.data : null;
+    const detail = answersKey(hoveredAt.data?.asked, tag) && hoveredAt.data?.hour === shown ? hoveredAt.data : null;
     const counted = (key: string) => !shownTypes.length || shownTypes.includes(key);
     const rows: TooltipRow[] = !detail ? [{ label: hoveredAt.error ? `This hour could not be read: ${hoveredAt.error.message}` : 'Reading this hour…', tone: 'muted' }]
       : count === 'ic' && !shownTypes.length
@@ -233,7 +234,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
   const drillScope = JSON.stringify([track?.source.id, track?.branch.id, count, measure, included, refits]);
   const chartType = drillType?.scope === drillScope ? drillType.type : shownTypes.length === 1 ? shownTypes[0] : null;
   const chartSpec = useMemo(() => ({ count, type: count === 'units' ? chartType ?? shownTypes[0] ?? null : chartType }), [count, chartType, shownTypes]);
-  const drillParams = useCallback((tag: string) => ({ branchId: track!.branch.id, tag, count, measure, refits }), [track, count, measure, refits]);
+  const drillParams = useCallback((tag: string) => ({ branchId: track!.branch.id, country: countryFromKey(tag), count, measure, refits }), [track, count, measure, refits]);
   const decodeDrill = useCallback((data: ProducedCountryReply) => producedDrillData(data, chartSpec), [chartSpec]);
   const pickDrillTag = (hour: number) => model ? mixCountry(widget.countries, fallback,
     rankProduced(model, rankedCandidates(resolved, hour, model.tags), hour, slots, produced)) : null;

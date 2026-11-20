@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import type { ForceParams } from '../../charts/race/forceRace';
 import { usNumber } from '../../charts/numberFormat.ts';
 import type { OptionValue } from '../../dashboard/options';
@@ -10,7 +11,7 @@ export const navalPeriod = (options: Options) => options.period === 'month' ? 'm
 
 /** A naval losses request (`naval-losses`) without its window. */
 export function navalRequest(branchId: string, resolved: { tags: readonly string[]; top?: number }, options: Options): ForceParams {
-  return { branchId, tags: resolved.top == null ? [...resolved.tags] : [], top: resolved.top ?? null,
+  return { branchId, countries: resolved.top == null ? resolved.tags.map(countryFromKey) : [], top: resolved.top ?? null,
     attribution: navalAttribution(options), kind: navalKind(options), period: navalPeriod(options) };
 }
 

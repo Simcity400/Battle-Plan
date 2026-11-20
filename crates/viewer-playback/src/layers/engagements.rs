@@ -77,6 +77,9 @@ pub struct Engagements {
     marked: usize,
     /// Combats changed since the host last cleared the list: ids of kind [`KINDS`].
     changed: super::Changed,
+    /// Waits entered on the fold: a whole settle's only.
+    #[cfg(test)]
+    fold_waits: std::cell::Cell<usize>,
 }
 
 /// The [`Layer::changed`] kind of a land and a naval combat's id, by [`LAND`] and [`NAVAL`].
@@ -95,6 +98,8 @@ impl Engagements {
             frame: 0,
             marked: 0,
             changed: super::Changed::default(),
+            #[cfg(test)]
+            fold_waits: std::cell::Cell::new(0),
         }
     }
 
@@ -292,17 +297,20 @@ impl Engagements {
         std::mem::replace(&mut self.statuses, held) != held
     }
 
-    /// A settle that waits shows the flags of its own hour: the index folds in the background, so
-    /// each kind's head is waited for before its flags are read, and the hour's provenance then
-    /// reads every flag again. A fold that does not come in [`WHOLE`] (one cancelled at shutdown,
-    /// or one the head has outrun) leaves the flags unknown and every layer that reads them names
-    /// that; it never refuses the settle, which would stop the window over a background pass.
+    /// A whole settle shows the flags of its own hour: the index folds in the background, so each
+    /// kind's head is waited for before its flags are read, and the hour's provenance then reads
+    /// every flag again. A fold that does not come in [`WHOLE`] (one cancelled at shutdown, or one
+    /// the head has outrun) leaves the flags unknown and every layer that reads them names that; it
+    /// never refuses the settle, which would stop the window over a background pass. Any other
+    /// settle runs under the side's lock and waits for nothing: the flags stand pending, named,
+    /// and a publication after the fold arrives reads them again.
     fn wait_for_the_fold(&self, mirrors: &Mirrors, settling: Settling) {
-        let (Some(index), Some(viewer)) = (&self.index, self.viewer) else { return };
-        let limit = settling.waiting(WHOLE);
+        let (Some(index), Some(viewer), true) = (&self.index, self.viewer, settling.strict()) else { return };
         for kind in [LAND, NAVAL] {
             if let Some(head) = self.head(mirrors, kind) {
-                index.history.reached(index.branch, head, viewer, limit);
+                #[cfg(test)]
+                self.fold_waits.set(self.fold_waits.get() + 1);
+                index.history.reached(index.branch, head, viewer, WHOLE);
             }
         }
     }
@@ -311,9 +319,7 @@ impl Engagements {
         if self.take_statuses(mirrors) {
             self.read_all();
         }
-        if settling.waits() {
-            self.wait_for_the_fold(mirrors, settling);
-        }
+        self.wait_for_the_fold(mirrors, settling);
         self.take_player(mirrors);
         for kind in [LAND, NAVAL] {
             self.mark(mirrors, kind);

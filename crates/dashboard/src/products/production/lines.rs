@@ -4,6 +4,7 @@
 //! (`production-line-detail`). Neither walks hours: the lines come from each run's index, their
 //! values from their columns' runs over the hours asked.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     Appearance, DECIMALS, DETAIL_HOURS, LineKind, OrganisationName, OutputPart, OutputRun, RunLines, VariantName, appearances, held_hours, joined,
     names::{self, Named},
@@ -11,7 +12,7 @@ use super::{
 };
 use crate::{
     Source,
-    products::{LoadContext, Product, check_reply_budget, validate_tag},
+    products::{LoadContext, Product, check_reply_budget},
     span::HourSpan,
 };
 use dashboard_query::{Query, read};
@@ -67,7 +68,7 @@ pub struct LineHistory {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionLinesParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -99,7 +100,7 @@ pub struct ProductionLinesReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionDetailParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub window: i32,
 }
 
@@ -161,11 +162,11 @@ pub struct ProductionLineDetailReply {
 
 dashboard_base::reply_warnings!(ProductionLinesReply, ProductionLineDetailReply);
 
-fn validate_country(branch: &str, tag: &str) -> Result<(), &'static str> {
+fn validate_params(branch: &str, country: &Country) -> Result<(), &'static str> {
     if branch.parse::<u64>().is_err() {
         return Err("Invalid branch");
     }
-    validate_tag(tag)
+    validate_country(country)
 }
 
 /// Run `run`'s line index, kept while the recording is open.
@@ -295,7 +296,7 @@ impl Product for ProductionLines {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_country(&params.branch_id, &params.tag)
+        validate_params(&params.branch_id, &params.country)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -313,10 +314,10 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
     let recording = query.replay.recording();
     let index = index_of(source);
     let (from, to) = (query.timeline.first, query.timeline.last);
-    let found = appearances(query, &params.tag, from, to, &index)?;
+    let found = appearances(query, &params.country, from, to, &index)?;
     let mut warnings = Vec::new();
-    if !query.holders.named(&params.tag) {
-        warnings.push(format!("{} is held by no country in this branch", params.tag));
+    if !query.holders.named(&params.country) {
+        warnings.push(query.holders.say(&params.country, to, |name| format!("{name} is held by no country in this branch")));
     }
     // Each run's step columns, for that run's lines, over the hours they lived.
     let mut by_run: BTreeMap<u32, Vec<std::collections::HashMap<u128, read::Runs>>> = BTreeMap::new();
@@ -394,13 +395,13 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
     let icons = named.icons();
     Ok(ProductionLinesReply {
         branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
+        tag: query.holders.name(&params.country, to),
         decimals: DECIMALS,
         lines,
         variants: named.variants.into_values().collect(),
         organisations: named.organisations.into_values().collect(),
         icons,
-        line_hours: held_hours(query, &params.tag, from, to),
+        line_hours: held_hours(query, &params.country, from, to),
         detail_hours: DETAIL_HOURS,
         warnings,
     })
@@ -530,7 +531,7 @@ impl Product for ProductionLineDetail {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_country(&params.branch_id, &params.tag)?;
+        validate_params(&params.branch_id, &params.country)?;
         window_hours(params.window).map(|_| ()).ok_or("Invalid production window")
     }
 
@@ -549,7 +550,7 @@ pub(super) fn detail_reply(source: &Source, query: &Query<'_>, params: &Producti
     let recording = query.replay.recording();
     let index = index_of(source);
     // Keys are counted over the whole branch, so a line keeps the key `production-lines` gives it.
-    let found: Vec<Appearance> = appearances(query, &params.tag, query.timeline.first, query.timeline.last, &index)?
+    let found: Vec<Appearance> = appearances(query, &params.country, query.timeline.first, query.timeline.last, &index)?
         .into_iter()
         .filter(|appearance| appearance.pieces.iter().any(|piece| piece.first <= last && piece.last >= first))
         .collect();
@@ -576,5 +577,5 @@ pub(super) fn detail_reply(source: &Source, query: &Query<'_>, params: &Producti
         .iter()
         .map(|appearance| LineDetail { key: appearance.key.clone(), runs: line_runs(appearance, &by_run, first, last), output: output_runs(appearance, &outputs, first, last) })
         .collect();
-    Ok(ProductionLineDetailReply { branch_id: params.branch_id.clone(), tag: params.tag.clone(), decimals: DECIMALS, window: params.window, first_hour: first, last_hour: last, lines, warnings: Vec::new() })
+    Ok(ProductionLineDetailReply { branch_id: params.branch_id.clone(), tag: query.holders.name(&params.country, last), decimals: DECIMALS, window: params.window, first_hour: first, last_hour: last, lines, warnings: Vec::new() })
 }

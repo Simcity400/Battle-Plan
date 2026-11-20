@@ -5,7 +5,7 @@ import { casualtyRaceEntries, casualtyRatio, casualtyRows, formatCasualties, ran
 import type { HeldMeasures } from './casualtiesData';
 
 const state = (measure: string, values: Record<string, string | null>): SeriesStateReply => ({ branchId: '1', measure, decimals: 0,
-  states: Object.entries(values).map(([tag, raw]) => ({ tag, hour: 10, drop: null, missing: raw === null ? 'Not recorded' : null,
+  states: Object.entries(values).map(([tag, raw]) => ({ country: tag, hour: 10, drop: null, missing: raw === null ? 'Not recorded' : null,
     run: raw === null ? null : { valueRaw: raw } as never })) });
 
 const held = (): HeldMeasures => ({

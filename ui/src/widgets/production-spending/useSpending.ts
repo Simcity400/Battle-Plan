@@ -1,5 +1,6 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo, useRef } from 'react';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -29,7 +30,7 @@ export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: 
     const at = keys.current.headAt?.(position);
     return at == null ? 'outside' : keys.current.key(at);
   });
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const range = widget.time.mode === 'range';
@@ -50,7 +51,7 @@ export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: 
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
   const held = useFrameWindows<ProductionSpendingReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'production-spending', params: { branchId: track!.branch.id, tag: tag!, repairs, window: index } }),
+    product: 'production-spending', params: { branchId: track!.branch.id, country: countryFromKey(tag!), repairs, window: index } }),
   () => windowsAt(runtime.clock.getSnapshot().position, following), subscribeClock, active, validate, track?.source);
   // What this render reads: every window but the one ahead.
   const needed = windowsAt(runtime.clock.getSnapshot().position, false);

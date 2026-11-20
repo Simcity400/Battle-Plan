@@ -251,6 +251,7 @@ pub(super) fn offer(
             let scopes =
                 EventScopes::new(vec![owner, EventScope::of(EventObject::Country(target))]);
             ScriptedText::new(hour.frame, hour.localisation, content, hour.ours)
+                .viewing(hour.ours)
                 .expand_in(&text, &scopes)
         }),
     );

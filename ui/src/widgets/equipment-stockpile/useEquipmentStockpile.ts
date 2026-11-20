@@ -1,7 +1,8 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo, useSyncExternalStore } from 'react';
 import type { Span } from '../../charts/series';
 import type { DashboardClient } from '../../dashboard/client';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { datedCountrySpans } from '../../dashboard/datedCountry';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
@@ -30,10 +31,10 @@ export const includedTypes = (widget: WidgetSpec) => contentSet(typeof widget.op
 export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack | undefined, holders: readonly StockpileHolder[], included: readonly string[], active: boolean) {
   const request = track && holders.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-catalogue',
     params: { branchId: track.branch.id, holders, included } } : null;
-  const tags = JSON.stringify(holders.map(holder => holder.tag));
+  const tags = JSON.stringify(holders.map(holder => holder.country));
   return useProduct<StockpileCatalogueReply>(client, request, active, value => {
     const reply = validateStockpileCatalogue(value);
-    if (!track || reply.branchId !== track.branch.id || reply.campaignKey !== track.source.metadata.campaignKey || JSON.stringify(reply.tags) !== tags)
+    if (!track || reply.branchId !== track.branch.id || reply.campaignKey !== track.source.metadata.campaignKey || JSON.stringify(reply.countries) !== tags)
       throw new Error('The stockpile catalogue belongs to another country, campaign or branch.');
     return reply;
   }, track?.source);
@@ -42,7 +43,7 @@ export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack
 /** One holder's stockpile at the hour `widget` shows (`equipment-stockpile-at`): followed at the head as a pushed panel
  * whose numbers are live cells, else asked for its hour (a pinned or range widget, a hovered or drilled hour). */
 export function useStockpileAt(runtime: WidgetRuntime, widget: WidgetSpec, tag: string | null, active: boolean, hoverHour: number | null = null) {
-  return useHeadProduct<StockpileAtReply>(runtime, widget, 'equipment-stockpile-at', tag ? { tag } : null,
+  return useHeadProduct<StockpileAtReply>(runtime, widget, 'equipment-stockpile-at', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateStockpileAt, structure: reply => JSON.stringify(reply), hoverHour });
 }
 
@@ -59,11 +60,11 @@ function useView(catalogue: StockpileCatalogueReply | undefined, at: ReturnType<
 /** The widget's country, its catalogue and its stockpile at the hour it shows. */
 export function useEquipmentStockpile(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, within?: readonly Span[] | null) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const includedText = typeof widget.options?.included === 'string' ? widget.options.included : '';
   const included = useMemo(() => includedTypes(widget), [includedText]); // eslint-disable-line react-hooks/exhaustive-deps
   const withinKey = JSON.stringify(within ?? null);
-  const holders = useMemo<StockpileHolder[]>(() => tag ? [{ tag, ...(within ? { within: within.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) } : {}) }] : [],
+  const holders = useMemo<StockpileHolder[]>(() => tag ? [{ country: countryFromKey(tag), ...(within ? { within: within.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) } : {}) }] : [],
     [tag, withinKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const catalogue = useStockpileCatalogue(runtime.client, track, holders, included, active);
   const at = useStockpileAt(runtime, widget, tag ?? null, active);

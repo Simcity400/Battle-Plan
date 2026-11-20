@@ -10,6 +10,7 @@
 //! at or past an owner's witnessed length, or of an owner without one, is unknown for that owner,
 //! never zero.
 
+use dashboard_base::products::Country;
 use super::{
     LoadContext, Product,
     at_hour::{At, AtHour, Owner, Read},
@@ -21,7 +22,6 @@ use crate::{
     Source,
     catalogue::{self, Catalogue, Refusals},
 };
-use dashboard_base::products::validate_tag;
 use dashboard_follow::live::Source as LiveSource;
 use dashboard_query::identity::Holder;
 use dashboard_text::variant_names::{self, Tags, Texts};
@@ -145,7 +145,7 @@ pub struct MinefieldsParams {
     pub branch_id: String,
     /// The owners shown; every owner when none.
     #[serde(default)]
-    pub tags: Option<Vec<String>>,
+    pub countries: Option<Vec<Country>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -197,7 +197,7 @@ impl AtHour for Minefields {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        params.tags.iter().flatten().try_for_each(|tag| validate_tag(tag))
+        params.countries.iter().flatten().try_for_each(dashboard_base::products::validate_country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -222,7 +222,7 @@ impl AtHour for Minefields {
         };
         let links = links(frame);
         let names = Names::new(at.holders);
-        let wanted: Option<BTreeSet<&str>> = params.tags.as_ref().map(|tags| tags.iter().map(String::as_str).collect());
+        let wanted: Option<BTreeSet<&str>> = params.countries.as_ref().map(|countries| countries.iter().filter_map(|country| at.holders.tag_at(country, frame.hour)).collect());
         let sea = at.context.sea.sea.clone().unwrap_or_default();
         let fold = fold(rows, |raw| tag_of(&links, &names, raw, frame.hour), |tag| wanted.as_ref().is_none_or(|wanted| wanted.contains(tag)), lost, &sea);
         let amount = dashboard_declare::field(TableId::NavalRegionalMines, "amount")?;
@@ -257,7 +257,7 @@ pub type MineRuns = Vec<(i32, i32, Option<String>)>;
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MineLine {
-    pub tag: String,
+    pub country: Country,
     pub runs: MineRuns,
 }
 
@@ -279,7 +279,7 @@ dashboard_base::reply_warnings!(MinefieldHistoryReply);
 pub struct MinefieldHistoryParams {
     pub branch_id: String,
     pub region: u32,
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     pub first_hour: i32,
     pub last_hour: i32,
 }
@@ -326,7 +326,7 @@ impl Product for MinefieldHistory {
         if params.first_hour > params.last_hour {
             return Err("A minefield history ends before it starts");
         }
-        params.tags.iter().try_for_each(|tag| validate_tag(tag))
+        params.countries.iter().try_for_each(dashboard_base::products::validate_country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -340,7 +340,7 @@ impl Product for MinefieldHistory {
         let recording = query.replay.recording();
         let amount = dashboard_declare::field(TableId::NavalRegionalMines, "amount")?;
         let mut lines = Vec::new();
-        for tag in &params.tags {
+        for tag in &params.countries {
             let mut runs: Vec<(i32, i32, Option<i64>)> = Vec::new();
             for held in query.holders.within(tag, params.first_hour, params.last_hour) {
                 let Holder::Found { id, .. } = held.holder else { continue };
@@ -358,7 +358,7 @@ impl Product for MinefieldHistory {
                     runs.extend(combine(held.get(&key).unwrap_or(&none), &witnesses, params.region, stretch.first, stretch.last));
                 }
             }
-            lines.push(MineLine { tag: tag.clone(), runs: runs.into_iter().map(|(first, last, value)| (first, last, value.map(|value| value.to_string()))).collect() });
+            lines.push(MineLine { country: tag.clone(), runs: runs.into_iter().map(|(first, last, value)| (first, last, value.map(|value| value.to_string()))).collect() });
         }
         Ok(MinefieldHistoryReply { region: params.region, lines, scale: SCALE, warnings: Vec::new() })
     }

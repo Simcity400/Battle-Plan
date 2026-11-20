@@ -1,3 +1,4 @@
+use dashboard_base::products::Country;
 use super::{
     inputs::{self, Hour, Input, Relation, Shown, State},
     walk::{self, Seen, Viewed, Walk},
@@ -14,10 +15,10 @@ use std::collections::BTreeMap;
 
 /// Tags held by slots of the same number, each country's raw id its slot, over `first..=last`.
 fn holders(tags: &[(&str, u32)], first: i32, last: i32) -> Holders {
-    Holders {
-        tags: tags.iter().map(|&(tag, slot)| (tag.to_owned(), vec![HolderRun { first, last, holder: Holder::Found { slot, id: slot }, starts_segment: true }])).collect::<BTreeMap<_, _>>(),
-        unknown: Vec::new(),
-    }
+    Holders::new(
+        tags.iter().map(|&(tag, slot)| (tag.to_owned(), vec![HolderRun { first, last, holder: Holder::Found { slot, id: slot }, starts_segment: true }])).collect::<BTreeMap<_, _>>(),
+        Vec::new(),
+    )
 }
 
 /// Country 1 at war with each of `enemies` (raw ids, linked to slots of the same number), every
@@ -162,8 +163,8 @@ const FACTORS: Factors = Factors { industry_given: 100_000, fuel_given: 100_000,
 fn contributions_credit_each_member_its_own_ledgers_and_same_side_deliveries_for_each_viewpoint() {
     let frame = participation();
     let held = holders(&[("ONE", 1), ("TWO", 2), ("THREE", 3)], 0, 1000);
-    for view in [None, Some("TWO")] {
-        let groups = contributions::groups(&frame, &held, view, Ok(FACTORS)).unwrap();
+    for view in [None, Some(Country::from("TWO")), Some(Country::Slot(2))] {
+        let groups = contributions::groups(&frame, &held, view.as_ref(), Ok(FACTORS)).unwrap();
         let group = &groups[0];
         assert!(group.reason.is_none(), "{:?}", group.reason);
         let row = |tag: &str| group.participants.iter().find(|row| row.tag == tag).unwrap();

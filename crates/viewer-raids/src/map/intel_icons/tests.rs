@@ -4,8 +4,13 @@ use crate::map::raids::test_support::{self, put};
 use replay_data::{
     rows::AgencyBufferedOperation, rows::AgencyOperationBuffersRow, rows::OperationEquipment,
     rows::OperationEquipmentTotal, rows::OperationRequirement, rows::PoliticsRow,
-    rows::RaidCounterOperative, rows::RaidIntelInputRow, rows::StateRow,
+    rows::LocalPlayerRow, rows::RaidCounterOperative, rows::RaidIntelInputRow, rows::StateRow,
 };
+
+/// The recording client views the country of raw `country` (positive) or observes `observer`.
+fn client(frame: &mut replay_frame::frame::DecodedFrame, country: u32, observer_country: u32) {
+    put::<tables::LocalPlayer>(frame, vec![LocalPlayerRow { country, observer_country }]);
+}
 use viewer_foundation::map::{native_resources::Context, sprites::Batch, test_support::gui};
 
 fn defines() -> IntelDefines {
@@ -331,6 +336,7 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
             })
             .collect(),
     );
+    client(&mut frame, 10, 0);
     put::<tables::AgencyOperationBuffers>(
         &mut frame,
         vec![AgencyOperationBuffersRow {
@@ -800,8 +806,18 @@ fn buffered_operation_icons(
     operations: Vec<OperationRow>,
     buffer: Option<AgencyOperationBuffersRow>,
 ) -> IntelIcons {
+    buffered_operation_icons_for(operations, buffer, (10, 0))
+}
+
+/// The icons of GER (slot 2) while the recording client views `(country, observer)`.
+fn buffered_operation_icons_for(
+    operations: Vec<OperationRow>,
+    buffer: Option<AgencyOperationBuffersRow>,
+    (country, observer): (u32, u32),
+) -> IntelIcons {
     let raids = test_support::assets();
     let mut frame = test_support::positive_frame();
+    client(&mut frame, country, observer);
     put::<tables::Operations>(&mut frame, operations);
     if let Some(buffer) = buffer {
         put::<tables::AgencyOperationBuffers>(&mut frame, vec![buffer]);
@@ -886,6 +902,37 @@ fn completed_bucket_admits_before_an_older_preparation_with_one_slot() {
 }
 
 #[test]
+fn the_client_buffer_draws_only_while_the_map_is_viewed_as_the_clients_country() {
+    let buffer = || AgencyOperationBuffersRow {
+        unready: vec![AgencyBufferedOperation { operation: 1, state: Some(10) }],
+        ..Default::default()
+    };
+    let operations = |icons: &IntelIcons| icons.states.iter().flat_map(|state| &state.entries).filter(|entry| entry.key == EntryKey::Operation(1)).count();
+    // GER viewed, the client playing GER or observing it: its buffer is GER's.
+    for client in [(10, 0), (0, 10)] {
+        let shown = buffered_operation_icons_for(vec![buffered_test_operation(1)], Some(buffer()), client);
+        assert_eq!(operations(&shown), 1, "{client:?}: {:?}", shown.report);
+    }
+    // The client views ENG: the buffer is ENG's, and GER's is not recorded.
+    let shown = buffered_operation_icons_for(vec![buffered_test_operation(1)], Some(buffer()), (11, 0));
+    assert_eq!(operations(&shown), 0);
+    assert!(
+        shown.report.reasons.keys().any(|reason| reason.contains("AgencyOperationBuffers holds only the recording client's buffer")),
+        "{:?}",
+        shown.report
+    );
+    // No client viewpoint recorded: withheld by name, never guessed.
+    let raids = test_support::assets();
+    let mut frame = test_support::positive_frame();
+    put::<tables::Operations>(&mut frame, vec![buffered_test_operation(1)]);
+    put::<tables::AgencyOperationBuffers>(&mut frame, vec![buffer()]);
+    let localisation = installed_content_localisation::localisation::Localisation::default();
+    let shown = icons(&IntelAssets::test(defines(), Vec::new(), Vec::new(), 0), &raids, &frame, 2, &localisation, "english");
+    assert_eq!(operations(&shown), 0);
+    assert!(shown.report.reasons.keys().any(|reason| reason.contains("the recording client's viewpoint is unknown")), "{:?}", shown.report);
+}
+
+#[test]
 fn unavailable_ui_buffer_withholds_saved_operations_and_names_the_refusal() {
     let icons = buffered_operation_icons(vec![buffered_test_operation(1)], None);
     assert!(
@@ -936,6 +983,7 @@ fn a_nonterminal_operation_at_zero_remaining_days_has_the_finished_entry_present
             ..buffered_test_operation(1)
         }],
     );
+    client(&mut frame, 10, 0);
     put::<tables::AgencyOperationBuffers>(
         &mut frame,
         vec![AgencyOperationBuffersRow {

@@ -16,8 +16,8 @@ import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import type { NameAt } from '../../dashboard/countryFacts';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { useCountryLooks } from '../../dashboard/countryLooks';
-import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { nameKey, useCountryFactsByKey } from '../../dashboard/countryNamesAt';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -79,7 +79,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset,
     subscribe: (changed: () => void) => clock.subscribeFrame(changed) } : undefined, [followsClock, track, clock, axisOffset]);
   useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
-  const dashboardTag = track ? defaultCountryTag(track) : null;
+  const dashboardTag = track ? defaultCountryKey(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, at, lastHour, identities),
     [widget.countries, dashboardTag, groups.data, at, lastHour, identities]);
@@ -107,7 +107,8 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   const identityHistories = useMemo(() => new Map(groups.data?.countryIdentities.map(history => [history.tag, history.identities]) ?? []), [groups.data]);
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
   // Sides still listed are named and coloured at the shown hour; the rest at a fixed hour each.
-  const { country, revision } = useCountriesAt(runtime.client, track, wanted.live, at, active, nameWanted.live, segmentAt, WORDS);
+  const { country, revision } = useCountriesAt(runtime.client, track, wanted.live, at, active, nameWanted.live, segmentAt, WORDS,
+    { clock, on: followsClock, hour: (clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null });
   const looks = useCountryLooks(runtime.client, track, wanted.live, at, active, segmentAt);
   const datedWanted = useMemo(() => {
     const pairs = new Map<string, NameAt>();
@@ -115,7 +116,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
     return [...pairs.values()];
   }, [nameWanted.dated, tipWanted]);
   const datedHours = Math.max(MAX_NAME_HOURS, new Set(datedWanted.map(pair => pair.hour)).size);
-  const styles = useCountryFactsRead(runtime.client, track, datedWanted, active, STYLES, datedHours);
+  const styles = useCountryFactsByKey(runtime.client, track, datedWanted, active, STYLES, datedHours);
   const flagWanted = useMemo(() => [...wanted.dated, ...tipWanted], [wanted.dated, tipWanted]);
   const flags = useCountryFlagsRead(runtime.client, track, flagWanted, active);
   const fixed = tokens.countryColours === 'fixed';

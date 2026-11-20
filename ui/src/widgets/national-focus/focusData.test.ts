@@ -11,7 +11,7 @@ import { HourStore, planRequests } from '../../dashboard/countryFacts.ts';
 import type { FocusOrder, FocusReply } from '../../generated/dashboard';
 import type { SegmentHours } from './focusData';
 
-const request = focusRequest('source', 'v1', { branchId: '1', tag: 'GER' });
+const request = focusRequest('source', 'v1', { branchId: '1', country: 'GER' });
 const first = { completed: [{ ordinal: 0, token: 'one', completedByHour: null }], current: 'two', continuous: null, paused: false };
 const reply: FocusReply = { history: { segments: [
   { firstHour: 100, lastHour: 123, order: first },
@@ -128,7 +128,7 @@ test('many focus widgets share one load while playback advances without requests
   assert.ok(results.every(value => value === results[0]));
   for (let hour = 100; hour <= 200; hour++) for (const result of results) focusAt(result.history, hour);
   assert.equal(calls, 1);
-  await loadProduct(client, focusRequest('source', 'v1', { branchId: '1', tag: 'ENG' }), new AbortController().signal, validateFocusReply);
+  await loadProduct(client, focusRequest('source', 'v1', { branchId: '1', country: 'ENG' }), new AbortController().signal, validateFocusReply);
   assert.equal(calls, 2);
 });
 
@@ -152,7 +152,7 @@ test('focus progress reports exact days and days left only from a known daily ra
 });
 
 test('dated focus artwork authenticates the read, retains empty text and refuses omitted tokens', () => {
-  const params = { branchId: '1', hour: 10, tag: 'synthetic', database: 'national' as const, tokens: ['focus'] };
+  const params = { branchId: '1', hour: 10, country: 'synthetic', database: 'national' as const, tokens: ['focus'] };
   const art = { token: 'focus', name: '', description: '', baseDurationDays: 10, icon: null as string | null };
   const dated = { branchId: '1', hour: 10, tag: 'synthetic', database: 'national', items: [{ artwork: art, reason: 'focus-window mode is not recorded' as string | null }], warnings: ['Named content warning'] };
   assert.equal(validateFocusArtworkReply(dated, params).items[0].reason, 'focus-window mode is not recorded');
@@ -171,8 +171,8 @@ test('dated focus artwork authenticates the read, retains empty text and refuses
 test('duration metadata and dated requests retain 5000 modded tokens without a chosen cap', () => {
   const artwork = Array.from({ length: 5000 }, (_, index) => ({ token: `synthetic_focus_${index}`, name: null, description: null, baseDurationDays: 10, icon: null }));
   assert.equal(validateFocusReply({ ...reply, artwork }).artwork.length, artwork.length);
-  const params = { branchId: '1', hour: 10, tag: 'synthetic', database: 'continuous' as const, tokens: artwork.map(art => art.token) };
-  assert.equal(validateFocusArtworkReply({ branchId: params.branchId, hour: params.hour, tag: params.tag, database: params.database,
+  const params = { branchId: '1', hour: 10, country: 'synthetic', database: 'continuous' as const, tokens: artwork.map(art => art.token) };
+  assert.equal(validateFocusArtworkReply({ branchId: params.branchId, hour: params.hour, tag: params.country, database: params.database,
     items: artwork.map(art => ({ artwork: art, reason: null })), warnings: [] }, params).items.length, 5000);
 });
 

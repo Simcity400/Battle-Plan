@@ -292,6 +292,8 @@ struct Made {
     stamp: u64,
     /// The hour of the rows they were made from.
     hour: Hour,
+    /// The perspective they were made for.
+    perspective: Choice,
     /// The newest hour those rows stand at: a step that changed no table of theirs moves it with no
     /// build at all ([`RowReader::through`]).
     stands: Hour,
@@ -491,7 +493,7 @@ fn work(shared: &Shared, select: &dyn Select, reader: &views::Reader, maker: tim
             Ok(prepared) => {
                 let stamp = held.published + 1;
                 (held.published, held.refused) = (stamp, None);
-                held.made = Some(Made { generation, stamp, hour: frame.hour, stands, frame: Some(frame), prepared: Arc::new(prepared) });
+                held.made = Some(Made { generation, stamp, hour: frame.hour, perspective, stands, frame: Some(frame), prepared: Arc::new(prepared) });
                 standing = Some(at);
             }
             Err(error) => held.refused = Some(format!("Today's unit models cannot be made from the rows at the head: {error}")),
@@ -521,6 +523,10 @@ pub struct Models {
     joined: Option<u64>,
     pub prepared: Option<(Hour, Arc<PreparedModels>)>,
     pub refused: Option<String>,
+    /// The perspective asked last, and the perspective `prepared` was made for: none for models
+    /// withheld while another country's were held.
+    asked: Option<Choice>,
+    prepared_for: Option<Choice>,
 }
 
 impl Models {
@@ -543,7 +549,7 @@ impl Models {
             Ok(worker) => (Some(worker), None),
             Err(error) => (None, Some(format!("The unit models' worker cannot start: {error}"))),
         };
-        Self { shared, worker, reader, maker, lines: None, made: None, generation: 0, shipless: None, joined: None, prepared: None, refused }
+        Self { shared, worker, reader, maker, lines: None, made: None, generation: 0, shipless: None, joined: None, prepared: None, refused, asked: None, prepared_for: None }
     }
 
     /// Its place in the step's timeline.
@@ -593,6 +599,7 @@ impl Models {
         };
         let asked = Asked { perspective: perspective.clone(), convoys: self.lines.clone(), naval };
         self.shared.lock().asked = Some(asked);
+        self.asked = Some(perspective.clone());
         timeline::mark(self.maker, Mark::Asked);
     }
 
@@ -625,7 +632,7 @@ impl Models {
         {
             let held = self.shared.lock();
             self.refused.clone_from(&held.refused);
-            if let Some(made) = held.made.as_ref().filter(|made| made.generation == self.generation)
+            if let Some(made) = held.made.as_ref().filter(|made| made.generation == self.generation && self.asked.as_ref() == Some(&made.perspective))
                 && self.made.as_ref().is_none_or(|ours| ours.stamp < made.stamp)
             {
                 arrived = self.made.as_ref().is_none_or(|ours| !Arc::ptr_eq(&ours.prepared, &made.prepared));
@@ -643,7 +650,14 @@ impl Models {
         if arrived && let Some(made) = &self.made {
             let prepared = Arc::clone(&made.prepared);
             (self.shipless, self.joined) = ((!prepared.naval()).then(|| Arc::clone(&prepared)), None);
-            self.prepared = Some((made.hour, prepared));
+            (self.prepared, self.prepared_for) = (Some((made.hour, prepared)), Some(made.perspective.clone()));
+        }
+        // Models made for another viewing country are no models of this one: none are drawn, by
+        // name, until its own arrive.
+        if let Some((hour, _)) = self.prepared.as_ref().filter(|_| self.prepared_for.is_some() && self.prepared_for != self.asked) {
+            let withheld = PreparedModels::withheld("the models of the viewing country chosen are being made");
+            (self.prepared, self.prepared_for, self.shipless, self.joined) = (Some((*hour, Arc::new(withheld))), None, None, None);
+            arrived = true;
         }
         arrived
     }

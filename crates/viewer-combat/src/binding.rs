@@ -186,7 +186,9 @@ pub(super) fn flags(static_content: &StaticContent, frame: &DecodedFrame) -> io:
         .collect())
 }
 impl Bindings {
-    /// `engaged` is the hour's engaged flag of every combat for the viewer.
+    /// `engaged` is the hour's engaged flag of every combat for the viewer; `navy_sources` the
+    /// hour's regional naval dominance sources; `rule_relations` the adjacency rule relations.
+    #[allow(clippy::too_many_arguments, reason = "the window's read inputs, each from another owner")]
     pub fn read(
         static_content: &StaticContent,
         frame: &DecodedFrame,
@@ -195,8 +197,16 @@ impl Bindings {
         engaged: &CombatFlags,
         paused: bool,
         nato: bool,
+        navy_sources: &viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap,
+        rule_relations: Option<&super::RuleRelations>,
     ) -> io::Result<Self> {
         let mut out = Self::default();
+        if let Selection::State(province) = selection {
+            return super::state_view::bind(static_content, frame, vision, province, nato, rule_relations);
+        }
+        if let Selection::NavalRegion(region) = selection {
+            return super::naval_region_view::bind(static_content, frame, vision, region, engaged, paused, navy_sources);
+        }
         if let Selection::AirRegion(region) = selection {
             return super::air_menu::bind(
                 static_content,
@@ -217,7 +227,7 @@ impl Bindings {
             Selection::Land(id) => out.land(static_content, frame, id, vision)?,
             Selection::Naval(id) => out.naval(static_content, frame, id, &flags)?,
             Selection::NavalResult(id) => out.naval_result(static_content, frame, id, &flags)?,
-            Selection::AirRegion(_) => unreachable!(),
+            Selection::AirRegion(_) | Selection::State(_) | Selection::NavalRegion(_) => unreachable!(),
         }
         super::details::bind(&mut out, static_content, frame, selection, &flags, vision)?;
         if let Selection::Naval(id) = selection {

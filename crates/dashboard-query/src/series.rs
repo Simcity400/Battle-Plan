@@ -6,7 +6,7 @@
 use crate::{
     Query,
     chart::{ChartBucket, ChartRun, ChartSummary, MarkCluster, MarkSummary},
-    identity::Holder,
+    identity::{Country, Holder, NOT_IN_HISTORY},
     log::{self, Pattern},
     read,
 };
@@ -33,26 +33,26 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// One line of a series: a tag's owner, and for a sub-keyed series one of its parts (0 for a
+/// One line of a series: a country's owner, and for a sub-keyed series one of its parts (0 for a
 /// series without parts).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ask {
-    pub tag: String,
+    pub country: Country,
     pub part: u128,
 }
 
 impl Ask {
     /// The line of a series without parts.
-    pub fn whole(tag: &str) -> Self {
-        Self { tag: tag.to_owned(), part: 0 }
+    pub fn whole(country: impl Into<Country>) -> Self {
+        Self { country: country.into(), part: 0 }
     }
 }
 
-/// A line as a request names it: a tag, and for a sub-keyed series its part's key.
+/// A line as a request names it: a country, and for a sub-keyed series its part's key.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesLineAsk {
-    pub tag: String,
+    pub country: Country,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub part: Option<String>,
@@ -116,11 +116,11 @@ pub struct SeriesDrop {
     pub after_raw: String,
 }
 
-/// A tag's value at an hour.
+/// A country's value at an hour.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesState {
-    pub tag: String,
+    pub country: Country,
     /// The part's key, for a sub-keyed series.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -150,7 +150,7 @@ pub struct SeriesKeyReply {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesEvent {
-    pub tag: String,
+    pub country: Country,
     pub hour: i32,
     pub ordinal: String,
     pub row: SeriesDrop,
@@ -176,7 +176,7 @@ pub enum NavigationKey {
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesRead {
-    pub tag: String,
+    pub country: Country,
     pub hour: i32,
     /// For a sub-keyed series, one part's key; none reads every part the owner holds at the hour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,7 +197,7 @@ pub struct SeriesPartLife {
     pub last_hour: i32,
 }
 
-/// Each asked tag's parts over a span: the list a breakdown's legend needs.
+/// Each asked country's parts over a span: the list a breakdown's legend needs.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesPartsReply {
@@ -210,7 +210,7 @@ pub struct SeriesPartsReply {
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesOwnerParts {
-    pub tag: String,
+    pub country: Country,
     pub parts: Vec<SeriesPartLife>,
     /// The span's hours whose parts are not known, with why.
     pub missing: Vec<MissingSpan>,
@@ -229,8 +229,8 @@ struct Params {
     branch_id: String,
     family: Family,
     #[serde(default)]
-    tags: Vec<String>,
-    /// A sub-keyed series' lines, (tag, part).
+    countries: Vec<Country>,
+    /// A sub-keyed series' lines, (country, part).
     #[serde(default)]
     lines: Vec<SeriesLineAsk>,
     #[serde(default)]
@@ -374,7 +374,7 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
             }
             let asks = match ranking {
                 Some(n) => ranked::stepped(&line, origin, key, bounds, n)?.into_iter().map(|tag| Ask::whole(&tag)).collect(),
-                None => line.asks(&params.tags, &params.lines)?,
+                None => line.asks(&params.countries, &params.lines)?,
             };
             // Main's autonomy alone answered none where nothing changes; every other series holds the origin.
             let hour = match series.kind {
@@ -386,14 +386,14 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
         PARTS => {
             let (from, to) = (hour_of(params.from, "from")?, hour_of(params.to, "to")?);
             let part_bits = series.parts.ok_or_else(|| invalid(format!("{} has no parts", series.kind)))?.bits;
-            serde_json::to_value(SeriesPartsReply { branch_id: params.branch_id.clone(), part_bits, owners: line.part_lives(&params.tags, from, to)? })?
+            serde_json::to_value(SeriesPartsReply { branch_id: params.branch_id.clone(), part_bits, owners: line.part_lives(&params.countries, from, to)? })?
         }
         "events-page" if series.drops => {
             let to = hour_of(params.to, "to")?;
             let from = params.from.map(|from| hour_of(Some(from), "from")).transpose()?.unwrap_or(query.timeline.first);
             let cursor = params.cursor.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| invalid("Invalid cursor"))?;
             let size = params.page_size.filter(|size| (1..=PAGE_LIMIT).contains(size)).ok_or_else(|| invalid("Invalid page size"))?;
-            serde_json::to_value(line.page(&params.tags, from, to, cursor, size)?)?
+            serde_json::to_value(line.page(&params.countries, from, to, cursor, size)?)?
         }
         crate::tile::PRODUCT => serde_json::to_value(crate::tile::reply(&line, &params.branch_id, value)?)?,
         _ => return Err(invalid(format!("{} does not answer {product}", series.kind))),
@@ -542,16 +542,16 @@ impl<'q, 'a> Line<'q, 'a> {
         }
     }
 
-    /// The lines a request names: its tags for a series without parts, its (tag, part) lines for
+    /// The lines a request names: its countries for a series without parts, its (country, part) lines for
     /// one with them. A line of every part summed is not offered: per-key buckets cannot give the
     /// least and greatest of a sum.
-    pub fn asks(&self, tags: &[String], lines: &[SeriesLineAsk]) -> io::Result<Vec<Ask>> {
-        if self.series.parts.is_some() && !tags.is_empty() {
+    pub fn asks(&self, countries: &[Country], lines: &[SeriesLineAsk]) -> io::Result<Vec<Ask>> {
+        if self.series.parts.is_some() && !countries.is_empty() {
             return Err(invalid(format!("{} is asked by (tag, part) lines, never a sum of its parts", self.series.kind)));
         }
-        let mut out: Vec<Ask> = tags.iter().map(|tag| Ask::whole(tag)).collect();
+        let mut out: Vec<Ask> = countries.iter().map(Ask::whole).collect();
         for line in lines {
-            out.push(Ask { tag: line.tag.clone(), part: self.part_of(line.part.as_deref())? });
+            out.push(Ask { country: line.country.clone(), part: self.part_of(line.part.as_deref())? });
         }
         Ok(out)
     }
@@ -783,35 +783,36 @@ impl<'q, 'a> Line<'q, 'a> {
             return Ok(drawn
                 .into_iter()
                 .zip(charts)
-                .map(|((ask, membership), (summary, missing))| RankedLine { tag: ask.tag, summary, membership, missing })
+                .map(|((ask, membership), (summary, missing))| RankedLine { tag: ask.country.key().into_owned(), summary, membership, missing })
                 .collect());
         }
         lines
             .into_iter()
             .map(|(tag, (buckets, membership))| {
-                let parts = self.parts(&tag, from, to);
-                let missing = self.missing(&tag, from, to, &parts)?;
+                let country = Country::from(&tag);
+                let parts = self.parts(&country, from, to);
+                let missing = self.missing(&country, from, to, &parts)?;
                 Ok(RankedLine { summary: ChartSummary { from: f64::from(from), to: f64::from(to), width, buckets, runs: None }, membership, missing, tag })
             })
             .collect()
     }
 
-    /// `tag`'s parts meeting `from..=to`, of a series without parts.
-    pub fn parts(&self, tag: &str, from: i32, to: i32) -> Vec<Part> {
-        self.held(&Ask::whole(tag), from, to)
+    /// `country`'s parts meeting `from..=to`, of a series without parts.
+    pub fn parts(&self, country: impl Into<Country>, from: i32, to: i32) -> Vec<Part> {
+        self.held(&Ask::whole(country), from, to)
     }
 
-    /// The parts of `ask`'s line meeting `from..=to`: its tag's holders' rows of its part.
+    /// The parts of `ask`'s line meeting `from..=to`: its country's holders' rows of its part.
     pub fn held(&self, ask: &Ask, from: i32, to: i32) -> Vec<Part> {
         if self.series.key.unowned() {
-            return self.series.key.fixed(&ask.tag).map_or_else(Vec::new, |key| self.fixed(key, from, to));
+            return ask.country.tag().and_then(|tag| self.series.key.fixed(tag)).map_or_else(Vec::new, |key| self.fixed(key, from, to));
         }
         let timeline = &self.query.timeline;
-        let tag = ask.tag.as_str();
+        let country = &ask.country;
         let mut out: Vec<Part> = Vec::new();
-        for run in self.query.holders.within(tag, from, to) {
+        for run in self.query.holders.within(country, from, to) {
             let Holder::Found { slot, id } = run.holder else { continue };
-            let holder_first = self.query.holders.at(tag, run.first).map_or(run.first, |held| held.first);
+            let holder_first = self.query.holders.at(country, run.first).map_or(run.first, |held| held.first);
             for stretch in timeline.within(run.first, run.last) {
                 // The segment begins where the uncut stretch does, back through loads into recorded
                 // hours, never before its holder took the tag.
@@ -837,21 +838,31 @@ impl<'q, 'a> Line<'q, 'a> {
         out
     }
 
-    /// Why `tag` has no value at `hour`, when its holder or the timeline says so.
-    fn missing_at(&self, tag: &str, hour: i32) -> Option<String> {
+    /// Why `country` has no value at `hour`, when its holder or the timeline says so.
+    pub(crate) fn missing_at(&self, country: &Country, hour: i32) -> Option<String> {
         if self.query.timeline.at(hour).is_none() {
             return Some(self.query.timeline.reason(hour));
         }
         if self.series.key.unowned() {
-            return self.series.key.fixed(tag).is_none().then(|| format!("{tag} names no row of {}", self.series.kind));
+            return country.tag().and_then(|tag| self.series.key.fixed(tag)).is_none().then(|| self.query.holders.say(country, hour, |name| format!("{name} names no row of {}", self.series.kind)));
         }
+        let Some(name) = self.query.holders.label(country, hour) else { return Some(NOT_IN_HISTORY.to_owned()) };
         if let Some((_, _, reason)) = self.query.holders.unknown.iter().find(|(first, last, _)| *first <= hour && hour <= *last) {
-            return Some(format!("Who holds {tag} is not known: {reason}"));
+            return Some(format!("Who holds {name} is not known: {reason}"));
         }
-        match self.query.holders.at(tag, hour) {
-            None => Some(format!("{tag} is held by no country")),
-            Some(run) if run.holder == Holder::Unresolved => Some(format!("No link resolves the country holding {tag}")),
+        match self.query.holders.at(country, hour) {
+            None => Some(self.absent(country, hour)),
+            Some(run) if run.holder == Holder::Unresolved => Some(format!("No link resolves the country holding {name}")),
             Some(_) => None,
+        }
+    }
+
+    /// Why `country` has no row at `hour` it holds no tag at: a tag no country holds, or a country
+    /// that does not exist then, whose value is not recorded there.
+    pub(crate) fn absent(&self, country: &Country, hour: i32) -> String {
+        match country {
+            Country::Tag(tag) => format!("{tag} is held by no country"),
+            Country::Slot(_) => self.query.holders.say(country, hour, |name| format!("{name}'s {} was not recorded at this hour", self.measure.name)),
         }
     }
 
@@ -887,28 +898,28 @@ impl<'q, 'a> Line<'q, 'a> {
         }
         let mut asks: Vec<(Ask, i32)> = Vec::new();
         let mut planned: Vec<Result<usize, SeriesState>> = Vec::new();
-        let unread = |read: &SeriesRead, missing: String| SeriesState { tag: read.tag.clone(), part: None, hour: read.hour, run: None, drop: None, missing: Some(missing) };
+        let unread = |read: &SeriesRead, missing: String| SeriesState { country: read.country.clone(), part: None, hour: read.hour, run: None, drop: None, missing: Some(missing) };
         for read in reads {
             if self.series.parts.is_none() || read.part.is_some() {
-                asks.push((Ask { tag: read.tag.clone(), part: self.part_of(read.part.as_deref())? }, read.hour));
+                asks.push((Ask { country: read.country.clone(), part: self.part_of(read.part.as_deref())? }, read.hour));
                 planned.push(Ok(asks.len() - 1));
                 continue;
             }
-            if let Some(reason) = self.missing_at(&read.tag, read.hour) {
+            if let Some(reason) = self.missing_at(&read.country, read.hour) {
                 planned.push(Err(unread(read, reason)));
                 continue;
             }
-            let (Some(stretch), Some(Holder::Found { slot, id })) = (self.query.timeline.at(read.hour), self.query.holders.at(&read.tag, read.hour).map(|run| run.holder)) else {
-                planned.push(Err(unread(read, format!("{} is held by no country", read.tag))));
+            let (Some(stretch), Some(Holder::Found { slot, id })) = (self.query.timeline.at(read.hour), self.query.holders.at(&read.country, read.hour).map(|run| run.holder)) else {
+                planned.push(Err(unread(read, self.absent(&read.country, read.hour))));
                 continue;
             };
             let parts = self.series.parts.expect("a sub-keyed series");
             match self.owned_at(stretch.run, read.hour, self.series.key.of(slot, id), top)? {
                 Err(reason) => planned.push(Err(unread(read, reason))),
-                Ok(keys) if keys.is_empty() => planned.push(Err(unread(read, format!("{} holds no row of {} at this hour", read.tag, self.series.kind)))),
+                Ok(keys) if keys.is_empty() => planned.push(Err(unread(read, format!("{} holds no row of {} at this hour", self.query.holders.name(&read.country, read.hour), self.series.kind)))),
                 Ok(keys) => {
                     for key in keys {
-                        asks.push((Ask { tag: read.tag.clone(), part: parts.part(key) }, read.hour));
+                        asks.push((Ask { country: read.country.clone(), part: parts.part(key) }, read.hour));
                         planned.push(Ok(asks.len() - 1));
                     }
                 }
@@ -932,17 +943,17 @@ impl<'q, 'a> Line<'q, 'a> {
         let mut blocks: HashMap<(u32, u32), Vec<(usize, Part, (i32, i32))>> = HashMap::new();
         let mut out: Vec<SeriesState> = reads
             .iter()
-            .map(|(ask, hour)| SeriesState { tag: ask.tag.clone(), part: self.part_text(ask), hour: *hour, run: None, drop: None, missing: None })
+            .map(|(ask, hour)| SeriesState { country: ask.country.clone(), part: self.part_text(ask), hour: *hour, run: None, drop: None, missing: None })
             .collect();
         for (at, (ask, hour)) in reads.iter().enumerate() {
             let hour = *hour;
-            if let Some(reason) = self.missing_at(&ask.tag, hour) {
+            if let Some(reason) = self.missing_at(&ask.country, hour) {
                 out[at].missing = Some(reason);
                 continue;
             }
             let timeline = &self.query.timeline;
             let Some(whole) = self.held(ask, timeline.first, timeline.last).into_iter().find(|part| part.first <= hour && hour <= part.last) else {
-                out[at].missing = Some(format!("{} is held by no country", ask.tag));
+                out[at].missing = Some(self.absent(&ask.country, hour));
                 continue;
             };
             let part = whole;
@@ -975,7 +986,7 @@ impl<'q, 'a> Line<'q, 'a> {
                 let Some(found) = runs.iter().position(|run| run.0 <= hour && hour <= run.1) else { continue };
                 let (first, last, value) = runs[found];
                 let Some(value) = value else {
-                    out[at].missing = Some(format!("{}'s {} was not recorded at this hour", out[at].tag, self.measure.name));
+                    out[at].missing = Some(format!("{}'s {} was not recorded at this hour", self.query.holders.name(&out[at].country, hour), self.measure.name));
                     continue;
                 };
                 let (read_first, read_last) = (first, last);
@@ -1005,22 +1016,22 @@ impl<'q, 'a> Line<'q, 'a> {
         Ok(out)
     }
 
-    /// `tag`'s chart over `from..=to` drawn `width` pixels wide, and the hours it holds no value.
-    pub fn summary(&self, tag: &str, from: i32, to: i32, width: u32) -> io::Result<(ChartSummary, Vec<MissingSpan>)> {
-        Ok(self.summaries(&[tag.to_owned()], from, to, width)?.remove(0))
+    /// `country`'s chart over `from..=to` drawn `width` pixels wide, and the hours it holds no value.
+    pub fn summary(&self, country: impl Into<Country>, from: i32, to: i32, width: u32) -> io::Result<(ChartSummary, Vec<MissingSpan>)> {
+        Ok(self.summaries(&[country.into()], from, to, width)?.remove(0))
     }
 
     /// Each of `tags`' charts over `from..=to`, `width` pixels wide, and the hours each holds no
     /// value: one read of each run the view meets, for every tag at once.
-    pub fn summaries(&self, tags: &[String], from: i32, to: i32, width: u32) -> io::Result<Vec<(ChartSummary, Vec<MissingSpan>)>> {
-        let drawn: Vec<(Ask, Vec<(i32, i32)>)> = tags.iter().map(|tag| (Ask::whole(tag), vec![(from, to)])).collect();
+    pub fn summaries<C: Clone + Into<Country>>(&self, countries: &[C], from: i32, to: i32, width: u32) -> io::Result<Vec<(ChartSummary, Vec<MissingSpan>)>> {
+        let drawn: Vec<(Ask, Vec<(i32, i32)>)> = countries.iter().map(|country| (Ask::whole(country.clone()), vec![(from, to)])).collect();
         self.summaries_within(&drawn, from, to, width)
     }
 
     /// [`Self::summaries`] with each tag's line drawn only over its own spans of the view (a
     /// ranking's membership): a line starts afresh at each span.
     pub fn summaries_within(&self, drawn: &[(Ask, Vec<(i32, i32)>)], from: i32, to: i32, width: u32) -> io::Result<Vec<(ChartSummary, Vec<MissingSpan>)>> {
-        let tags: Vec<&String> = drawn.iter().map(|(ask, _)| &ask.tag).collect();
+        let tags: Vec<&Country> = drawn.iter().map(|(ask, _)| &ask.country).collect();
         let hours = i64::from(to) - i64::from(from) + 1;
         let mut out = Vec::with_capacity(tags.len());
         match hours > i64::from(width) {
@@ -1028,12 +1039,12 @@ impl<'q, 'a> Line<'q, 'a> {
                 let (level, bin_hours) = grid(hours, width);
                 for (tag, (buckets, held)) in tags.iter().zip(self.binned(drawn, from, to, level, bin_hours)?) {
                     let summary = ChartSummary { from: f64::from(from), to: f64::from(to), width, buckets, runs: None };
-                    out.push((summary, self.missing(tag, from, to, &held)?));
+                    out.push((summary, self.missing(*tag, from, to, &held)?));
                 }
             }
             false => {
                 for (tag, (runs, held)) in tags.iter().zip(self.hourly_runs(drawn, from, to)?) {
-                    out.push((self.hourly(runs, from, to, width), self.missing(tag, from, to, &held)?));
+                    out.push((self.hourly(runs, from, to, width), self.missing(*tag, from, to, &held)?));
                 }
             }
         }
@@ -1496,9 +1507,10 @@ impl<'q, 'a> Line<'q, 'a> {
     /// hours no part holds ([`Self::unheld`]), and within each part the hours its table was not
     /// complete and, where an absent row is no value, the hours outside its key's life in the run.
     /// Exact hours, read from the blocks' page entries and the table's lifetimes, whatever the bins.
-    pub fn missing(&self, tag: &str, from: i32, to: i32, parts: &[Part]) -> io::Result<Vec<MissingSpan>> {
-        let mut out = self.unheld(tag, from, to, parts);
-        let rowless = format!("{tag}'s {} was not recorded here", self.measure.name);
+    pub fn missing(&self, country: impl Into<Country>, from: i32, to: i32, parts: &[Part]) -> io::Result<Vec<MissingSpan>> {
+        let country = &country.into();
+        let mut out = self.unheld(country, from, to, parts);
+        let rowless = format!("{}'s {} was not recorded here", self.query.holders.name(country, to), self.measure.name);
         for part in parts {
             let complete = self.incomplete(part, from, to, &mut out)?;
             if complete.is_empty() {
@@ -1565,7 +1577,7 @@ impl<'q, 'a> Line<'q, 'a> {
     /// The hours of `from..=to` no part of `tag` holds, each stretch with its reason: one reason
     /// between consecutive boundaries of the timeline's stretches and unheld hours, the identity
     /// table's unknown hours and the tag's holder runs.
-    pub fn unheld(&self, tag: &str, from: i32, to: i32, parts: &[Part]) -> Vec<MissingSpan> {
+    pub fn unheld(&self, country: &Country, from: i32, to: i32, parts: &[Part]) -> Vec<MissingSpan> {
         let mut edges: Vec<i64> = Vec::new();
         for gap in &self.query.timeline.unheld {
             edges.extend([i64::from(gap.first), i64::from(gap.last) + 1]);
@@ -1573,7 +1585,7 @@ impl<'q, 'a> Line<'q, 'a> {
         for (first, last, _) in &self.query.holders.unknown {
             edges.extend([i64::from(*first), i64::from(*last) + 1]);
         }
-        for run in self.query.holders.tags.get(tag).into_iter().flatten() {
+        for run in self.query.holders.runs(country) {
             edges.extend([i64::from(run.first), i64::from(run.last) + 1]);
         }
         for stretch in &self.query.timeline.stretches {
@@ -1588,8 +1600,8 @@ impl<'q, 'a> Line<'q, 'a> {
                 let next = edges[edges.partition_point(|&edge| edge <= at)..].first().copied().unwrap_or(i64::MAX);
                 let end = (next - 1).min(last);
                 let reason = self
-                    .missing_at(tag, at as i32)
-                    .unwrap_or_else(|| format!("{tag}'s {} was not recorded here", self.measure.name));
+                    .missing_at(country, at as i32)
+                    .unwrap_or_else(|| format!("{}'s {} was not recorded here", self.query.holders.name(country, at as i32), self.measure.name));
                 match out.last_mut() {
                     Some(held) if held.reason == reason && i64::from(held.last_hour) + 1 == at => held.last_hour = end as i32,
                     _ => out.push(MissingSpan { first_hour: at as i32, last_hour: end as i32, reason }),
@@ -1666,8 +1678,8 @@ impl<'q, 'a> Line<'q, 'a> {
 
     /// The nearest hour from `origin` toward `key` at which any measure of any tag changes,
     /// within `bounds`; the origin itself, held within the bounds, where nothing changes.
-    pub fn navigate(&self, tags: &[String], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
-        let asks: Vec<Ask> = tags.iter().map(|tag| Ask::whole(tag)).collect();
+    pub fn navigate<C: Clone + Into<Country>>(&self, countries: &[C], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
+        let asks: Vec<Ask> = countries.iter().map(|country| Ask::whole(country.clone())).collect();
         self.navigate_lines(&asks, measures, origin, key, bounds)
     }
 
@@ -1730,12 +1742,12 @@ impl<'q, 'a> Line<'q, 'a> {
 
     /// The drops log's patterns of `tags` (each a group) over `from..=to`: each holder part's
     /// rows of this measure.
-    fn drop_patterns(&self, tags: &[String], from: i32, to: i32) -> io::Result<Vec<Pattern>> {
+    fn drop_patterns<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32) -> io::Result<Vec<Pattern>> {
         let kind = self.series.measures.iter().position(|measure| std::ptr::eq(measure, self.measure)).ok_or_else(|| invalid("No such measure"))?;
         let mask = u128::from(u32::MAX) << log::facet_shift(0) | u128::from(u32::MAX) << log::facet_shift(1);
         let mut out = Vec::new();
         for (group, tag) in tags.iter().enumerate() {
-            for part in self.parts(tag, from, to) {
+            for part in self.parts(tag.clone(), from, to) {
                 out.push(Pattern {
                     run: part.run,
                     first: part.first,
@@ -1756,7 +1768,7 @@ impl<'q, 'a> Line<'q, 'a> {
     /// Each of `tags`' drops from `first` through `last`, by bin of `bin_hours` on the absolute
     /// grid from `first` (index, count), and how many it dropped on the timeline before `first`:
     /// exact, from the drops log's counts and, under six hours, its rows.
-    pub(crate) fn drop_counts(&self, tags: &[String], first: i32, last: i32, bin_hours: i64) -> io::Result<Vec<(u64, Vec<(u32, u64)>)>> {
+    pub(crate) fn drop_counts<C: Clone + Into<Country>>(&self, tags: &[C], first: i32, last: i32, bin_hours: i64) -> io::Result<Vec<(u64, Vec<(u32, u64)>)>> {
         let patterns = self.drop_patterns(tags, self.query.timeline.first, last)?;
         let counts = self.drops_log()?.counts(&patterns, tags.len(), first, last, bin_hours)?;
         Ok(counts.into_iter().map(|counts| (counts.before, counts.bins)).collect())
@@ -1764,7 +1776,7 @@ impl<'q, 'a> Line<'q, 'a> {
 
     /// A page of the tags' drops from ordinal `cursor` within `from..=to`. Ordinals count from
     /// the timeline's first drop of these tags; a row's own ordinal counts its country's.
-    pub fn page(&self, tags: &[String], from: i32, to: i32, cursor: u64, size: u32) -> io::Result<SeriesEventPage> {
+    pub fn page<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32, cursor: u64, size: u32) -> io::Result<SeriesEventPage> {
         let patterns = self.drop_patterns(tags, self.query.timeline.first, to)?;
         let page = self.drops_log()?.page(&patterns, tags.len(), from, to, cursor, size)?;
         let cell = |row: &log::Row, at: usize| match row.cells.get(at) {
@@ -1775,7 +1787,7 @@ impl<'q, 'a> Line<'q, 'a> {
         for paged in &page.rows {
             let hour = paged.row.hour;
             rows.push(SeriesEvent {
-                tag: tags[paged.group].clone(),
+                country: tags[paged.group].clone().into(),
                 hour,
                 ordinal: paged.own.to_string(),
                 row: SeriesDrop { hour, before_raw: cell(&paged.row, 0)?, after_raw: cell(&paged.row, 1)? },
@@ -1786,7 +1798,7 @@ impl<'q, 'a> Line<'q, 'a> {
 
     /// Each of `tags`' drops over the view as marks, each cluster at most eighteen pixels wide:
     /// counted from the drops log for every tag at once, a cluster's hours those of its bins.
-    pub fn marks_of(&self, tags: &[String], from: i32, to: i32, width: u32) -> io::Result<Vec<MarkSummary>> {
+    pub fn marks_of<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32, width: u32) -> io::Result<Vec<MarkSummary>> {
         let hours = i64::from(to) - i64::from(from) + 1;
         let span = ((hours * 18 + i64::from(width) - 1) / i64::from(width)).max(1);
         let bin = log::bin_for(span, 1);
@@ -1830,7 +1842,7 @@ impl<'q, 'a> Line<'q, 'a> {
     /// Each tag's parts over `from..=to` with the first and last hour it held each: its holders'
     /// key ranges of the table's lifetimes in each stretch, read once a run; and the hours no part
     /// is known, the tag unheld or its table not complete, where a part may be missing.
-    pub fn part_lives(&self, tags: &[String], from: i32, to: i32) -> io::Result<Vec<SeriesOwnerParts>> {
+    pub fn part_lives<C: Clone + Into<Country>>(&self, tags: &[C], from: i32, to: i32) -> io::Result<Vec<SeriesOwnerParts>> {
         let parts = self.series.parts.ok_or_else(|| invalid(format!("{} has one row an owner: it has no parts", self.series.kind)))?;
         if dashboard_declare::read_by_key(self.series.table) {
             return Err(invalid(format!("{} is not summarized: its parts' lifetimes are not offered", self.series.kind)));
@@ -1843,7 +1855,8 @@ impl<'q, 'a> Line<'q, 'a> {
         let mut out = Vec::with_capacity(tags.len());
         for tag in tags {
             let mut found: BTreeMap<u128, (i32, i32)> = BTreeMap::new();
-            let held = self.parts(tag, from, to);
+            let country: Country = tag.clone().into();
+            let held = self.parts(&country, from, to);
             for part in &held {
                 if !lives.contains_key(&part.run) {
                     let mut read = crate::cost::lifetimes(recording, part.run, self.series.table)?;
@@ -1863,12 +1876,12 @@ impl<'q, 'a> Line<'q, 'a> {
                     span.1 = span.1.max(last as i32);
                 }
             }
-            let mut missing = self.unheld(tag, from, to, &held);
+            let mut missing = self.unheld(&country, from, to, &held);
             for part in &held {
                 self.incomplete(part, from, to, &mut missing)?;
             }
             out.push(SeriesOwnerParts {
-                tag: tag.clone(),
+                country,
                 parts: found
                     .into_iter()
                     .map(|(part, (first_hour, last_hour))| SeriesPartLife { part: part.to_string(), id: parts.id(part).map(|id| id.to_string()), first_hour, last_hour })

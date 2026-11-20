@@ -165,7 +165,7 @@ export function recordedSpans(span: Span, missing: readonly Span[]): Span[] {
  * recorded spans of `span`: the `chosen` countries (at zero when they raided none), or with `top` the countries ever
  * among the top `count` by the metric, each with the spans it was. A raid without a named raider is counted apart. */
 export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing: readonly Span[], chosen: readonly string[],
-  top: { count: number; metric: RaidMetric } | null): RaidTally {
+  top: { count: number; metric: RaidMetric } | null, keyOf: (raider: string, hour: number) => string = raider => raider): RaidTally {
   const events = new Map<string, [number, 0 | 1][]>();
   let unattributed = 0;
   for (const episode of episodes) {
@@ -174,9 +174,13 @@ export function raidTally(episodes: readonly RaidEpisode[], span: Span, missing:
     if (episode.succeeded && episode.endedHour !== null) marks.push([episode.endedHour, 1]);
     if (!marks.length) continue;
     if (episode.raider === null) { unattributed++; continue; }
-    const list = events.get(episode.raider) ?? [];
-    list.push(...marks);
-    events.set(episode.raider, list);
+    // Each mark counts for the country the raider tag was then: a chosen slot takes every tag its country held.
+    for (const mark of marks) {
+      const key = keyOf(episode.raider, mark[0]);
+      const list = events.get(key) ?? [];
+      list.push(mark);
+      events.set(key, list);
+    }
   }
   for (const list of events.values()) list.sort((a, b) => a[0] - b[0]);
   const hours = [...new Set([...events.values()].flatMap(list => list.map(([hour]) => hour)))].sort((a, b) => a - b);

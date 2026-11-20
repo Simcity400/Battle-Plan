@@ -15,8 +15,8 @@
 //! supply position, size, sprite, frame and font; the recorded emblem appends
 //! [`EMBLEM_SUFFIX`]. Interface pixels use [`super::super::ui_scale`]. Pins retain
 //! [`PING_PRIORITY`] across map modes and nearer pins draw over farther ones.
-//! Hover highlights the union of theatre regions and leaving clears it, without
-//! a tooltip. Pointer state belongs to the view.
+//! Hover highlights the union of theatre regions and leaving clears it; the hover
+//! carries the theatre's key for its tooltip. Pointer state belongs to the view.
 
 use replay_data::rows::FactionTheatreRow;
 use std::collections::HashMap;
@@ -106,6 +106,8 @@ pub fn theatre_anchor(positions: &[[f32; 3]]) -> Option<[f32; 3]> {
 pub(crate) struct Pin {
     /// The theatre's first region, whose listed provinces keep the pin.
     pub(crate) first_region: u32,
+    /// The theatre's FactionTheatres key: faction and ordinal.
+    pub(crate) theatre: (u64, u32),
     pub(crate) regions: Arc<[u32]>,
     pub(crate) anchor: [f32; 3],
     /// The emblem sprite name.
@@ -249,6 +251,7 @@ impl HourPins {
             emblem.extend_from_slice(EMBLEM_SUFFIX.as_bytes());
             pins.push(Pin {
                 first_region: row.regions[0],
+                theatre: (row.faction, row.ordinal),
                 regions: row.regions.clone().into(),
                 anchor,
                 emblem,
@@ -268,6 +271,7 @@ pub(super) struct PreparedPins {
 struct PlacedPin {
     depth: f32,
     region: u32,
+    theatre: (u64, u32),
     regions: Arc<[u32]>,
     screen: [f32; 2],
     emblem: Vec<u8>,
@@ -296,6 +300,7 @@ pub(super) fn faction_pings(inputs: &CounterInputs<'_>, hour: &HourPins, out: &m
         out.native_pings.placed.push(PlacedPin {
             depth: projection.depth,
             region: pin.first_region,
+            theatre: pin.theatre,
             regions: Arc::clone(&pin.regions),
             screen: projection.position,
             emblem: pin.emblem.clone(),
@@ -312,6 +317,8 @@ pub(super) fn faction_pings(inputs: &CounterInputs<'_>, hour: &HourPins, out: &m
 #[derive(Clone, Debug, PartialEq)]
 pub struct PinHover {
     pub rect: [f32; 4],
+    /// The theatre's FactionTheatres key: faction and ordinal.
+    pub theatre: (u64, u32),
     pub regions: Arc<[u32]>,
     pub layer: u64,
 }
@@ -522,6 +529,7 @@ impl PreparedPins {
                     if let Some(rect) = hover {
                         report.faction_pin_hovers.push(PinHover {
                             rect,
+                            theatre: pins[&drawn.owner].1.theatre,
                             regions: Arc::clone(&pins[&drawn.owner].1.regions),
                             layer: layer(PING_PRIORITY, ordinal as u32, 0),
                         });

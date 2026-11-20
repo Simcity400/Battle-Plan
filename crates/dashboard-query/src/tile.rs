@@ -22,11 +22,12 @@
 
 use crate::{
     chart::{ChartBucket, ChartRun},
+    identity::Country,
     series::{Ask, Line, MissingSpan, SeriesLineAsk, Span},
 };
 use replay_columnar::summary::{BASE_HOURS, bucket_hours};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io};
+use std::io;
 use ts_rs::TS;
 
 /// The product a tile is asked under.
@@ -54,11 +55,12 @@ struct Params {
     bin_hours: i64,
     index: i64,
     #[serde(default)]
-    tags: Vec<String>,
-    /// A sub-keyed series' lines, (tag, part).
+    countries: Vec<Country>,
+    /// A sub-keyed series' lines, (country, part).
     #[serde(default)]
     lines: Vec<SeriesLineAsk>,
-    within: Option<BTreeMap<String, Vec<Span>>>,
+    /// Each country's spans its lines are drawn over.
+    within: Option<Vec<(Country, Vec<Span>)>>,
     #[serde(default)]
     with_marks: bool,
 }
@@ -88,7 +90,7 @@ pub struct TileMarks {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TileLine {
-    pub tag: String,
+    pub country: Country,
     /// The part's key, for a sub-keyed series.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -167,8 +169,8 @@ pub fn closure(first: i32, last: i32, timeline_last: i32) -> (bool, Option<i32>)
 /// The tile `params` ask of `line`'s tags.
 pub fn reply(line: &Line<'_, '_>, branch_id: &str, params: &serde_json::Value) -> io::Result<SeriesTileReply> {
     let params: Params = serde_json::from_value(params.clone()).map_err(|error| invalid(format!("Invalid tile request: {error}")))?;
-    let asks = line.asks(&params.tags, &params.lines)?;
-    tile(line, branch_id, &asks, params.within.as_ref(), params.bin_hours, params.index, params.with_marks)
+    let asks = line.asks(&params.countries, &params.lines)?;
+    tile(line, branch_id, &asks, params.within.as_deref(), params.bin_hours, params.index, params.with_marks)
 }
 
 /// Tile `index` of bins of `bin_hours` of `asks`' lines, each drawn only over its tag's spans of
@@ -177,7 +179,7 @@ pub fn tile(
     line: &Line<'_, '_>,
     branch_id: &str,
     asks: &[Ask],
-    within: Option<&BTreeMap<String, Vec<Span>>>,
+    within: Option<&[(Country, Vec<Span>)]>,
     bin_hours: i64,
     index: i64,
     with_marks: bool,
@@ -187,11 +189,14 @@ pub fn tile(
     let query = line.query();
     let key = line.series().key;
     for ask in asks {
-        if key.unowned() && key.fixed(&ask.tag).is_none() {
-            return Err(invalid(format!("{} names no row of {}", ask.tag, line.series().kind)));
+        if key.unowned() && ask.country.tag().and_then(|tag| key.fixed(tag)).is_none() {
+            return Err(invalid(format!("{} names no row of {}", ask.country, line.series().kind)));
         }
-        if !key.unowned() && !query.holders.tags.contains_key(&ask.tag) {
-            return Err(invalid(format!("No country of this history holds the tag {}", ask.tag)));
+        if !key.unowned() && !query.holders.named(&ask.country) {
+            return Err(invalid(match &ask.country {
+                Country::Tag(tag) => format!("No country of this history holds the tag {tag}"),
+                Country::Slot(slot) => format!("No country of this history is the country {slot}"),
+            }));
         }
     }
     let read_from = first - bin_hours as i32;
@@ -200,9 +205,9 @@ pub fn tile(
         .map(|ask| {
             let spans = match within {
                 Some(within) => within
-                    .get(&ask.tag)
-                    .into_iter()
-                    .flatten()
+                    .iter()
+                    .filter(|(country, _)| *country == ask.country)
+                    .flat_map(|(_, spans)| spans)
                     .map(|span| (span.first_hour.max(read_from), span.last_hour.min(last)))
                     .filter(|(a, b)| a <= b)
                     .collect(),
@@ -214,8 +219,8 @@ pub fn tile(
     let scale = line.scale();
     let mut marks = match with_marks && line.drops() {
         true => {
-            let tags: Vec<String> = asks.iter().map(|ask| ask.tag.clone()).collect();
-            line.drop_counts(&tags, first, last, bin_hours)?.into_iter().map(|(before, bins)| Some(TileMarks { before: before.to_string(), bins })).collect()
+            let countries: Vec<Country> = asks.iter().map(|ask| ask.country.clone()).collect();
+            line.drop_counts(&countries, first, last, bin_hours)?.into_iter().map(|(before, bins)| Some(TileMarks { before: before.to_string(), bins })).collect()
         }
         false => vec![None; asks.len()],
     };
@@ -223,9 +228,9 @@ pub fn tile(
     for (at, ask) in asks.iter().enumerate() {
         let parts = line.held(ask, first, last);
         lines.push(TileLine {
-            tag: ask.tag.clone(),
+            country: ask.country.clone(),
             part: line.part_text(ask),
-            missing: line.missing(&ask.tag, first, last, &parts)?,
+            missing: line.missing(&ask.country, first, last, &parts)?,
             parts: parts
                 .iter()
                 .map(|part| TilePart { first_hour: part.first, last_hour: part.last, slot: part.slot, country_id: part.id, segment_first_hour: part.segment_first })

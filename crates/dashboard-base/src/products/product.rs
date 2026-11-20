@@ -10,6 +10,7 @@ use crate::Source;
 
 pub use crate::config::{ContentOptions, LoadContext};
 pub use crate::protocol::validate_tag;
+pub use dashboard_query::identity::Country;
 // Products name the air wing reader at this path.
 pub use crate::air_wing_names as air_wings;
 // The public path; products also name the identity helpers through it.
@@ -130,12 +131,29 @@ pub trait Product: 'static {
     ) -> io::Result<Self::Reply>;
 }
 
+/// The one check for a requested country: a slot names any country, a tag is checked as a tag.
+pub fn validate_country(country: &Country) -> Result<(), &'static str> {
+    country.tag().map_or(Ok(()), validate_tag)
+}
+
+/// What complete Countries and CountryLinks tables say of `country` this hour.
+pub fn country_in_frame<'a>(
+    countries: &'a [replay_data::rows::CountryRow],
+    links: &[replay_data::rows::CountryLinkRow],
+    country: &Country,
+) -> crate::metadata::TaggedCountry<'a> {
+    match country {
+        Country::Tag(tag) => crate::metadata::tagged_country(countries, links, tag),
+        Country::Slot(slot) => crate::metadata::slotted_country(countries, links, *slot),
+    }
+}
+
 /// Parameters shared by the per-country products.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 impl CountryParams {
@@ -143,7 +161,7 @@ impl CountryParams {
         if self.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&self.tag)
+        validate_country(&self.country)
     }
 
     pub fn branch(&self) -> u64 {
@@ -172,12 +190,12 @@ impl BranchParams {
 }
 
 /// Selection checks shared by products drawing several countries.
-pub fn validate_countries(branch_id: &str, tags: &[String]) -> Result<(), &'static str> {
-    if tags.is_empty() {
+pub fn validate_countries(branch_id: &str, countries: &[Country]) -> Result<(), &'static str> {
+    if countries.is_empty() {
         return Err("Invalid country selection");
     }
-    for tag in tags {
-        validate_tag(tag)?;
+    for country in countries {
+        validate_country(country)?;
     }
     if branch_id.parse::<u64>().is_err() {
         return Err("Invalid branch");

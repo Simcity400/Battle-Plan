@@ -149,7 +149,7 @@ fn equal(path: &Path, heads: usize, dump: Option<PathBuf>) -> Result<Value> {
     let mut rows = Vec::new();
     for (kind, measure) in SERIES {
         let line = line(&query, kind, measure)?;
-        let held: Vec<String> = all.iter().filter(|tag| !line.parts(tag, first, last).is_empty()).take(8).cloned().collect();
+        let held: Vec<String> = all.iter().filter(|tag| !line.parts(*tag, first, last).is_empty()).take(8).cloned().collect();
         for (view, &(name, from, to)) in views.iter().enumerate() {
             totals["views"] = json!(totals["views"].as_u64().unwrap() + 1);
             let hours = i64::from(to) - i64::from(from) + 1;
@@ -349,7 +349,7 @@ fn hourly(path: &Path, heads: usize, dump: Option<PathBuf>) -> Result<Value> {
     let mut rows = Vec::new();
     for (kind, measure) in SERIES {
         let line = line(&query, kind, measure)?;
-        let held: Vec<String> = all.iter().filter(|tag| !line.parts(tag, first, last).is_empty()).take(8).cloned().collect();
+        let held: Vec<String> = all.iter().filter(|tag| !line.parts(*tag, first, last).is_empty()).take(8).cloned().collect();
         for at in 0..heads {
             let to = first + ((i64::from(last) - i64::from(first)) * (at as i64 + 1) / (heads as i64 + 1)) as i32 + 13 * at as i32;
             let to = to.min(last);

@@ -2,6 +2,9 @@ import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useContentRevision } from './contentRevision.ts';
 import { useHeldTimeline } from './countryNamesAt.ts';
 import { identitySince } from './countryTimeline.ts';
+import { countryFromKey, isSlotKey } from './countryKey.ts';
+import { useSlotTags } from './countrySlots.ts';
+import type { SlotTags } from './countrySlots';
 import type { DashboardClient } from './client';
 import type { BoundTrack } from './model';
 import type { PlaybackController } from './playback';
@@ -24,6 +27,25 @@ export function useAtHead<T>(clock: PlaybackController, on: boolean, read: (hour
     return value;
   };
   return useSyncExternalStore(on ? subscribe : unsubscribed, snapshot, snapshot);
+}
+
+/** [`identitySince`] for keys: a slot's identity is the tag its country goes by at `hour`, changing where it takes another;
+ * undefined while that is not known. */
+function slotIdentitySince(timeline: Parameters<typeof identitySince>[0], slots: SlotTags | undefined, hour: number, keys: readonly string[]): number | undefined {
+  if (!keys.some(isSlotKey)) return identitySince(timeline, hour, keys);
+  if (!slots) return undefined;
+  const tags: string[] = [];
+  let since = -Infinity;
+  for (const key of keys) {
+    const slot = countryFromKey(key);
+    if (typeof slot !== 'number') { tags.push(key); continue; }
+    const run = slots.runAt(slot, hour);
+    if (!run) continue;
+    tags.push(run.tag);
+    since = Math.max(since, run.firstHour);
+  }
+  const held = identitySince(timeline, hour, tags);
+  return held === undefined ? undefined : Math.max(held, since);
 }
 
 /** The hour a held panel's rows are chosen at: its last push's hour `at`, moved to the last of `changes` (where the
@@ -66,9 +88,10 @@ export function useIdentityHour(client: DashboardClient, track: Pick<BoundTrack,
   clock: PlaybackController, on: boolean, trackHour: (clockHour: number) => number | null): number | null {
   const content = useContentRevision(client);
   const timeline = useHeldTimeline(client, track, content, on);
+  const slots = useSlotTags(client, track, on && tags.some(isSlotKey));
   const settled = useAtHead(clock, on, hour => {
     const at = trackHour(hour);
-    return at === null ? null : (timeline ? identitySince(timeline, at, tags) : undefined) ?? Number.NaN;
+    return at === null ? null : (timeline ? slotIdentitySince(timeline, slots, at, tags) : undefined) ?? Number.NaN;
   });
   const unheld = on && Number.isNaN(settled);
   const requestHour = useFallbackHour(clock, unheld);

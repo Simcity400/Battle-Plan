@@ -262,6 +262,8 @@ pub struct Content {
     pub map_defines: MapDefines,
     /// The content's zoom defines with the user's zoom and camera speeds.
     pub camera_law: CameraLaw,
+    /// The minimap's slide: `NInterface.MINIMAP_TOGGLE_DURATION` and `_SHIFT`.
+    pub minimap_defines: Result<combat::minimap::Defines, String>,
     /// The recorded speeds the day/night cycle follows, or why they could not be read.
     pub game_speeds: Result<viewer_foundation::map::frame::GameSpeeds, String>,
     /// The user's `settings.txt` display facts that size the game's interface
@@ -278,8 +280,8 @@ pub struct Content {
     pub game_audio: dashboard_core::protocol::MapAudio,
     /// The game's second master factor (`dev_master_volume`), a fraction.
     pub game_dev_master: f32,
-    /// The game's arrow cursor, or why it is not shown.
-    pub cursor: Result<eframe::egui::CustomCursorImage, String>,
+    /// The game's map cursors, each or why it is not shown.
+    pub cursors: crate::cursors::Cursors,
     /// The game images and textures the map passes draw from.
     pub assets: MapAssets,
     /// Persistent recording compatibility, content verification and presentation limitations.
@@ -568,6 +570,30 @@ pub fn links_of(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, u32>> {
         .collect())
 }
 
+/// The hit shapes of the overlay's own icons as a draw laid them out: the raid icons it laid out
+/// for hovering, drawn or hidden, the Operatives entries, and the occupation and adjacency icons.
+/// The draw writes them beside the counters' report, so the map is resolved against what was
+/// drawn until the next draw, whatever layout is installed meanwhile.
+#[derive(Default)]
+pub struct OverlayHits {
+    pub raids: Vec<raids::tooltips::Hit>,
+    pub intel: Vec<intel_icons::IntelHit>,
+    pub occupation: Vec<viewer_world::map::occupation_icons::Hit>,
+    pub adjacency: Vec<viewer_world::map::adjacency_icons::Hit>,
+}
+
+impl OverlayHits {
+    /// The intel entry under the pointer. `seen` gives the pointer in one entry's own layout
+    /// with its container's draw rank, the coordinates every consumer of a map-icon hit works in
+    /// ([`crate::app::map_hits::local`]); `None` for an entry a free eye does not show.
+    pub fn intel_at(
+        &self,
+        seen: impl Fn(&intel_icons::IntelHit) -> Option<([f32; 2], u32)>,
+    ) -> Option<&intel_icons::IntelHit> {
+        intel_icons::hit_seen(&self.intel, seen)
+    }
+}
+
 /// Camera-dependent preparation retained while only the hour fraction moves.
 ///
 /// The raid icons are kept apart from the labels, so that a raid batch's
@@ -587,21 +613,13 @@ pub struct PreparedOverlay {
     raids: Batch,
     /// Prepared raid owners; presentation windows retain their own clock.
     native_raids: raids::PreparedRaids,
-    /// Hover rectangles of the last native raid draw.
-    raid_hits: Vec<raids::tooltips::Hit>,
-    /// Where the raid icons stand in the batch [`Self::draw_into`] last
-    /// drew, `None` when it left them out.
-    raid_range: Option<std::ops::Range<usize>>,
-    /// Whether the last draw laid the raid icons out for hovering, drawn or hidden.
-    raids_hovered: bool,
     icons: counters::PreparedCounters,
     label_report: LabelReport,
     raid_report: raids::RaidReport,
-    /// The Operatives map mode's state containers, their quads, hover shapes and report as
-    /// of the last draw.
+    /// The Operatives map mode's state containers, and their quads and report as of the last
+    /// draw.
     native_intel: intel_icons::PreparedIntel,
     intel: Batch,
-    intel_hits: Vec<intel_icons::IntelHit>,
     intel_report: intel_icons::IntelReport,
     /// [`crate::map::lazy_icons::LazyTextures::version`] when it was laid out; a
     /// newer version may have decoded a flag or portrait it left out.
@@ -622,12 +640,10 @@ pub struct PreparedOverlay {
     /// view's pools.
     resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
     occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
-    occupation_hits: Vec<viewer_world::map::occupation_icons::Hit>,
     /// Who laid out the resource icons and the occupation icons.
     resource_icons_by: MadeBy,
     occupation_icons_by: MadeBy,
     adjacency_icons: viewer_world::map::adjacency_icons::PreparedAdjacencyIcons,
-    adjacency_hits: Vec<viewer_world::map::adjacency_icons::Hit>,
     /// The strait and canal icons' priority in the view's map mode.
     adjacency_priority: i8,
     /// The resource, occupation and adjacency icons as last drawn.
@@ -722,6 +738,7 @@ pub struct DumpOverlay<'a> {
     looks: Option<free_icons::Looks>,
     pub labels: LabelReport,
     pub counters: CounterReport,
+    pub hits: OverlayHits,
     pub raids: raids::RaidReport,
     pub settlement_warnings: Vec<String>,
 }
@@ -765,7 +782,7 @@ impl DumpOverlay<'_> {
             .retries()
     }
 
-    /// The overlay as of the last presented frame: its intel icons' report and hover shapes.
+    /// The overlay as of the last presented frame: its intel icons' report and its stripes.
     pub fn prepared(&self) -> &PreparedOverlay {
         &self.prepared
     }
@@ -781,6 +798,36 @@ impl DumpOverlay<'_> {
         self.tables.naval_dominance_sources()
     }
 
+    /// Opens the target details window of the raid offer bubble at `province`, built from the
+    /// hour's rows for the viewing country as the bubble's click builds it; how many targets it
+    /// lists.
+    pub fn open_raid_details(&mut self, province: u32) -> Result<usize, String> {
+        let targets = self
+            .tables
+            .raids
+            .icons
+            .iter()
+            .find_map(|icon| match &icon.tooltip {
+                Some(raids::tooltips::Key::Offer(targets)) if icon.province == province => Some(Arc::clone(targets)),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                let offers: Vec<String> = self
+                    .tables
+                    .raids
+                    .icons
+                    .iter()
+                    .filter(|icon| matches!(icon.tooltip, Some(raids::tooltips::Key::Offer(_))))
+                    .map(|icon| icon.province.to_string())
+                    .collect();
+                format!("no raid offer bubble stands at province {province} for the viewing country; offers stand at [{}]", offers.join(", "))
+            })?;
+        let details = raids::tooltips::details(&self.hour.raid_hover, self.hour.frame, self.tables.vision.ours(), &targets);
+        let count = details.entries.len();
+        self.prepared.counter_view.raid_details = Some((province, Arc::new(details)));
+        Ok(count)
+    }
+
     pub fn refuse_settlement(&mut self, retries: Vec<Retry>) {
         self.settlement_warnings = retries.iter().map(Retry::warning).collect();
     }
@@ -790,7 +837,7 @@ impl DumpOverlay<'_> {
         self.advance_provinces();
         loop {
             let before = self.hour.icons.lazy.version();
-            (self.batch, self.labels, self.counters, self.raids) = self.prepared.draw(
+            (self.batch, self.labels, self.counters, self.hits, self.raids) = self.prepared.draw(
                 &self.hour,
                 self.camera,
                 self.viewport,
@@ -848,6 +895,17 @@ impl PreparedOverlay {
     ) {
         self.counter_view.pressed = pressed;
         self.counter_view.plate_hovered = plate_hovered;
+    }
+
+    /// The raid bubble whose details window is open, with what its click built, and the bubble
+    /// under the pointer: they change no layout, so the frame sets them as they change.
+    pub fn raid_view(&self) -> (Option<(u32, Arc<raids::tooltips::Details>)>, Option<u32>) {
+        (self.counter_view.raid_details.clone(), self.counter_view.raid_hovered)
+    }
+
+    pub fn set_raid_view(&mut self, (details, hovered): (Option<(u32, Arc<raids::tooltips::Details>)>, Option<u32>)) {
+        self.counter_view.raid_details = details;
+        self.counter_view.raid_hovered = hovered;
     }
 
     /// The view the overlay presents through, for one laid out on another memory of it
@@ -960,14 +1018,16 @@ impl PreparedOverlay {
         ui_scale: f32,
         layers: &OverlayLayers,
         time: f32,
-    ) -> io::Result<(Batch, LabelReport, CounterReport, raids::RaidReport)> {
+    ) -> io::Result<(Batch, LabelReport, CounterReport, OverlayHits, raids::RaidReport)> {
         let mut batch = Batch::default();
         let mut report = CounterReport::default();
-        self.draw_into(hour, camera, viewport, ui_scale, layers, time, &mut batch, &mut report)?;
+        let mut hits = OverlayHits::default();
+        self.draw_into(hour, camera, viewport, ui_scale, layers, time, &mut batch, &mut report, &mut hits)?;
         Ok((
             batch,
             self.label_report.clone(),
             report,
+            hits,
             self.raid_report.clone(),
         ))
     }
@@ -1064,7 +1124,7 @@ impl PreparedOverlay {
         }
         if pools.raids {
             let mut raid_report = self.native_raids.report.clone();
-            self.native_raids.draw(context, hour.icons.raids.priority, raid_view, &mut scratch, &mut Vec::new(), &mut raid_report);
+            self.native_raids.draw(context, hour.icons.raids.priority, raid_view, &mut scratch, &mut Vec::new(), &mut raid_report, self.counter_view.raid_details.as_ref(), self.counter_view.raid_hovered);
         }
         if pools.intel {
             let mut intel_report = self.native_intel.report.clone();
@@ -1083,9 +1143,8 @@ impl PreparedOverlay {
         counters
     }
 
-    /// [`PreparedOverlay::draw`] into the caller's batch and counter report, reusing their
-    /// storage, so the window's per-fraction redraw allocates nothing. On an error both are
-    /// left as they were.
+    /// [`PreparedOverlay::draw`] into the caller's batch, counter report and hit shapes, reusing
+    /// the batch's and report's storage. On an error all three are left as they were.
     #[allow(clippy::too_many_arguments, reason = "each argument is separate state the host lends for one draw or load")]
     pub fn draw_into(
         &mut self,
@@ -1097,6 +1156,7 @@ impl PreparedOverlay {
         time: f32,
         batch: &mut Batch,
         report: &mut CounterReport,
+        hits: &mut OverlayHits,
     ) -> io::Result<()> {
         let display = &layers.counters;
         let logical = gui_resources_viewport(viewport, ui_scale);
@@ -1156,14 +1216,17 @@ impl PreparedOverlay {
         let raid_priority = hour.icons.raids.priority;
         let intel_assets = &hour.icons.intel;
         let native_raids = &self.native_raids;
+        let raid_details = self.counter_view.raid_details.clone();
+        let raid_hovered = self.counter_view.raid_hovered;
         let native_intel = &self.native_intel;
         let labels = &self.labels;
         let resource_icons = &self.resource_icons;
         let occupation_icons = &self.occupation_icons;
         let adjacency_icons = &self.adjacency_icons;
         let adjacency_priority = self.adjacency_priority;
-        let occupation_hits = &mut self.occupation_hits;
-        let adjacency_hits = &mut self.adjacency_hits;
+        let (mut occupation_drawn, mut adjacency_drawn) = (Vec::new(), Vec::new());
+        let occupation_hits = &mut occupation_drawn;
+        let adjacency_hits = &mut adjacency_drawn;
         let icons = &mut self.icons;
         let mut views = self
             .counter_view
@@ -1229,6 +1292,8 @@ impl PreparedOverlay {
                             &mut raid_batch,
                             &mut raid_hits,
                             &mut raid_report,
+                            raid_details.as_ref(),
+                            raid_hovered,
                         );
                         (raid_batch, raid_hits, raid_report)
                     });
@@ -1310,13 +1375,15 @@ impl PreparedOverlay {
         counters?;
         let (raid_quads, intel_quads) = raid_quads;
         (self.mode_icons, self.mode_icon_refused) = mode_icons;
-        (self.raids, self.raid_hits, self.raid_report) = raid_quads;
-        (self.intel, self.intel_hits, self.intel_report) = intel_quads;
+        let raid_hits;
+        let intel_hits;
+        (self.raids, raid_hits, self.raid_report) = raid_quads;
+        (self.intel, intel_hits, self.intel_report) = intel_quads;
         let (counters, counter_report) = self.icons.drawn();
         report.assign(counter_report);
         let labels = label_view.drawn();
         self.label_report.clone_from(label_view.report());
-        self.raid_range = compose(
+        let raid_range = compose(
             batch,
             &OverlayParts {
                 pings: &self.icons.fixed.pings,
@@ -1331,7 +1398,9 @@ impl PreparedOverlay {
             },
             layers,
         );
-        self.raids_hovered = layers.raids_hovered;
+        // Only the raid icons the draw laid out for hovering, drawn or hidden, can own the hover.
+        let raids = if raid_range.is_some() || layers.raids_hovered { raid_hits } else { Vec::new() };
+        *hits = OverlayHits { raids, intel: intel_hits, occupation: occupation_drawn, adjacency: adjacency_drawn };
         Ok(())
     }
 
@@ -1351,14 +1420,6 @@ impl PreparedOverlay {
             .iter()
             .map(|(reason, count)| format!("Map icons: {count} not drawn: {reason}."))
             .collect()
-    }
-
-    pub fn occupation_hits(&self) -> &[viewer_world::map::occupation_icons::Hit] {
-        &self.occupation_hits
-    }
-
-    pub fn adjacency_hits(&self) -> &[viewer_world::map::adjacency_icons::Hit] {
-        &self.adjacency_hits
     }
 
     /// All views upload this same current secondary province field, including its empty clear.
@@ -1381,29 +1442,9 @@ impl PreparedOverlay {
             }))
     }
 
-    /// The hit shapes of the raid icons the latest draw laid out for hovering, drawn or hidden;
-    /// none when it left them out. Only those icons can own the hover.
-    pub fn raid_hits(&self) -> &[raids::tooltips::Hit] {
-        if self.raid_range.is_some() || self.raids_hovered {
-            &self.raid_hits
-        } else {
-            &[]
-        }
-    }
-
     /// The intel icons' report, as of the last draw.
     pub fn intel_report(&self) -> &intel_icons::IntelReport {
         &self.intel_report
-    }
-
-    /// The intel entry under the pointer. `seen` gives the pointer in one entry's own layout
-    /// with its container's draw rank, the coordinates every consumer of a map-icon hit works in
-    /// ([`crate::app::map_hits::local`]); `None` for an entry a free eye does not show.
-    pub fn intel_at(
-        &self,
-        seen: impl Fn(&intel_icons::IntelHit) -> Option<([f32; 2], u32)>,
-    ) -> Option<&intel_icons::IntelHit> {
-        intel_icons::hit_seen(&self.intel_hits, seen)
     }
 
     /// ToolTip draws after the map and combat window, with this hour's native flag atlases.
@@ -2112,16 +2153,7 @@ impl Document {
             let game_strategic_names = settings.bool_at(&["strategic_regions"]).unwrap_or(false);
             let game_audio = dashboard_core::map_settings::game_audio(&settings);
             let game_dev_master = dashboard_core::map_settings::game_dev_master(&settings);
-            let cursor = content
-                .layers
-                .read_uncovered("gfx/cursors/normal.cur")
-                .and_then(|bytes| installed_content_image::cursor::decode(&bytes))
-                .map(|cursor| eframe::egui::CustomCursorImage {
-                    rgba: cursor.image.pixels.into(),
-                    size: [cursor.image.width as u16, cursor.image.height as u16],
-                    hotspot: cursor.hotspot,
-                })
-                .map_err(|error| format!("gfx/cursors/normal.cur: {error}"));
+            let cursors = crate::cursors::Cursors::load(|path| content.layers.read_uncovered(path));
             let map_defines = crate::map_assets::graphics_define(
                 &content.layers,
                 "camera and map",
@@ -2136,6 +2168,14 @@ impl Document {
                 &defines,
                 |defines| CameraLaw::load(defines, &settings),
             )?;
+            let minimap_defines = crate::map_assets::graphics_define(
+                &content.layers,
+                "minimap",
+                &art_defines,
+                &defines,
+                combat::minimap::Defines::load,
+            )
+            .map_err(|error| error.to_string());
             // The map is drawn as this client's game would draw it: its own `force_pow2_textures`
             // pads every texture file the passes load and sets their global defines.
             let decode = settings.texture_decode();
@@ -3126,6 +3166,7 @@ impl Document {
                 large_flags: Arc::clone(&icons.counters.large_flags),
                 lazy: Arc::clone(&icons.lazy),
                 trigger_content: Arc::new(icons.raids.trigger_content.clone()),
+                occupation: Arc::new(combat::Occupation::load(&content.layers)),
             });
             let resource_icons = viewer_world::map::resource_icons::ResourceIconContent::load(
                 &content.layers,
@@ -3265,6 +3306,7 @@ impl Document {
                 map,
                 map_defines,
                 camera_law,
+                minimap_defines,
                 game_speeds,
                 game_display,
                 game_options,
@@ -3272,7 +3314,7 @@ impl Document {
                 game_strategic_names,
                 game_audio,
                 game_dev_master,
-                cursor,
+                cursors,
                 assets,
                 warnings,
                 uncovered_reads,
@@ -5357,8 +5399,6 @@ impl<'a> Hour<'a> {
                 resource_icons_by: resource_icons.1,
                 occupation_icons: occupation_icons.0,
                 occupation_icons_by: occupation_icons.1,
-                occupation_hits: Vec::new(),
-                adjacency_hits: Vec::new(),
                 adjacency_icons,
                 adjacency_priority,
                 mode_icons: Batch::default(),
@@ -5370,15 +5410,11 @@ impl<'a> Hour<'a> {
                 labels: std::mem::take(&mut still.labels),
                 native_raids,
                 raids: Batch::default(),
-                raid_hits: Vec::new(),
-                raid_range: None,
-                raids_hovered: false,
                 icons,
                 label_report,
                 raid_report,
                 native_intel,
                 intel: Batch::default(),
-                intel_hits: Vec::new(),
                 intel_report,
                 tables: tables.identity(),
             })
@@ -5477,6 +5513,7 @@ impl<'a> Hour<'a> {
             looks: None,
             labels: LabelReport::default(),
             counters: CounterReport::default(),
+            hits: OverlayHits::default(),
             raids: raids::RaidReport::default(),
             settlement_warnings: Vec::new(),
         })

@@ -80,7 +80,9 @@ impl<K: PartialEq, V> Recent<K, V> {
     /// The first caller of a key builds it with no lock held; a caller that
     /// asks for the same key meanwhile waits for that build instead of doing
     /// the same work, so one key is built once. A failed build is not cached:
-    /// its entry is removed and a waiter builds for itself.
+    /// its entry is removed and a waiter builds for itself. Nor is one that read
+    /// a table its rows' reader had not declared: once the table is learned,
+    /// the next ask builds over rows that hold it.
     pub fn get_or_insert_with<E>(
         &self,
         key: K,
@@ -169,17 +171,18 @@ impl<K: PartialEq, V> Recent<K, V> {
     ) -> Result<Arc<V>, E> {
         // A panic while building leaves the cell failed rather than waited on.
         let mut guard = FailOnDrop(Some(cell));
-        let built = build();
+        let (built, undeclared) = replay_frame::frame::discovering_within(build);
         guard.0 = None;
+        let kept = built.is_ok() && undeclared.is_empty();
         match &built {
-            Ok(value) => {
+            Ok(value) if kept => {
                 self.lock().latest = Some(Arc::clone(value));
                 *cell.lock() = CellState::Built(Arc::downgrade(value));
             }
-            Err(_) => *cell.lock() = CellState::Failed,
+            _ => *cell.lock() = CellState::Failed,
         }
         cell.done.notify_all();
-        if built.is_err() {
+        if !kept {
             self.lock().held.retain(|(_, held)| !Arc::ptr_eq(held, cell));
         }
         built

@@ -1,3 +1,4 @@
+import { countryFromKey } from './countryKey.ts';
 import { runAt } from '../charts/series.ts';
 import type { CountryIdentityHistory, CountryIdentityRun, MembershipRun } from '../generated/dashboard';
 import type { Span } from '../charts/series';
@@ -77,6 +78,7 @@ export class CountryIdentityIndex {
   readonly changeHours: ReadonlyArray<number>;
   private readonly byTag = new Map<string, KeyRun[]>();
   private readonly byKey = new Map<string, Map<string, CountryIdentityRun[]>>();
+  private readonly bySlot = new Map<number, Set<string>>();
   private readonly order = new Map<string, number>();
   private readonly choices = new WeakMap<readonly string[], ReadonlySet<string>>();
 
@@ -88,6 +90,8 @@ export class CountryIdentityIndex {
       this.byTag.set(history.tag, history.identities.map(identity => {
         hours.add(identity.firstHour); hours.add(identity.lastHour + 1);
         const key = countryIdentityKey(identity);
+        const slotKeys = this.bySlot.get(identity.slot);
+        if (slotKeys) slotKeys.add(key); else this.bySlot.set(identity.slot, new Set([key]));
         let aliases = this.byKey.get(key);
         if (!aliases) { aliases = new Map(); this.byKey.set(key, aliases); }
         const runs = aliases.get(history.tag);
@@ -98,14 +102,26 @@ export class CountryIdentityIndex {
     this.changeHours = [...hours].sort((a, b) => a - b);
   }
 
-  keyAt(tag: string, hour: number): string | null { return runAt(this.byTag.get(tag) ?? [], hour)?.key ?? null; }
+  keyAt(tag: string, hour: number): string | null {
+    const slot = countryFromKey(tag);
+    if (typeof slot === 'number') {
+      for (const key of this.bySlot.get(slot) ?? []) for (const runs of this.byKey.get(key)?.values() ?? []) if (runAt(runs, hour)) return key;
+      return null;
+    }
+    return runAt(this.byTag.get(tag) ?? [], hour)?.key ?? null;
+  }
 
-  /** Manual picks include every native holder ever recorded under each literal tag. */
+  /** Manual picks include every native holder ever recorded under each literal tag; a country chosen by its slot
+   * ([`countryKey`]) is every native holder in that slot. */
   selected(chosen: readonly string[]): ReadonlySet<string> {
     let keys = this.choices.get(chosen);
     if (!keys) {
       const selected = new Set<string>();
-      for (const tag of chosen) for (const run of this.byTag.get(tag) ?? []) selected.add(run.key);
+      for (const tag of chosen) {
+        const slot = countryFromKey(tag);
+        if (typeof slot === 'number') { for (const key of this.bySlot.get(slot) ?? []) selected.add(key); continue; }
+        for (const run of this.byTag.get(tag) ?? []) selected.add(run.key);
+      }
       keys = selected;
       this.choices.set(chosen, keys);
     }
@@ -187,9 +203,15 @@ export function countryAliasesAt(histories: readonly IdentityHistory[], chosen: 
 
 export interface CountryDrillHistory { tag: string; identities?: readonly CountryIdentityRun[]; segments?: readonly Span[] }
 
+/** The history of `key` ([`countryKey`]): a tag's own, or the tag a slot's country held at `hour`. */
+export function historyAt<H extends { tag: string; identities?: readonly CountryIdentityRun[] }>(histories: readonly H[], key: string, hour: number): H | undefined {
+  const slot = countryFromKey(key);
+  return typeof slot === 'number' ? histories.find(history => runAt(history.identities ?? [], hour)?.slot === slot) : histories.find(history => history.tag === key);
+}
+
 /** A breakdown stays with the native country selected at its origin date. */
 export function countryDrillSpans(histories: readonly CountryDrillHistory[], tag: string, originHour: number): ReadonlyMap<string, readonly Span[]> {
-  const origin = histories.find(history => history.tag === tag);
+  const origin = historyAt(histories, tag, originHour);
   const identity = runAt(origin?.identities ?? [], originHour);
   if (!identity) {
     const segment = runAt(origin?.segments ?? [], originHour);

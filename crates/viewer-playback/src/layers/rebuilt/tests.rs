@@ -493,6 +493,28 @@ fn a_compose_lets_the_product_built_before_it_go() {
     assert_eq!(probe_of(&side).product().map(|built| built.hour), Some(hour), "built again at the hour sought: {}", window_state(&side, &gate));
 }
 
+/// A change of viewing country lets the product made for the country before go at once, the scene
+/// given nothing in its place, and takes only one built for the new country. Before, the old
+/// product stayed installed (an aircraft flight plan of the country before under the new one) and a
+/// build begun before the change was still taken.
+#[test]
+fn a_viewing_country_change_lets_the_product_made_for_the_country_before_go() {
+    use viewer_foundation::map::perspective::Country;
+    let gate = Gate::opened();
+    let mut side = window_side(record(), &gate);
+    let _opens = Opens(Arc::clone(&gate));
+    frames_at(&mut side, None, &gate, "the probe's first product", |side| !side.composing() && probe_of(side).product().is_some());
+    let before = probe_of(&side).product().map(|built| built.generation).unwrap();
+    let chosen = View { perspective: Choice { country: Country::Tag("text 1".into()), ..Choice::default() }, ..View::default() };
+    side.set_view(chosen.clone()).unwrap();
+    assert!(probe_of(&side).product().is_none(), "the product made for the country before is let go at the change");
+    assert!(!probe_of(&side).uploaded(), "and the scene is given nothing in its place");
+    frames_at(&mut side, None, &gate, "the chosen country's product", |side| probe_of(side).product().is_some());
+    let built = probe_of(&side).product().unwrap();
+    assert!(built.generation > before, "built after the change: {}", window_state(&side, &gate));
+    assert_eq!(built.seen.as_ref().map(|(choice, _)| choice), Some(&chosen.perspective), "for the chosen country");
+}
+
 /// A compose is owed one plan the scene takes anew, and the install pays it. On the base the
 /// compose's reset was spent by the product that happened to be taken first, so a product taken
 /// after it and before the scene had been given anything was handed on as a continuation, and

@@ -21,6 +21,7 @@ mod coverage;
 #[cfg(test)]
 mod tests;
 
+use dashboard_base::products::Country;
 use super::{
     LoadContext, Product, ReplyWarnings,
     at_hour::{self, At, AtHour, Keys, Owner, Read},
@@ -76,13 +77,13 @@ pub struct LossCountry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LossesParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     #[serde(default)]
     pub land_source: LandSource,
-    /// The identity; the tag's holder at `to` when none.
+    /// The identity; the country's holder at `to` when none.
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional, as = "Option<_>"))]
-    pub country: Option<LossCountry>,
+    pub identity: Option<LossCountry>,
     pub from: i32,
     pub to: i32,
     pub width: u32,
@@ -334,12 +335,12 @@ fn known<T: Copy>(value: Recorded<T>) -> Option<T> {
 /// The identity the reply reads: the one asked, when it held the tag in the window, else the
 /// tag's holder at `to`.
 fn identity(query: &Query<'_>, params: &LossesParams) -> io::Result<LossCountry> {
-    let runs = query.holders.within(&params.tag, params.from, params.to);
-    if let Some(asked) = params.country {
+    let runs = query.holders.within(&params.country, params.from, params.to);
+    if let Some(asked) = params.identity {
         let held = runs.iter().any(|run| run.holder == Holder::Found { slot: asked.slot, id: asked.country_id });
         return if held { Ok(asked) } else { Err(dashboard_core::refused("The chosen country identity does not hold the tag in this window")) };
     }
-    match query.holders.at(&params.tag, params.to).map(|run| run.holder) {
+    match query.holders.at(&params.country, params.to).map(|run| run.holder) {
         Some(Holder::Found { slot, id }) => Ok(LossCountry { slot, country_id: id }),
         _ => runs
             .iter()
@@ -615,7 +616,7 @@ fn reply(
     warnings.extend(covered.warnings(combat_log));
     Ok(LossesReply {
         branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
+        tag: query.holders.name(&params.country, query.timeline.last),
         land_source: params.land_source,
         land_lower_bound: None,
         amount_scale: AMOUNT_SCALE as u32,
@@ -669,7 +670,7 @@ impl Product for EquipmentLosses {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        super::CountryParams { branch_id: params.branch_id.clone(), tag: params.tag.clone() }.validate()?;
+        super::CountryParams { branch_id: params.branch_id.clone(), country: params.country.clone() }.validate()?;
         if params.from > params.to {
             return Err("Invalid equipment-loss window");
         }
@@ -691,10 +692,10 @@ impl Product for EquipmentLosses {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LossHeadParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional, as = "Option<_>"))]
-    pub country: Option<LossCountry>,
+    pub identity: Option<LossCountry>,
 }
 
 /// The leaves the identity holds at the hour; each one's total is the live cell `(key, "total")`.
@@ -715,7 +716,7 @@ impl ReplyWarnings for LossHeadReply {
 pub struct EquipmentLossHead;
 
 fn head_identity(params: &LossHeadParams, owner: Option<Owner>) -> Option<(u32, u32)> {
-    params.country.map(|country| (country.slot, country.country_id)).or(owner.map(|owner| (owner.slot, owner.id)))
+    params.identity.map(|country| (country.slot, country.country_id)).or(owner.map(|owner| (owner.slot, owner.id)))
 }
 
 impl AtHour for EquipmentLossHead {
@@ -727,11 +728,11 @@ impl AtHour for EquipmentLossHead {
     type Context = ();
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        super::CountryParams { branch_id: params.branch_id.clone(), tag: params.tag.clone() }.validate()
+        super::CountryParams { branch_id: params.branch_id.clone(), country: params.country.clone() }.validate()
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        params.country.is_none().then_some(params.tag.as_str())
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        params.identity.is_none().then_some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

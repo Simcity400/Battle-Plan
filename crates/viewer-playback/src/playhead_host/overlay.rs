@@ -222,8 +222,7 @@ fn overlay_needs() -> Vec<RowNeed> {
 }
 
 /// The tables the open map's overlay reads at any view: [`OVERLAY`], every family's and the
-/// vision's, ascending. What a tooltip, a panel or a click asks of the rows at the head is this
-/// set, whatever the camera ([`crate::app::head_rows`]).
+/// vision's, ascending.
 pub fn overlay_tables() -> Vec<TableId> {
     tables_shown(Shown::EVERY)
 }
@@ -232,7 +231,7 @@ pub fn overlay_tables() -> Vec<TableId> {
 /// for while nothing can draw it, and a table the maker reads beyond this set is learned
 /// ([`Maker::learn`]), so a family grouped wrongly costs one publication and shows in the run's
 /// `view_store.learned`.
-fn tables_shown(shown: Shown) -> Vec<TableId> {
+pub fn tables_shown(shown: Shown) -> Vec<TableId> {
     let family = |held: bool, tables: &'static [TableId]| held.then_some(tables).unwrap_or_default();
     let mut tables: Vec<TableId> = OVERLAY
         .iter()
@@ -267,9 +266,20 @@ impl Ask {
     /// What the overlay's tables need of the view: by key unless the eye is free, which lays every
     /// icon out in the world, and only the icon families this camera and map mode can draw.
     fn need(&self, defines: &viewer_counters::map::counters::CounterDefines) -> Need {
-        let height = self.camera.free().is_none().then_some(self.camera.height);
-        Need { air_missions: false, by_key: self.camera.free().is_none(), shown: Shown::at(height, self.target, &self.view.visibility, defines) }
+        Need { air_missions: false, by_key: self.camera.free().is_none(), shown: self.shown(defines) }
     }
+
+    /// The icon families this camera, its zoom's target and map mode can draw.
+    pub fn shown(&self, defines: &viewer_counters::map::counters::CounterDefines) -> Shown {
+        shown(&self.camera, self.target, &self.view, defines)
+    }
+}
+
+/// The icon families a view at `camera`, zooming towards `target`, can draw in `view`'s mode: the
+/// families the overlay's rows hold ([`tables_shown`]).
+pub fn shown(camera: &Camera, target: Option<f32>, view: &CounterView, defines: &viewer_counters::map::counters::CounterDefines) -> Shown {
+    let height = camera.free().is_none().then_some(camera.height);
+    Shown::at(height, target, &view.visibility, defines)
 }
 
 /// The overlay of one step, handed to the frame in its window: laid out for its hour, placed at
@@ -576,7 +586,8 @@ struct Built {
     /// The hour the tables stand at.
     hour: Hour,
     tables: Arc<OverlayTables>,
-    lay_ins: Arc<LayIns>,
+    /// The perspective they were made for.
+    perspective: Choice,
 }
 
 /// The layout the maker published, taken by the first step that joins after it: a step never waits
@@ -665,6 +676,8 @@ pub struct Overlay {
     /// The tables the step gave the counter layers, as the maker published them, and the hour they
     /// stand at.
     tables: Option<Arc<OverlayTables>>,
+    /// The perspective the tables held were made for.
+    tables_for: Option<Choice>,
     stands: Option<Hour>,
     taken: u64,
     /// The overlay made, until the frame takes it in its window.
@@ -672,7 +685,6 @@ pub struct Overlay {
     lay_owed: Owed,
     /// The hour of the rows the overlay the frame holds was made from.
     hour: Option<Hour>,
-    lay_ins: Arc<LayIns>,
     loading: Vec<String>,
     missed: Vec<TableId>,
     maker: timeline::Maker,
@@ -690,12 +702,12 @@ impl Overlay {
             stamp: 0,
             asked: None,
             tables: None,
+            tables_for: None,
             stands: None,
             taken: 0,
             made: None,
             lay_owed: Owed::default(),
             hour: None,
-            lay_ins: Arc::default(),
             loading: Vec::new(),
             missed: Vec::new(),
             maker: timeline::maker("overlay"),
@@ -725,7 +737,7 @@ impl Overlay {
         held.laid_out = None;
         drop(held);
         self.shared.signal.notify_all();
-        (self.tables, self.stands, self.asked, self.lay_owed) = (None, None, None, Owed::default());
+        (self.tables, self.tables_for, self.stands, self.asked, self.lay_owed) = (None, None, None, None, Owed::default());
         // The overlay of the picture before this one is not the overlay of this one, at any hour:
         // the layout the frame holds is replaced by the first of this picture, which may stand at
         // an earlier hour (a seek back).
@@ -753,11 +765,6 @@ impl Overlay {
         self.hour
     }
 
-    /// The map's layers' products the last layout laid in.
-    pub fn lay_ins(&self) -> Arc<LayIns> {
-        Arc::clone(&self.lay_ins)
-    }
-
     /// The overlay's refusals and what its tables are loading, by name.
     pub fn loading(&self) -> &[String] {
         &self.loading
@@ -772,6 +779,11 @@ impl Overlay {
     /// The tables of the step's hour, as the maker published them; none before its first build.
     pub fn tables(&self) -> Option<&Arc<OverlayTables>> {
         self.tables.as_ref()
+    }
+
+    /// The tables held while they were made for `perspective`: another's are no tables of this one.
+    pub fn tables_of(&self, perspective: &Choice) -> Option<&Arc<OverlayTables>> {
+        self.tables.as_ref().filter(|_| self.tables_for.as_ref() == Some(perspective))
     }
 
     /// The recording's air rosters, which the counter layers are given with the tables.
@@ -945,8 +957,8 @@ impl Overlay {
         }
         self.taken = built.stamp;
         self.tables = Some(built.tables);
+        self.tables_for = Some(built.perspective);
         self.stands = Some(built.hour);
-        self.lay_ins = built.lay_ins;
     }
 
     /// The layout the maker published, taken: the frame draws it in its window. Never waited for,
@@ -1384,7 +1396,7 @@ impl Maker {
             generation: want.generation,
             hour: stands,
             tables: Arc::new(tables.clone()),
-            lay_ins: Arc::clone(&self.lay_ins),
+            perspective: want.perspective.clone(),
         });
         drop(held);
         timeline::mark(self.marks, Mark::Published);
@@ -1454,6 +1466,11 @@ impl ShownVision {
             (true, None) => return Err("the map draws no vision layer".into()),
             (false, _) => return self.kept(),
         };
+        // A perspective change's fold not taken yet: the layer still holds the viewer before under
+        // the new choice, which is no copy of the new viewer's vision.
+        if layer.restarting() {
+            return if exact { Err("the vision of this perspective is still being made".into()) } else { self.kept() };
+        }
         let key = VisionKey { applied, published: layer.published(), carried: layer.carried().entities, choice: layer.choice().clone() };
         let now = Instant::now();
         let due = self.held.as_ref().is_none_or(|(held, ..)| *held != key);

@@ -3,7 +3,7 @@ use super::*;
 use replay_data::rows::AirCountryRelationRow;
 use viewer_foundation::map::{
     native_gui::{self, lifecycle::Instance},
-    naval_mine_levels::Levels,
+    naval_mine_levels::{self, Levels},
     naval_region_control::raw_roster,
 };
 
@@ -106,13 +106,7 @@ pub(super) fn prepare(
             }
             Ok(counts)
         });
-    let features = frame
-        .complete::<tables::SimulationFeatures>()
-        .map_err(|e| e.to_string())
-        .and_then(|rows| match rows {
-            [row] => Ok(row.dlc_mask & (1 << 19) != 0),
-            _ => Err("naval status feature singleton unavailable".into()),
-        });
+    let features = naval_mine_levels::enabled(frame);
     let maximum = inputs
         .assets
         .air_sortie_defines

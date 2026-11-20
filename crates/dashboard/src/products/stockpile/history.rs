@@ -4,6 +4,7 @@
 //! `LogisticsEquipment` were read (from the blocks' page entries, no row decoded). A read is
 //! carried for [`STAGGER_PERIOD`] hours within the same holder; a value is never carried past.
 
+use dashboard_base::products::Country;
 use crate::{Source, span::HourSpan};
 use dashboard_query::{Query, identity::Holder};
 use replay::{
@@ -131,7 +132,7 @@ fn reads_of(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i32) 
 }
 
 /// `tag`'s histories over `query`'s timeline (see the module).
-pub fn replay(source: &Source, query: &Query<'_>, tag: &str) -> io::Result<Replay> {
+pub fn replay(source: &Source, query: &Query<'_>, tag: &Country) -> io::Result<Replay> {
     let recording = query.replay.recording();
     let field = |table, name| dashboard_declare::field(table, name);
     let amount = field(TableId::StockByVariant, "amount")?;
@@ -251,13 +252,13 @@ pub fn replay(source: &Source, query: &Query<'_>, tag: &str) -> io::Result<Repla
 /// What a source keeps of the histories it read: by timeline (its id and last hour) and tag.
 #[derive(Default)]
 struct Kept {
-    replays: HashMap<(u64, i32, String), Arc<Replay>>,
+    replays: HashMap<(u64, i32, Country), Arc<Replay>>,
 }
 
 /// [`replay`] of `tag`, read once per timeline and kept by the source; a timeline that grew reads
 /// it again.
-pub fn kept(source: &Source, query: &Query<'_>, tag: &str) -> io::Result<Arc<Replay>> {
-    let key = (query.timeline.id, query.timeline.last, tag.to_owned());
+pub fn kept(source: &Source, query: &Query<'_>, tag: &Country) -> io::Result<Arc<Replay>> {
+    let key = (query.timeline.id, query.timeline.last, tag.clone());
     let state = source.state::<Kept>();
     if let Some(found) = state.lock().unwrap_or_else(PoisonError::into_inner).replays.get(&key) {
         return Ok(Arc::clone(found));

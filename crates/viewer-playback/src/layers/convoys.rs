@@ -276,6 +276,8 @@ struct Job {
 /// A product, the jobs it answers (newer ones replace older ones not started), and what it cost.
 struct Made {
     product: TradeRoutes,
+    /// The viewing country's slot it was made for.
+    ours: u32,
     /// The hour of the mirrors the product was made from.
     hour: Option<Hour>,
     jobs: usize,
@@ -374,7 +376,7 @@ impl Maker {
         self.ribbons = kept;
         let ribbons: usize = self.ribbons.values().flatten().map(|ribbon| ribbon.vertices.capacity() * std::mem::size_of::<OrderVertex>() + ribbon.native.capacity() * 32 + ribbon.points.capacity() * 8 + 256).sum();
         let stops: usize = self.stops.values().map(|(route, stops)| route.path.capacity() * 4 + stops.as_ref().ok().and_then(Option::as_ref).map_or(0, |stops| (stops.provinces.capacity() + stops.regions.capacity()) * 4) + 96).sum();
-        Made { product, hour, jobs: answered, reused, made, micros: started.elapsed().as_micros() as usize, bytes: ribbons + stops }
+        Made { product, ours: job.ours, hour, jobs: answered, reused, made, micros: started.elapsed().as_micros() as usize, bytes: ribbons + stops }
     }
 }
 
@@ -564,6 +566,9 @@ pub struct Convoys {
     worker: Option<(Sender<Job>, Receiver<Made>)>,
     /// Jobs sent and not answered yet.
     in_flight: usize,
+    /// Exchanges that waited on the worker: a whole settle's only.
+    #[cfg(test)]
+    blocking_waits: usize,
     /// What the worker's stops and ribbons held at its last product.
     worker_bytes: usize,
     /// Steps applied since the last job was sent: a product that names its hour is old on arrival.
@@ -583,6 +588,8 @@ pub struct Convoys {
     /// Made whole by the worker and shared from there: the frame's window takes it by reference
     /// count and the scene reads that one.
     product: Arc<TradeRoutes>,
+    /// The viewing country's slot the product was made for; none before the first.
+    product_for: Option<u32>,
     statuses: HashMap<usize, Status>,
     /// The map mode draws no trade route: it declares, holds and carries nothing.
     hidden: bool,
@@ -620,6 +627,8 @@ impl Convoys {
             serving: HashSet::new(),
             worker: None,
             in_flight: 0,
+            #[cfg(test)]
+            blocking_waits: 0,
             worker_bytes: 0,
             moved: false,
             window: false,
@@ -629,6 +638,7 @@ impl Convoys {
             pending: Vec::new(),
             stale: false,
             product: Arc::default(),
+            product_for: None,
             statuses: HashMap::new(),
             hidden: false,
             frame: 0,
@@ -692,6 +702,13 @@ impl Convoys {
     /// The product the frame's window takes: the same one, by reference count.
     pub fn product_shared(&self) -> Arc<TradeRoutes> {
         Arc::clone(&self.product)
+    }
+
+    /// The product with its [`Self::product_seq`] while it was made for the viewing country the
+    /// layer is given; none while that country's is being made.
+    pub fn shown(&self) -> Option<(u64, Arc<TradeRoutes>)> {
+        let ours = self.vision.as_ref().map(|&(_, ours)| ours)?;
+        (self.product_for == Some(ours)).then(|| (self.product_seq, self.product_shared()))
     }
 
     /// Rows changed, products made, ribbons kept and made, and the products' microseconds.
@@ -998,12 +1015,21 @@ impl Convoys {
 
     /// Takes the products the worker made; `wait` waits for every job in flight.
     fn exchange(&mut self, wait: bool) {
+        #[cfg(test)]
+        if wait && self.in_flight > 0 {
+            self.blocking_waits += 1;
+        }
         let Some((_, made)) = &self.worker else { return };
         while self.in_flight > 0 {
             let next = if wait { made.recv().ok() } else { made.try_recv().ok() };
             let Some(made) = next else { break };
             self.in_flight = self.in_flight.saturating_sub(made.jobs);
+            // Asked before the viewing country changed: another country's lines.
+            if self.vision.as_ref().is_none_or(|&(_, ours)| ours != made.ours) {
+                continue;
+            }
             self.product = Arc::new(made.product);
+            self.product_for = Some(made.ours);
             self.product_hour = made.hour;
             self.product_seq += 1;
             self.marked[2] += made.reused;
@@ -1026,7 +1052,11 @@ impl Convoys {
             self.stale = true;
         }
         if self.vision.is_none() {
+            // Nothing is drawn and every row is read again with the next vision: no work is carried,
+            // and the worker goes with the jobs out, so none is taken for that vision.
             self.refused = Some("The convoys layer is refused: it is given no vision of the viewing country yet".into());
+            (self.pending, self.stale, self.since) = (Vec::new(), false, None);
+            (self.worker, self.in_flight, self.worker_bytes) = (None, 0, 0);
             return;
         }
         if self.refused.take().is_some() {
@@ -1092,7 +1122,7 @@ pub fn differ(ours: &TradeRoutes, theirs: &TradeRoutes, refused: Option<&str>, t
     if ours.report != theirs.report {
         note(format!("report: {:?} against {:?}", ours.report, theirs.report));
     }
-    if ours.field.draws.len() != theirs.field.draws.len() || ours.field.trade_route_hovers != theirs.field.trade_route_hovers {
+    if ours.field.draws.len() != theirs.field.draws.len() || ours.field.trade_route_hovers != theirs.field.trade_route_hovers || ours.field.trade_route_lines != theirs.field.trade_route_lines {
         note(format!("lines: {} draws against {}", ours.field.draws.len(), theirs.field.draws.len()));
     }
     (differing, first)
@@ -1208,7 +1238,9 @@ impl Layer for Convoys {
     }
 
     fn settle(&mut self, mirrors: &Mirrors, settling: Settling) -> io::Result<()> {
-        self.settle_dirty(mirrors, settling.waits());
+        // Only a whole settle waits on the worker: a publication runs under the side's lock, so a
+        // job out is polled and its product joins a later one.
+        self.settle_dirty(mirrors, settling.strict());
         Ok(())
     }
 
@@ -1216,20 +1248,29 @@ impl Layer for Convoys {
         // Only whose lines or plan are drawn: the viewing country, taken when it changes.
         if self.window
             && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()
-            && let Some(ours) = vision.ours()
-            && self.vision.as_ref().is_none_or(|(choice, held)| *held != ours || choice != vision.choice())
         {
-            // Held at once: a mode that draws no convoys settles nothing, so a given vision would wait.
-            self.vision = Some((vision.choice().clone(), ours));
-            self.stale |= self.columns.is_some();
+            match vision.ours() {
+                // Held at once: a mode that draws no convoys settles nothing, so a given vision would wait.
+                Some(ours) if self.vision.as_ref().is_none_or(|(choice, held)| *held != ours || choice != vision.choice()) => {
+                    self.vision = Some((vision.choice().clone(), ours));
+                    self.stale |= self.columns.is_some();
+                }
+                // No viewing country: the lines of the one before are withheld at once.
+                None => self.vision = None,
+                Some(_) => {}
+            }
         }
-        self.settle_dirty(mirrors, settling.waits());
+        self.settle_dirty(mirrors, settling.strict());
         Ok(())
     }
 
 
     fn carried(&self) -> Carried {
-        // A job out is the worker's: counted here it froze the shown hour while playing.
+        // A job out is the worker's: counted here it froze the shown hour while playing. Refused, a
+        // settle can do none of the marked work; it waits there for the next vision.
+        if self.refused.is_some() {
+            return Carried::default();
+        }
         let entities = self.pending.iter().map(|(_, slots, deleted)| slots.len() + deleted.len()).sum::<usize>() + usize::from(self.stale);
         Carried { entities }
     }
@@ -1251,6 +1292,11 @@ impl Layer for Convoys {
 
     fn any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    #[cfg(test)]
+    fn any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 

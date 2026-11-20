@@ -4,6 +4,7 @@
 //! the division equipment tables' counts by template for the attribution asked; the base width
 //! is the recorded sum of sub-unit widths before country and commander factors.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{ArmyAttribution, Content, Countries, Refusals, find, side, token_key};
 use crate::{
     Source,
@@ -12,7 +13,6 @@ use crate::{
         at_hour::{At, AtHour, Keys, Owner, Read},
     },
 };
-use dashboard_base::products::validate_tag;
 use replay_data::rows::{DivisionEquipmentTemplateRow, Recorded, TableId, TemplateSubunit, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ pub struct DivisionTemplates;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionTemplatesParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub count_for: ArmyAttribution,
 }
 
@@ -171,11 +171,11 @@ impl AtHour for DivisionTemplates {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -211,18 +211,18 @@ impl AtHour for DivisionTemplates {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Division templates country is unavailable at this hour"))?;
         let mut refusals = Refusals::default();
-        let reply = build(frame, params, owner.slot, at.context, &mut refusals, at.cancelled)?;
+        let reply = build(frame, params, at.holders.name(&params.country, at.hour), owner.slot, at.context, &mut refusals, at.cancelled)?;
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
 }
 
 /// The roster of the country in canonical slot `slot` in `frame`.
-fn build(frame: &DecodedFrame, params: &DivisionTemplatesParams, slot: u32, content: &Content, refusals: &mut Refusals, cancelled: &std::sync::atomic::AtomicBool) -> io::Result<DivisionTemplatesReply> {
+fn build(frame: &DecodedFrame, params: &DivisionTemplatesParams, tag: String, slot: u32, content: &Content, refusals: &mut Refusals, cancelled: &std::sync::atomic::AtomicBool) -> io::Result<DivisionTemplatesReply> {
     frame.complete::<tables::Countries>()?;
     frame.complete::<tables::CountryLinks>()?;
     frame.complete::<tables::DivisionTemplates>()?;
-    let mut reply = DivisionTemplatesReply { tag: params.tag.clone(), count_for: params.count_for, templates: Vec::new(), fielded_missing: None, warnings: Vec::new() };
+    let mut reply = DivisionTemplatesReply { tag, count_for: params.count_for, templates: Vec::new(), fielded_missing: None, warnings: Vec::new() };
     let (mut owned, unlinked) = owned(frame, slot);
     refusals.note_times(UNLINKED_TEMPLATE, unlinked);
     let counts = fielded(frame, slot, side(params.count_for));

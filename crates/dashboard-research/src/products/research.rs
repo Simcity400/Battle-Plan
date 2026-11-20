@@ -20,7 +20,7 @@ pub mod slots;
 #[cfg(test)]
 mod tests;
 
-use super::{CountryParams, LoadContext, Product, artwork};
+use super::{Country, CountryParams, LoadContext, Product, artwork};
 use crate::{Artwork, Source, metadata::check_cancel};
 use dashboard_base::{ResearchFolder, ResearchTechnologyFolder};
 use dashboard_query::{Query, cost, identity::Holder};
@@ -236,10 +236,10 @@ pub(crate) struct Span {
 }
 
 /// `tag`'s holders over `query`'s timeline, cut at its stretches, and the hours no holder resolved.
-pub(crate) fn spans(query: &Query<'_>, tag: &str) -> (Vec<Span>, Vec<(i32, i32)>) {
+pub(crate) fn spans(query: &Query<'_>, tag: &Country) -> (Vec<Span>, Vec<(i32, i32)>) {
     let mut out = Vec::new();
     let mut unresolved = Vec::new();
-    for run in query.holders.tags.get(tag).into_iter().flatten() {
+    for run in query.holders.runs(tag).iter() {
         match run.holder {
             Holder::Found { slot, id } => out.extend(query.timeline.within(run.first, run.last).map(|stretch| Span { run: stretch.run, first: stretch.first, last: stretch.last, slot, id })),
             Holder::Unresolved => unresolved.push((run.first, run.last)),
@@ -417,7 +417,7 @@ fn last_read(source: &Source, query: &Query<'_>, span: &Span) -> io::Result<Opti
 }
 
 /// `tag`'s research history on `query`'s timeline, with the warnings it names.
-fn history(source: &Source, query: &Query<'_>, tag: &str, cancelled: &AtomicBool) -> io::Result<(ResearchHistory, Vec<String>)> {
+fn history(source: &Source, query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> io::Result<(ResearchHistory, Vec<String>)> {
     let (spans, unresolved) = spans(query, tag);
     if spans.is_empty() {
         return Err(dashboard_core::refused(format!("{tag} holds no country on this branch")));
@@ -509,7 +509,7 @@ impl Product for Research {
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let query = crate::answer::query(source, params.branch())?;
-        let (history, warnings) = history(source, &query, &params.tag, cancelled)?;
+        let (history, warnings) = history(source, &query, &params.country, cancelled)?;
         present(source, context, history, warnings, cancelled)
     }
 }

@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import type { SeriesDrop, SeriesEventPage, SeriesRun, SeriesState } from '../../generated/dashboard';
 
 export interface MeasureStates {
@@ -19,7 +20,7 @@ const run = (value: unknown): value is SeriesRun => object(value) && hour(value.
 
 export function validateMeasureStates(value: unknown): MeasureStates {
   if (!object(value) || typeof value.branchId !== 'string' || typeof value.measure !== 'string' || !decimals(value.decimals)
-    || !Array.isArray(value.states) || !value.states.every(state => object(state) && typeof state.tag === 'string' && hour(state.hour)
+    || !Array.isArray(value.states) || !value.states.every(state => object(state) && (typeof state.country === 'string' || typeof state.country === 'number') && hour(state.hour)
       && (state.run === null || run(state.run)) && (state.drop === null || drop(state.drop))
       && (state.missing === null || typeof state.missing === 'string')))
     throw new Error('The balance hour reply is malformed.');
@@ -46,7 +47,7 @@ export interface ReachedLine {
 
 export function reachedLines(tags: readonly string[], states: MeasureStates | undefined): ReachedLine[] {
   return tags.map(tag => {
-    const reached = states?.states.filter(state => state.tag === tag) ?? [];
+    const reached = states?.states.filter(state => countryKey(state.country) === tag) ?? [];
     const unique = new Map<string, SeriesRun>();
     for (const state of reached) if (state.run) unique.set(JSON.stringify([state.run.firstHour, state.run.lastHour, state.run.valueRaw, state.run.countryId]), state.run);
     return { tag, runs: [...unique.values()].sort((a, b) => a.firstHour - b.firstHour),

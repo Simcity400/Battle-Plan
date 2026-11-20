@@ -1,3 +1,4 @@
+import { answersKey, countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { VirtualList } from '../../components/VirtualList';
 import WidgetState from '../../components/WidgetState';
@@ -21,7 +22,7 @@ export default function CountryPeople({ runtime, widget, track, tag, hoverHour =
 }) {
   const exileScroll = useRef<HTMLDivElement>(null);
   const facts = useRef<HTMLDListElement | null>(null);
-  const params = useMemo(() => track && tag ? { tag } : null, [track, tag]);
+  const params = useMemo(() => track && tag ? { country: countryFromKey(tag) } : null, [track, tag]);
   const paint = useCallback((reply: PeopleReply) => {
     const list = facts.current;
     if (!list) return;
@@ -34,7 +35,7 @@ export default function CountryPeople({ runtime, widget, track, tag, hoverHour =
   const structure = useCallback((reply: PeopleReply) => peopleStructure(reply, view), [view]);
   const head = useHeadProduct(runtime, widget, 'country-people', params, { active, validate: validatePeople, structure, paint, hoverHour });
   const data = head.data;
-  const current = data?.tag === tag && data?.branchId === track?.branch.id;
+  const current = answersKey(data?.asked, tag) && data?.branchId === track?.branch.id;
   useEffect(() => { onWarnings?.(current ? data?.warnings ?? [] : []); return () => onWarnings?.([]); }, [current, data, onWarnings]);
   if (!tag || !track) return null;
   if (head.error && !data) return <WidgetState kind="error" what="manpower and politics" failure={head.error} onRetry={head.retry} />;

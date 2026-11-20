@@ -19,7 +19,7 @@ fn produced(query: &Query<'_>, id: u32, resource: u32, hour: i32) -> Option<i64>
 }
 
 fn read(tag: &str, hour: i32, part: Option<u32>) -> SeriesRead {
-    SeriesRead { tag: tag.to_owned(), hour, part: part.map(|part| part.to_string()) }
+    SeriesRead { country: tag.into(), hour, part: part.map(|part| part.to_string()) }
 }
 
 const HOURS: [i32; 9] = [FIRST, FIRST + 1_999, FIRST + 2_000, FIRST + 4_321, FIRST + 5_999, ITA_FROM + 3, FIRST + FIRST_HOURS - 1, SECOND + 17, LAST];
@@ -42,7 +42,7 @@ fn a_state_of_one_part_is_the_parts_row_at_the_hour() {
         assert_eq!(state.part.as_deref(), Some(resource.to_string().as_str()));
         let wanted = produced(&query, *id, *resource, read.hour);
         let got = state.run.as_ref().map(|run| run.value_raw.parse::<i64>().unwrap());
-        assert_eq!(got, wanted, "{} part {resource} at {}: {state:?}", read.tag, read.hour);
+        assert_eq!(got, wanted, "{} part {resource} at {}: {state:?}", read.country, read.hour);
         if let Some(run) = &state.run {
             assert!(run.first_hour <= read.hour && read.hour <= run.last_hour);
             for hour in run.first_hour..=run.last_hour {
@@ -84,7 +84,7 @@ fn a_state_of_every_part_and_of_the_top_parts_is_the_owners_rows_at_the_hour() {
         }
     }
     let whole = resources_line(&query, "produced");
-    assert!(whole.asks(&["GER".to_owned()], &[]).is_err(), "a sum of parts is not offered");
+    assert!(whole.asks(&["GER".into()], &[]).is_err(), "a sum of parts is not offered");
 }
 
 /// Tiles of two parts: hourly tiles carry each part's hours as the fixture wrote them, and six-hour
@@ -93,7 +93,7 @@ fn a_state_of_every_part_and_of_the_top_parts_is_the_owners_rows_at_the_hour() {
 fn tiles_of_two_parts_hold_each_parts_values() {
     let query = query();
     let line = resources_line(&query, "produced");
-    let asks = vec![Ask { tag: "GER".into(), part: 4 }, Ask { tag: "ITA".into(), part: 2 }];
+    let asks = vec![Ask { country: "GER".into(), part: 4 }, Ask { country: "ITA".into(), part: 2 }];
     let ids = [(9001, 4), (9002, 2)];
     let scale = line.scale();
     let mut compared = 0;
@@ -151,7 +151,7 @@ fn a_chart_names_the_hours_its_line_holds_no_row_in_and_its_table_was_not_availa
     let line = resources_line(&query, "produced");
     let rowless = |first: i32, last: i32| MissingSpan { first_hour: first, last_hour: last, reason: "GER's produced was not recorded here".into() };
     let gap = MissingSpan { first_hour: FIRST + FIRST_HOURS, last_hour: SECOND - 1, reason: GAP_REASON.into() };
-    let chart = |part: u128, from: i32, to: i32, width: u32| line.summaries_within(&[(Ask { tag: "GER".into(), part }, vec![(from, to)])], from, to, width).unwrap().remove(0);
+    let chart = |part: u128, from: i32, to: i32, width: u32| line.summaries_within(&[(Ask { country: "GER".into(), part }, vec![(from, to)])], from, to, width).unwrap().remove(0);
     for width in [64, 600] {
         let (never, missing) = chart(5, FIRST, LAST, width);
         assert!(never.buckets.iter().all(Option::is_none), "no row, nothing drawn");
@@ -168,7 +168,7 @@ fn a_chart_names_the_hours_its_line_holds_no_row_in_and_its_table_was_not_availa
     let (_, inside) = chart(4, FIRST + 2_000, FIRST + 2_099, 100);
     assert!(inside.is_empty(), "hours its row holds: {inside:?}");
     let index = i64::from(FIRST + 3_000).div_euclid(BINS as i64 * 6);
-    let reply = tile::tile(&line, "1", &[Ask { tag: "GER".into(), part: 5 }], None, 6, index, false).unwrap();
+    let reply = tile::tile(&line, "1", &[Ask { country: "GER".into(), part: 5 }], None, 6, index, false).unwrap();
     let last = reply.first_hour + (BINS * 6) as i32 - 1;
     assert_eq!(reply.lines[0].missing, [rowless(reply.first_hour, last)], "a tile of a part never held");
 
@@ -188,20 +188,20 @@ fn the_next_change_of_a_part_is_the_next_hour_its_row_moves_comes_or_goes() {
     let measure = line.series().measure("produced").unwrap();
     let bounds = (FIRST, FIRST + FIRST_HOURS - 1);
     for (id, resource, origin) in [(9001, 4, FIRST + 1_000), (9001, 4, FIRST + 5_950), (9001, 1, FIRST + 3_001), (9002, 2, ITA_FROM + 100), (9002, 1, ITA_FROM - 400)] {
-        let ask = Ask { tag: tag_of(id).into(), part: u128::from(resource) };
+        let ask = Ask { country: tag_of(id).into(), part: u128::from(resource) };
         let found = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds).unwrap();
         let held = |hour: i32| held(&query, tag_of(id), hour);
         let first_held = (bounds.0..=bounds.1).find(|&hour| held(hour)).unwrap();
         let wanted = (origin + 1..=bounds.1).find(|&hour| hour == first_held || (hour > first_held && produced(&query, id, resource, hour) != produced(&query, id, resource, hour - 1)));
-        assert_eq!(line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds).unwrap(), wanted, "{} part {resource} after {origin}: none when nothing changes after it", ask.tag);
-        assert_eq!(found, wanted.or(Some(origin)), "{} part {resource} after {origin}: the origin itself when nothing changes after it, as main", ask.tag);
+        assert_eq!(line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds).unwrap(), wanted, "{} part {resource} after {origin}: none when nothing changes after it", ask.country);
+        assert_eq!(found, wanted.or(Some(origin)), "{} part {resource} after {origin}: the origin itself when nothing changes after it, as main", ask.country);
         let back = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowLeft, bounds).unwrap();
         let wanted = (bounds.0..origin).rev().find(|&hour| hour == first_held || (hour > first_held && produced(&query, id, resource, hour) != produced(&query, id, resource, hour - 1)));
-        assert_eq!(back, wanted.or(Some(origin)), "{} part {resource} before {origin}: the origin itself when nothing changes before it, as main", ask.tag);
+        assert_eq!(back, wanted.or(Some(origin)), "{} part {resource} before {origin}: the origin itself when nothing changes before it, as main", ask.country);
     }
     // Main's reached-hour fallback: a step off either edge of the bounds answers the edge, an origin past them is held
     // within them, and a step with no origin and nothing to find is none.
-    let ask = Ask { tag: tag_of(9001).into(), part: 4 };
+    let ask = Ask { country: tag_of(9001).into(), part: 4 };
     let step = |origin: Option<i32>, key| line.navigate_lines(std::slice::from_ref(&ask), &[measure], origin, key, bounds).unwrap();
     assert_eq!(step(Some(bounds.0), NavigationKey::ArrowLeft), Some(bounds.0));
     assert_eq!(step(Some(bounds.1), NavigationKey::ArrowRight), Some(bounds.1));
@@ -298,7 +298,7 @@ fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
                 }
             }
             let got: BTreeMap<u32, (i32, i32)> = owner.parts.iter().map(|life| (life.part.parse().unwrap(), (life.first_hour, life.last_hour))).collect();
-            assert_eq!(got, wanted, "{}'s parts over {from}..{to}", owner.tag);
+            assert_eq!(got, wanted, "{}'s parts over {from}..{to}", owner.country);
             assert!(owner.parts.iter().all(|life| life.id.as_deref() == Some(life.part.as_str())), "a resource part names its resource");
         }
         if to > FIRST + FIRST_HOURS {
@@ -421,7 +421,7 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
             .filter_map(|id| Some((power(id, hour)?, tag_of(id))))
             .collect();
         wanted.sort_by(|a, b| b.0.cmp(&a.0));
-        let got: Vec<(i64, &str)> = reply.states.iter().map(|state| (state.run.as_ref().unwrap().value_raw.parse().unwrap(), state.tag.as_str())).collect();
+        let got: Vec<(i64, &str)> = reply.states.iter().map(|state| (state.run.as_ref().unwrap().value_raw.parse().unwrap(), state.country.tag().unwrap())).collect();
         assert_eq!(got, wanted.into_iter().take(1).collect::<Vec<_>>(), "the top country at {hour}");
     }
     let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1, "from": FIRST, "to": LAST, "width": 64 }))).unwrap();
@@ -464,7 +464,7 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
         ends += 1;
     }
     assert_eq!(ends, 1, "the leader at the stretch's last hour draws its bin");
-    let tiles = serde_json::json!({ "top": null, "from": FIRST, "to": LAST, "width": 64, "tags": ["GER"] });
+    let tiles = serde_json::json!({ "top": null, "from": FIRST, "to": LAST, "width": 64, "countries": ["GER"] });
     assert!(answer(&query, "series-summary", &{
         let mut params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" } });
         params.as_object_mut().unwrap().extend(tiles.as_object().unwrap().clone());
@@ -491,7 +491,7 @@ fn a_request_naming_1500_countries_is_answered() {
     };
     let tags: Vec<String> = TAGS.iter().map(|tag| (*tag).to_owned()).chain((0..1_498).map(|at| format!("X{at:04}"))).collect();
     let hour = ITA_FROM + 10;
-    let reads: Vec<serde_json::Value> = tags.iter().map(|tag| serde_json::json!({ "tag": tag, "hour": hour })).collect();
+    let reads: Vec<serde_json::Value> = tags.iter().map(|tag| serde_json::json!({ "country": tag, "hour": hour })).collect();
     let states: SeriesStateReply = serde_json::from_value(ask("series-state", serde_json::json!({ "reads": reads }))).unwrap();
     assert_eq!(states.states.len(), 1_500);
     assert!(states.states[..2].iter().all(|state| state.run.is_some()), "GER and ITA read at {hour}");
@@ -499,9 +499,9 @@ fn a_request_naming_1500_countries_is_answered() {
     let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1_500, "from": FIRST, "to": LAST, "width": 64 }))).unwrap();
     assert_eq!(chart.lines.iter().map(|line| line.tag.as_str()).collect::<std::collections::BTreeSet<_>>(), TAGS.into_iter().collect());
     let next: SeriesKeyReply =
-        serde_json::from_value(ask("series-next-change", serde_json::json!({ "tags": tags, "key": "ArrowRight", "from": hour, "firstHour": FIRST, "lastHour": LAST }))).unwrap();
+        serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": tags, "key": "ArrowRight", "from": hour, "firstHour": FIRST, "lastHour": LAST }))).unwrap();
     assert!(next.hour.is_some_and(|next| next > f64::from(hour)));
-    ask("events-page", serde_json::json!({ "tags": tags, "from": FIRST, "to": LAST, "pageSize": 16 }));
+    ask("events-page", serde_json::json!({ "countries": tags, "from": FIRST, "to": LAST, "pageSize": 16 }));
 }
 
 fn line_of<'q>(query: &'q Query<'static>) -> Line<'q, 'static> {
@@ -559,7 +559,7 @@ fn a_ranked_short_stretch_reads_its_winner_only_over_its_tags_hours() {
         unheld: Vec::new(),
     });
     let run = |first: i32, last: i32, starts_segment: bool| HolderRun { first, last, holder: Holder::Found { slot: 8, id: 9002 }, starts_segment };
-    let mut holders = Holders { tags: query.holders.tags.clone(), unknown: Vec::new() };
+    let mut holders = Holders::new(query.holders.tags.clone(), Vec::new());
     holders.tags.insert("AAA".to_owned(), vec![run(first, from - 1, true)]);
     holders.tags.insert("ITA".to_owned(), vec![run(from, last, true)]);
     query.holders = Arc::new(holders);
@@ -644,7 +644,7 @@ fn a_rank_names_the_greatest_countries_at_the_hour_with_their_states() {
         let mut wanted: Vec<(i64, u32)> = [9001, 9002].into_iter().filter(|&id| exists(id, hour)).filter_map(|id| Some((power(id, hour)?, id))).collect();
         wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         ranked_both += usize::from(wanted.len() == 2);
-        let shown: Vec<(String, Option<String>)> = reply.states.iter().map(|state| (state.tag.clone(), state.run.as_ref().map(|run| run.value_raw.clone()))).collect();
+        let shown: Vec<(String, Option<String>)> = reply.states.iter().map(|state| (state.country.to_string(), state.run.as_ref().map(|run| run.value_raw.clone()))).collect();
         let wanted: Vec<(String, Option<String>)> = wanted.into_iter().map(|(value, id)| (tag_of(id).to_owned(), Some(value.to_string()))).collect();
         assert_eq!(shown, wanted, "at {hour}");
     }

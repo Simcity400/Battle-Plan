@@ -398,6 +398,7 @@ fn height_volume_clamps_altitude_and_interpolates() {
         height_min_volume: 0.2,
         height_max_volume: 1.0,
         voice_category: "Voices".into(),
+        voice_cool_down: 2.8,
     };
     assert_eq!(defines.height_volume(10.0), 0.2);
     assert_eq!(defines.height_volume(5000.0), 1.0);

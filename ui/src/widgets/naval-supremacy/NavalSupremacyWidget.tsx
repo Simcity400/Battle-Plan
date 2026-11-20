@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -14,7 +15,7 @@ import { useAtHead } from '../../dashboard/atHead';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions } from '../../dashboard/options';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { windowsOf } from '../../dashboard/heldWindows';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -33,7 +34,7 @@ const LABELS: Record<Control, string> = { friendly: 'Friendly control', enemy: '
 export default function NavalSupremacyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const menu = useContextMenu('Naval supremacy');
@@ -50,7 +51,7 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const wanted = useMemo(() => extent && extent[0] <= extent[1] ? windowsOf(extent[0], extent[1], following) : [], [extent?.[0], extent?.[1], following]); // eslint-disable-line react-hooks/exhaustive-deps
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]) : null;
   const held = useProductWindows(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'naval-supremacy',
-    params: { branchId: track!.branch.id, tag: tag!, window: index } }), wanted, active, validateSupremacy, track?.source);
+    params: { branchId: track!.branch.id, country: countryFromKey(tag!), window: index } }), wanted, active, validateSupremacy, track?.source);
   const error = shown.map(index => held.errors.get(index)).find(failure => failure !== undefined);
   const retry = held.retry;
   const complete = shown.length > 0 && shown.every(index => held.data.has(index));

@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { validateForceReply } from '../../charts/race/forceRace.ts';
 import type { ForceParams } from '../../charts/race/forceRace';
 import type { OptionValue } from '../../dashboard/options';
@@ -10,7 +11,7 @@ export function validateAirForceReply(data: unknown): ForceSizeReply {
 /** Country choices are opaque tags; top N asks the product to rank the declared measure. */
 export function airForceRequest(branchId: string, resolved: { tags: readonly string[]; top?: number },
   options: Readonly<Record<string, OptionValue>>): ForceParams {
-  return { branchId, tags: resolved.top == null ? [...resolved.tags] : [], top: resolved.top ?? null,
+  return { branchId, countries: resolved.top == null ? resolved.tags.map(countryFromKey) : [], top: resolved.top ?? null,
     measure: options.measure === 'wings' ? 'wings' : 'planes', ownership: options.ownership === 'effective' ? 'effective' : 'roster' };
 }
 

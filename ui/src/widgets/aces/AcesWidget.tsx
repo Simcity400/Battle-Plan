@@ -9,7 +9,7 @@ import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { nameKey, useCountryFactsAt } from '../../dashboard/countryNamesAt';
 import type { FactSpec } from '../../dashboard/countryFacts';
 import { useContentRevision } from '../../dashboard/contentRevision';
@@ -48,7 +48,7 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const filtered = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && filtered);
-  const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));
+  const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);

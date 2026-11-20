@@ -1,17 +1,21 @@
+import type { ReactElement } from 'react';
+import { isSlotKey } from '../countryKey.ts';
 import { failureText } from '../queryError.ts';
 import CountryPicker from '../../components/CountryPicker';
 import { Select } from '../../components/Select';
 import { SettingLabel } from './SettingLabel';
-import { SourceFlag } from '../../components/CountryFlag';
+import { CountryFlagUrl } from '../../components/CountryFlag';
 import { Icon } from '../../components/Icons';
 import { Segmented } from '../../components/Segmented';
 import type { CountryGroupReply } from '../../generated/dashboard';
-import { defaultCountryTag, selectedTags, singleCountryChoice } from '../countrySelection';
+import { defaultCountryKey, selectedCountryKeys, singleCountryChoice } from '../countrySelection';
 import { countrySelectionFor, countrySelectionMode, countrySelectionModes, DEFAULT_TOP } from '../groups';
 import { useCampaignSettings } from '../campaignSettings';
 import { factionChoiceLabel } from '../factionNames';
 import { resolveWindow } from '../model';
 import { useAtHead } from '../atHead.ts';
+import { chipName, useKeyLabelsAt, useKeyTagsAt } from '../useKeyTagsAt.ts';
+import type { CountryLabel } from '../countryFlagsAt';
 import { useCountryGroups } from '../useCountryGroups';
 import type { BoundTrack, CountryGroup, CountrySelection, GroupMembership, WidgetSpec } from '../model';
 import type { WidgetMeta, WidgetRuntime } from '../definitions';
@@ -27,11 +31,14 @@ export function CountriesSection({ widget, reference, runtime, limits, inline = 
   inline?: boolean;
 }) {
   const source = reference?.source;
-  const fallback = defaultCountryTag(reference);
+  const fallback = defaultCountryKey(reference);
   const common = { field: !inline, inline, source, client: runtime.client, countries: source?.metadata.countries ?? [], playerCountryId: source?.metadata.playerCountryId ?? null };
-  if (limits.max <= 1) return <CountryPicker key={source?.id ?? 'unbound'} {...common}
-    selectedTag={widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : fallback}
-    onChange={tag => onChange(singleCountryChoice(tag, fallback, limits.fixed))} />;
+  // The dashboard's country as the picker names it: the tag it was chosen under, else the tag it goes by at the hour shown.
+  const picker = (fallbackTag: string | null) => <CountryPicker key={source?.id ?? 'unbound'} {...common}
+    selectedTag={widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : fallbackTag}
+    onChange={tag => onChange(singleCountryChoice(tag, fallbackTag, limits.fixed))} />;
+  if (limits.max <= 1) return reference?.selectedTag != null || fallback === null || !isSlotKey(fallback) ? picker(reference?.selectedTag ?? fallback)
+    : <TagsAt widget={widget} reference={reference} runtime={runtime} keys={[fallback]}>{([tag]) => picker(tag)}</TagsAt>;
   const mode = widget.countries.kind === 'all' && !limits.all ? 'countries' : countrySelectionMode(widget.countries);
   return <>
     <Segmented label="Choose countries by" value={mode} options={countrySelectionModes(limits)}
@@ -45,21 +52,38 @@ export function CountriesSection({ widget, reference, runtime, limits, inline = 
   </>;
 }
 
+/** `children` given the tag each key goes by at the widget's hour shown: a slot is named, and flagged, by its country's tag then. */
+function TagsAt({ widget, reference, runtime, keys, children }: {
+  widget: WidgetSpec; reference: BoundTrack | undefined; runtime: WidgetRuntime; keys: readonly string[]; children: (tags: readonly (string | null)[]) => ReactElement;
+}) {
+  const shownHour = (clockHour: number) => reference ? resolveWindow(widget, reference, runtime.tracks, clockHour)?.lastHour ?? Number.NaN : Number.NaN;
+  return children(useKeyTagsAt(runtime, reference, keys, shownHour, widget.time.mode === 'follow', true));
+}
+
+/** `children` given each key's label at the widget's hour shown, as every country label names it then. */
+function LabelsAt({ widget, reference, runtime, keys, children }: {
+  widget: WidgetSpec; reference: BoundTrack; runtime: WidgetRuntime; keys: readonly string[]; children: (labels: readonly ReturnType<CountryLabel>[]) => ReactElement;
+}) {
+  const shownHour = (clockHour: number) => resolveWindow(widget, reference, runtime.tracks, clockHour)?.lastHour ?? Number.NaN;
+  return children(useKeyLabelsAt(runtime, reference, keys, shownHour, widget.time.mode === 'follow', true));
+}
+
 function CountryChips({ widget, reference, runtime, max, inline, onChange }: {
   widget: WidgetSpec; reference: BoundTrack | undefined; runtime: WidgetRuntime; max: number; inline: boolean; onChange: (countries: CountrySelection) => void;
 }) {
   const source = reference?.source;
-  const tags = selectedTags(widget.countries, reference);
+  const tags = selectedCountryKeys(widget.countries, reference);
   const follows = widget.countries.kind === 'selected';
   const setTags = (next: string[]) => onChange(next.length ? { kind: 'tags', tags: next } : { kind: 'selected' });
-  const name = (tag: string) => source?.metadata.countries.find(country => country.tag === tag)?.name ?? 'Country name unavailable';
+  const chips = (labels: readonly (ReturnType<CountryLabel> | undefined)[]) => <ul className="settings-countries" aria-label="Chosen countries">{tags.map((tag, i) => <li key={tag} className="settings-country">
+    {labels[i] && <CountryFlagUrl className="country-flag" url={labels[i]!.flag} detail={labels[i]!.flagDetail} reason={labels[i]!.flagReason ?? undefined} pending={labels[i]!.flagPending} />}
+    <span>{chipName(labels[i])}{follows && <small>Dashboard country</small>}</span>
+    {!follows && <button type="button" className="icon-button small" aria-label={`Remove ${chipName(labels[i])}`}
+      onClick={() => setTags(tags.filter(item => item !== tag))}><Icon name="close" /></button>}
+  </li>)}</ul>;
+  // Without a campaign there is no hour to name a country at.
   return <>
-    <ul className="settings-countries" aria-label="Chosen countries">{tags.map(tag => <li key={tag} className="settings-country">
-      {source && <SourceFlag client={runtime.client} source={source} tag={tag} />}
-      <span>{name(tag)}{follows && <small>Dashboard country</small>}</span>
-      {!follows && <button type="button" className="icon-button small" aria-label={`Remove ${name(tag)}`}
-        onClick={() => setTags(tags.filter(item => item !== tag))}><Icon name="close" /></button>}
-    </li>)}</ul>
+    {reference ? <LabelsAt widget={widget} reference={reference} runtime={runtime} keys={tags}>{chips}</LabelsAt> : chips([])}
     <CountryPicker key={source?.id ?? 'unbound'} field={!inline} inline={inline} source={source} client={runtime.client} countries={source?.metadata.countries ?? []}
       playerCountryId={source?.metadata.playerCountryId ?? null} selectedTag={null} chosen={tags}
       addLabel={tags.length >= max ? `Up to ${max} countries; pick one to remove it` : 'Add or remove a country'}
@@ -117,7 +141,7 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
     <div className="setting-row"><span>Group</span>
       <Select label="Group" value={value} options={kinds} onChange={choice => {
         const next: CountryGroup = choice.startsWith('faction:') ? { type: 'faction', id: choice.slice(8) }
-          : choice === 'war' ? { type: 'war', tag: defaultCountryTag(reference) ?? '' }
+          : choice === 'war' ? { type: 'war', tag: defaultCountryKey(reference) ?? '' }
             : choice === 'top' ? { type: 'top', count: Math.min(DEFAULT_TOP, limits.max) } : { type: 'humans' };
         if (next.type !== 'war' || next.tag) set({ group: next });
       }} /></div>

@@ -1,3 +1,4 @@
+import { answersKey } from '../../dashboard/countryKey.ts';
 import { useMemo } from 'react';
 import { failureText } from '../../dashboard/queryError.ts';
 import type { NarrowTable } from '../../charts/table/options';
@@ -30,7 +31,7 @@ export default function ProducedDrillTable({ runtime, track, active, tag, hour, 
 }) {
   const alias = tagAt(hour);
   const at = useProducedAt(runtime, track, alias, alias ? hour : null, measure, refits, active);
-  const reply = at.data && at.data.tag === alias && at.data.hour === Math.floor(hour) ? at.data : undefined;
+  const reply = at.data && answersKey(at.data.asked, alias) && at.data.hour === Math.floor(hour) ? at.data : undefined;
   const rows = useMemo(() => reply ? typeRows(reply) : null, [reply]);
   const pictures = useProducedArtwork(runtime, track, alias ?? tag, reply?.read ?? null, active);
   const since = reply?.observation ?? null;

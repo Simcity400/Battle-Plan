@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import { liveRace, rowsOf } from '../../charts/race/measureRaceData.ts';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { countryTagAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatchFilter, noMembersAt, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import NoMembersState from '../../dashboard/NoMembersState';
@@ -26,13 +28,17 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   const { track, data, error, retry } = useRaidLog(widget, runtime, active);
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const following = active && widget.time.mode === 'follow' && !!track && view === 'race';
   const span = useMemo(() => track ? { firstHour: track.branch.firstHour, lastHour: track.branch.lastHour } : null, [track?.branch.firstHour, track?.branch.lastHour]);
-  const tally = useMemo(() => data && span ? raidTally(data.episodes, span, data.missing, resolved.tags, resolved.top == null ? null : { count: resolved.top, metric }) : null,
-    [data, span, resolved.tags, resolved.top, metric]);
+  const slotKeys = useMemo(() => resolved.tags.filter(isSlotKey), [resolved.tags]);
+  const slots = useSlotTags(runtime.client, track, active && slotKeys.length > 0);
+  const tally = useMemo(() => data && span && (!slotKeys.length || slots) ? raidTally(data.episodes, span, data.missing, resolved.tags,
+    resolved.top == null ? null : { count: resolved.top, metric },
+    (raider, hour) => slotKeys.find(key => countryTagAt(slots, countryFromKey(key), hour) === raider) ?? raider) : null,
+  [data, span, resolved.tags, resolved.top, metric, slotKeys, slots]);
   const series = useMemo(() => tallyModel(tally?.series ?? []), [tally]);
   const identities = useMemo(() => grouped && groups.data ? countryIdentityIndex(groups.data.countryIdentities) : tally ? tallyIdentities(tally.series) : null,
     [grouped, groups.data, tally]);

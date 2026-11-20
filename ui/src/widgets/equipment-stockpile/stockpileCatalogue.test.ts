@@ -6,7 +6,7 @@ import { stockAt, stockGroups, validateStockpileCatalogue } from './stockpileDat
 
 const at = (hour: number, amountRaw: string | null) => [{ firstHour: hour, lastHour: hour, amountRaw }];
 const catalogue: StockpileCatalogueReply = {
-  branchId: '1', tags: ['GER'], campaignKey: 'campaign', decimals: 5, needBoundRaw: '9223372036854775807', warnings: ['catalogue'],
+  branchId: '1', countries: ['GER'], campaignKey: 'campaign', decimals: 5, needBoundRaw: '9223372036854775807', warnings: ['catalogue'],
   types: [{ key: 'infantry_equipment', name: 'Infantry equipment', domain: 'land', needNote: null }],
   variants: [
     { id: '10', token: 'infantry_equipment_1', archetype: 'infantry_equipment', designs: ['design-a'],
@@ -51,11 +51,11 @@ test('an hour’s values join the catalogue: its variants, reads and peaks, with
 
 test('an alias history reads each hour from the tag it held then', () => {
   const holders = stockpileHolders(new Map([['GER', [{ firstHour: 0, lastHour: 109 }]], ['DDR', [{ firstHour: 110, lastHour: 114 }]]]));
-  assert.deepEqual(holders.map(holder => holder.tag), ['GER', 'DDR']);
+  assert.deepEqual(holders.map(holder => holder.country), ['GER', 'DDR']);
   assert.equal(holderAt(holders, 100), 'GER');
   assert.equal(holderAt(holders, 112), 'DDR');
   assert.equal(holderAt(holders, 116), null);
-  assert.equal(holderAt([{ tag: 'GER' }], 116), 'GER');
+  assert.equal(holderAt([{ country: 'GER' }], 116), 'GER');
 });
 
 test('a reply held while the next hour loads is shown at its own hour, never read as the next', () => {

@@ -172,7 +172,8 @@ mod naval_repairs;
 pub use replay_derive::{air_mission_counts, air_region_derive};
 pub use air_missions::{AirPasses, AirValues, Ground, RegionAlerts, TodayAir, counts_withheld, fragment_withheld, ground_of, ground_withheld, interception_gate, interception_received_of, region_alerts, supplied, supply_refusal};
 
-pub type MissionMemo = Recent<(replay_data::BranchId, replay_data::Hour, u32), MissionIcons>;
+/// The hour's naval mission part for a viewing country, keyed with whether its icons were made.
+pub type MissionMemo = Recent<(replay_data::BranchId, replay_data::Hour, u32, bool), MissionIcons>;
 pub mod carry;
 pub mod naval_windows;
 pub mod type_tint;
@@ -1999,10 +2000,42 @@ impl CounterInputs<'_> {
     }
 }
 
+/// Which control of a region's air mission icon a hit belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AirMissionPart {
+    /// A mission button, by mission kind.
+    Mission(usize),
+    /// `more_ground_crews_icon`: its click posts a command an observer never performs.
+    GroundCrews,
+    /// The regional supply icon and counts.
+    Supply,
+}
+
+/// What a click on a part of the icon does for an observer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AirMissionClick {
+    /// Selects the region's wings on that mission.
+    SelectMission(usize),
+    /// Opens the region's air window.
+    OpenRegion,
+    /// Nothing: the game posts a command an observer never performs.
+    Nothing,
+}
+
+impl AirMissionPart {
+    pub fn click(self) -> AirMissionClick {
+        match self {
+            Self::Mission(mission) => AirMissionClick::SelectMission(mission),
+            Self::GroundCrews => AirMissionClick::Nothing,
+            Self::Supply => AirMissionClick::OpenRegion,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AirMissionHover {
     pub region: u32,
-    pub mission: Option<usize>,
+    pub part: AirMissionPart,
     pub rect: [f32; 4],
     pub layer: u64,
     pub text: Arc<viewer_foundation::tooltip_text::Tooltip>,
@@ -2073,6 +2106,8 @@ pub struct CounterReport {
     /// Radar base-hit index to province; the range manager follows the hovered icon.
     pub radar_hits: BTreeMap<usize, u32>,
     pub air_base_hits: BTreeMap<usize, (u32, i32)>,
+    /// Naval base button hit index to the base's province.
+    pub naval_base_hits: BTreeMap<usize, u32>,
     pub air_grid_hits: BTreeMap<usize, AirGridHover>,
     pub air_mission_hits: Vec<AirMissionHover>,
     pub naval_mission_hits: Vec<NavalMissionHit>,
@@ -2471,6 +2506,7 @@ impl CounterReport {
             base_hits,
             radar_hits,
             air_base_hits,
+            naval_base_hits,
             air_grid_hits,
             air_mission_hits,
             naval_mission_hits,
@@ -2550,6 +2586,7 @@ impl CounterReport {
         self.base_hits.append(base_hits);
         untouched(&*radar_hits, "radar_hits");
         untouched(&*air_base_hits, "air_base_hits");
+        untouched(&*naval_base_hits, "naval_base_hits");
         untouched(&*air_grid_hits, "air_grid_hits");
         self.air_mission_hits.append(air_mission_hits);
         self.naval_mission_hits.append(naval_mission_hits);
@@ -2670,6 +2707,7 @@ impl CounterReport {
             base_hits,
             radar_hits,
             air_base_hits,
+            naval_base_hits,
             air_grid_hits,
             air_mission_hits,
             naval_mission_hits,
@@ -2749,6 +2787,7 @@ impl CounterReport {
         self.base_hits.clone_from(base_hits);
         self.radar_hits.clone_from(radar_hits);
         self.air_base_hits.clone_from(air_base_hits);
+        self.naval_base_hits.clone_from(naval_base_hits);
         self.air_grid_hits.clone_from(air_grid_hits);
         self.air_mission_hits.clone_from(air_mission_hits);
         self.naval_mission_hits.clone_from(naval_mission_hits);
@@ -3611,12 +3650,12 @@ pub fn hour_tables_profiled(
             };
             Ok::<_, io::Error>((native, order, base_icons))
         })?;
-    let missions = if !need.shown.naval_missions {
-        Arc::default()
-    } else {
-    spans.measure("overlay.tables.counters.missions", |spans| {
+    // The sea regions' hovers read the dominance sources at every view; the icons only a view
+    // that can draw them.
+    let icons_shown = need.shown.naval_missions;
+    let missions = spans.measure("overlay.tables.counters.missions", |spans| {
         // Never waits on another build of the hour: builds its own copy meanwhile.
-        mission_memo.get_or_insert_without_waiting((frame.branch, frame.hour, vision.ours()), || {
+        mission_memo.get_or_insert_without_waiting((frame.branch, frame.hour, vision.ours(), icons_shown), || {
             spans.measure("overlay.tables.counters.missions.build", |spans| {
                 let (forces, mut icons) =
                     spans.measure("overlay.tables.counters.missions.build.read", |_| {
@@ -3625,14 +3664,18 @@ pub fn hour_tables_profiled(
                             .iter()
                             .map(|row| (row.id, row))
                             .collect();
-                        let icons = MissionIcons::read(
-                            frame,
-                            &vision,
-                            &links,
-                            &country_ids,
-                            &native,
-                            &forces,
-                        )?;
+                        let icons = if icons_shown {
+                            MissionIcons::read(
+                                frame,
+                                &vision,
+                                &links,
+                                &country_ids,
+                                &native,
+                                &forces,
+                            )?
+                        } else {
+                            MissionIcons::default()
+                        };
                         Ok::<_, io::Error>((forces, icons))
                     })?;
                 icons.naval_dominance_sources = Some(Arc::new(Ok(BTreeMap::new())));
@@ -3670,8 +3713,7 @@ pub fn hour_tables_profiled(
                 Ok::<_, io::Error>(Arc::new(icons))
             })
         })
-    })?
-    };
+    })?;
     let mut tables = spans.measure("overlay.tables.counters.remaining_hour_base", |spans| {
         // Keep HQ providers only for groups with both a leader and provider.
         let hq_providers = if need.shown.units {

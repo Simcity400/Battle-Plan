@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
 import { useCallback, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
@@ -23,7 +24,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import { useHolderLooks } from '../../dashboard/holderLooks.ts';
 import { nameReadMetadata, nameReadFailure } from '../../dashboard/nameReads.ts';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { factionNameAt } from '../../dashboard/factionNames';
 import { useFactionDisplayNames } from '../../dashboard/factionChoice';
@@ -106,14 +107,14 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   const window = track && resolveWindow(widget, track, runtime.tracks, clock.getHour());
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const groups = useCountryGroups(runtime, track, active);
-  const resolved = track ? resolveCountries(widget.countries, [defaultCountryTag(track) ?? ''].filter(Boolean), groups.data, track.branch.lastHour, Number.MAX_SAFE_INTEGER) : null;
+  const resolved = track ? resolveCountries(widget.countries, [defaultCountryKey(track) ?? ''].filter(Boolean), groups.data, track.branch.lastHour, Number.MAX_SAFE_INTEGER) : null;
   const top = resolved?.top ?? null;
   const [rankRoot, setRankRoot] = useState<HTMLDivElement | null>(null);
   const ranked = useTopCountries({ widget, runtime, active }, track, top, options.topMeasure, useMemo(() => ({ current: rankRoot }), [rankRoot]));
   const members = useMemo(() => (resolved?.tags ?? []).filter(tag => !resolved?.membership || resolved.membership.get(tag)?.some(run => run.firstHour <= hour && hour <= run.lastHour)),
     [resolved?.tags.join(','), resolved?.membership, hour]); // eslint-disable-line react-hooks/exhaustive-deps
   const tags = top === null ? members : ranked.tags ?? NO_TAGS;
-  const opinions = useHeadProduct(runtime, widget, 'diplomatic-relations', track && (top === null || ranked.tags) && tags.length > 1 ? { tags } : null,
+  const opinions = useHeadProduct(runtime, widget, 'diplomatic-relations', track && (top === null || ranked.tags) && tags.length > 1 ? { countries: tags.map(countryFromKey) } : null,
     { active, validate: validateRelations, structure: relationsStructure });
   const data = opinions.data;
   const shown = opinions.at ?? hour;

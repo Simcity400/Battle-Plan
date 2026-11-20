@@ -1346,7 +1346,8 @@ impl Views {
     }
 
     /// [`Self::reader_at`] keeping the frames before its newest, for a window part that answers at
-    /// the hour the display shows ([`Reader::frame_through`]).
+    /// the hour the display shows ([`Reader::frame_through`]) or at a click's own hour
+    /// ([`Reader::frame_of`]).
     pub fn reader_through(&self, name: &'static str, needs: &[Need], pace: Pace) -> Reader {
         open(&self.shared, name, needs, false, pace, true)
     }
@@ -1922,6 +1923,16 @@ impl Reader {
         newest.chain(reading.older.iter().flatten().filter(|&&(_, at)| at == seek).map(|(frame, _)| frame)).find(|frame| frame.hour <= hour).cloned()
     }
 
+    /// Its frame of `hour` and of the side's last posted seek, the newest or one of the few before
+    /// it a reader that keeps them holds; none while no such frame is made for it.
+    pub fn frame_of(&self, hour: Hour) -> Option<Arc<DecodedFrame>> {
+        let readers = lock(&self.shared.readers);
+        let reading = readers.get(Self::place(&readers, self.id)?)?;
+        let seek = self.seek();
+        let newest = reading.frame.iter().filter(|_| reading.stands.is_some_and(|(_, at)| at == seek));
+        newest.chain(reading.older.iter().flatten().filter(|&&(_, at)| at == seek).map(|(frame, _)| frame)).find(|frame| frame.hour == hour).cloned()
+    }
+
     /// [`Self::frame`] without waiting for the store: none while the store is making the makers'
     /// frames, which it does holding its readers and which at a piece's crossing is hundreds of
     /// thousands of cells' worth of work. A reader of the display frame's own takes this, so the
@@ -2294,29 +2305,54 @@ impl AtHead {
         if let Some(hour) = views.shown_through() {
             return self.frame_through(views, hour);
         }
-        self.asked = true;
-        if !self.open.as_ref().is_some_and(|reader| views.holds(reader)) {
-            self.open = Some(match self.now {
-                true => views.reader_later(self.name, &self.needs, self.pace),
-                false => views.reader_through(self.name, &self.needs, self.pace),
-            });
-        }
-        let open = self.open.as_ref()?;
-        if self.now { open.frame_now() } else { open.frame() }
+        let now = self.now;
+        let open = self.kept(views);
+        if now { open.frame_now() } else { open.frame() }
     }
 
     /// [`Self::frame`] at the newest frame no later than `hour`: what the display shows at `hour`,
     /// never rows prepared past it.
     pub fn frame_through(&mut self, views: &Views, hour: Hour) -> Option<Arc<DecodedFrame>> {
+        let now = self.now;
+        let open = self.kept(views);
+        if now { open.frame_now_through(hour) } else { open.frame_through(hour) }
+    }
+
+    /// Kept open through this frame on `views`' store, asked or not: its frames keep coming.
+    pub fn keep(&mut self, views: &Views) {
+        self.kept(views);
+    }
+
+    /// Its frame of `hour` ([`Reader::frame_of`]); none while no frame of that hour is made.
+    pub fn frame_of(&mut self, views: &Views, hour: Hour) -> Option<Arc<DecodedFrame>> {
+        self.kept(views).frame_of(hour)
+    }
+
+    /// Its reader on `views`' store, opened as it reads; asked this frame.
+    fn kept(&mut self, views: &Views) -> &Reader {
         self.asked = true;
-        if !self.open.as_ref().is_some_and(|reader| views.holds(reader)) {
-            self.open = Some(match self.now {
+        let reader = match self.open.take() {
+            Some(reader) if views.holds(&reader) => reader,
+            _ => match self.now {
                 true => views.reader_later(self.name, &self.needs, self.pace),
                 false => views.reader_through(self.name, &self.needs, self.pace),
-            });
+            },
+        };
+        self.open.insert(reader)
+    }
+
+    /// Reads `needs` and no other set from now on: a set it no longer names is let go, and one new
+    /// to it is made from the side's mirrors at once.
+    pub fn declare(&mut self, needs: &[Need]) {
+        let mut needs = needs.to_vec();
+        needs.sort_unstable_by_key(|need| need.table.index());
+        if needs == self.needs {
+            return;
         }
-        let open = self.open.as_ref()?;
-        if self.now { open.frame_now_through(hour) } else { open.frame_through(hour) }
+        self.needs = needs;
+        if let Some(reader) = &self.open {
+            reader.declare_only_needs(&self.needs);
+        }
     }
 
     /// `read` over a frame this gave; none when it read a table not declared yet, which is

@@ -1,3 +1,4 @@
+import { answersKey, countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -6,7 +7,7 @@ import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
 import { usNumber } from '../../charts/numberFormat';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { resolveWindow } from '../../dashboard/model';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -27,7 +28,7 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, clock.getHour());
   const hour = window ? Math.floor(window.lastHour) : null;
-  const tag = track ? selectedTags(widget.countries, track)[0] ?? null : null;
+  const tag = track ? selectedCountryKeys(widget.countries, track)[0] ?? null : null;
   const root = useRef<HTMLDivElement | null>(null);
   // Each push writes the completion dates, which move with the hour, into the page: never a render.
   const paintCompletions = useCallback((reply: WargoalsReply) => {
@@ -39,9 +40,9 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
   }, []);
   // Pushed at the head while following, rendering only when the goals or their terms change; the last goals stay shown,
   // labelled with their own hour, until the next.
-  const product = useHeadProduct(runtime, widget, 'wargoals', tag ? { tag } : null,
+  const product = useHeadProduct(runtime, widget, 'wargoals', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateWargoalsReply, structure: wargoalStructure, paint: paintCompletions });
-  const data = product.data?.tag === tag && product.data.branchId === track?.branch.id ? product.data : null;
+  const data = answersKey(product.data?.asked, tag) && product.data?.branchId === track?.branch.id ? product.data : null;
   const at = product.at ?? hour ?? 0;
   const following = widget.time.mode === 'follow' && product.read === 'followed';
   const axisOffset = track?.axisOffset ?? 0;

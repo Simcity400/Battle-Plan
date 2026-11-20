@@ -171,7 +171,7 @@ impl Ranking {
     }
 
     pub(crate) fn write(&mut self, query: &Query, lane: &Lane, changes: Option<&playhead::changes::Changes>, tags: &Tags, reasons: &Reasons, table: &mut Table, out: &mut Vec<u8>) -> Option<u64> {
-        let Query::Series { tags: names, top: Some(n), least, parts: false, .. } = query else { return None };
+        let Query::Series { countries: names, top: Some(n), least, parts: false, .. } = query else { return None };
         let source = query.source()?;
         let cells = lane.cells();
         out.clear();
@@ -194,7 +194,7 @@ impl Ranking {
             self.slots.clear();
             self.sorted.clear();
             let mut order: Vec<_> = (0..names.len()).collect();
-            order.sort_unstable_by_key(|&i| &names[i]);
+            order.sort_by_cached_key(|&i| names[i].key());
             self.order.resize(order.len(), 0);
             for (rank, i) in order.into_iter().enumerate() { self.order[i] = rank as u32; }
             self.dirty.extend(cells.rows());
@@ -215,7 +215,7 @@ impl Ranking {
         for &(value, _, key) in self.sorted.iter().take(*n) {
             table.row(key);
             table.cell(if *least { value } else { !value }, State::Value);
-            table.name(&names[tags.by_key[&key] as usize]);
+            table.name(&names[tags.by_key[&key] as usize].key());
         }
         table.encode(out);
         Some(read)
@@ -286,7 +286,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 Rows::Appended | Rows::Listed => {}
             }
         }
-        Query::Series { series, tags: names, top, parts: true, .. } => {
+        Query::Series { series, countries: names, top, parts: true, .. } => {
             let source = query.source().expect("a checked series");
             let owned = series.parts.expect("a checked sub-keyed series");
             table.clear(1, false);
@@ -294,7 +294,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 let owner = match tag {
                     TagRow::Absent(reason) => {
                         table.row(0);
-                        table.name(&names[at]);
+                        table.name(&names[at].key());
                         table.absent(reason);
                         continue;
                     }
@@ -311,7 +311,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                             let (value, state) = series_value(&source, cells, slot);
                             table.row(key);
                             table.cell(value, state);
-                            table.name(&names[at]);
+                            table.name(&names[at].key());
                         }
                     }
                     Some(n) => {
@@ -328,18 +328,18 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                         for &(value, key, _) in ranked.iter() {
                             table.row(key);
                             table.cell(value, State::Value);
-                            table.name(&names[at]);
+                            table.name(&names[at].key());
                         }
                     }
                 }
                 if table.rows() == before {
                     table.row(0);
-                    table.name(&names[at]);
+                    table.name(&names[at].key());
                     table.absent(&format!("{} holds no row of {} at this hour", names[at], series.kind));
                 }
             }
         }
-        Query::Series { tags: names, top: Some(n), least, .. } => {
+        Query::Series { countries: names, top: Some(n), least, .. } => {
             let source = query.source().expect("a checked series");
             table.clear(1, false);
             ranked.clear();
@@ -353,7 +353,7 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             // As the UI ranks (`compareTags`): greatest first, a tie by tag in byte order.
             let by_tag = |a: &(i64, u128, u32), b: &(i64, u128, u32)| {
                 let (a0, b0) = if *least { (b.0, a.0) } else { (a.0, b.0) };
-                b0.cmp(&a0).then_with(|| names[a.2 as usize].cmp(&names[b.2 as usize]))
+                b0.cmp(&a0).then_with(|| names[a.2 as usize].key().cmp(&names[b.2 as usize].key()))
             };
             if ranked.len() > *n {
                 ranked.select_nth_unstable_by(*n - 1, by_tag);
@@ -363,10 +363,10 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
             for &(value, key, at) in ranked.iter() {
                 table.row(key);
                 table.cell(value, State::Value);
-                table.name(&names[at as usize]);
+                table.name(&names[at as usize].key());
             }
         }
-        Query::Series { measure, tags: names, top: None, .. } => {
+        Query::Series { measure, countries: names, top: None, .. } => {
             let source = query.source().expect("a checked series");
             table.clear(1, false);
             let unread = |at: usize| format!("{}'s {} was not recorded at this hour", names[at], measure.name);
@@ -374,14 +374,14 @@ pub(crate) fn write(query: &Query, lane: &Lane, find: &dyn Find, tags: &Tags, re
                 let key = match tag {
                     TagRow::Absent(reason) => {
                         table.row(0);
-                        table.name(&names[at]);
+                        table.name(&names[at].key());
                         table.absent(reason);
                         continue;
                     }
                     TagRow::Key(key) => *key,
                 };
                 table.row(key);
-                table.name(&names[at]);
+                table.name(&names[at].key());
                 match find.slot(key) {
                     None => table.absent(&unread(at)),
                     Some(slot) => {

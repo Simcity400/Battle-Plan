@@ -67,7 +67,7 @@ fn value<'a>(facts: &'a [PeopleFact], label: &str) -> Option<&'a str> {
 
 #[test]
 fn a_countrys_people_join_its_pools_recruitment_elections_exiles_and_the_recorders_deployed_sums() {
-    let reply = read(&frame(), "1", "MOD", MOD, Some(DEFINES)).unwrap();
+    let reply = read(&frame(), "1", &Country::Slot(MOD.slot), "MOD", MOD, Some(DEFINES)).unwrap();
     assert_eq!(value(&reply.manpower, "Available manpower"), Some("-2"));
     assert_eq!(value(&reply.manpower, "Effective recruitable population"), Some("2507"));
     assert_eq!(reply.states[0].recruitable, Some(2500));
@@ -86,7 +86,7 @@ fn a_countrys_people_join_its_pools_recruitment_elections_exiles_and_the_recorde
     assert_eq!((reply.exiles[0].manpower, reply.exiles[0].cap, reply.exiles[0].leaders), (Some(400), Some(900), Some(2)));
     assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
     // The host sees the exile it hosts.
-    let host = read(&frame(), "1", "HST", Owner { slot: 2, id: 201 }, None).unwrap();
+    let host = read(&frame(), "1", &Country::Slot(2), "HST", Owner { slot: 2, id: 201 }, None).unwrap();
     assert_eq!(host.exiles.len(), 1);
     assert_eq!(value(&host.manpower, "Deployed exile air force"), None, "an unrecorded sum is missing, never zero");
     assert!(host.warnings.iter().any(|warning| warning.contains("Deployed exile air force")));
@@ -101,7 +101,7 @@ fn an_unknown_state_or_deployed_row_leaves_its_totals_missing_never_zero() {
     if let TableView::Complete(TableRows::CountryDeployedManpower(rows)) = &mut *frame.tables[TableId::CountryDeployedManpower.index()] {
         rows.remove(0);
     }
-    let reply = read(&frame, "1", "MOD", MOD, Some(DEFINES)).unwrap();
+    let reply = read(&frame, "1", &Country::Slot(MOD.slot), "MOD", MOD, Some(DEFINES)).unwrap();
     assert_eq!(value(&reply.manpower, "Available manpower"), None);
     assert_eq!(value(&reply.manpower, "Effective recruitable population"), None);
     assert!(reply.warnings.iter().any(|warning| warning.contains("controlled state 2")));
@@ -122,11 +122,11 @@ fn a_country_owning_no_states_holds_no_elections_and_an_unread_count_leaves_them
     }
     let mut frame = frame();
     counters(&mut frame)[0].owned_state_count = 0;
-    let reply = read(&frame, "1", "MOD", MOD, Some(DEFINES)).unwrap();
+    let reply = read(&frame, "1", &Country::Slot(MOD.slot), "MOD", MOD, Some(DEFINES)).unwrap();
     assert_eq!(value(&reply.politics, "Elections"), Some("Not held"));
     assert_eq!(value(&reply.politics, "Next election"), Some("Not held"));
     counters(&mut frame).clear();
-    let reply = read(&frame, "1", "MOD", MOD, Some(DEFINES)).unwrap();
+    let reply = read(&frame, "1", &Country::Slot(MOD.slot), "MOD", MOD, Some(DEFINES)).unwrap();
     assert_eq!(value(&reply.politics, "Elections"), None, "eligibility without the country's state count is unknown, never allowed");
     assert!(reply.warnings.iter().any(|warning| warning.contains("election details")));
 }

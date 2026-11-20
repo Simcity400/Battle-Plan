@@ -1,3 +1,4 @@
+use dashboard_query::identity::Holders;
 use super::*;
 use crate::products::groups::MembershipRun;
 
@@ -48,17 +49,17 @@ fn a_battle_records_modifiers_are_the_newest_rows_its_record_inserted_never_an_e
 
 #[test]
 fn a_side_is_chosen_by_a_country_on_it_and_never_left_out_by_one_not_known() {
-    let tags = BattleCountryFilter { tags: Some(vec!["GER".into()]), ..BattleCountryFilter::default() };
+    let tags = BattleCountryFilter { countries: Some(vec!["GER".into()]), ..BattleCountryFilter::default() };
     let some = |tag: &str| Some(tag.to_owned());
-    assert!(matches_side(&tags, [some("ITA"), some("GER")], 10));
-    assert!(!matches_side(&tags, [some("ITA")], 10));
-    assert!(matches_side(&tags, [some("ITA"), None], 10), "a participant not known may be chosen");
-    assert!(matches_side(&tags, [], 10), "a side with no country is not left out");
+    assert!(matches_side(&tags, &Holders::default(), [some("ITA"), some("GER")], 10));
+    assert!(!matches_side(&tags, &Holders::default(), [some("ITA")], 10));
+    assert!(matches_side(&tags, &Holders::default(), [some("ITA"), None], 10), "a participant not known may be chosen");
+    assert!(matches_side(&tags, &Holders::default(), [], 10), "a side with no country is not left out");
     let runs = BattleCountryFilter {
         membership: Some(vec![MembershipRun { tag: "GER".into(), first_hour: 0, last_hour: 50 }]),
         ..BattleCountryFilter::default()
     };
-    assert!(matches_country(&runs, "GER", 50));
-    assert!(!matches_country(&runs, "GER", 51));
+    assert!(matches_country(&runs, &Holders::default(), "GER", 50));
+    assert!(!matches_country(&runs, &Holders::default(), "GER", 51));
     assert_eq!(fixed(-150_000), "-1.5");
 }

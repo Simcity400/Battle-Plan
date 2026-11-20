@@ -136,6 +136,8 @@ pub struct FactionHighlight {
     classes: crate::map::border_pass::ClassPlan,
     zone: crate::map::demilitarized::ZonePlan,
     hover: crate::map::demilitarized::ZonePlan,
+    /// The ground selection's outline and its palette colour.
+    selection: Option<(crate::map::demilitarized::ZonePlan, [f32; 4])>,
 }
 
 impl FactionHighlight {
@@ -147,17 +149,36 @@ impl FactionHighlight {
         zone: &Zone,
         provinces: &BTreeSet<u32>,
     ) -> Self {
+        Self::with_selection(meshes, regions, zone, provinces, None)
+    }
+
+    /// [`Self::new`] with the ground selection's provinces outlined in their palette colour: an
+    /// edge leaving the selection, unless the custom highlight claims it first, as the game ranks
+    /// a custom highlight above the selection and the selection above the demilitarised zone.
+    pub fn with_selection(
+        meshes: &BorderMeshes,
+        regions: &Regions,
+        zone: &Zone,
+        provinces: &BTreeSet<u32>,
+        selection: Option<(&BTreeSet<u32>, [f32; 4])>,
+    ) -> Self {
         let highlight = |a, b| provinces.contains(&a) != provinces.contains(&b);
+        let selected = |a, b| {
+            !highlight(a, b) && selection.is_some_and(|(set, _)| set.contains(&a) != set.contains(&b))
+        };
         Self {
             classes: crate::map::border_pass::ClassPlan::matching(meshes, regions, |a, b| {
-                !zone.splits(a, b) && !highlight(a, b)
+                !zone.splits(a, b) && !highlight(a, b) && !selected(a, b)
             }),
             zone: crate::map::demilitarized::ZonePlan::matching(meshes, regions, |a, b| {
-                zone.splits(a, b) && !highlight(a, b)
+                zone.splits(a, b) && !highlight(a, b) && !selected(a, b)
             }),
             hover: crate::map::demilitarized::ZonePlan::custom_highlight(
                 meshes, regions, highlight,
             ),
+            selection: selection.map(|(_, color)| {
+                (crate::map::demilitarized::ZonePlan::custom_highlight(meshes, regions, selected), color)
+            }),
         }
     }
 }
@@ -336,6 +357,8 @@ pub struct Scene {
     demilitarized: Option<DemilitarizedPass>,
     /// The rendered pin currently owning a local pointer highlight.
     faction_highlight_regions: Vec<u32>,
+    /// Whether the installed highlight plan outlines the ground selection.
+    selection_outlined: bool,
     // names
     icon_textures: Arc<IconTextures>,
     /// The game textures this scene draws, shared with every scene of its content.
@@ -1055,6 +1078,7 @@ impl Scene {
             borders: None,
             demilitarized: None,
             faction_highlight_regions: Vec::new(),
+            selection_outlined: false,
             // names
             icon_textures,
             _shared,
@@ -1704,6 +1728,11 @@ impl Scene {
                 .warm_added(device, self.map_size, self.graphics.samples)?;
         }
         Ok(())
+    }
+
+    /// The unit models' pass, which poses the land figures the unit history places.
+    pub fn unit_pass(&self) -> Option<&ModelPass> {
+        self.unit_models.as_ref()
     }
 
     /// The player's instances the last frame drew, for reporting.
@@ -2584,6 +2613,7 @@ impl Scene {
             assets,
         )?);
         self.faction_highlight_regions.clear();
+        self.selection_outlined = false;
         Ok(())
     }
 
@@ -2605,8 +2635,10 @@ impl Scene {
         if let Some(pass) = &mut self.demilitarized {
             pass.set_zone(device, meshes, regions, zone)?;
             pass.clear_hover();
+            pass.set_selection(device, None)?;
         }
         self.faction_highlight_regions.clear();
+        self.selection_outlined = false;
         Ok(())
     }
 
@@ -2623,6 +2655,7 @@ impl Scene {
                 &mut self.borders,
                 &mut self.demilitarized,
                 &mut self.faction_highlight_regions,
+                &mut self.selection_outlined,
             ),
             device,
             classes,
@@ -2631,10 +2664,11 @@ impl Scene {
     }
 
     fn install_border_plans(
-        (borders, demilitarized, highlighted): (
+        (borders, demilitarized, highlighted, outlined): (
             &mut Option<BorderPass>,
             &mut Option<DemilitarizedPass>,
             &mut Vec<u32>,
+            &mut bool,
         ),
         device: &wgpu::Device,
         classes: &crate::map::border_pass::ClassPlan,
@@ -2648,8 +2682,10 @@ impl Scene {
             let _zone_span = viewer_foundation::profiling::span("dmz_install");
             pass.set_plan(device, zone)?;
             pass.clear_hover();
+            pass.set_selection(device, None)?;
         }
         highlighted.clear();
+        *outlined = false;
         Ok(())
     }
 
@@ -2703,6 +2739,7 @@ impl Scene {
                 &mut self.borders,
                 &mut self.demilitarized,
                 &mut self.faction_highlight_regions,
+                &mut self.selection_outlined,
             );
             jobs.push(Box::new(move || {
                 Self::install_border_plans(parts, device, classes, zone)
@@ -2804,6 +2841,12 @@ impl Scene {
         &self.faction_highlight_regions
     }
 
+    /// Whether a highlight plan is installed: a faction or adjacency highlight, or the ground
+    /// selection's outline.
+    pub fn highlight_installed(&self) -> bool {
+        !self.faction_highlight_regions.is_empty() || self.selection_outlined
+    }
+
     /// Uploads the worker's prepared faction highlight without rebuilding edges.
     pub fn set_faction_highlight(
         &mut self,
@@ -2818,10 +2861,12 @@ impl Scene {
         if let Some(pass) = &mut self.demilitarized {
             pass.set_plan(device, &plan.zone)?;
             pass.set_hover(device, &plan.hover, color)?;
+            pass.set_selection(device, plan.selection.as_ref().map(|(plan, color)| (plan, *color)))?;
         }
         self.faction_highlight_regions.clear();
         self.faction_highlight_regions
             .extend_from_slice(strategic_regions);
+        self.selection_outlined = plan.selection.is_some();
         Ok(())
     }
 

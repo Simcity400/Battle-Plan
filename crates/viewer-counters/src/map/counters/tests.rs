@@ -2797,6 +2797,7 @@ fn base_icon_refusals_reach_the_diagnostics_by_reason() {
             "GFX_mapicon_facility_specialization_air".into(),
             2,
         )]),
+        naval_base_hits: BTreeMap::from([(0, 9)]),
         ..Default::default()
     };
     refusing
@@ -5911,4 +5912,49 @@ fn a_view_shows_an_icon_family_below_its_own_cutoff_or_at_the_height_a_zoom_is_s
     );
     // A free eye lays every icon out in the world, and a camera not placed yet draws everything.
     assert_eq!(Shown::at(None, None, political, defines), Shown::EVERY);
+}
+
+/// The sea regions' dominance hovers read the hour's dominance sources at every view, so a view
+/// that can draw no naval mission icon still has them. Before, the tables made them only where the
+/// icons draw, and at a wide view every sea region's hover refused its dominance text.
+#[test]
+fn the_dominance_sources_are_made_where_no_naval_mission_icon_draws() {
+    use super::{Need, Shown};
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    with_counter_inputs_fixture(native::Guis::new(Vec::new()), |_| {}, |_| {}, |inputs| {
+        let frame = DecodedFrame {
+            branch: 1,
+            hour: 1,
+            metrics: Default::default(),
+            tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
+        };
+        let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+        for naval_missions in [false, true] {
+            let need = Need { air_missions: false, by_key: true, shown: Shown { naval_missions, ..Shown::EVERY } };
+            let tables = hour_tables_profiled(
+                &frame,
+                inputs.map,
+                Arc::new(Vision::sharing(1, [])),
+                inputs.content,
+                inputs.assets,
+                inputs.equipment,
+                inputs.localisation,
+                &Default::default(),
+                None,
+                None,
+                None,
+                &type_tint::Memo::new(type_tint::TABLES),
+                &MissionMemo::new(),
+                moves.movement_reads(),
+                Err("unreached synthetic naval topology".into()),
+                Kinds::default(),
+                need,
+                &Carry::default(),
+                None,
+                &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            )
+            .unwrap();
+            assert_eq!((*tables.naval_dominance_sources()).as_ref().map(BTreeMap::len), Ok(0), "naval mission icons drawn: {naval_missions}");
+        }
+    });
 }

@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { failureDetails, type Failure } from '../../dashboard/queryError.ts';
 import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
@@ -92,7 +93,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
     dispatch(openWings(hour, following));
   }, [widget, track, runtime, following]);
   const open = drill.breakdown !== null && region !== null;
-  const wings = useHeadProduct<AirMissionWingsReply>(runtime, widget, 'air-mission-wings', region && drill.breakdown !== null && tag ? { tag, region: Number(region.region) } : null,
+  const wings = useHeadProduct<AirMissionWingsReply>(runtime, widget, 'air-mission-wings', region && drill.breakdown !== null && tag ? { country: countryFromKey(tag), region: Number(region.region) } : null,
     { active: active && open, validate: validateAirWings, structure: wingsStructure, hoverHour: drill.follow ? null : drill.hour });
   const wingsShown = useRef(wings.shownAt);
   wingsShown.current = wings.shownAt;

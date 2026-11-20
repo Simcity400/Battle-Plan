@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -11,7 +12,7 @@ import { LiveCell } from '../../charts/live';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useHolderLooks } from '../../dashboard/holderLooks';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions } from '../../dashboard/options';
@@ -42,9 +43,9 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
-  const viewpointTag = selectedTags(widget.countries, track)[0] ?? null;
+  const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const structural = useProduct<WarsReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
-    params: { branchId: track.branch.id, viewpointTag } } : null, active, validateWarsReply, track?.source);
+    params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } } : null, active, validateWarsReply, track?.source);
   const saved = typeof options.war === 'string' && options.war ? contentKey(options.war) : null;
   const trackHour = useCallback((clockHour: number) => {
     const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
@@ -80,11 +81,11 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
     live.set(group && !group.reason ? contributionItems(contributionRows(group), shownAs, looks, muted) : NO_ITEMS);
     shown(reply.hour);
   }, [groupOf, live, shown]);
-  const head = useHeadProduct<WarContributionsReply>(runtime, widget, 'war-contributions', going ? { viewpointTag } : null, {
+  const head = useHeadProduct<WarContributionsReply>(runtime, widget, 'war-contributions', going ? { viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, {
     active, validate: validateWarContributions, paint, structure: reply => contributionStructure(groupOf(reply), reply.available),
   });
   const ended = useProduct<WarContributionsReply>(runtime.client, track && war && !going ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'war-contributions', params: { branchId: track.branch.id, viewpointTag, hour: readHour } } : null, active, validateWarContributions, track?.source);
+    product: 'war-contributions', params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: readHour } } : null, active, validateWarContributions, track?.source);
   const reply = going ? head.data : ended.data;
   const error = going ? head.error : ended.error;
   // A reply of another war's hours (the last one shown while the new one loads) is not this war's.

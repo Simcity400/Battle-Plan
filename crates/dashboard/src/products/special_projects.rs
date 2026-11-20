@@ -10,6 +10,7 @@
 //! [`details`] is the at-hour panel of scientists, facilities and rewards, and the effects of one
 //! project's output and reward options.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     LoadContext, Product,
     at_hour::{self, Read},
@@ -23,7 +24,6 @@ use crate::{
     catalogue::{Refusals, View},
     span::HourSpan,
 };
-use dashboard_base::products::validate_tag;
 use dashboard_query::{Query, identity::Holder};
 use installed_content_core::special_projects::{Catalog, Project};
 use installed_content_localisation::localisation::Argument;
@@ -73,7 +73,7 @@ pub struct SpecialProjectsParams {
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub hour: Option<i32>,
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -652,12 +652,12 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
     Ok(())
 }
 
-/// The holder runs of `tag` over the timeline cut at its stretches, and the holders as identity
-/// runs.
-fn pieces(query: &Query<'_>, tag: &str, through: i32) -> (Vec<Piece>, Vec<CountryIdentityRun>) {
+/// The holder runs of `country` through `through` over the timeline cut at its stretches, and the
+/// holders as identity runs.
+fn pieces(query: &Query<'_>, country: &Country, through: i32) -> (Vec<Piece>, Vec<CountryIdentityRun>) {
     let mut pieces = Vec::new();
     let mut identities: Vec<CountryIdentityRun> = Vec::new();
-    for run in query.holders.within(tag, query.timeline.first, through) {
+    for run in query.holders.within(country, query.timeline.first, through) {
         let Holder::Found { slot, id } = run.holder else { continue };
         match identities.last_mut() {
             Some(held) if (held.slot, held.country_id) == (slot, id) && held.last_hour.checked_add(1) == Some(run.first) => held.last_hour = run.last,
@@ -755,7 +755,7 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
 }
 
 fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, through: i32, cancelled: &AtomicBool) -> io::Result<SpecialProjectsReply> {
-    let (pieces, identities) = pieces(&query, &params.tag, through);
+    let (pieces, identities) = pieces(&query, &params.country, through);
     let mut fold = Fold::new(query.timeline.first);
     let mut observed: Vec<(i32, i32)> = Vec::new();
     let mut links: HashMap<u32, RunLinks> = HashMap::new();
@@ -765,12 +765,14 @@ fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &Pro
         let read = read_piece(&query, run_links, piece)?;
         fold_piece(&mut fold, piece, &read, &mut observed, cancelled)?;
     }
-    present(&query, params, content, &fold, observed, identities, cancelled, &mut None)
+    let tag = query.holders.name(&params.country, through);
+    present(&query, params, content, &fold, observed, identities, &tag, cancelled, &mut None)
 }
 
 type Spelling = (BTreeMap<u32, i32>, BTreeMap<u32, i32>, Spelled, Refusals, BTreeMap<String, u64>);
 
-fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, fold: &Fold, observed: Vec<(i32, i32)>, identities: Vec<CountryIdentityRun>, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
+/// The reply over `fold`, naming the country `tag`, the name it goes by at the hour shown.
+fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, fold: &Fold, observed: Vec<(i32, i32)>, identities: Vec<CountryIdentityRun>, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
     let mut naming = Naming::new(content);
     let mut definitions: BTreeMap<u32, i32> = BTreeMap::new();
     let mut characters: BTreeMap<u32, i32> = BTreeMap::new();
@@ -800,11 +802,11 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             let look = &fold.looks[run.presentation as usize];
             let hour = run.first_hour;
             let name = names.entry((look.definition, hour)).or_insert_with(|| {
-                let slot = query.holders.at(&params.tag, hour).and_then(|run| match run.holder {
+                let slot = query.holders.at(&params.country, hour).and_then(|run| match run.holder {
                     Holder::Found { slot, .. } => Some(slot),
                     Holder::Unresolved => None,
                 });
-                naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, &params.tag, &mut |key| match slot {
+                naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, tag, &mut |key| match slot {
                     Some(slot) => scoped_at(query, content, key, hour, slot),
                     None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
                 })
@@ -842,7 +844,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
     };
     let reply = SpecialProjectsReply {
         branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
+        tag: tag.to_owned(),
         identities,
         available: observed.into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }).collect(),
         projects,
@@ -886,7 +888,7 @@ impl Product for SpecialProjects {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]

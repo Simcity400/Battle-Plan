@@ -5,7 +5,7 @@ import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message } from '../../dashboard/follow/messages.fixture.ts';
 import type { SeriesState } from '../../generated/dashboard';
 
-const state = (tag: string, valueRaw: string | null, missing: string | null = null): SeriesState => ({ tag, hour: 50, drop: null, missing,
+const state = (tag: string, valueRaw: string | null, missing: string | null = null): SeriesState => ({ country: tag, hour: 50, drop: null, missing,
   run: valueRaw === null ? null : { firstHour: 40, lastHour: 60, valueRaw, slot: 1, countryId: 1, startsSegment: false, segmentFirstHour: 0, firstExact: true, lastExact: true } });
 
 test('a race at an hour ranks only states holding a value, greatest first and ties by tag, never a missing one as zero', () => {

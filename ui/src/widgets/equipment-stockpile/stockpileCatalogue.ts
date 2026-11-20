@@ -1,3 +1,4 @@
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { EquipmentStockpileReply, StockpileCatalogueReply, StockVariant, TypeLogistics } from './types';
 import type { Span } from '../../charts/series';
 import type { StockGroup } from './stockpileData';
@@ -33,16 +34,18 @@ export function groupIn(reply: EquipmentStockpileReply, group: StockGroup): Stoc
 
 /** The holders a request reads: each tag, only within its hours where they are named. */
 export const stockpileHolders = (spans: ReadonlyMap<string, readonly Span[]>): StockpileHolder[] =>
-  [...spans].map(([tag, within]) => ({ tag, within: within.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) }));
+  [...spans].map(([tag, within]) => ({ country: countryFromKey(tag), within: within.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) }));
 
 /** The holder whose hours hold `hour`: the first without named hours, else the one they hold it. */
-export const holderAt = (holders: readonly StockpileHolder[], hour: number) =>
-  holders.find(holder => !holder.within || holder.within.some(span => span.firstHour <= hour && hour <= span.lastHour))?.tag ?? null;
+export const holderAt = (holders: readonly StockpileHolder[], hour: number): string | null => {
+  const found = holders.find(holder => !holder.within || holder.within.some(span => span.firstHour <= hour && hour <= span.lastHour));
+  return found ? countryKey(found.country) : null;
+};
 
 /** The widget's reply at an hour: the catalogue's variants, types and peaks with the hour's values and
  * the reads that supply them (`equipment-stockpile-at`), none where the hour's reply is not in yet. A
  * variant or type the hour names that an older catalogue does not list keeps its own entry. */
-export function stockpileView(catalogue: StockpileCatalogueReply, at: EquipmentStockpileReply | undefined, hour: number, tag = at?.tag ?? catalogue.tags[0] ?? ''): PreparedStockpileReply {
+export function stockpileView(catalogue: StockpileCatalogueReply, at: EquipmentStockpileReply | undefined, hour: number, tag = at?.tag ?? (catalogue.countries[0] === undefined ? '' : countryKey(catalogue.countries[0]))): PreparedStockpileReply {
   const values = new Map((at?.variants ?? []).map(variant => [variant.id, variant]));
   const listed = new Set(catalogue.variants.map(variant => variant.id));
   const variants: StockVariant[] = catalogue.variants.map(variant => {

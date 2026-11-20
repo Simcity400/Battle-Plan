@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -13,7 +14,7 @@ import { formatDateTime } from '../../dashboard/calendar';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetMeta, WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { countryMatch, countryMatchChangeHours, countryMatchFilter } from '../../dashboard/groups';
@@ -152,7 +153,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const first = widget.time.mode === 'range' && track ? Math.floor(resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.firstHour ?? track.branch.firstHour)
     : track?.branch.firstHour ?? 0;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');
-  const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));
+  const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
@@ -215,7 +216,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const rankingRequest = track && hour !== null && inBranch ? { sourceId: track.source.id, revision: track.source.revision,
-    product: `${adapter.product}-ranking`, params: { branchId: track.branch.id, firstHour: Math.min(first, hour), lastHour: hour, topN, measure, countries } } : null;
+    product: `${adapter.product}-ranking`, params: { branchId: track.branch.id, firstHour: Math.min(first, hour), lastHour: hour, topN, measure,
+      countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } } : null;
   const ranking = useProduct<Ranking>(runtime.client, rankingRequest,
     active && inBranch && view === 'biggest' && match.ready && !match.reason && manifest.data?.available === true, adapter.validateRanking);
   const shown = useMemo(() => !inBranch || hour === null || !match.ready ? NO_ROWS : view === 'biggest' ? adapter.rankedRows(ranking.data, hour)

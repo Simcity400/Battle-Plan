@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient } from '../../dashboard/client';
@@ -5,7 +6,8 @@ import type { BoundTrack } from '../../dashboard/model';
 import { loadProduct, loadTransientProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useHeldFailure } from '../../dashboard/heldFailures';
-import type { ArmySizeParams, ArmySizeReply, CountryIdentityRun, MissingSpan } from '../../generated/dashboard';
+import type { ArmySizeParams, CountryIdentityRun, MissingSpan } from '../../generated/dashboard';
+import type { ArmySizeReply } from './armySizeData';
 import type { ChartSummary } from '../../charts/chartSummary';
 import { chartSummaryLines } from '../../charts/chartSummary';
 import type { TimeChartProps } from '../../charts/TimeChart';
@@ -71,7 +73,7 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
   const ranked = params?.top != null;
   const dense = tiled?.key === key && tiled.dense;
   const tiles = useTiles(client, track && params && !ranked ? { source: track.source, branchId: params.branchId,
-    family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: null }, tags: params.tags, lastHour: track.branch.lastHour } : null, active, live);
+    family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: null }, tags: params.countries.map(countryKey), lastHour: track.branch.lastHour } : null, active, live);
   // Followed, a tile landing repaints the lines from this, never rendering the widget.
   const tileSource = tiles.live;
   const lineData = useMemo(() => !ranked && live ? liveSummaries(tileSource) : undefined, [ranked, live, tileSource]);
@@ -83,8 +85,11 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
     track && params ? JSON.stringify([key, content]) : null, shown, JSON.stringify([shown?.from, shown?.to, shown?.width]), active,
     (at, signal) => loadProduct(client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'series-summary',
       params: { branchId: params!.branchId, family: { kind: 'army-size', measure: params!.measure, countFor: params!.countFor, top: params!.top },
-        tags: params!.tags, from: at.from, to: at.to, width: at.width } }, signal, value => {
-      const series = chartSummaryLines<{ tag: string; summary: ChartSummary; identities?: CountryIdentityRun[]; missing: MissingSpan[] }>((value as { series?: unknown } | null)?.series,
+        countries: params!.countries, from: at.from, to: at.to, width: at.width } }, signal, value => {
+      const lines = (value as { series?: unknown } | null)?.series;
+      const keyed = Array.isArray(lines) ? lines.map(line => line && typeof line === 'object' && (typeof line.country === 'string' || typeof line.country === 'number')
+        ? (({ country, ...rest }) => ({ ...rest, tag: countryKey(country) }))(line) : line) : lines;
+      const series = chartSummaryLines<{ tag: string; summary: ChartSummary; identities?: CountryIdentityRun[]; missing: MissingSpan[] }>(keyed,
         line => typeof line.tag === 'string' && Array.isArray(line.missing));
       if (!series) throw Error('The army summary is malformed.');
       return { ...value as object, series };
@@ -124,7 +129,7 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
     navigation.current?.abort();
     const controller = new AbortController(); pending.current.add(controller); navigation.current = controller;
     void loadTransientProduct<{ hour: number | null }>(client, { sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change', params: { branchId: params.branchId,
-      family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: params.top }, tags: params.tags,
+      family: { kind: 'army-size', measure: params.measure, countFor: params.countFor, top: params.top }, countries: params.countries,
       key: action, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) } }, controller.signal).then(value => {
       if (!controller.signal.aborted && alive.current === owner) setKeyboard(previous => ({ owner, hour: value.hour, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: asFailure(error) }); }).finally(() => pending.current.delete(controller));

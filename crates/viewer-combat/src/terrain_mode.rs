@@ -41,6 +41,24 @@ pub fn hover(content: &Content, frame: &DecodedFrame, province: u32, vision: &Vi
     out
 }
 
+/// The province terrain text the state view's terrain picture gives, the same the terrain map
+/// mode's hover makes; what it leaves out is added to `refused`.
+pub(crate) fn province_text(content: &Content, frame: &DecodedFrame, province: u32, vision: &Vision, refused: &mut Vec<String>) -> Result<String, String> {
+    let mut local = None;
+    let text = text(content, frame, province, vision, refused, &mut local);
+    refused.extend(local.map(|why| format!("local province effects: {why}")));
+    text
+}
+
+/// The province's weather record's modifier accumulator described alone, as the state view's
+/// weather icons give it.
+pub(crate) fn weather_modifiers(content: &Content, frame: &DecodedFrame, province: u32) -> Result<String, String> {
+    let definitions = Definitions::read(frame, &content.modifier_names)
+        .map_err(|why| why.to_string())?
+        .map_err(|why| why.to_string())?;
+    local::accumulator(content, frame, &definitions, province)
+}
+
 fn text(
     content: &Content,
     frame: &DecodedFrame,

@@ -18,7 +18,7 @@ import { useCountryColours } from '../charts/race/countryColours';
 import { SECONDARY_DASH } from '../charts/palette';
 import { formatDateTime } from './calendar';
 import { useCountryLooks } from './countryLooks';
-import { selectedTags } from './countrySelection';
+import { selectedCountryKeys } from './countrySelection';
 import type { WidgetProps } from './definitions';
 import { resolveCountries } from './groups';
 import { groupNumbers } from './groupsReply';
@@ -31,7 +31,7 @@ import { useHeadHour } from '../widgets/army-size/headHour.ts';
 import LiveText, { liveTexts } from '../charts/LiveText';
 import { useCountryGroups } from './useCountryGroups';
 import { useMilitaryAirLedger } from './useMilitaryAirLedger';
-import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerLabel, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip } from './militaryAirLedger';
+import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerLabel, ledgerNames, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip } from './militaryAirLedger';
 import { liveAt, sameBy } from '../charts/live';
 import { stickyLimit, stickyMembers } from './follow/stickyMembers.ts';
 import type { StickyMembers } from './follow/stickyMembers';
@@ -88,7 +88,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour ?? hour;
   const index = useMemo(() => data ? militaryAirIndex(data) : null, [data]);
   const rows = useMemo(() => index ? militaryAirAt(index, from, hour) : [], [index, from, hour]);
-  const fallback = selectedTags(widget.countries, track), fallbackKey = JSON.stringify(fallback);
+  const fallback = selectedCountryKeys(widget.countries, track), fallbackKey = JSON.stringify(fallback);
   const lastHour = track?.branch.lastHour ?? hour;
   const selected = useMemo(() => ledgerCountries(rows, widget.countries, fallback, groups.data, hour, lastHour, metric, data?.countries),
     [rows, widget.countries, fallbackKey, groups.data, hour, lastHour, metric, data?.countries]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -97,7 +97,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
     if (widget.countries.kind === 'all') return index.series;
     if (widget.countries.kind === 'group' && widget.countries.group.type === 'top') return index.series.filter(series => series.country.membership?.length);
     const resolved = resolveCountries(widget.countries, fallback, groups.data, lastHour, Number.MAX_SAFE_INTEGER);
-    const identities = new Set(index.series.filter(series => resolved.tags.includes(series.country.tag)).map(series => series.country.identity));
+    const identities = new Set(index.series.filter(series => resolved.tags.some(key => ledgerNames(key, series.country))).map(series => series.country.identity));
     return index.series.filter(series => identities.has(series.country.identity));
   }, [index, widget.countries, fallbackKey, groups.data, lastHour]); // eslint-disable-line react-hooks/exhaustive-deps
   const lines = useMemo<CountryRaceLine[]>(() => {

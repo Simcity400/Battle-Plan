@@ -1,3 +1,4 @@
+use dashboard_query::identity::Holders;
 use super::*;
 
 fn entry(id: &str, casualties: Option<f64>, length: u64, peak: Option<u64>) -> Ranked {
@@ -21,19 +22,19 @@ fn a_battle_is_chosen_by_a_country_on_either_side_at_its_read_and_never_left_out
     let ger = ["GER".to_owned()];
     let sov = ["SOV".to_owned()];
     let all = BattleCountryFilter::default();
-    assert!(all.matches([(&ger, false), (&sov, false)], 10));
-    let tags = BattleCountryFilter { tags: Some(vec!["SOV".into()]), ..BattleCountryFilter::default() };
-    assert!(tags.matches([(&ger, false), (&sov, false)], 10));
-    assert!(!tags.matches([(&ger, false), (&ger, false)], 10));
-    assert!(tags.matches([(&ger, false), (&[], true)], 10));
+    assert!(all.matches(&Holders::default(), [(&ger, false), (&sov, false)], 10));
+    let tags = BattleCountryFilter { countries: Some(vec!["SOV".into()]), ..BattleCountryFilter::default() };
+    assert!(tags.matches(&Holders::default(), [(&ger, false), (&sov, false)], 10));
+    assert!(!tags.matches(&Holders::default(), [(&ger, false), (&ger, false)], 10));
+    assert!(tags.matches(&Holders::default(), [(&ger, false), (&[], true)], 10));
     let runs = BattleCountryFilter {
         membership: Some(vec![super::super::groups::MembershipRun { tag: "GER".into(), first_hour: 100, last_hour: 200 }]),
         unobserved: vec![dashboard_base::span::HourSpan { first_hour: 300, last_hour: 310 }],
         ..BattleCountryFilter::default()
     };
-    assert!(runs.matches([(&ger, false), (&sov, false)], 150));
-    assert!(!runs.matches([(&ger, false), (&sov, false)], 250));
-    assert!(runs.matches([(&ger, false), (&sov, false)], 305), "membership not observed at the hour is not known to leave a battle out");
+    assert!(runs.matches(&Holders::default(), [(&ger, false), (&sov, false)], 150));
+    assert!(!runs.matches(&Holders::default(), [(&ger, false), (&sov, false)], 250));
+    assert!(runs.matches(&Holders::default(), [(&ger, false), (&sov, false)], 305), "membership not observed at the hour is not known to leave a battle out");
 }
 
 #[test]

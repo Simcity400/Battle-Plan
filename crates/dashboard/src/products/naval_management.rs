@@ -4,6 +4,7 @@
 //! reads the owner's rows step by step; a refit's progress and a queued ship's hull move hourly,
 //! so each is a live cell (by line and ship handle) the panel paints, not a number of the reply.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     LoadContext,
     at_hour::{At, AtHour, Keys, Owner, Read},
@@ -12,7 +13,6 @@ use crate::{
     Source,
     catalogue::{self, Catalogue, View},
 };
-use dashboard_base::products::validate_tag;
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_text::{
     metadata::link_slot,
@@ -34,7 +34,7 @@ mod tests;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalManagementParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// A number a line shows that moves every hour: its value at the reply's hour (raw fixed5) and,
@@ -166,7 +166,7 @@ impl AtHour for NavalManagement {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid naval management branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -180,8 +180,8 @@ impl AtHour for NavalManagement {
         ]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

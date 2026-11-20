@@ -98,6 +98,7 @@ fn labels_settled_every_step_equal_composed_and_follow_points_capitals_names_war
     let mut side = side("labels-steps");
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let mut seen = Vec::new();
+    let mut made: Option<(*const map_display_data::landscape::Labels, replay_data::Hour)> = None;
     frames_until(&mut side, |side, frame| {
         if frame.steps == 0 || side.composing() {
             return false;
@@ -109,6 +110,13 @@ fn labels_settled_every_step_equal_composed_and_follow_points_capitals_names_war
         fresh.compose(mirrors).unwrap();
         assert_eq!(layer.differ(&fresh), (0, None), "settled at hour {:?} equals composed", frame.applied);
         let hour = frame.applied.unwrap();
+        let hours = layer.drawn_hours().expect("settled labels hold for an hour");
+        assert!(hours.contains(&hour), "the labels drawn at hour {hour} hold for it: {hours:?}");
+        match made.replace((Arc::as_ptr(&layer.drawn), *hours.start())) {
+            Some((before, from)) if before == Arc::as_ptr(&layer.drawn) => assert_eq!(*hours.start(), from, "unchanged labels hold from the hour they were made, at hour {hour}"),
+            Some(_) => assert_eq!(hours, hour..=hour, "labels made again at hour {hour} hold for no earlier hour"),
+            None => {}
+        }
         let display = layer.display();
         let candidate = |province: u32| display.candidates.iter().find(|candidate| candidate.province == province).cloned();
         let text = |province: u32| match candidate(province).map(|candidate| candidate.name) {

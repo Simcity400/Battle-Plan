@@ -68,6 +68,35 @@ fn an_hour_the_index_has_not_reached_shows_unknown_and_a_covered_one_the_folded_
 }
 
 
+/// A still publication (paused, or a switch of viewing country at a held hour) runs under the side's
+/// lock: it reads the fold as it stands instead of waiting for it, the flags pending by name, and
+/// the publication after the fold arrives reads them. Before, it waited up to two minutes for the
+/// fold under the lock, so the frame was handed no window meanwhile.
+#[test]
+fn a_still_publication_waits_for_no_fold_and_the_next_reads_it_once_folded() {
+    let history = Arc::new(History::default());
+    let entry = open(units(record(16, combats), "engagements still"), quick()).unwrap();
+    let index = Index { history: Arc::clone(&history), branch: 3 };
+    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Engagements::new(Some(index), Some(1)))], View::default()).unwrap();
+    sought(&mut side, 4);
+    let waited = layer(&side).fold_waits.get();
+    side.frame_still(4).unwrap();
+    assert_eq!(layer(&side).fold_waits.get(), waited, "a still publication enters no wait for the fold");
+    let (land, _, provenance) = layer(&side).flags();
+    assert_eq!((provenance[LAND], land.get(&100)), (Provenance::Pending, Some(&Engaged::Unknown)), "pending by name, never a guess");
+    {
+        let mut covered = Covered::new(0);
+        covered.last = 9;
+        covered.viewers.push((0, 1));
+        covered.fold(false).record(LAND, 0, &[((100, 0), Engaged::No), ((100, 1), Engaged::No)], &[]);
+        history.branches.lock().unwrap().insert(3, covered);
+    }
+    side.frame_still(4).unwrap();
+    assert_eq!(layer(&side).fold_waits.get(), waited, "nor does the one after the fold");
+    let (land, _, provenance) = layer(&side).flags();
+    assert_eq!((provenance[LAND], land.get(&100)), (Provenance::Indexed, Some(&Engaged::No)), "the publication after the fold reads it");
+}
+
 /// Combat 100 from hour 0, 101 from hour 6 and gone at hour 10.
 fn passing(at: u32, store: &mut replay_columnar::store::Store) {
     complete(store, at, &[TableId::LandCombats, TableId::NavalCombats, TableId::NavalCombatDetails]);

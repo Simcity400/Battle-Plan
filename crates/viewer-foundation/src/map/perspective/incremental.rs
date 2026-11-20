@@ -1885,6 +1885,17 @@ fn resolve(frame: &DecodedFrame, index: &Index, choice: &Choice) -> io::Result<(
                 None => (default()?.0, Resolution::Absent(tag.clone())),
             }
         }
+        Country::Slot { slot, .. } => {
+            let held = index
+                .groups
+                .get(&(TableId::Countries.index(), 1, *slot as u128))
+                .is_some_and(|keys| !keys.is_empty());
+            if held {
+                (*slot, Resolution::Requested)
+            } else {
+                (default()?.0, Resolution::Absent(choice.country.to_string()))
+            }
+        }
     })
 }
 fn first_error(

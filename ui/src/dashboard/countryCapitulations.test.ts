@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { countryCapitulationBadges, countryCapitulationRows } from './countryCapitulations.ts';
+import { countryKey } from './countryKey.ts';
 import { visibleBadges } from '../charts/badges.ts';
 import { tooltipText } from '../charts/tooltip.ts';
 
@@ -37,6 +38,17 @@ test('capitulations use the drawn native holder, exact event coverage and dated 
   assert.equal(JSON.stringify(countries), before, 'markers never split or alter the numeric coverage');
   assert.deepEqual(visibleBadges([...badges.values()].flat(), [10, 20], 14).map(badge => badge.hour), [11]);
   assert.deepEqual([...countryCapitulationBadges(undefined, countries, [10, 20])], []);
+});
+
+test('a country chosen by slot takes the capitulations of each tag it held while it did, never another holder’s', () => {
+  // Slot 5 is GER until 19, then DEU; from 20 GER is slot 9's.
+  const histories = [
+    { tag: 'GER', identities: [{ firstHour: 0, lastHour: 19, slot: 5, countryId: 50 }, { firstHour: 20, lastHour: 40, slot: 9, countryId: 90 }] },
+    { tag: 'DEU', identities: [{ firstHour: 20, lastHour: 40, slot: 5, countryId: 50 }] },
+  ];
+  const groups = { capitulations: [{ tag: 'GER', hour: 10 }, { tag: 'DEU', hour: 25 }, { tag: 'GER', hour: 30 }] };
+  const badges = countryCapitulationBadges(groups, [{ tag: countryKey(5), segments: [span(0, 40)] }], [0, 40], histories);
+  assert.deepEqual(badges.get(countryKey(5))?.map(badge => [badge.hour, badge.capitulationTag]), [[10, 'GER'], [25, 'DEU']]);
 });
 
 test('all 5,000 selected native countries retain their dated capitulation', () => {

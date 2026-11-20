@@ -7,7 +7,7 @@ const windows = [{ firstHour: 0, lastHour: 719 }, { firstHour: 720, lastHour: 14
 const reply = (window: number, parts: string[], runs: ForceSizeReply['series'][number]['runs'], membership: { firstHour: number; lastHour: number }[] | null = null): ForceSizeReply => ({
   branchId: '1', windows: [], window, interval: windows[window], warnings: [`w${window}`],
   parts: parts.map(key => ({ key, name: key, unresolved: key.startsWith(':') })),
-  series: [{ tag: 'GER', identities: [{ firstHour: windows[window].firstHour, lastHour: windows[window].lastHour, slot: 3, countryId: 30 }],
+  series: [{ country: 'GER', identities: [{ firstHour: windows[window].firstHour, lastHour: windows[window].lastHour, slot: 3, countryId: 30 }],
     segments: [{ firstHour: windows[window].firstHour, lastHour: windows[window].lastHour }], membership, runs }],
 });
 

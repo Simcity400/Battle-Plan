@@ -1,3 +1,5 @@
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
@@ -9,7 +11,7 @@ import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, noMembersAt, resolveCountries } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -48,13 +50,13 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, definition.countries.max),
     [widget.countries, fallback, groups.data, lastHour]);
   const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
   const tagsKey = JSON.stringify(resolved.tags);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const params = useMemo(() => track && resolved.tags.length ? { tags: resolved.tags } : null, [track?.branch.id, tagsKey]);
+  const params = useMemo(() => track && resolved.tags.length ? { countries: resolved.tags.map(countryFromKey) } : null, [track?.branch.id, tagsKey]);
   const root = useRef<HTMLDivElement | null>(null);
   const painted = useRef<Map<string, Painted>>(new Map());
   const paint = useCallback((reply: OperativesRosterReply) => {
@@ -65,13 +67,15 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   if (head.data && head.read !== 'followed') painted.current = paintedRows(head.data);
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? lastHour;
+  // The reply names an unheld country by the key it was asked by: a slot is named by the tag it goes by then.
+  const unheldSlots = useSlotTags(runtime.client, track, active && !!head.data?.unheld.some(isSlotKey));
   const departedAt = widget.time.mode === 'campaign' && options.departed === true && head.read === 'asked' ? head.hour : null;
   const departed = useProduct<OperativesDepartedReply>(runtime.client, track && params && departedAt !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'operatives-departed', params: { branchId: track.branch.id, tags: params.tags, hour: departedAt } } : null, active, validateDeparted, track?.source);
+    product: 'operatives-departed', params: { branchId: track.branch.id, countries: params.countries, hour: departedAt } } : null, active, validateDeparted, track?.source);
   // The tenures cover the stretch the hour is in: asked again only when the hour shown leaves it.
   const tenureHour = useRef<number | null>(null);
   const tenuresAsked = useProduct<OperativeTenuresReply>(runtime.client, track && params && tenureHour.current !== null ? { sourceId: track.source.id,
-    revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, tags: params.tags, hour: tenureHour.current } } : null,
+    revision: track.source.revision, product: 'operative-tenures', params: { branchId: track.branch.id, countries: params.countries, hour: tenureHour.current } } : null,
     active, validateTenures, track?.source);
   const tenures = tenuresAsked.data;
   if (head.data && (tenureHour.current === null || (tenures && (hour < tenures.firstHour || hour > tenures.lastHour)))) tenureHour.current = hour;
@@ -163,7 +167,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   else if (!data) body = <WidgetState kind="loading" label="Loading operatives roster…" />;
   else if (!rows.length && data.agencyFeature === false) body = <WidgetState kind="unavailable" message="Intelligence agencies unavailable." />;
   else if (!rows.length && data.missing) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." detail={data.missing} />;
-  else if (!rows.length && data.unheld.length === resolved.tags.length) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." detail={`No country holds ${data.unheld.join(', ')} at this time.`} />;
+  else if (!rows.length && data.unheld.length === resolved.tags.length) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." detail={`No country holds ${data.unheld.map(key => keyNameAt(unheldSlots, key, hour) ?? 'Unknown').join(', ')} at this time.`} />;
   else if (!rows.length) body = <WidgetState kind="empty" message="No operatives in the selected roster." />;
   else body = <Table rowRevision={row => [row, columns]} label="Operatives roster" rows={rows} columns={columns} rowKey={rowKey}
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}

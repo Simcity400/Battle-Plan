@@ -61,7 +61,7 @@ test('line styles read 439 and 1,500 countries in one request and commit the com
         if (['useCountryLineStyles', 'products'].some(name => path.endsWith(`/dashboard/${name}.ts`)))
           return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__lineStylesFixture;');
         if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace(
-          'return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);', 'return revision.snapshot();');
+          'return useSyncExternalStore(subscribe, snapshot, snapshot);', 'return snapshot();');
       },
     }] });
   try {
@@ -111,6 +111,39 @@ test('line styles read 439 and 1,500 countries in one request and commit the com
       branch: { id: 'branch', firstHour: 0, lastHour: 3000, gaps: [{ firstHour: 710, lastHour: 730 }] } } as unknown as BoundTrack;
     cursor = 0; useCountryLineStyles(gapClient, gapped, ['Synthetic country'], 731, true); fixture.commit(); await settle();
     assert.deepEqual(asked, [731]);
+    fixture.unmount();
+    // The dashboard's country, chosen by slot: its colour is read by the tag the slot goes by then, under its key.
+    const slotAsked: string[][] = [];
+    const slotClient = { product: (input: ProductRequest<CountryStyleParams>) => {
+      if (input.product === 'country-identities') return Promise.resolve({ ...input, data: { countries: [
+        { tag: 'GER', identities: [{ firstHour: 0, lastHour: 3000, slot: 5, countryId: 50 }], unresolved: [] }] } });
+      slotAsked.push(input.params.tags);
+      return Promise.resolve({ ...input, data: { branchId: input.params.branchId, hour: input.params.hour,
+        styles: [{ tag: 'GER', name: 'Germany', color: [1, 2, 3] }], warnings: [] } });
+    } } as unknown as DashboardClient;
+    const slotTrack = { source: { id: 'slot-source', revision: 'revision' }, branch: { id: 'branch', firstHour: 0, lastHour: 3000, gaps: [] } } as unknown as BoundTrack;
+    const slotKey = '\u00005';
+    let shown!: ReturnType<typeof useCountryLineStyles>;
+    for (let step = 0; step < 4; step++) { cursor = 0; shown = useCountryLineStyles(slotClient, slotTrack, [slotKey], 1, true); fixture.commit(); await settle(); }
+    assert.deepEqual(slotAsked, [['GER']], 'asked by the tag the slot goes by, never by the raw slot key');
+    assert.equal(shown.known.get(slotKey)?.name, 'Germany', 'the colour comes back under the key it was asked by');
+    fixture.unmount();
+    // A slot first holding its tag after the monthly sample, the tag another country's at that sample: the colour is
+    // read inside the slot's own run, never the other holder's, and the tag-chosen line keeps the sample hour.
+    const lateAsked: { hour: number; tags: string[] }[] = [];
+    const lateClient = { product: (input: ProductRequest<CountryStyleParams>) => {
+      if (input.product === 'country-identities') return Promise.resolve({ ...input, data: { countries: [
+        { tag: 'GER', identities: [{ firstHour: 0, lastHour: 799, slot: 7, countryId: 70 }, { firstHour: 800, lastHour: 3000, slot: 5, countryId: 50 }], unresolved: [] },
+        { tag: 'ITA', identities: [{ firstHour: 0, lastHour: 3000, slot: 9, countryId: 90 }], unresolved: [] }] } });
+      lateAsked.push({ hour: input.params.hour, tags: input.params.tags });
+      return Promise.resolve({ ...input, data: { branchId: input.params.branchId, hour: input.params.hour,
+        styles: input.params.tags.map(tag => ({ tag, name: input.params.hour < 800 ? `Old ${tag}` : `New ${tag}`, color: [1, 2, 3] })), warnings: [] } });
+    } } as unknown as DashboardClient;
+    const lateTrack = { source: { id: 'late-source', revision: 'revision' }, branch: { id: 'branch', firstHour: 0, lastHour: 3000, gaps: [] } } as unknown as BoundTrack;
+    for (let step = 0; step < 4; step++) { cursor = 0; shown = useCountryLineStyles(lateClient, lateTrack, [slotKey, 'ITA'], 900, true); fixture.commit(); await settle(); }
+    assert.deepEqual(lateAsked.sort((a, b) => a.hour - b.hour), [{ hour: 720, tags: ['ITA'] }, { hour: 800, tags: ['GER'] }]);
+    assert.equal(shown.known.get(slotKey)?.name, 'New GER', 'the slot takes its own colour, not the tag\'s holder at the sample');
+    assert.equal(shown.known.get('ITA')?.name, 'Old ITA');
     fixture.unmount();
   } finally { fixture.unmount(); delete host.__lineStylesFixture; await vite.close(); }
 });

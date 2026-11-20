@@ -1,3 +1,4 @@
+import { countryFromKey } from './countryKey.ts';
 import { useCallback, useEffect, useMemo } from 'react';
 import { useChartTokens } from '../charts/useChartTokens';
 import type { OptionChoices, WidgetProps, WidgetRuntime } from './definitions';
@@ -5,11 +6,12 @@ import type { WidgetSpec } from './model';
 import { contentKey, contentSet, resolveOptions, setToken } from './options';
 import type { OptionField, OptionValue } from './options';
 import { useProduct } from './products';
-import { defaultCountryTag, selectedTags } from './countrySelection';
+import { defaultCountryKey, selectedCountryKeys } from './countrySelection';
 import { useFactionColours } from './FactionColours';
 import { looksRead, useCountryLooks } from './countryLooks';
 import { useIdentityHour } from './atHead';
 import { trackHourOf } from './settledHour';
+import { useKeyTagsAt } from './useKeyTagsAt.ts';
 import { countryLineColours } from './countryLineColours.ts';
 import { useHeadProduct } from './headProduct';
 import { airSideName, momentRows, validateAirChoices, validateAirSuperiority } from './airSuperiority';
@@ -34,7 +36,7 @@ export type AirModeSettings = ReturnType<typeof airMode>;
 
 /** The params of `air-superiority` for `mode`; regions are chosen by the widget, not the product, unless asked. */
 export function airParams(mode: AirModeSettings) {
-  return { mode: mode.mode, ...(mode.viewpoint ? { viewpoint: mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : mode.viewpoint,
+  return { mode: mode.mode, ...(mode.viewpoint ? { viewpoint: mode.viewpoint.startsWith('country:') ? countryFromKey(mode.viewpoint.slice(8)) : mode.viewpoint,
     ...(mode.viewpoint.startsWith('country:') ? { viewpointCountry: true } : {}) } : {}),
     ...(mode.sides.length ? { sides: mode.sides } : {}), ...(mode.regions.length ? { regions: mode.regions } : {}),
     ...(mode.theatres.length ? { theatres: mode.theatres } : {}) };
@@ -91,7 +93,7 @@ export function useAirMoment(props: WidgetProps, options: Readonly<Record<string
   const { widget, runtime, active, onDiagnostics } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const campaign = track?.source.metadata.campaignKey ?? '';
-  const currentCountry = selectedTags(widget.countries, track)[0] ?? defaultCountryTag(track);
+  const currentCountry = selectedCountryKeys(widget.countries, track)[0] ?? defaultCountryKey(track);
   const mode = useMemo(() => airMode(options, campaign, currentCountry),
     [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]); // eslint-disable-line react-hooks/exhaustive-deps
   const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;
@@ -114,7 +116,10 @@ export function useAirLooks(props: Pick<WidgetProps, 'runtime' | 'widget' | 'act
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const tokens = useChartTokens();
   const sides = data?.sides ?? NO_SIDES;
-  const viewpointTag = mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : null;
+  const viewpointKey = mode.viewpoint.startsWith('country:') ? mode.viewpoint.slice(8) : null;
+  // A slot viewpoint is named, flagged and coloured as the tag it goes by at the hour shown.
+  const [viewpointTag = null] = useKeyTagsAt(runtime, track, viewpointKey ? [viewpointKey] : [],
+    clockHour => pushed && track ? trackHourOf(widget, track, runtime.tracks, clockHour) ?? Number.NaN : Math.floor(at ?? track?.branch.lastHour ?? 0), pushed, active);
   const tags = useMemo(() => [...new Set([...sides.flatMap(side => [side.tag, side.leader].flatMap(tag => tag ? [tag] : [])), ...(viewpointTag ? [viewpointTag] : [])])], [sides, viewpointTag]);
   const identityHour = useIdentityHour(runtime.client, track, tags, runtime.clock, active && pushed,
     clockHour => track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null);
@@ -145,9 +150,9 @@ export function useAirLooks(props: Pick<WidgetProps, 'runtime' | 'widget' | 'act
     const side = data?.viewpoint == null ? undefined : sides[data.viewpoint];
     const viewpoint = side ? { name: sideName(side), color: color(side) }
       : viewpointTag ? { name: names.name(viewpointTag, hour), tag: viewpointTag, color: colours.get(`country:${viewpointTag}`) ?? tokens.muted }
-        : { name: 'No country selected', color: tokens.muted };
+        : viewpointKey ? { name: 'Country name unavailable', color: tokens.muted } : { name: 'No country selected', color: tokens.muted };
     return { name: sideName, color, viewpoint, enemy: tokens.error, scale: 100_000, badBelow: 40_000, goodAbove: 60_000, mode: mode.mode };
-  }, [data?.viewpoint, sides, sideName, color, viewpointTag, names, hour, colours, tokens.muted, tokens.error, mode.mode]);
+  }, [data?.viewpoint, sides, sideName, color, viewpointTag, viewpointKey, names, hour, colours, tokens.muted, tokens.error, mode.mode]);
   const legend = useMemo(() => mode.mode === 'viewpoint' ? [
     { id: 'friendly', label: `${looks.viewpoint.name} (friendly)`, color: looks.viewpoint.color },
     { id: 'enemy', label: `Enemies of ${looks.viewpoint.name}`, color: tokens.error },

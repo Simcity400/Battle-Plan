@@ -35,7 +35,7 @@ fn goal_frame(entries: Vec<FactionGoalEntryRow>) -> DecodedFrame {
 }
 
 fn params() -> details::FactionDetailParams {
-    details::FactionDetailParams { branch_id: "1".into(), faction: FACTION.to_string() }
+    details::FactionDetailParams { branch_id: "1".into(), faction: FACTION.to_string(), viewpoint: None }
 }
 
 /// The faction's own lists alone, each goal named once however often it is listed, its progress

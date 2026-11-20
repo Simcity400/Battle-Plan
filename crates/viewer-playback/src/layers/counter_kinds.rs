@@ -36,17 +36,21 @@ fn find<T: 'static>(layers: &[Box<dyn Layer>]) -> Option<&T> {
 }
 
 /// The product of each kind whose layer draws, as of its last settle; none for the rest, and
-/// none at all while the map composes.
+/// none at all while the map composes. A kind's product is handed only while its layer was settled
+/// over the vision the map shows: one made over another country's vision is no product of this
+/// one's, and with the vision refused every kind is withheld.
 pub fn published(side: &MapSide) -> Layered {
     let Some((_, layers)) = side.parts() else { return Layered::default() };
     let drawn = |name: &str| side.draws(name);
+    let viewer = side.viewer();
+    let shows = |held: Option<(Choice, Arc<Vision>)>| viewer.is_some_and(|viewer| held.is_some_and(|(_, vision)| vision.ours() == viewer));
     Layered {
-        land: crate::layers::counters::published(side),
-        land_markers: drawn("land_markers").then(|| find::<LandMarkers>(layers).and_then(LandMarkers::published).cloned()).flatten(),
-        naval_markers: drawn("naval_markers").then(|| find::<NavalMarkers>(layers).and_then(NavalMarkers::published).cloned()).flatten(),
-        bases: drawn("base_counters").then(|| find::<BaseCountersFed>(layers).and_then(BaseCountersFed::published).cloned()).flatten(),
-        guns: drawn("gun_counters").then(|| find::<GunCounters>(layers).and_then(GunCounters::published).cloned()).flatten(),
-        air: drawn("air_mission_counters").then(|| find::<AirMissionCounters>(layers).and_then(AirMissionCounters::published).cloned()).flatten(),
+        land: crate::layers::counters::published(side).filter(|_| find::<super::counters::fed::Fed>(layers).is_some_and(|layer| shows(layer.perspective()))),
+        land_markers: drawn("land_markers").then(|| find::<LandMarkers>(layers).filter(|layer| shows(layer.perspective())).and_then(LandMarkers::published).cloned()).flatten(),
+        naval_markers: drawn("naval_markers").then(|| find::<NavalMarkers>(layers).filter(|layer| shows(layer.perspective())).and_then(NavalMarkers::published).cloned()).flatten(),
+        bases: drawn("base_counters").then(|| find::<BaseCountersFed>(layers).filter(|layer| shows(layer.perspective())).and_then(BaseCountersFed::published).cloned()).flatten(),
+        guns: drawn("gun_counters").then(|| find::<GunCounters>(layers).filter(|layer| shows(layer.perspective())).and_then(GunCounters::published).cloned()).flatten(),
+        air: drawn("air_mission_counters").then(|| find::<AirMissionCounters>(layers).filter(|layer| shows(layer.perspective())).and_then(AirMissionCounters::published).cloned()).flatten(),
     }
 }
 

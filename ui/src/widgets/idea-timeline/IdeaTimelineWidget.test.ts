@@ -16,7 +16,7 @@ import type { IdeaHistoryReply, IdeaInfo } from '../../generated/dashboard';
 registerWidgets([definition, spiritsDefinition]);
 const info = (token: string, category: string, slot: string | null): IdeaInfo => ({ token, category, slot, law: false, designer: false,
   effects: [], targeted: [], equipment: [], research: [], traits: [], tooltips: [], effectsKnown: true, unknown: null, nameMissing: null });
-const data: IdeaHistoryReply = { branchId: '1', tag: 'mod_country', unobserved: [], identityStarts: [100], modifiers: [], texts: [], warnings: [],
+const data: IdeaHistoryReply = { branchId: '1', tag: 'mod_country', asked: 'mod_country', unobserved: [], identityStarts: [100], modifiers: [], texts: [], warnings: [],
   categories: [
     { token: 'mod_laws', name: 'Mod laws', kind: null, hidden: false, politicsTab: true,
       slots: [{ token: 'mod_slot', name: 'Mod slot', character: false, seats: 1, laws: ['mod_law'] }] },

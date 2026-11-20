@@ -12,7 +12,7 @@ import { jumpItem } from '../../charts/jump';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -50,7 +50,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
   const hour = window ? Math.floor(window.lastHour) : null;
   const inBranch = track !== undefined && hour !== null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
-  const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));
+  const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);

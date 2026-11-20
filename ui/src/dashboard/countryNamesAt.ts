@@ -10,6 +10,8 @@ import type { BoundTrack } from './model';
 import { heldFacts, heldTimeline, watchTimeline } from './countryTimeline.ts';
 import { inFrame } from './frameUpdates.ts';
 import type { CountryTimeline, HeldLookup } from './countryTimeline';
+import { countryFromKey } from './countryKey.ts';
+import { useSlotTags, type SlotTags } from './countrySlots.ts';
 
 export { MAX_NAME_HOURS, nameKey };
 export type { NameAt };
@@ -65,6 +67,38 @@ export function useCountryFactsRead<V>(client: DashboardClient, track: Pick<Boun
     for (const [key, value] of answered) picked.set(key, value);
     return picked;
   }, [requests, answered, rest, version]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/** Country facts (`country-styles`) of `wanted` countries, each a [`countryKey`]: a country asked by its slot reads the
+ * facts of the tag it goes by at each hour asked, under its own key. */
+export function useCountryFactsByKey<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
+  spec: AnyFactSpec<V>, maxHours = Infinity, attempt = 0): ReadonlyMap<string, V | null | Failure> {
+  const bySlot = wanted.some(item => typeof countryFromKey(item.tag) === 'number');
+  const slots = useSlotTags(client, track, active && bySlot);
+  const asked = useMemo(() => bySlot ? slotFacts(wanted, slots) : null, [bySlot, wanted, slots]);
+  const read = useCountryFactsRead(client, track, asked?.wanted ?? wanted, active, spec, maxHours, attempt);
+  return useMemo(() => {
+    if (!asked) return read;
+    const out = new Map<string, V | null | Failure>();
+    for (const [key, held] of asked.back) {
+      if (held === null) { if (slots) out.set(key, null); continue; }
+      if (read.has(held)) out.set(key, read.get(held)!);
+    }
+    return out;
+  }, [read, asked, slots]);
+}
+
+/** `wanted` with each slot named by the tag it goes by at its hour, and where each asked fact is read: by its tag's
+ * fact key, or none for a slot holding no tag then (or whose tags are not yet known). */
+function slotFacts(wanted: readonly NameAt[], slots: SlotTags | undefined): { wanted: NameAt[]; back: Map<string, string | null> } {
+  const out: NameAt[] = [], back = new Map<string, string | null>();
+  for (const item of wanted) {
+    const slot = countryFromKey(item.tag);
+    const tag = typeof slot === 'number' ? slots?.tagAt(slot, item.hour) ?? null : item.tag;
+    back.set(nameKey(item.hour, item.tag), tag === null ? null : nameKey(item.hour, tag));
+    if (tag !== null) out.push({ hour: item.hour, tag });
+  }
+  return { wanted: out, back };
 }
 
 /** The country timeline held for `track` under `content`, re-rendering, once a frame, as it arrives
@@ -162,7 +196,7 @@ export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrac
   maxHours = Infinity, attempt = 0): ReadonlyMap<string, NameRead> {
   const available = useMemo(() => wanted.filter(item => track && Number.isSafeInteger(item.hour)
     && item.hour >= track.branch.firstHour && item.hour <= track.branch.lastHour), [wanted, track]);
-  const read = useCountryFactsRead(client, track, available, active, NAMES, maxHours, attempt);
+  const read = useCountryFactsByKey(client, track, available, active, NAMES, maxHours, attempt);
   const previous = useRef<ReadonlyMap<string, NameRead>>(new Map());
   // The last name or refusal read for each country: while its name at a new hour is read, that one shows, never "loading".
   // Held per client as the reads are: another client's names are never shown for this one's.

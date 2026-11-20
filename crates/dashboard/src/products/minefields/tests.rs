@@ -63,7 +63,7 @@ fn history_is_the_amount_row_then_zero_under_a_live_witness_and_unknown_elsewher
 
 #[test]
 fn a_history_of_every_owner_of_a_region_is_asked_whatever_their_count() {
-    let tags: Vec<String> = (0..1_500).map(|at| format!("{}{}{}", (b'A' + (at / 676) as u8) as char, (b'A' + (at / 26 % 26) as u8) as char, (b'A' + (at % 26) as u8) as char)).collect();
-    let params = MinefieldHistoryParams { branch_id: "1".into(), region: 7, tags, first_hour: 0, last_hour: 100 };
+    let tags: Vec<Country> = (0..1_500).map(|at| format!("{}{}{}", (b'A' + (at / 676) as u8) as char, (b'A' + (at / 26 % 26) as u8) as char, (b'A' + (at % 26) as u8) as char).into()).collect();
+    let params = MinefieldHistoryParams { branch_id: "1".into(), region: 7, countries: tags, first_hour: 0, last_hour: 100 };
     assert_eq!(<MinefieldHistory as Product>::validate(&params), Ok(()));
 }

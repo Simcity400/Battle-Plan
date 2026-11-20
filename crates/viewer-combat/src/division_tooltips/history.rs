@@ -183,7 +183,8 @@ fn medal_effects(
             .ok()
             .map(|at| links[at].canonical_slot)
             .ok_or("medal unit owner link unavailable")?;
-        let text_context = ScriptedText::new(frame, loc, scripted, owner);
+        // Only the viewing country's own divisions show their career, so the owner is the viewer.
+        let text_context = ScriptedText::new(frame, loc, scripted, owner).viewing(owner);
         let context = effect_description::Context::new(
             &text_context,
             loc,

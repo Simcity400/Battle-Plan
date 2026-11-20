@@ -8,6 +8,7 @@
 //! manpower, its level from the content's experience defines. Entries keep their native list
 //! order and repeats. Intelligence copies of divisions are left out.
 
+use dashboard_base::products::Country;
 use super::{Content, Countries, Refusals, attributed, find, token_key};
 use crate::{
     Source,
@@ -50,7 +51,7 @@ pub struct DivisionRecord;
 pub struct DivisionCareersParams {
     pub branch_id: String,
     /// The countries whose divisions rank; none ranks every country's.
-    pub tags: Option<Vec<String>>,
+    pub countries: Option<Vec<Country>>,
 }
 
 /// A medal the ranking names, by its content key.
@@ -196,8 +197,8 @@ impl AtHour for DivisionCareers {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        for tag in params.tags.iter().flatten() {
-            dashboard_base::products::validate_tag(tag)?;
+        for tag in params.countries.iter().flatten() {
+            dashboard_base::products::validate_country(tag)?;
         }
         branch(&params.branch_id)
     }
@@ -212,7 +213,7 @@ impl AtHour for DivisionCareers {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         // The asked tags' slots at the hour, by the one identity rule.
-        let slots = params.tags.as_ref().map(|tags| {
+        let slots = params.countries.as_ref().map(|tags| {
             tags.iter()
                 .filter_map(|tag| match at.holders.at(tag, at.hour).map(|run| run.holder) {
                     Some(Holder::Found { slot, .. }) => Some(slot),

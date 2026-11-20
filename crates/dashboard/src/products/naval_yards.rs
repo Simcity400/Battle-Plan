@@ -6,6 +6,7 @@
 //! recorded is none with its reason in the warnings, never zero. A ship's hull and a line's
 //! progress move hourly: they are live cells (by ship and line handle) the widgets paint.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     LoadContext,
     at_hour::{At, AtHour, Owner, Read},
@@ -19,7 +20,6 @@ use dashboard_follow::live::{Cells, Source as Cell};
 use installed_content_core::unit_leader::{SubUnit, SubUnits};
 use installed_content_division_names::division_names::Database;
 use replay_data::rows::{ShipModelRow, ShipNamingOperands, ShipRow};
-use dashboard_base::products::validate_tag;
 use dashboard_text::variant_names::{self, Tags, Texts};
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, DecodedSource};
@@ -40,7 +40,7 @@ mod tests;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalYardsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// A ship as the yards show it: its full handle, its name as the game held it, else one rebuilt
@@ -139,7 +139,7 @@ fn validate(params: &NavalYardsParams) -> Result<(), &'static str> {
     if params.branch_id.parse::<u64>().is_err() {
         return Err("Invalid branch");
     }
-    validate_tag(&params.tag)
+    validate_country(&params.country)
 }
 
 /// The raw country ids that link to canonical slot `slot`.
@@ -470,8 +470,8 @@ impl AtHour for NavalRepairs {
         vec![NavalYardsParams::decl(), YardShip::decl(), RepairPort::decl(), NavalRepairsReply::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -626,8 +626,8 @@ impl AtHour for NavalRefits {
         vec![NavalYardsParams::decl(), YardShip::decl(), RefitLine::decl(), NavalRefitsReply::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

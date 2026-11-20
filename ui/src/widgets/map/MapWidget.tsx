@@ -24,7 +24,10 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
     if (!track) return null;
     const window = resolveWindow(widget, track, runtime.tracks, clock.position);
     if (!window || window.lastHour < track.branch.firstHour || window.lastHour > track.branch.lastHour) return null;
-    return { options: { fog: mapOptions.fog, country: widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : track.selectedTag }, sourceId: track.source.id, path: track.source.path, revision: track.source.revision, branchId: track.branch.id,
+    const pinned = widget.countries.kind === 'tags';
+    const country = widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : track.selectedTag;
+    return { options: { fog: mapOptions.fog, country, countrySlot: pinned ? null : track.selectedSlot ?? null, countryPinned: pinned,
+      observed: pinned ? null : track.observed?.[widget.id] ?? null }, sourceId: track.source.id, path: track.source.path, revision: track.source.revision, branchId: track.branch.id,
       seekSequence: widget.time.mode === 'follow' ? clock.seekSequence : undefined,
       playing: widget.time.mode === 'follow' && clock.playing,
       hoursPerSecond: clock.hoursPerSecond,

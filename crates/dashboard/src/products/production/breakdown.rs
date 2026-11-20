@@ -4,6 +4,7 @@
 //! identify all past growth, switches and assignments; those remain a reconciled residual rather
 //! than attributing today's modifiers to yesterday's efficiency.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     DETAIL_HOURS, appearances, lines::index_of,
     names::{self, Named},
@@ -11,7 +12,7 @@ use super::{
 };
 use crate::{
     Source,
-    products::{LoadContext, Product, check_reply_budget, validate_tag},
+    products::{LoadContext, Product, check_reply_budget},
 };
 use engine_executable::modifier_keys as keys;
 use replay::cells::TableReader;
@@ -803,7 +804,7 @@ pub struct ProductionLineBreakdown;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionBreakdownParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// The line's key in `production-lines`.
     pub key: String,
     /// The factor shown in full; the others carry only their totals.
@@ -888,7 +889,7 @@ impl Product for ProductionLineBreakdown {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&params.tag)?;
+        validate_country(&params.country)?;
         if parse_key(&params.key).is_none() {
             return Err("Invalid production line key");
         }
@@ -904,7 +905,7 @@ impl Product for ProductionLineBreakdown {
         let content = names::context(source, context)?;
         let (first, last) = window_hours(params.hour.div_euclid(DETAIL_HOURS)).ok_or_else(|| dashboard_core::invalid("Invalid production hour"))?;
         let index = index_of(source);
-        let found = appearances(&query, &params.tag, query.timeline.first, query.timeline.last, &index)?;
+        let found = appearances(&query, &params.country, query.timeline.first, query.timeline.last, &index)?;
         let appearance = found
             .into_iter()
             .find(|appearance| appearance.key == params.key)
@@ -1001,7 +1002,7 @@ impl Product for ProductionLineBreakdown {
         }
         let reply = ProductionLineBreakdownReply {
             branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
+            tag: query.holders.name(&params.country, query.timeline.last),
             key: params.key.clone(),
             first_hour: first,
             last_hour: last,

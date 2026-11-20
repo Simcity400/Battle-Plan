@@ -1,3 +1,4 @@
+import { metadataCountry } from './countryKey.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { nameKey } from './countryFacts.ts';
 import type { NameAt } from './countryFacts';
@@ -31,7 +32,7 @@ export function useIdeaTooltips(data: Pick<IdeaHistoryReply, 'ideas' | 'artwork'
   const names = useCountryNamesAt(client, track, requested, active, Infinity, attempt);
   return useMemo(() => {
     if (!data || !track) return null;
-    const metadataName = fallbackName ?? ((tag: string) => track.source.metadata.countries.find(country => country.tag === tag)?.name ?? 'Country name unavailable');
+    const metadataName = fallbackName ?? ((tag: string) => metadataCountry(track.source.metadata.countries, tag)?.name ?? 'Country name unavailable');
     const nameAt = (tag: string, hour: number) => {
       const key = nameKey(hour, tag);
       const read = names.get(key);

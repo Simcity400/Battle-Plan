@@ -1,3 +1,5 @@
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -7,7 +9,7 @@ import Timeline from '../../charts/timeline/Timeline';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions } from '../../dashboard/options';
@@ -42,9 +44,9 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
   const at = Math.floor(playhead ?? last);
   const extent: [number, number] = [first, Math.max(first + 1, last + 1)];
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultCountryTag(track);
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultCountryKey(track);
   const reply = useProduct<DiplomacyPactsReply>(runtime.client, track && tag ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'diplomatic-pacts', params: { branchId: track.branch.id, tag } } : null, active, validatePacts, track?.source);
+    product: 'diplomatic-pacts', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null, active, validatePacts, track?.source);
   const data = reply.data;
   const axisOffset = track?.axisOffset ?? 0;
   const changes = useMemo(() => data ? changeHours(data) : [], [data]);
@@ -53,7 +55,14 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
     subscribe: (changed: () => void) => clock.subscribeFrame(changed) } : undefined, [followsClock, track, clock, axisOffset]);
   useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
   const kinds = useMemo(() => { const chosen = contentSet(options.kinds).map(contentKey); return chosen.length ? new Set(chosen) : null; }, [options.kinds]);
-  const agreements = useMemo(() => data && tag ? agreementsOf(data.pacts, tag, at, kinds) : [], [data, tag, at, kinds]);
+  const bySlot = tag !== null && isSlotKey(tag);
+  const slots = useSlotTags(runtime.client, track, active && bySlot);
+  // A pact names the chosen country by the tag it went by at the pact's last hour held.
+  const pacts = useMemo(() => !data || !tag || !bySlot ? data?.pacts ?? [] : data.pacts.map(pact => {
+    const own = keyNameAt(slots, tag, pact.lastSeen);
+    return own === null ? pact : { ...pact, first: pact.first === own ? tag : pact.first, second: pact.second === own ? tag : pact.second };
+  }), [data, tag, bySlot, slots]);
+  const agreements = useMemo(() => data && tag ? agreementsOf(pacts, tag, at, kinds) : [], [data, pacts, tag, at, kinds]);
   // Partners are named as they were when last listed (or at the hour shown, if earlier):
   // a tag a later country takes never renames an earlier agreement's partner.
   const [inView, setInView] = useChangedState<[number, number]>([0, 40]);
@@ -85,7 +94,7 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (!tag) return <WidgetState kind="empty" icon="link" message="Choose a country in widget settings." />;
   if (reply.error) return <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading diplomacy…" />;
+  if (!data || bySlot && !slots) return <WidgetState kind="loading" label="Loading diplomacy…" />;
   if (!lanes.length) return <WidgetState kind="empty" icon="link" message={`${country(tag, at).name} has no ${agreements.length ? 'agreements in force' : 'recorded agreements'} at this time.`} />;
   const tooltip = (laneId: string): TooltipContent | null => {
     const about = info.get(laneId);

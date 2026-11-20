@@ -7,6 +7,7 @@
 //! `air-statistics-regions` names every region the country held statistics in over the timeline,
 //! so a region not recorded at the hour shown can still be chosen.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{LoadContext, Product};
 use crate::{
     Source, catalogue,
@@ -15,7 +16,6 @@ use crate::{
         at_hour::{self, At, AtHour, Keys, Owner, Read},
     },
 };
-use dashboard_base::products::validate_tag;
 use dashboard_follow::live::{Cells, Source as Cell};
 use engine_air_history::cloop_history::air_stats;
 use installed_content_localisation::localisation::Argument;
@@ -47,7 +47,7 @@ pub struct AirStatisticsAt;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirStatisticsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// Pair index in recorded schema order, not the interface's button order.
     pub channel: u8,
 }
@@ -224,7 +224,7 @@ impl AtHour for AirStatisticsAt {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)?;
+        validate_country(&params.country)?;
         if usize::from(params.channel) >= PAIRS {
             return Err("Invalid air-statistics channel");
         }
@@ -236,8 +236,8 @@ impl AtHour for AirStatisticsAt {
         vec![AirStatisticsParams::decl(), AirStatisticsReply::decl(), AirStatisticsChannel::decl(), AirStatisticsRegion::decl(), AirMissionTheatre::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -287,7 +287,7 @@ pub struct AirStatisticsRegions;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirStatisticsRegionsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -314,7 +314,7 @@ impl Product for AirStatisticsRegions {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -329,7 +329,7 @@ impl Product for AirStatisticsRegions {
         let query = crate::answer::query(source, branch)?;
         let names = names(source, load);
         let mut warnings = names.warnings.clone();
-        let runs = query.holders.tags.get(&params.tag).map(Vec::as_slice).unwrap_or_default();
+        let runs = query.holders.runs(&params.country);
         let found = || runs.iter().filter_map(|run| match run.holder {
             dashboard_query::identity::Holder::Found { slot, id } => Some((slot, id)),
             dashboard_query::identity::Holder::Unresolved => None,

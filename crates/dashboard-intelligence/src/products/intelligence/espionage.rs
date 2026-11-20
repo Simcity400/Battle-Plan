@@ -244,7 +244,7 @@ pub struct EspionageOperationsParams {
     pub branch_id: String,
     /// Only this country's operations, run by it or against it; every one when none.
     #[serde(default)]
-    pub tag: Option<String>,
+    pub country: Option<dashboard_base::products::Country>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -287,11 +287,11 @@ impl AtHour for EspionageOperations {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         branch(&params.branch_id)?;
-        params.tag.as_deref().map_or(Ok(()), dashboard_base::products::validate_tag)
+        params.country.as_ref().map_or(Ok(()), dashboard_base::products::validate_country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        params.tag.as_deref()
+    fn owner(params: &Self::Params) -> Option<&dashboard_base::products::Country> {
+        params.country.as_ref()
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -922,8 +922,8 @@ impl Product for EspionageLog {
             page_size: params.page_size,
             columns: None,
         };
-        let tagged = params.facets.iter().any(|filter| !filter.tags.is_empty());
-        let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.map(str::to_owned)))?;
+        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
+        let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
         let recording = query.replay.recording();
         let mut links: HashMap<u32, Arc<RunLinks>> = HashMap::new();
         let mut tokens: BTreeMap<u32, BTreeSet<u128>> = BTreeMap::new();
@@ -986,7 +986,7 @@ impl Product for EspionageLog {
                     hour: row.hour,
                     key: row.key.to_string(),
                     ordinal: ordinal.to_string(),
-                    tag: tag.clone(),
+                    country: tag.clone(),
                     own_ordinal: tagged.then(|| own.to_string()),
                     cells,
                 }

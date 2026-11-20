@@ -106,7 +106,7 @@ export type Facet = FacetFilter;
  * through any country a row names at its own hour, as a group's members are. */
 export function feedFacets(kinds: readonly FeedKindCode[], categories: ReadonlySet<string>): Facet[] | null {
   const values = kinds.filter(kind => categories.has(kind.category)).map(kind => kind.code);
-  return values.length ? [{ name: 'kind', values, tags: [] }] : null;
+  return values.length ? [{ name: 'kind', values, countries: [] }] : null;
 }
 
 /** Country matching for a removed member uses the identity of its last recorded membership. */

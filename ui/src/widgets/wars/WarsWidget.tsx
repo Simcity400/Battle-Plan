@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -11,11 +12,11 @@ import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLooks } from '../../dashboard/countryLooks';
-import { useCountryFactsRead } from '../../dashboard/countryNamesAt';
+import { useCountryFactsByKey } from '../../dashboard/countryNamesAt';
 import { useFactionColours } from '../../dashboard/FactionColours';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
@@ -51,9 +52,9 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const following = widget.time.mode === 'follow';
   // The viewpoint is the widget's country: the dashboard's unless one is picked.
-  const viewpointTag = selectedTags(widget.countries, track)[0] ?? null;
+  const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const product = useProduct<WarsReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
-    params: { branchId: track.branch.id, viewpointTag } } : null, active, validateWarsReply, track?.source);
+    params: { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } } : null, active, validateWarsReply, track?.source);
   const data = product.data;
   const groups = useCountryGroups(runtime, track, active);
   const factions = useFactionColours(runtime.client, track?.source);
@@ -95,7 +96,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   // The hour a tooltip ends ongoing runs at: the head now, never the hour the lanes were made at.
   const until = () => following ? trackHour(clock.getHour()) ?? at : at;
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const hourParams = track && hoverHour !== null ? { branchId: track.branch.id, viewpointTag, hour: hoverHour } : null;
+  const hourParams = track && hoverHour !== null ? { branchId: track.branch.id, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag), hour: hoverHour } : null;
   const losses = useProduct<WarLossesReply>(runtime.client, track && hourParams ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'war-losses', params: hourParams } : null, active, validateWarLosses, track?.source);
   const contributions = useProduct<WarContributionsReply>(runtime.client, track && hourParams ? { sourceId: track.source.id, revision: track.source.revision,
@@ -110,12 +111,12 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const [named, setNamed] = useState<string[]>([]);
   const namedSet = useMemo(() => new Set(named), [named]);
   const segmentAt = useCallback((tag: string, hour: number) => warsLookStart(prepared, track?.branch, tag, hour), [prepared, track?.branch]);
-  const { country, revision } = useCountriesAt(runtime.client, track, named, at, active, named, segmentAt, NAME_WORDS);
+  const { country, revision } = useCountriesAt(runtime.client, track, named, at, active, named, segmentAt, NAME_WORDS, { clock, on: following, hour: trackHour });
   const looks = useCountryLooks(runtime.client, track, named, at, active, segmentAt);
   const fixed = tokens.countryColours === 'fixed';
   const stylePlan = useMemo(() => warsColourPlan(prepared, track?.branch, at, fixed), [prepared, track?.branch, at, fixed]);
   // Fixed colours need the full stable participant set; artwork still reads visible lanes only.
-  const styles = useCountryFactsRead(runtime.client, track, stylePlan.wanted, active, STYLES, stylePlan.maxHours);
+  const styles = useCountryFactsByKey(runtime.client, track, stylePlan.wanted, active, STYLES, stylePlan.maxHours);
   const fixedColourKey = fixed ? warsFixedColourKey(stylePlan, styles) : null;
   const fixedColours = useMemo(() => {
     if (fixedColourKey == null) return new Map<string, string>();

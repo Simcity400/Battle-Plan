@@ -4,7 +4,7 @@ import type { CountryStyle, CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
 import { flagReadMetadata } from './countryFlagsAt.ts';
 import { useCountryFlagsRead } from './countryFlags.ts';
-import { nameKey, useCountryFactsRead } from './countryNamesAt.ts';
+import { nameKey, useCountryFactsByKey } from './countryNamesAt.ts';
 import { MAX_NAME_HOURS, isFailedFact } from './countryFacts.ts';
 import type { FactSpec } from './countryFacts';
 import { matchesLookSegment, sampledLooks } from './looks.ts';
@@ -120,7 +120,7 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
   const set = useMemo(() => JSON.parse(tagKey) as string[], [tagKey]);
   const plan = useMemo(() => lookPlan(track?.branch, set, moment, segmentAt, hours, exact), [set, track?.branch, moment, segmentAt, hours, exact]);
   const { samples, wanted } = plan;
-  const styles = useCountryFactsRead(client, track, wanted, active, STYLES, plan.maxHours);
+  const styles = useCountryFactsByKey(client, track, wanted, active, STYLES, plan.maxHours);
   const flagKey = useMemo(() => flagTags === undefined ? null : JSON.stringify([...new Set(flagTags)].sort()), [flagTags]);
   const flagWanted = useMemo(() => {
     if (flagKey === null) return wanted;

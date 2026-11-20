@@ -47,6 +47,8 @@ pub enum ViewEvent {
     Toggle(dashboard::protocol::MapToggle),
     /// The modes the picker offers, once for each content the view loads.
     Modes(Vec<dashboard::protocol::MapModeChoice>),
+    /// A Ctrl+click chose this viewing country.
+    Observe(dashboard::protocol::ObservedCountry),
 }
 
 /// The picker's state in one view.
@@ -62,9 +64,13 @@ pub struct PickerState {
     pub events: Vec<ViewEvent>,
     /// Hidden in the map-only pop-out; its shortcuts still work.
     pub hidden: bool,
+    /// The host pins this view's country, so Ctrl+click never switches it.
+    pub country_pinned: bool,
     labels: Option<PickerLabels>,
     /// The content whose modes the host was last told.
     modes_for: Option<Weak<Content>>,
+    pub minimap: super::minimap::MinimapState,
+    pub find: super::find_view::FindState,
 }
 
 impl Default for PickerState {
@@ -77,13 +83,30 @@ impl Default for PickerState {
             requested: None,
             events: Vec::new(),
             hidden: false,
+            country_pinned: false,
             labels: None,
             modes_for: None,
+            minimap: Default::default(),
+            find: Default::default(),
         }
     }
 }
 
 impl PickerState {
+    /// Whether the primary button holds a control of the picker, the minimap or the find view.
+    pub fn holding(&self) -> bool {
+        self.picker.holding() || self.minimap.holding() || self.find.view.holding()
+    }
+
+    /// Whether the picker, the minimap or the find view still changes on the clock: a held
+    /// button, the minimap's slide, the edit box's caret.
+    pub fn pointing(&self) -> bool {
+        self.picker.pointing()
+            || self.minimap.active()
+            || self.find.view.pointing()
+            || (self.find.open && self.find.field.blinking())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw(
         &mut self,
@@ -308,13 +331,24 @@ pub fn slot_modes(document: &Document, configured: &[String]) -> Vec<MapMode> {
 }
 
 /// What the province hover shows in `mode`: the location block only in the default and states
-/// modes, each other mode's own lines otherwise.
+/// modes, each other mode's own lines otherwise. Where the pointer picks the strategic region
+/// (`region`, see [`picks_region`]), the region's own builder answers outside the strategic modes:
+/// the default mode's dominance, the terrain mode's naval terrain, and nothing in any other.
 pub fn mode_hover(
     mode: &MapMode,
+    region: bool,
     opinion_thresholds: [i32; 2],
     infrastructure_level: impl FnOnce() -> Result<i32, String>,
 ) -> viewer_counter_products::map::province_tooltips::ModeHover {
     use viewer_counter_products::map::province_tooltips::ModeHover;
+    let unprepared = || std::sync::Arc::new(Err("naval dominance sources not prepared".into()));
+    if region && !matches!(mode, MapMode::Stock(Stock::StrategicAir | Stock::StrategicNavy)) {
+        return match mode {
+            MapMode::Stock(Stock::Default) => ModeHover::SeaRegion(unprepared()),
+            MapMode::Stock(Stock::Terrain) => ModeHover::Terrain { region: true },
+            _ => ModeHover::Region,
+        };
+    }
     match mode {
         MapMode::Stock(stock) => match stock {
             Stock::Default => ModeHover::Location { category: false },
@@ -330,12 +364,9 @@ pub fn mode_hover(
             Stock::Ideology => ModeHover::Ideology,
             Stock::Resistance | Stock::Compliance => ModeHover::Occupation,
             Stock::Factions | Stock::Players | Stock::Raids => ModeHover::Nothing,
-            // The app asks the terrain mode's own hover (viewer-combat's terrain_mode) instead.
-            Stock::Terrain => ModeHover::Nothing,
+            Stock::Terrain => ModeHover::Terrain { region: false },
             Stock::StrategicAir => ModeHover::StrategicAir(Default::default()),
-            Stock::StrategicNavy => ModeHover::StrategicNavy(std::sync::Arc::new(Err(
-                "naval dominance sources not prepared".into(),
-            ))),
+            Stock::StrategicNavy => ModeHover::StrategicNavy(unprepared()),
             Stock::Resources => ModeHover::Resources,
             Stock::Operatives => ModeHover::Operatives,
             Stock::Infrastructure => ModeHover::Infrastructure(infrastructure_level()),
@@ -343,6 +374,13 @@ pub fn mode_hover(
         },
         MapMode::Scripted(name) => ModeHover::Scripted(name.clone()),
     }
+}
+
+/// Whether the game's pointer picks a province of `kind` in `region` as that strategic region
+/// outside the strategic modes: a sea province with one; land, a lake or a sea province without
+/// one is picked as itself.
+pub fn picks_region(kind: Option<installed_content_core::map::ProvinceKind>, region: Option<u32>) -> bool {
+    kind == Some(installed_content_core::map::ProvinceKind::Sea) && region.is_some()
 }
 
 /// Whether the recording owns the feature of the fourth large button.
@@ -371,8 +409,11 @@ pub fn parse_shortcut(text: &str) -> Option<(egui::Modifiers, egui::Key)> {
             "," => key = Some(egui::Key::Comma),
             "." => key = Some(egui::Key::Period),
             other => {
+                let mut capitalised: String = other.get(..1).unwrap_or_default().to_ascii_uppercase();
+                capitalised.push_str(other.get(1..).unwrap_or_default());
                 key = egui::Key::from_name(&other.to_ascii_uppercase())
                     .or_else(|| egui::Key::from_name(other))
+                    .or_else(|| egui::Key::from_name(&capitalised))
             }
         }
     }
@@ -503,7 +544,9 @@ pub fn click(
             Click::Configure(Vec::new())
         }
         Control::Toggle(name) => Click::Toggle(name),
-        Control::Window => Click::Nothing,
+        Control::FindView | Control::Minimap(_) | Control::Find(_) | Control::Window => {
+            Click::Nothing
+        }
     }
 }
 
@@ -528,15 +571,21 @@ impl Viewer {
 
     /// Records the view's options as chosen here and queues them for the host.
     fn report_options(&mut self) {
+        use viewer_foundation::map::perspective::Country;
+        let (country, country_slot) = match &self.perspective.country {
+            Country::Recorded => (None, None),
+            Country::Tag(tag) => (Some(tag.clone()), None),
+            Country::Slot { slot, tag } => (Some(tag.clone()), Some(*slot)),
+        };
         let options = dashboard::protocol::MapOptions {
-            country: match &self.perspective.country {
-                viewer_foundation::map::perspective::Country::Tag(tag) => Some(tag.clone()),
-                _ => None,
-            },
+            country,
+            country_slot,
+            country_pinned: self.picker.country_pinned,
             fog: self.perspective.fog,
             map_mode: (self.map_mode != MapMode::default()).then(|| self.map_mode.token()),
             map_mode_slots: self.picker.slots.clone(),
             picker_hidden: self.picker.hidden,
+            observed: None,
         };
         self.picker.requested = Some(options.clone());
         self.picker.events.push(ViewEvent::Options(options));
@@ -546,6 +595,7 @@ impl Viewer {
     /// still on its way. The picker owns only these; fog and the country are the host's.
     pub(crate) fn apply_host_options(&mut self, options: &dashboard::protocol::MapOptions) {
         self.picker.hidden = options.picker_hidden;
+        self.picker.country_pinned = options.country_pinned;
         let echoed = self
             .picker
             .requested
@@ -655,7 +705,8 @@ impl Viewer {
             self.picker_toggles()
         };
         let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map)), document);
-        Some(self.picker.draw(
+        self.refresh_find_view(document);
+        let drawn = self.picker.draw(
             document,
             &self.map_mode,
             toggles,
@@ -663,13 +714,25 @@ impl Viewer {
             hovers,
             time,
             advance,
-            input,
+            input.clone(),
             four,
-        ))
+        );
+        Some(drawn.map(|mut drawn| {
+            self.draw_map_windows(document, extent, hovers, time, advance, input, &mut drawn);
+            drawn
+        }))
     }
 
     /// A click on a picker control; `secondary` is the right button.
     pub(crate) fn picker_click(&mut self, document: &Document, control: &Control, secondary: bool) {
+        match control {
+            Control::FindView => self.picker.find.toggle(self.picker_now()),
+            Control::Minimap(viewer_combat::minimap::Control::Handle) => self.toggle_minimap(document),
+            Control::Minimap(viewer_combat::minimap::Control::OffensivePing) => self.picker.minimap.arm(true),
+            Control::Minimap(viewer_combat::minimap::Control::DefensivePing) => self.picker.minimap.arm(false),
+            Control::Find(find) => self.picker.find.click(*find),
+            _ => {}
+        }
         let slots = slot_modes(document, &self.picker.slots);
         match click(
             &mut self.picker.open,
@@ -721,6 +784,23 @@ impl Viewer {
 
     /// The picker's authored keys pressed this frame, as clicks.
     pub(crate) fn picker_keys(&mut self, ui: &egui::Ui, document: &Document, extent: [f32; 2]) {
+        // The edit box takes the keys while it has focus.
+        if self.find_view_keys(ui, document, extent, self.picker_now()) {
+            return;
+        }
+        let minimap = viewer_combat::minimap::handle_shortcut(&document.combat, extent)
+            .ok()
+            .flatten()
+            .and_then(|text| parse_shortcut(&text));
+        let toggles = ui.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(event, egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+                    if minimap.is_some_and(|(wanted, wanted_key)| wanted_key == *key && modifiers.matches_exact(wanted)))
+            })
+        });
+        if toggles {
+            self.toggle_minimap(document);
+        }
         let four = self.head_rows.four_buttons(super::head_rows::head(super::live_of(&self.playhead_map)), document);
         let Ok(shortcuts) = picker::shortcuts(&document.combat, extent, four, DEFAULT_SLOTS.len())
         else {
@@ -759,10 +839,13 @@ mod tests {
     fn options(fog: bool, mode: Option<&str>) -> dashboard::protocol::MapOptions {
         dashboard::protocol::MapOptions {
             country: None,
+            country_slot: None,
+            country_pinned: false,
             fog,
             map_mode: mode.map(str::to_owned),
             map_mode_slots: Vec::new(),
             picker_hidden: false,
+            observed: None,
         }
     }
 
@@ -882,7 +965,7 @@ mod tests {
             .into_iter()
             .filter_map(|event| match event {
                 ViewEvent::Toggle(toggle) => Some(toggle),
-                ViewEvent::Options(_) | ViewEvent::Modes(_) => None,
+                ViewEvent::Options(_) | ViewEvent::Modes(_) | ViewEvent::Observe(_) => None,
             })
             .collect()
     }
@@ -1154,7 +1237,7 @@ mod tests {
     #[test]
     fn only_the_default_and_states_modes_hover_the_location_block() {
         use viewer_counter_products::map::province_tooltips::ModeHover;
-        let hover = |stock| mode_hover(&MapMode::Stock(stock), [50, -50], || Ok(3));
+        let hover = |stock| mode_hover(&MapMode::Stock(stock), false, [50, -50], || Ok(3));
         assert_eq!(
             hover(Stock::Default),
             ModeHover::Location { category: false }
@@ -1176,6 +1259,7 @@ mod tests {
         assert_eq!(hover(Stock::Compliance), ModeHover::Occupation);
         assert_eq!(hover(Stock::Operatives), ModeHover::Operatives);
         assert_eq!(hover(Stock::Resources), ModeHover::Resources);
+        assert_eq!(hover(Stock::Terrain), ModeHover::Terrain { region: false });
         assert_eq!(
             hover(Stock::StrategicAir),
             ModeHover::StrategicAir(Default::default())
@@ -1190,9 +1274,37 @@ mod tests {
             assert_eq!(hover(stock), ModeHover::Nothing, "{stock:?}");
         }
         assert_eq!(
-            mode_hover(&MapMode::Scripted("spheres".into()), [50, -50], || Ok(0)),
+            mode_hover(&MapMode::Scripted("spheres".into()), false, [50, -50], || Ok(0)),
             ModeHover::Scripted("spheres".into())
         );
+    }
+
+    #[test]
+    fn a_picked_region_hovers_as_the_region_builder_answers_its_mode() {
+        use installed_content_core::map::ProvinceKind::*;
+        use viewer_counter_products::map::province_tooltips::ModeHover;
+        assert!(picks_region(Some(Sea), Some(40)));
+        // A sea province without a region is picked as itself, as is land or a lake.
+        assert!(!picks_region(Some(Sea), None));
+        assert!(!picks_region(Some(Land), Some(40)));
+        assert!(!picks_region(Some(Lake), Some(40)));
+        assert!(!picks_region(None, Some(40)));
+        let hover = |mode: MapMode| mode_hover(&mode, true, [50, -50], || Ok(3));
+        assert_eq!(
+            hover(MapMode::Stock(Stock::Default)),
+            ModeHover::SeaRegion(std::sync::Arc::new(Err("naval dominance sources not prepared".into())))
+        );
+        assert_eq!(hover(MapMode::Stock(Stock::Terrain)), ModeHover::Terrain { region: true });
+        // The strategic modes pick the region for every province and build their own hover.
+        assert_eq!(hover(MapMode::Stock(Stock::StrategicAir)), ModeHover::StrategicAir(Default::default()));
+        assert!(matches!(hover(MapMode::Stock(Stock::StrategicNavy)), ModeHover::StrategicNavy(_)));
+        // The region builder writes nothing of its own in any other stock or scripted mode.
+        for stock in Stock::ALL.into_iter().filter(|stock| {
+            ![Stock::Default, Stock::Terrain, Stock::StrategicAir, Stock::StrategicNavy].contains(stock)
+        }) {
+            assert_eq!(hover(MapMode::Stock(stock)), ModeHover::Region, "{stock:?}");
+        }
+        assert_eq!(hover(MapMode::Scripted("spheres".into())), ModeHover::Region);
     }
 
     #[test]
@@ -1304,6 +1416,19 @@ mod tests {
         assert_eq!(
             parse_shortcut(","),
             Some((egui::Modifiers::NONE, egui::Key::Comma))
+        );
+        // The find view's and the minimap's keys, as the game writes them.
+        assert_eq!(
+            parse_shortcut("RETURN"),
+            Some((egui::Modifiers::NONE, egui::Key::Enter))
+        );
+        assert_eq!(
+            parse_shortcut("ESCAPE"),
+            Some((egui::Modifiers::NONE, egui::Key::Escape))
+        );
+        assert_eq!(
+            parse_shortcut("ctrl+m"),
+            Some((egui::Modifiers::CTRL, egui::Key::M))
         );
         assert_eq!(parse_shortcut(""), None);
     }

@@ -4,11 +4,12 @@
 //! command power allocations hold (`PowerHolds` against `CountryCommandPower`). Every amount is a
 //! live cell; the reply is which rows there are, their names and why one is missing.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{SpendCurrency, naming::undated};
 use crate::{
     Source,
     products::{
-        LoadContext, validate_tag,
+        LoadContext,
         at_hour::{At, AtHour, Keys, Owner, Read},
     },
 };
@@ -34,7 +35,7 @@ const DAILY: &str = "Daily figures";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PowerDayParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub currency: SpendCurrency,
 }
 
@@ -112,7 +113,7 @@ impl AtHour for PowerDay {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid power day branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -120,8 +121,8 @@ impl AtHour for PowerDay {
         vec![PowerDayParams::decl(), PowerDayReply::decl(), PowerDayPart::decl(), PowerDayHold::decl()]
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

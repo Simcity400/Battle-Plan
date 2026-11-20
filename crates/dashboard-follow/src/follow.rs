@@ -319,7 +319,7 @@ impl Followed {
         let standing = self.standing.len() * (size_of::<Ordinal>() + size_of::<Option<Listed>>() + 16) + self.standing.values().flatten().map(|(_, cells)| cells.len() * size_of::<(i64, State)>()).sum::<usize>();
         let query = match &self.query {
             Query::Cells { columns, rows, .. } => columns.capacity() * 8 + if let Rows::Keys(keys) | Rows::Live(keys) = rows { keys.capacity() * 16 } else { 0 },
-            Query::Series { tags, .. } => tags.iter().map(|tag| tag.capacity() + size_of::<String>()).sum(),
+            Query::Series { countries, .. } => countries.iter().map(|country| country.tag().map_or(0, str::len) + size_of::<dashboard_query::identity::Country>()).sum(),
             Query::Head(_) => 0,
         };
         (self.sent.capacity() + self.live.bytes(), self.pending.capacity() + log, size_of::<Self>() + query + self.ranking.bytes() + standing + self.keys.capacity() * 16 + self.declared.capacity() * 8)
@@ -805,10 +805,10 @@ impl Engine {
                     false
                 }
                 Query::Head(_) => continue,
-                Query::Series { identity, tags, top, parts, .. } => {
+                Query::Series { identity, countries, top, parts, .. } => {
                     followed.ranking.clear();
                     followed.tags = tags_at(&followed.query, head);
-                    followed.until = identity_until(identity, tags, head);
+                    followed.until = identity_until(identity, countries, head);
                     index.until = index.until.min(followed.until);
                     index.series.push(query);
                     if top.is_some() || *parts {
@@ -1033,8 +1033,8 @@ impl Engine {
                 let query = index.series[at];
                 let followed = self.slab[query].as_mut().expect("a followed series");
                 if head >= followed.until {
-                    let Query::Series { identity, tags, top, parts, .. } = &followed.query else { continue };
-                    followed.until = identity_until(identity, tags, head);
+                    let Query::Series { identity, countries, top, parts, .. } = &followed.query else { continue };
+                    followed.until = identity_until(identity, countries, head);
                     followed.ranking.clear();
                     followed.tags = tags_at(&followed.query, head);
                     let keys = if top.is_some() || *parts { Vec::new() } else { holder_keys(&followed.tags.rows) };

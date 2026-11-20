@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { failureText } from '../../dashboard/queryError.ts';
 import type { Failure } from '../../dashboard/queryError';
@@ -31,7 +32,8 @@ import type { OptionValue } from '../../dashboard/options';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useFrameWindows } from './frameWindows.ts';
 import { useProduct } from '../../dashboard/products';
-import type { ArmyAttribution, ArmyMeasure, ArmySizeReply } from '../../generated/dashboard';
+import type { ArmyAttribution, ArmyMeasure } from '../../generated/dashboard';
+import type { ArmySizeReply } from './armySizeData';
 import { ARMY_REMAINDER, armyDrillBands, armyDrillNumbers, armyDrillIdentityReply, armyDrillValue } from './armyDrill';
 import { armySizeRequest, armyWindows, formatArmyValue, measureName, mergeArmyWindows, typeName, validateArmyWindow } from './armySizeData';
 import type { armyCountrySelection } from './ArmyCountryChip';
@@ -137,12 +139,12 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
   const identitySpans = useMemo(() => countryDrillSpans(data?.series ?? [], tag ?? '', originHour), [data, tag, originHour]);
   const actor = countryDrillTagAt(identitySpans, hour);
   const rosterAt = (at: number, of: string) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'template-roster',
-    params: { branchId: track!.branch.id, tag: of, hour: at } });
+    params: { branchId: track!.branch.id, country: countryFromKey(of), hour: at } });
   const heldRoster = useProduct<Roster>(runtime.client, !live && track && actor ? rosterAt(hour, actor) : null, active, rosterReply, track?.source);
   const [rosterElement, setRosterElement] = useState<HTMLElement | null>(null);
   const rosterRoot = useMemo(() => ({ current: rosterElement }), [rosterElement]);
   const rosterStore = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const rosterQuery = useMemo(() => live && actor && track ? { panel: 'template-roster', branchId: track.branch.id, tag: actor } : null,
+  const rosterQuery = useMemo(() => live && actor && track ? { panel: 'template-roster', branchId: track.branch.id, country: countryFromKey(actor)} : null,
     [live, actor, track?.branch.id]);
   const followedRoster = useFollow(rosterStore, rosterQuery, rosterRoot, NO_PAINT, panelStructure);
   const rosterPushed = followsHead(followedRoster);

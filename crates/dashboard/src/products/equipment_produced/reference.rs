@@ -221,7 +221,7 @@ fn span_values(rows: &RunRows, span: &Span, select: &Select, asked: Option<&Aske
 
 /// Each tag's series over every span it was held, measured: each run's tables read once for every
 /// tag ([`RunRows`]), each span swept on its own thread.
-fn lines(query: &Query<'_>, tags: &[String], select: &Select, types: &BTreeMap<u32, BTreeMap<u32, Typed>>, content: &Content, notes: &mut BTreeSet<String>, dated: &mut Dated, cancelled: &AtomicBool) -> io::Result<Vec<ProducedSeries>> {
+fn lines(query: &Query<'_>, tags: &[Country], select: &Select, types: &BTreeMap<u32, BTreeMap<u32, Typed>>, content: &Content, notes: &mut BTreeSet<String>, dated: &mut Dated, cancelled: &AtomicBool) -> io::Result<Vec<ProducedSeries>> {
     use rayon::prelude::*;
     let spans: Vec<Vec<Span>> = tags.iter().map(|tag| spending::spans(query, tag)).collect();
     let mut totals: Vec<Vec<Vec<Piece<measure::Counted>>>> = spans.iter().map(|held| vec![Vec::new(); held.len()]).collect();
@@ -368,12 +368,12 @@ pub(super) fn whole(source: &Source, query: &Query<'_>, params: &EquipmentProduc
     let types = branch_types(source, query, &content, &mut notes)?;
     let select = select(params.count, params.refits, params.measure, &params.types);
     let tags = match (params.top, params.rank_hour) {
-        (Some(n), Some(hour)) => ranked(query, hour, n as usize, &select, &types, &content, &mut notes)?,
-        _ => params.tags.clone(),
+        (Some(n), Some(hour)) => ranked(query, hour, n as usize, &select, &types, &content, &mut notes)?.into_iter().map(Country::from).collect(),
+        _ => params.countries.clone(),
     };
     let mut dated = Dated::default();
     let series = self::lines(query, &tags, &select, &types, &content, &mut notes, &mut dated, cancelled)?;
-    let lines: Vec<ProducedLine> = tags.into_iter().zip(series).map(|(tag, series)| ProducedLine { identities: identities(query, &tag), tag, series }).collect();
+    let lines: Vec<ProducedLine> = tags.into_iter().zip(series).map(|(country, series)| ProducedLine { identities: identities(query, &country), tag: query.holders.name(&country, query.timeline.last), country, series }).collect();
     // Production's reads are the branch's, whichever lines are shown: a top N with nothing ranked yet still has them.
     for stretch in &query.timeline.stretches {
         dated.reads(query, &Span { run: stretch.run, first: stretch.first, last: stretch.last, id: 0, breaks: false })?;

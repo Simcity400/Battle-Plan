@@ -589,6 +589,7 @@ impl Walk<'_> {
                 path: window.path.clone(),
                 owner: self.region_owner.clone(),
                 scroll: None,
+                slide: None,
                 rect: [
                     origin[0] as f32,
                     origin[1] as f32,

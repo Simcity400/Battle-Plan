@@ -10,6 +10,7 @@
 //! known owner's opinion of each other chosen country (row its tag, column the target's; no row is
 //! exactly zero) and the hour its opinions were read (`readHour`).
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     LoadContext, Product,
     at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt},
@@ -20,7 +21,6 @@ use crate::{
     catalogue::{self, Catalogue},
     span::HourSpan,
 };
-use dashboard_base::products::validate_tag;
 use dashboard_query::{
     identity::{Holder, Holders},
     read,
@@ -40,17 +40,23 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-/// The holder (canonical slot, raw id) of each of `tags` at `hour`, when one holds it.
-fn holder_ids<'t>(holders: &Holders, tags: &'t [String], hour: i32) -> Vec<(&'t str, Option<(u32, u32)>)> {
-    tags.iter()
-        .map(|tag| {
-            let id = match holders.at(tag, hour).map(|run| run.holder) {
+/// The holder (canonical slot, raw id) of each of `countries` at `hour`, when one holds it, each
+/// named by its country ([`Country::key`]).
+fn holder_ids(holders: &Holders, countries: &[Country], hour: i32) -> Vec<(String, Option<(u32, u32)>)> {
+    countries
+        .iter()
+        .map(|country| {
+            let id = match holders.at(country, hour).map(|run| run.holder) {
                 Some(Holder::Found { slot, id }) => Some((slot, id)),
                 _ => None,
             };
-            (tag.as_str(), id)
+            (country.key().into_owned(), id)
         })
         .collect()
+}
+
+fn named(ids: &[(String, Option<(u32, u32)>)]) -> Vec<(&str, Option<(u32, u32)>)> {
+    ids.iter().map(|(key, id)| (key.as_str(), *id)).collect()
 }
 
 /// Every raw id of the chosen holders, by the slot it resolves to: each link to a chosen slot, and
@@ -71,7 +77,7 @@ pub struct DiplomaticRelations;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiplomaticRelationsParams {
     pub branch_id: String,
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
 }
 
 /// One chosen country whose opinions of the other chosen countries are its live cells.
@@ -166,7 +172,7 @@ impl AtHour for DiplomaticRelations {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        params.tags.iter().try_for_each(|tag| validate_tag(tag))
+        params.countries.iter().try_for_each(validate_country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -180,7 +186,7 @@ impl AtHour for DiplomaticRelations {
             1 => {}
             _ => return Vec::new(),
         }
-        let mut ids: Vec<u32> = aliases(held, &holder_ids(at.holders, &params.tags, at.hour)).into_keys().collect();
+        let mut ids: Vec<u32> = aliases(held, &named(&holder_ids(at.holders, &params.countries, at.hour))).into_keys().collect();
         ids.sort_unstable();
         ids.dedup();
         let owners = |id: u32| (u128::from(id) << 32, u128::from(id) << 32 | u128::from(u32::MAX));
@@ -196,8 +202,8 @@ impl AtHour for DiplomaticRelations {
     }
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
-        let ids = holder_ids(at.holders, &params.tags, at.hour);
-        let owners = opinions(frame, &ids, at.live)?;
+        let ids = holder_ids(at.holders, &params.countries, at.hour);
+        let owners = opinions(frame, &named(&ids), at.live)?;
         let unresolved = owners.iter().filter(|owner| owner.country_id.is_none()).count();
         let warnings = if unresolved > 0 { vec![format!("{unresolved} chosen countries have no holder at this hour; their opinions are not known.")] } else { Vec::new() };
         Ok(DiplomaticRelationsReply { owners, warnings })
@@ -287,7 +293,7 @@ pub struct DiplomaticPacts;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiplomaticPactsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// A relation kind a reply's agreements name.
@@ -339,12 +345,10 @@ pub struct DiplomacyPactsReply {
 dashboard_base::reply_warnings!(DiplomacyPactsReply);
 
 /// `tag`'s holder raw ids over the timeline, each with the hours it held the tag.
-fn tag_ids(holders: &Holders, tag: &str) -> Vec<(u32, i32, i32)> {
+fn tag_ids(holders: &Holders, tag: &Country) -> Vec<(u32, i32, i32)> {
     holders
-        .tags
-        .get(tag)
-        .into_iter()
-        .flatten()
+        .runs(tag)
+        .iter()
         .filter_map(|run| match run.holder {
             Holder::Found { id, .. } => Some((id, run.first, run.last)),
             Holder::Unresolved => None,
@@ -476,7 +480,7 @@ impl Product for DiplomaticPacts {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -490,7 +494,7 @@ impl Product for DiplomaticPacts {
                 held.insert(stretch.run, (crate::answer::pacts(source, stretch.run)?, crate::answer::links(source, stretch.run)?));
             }
         }
-        let ids = tag_ids(&query.holders, &params.tag);
+        let ids = tag_ids(&query.holders, &params.country);
         let (pacts, counts) = pacts(&query.timeline.stretches, &held, &names, &ids, query.timeline.last);
         let tokens: HashMap<&str, u32> = held.values().flat_map(|(run, _)| run.kinds.iter().map(|(token, kind)| (kind.as_str(), *token))).collect();
         let catalogue = context.content.as_ref().map(|options| catalogue::catalogue(source, options)).transpose().map_err(|error| error.to_string());

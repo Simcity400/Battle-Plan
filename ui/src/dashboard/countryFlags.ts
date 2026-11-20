@@ -1,3 +1,5 @@
+import { countryFromKey } from './countryKey.ts';
+import { useSlotTags } from './countrySlots.ts';
 import { asFailure, type Failure } from './queryError.ts';
 /** Country flags as preparation chose them. Each run of a recording branch's country timeline names
  * a flag choice (`flagIn`), and each distinct choice is drawn once per recording, content revision
@@ -290,13 +292,22 @@ export function useFlagReads(client: DashboardClient, recording: DashboardSource
 export function useCountryFlagsRead(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
   size: CountryFlagSize = 'panel'): ReadonlyMap<string, FlagValue> {
   const branchId = track?.branch.id ?? '';
-  const flags = useFlagReads(client, track?.source, wanted.map(({ tag, hour }) => ({ tag, hour, branchId })), active && !!track, size);
+  // A country asked by its slot (`countryKey`) shows the flag of the tag it goes by at each hour asked.
+  const bySlot = wanted.some(item => typeof countryFromKey(item.tag) === 'number');
+  const slots = useSlotTags(client, track, active && bySlot);
+  const asked = useMemo(() => wanted.flatMap(({ tag, hour }) => {
+    const slot = countryFromKey(tag);
+    const shown = typeof slot === 'number' ? slots?.tagAt(slot, hour) ?? null : tag;
+    return shown === null ? [] : [{ asked: tag, tag: shown, hour }];
+  }), [wanted, slots]);
+  const flags = useFlagReads(client, track?.source, asked.map(({ tag, hour }) => ({ tag, hour, branchId })), active && !!track, size);
   return useMemo(() => {
     const keyed = new Map<string, FlagValue>();
     for (const [key, value] of flags) {
       const [, hour, tag] = JSON.parse(key) as [string, number, string];
       keyed.set(nameKey(hour, tag), value);
     }
+    if (bySlot) for (const item of asked) if (item.asked !== item.tag && keyed.has(nameKey(item.hour, item.tag))) keyed.set(nameKey(item.hour, item.asked), keyed.get(nameKey(item.hour, item.tag))!);
     return keyed;
-  }, [flags]);
+  }, [flags, asked, bySlot]);
 }

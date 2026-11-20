@@ -4,12 +4,12 @@
 //! counted only while the tag holds it ([`spent_by_leaf`]); the lines worked on each leaf, and the
 //! stretches whose output a total lacks, come from each run's lines ([`super::RunLines`]).
 
+use dashboard_base::products::{Country, validate_country};
 use super::{COST_SCALE, Content, ConstructionStateName, ConstructionType, Line, ProjectKind, SpendingGap, gap_of, missing};
 use crate::{
     Source,
     products::{LoadContext, Product, country_ids::Names},
 };
-use dashboard_base::products::validate_tag;
 use dashboard_query::{Query, identity::Holder, series::MissingSpan};
 use replay::lanes::{Cell, Keys};
 use replay_data::rows::{TableId, TagHolderRow, key_field};
@@ -29,7 +29,7 @@ pub struct ConstructionSpending;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConstructionSpendingParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// A leaf's running total from `known_at` on.
@@ -187,7 +187,7 @@ pub(crate) fn totals(mut deltas: Vec<Delta>) -> Vec<SpentStep> {
 /// identity the tag's holder runs name and each stretch it holds it, the identity's rows' totals
 /// from the hour before the holding (when the run holds it), so output before the holding is not
 /// the tag's.
-pub fn spent_by_leaf(query: &Query<'_>, tag: &str) -> io::Result<BTreeMap<LeafKey, Vec<SpentStep>>> {
+pub fn spent_by_leaf(query: &Query<'_>, tag: &Country) -> io::Result<BTreeMap<LeafKey, Vec<SpentStep>>> {
     let recording = query.replay.recording();
     let total = dashboard_declare::field(TableId::ConstructionSpend, "total")?;
     let mut by_leaf: BTreeMap<LeafKey, Vec<Delta>> = BTreeMap::new();
@@ -217,7 +217,7 @@ impl Product for ConstructionSpending {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -239,7 +239,7 @@ impl Product for ConstructionSpending {
         let names = Names::new(&query.holders);
         let end = query.timeline.last;
         let mut leaves: BTreeMap<LeafKey, SpendingLeaf> = BTreeMap::new();
-        for (key, spent) in spent_by_leaf(&query, &params.tag)? {
+        for (key, spent) in spent_by_leaf(&query, &params.country)? {
             leaf_mut(&mut leaves, key).spent = spent;
         }
         let mut before_first_read = 0u32;
@@ -260,7 +260,7 @@ impl Product for ConstructionSpending {
                     unattributed.push(SpendingUnknown { known_at: line.first, reason: SpendingGap::OwnerUnknown, project: line.id.to_string(), until });
                     continue;
                 }
-                if names.tag_at(&links, line.country, line.first_read) != Some(params.tag.as_str()) {
+                if !names.tag_at(&links, line.country, line.first_read).is_some_and(|tag| query.holders.goes_by(&params.country, tag, line.first_read)) {
                     continue;
                 }
                 before_first_read += u32::from(line.before_observation);
@@ -288,11 +288,11 @@ impl Product for ConstructionSpending {
         }
         let recorded = super::recorded(&query)?;
         if recorded && leaves.is_empty() {
-            warnings.push(format!("{}: no recorded construction in this branch", params.tag));
+            warnings.push(query.holders.say(&params.country, query.timeline.last, |name| format!("{name}: no recorded construction in this branch")));
         }
         let reply = ConstructionSpendingReply {
             branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
+            tag: query.holders.name(&params.country, query.timeline.last),
             cost_scale: COST_SCALE,
             recorded,
             types: content.types,

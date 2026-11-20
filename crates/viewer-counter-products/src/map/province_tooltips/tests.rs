@@ -172,3 +172,25 @@ fn navy_hover_rebuilds_when_prepared_source_coverage_finishes_without_an_hour_ch
     );
     assert_eq!(changed.title, "3");
 }
+
+#[test]
+fn a_land_province_gives_the_delayed_click_footer_and_water_does_not() {
+    use installed_content_core::map::ProvinceKind;
+    let loc: Localisation = [("PROVINCE_CLICK_VIEW", "Click to view State")]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+    let footer = |kind| {
+        let mut out = Tooltip { body: "selection".into(), ..Default::default() };
+        click_footer(&loc, kind, &mut out);
+        out
+    };
+    assert_eq!(footer(Some(ProvinceKind::Land)).body, "selection
+Click to view State");
+    for water in [ProvinceKind::Sea, ProvinceKind::Lake] {
+        let out = footer(Some(water));
+        assert_eq!(out.body, "selection");
+        assert!(out.refused.is_empty());
+    }
+    assert_eq!(footer(None).refused.len(), 1);
+}

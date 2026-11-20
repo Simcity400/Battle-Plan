@@ -140,6 +140,8 @@ export interface DashboardClient {
   onMapOptions?(callback: (event: MapOptionsEvent) => void): Promise<() => void>;
   /** The native map picker clicked a toggle whose setting the host owns. */
   onMapToggle?(callback: (event: MapToggleEvent) => void): Promise<() => void>;
+  /** A Ctrl+click on a native map chose a viewing country, as the game's observer switches the observed one. */
+  onMapObserve?(callback: (event: MapObserveEvent) => void): Promise<() => void>;
   /** Opens the dated stream into the drawing worker. */
   openFollow?(port: MessagePort): Promise<void>;
 }
@@ -148,3 +150,6 @@ export interface MapOptionsEvent { viewId: string; options: MapOptions }
 /** A picker toggle click: the host flips its own value of the setting. */
 export interface MapToggle { setting: 'dayNight' | 'alliedPlans' | 'fog' }
 export interface MapToggleEvent { viewId: string; toggle: MapToggle }
+/** The country a Ctrl+click chose: its canonical slot, which the choice follows, its tag at the click's hour, and the
+ * switch's sequence, which the view's options echo once the choice applies it. */
+export interface MapObserveEvent { viewId: string; country: { slot: number; tag: string; sequence: number } }

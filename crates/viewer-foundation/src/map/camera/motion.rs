@@ -56,6 +56,10 @@ const LEAST_KEY_MOVE: f32 = 1.0;
 const EDGE_PIXELS: i32 = 2;
 /// A pan step is this fraction of the eye's height per unit of `scroll_speed` and second.
 const PAN_PER_HEIGHT: f32 = 0.1;
+/// The minimap's zoom steps: fractions of the height, and the least step.
+const ZOOM_IN_STEP: f32 = 0.5;
+const ZOOM_OUT_STEP: f32 = 0.75;
+const LEAST_ZOOM_STEP: f32 = 10.0;
 
 /// The operands of the camera motion law.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -289,6 +293,43 @@ impl Motion {
         } else {
             target
         });
+    }
+
+    /// Sets the target's look-at point to `center`, and its height to `height` when given, then
+    /// holds it within the game's limits, as the game's own placing of its camera does. A height
+    /// change the limits shorten below one unit leaves the target where it was.
+    pub fn place(
+        &mut self,
+        camera: &mut Camera,
+        center: [f32; 2],
+        height: Option<f32>,
+        floor: Floor<'_>,
+    ) {
+        let before = self.target.unwrap_or_else(|| camera.placement());
+        let mut target = Placement {
+            center,
+            height: height.unwrap_or(before.height),
+            pose: before.pose,
+        };
+        clamp(camera, &mut target, floor);
+        if height.is_some() && LEAST_KEY_MOVE > (before.height - target.height).abs() {
+            target.height = before.height;
+        }
+        self.target = Some(target);
+    }
+
+    /// One zoom step about the target's look-at point, as the minimap's wheel takes it: in by
+    /// half the target's height, out by three quarters, each at least ten units.
+    pub fn zoom_step(&mut self, camera: &mut Camera, zoom_in: bool, floor: Floor<'_>) {
+        let before = self.target.unwrap_or_else(|| camera.placement());
+        let factor = if zoom_in { ZOOM_IN_STEP } else { ZOOM_OUT_STEP };
+        let step = (factor * before.height).max(LEAST_ZOOM_STEP);
+        let height = if zoom_in {
+            before.height - step
+        } else {
+            before.height + step
+        };
+        self.place(camera, before.center, Some(height), floor);
     }
 
     /// A frame's wheel notches alone, in order; see [`Self::step`].

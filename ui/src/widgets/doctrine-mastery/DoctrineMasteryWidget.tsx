@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -12,7 +13,7 @@ import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -36,10 +37,10 @@ import type { DoctrineMasteryReply, DoctrineRewardsReply, MasteryFolder, Mastery
 export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const valueId = useId();
   const root = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct<DoctrineMasteryReply>(runtime, widget, 'doctrine-mastery', tag ? { tag } : null,
+  const head = useHeadProduct<DoctrineMasteryReply>(runtime, widget, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
   useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
   const { data, error, retry } = head;
@@ -64,7 +65,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const hourShown = () => head.shownAt() ?? Math.floor(runtime.clock.getHour());
   const [describing, setDescribing] = useState<{ folder: number; track: number; hour: number } | null>(null);
   const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'doctrine-rewards', params: { branchId: track.branch.id, tag, folder: describing.folder, track: describing.track, hour: describing.hour } } : null,
+    product: 'doctrine-rewards', params: { branchId: track.branch.id, country: countryFromKey(tag), folder: describing.folder, track: describing.track, hour: describing.hour } } : null,
   active && describing !== null, validateDoctrineRewards, track?.source);
   const menu = useContextMenu('Doctrine mastery');
   const tracks = useMemo(() => new Map<string, { folder: MasteryFolder; item: MasteryTrack }>(shown.flatMap(folder =>

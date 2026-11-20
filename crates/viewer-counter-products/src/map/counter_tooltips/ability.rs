@@ -131,6 +131,7 @@ fn scoped_description(
     let content = context.content.ok_or("ability content is unavailable")?;
     let scripted = content.scripted.as_ref().as_ref().map_err(Clone::clone)?;
     let text = ScriptedText::new(context.frame, context.loc, scripted, context.vision.ours())
+        .viewing(context.vision.ours())
         .with_nato_counters(context.nato);
     let effects = scripted.effects()?;
     let effect_context = dashboard_text::effect_description::Context::new(

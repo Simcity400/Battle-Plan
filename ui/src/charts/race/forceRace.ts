@@ -1,5 +1,7 @@
 /** A force race's replies (`air-force-size`, `navy-size`): a window manifest, then each window's runs of a total
  * beside its parts. Windows join into one parts race reply for the race, its lines and its mix. */
+import type { CountryRef } from '../../generated/dashboard';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import type { CountryIdentityRun, ForcePart, ForceSizeReply } from '../../generated/dashboard';
 import type { PartsRaceAt, PartsRaceRun } from '../../dashboard/partsRace';
 import { validatePartsRaceReply } from '../../dashboard/partsRace.ts';
@@ -13,7 +15,7 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CountryRaceEntry } from './countryRace';
 
 /** A force race's request without its window. */
-export type ForceParams = Record<string, unknown> & { branchId: string; tags: string[]; top: number | null };
+export type ForceParams = Record<string, unknown> & { branchId: string; countries: CountryRef[]; top: number | null };
 
 const span = (value: unknown): value is Span => !!value && typeof value === 'object'
   && Number.isSafeInteger((value as Span).firstHour) && Number.isSafeInteger((value as Span).lastHour) && (value as Span).firstHour <= (value as Span).lastHour;
@@ -25,7 +27,8 @@ export function validateForceReply(value: unknown, referenced = false): ForceSiz
   const fail = () => { throw new Error('The force race reply is malformed.'); };
   if (!reply || typeof reply !== 'object' || !Array.isArray(reply.windows) || !reply.windows.every(span)
     || !(reply.window === null || Number.isSafeInteger(reply.window)) || !(reply.interval === null || span(reply.interval))) return fail();
-  validatePartsRaceReply(reply);
+  if (!Array.isArray(reply.series)) return fail();
+  validatePartsRaceReply({ ...reply, series: reply.series.map(series => ({ ...series, tag: countryKey(series.country) })) });
   for (const series of reply.series) {
     if (!Array.isArray(series.identities) || series.identities.some(run => !span(run))) return fail();
     if (referenced && series.runs.some(run => run.referenceTotal === undefined)) return fail();
@@ -80,8 +83,9 @@ export function joinForceWindows(manifest: Pick<ForceSizeReply, 'branchId' | 'wa
   for (const reply of held) {
     const index = reply.parts.map(part => at.get(part.key)!);
     for (const line of reply.series) {
-      const into = series.get(line.tag) ?? { runs: [], segments: [], identities: [], membership: line.membership === null ? null : [] };
-      series.set(line.tag, into);
+      const tag = countryKey(line.country);
+      const into = series.get(tag) ?? { runs: [], segments: [], identities: [], membership: line.membership === null ? null : [] };
+      series.set(tag, into);
       for (const run of line.runs) {
         const known = run.values.every(value => value !== null) && run.total !== null;
         const values: (number | null)[] = keys.map(() => known ? 0 : null);

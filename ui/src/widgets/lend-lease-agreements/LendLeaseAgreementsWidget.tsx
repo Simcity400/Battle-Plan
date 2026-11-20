@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -15,7 +16,7 @@ import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { reporting } from '../../dashboard/follow/liveCells.ts';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
@@ -57,9 +58,9 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const fallback = useMemo(() => selectedTags(widget.countries, track), [widget.countries, track]);
+  const fallback = useMemo(() => selectedCountryKeys(widget.countries, track), [widget.countries, track]);
   const tags = useMemo(() => widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? [...fallback].sort() : [], [widget.countries.kind, fallback]);
-  const params = useMemo(() => track ? { tags, only: 'agreements' } : null, [track, tags]);
+  const params = useMemo(() => track ? { countries: tags.map(countryFromKey), only: 'agreements' } : null, [track, tags]);
   const head = useHeadProduct<MarketLendLeaseReply>(runtime, widget, MARKET, params, { active, validate: validateMarketReply });
   const showEnded = options.ended !== 'hidden';
   // Every agreement the branch saw end, asked once a branch: which of them are ended moves with the hour shown.

@@ -11,6 +11,7 @@ pub fn build(
     frame: &DecodedFrame,
     state: u32,
     definition: &Definition,
+    viewer: u32,
 ) -> Tooltip {
     let mut out = Tooltip::default();
     let result = (|| {
@@ -21,7 +22,7 @@ pub fn build(
             _ => return Err("occupation controller scope is not a country".into()),
         };
         let scripted = content.scripted.as_ref().as_ref().map_err(Clone::clone)?;
-        let text = ScriptedText::new(frame, &content.localisation, scripted, perspective);
+        let text = ScriptedText::new(frame, &content.localisation, scripted, perspective).viewing(viewer);
         let effects = scripted.effects()?;
         let context = dashboard_text::effect_description::Context::new(
             &text,

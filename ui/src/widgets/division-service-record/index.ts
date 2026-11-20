@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { useMemo } from 'react';
 import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
@@ -21,7 +22,7 @@ function useDivisionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionC
   const { countries, selectionReason } = useCountriesSelectionAt(widget, runtime, hour, true);
   const tags = countries === undefined ? undefined : countries === null ? null : [...countries].sort();
   const request = track && tags !== undefined && !selectionReason ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'division-careers', params: { branchId: track.branch.id, hour, tags } } : null;
+    product: 'division-careers', params: { branchId: track.branch.id, hour, countries: tags?.map(countryFromKey) ?? null } } : null;
   const { data } = useProduct(runtime.client, request, true, validateDivisionCareers, track?.source);
   const wanted = useMemo(() => data ? [...new Set(data.divisions.flatMap(row => row.tag ? [row.tag] : []))].map(tag => ({ hour, tag })) : [], [data, hour]);
   const names = useCountryNamesAt(runtime.client, track, wanted, true);

@@ -12,6 +12,7 @@
 //! breakdown's table. A day, a week or a month is the running total less the total that long before, inside
 //! one holder's stretch and one observation; anything not known is said so with why, never zero.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     LoadContext, Product,
     identities::CountryIdentityRun,
@@ -21,7 +22,6 @@ use super::{
     },
 };
 use crate::Source;
-use dashboard_base::products::validate_tag;
 use dashboard_query::{
     Query, cost,
     identity::Holder,
@@ -189,7 +189,7 @@ pub struct EquipmentProducedParams {
     pub branch_id: String,
     /// Chosen countries; none with a top N.
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<u32>,
@@ -213,6 +213,9 @@ pub struct EquipmentProducedParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedLine {
+    /// The country asked, or a ranked country's tag.
+    pub country: Country,
+    /// The tag it goes by at the window's last hour.
     pub tag: String,
     pub identities: Vec<CountryIdentityRun>,
     pub series: ProducedSeries,
@@ -271,7 +274,7 @@ pub struct ProducedTypesReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProducedCountryParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub count: ProducedCount,
     pub measure: ProducedMeasure,
     pub refits: bool,
@@ -299,6 +302,8 @@ pub struct ProducedModel {
 pub struct ProducedCountryReply {
     pub branch_id: String,
     pub tag: String,
+    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    pub asked: dashboard_base::products::Country,
     pub count: ProducedCount,
     pub measure: ProducedMeasure,
     pub decimals: u8,
@@ -316,7 +321,7 @@ pub struct ProducedCountryReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProducedAtParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub hour: i32,
     pub measure: ProducedMeasure,
     pub refits: bool,
@@ -355,6 +360,8 @@ pub struct ProducedModelAt {
 pub struct ProducedAtReply {
     pub branch_id: String,
     pub tag: String,
+    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    pub asked: dashboard_base::products::Country,
     pub hour: i32,
     pub measure: ProducedMeasure,
     /// The country's production totals are recorded at the hour: a design it has no row of is zero.
@@ -372,8 +379,8 @@ pub struct ProducedAtReply {
 dashboard_base::reply_warnings!(EquipmentProducedReply, ProducedTypesReply, ProducedCountryReply, ProducedAtReply);
 
 /// The hours `tag`'s holders held it.
-fn identities(query: &Query<'_>, tag: &str) -> Vec<CountryIdentityRun> {
-    query.holders.tags.get(tag).into_iter().flatten().filter_map(|run| match run.holder {
+fn identities(query: &Query<'_>, tag: &Country) -> Vec<CountryIdentityRun> {
+    query.holders.runs(tag).iter().filter_map(|run| match run.holder {
         Holder::Found { slot, id } => Some(CountryIdentityRun { first_hour: run.first, last_hour: run.last, slot, country_id: id }),
         Holder::Unresolved => None,
     }).collect()
@@ -712,12 +719,12 @@ fn window_reply(source: &Source, query: &Query<'_>, params: &EquipmentProducedPa
     let parts_of = |run: u32| parts.get(&run).cloned().unwrap_or_default();
     crate::metadata::check_cancel(cancelled)?;
     let tags = match (params.top, params.rank_hour) {
-        (Some(n), Some(hour)) => line.totals_ranked(hour, n as usize, &parts_of, back, &|value| value > 0)?,
-        _ => params.tags.clone(),
+        (Some(n), Some(hour)) => line.totals_ranked(hour, n as usize, &parts_of, back, &|value| value > 0)?.into_iter().map(Country::from).collect(),
+        _ => params.countries.clone(),
     };
     let shown = first <= last;
     let runs = if shown { line.totals(&tags, &parts_of, back, first, last)? } else { vec![Vec::new(); tags.len()] };
-    let lines: Vec<ProducedLine> = tags.into_iter().zip(runs).map(|(tag, runs)| ProducedLine { identities: identities(query, &tag), tag, series: series_of(&runs) }).collect();
+    let lines: Vec<ProducedLine> = tags.into_iter().zip(runs).map(|(country, runs)| ProducedLine { identities: identities(query, &country), tag: query.holders.name(&country, last), country, series: series_of(&runs) }).collect();
     let clock = if shown { line.clock(first, last)? } else { Clock::default() };
     warnings.extend(notes);
     let reply = EquipmentProducedReply {
@@ -923,7 +930,7 @@ fn type_recorded(design: &spending::Design) -> bool {
 
 fn country_reply(source: &Source, query: &Query<'_>, params: &ProducedCountryParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ProducedCountryReply> {
     let mut read = Vec::new();
-    for span in spending::spans(query, &params.tag) {
+    for span in spending::spans(query, &params.country) {
         crate::metadata::check_cancel(cancelled)?;
         read.push(DesignRows::read(query, span)?);
     }
@@ -971,11 +978,12 @@ fn country_reply(source: &Source, query: &Query<'_>, params: &ProducedCountryPar
     warnings.extend(notes);
     let reply = ProducedCountryReply {
         branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
+        tag: query.holders.name(&params.country, query.timeline.last),
+        asked: params.country.clone(),
         count: params.count,
         measure: params.measure,
         decimals: decimals(params.count),
-        identities: identities(query, &params.tag),
+        identities: identities(query, &params.country),
         models: models.into_values().collect(),
         total,
         reads: dated.reads.into_iter().collect(),
@@ -1065,7 +1073,8 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
     let mut warnings = Vec::new();
     let mut reply = ProducedAtReply {
         branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
+        tag: query.holders.name(&params.country, params.hour),
+        asked: params.country.clone(),
         hour: params.hour,
         measure: params.measure,
         recorded: false,
@@ -1076,7 +1085,7 @@ fn at_reply(source: &Source, query: &Query<'_>, params: &ProducedAtParams, conte
         warnings: Vec::new(),
     };
     let hour = params.hour;
-    let (Some(stretch), Some(run)) = (query.timeline.at(hour).copied(), query.holders.at(&params.tag, hour).copied()) else {
+    let (Some(stretch), Some(run)) = (query.timeline.at(hour).copied(), query.holders.at(&params.country, hour).copied()) else {
         return Ok(reply);
     };
     let Holder::Found { id, .. } = run.holder else {
@@ -1163,10 +1172,10 @@ impl Product for EquipmentProduced {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        for tag in &params.tags {
-            validate_tag(tag)?;
+        for country in &params.countries {
+            validate_country(country)?;
         }
-        match (params.tags.is_empty(), params.top, params.rank_hour) {
+        match (params.countries.is_empty(), params.top, params.rank_hour) {
             (true, Some(top), Some(_)) if top > 0 => Ok(()),
             (true, Some(_), _) => Err("A top N names a size above zero and the hour it is ranked at"),
             (false, None, _) => Ok(()),
@@ -1227,7 +1236,7 @@ impl Product for EquipmentProducedCountry {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -1251,7 +1260,7 @@ impl Product for EquipmentProducedAt {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -1346,7 +1355,7 @@ mod tests {
     fn params(tags: &[&str], top: Option<u32>, rank_hour: Option<i32>, count: ProducedCount, measure: ProducedMeasure, types: &[&str], window: u32) -> EquipmentProducedParams {
         EquipmentProducedParams {
             branch_id: "1".into(),
-            tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            countries: tags.iter().map(|tag| Country::from(*tag)).collect(),
             top,
             rank_hour,
             count,

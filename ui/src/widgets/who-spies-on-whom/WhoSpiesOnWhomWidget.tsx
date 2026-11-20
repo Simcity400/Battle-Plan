@@ -10,7 +10,7 @@ import { LiveCell } from '../../charts/live.ts';
 import { useCountryColours } from '../../charts/race/countryColours';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryLooks } from '../../dashboard/countryLooks';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { worldFilter } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -44,7 +44,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
     { active, validate: validatePlacements, structure: placementStructure, paint: reply => paint.current(reply) });
   const hour = shownHour(runtime, widget, head);
   const groups = useCountryGroups(runtime, track, active);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const selection = widget.countries;
   const top = selection.kind === 'group' && selection.group.type === 'top' ? selection.group.count : null;
   const filter = useMemo(() => top !== null || selection.kind === 'all' ? null

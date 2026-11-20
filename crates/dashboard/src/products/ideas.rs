@@ -9,6 +9,7 @@
 //! advisor span keeps the seat and character recorded for it. An hour is read when both tables
 //! were read at it.
 
+use dashboard_base::products::Country;
 use super::{
     CountryParams, LoadContext, Product, check_reply_budget,
     idea_format::{self, LocalisedText, ModifierFormat},
@@ -180,6 +181,8 @@ pub struct HolderArtwork {
 pub struct IdeaHistoryReply {
     pub branch_id: String,
     pub tag: String,
+    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    pub asked: dashboard_base::products::Country,
     pub spans: Vec<IdeaSpan>,
     pub ideas: Vec<IdeaInfo>,
     pub artwork: Vec<Artwork>,
@@ -333,10 +336,10 @@ fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
 }
 
 /// `tag`'s idea history over `query`'s timeline.
-pub(crate) fn read(query: &Query<'_>, tag: &str, cancelled: &AtomicBool) -> io::Result<Ideas> {
+pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> io::Result<Ideas> {
     let columns = Columns::new()?;
     let mut ideas = Ideas::default();
-    let runs = query.holders.tags.get(tag).map(Vec::as_slice).unwrap_or_default();
+    let runs = query.holders.runs(tag);
     let mut holes: Vec<(i32, i32)> = query.timeline.unheld.iter().map(|unheld| (unheld.first, unheld.last)).collect();
     for stretch in &query.timeline.stretches {
         check_cancel(cancelled)?;
@@ -806,6 +809,7 @@ pub(crate) fn effect_keys<'a>(ideas: impl IntoIterator<Item = &'a IdeaInfo>) -> 
 pub(crate) fn present(
     content: &PoliticsContent,
     params: &CountryParams,
+    tag: &str,
     ideas: &Ideas,
     naming: &[NamingCountry],
     recorded: Option<&BTreeMap<String, ModifierDefinitionRow>>,
@@ -834,7 +838,7 @@ pub(crate) fn present(
             .and_then(|span| ideas.identity_starts.partition_point(|start| *start <= span.first_hour).checked_sub(1))
             .and_then(|index| naming.get(index))
             .unwrap_or(&unnamed);
-        let country = if latest.is_some() { named.for_tag(&params.tag) } else { IdeaCountry { tag: &params.tag, slot: 0, look: None } };
+        let country = if latest.is_some() { named.for_tag(tag) } else { IdeaCountry { tag, slot: 0, look: None } };
         let built = match latest.and_then(|span| span.character.as_ref()).map(|holder| ideas.templates.get(&holder.id)) {
             Some(Some(Ok(template))) => Ok(template),
             Some(Some(Err(reason))) => Err(reason.as_str()),
@@ -895,7 +899,8 @@ pub(crate) fn present(
     warnings.extend(content.catalogue.refusal_lines());
     Ok(IdeaHistoryReply {
         branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
+        tag: tag.to_owned(),
+        asked: params.country.clone(),
         spans: ideas.spans.clone(),
         ideas: infos,
         artwork,
@@ -911,13 +916,13 @@ pub(crate) fn present(
 
 /// The last country read, with its identities' naming, kept for the next request of it.
 #[derive(Default)]
-struct Kept(Option<(u64, String, Arc<(Ideas, Vec<NamingCountry>)>)>);
+struct Kept(Option<(u64, Country, Arc<(Ideas, Vec<NamingCountry>)>)>);
 
 /// `tag`'s idea history on `branch` of `source` and each identity start's naming: the one kept
 /// when it is that country's.
-pub(crate) fn history(source: &Source, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::Result<Arc<(Ideas, Vec<NamingCountry>)>> {
+pub(crate) fn history(source: &Source, branch: u64, tag: &Country, cancelled: &AtomicBool) -> io::Result<Arc<(Ideas, Vec<NamingCountry>)>> {
     let state = source.state::<Kept>();
-    let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && held == tag).map(|(_, _, read)| Arc::clone(read));
+    let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && *held == *tag).map(|(_, _, read)| Arc::clone(read));
     if let Some(read) = held {
         return Ok(read);
     }
@@ -931,7 +936,7 @@ pub(crate) fn history(source: &Source, branch: u64, tag: &str, cancelled: &Atomi
         .map(|(&hour, &(_, _, id))| naming_at(&mut frames, hour, id))
         .collect::<io::Result<Vec<_>>>()?;
     let read = Arc::new((ideas, naming));
-    state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, tag.to_owned(), Arc::clone(&read)));
+    state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, tag.clone(), Arc::clone(&read)));
     Ok(read)
 }
 
@@ -970,9 +975,9 @@ impl Product for IdeaHistory {
         let content = politics_content(source, context.content()?)?;
         let query = crate::answer::query(source, params.branch())?;
         // Apart: the country's history and the recording's definitions are read side by side.
-        let (read, recorded) = rayon::join(|| history(source, params.branch(), &params.tag, cancelled), || recorded_definitions(source, &query));
+        let (read, recorded) = rayon::join(|| history(source, params.branch(), &params.country, cancelled), || recorded_definitions(source, &query));
         let (read, recorded) = (read?, recorded?);
-        let reply = present(&content, params, &read.0, &read.1, (*recorded).as_ref(), cancelled)?;
+        let reply = present(&content, params, &query.holders.name(&params.country, query.timeline.last), &read.0, &read.1, (*recorded).as_ref(), cancelled)?;
         check_reply_budget(&reply)?;
         Ok(reply)
     }

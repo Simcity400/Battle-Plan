@@ -194,7 +194,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         &text,
         tooltip_painter::TooltipPosition {
             point: [0.0; 2],
-            naval_window: None,
+            anchor: None,
         },
         [640.0, 480.0],
         &tooltip_painter::TooltipDefines::read(&defines).unwrap(),

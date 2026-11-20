@@ -3,12 +3,11 @@ use replay_data::BranchId;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{io, sync::Arc};
-use viewer_foundation::map::perspective::Country;
 
 /// Fleet handles are a distinct ordered selection, never inferred from selected task forces.
 #[derive(Default)]
 pub struct Selection {
-    context: Option<(BranchId, Country, u32)>,
+    context: Option<BranchId>,
     fleets: Arc<Vec<u64>>,
 }
 
@@ -36,22 +35,16 @@ impl Selection {
         }
         *before != *self.fleets
     }
-    /// A new branch, country or viewer clears the selection; it reads no rows.
-    pub fn context(&mut self, branch: BranchId, country: &Country, viewer: u32) {
-        let context = (branch, country.clone(), viewer);
-        if self.context.as_ref() != Some(&context) {
+    /// A new branch clears the selection; a new viewing country keeps it, as the game's
+    /// observer switch deselects nothing. It reads no rows.
+    pub fn context(&mut self, branch: BranchId) {
+        if self.context != Some(branch) {
             self.clear();
-            self.context = Some(context);
+            self.context = Some(branch);
         }
     }
-    pub fn observe(
-        &mut self,
-        branch: BranchId,
-        country: &Country,
-        viewer: u32,
-        frame: &DecodedFrame,
-    ) {
-        self.context(branch, country, viewer);
+    pub fn observe(&mut self, branch: BranchId, frame: &DecodedFrame) {
+        self.context(branch);
         if let Ok(rows) = frame.complete::<tables::Fleets>() {
             Arc::make_mut(&mut self.fleets)
                 .retain(|id| rows.binary_search_by_key(id, |row| row.id).is_ok());
@@ -136,6 +129,61 @@ pub fn fleet_choices(frame: &DecodedFrame, viewer: u32) -> io::Result<Vec<(u64, 
         result.push((fleet.id, name));
     }
     Ok(result)
+}
+
+/// A naval base button's plain click: the viewing country's task forces standing in the base's
+/// province or with a ship in its repair queue, by its fleet roster's order. Within one fleet they
+/// follow their handles: the fleet's own task-force order is not recorded.
+pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Result<Vec<u64>> {
+    let links = frame
+        .complete::<tables::CountryLinks>()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let scores = frame
+        .complete::<tables::CountryGameScoreInputs>()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let forces = frame
+        .complete::<tables::TaskForces>()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let ships = frame
+        .complete::<tables::Ships>()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let queue = frame
+        .complete::<tables::NavalRepairQueue>()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let country = scores
+        .iter()
+        .find(|row| {
+            links
+                .binary_search_by_key(&row.country, |link| link.id)
+                .ok()
+                .is_some_and(|at| links[at].canonical_slot == viewer)
+        })
+        .ok_or_else(|| io::Error::other("viewing navy's fleet roster is absent"))?;
+    if !country.navy_error.is_empty() {
+        return Err(io::Error::other("viewing navy's fleet roster is unreadable"));
+    }
+    let queued: std::collections::BTreeSet<u64> = queue
+        .iter()
+        .filter(|row| row.province == province)
+        .filter_map(|row| {
+            ships
+                .binary_search_by_key(&row.ship, |ship| ship.id)
+                .ok()
+                .map(|at| ships[at].task_force)
+        })
+        .collect();
+    let mut members = Vec::new();
+    for occurrence in &country.fleets {
+        for force in forces.iter().filter(|force| {
+            force.fleet == occurrence.fleet
+                && (force.province == province || queued.contains(&force.id))
+        }) {
+            if !members.contains(&force.id) {
+                members.push(force.id);
+            }
+        }
+    }
+    Ok(members)
 }
 
 /// The mission button replaces selection with matching registrations in their
@@ -299,7 +347,7 @@ mod tests {
             ]),
         );
         let mut selection = Selection::default();
-        selection.observe(1, &Country::Tag("GER".into()), 3, &frame);
+        selection.observe(1, &frame);
         selection.click(3, false);
         selection.click(1, true);
         selection.click(2, true);
@@ -310,8 +358,65 @@ mod tests {
         selection.click(1, false);
         assert_eq!(selection.fleets().as_slice(), [1]);
         put(&mut frame, TableRows::Fleets(Vec::new()));
-        selection.observe(1, &Country::Tag("GER".into()), 3, &frame);
+        selection.observe(1, &frame);
         assert!(selection.fleets().is_empty());
+    }
+
+    #[test]
+    fn a_naval_base_click_takes_own_task_forces_there_or_queued_for_its_repairs() {
+        use replay_data::rows::{
+            CountryGameScoreInputRow, GameScoreFleetCount, NavalRepairQueueRow, ShipRow,
+        };
+        let mut frame = test_frame(1);
+        put(
+            &mut frame,
+            TableRows::CountryLinks(vec![
+                CountryLinkRow { id: 7, canonical_slot: 3 },
+                CountryLinkRow { id: 8, canonical_slot: 4 },
+            ]),
+        );
+        let force = |id, fleet, province| TaskForceRow { id, fleet, province, ..Default::default() };
+        put(
+            &mut frame,
+            TableRows::TaskForces(vec![
+                force(1, 10, 5),
+                force(2, 11, 5),
+                force(3, 11, 99),
+                force(4, 11, 98),
+                force(5, 20, 5),
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::Ships(vec![
+                ShipRow { id: 30, task_force: 3, ..Default::default() },
+                ShipRow { id: 40, task_force: 4, ..Default::default() },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::NavalRepairQueue(vec![
+                NavalRepairQueueRow { province: 5, ordinal: 0, ship: 30 },
+                NavalRepairQueueRow { province: 6, ordinal: 0, ship: 40 },
+            ]),
+        );
+        let roster = |country, fleets: &[u64]| CountryGameScoreInputRow {
+            country,
+            fleets: fleets
+                .iter()
+                .map(|&fleet| GameScoreFleetCount { fleet, ..Default::default() })
+                .collect(),
+            ..Default::default()
+        };
+        put(
+            &mut frame,
+            TableRows::CountryGameScoreInputs(vec![roster(7, &[11, 10]), roster(8, &[20])]),
+        );
+        // The roster puts fleet 11 first; the foreign task force 5 and the one queued at
+        // another base stay out.
+        assert_eq!(base_members(&frame, 3, 5).unwrap(), [2, 3, 1]);
+        assert_eq!(base_members(&frame, 4, 5).unwrap(), [5]);
+        assert!(base_members(&frame, 3, 7).unwrap().is_empty());
     }
 
     #[test]

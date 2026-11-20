@@ -54,13 +54,13 @@ const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 test('a chart on tiles renders when a tile lands, never because its view or the head moved', async () => {
   const asked: number[] = [];
   const client = {
-    product: async (request: { sourceId: string; revision: string; product: string; params: { binHours: number; index: number; tags: string[] } }) => {
-      const { binHours, index, tags } = request.params;
+    product: async (request: { sourceId: string; revision: string; product: string; params: { binHours: number; index: number; countries: string[] } }) => {
+      const { binHours, index, countries: tags } = request.params;
       asked.push(index);
       const first = index * TILE_BINS * binHours;
       const reply: SeriesTileReply = { branchId: '1', measure: 'politicalPower', decimals: 0, binHours, index, firstHour: first, immutable: true,
         filled: first + TILE_BINS * binHours - 1, rawValues: true, hourBytes: 1,
-        lines: tags.map(tag => ({ tag, missing: [{ firstHour: first, lastHour: first + TILE_BINS * binHours - 1, reason: 'not recorded' }], parts: [] })),
+        lines: tags.map(tag => ({ country: tag, missing: [{ firstHour: first, lastHour: first + TILE_BINS * binHours - 1, reason: 'not recorded' }], parts: [] })),
         bins: btoa('\0'.repeat(TILE_BINS * tags.length)) };
       return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: reply };
     },

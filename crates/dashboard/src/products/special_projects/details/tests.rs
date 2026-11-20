@@ -83,7 +83,7 @@ fn asked<P: AtHour>(source: &Source, request: Value) -> Result<Value, dashboard_
 }
 
 fn details(source: &Source, hour: i32) -> Value {
-    asked::<SpecialProjectDetailsAt>(source, json!({ "branchId": "1", "tag": "GER", "hour": hour })).unwrap()
+    asked::<SpecialProjectDetailsAt>(source, json!({ "branchId": "1", "country": "GER", "hour": hour })).unwrap()
 }
 
 fn has(reply: &Value, text: &str) -> bool {
@@ -132,7 +132,7 @@ fn a_value_with_no_read_in_the_day_or_since_the_holder_took_the_tag_is_not_read_
 #[test]
 fn the_panel_over_whole_tables_answers_as_the_keyed_request() {
     let source = recording();
-    let mut panel = (entry::<SpecialProjectDetailsAt>().panel)(&source, &load(), &json!({ "panel": "special-project-details", "branchId": "1", "tag": "GER" })).unwrap();
+    let mut panel = (entry::<SpecialProjectDetailsAt>().panel)(&source, &load(), &json!({ "panel": "special-project-details", "branchId": "1", "country": "GER" })).unwrap();
     for hour in [25, 40, UNHELD + 2, 53] {
         let tables = panel.tables().to_vec();
         let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(&tables)).unwrap() else { panic!("hour {hour} is recorded") };
@@ -143,7 +143,7 @@ fn the_panel_over_whole_tables_answers_as_the_keyed_request() {
 #[test]
 fn effects_without_the_recorded_content_are_refused_by_name() {
     let source = recording();
-    let error = asked::<SpecialProjectEffectsAt>(&source, json!({ "branchId": "1", "tag": "GER", "owner": 9001, "project": 3, "hour": 40 })).unwrap_err();
+    let error = asked::<SpecialProjectEffectsAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "hour": 40 })).unwrap_err();
     match error {
         dashboard_core::QueryError::Refused { text } => assert!(text.contains("content"), "{text}"),
         dashboard_core::QueryError::Failed { message } => panic!("not a refusal: {message}"),

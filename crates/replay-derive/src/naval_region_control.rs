@@ -16,6 +16,8 @@ pub struct Snapshot<'a> {
     pub enemy: i64,
     pub ratio_friendly: i64,
     pub ratio_enemy: i64,
+    /// The explanatory enemy sum before the minimum floor raises it.
+    pub raw_enemy: i64,
 }
 impl<'a> Snapshot<'a> {
     pub fn read(
@@ -28,13 +30,14 @@ impl<'a> Snapshot<'a> {
         let rows = regional_rows(frame, region)?;
         let context = ControlContext::new(frame, viewer, links);
         let (friendly, enemy) = context.rows(&rows)?;
-        let (ratio_friendly, ratio_enemy) = context.share_rows(&rows, minimum)?;
+        let (ratio_friendly, raw_enemy) = context.share_raw(&rows)?;
         Ok(Self {
             rows,
             friendly,
             enemy,
             ratio_friendly,
-            ratio_enemy,
+            ratio_enemy: raw_enemy.max(minimum),
+            raw_enemy,
         })
     }
     pub fn control(&self, minimum: i64, ratio: i64) -> Fact<u8> {
@@ -283,8 +286,12 @@ impl<'w, 'a> ControlContext<'w, 'a> {
         self.share_rows(&regional_rows(self.world.frame, region)?, minimum)
     }
     fn share_rows(&self, rows: &[&NavalSupremacyRow], minimum: i64) -> Fact<(i64, i64)> {
+        let (friendly, enemy) = self.share_raw(rows)?;
+        Ok((friendly, enemy.max(minimum)))
+    }
+    fn share_raw(&self, rows: &[&NavalSupremacyRow]) -> Fact<(i64, i64)> {
         if rows.iter().all(|row| row.current == 0) {
-            return Ok((0, 0_i64.max(minimum)));
+            return Ok((0, 0));
         }
         let (world, viewer) = (&*self.world, self.viewer);
         let links = world.links;
@@ -323,7 +330,7 @@ impl<'w, 'a> ControlContext<'w, 'a> {
                 }
             }
         }
-        Ok((ratio_friendly, ratio_enemy.max(minimum)))
+        Ok((ratio_friendly, ratio_enemy))
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -523,7 +530,9 @@ fn zero_subject(
     )
 }
 
-fn canonical(links: &BTreeMap<u32, u32>, raw: u32) -> Fact<u32> {
+/// A dominance roster's raw country as its canonical slot: raw zero is the reserved Country0,
+/// which the positive-only CountryLinks census leaves out.
+pub fn canonical(links: &BTreeMap<u32, u32>, raw: u32) -> Fact<u32> {
     if raw == 0 {
         Ok(0)
     } else {

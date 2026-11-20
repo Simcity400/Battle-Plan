@@ -34,6 +34,12 @@ pub struct Assets {
     pub(super) air_fuel_penalty: Result<i64, String>,
     pub(super) air_day_night: Result<replay_data::day_night::Defines, String>,
     pub(super) air_mine_maximum: Result<i64, String>,
+    /// The civilian intel lane's cap, then the ship count estimate's intel minimum, maximum and
+    /// range at lowest intel, which the naval region view's enemy ship count reads.
+    pub(super) naval_region_ship_intel: Result<[i64; 4], String>,
+    /// The convoy count estimate's intel minimum, maximum and range at lowest intel, which the
+    /// naval region view's enemy convoy count reads.
+    pub(super) naval_region_convoy_intel: Result<[i64; 3], String>,
     pub(super) air_cipher: Result<dashboard_text::cryptology::Defines, String>,
     pub(super) air_cipher_modifiers: Result<installed_content_core::modifiers::Modifiers, String>,
     pub(crate) native_windows: NativeWindows,
@@ -69,6 +75,20 @@ pub struct Assets {
     pub(super) naval_terrain: Result<super::naval_terrain::Content, String>,
     pub(super) land_terrain: Result<Arc<installed_content_core::terrain::TerrainDefinitions>, String>,
     pub temperature: Result<installed_content_weather::weather::TemperatureRanges, String>,
+    /// The thermal and ground snow intervals a province's weather icons are classified by.
+    pub(crate) province_weather: Result<installed_content_weather::weather::ProvinceModifierRules, String>,
+    /// The adjacency rules, and the rule each required province links to, which the state view
+    /// marks with its required rule icon.
+    pub(crate) required_rules: Result<RequiredRules, String>,
+    /// `non_core`, `non_core_controller` and `resistance_effect_base`, the static modifiers the
+    /// state owner information sums.
+    pub(crate) owner_info_modifiers: Result<[installed_content_core::modifiers::Modifiers; 3], String>,
+    /// The static modifiers the state view's custom province icons name (`<name>_icon`), by name.
+    pub(crate) province_icon_modifiers: BTreeMap<String, Result<installed_content_core::modifiers::Modifiers, String>>,
+    /// `NCountry.LOCAL_MANPOWER_ACCESSIBLE_NON_CORE_FACTOR`, fixed5.
+    pub(crate) non_core_manpower: Result<i64, String>,
+    /// `NBuildings.MAX_SHARED_SLOTS`, the state view's shared slot count's maximum.
+    pub(crate) max_shared_slots: Result<i32, String>,
     pub(super) border_events: installed_content_events::events::LazyEvents,
     /// The land window's defines, or why the content lacks them.
     pub(crate) land_defines: Result<super::defines::LandDefines, String>,
@@ -86,6 +106,32 @@ pub struct Assets {
     pub tooltip_defines: Result<TooltipDefines, String>,
     pub warnings: Vec<String>,
 }
+/// The adjacency rules in file order, and the rule each required province links to: the first
+/// that names it, as the game reports a later one and keeps the first.
+#[derive(Debug)]
+pub(crate) struct RequiredRules {
+    pub rules: Vec<installed_content_core::adjacency_rules::AdjacencyRule>,
+    pub by_province: BTreeMap<u32, usize>,
+}
+
+impl RequiredRules {
+    fn new(rules: Vec<installed_content_core::adjacency_rules::AdjacencyRule>) -> Self {
+        let mut by_province = BTreeMap::new();
+        for (index, rule) in rules.iter().enumerate() {
+            for &province in &rule.required_provinces {
+                if province != 0 {
+                    by_province.entry(province).or_insert(index);
+                }
+            }
+        }
+        Self { rules, by_province }
+    }
+
+    pub fn of(&self, province: u32) -> Option<&installed_content_core::adjacency_rules::AdjacencyRule> {
+        self.by_province.get(&province).map(|&index| &self.rules[index])
+    }
+}
+
 impl Assets {
     pub fn prepare_air_icons(
         &self,
@@ -513,6 +559,11 @@ fn native_templates(windows: &NativeWindows) -> impl Iterator<Item = &gui::nativ
     WINDOW_TEMPLATES
         .iter()
         .chain(super::picker::TEMPLATES)
+        .chain(super::confirmation::TEMPLATES)
+        .chain(super::minimap::TEMPLATES)
+        .chain(super::find_view::TEMPLATES)
+        .chain(super::state_view::TEMPLATES)
+        .chain(super::naval_region_view::TEMPLATES)
         .filter_map(|name| windows.gui_type(name))
 }
 
@@ -528,6 +579,8 @@ fn native_window_assets(
             localisation,
         ));
     }
+    // The find view's code writes this icon into its victory point results.
+    assets.add_text(&super::find_view::victory_point_icon(1));
     assets
 }
 
@@ -558,6 +611,35 @@ fn shortcut_assets(windows: &NativeWindows) -> native_gui::Assets {
         }
     }
     assets
+}
+
+/// The sprites the state view's code sets by a name its content gives: each building's special
+/// icon, each occupation law's icon and each dynamic modifier's icon. A source that does not read
+/// is named, and the entries that need it show their sprite as not loaded.
+fn content_named_sprites(layers: &ResolvedLayers, warnings: &mut Vec<String>) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut unread = |what: &str, why: io::Error| {
+        warnings.push(format!("Combat UI: the {what} do not load: {why} (1 missing_resource)."));
+    };
+    match installed_content_core::buildings::read(layers) {
+        Ok(buildings) => names.extend(buildings.types.into_values().map(|building| building.special_icon)),
+        Err(why) => unread("building special icons", why),
+    }
+    match installed_content_core::occupation_laws::read(layers) {
+        Ok(laws) => names.extend(laws.definitions.into_values().map(|law| law.sprite)),
+        Err(why) => unread("occupation law icons", why),
+    }
+    match installed_content_core::dynamic_modifiers::read(layers) {
+        Ok(modifiers) => names.extend(
+            modifiers
+                .definitions
+                .into_values()
+                .filter_map(|modifier| String::from_utf8(modifier.icon).ok()),
+        ),
+        Err(why) => unread("dynamic modifier icons", why),
+    }
+    names.remove("");
+    names
 }
 
 fn path(raw: &str) -> String {
@@ -829,6 +911,8 @@ impl Assets {
                 || name.starts_with(b"combat_portrait:")
                 // The map mode picker selects scripted modes' button sprites by name.
                 || name.starts_with(b"GFX_mapmode_buttons_")
+                // The state view names a location's icon after its token.
+                || name.starts_with(b"GFX_strategic_location_")
                 || portrait
                 || [
                     b"GFX_organization_texticon".as_slice(),
@@ -851,6 +935,11 @@ impl Assets {
                 }
             }
         }
+        wanted.extend(
+            content_named_sprites(layers, &mut warnings)
+                .into_iter()
+                .filter(|name| registry.sprite(name.as_bytes()).is_some()),
+        );
         let mut lazy_sprites = BTreeMap::new();
         let window_sprites = native_assets.sprites.clone();
         let mut resident = native_gui::Assets {
@@ -1131,6 +1220,29 @@ impl Assets {
                 .fixed5("NNavy", "NAVAL_MINES_IN_REGION_MAX")
                 .map(|value| value.max(100_000))
                 .map_err(|e| e.to_string()),
+            naval_region_ship_intel: (|| {
+                let caps = defines.fixed5_array("NIntel", "COUNTRY_LEVEL_INTEL_MAXIMUMS")?;
+                let cap = caps.first().copied().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "NIntel.COUNTRY_LEVEL_INTEL_MAXIMUMS is empty")
+                })?;
+                let fixed = |key| defines.fixed5("NIntel", key);
+                Ok::<_, std::io::Error>([
+                    cap,
+                    fixed("NAVY_SHIP_COUNT_INTEL_MIN")?,
+                    fixed("NAVY_SHIP_COUNT_INTEL_MAX")?,
+                    fixed("NAVY_SHIP_COUNT_INTEL_RANGE_AT_LOWEST_INTEL")?,
+                ])
+            })()
+            .map_err(|e| e.to_string()),
+            naval_region_convoy_intel: (|| {
+                let fixed = |key| defines.fixed5("NIntel", key);
+                Ok::<_, std::io::Error>([
+                    fixed("CIVILIAN_CONVOYS_RANGE_INTEL_MIN")?,
+                    fixed("CIVILIAN_MIN_INTEL_TO_SHOW_CONVOYS_GRAPH")?,
+                    fixed("CIVILIAN_CONVOYS_INTEL_RANGE_AT_LOWEST_INTEL")?,
+                ])
+            })()
+            .map_err(|e| e.to_string()),
             air_cipher: dashboard_text::cryptology::Defines::read(defines),
             gui,
             window_sprites,
@@ -1152,6 +1264,40 @@ impl Assets {
             land_terrain,
             temperature: installed_content_weather::weather::temperature_ranges(layers)
                 .map_err(|error| error.to_string()),
+            province_weather: installed_content_weather::weather::province_modifier_rules(layers)
+                .map_err(|error| error.to_string()),
+            required_rules: installed_content_core::adjacency_rules::read(layers)
+                .map(RequiredRules::new)
+                .map_err(|error| error.to_string()),
+            owner_info_modifiers: installed_content_core::static_modifiers::read_blocks(
+                layers,
+                &super::state_view::OWNER_INFO_MODIFIERS,
+            )
+            .map_err(|why| why.to_string())
+            .and_then(|blocks| {
+                let read: Vec<_> = blocks
+                    .blocks
+                    .into_iter()
+                    .map(|block| block.map_err(|why| format!("{} in {}: {}", why.modifier, why.file, why.reason)))
+                    .collect::<Result<_, _>>()?;
+                <[_; 3]>::try_from(read).map_err(|_| "the state owner static modifier read is incomplete".to_owned())
+            }),
+            province_icon_modifiers: {
+                let names = super::state_view::icon_modifier_names(native_windows);
+                let keys: Vec<&str> = names.iter().map(String::as_str).collect();
+                match installed_content_core::static_modifiers::read_blocks(layers, &keys) {
+                    Ok(blocks) => names
+                        .iter()
+                        .cloned()
+                        .zip(blocks.blocks.into_iter().map(|block| block.map_err(|why| format!("{} in {}: {}", why.modifier, why.file, why.reason))))
+                        .collect(),
+                    Err(error) => names.iter().map(|name| (name.clone(), Err(format!("{name}: {error}")))).collect(),
+                }
+            },
+            non_core_manpower: defines
+                .fixed5("NCountry", "LOCAL_MANPOWER_ACCESSIBLE_NON_CORE_FACTOR")
+                .map_err(|error| error.to_string()),
+            max_shared_slots: defines.int32("NBuildings", "MAX_SHARED_SLOTS").map_err(|error| error.to_string()),
             border_events: installed_content_events::events::LazyEvents::new(Arc::clone(shared)),
             land_defines: super::defines::LandDefines::read(defines)
                 .map_err(|error| error.to_string()),

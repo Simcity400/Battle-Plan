@@ -28,9 +28,9 @@ test('a page row is placed at its read, dated by its own hour, and names nothing
 
 test('the log is asked for the kinds shown, the chosen templates and the countries by tag', () => {
   assert.deepEqual(shownKinds('lost'), ['lost', 'transfer']);
-  assert.deepEqual(divisionFacets(['created'], null, null), [{ name: 'kind', values: [0], tags: [] }]);
+  assert.deepEqual(divisionFacets(['created'], null, null), [{ name: 'kind', values: [0], countries: [] }]);
   assert.deepEqual(divisionFacets(['lost', 'transfer'], ['31', '40'], ['GER']), [
-    { name: 'kind', values: [1, 2], tags: [] }, { name: 'template', values: [31, 40], tags: [] }, { name: 'slot', values: [], tags: ['GER'] }]);
+    { name: 'kind', values: [1, 2], countries: [] }, { name: 'template', values: [31, 40], countries: [] }, { name: 'slot', values: [], countries: ['GER'] }]);
   const token = templateToken('campaign', '1', '31');
   assert.deepEqual(selectedTemplates(token, 'campaign', '1'), ['31']);
   assert.deepEqual(selectedTemplates(token, 'campaign', '2'), []);

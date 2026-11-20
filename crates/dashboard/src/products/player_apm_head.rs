@@ -425,7 +425,7 @@ pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) ->
                 before = true;
             }
         }
-        lines.push(TileLine { tag: id.clone(), part: None, missing, parts: Vec::new(), marks: None });
+        lines.push(TileLine { country: id.clone().into(), part: None, missing, parts: Vec::new(), marks: None });
     }
     let (immutable, filled) = tile::closure(first, last, timeline_last);
     let (bins, raw_values, hour_bytes) = tile::encode(&buckets, first, ask.bin_hours, 1.0);

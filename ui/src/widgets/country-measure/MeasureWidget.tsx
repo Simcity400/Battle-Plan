@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CountryFlagUrl } from '../../components/CountryFlag';
@@ -19,7 +20,7 @@ import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipRow } from '../../charts/tooltip';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { countryLineColours, uncolouredWarning } from '../../dashboard/countryLineColours';
 import { useCountryLineStyles } from '../../dashboard/useCountryLineStyles';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -90,7 +91,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   }, []);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const lastHour = track?.branch.lastHour ?? 0;
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group');
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, lastHour]);
@@ -100,14 +101,14 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = useMemo(() => following && active && track && resolved.tags.length ? { product: 'series-state', params: { branchId: track.branch.id,
-    family: { kind: 'country-measure', measure: config.measure }, reads: resolved.tags.map(tag => ({ tag, hour: 0 })) } } : null,
+    family: { kind: 'country-measure', measure: config.measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
   [following, active, track?.branch.id, config.measure, resolved.tags]);
   // The hour of the values shown, told from the painter of the followed head.
   const shown = useShownHour();
   const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const followedHead = followsHead(followed);
   const ceilingQuery = useMemo(() => following && active && showCeiling && track && resolved.tags.length ? { product: 'series-state', params: { branchId: track.branch.id,
-    family: { kind: 'country-stability', measure: 'maxCommandPower' }, reads: resolved.tags.map(tag => ({ tag, hour: 0 })) } } : null,
+    family: { kind: 'country-stability', measure: 'maxCommandPower' }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
   [following, active, showCeiling, track?.branch.id, resolved.tags]);
   const ceilingFollowed = useFollow(store, ceilingQuery, root, NO_PAINT);
   const ceilingHead = followsHead(ceilingFollowed);

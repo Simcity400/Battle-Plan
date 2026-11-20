@@ -146,6 +146,8 @@ struct Made {
     stamp: u64,
     /// The hour of the rows it was made from.
     hour: Hour,
+    /// The viewing country's slot it was made for.
+    ours: u32,
     /// The newest hour those rows stand at: a step that changed no table of theirs moves it with
     /// no build at all ([`RowReader::through`]).
     stands: Hour,
@@ -327,6 +329,7 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
             generation,
             stamp,
             hour: frame.hour,
+            ours,
             stands,
             frame: Some(frame),
             plan: plan.map(Arc::new).map_err(|error| format!("The orders layer cannot make the plan: {error}")),
@@ -422,11 +425,11 @@ impl Orders {
 
     /// The newest plan and the hour of the rows it was made from.
     pub fn plan(&self) -> Option<(Hour, &Arc<OrderField>)> {
-        self.made.as_ref().and_then(|made| made.plan.as_ref().ok().map(|plan| (made.hour, plan)))
+        self.shown().and_then(|made| made.plan.as_ref().ok().map(|plan| (made.hour, plan)))
     }
 
     pub fn refused(&self) -> Option<&str> {
-        if let Some(why) = self.made.as_ref().and_then(|made| made.plan.as_ref().err()) {
+        if let Some(why) = self.shown().and_then(|made| made.plan.as_ref().err()) {
             return Some(why);
         }
         self.refused.as_deref()
@@ -436,7 +439,7 @@ impl Orders {
     /// A plan's own hour is its tables' last change, so it stands at every later hour no step
     /// changed a table it reads by.
     pub fn made_for(&self) -> Option<Hour> {
-        self.made.as_ref().filter(|made| made.generation == self.generation).map(|made| made.stands)
+        self.shown().filter(|made| made.generation == self.generation).map(|made| made.stands)
     }
 
     /// The plan's refusals and missing inputs, worded as today's; loading by name until a plan is made.
@@ -451,7 +454,7 @@ impl Orders {
     /// The battle plan's limitation notes in today's words, for the rows its plan was made from:
     /// stated only while the viewing country has orders.
     pub fn notes(&self) -> &[String] {
-        self.made.as_ref().map_or(&[], |made| &made.notes)
+        self.shown().map_or(&[], |made| &made.notes)
     }
 
     pub fn marked(&self) -> [u64; 3] {
@@ -577,6 +580,12 @@ impl Orders {
         }
     }
 
+    /// The plan taken while it was made for the viewing country the layer reads now: one made for
+    /// another country is no plan of this one's, and none is drawn until its own is made.
+    fn shown(&self) -> Option<&Made> {
+        self.made.as_ref().filter(|made| self.vision.as_ref().is_some_and(|&(_, ours)| ours == made.ours))
+    }
+
     /// What the worker makes the plan for: the viewing country's slot and the allied-plan switch.
     fn take_vision(&mut self) {
         if let Some((choice, vision)) = self.given.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
@@ -642,13 +651,19 @@ impl Layer for Orders {
     /// What the plan is made for: the step's hour and the viewing country, which is all the worker
     /// needs to build the plan of the rows it is given next.
     fn ask(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<bool> {
-        // Only whose lines or plan are drawn: the viewing country, taken when it changes.
+        // Only whose lines or plan are drawn: the viewing country, taken when it changes; none while
+        // another country chosen has no vision yet (being made or refused), so no plan of the
+        // country before stands. A seek's vision made again keeps the plan before until the next.
         if self.window
             && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()
-            && let Some(ours) = vision.ours()
-            && self.vision.as_ref().is_none_or(|(choice, held)| *held != ours || choice != vision.choice())
         {
-            self.vision = Some((vision.choice().clone(), ours));
+            match vision.ours() {
+                Some(ours) if self.vision.as_ref().is_none_or(|(choice, held)| *held != ours || choice != vision.choice()) => {
+                    self.vision = Some((vision.choice().clone(), ours));
+                }
+                None if self.vision.as_ref().is_some_and(|(choice, _)| choice != vision.choice()) => self.vision = None,
+                _ => {}
+            }
         }
         if let Some(head) = mirrors.get(TableId::ArmyOrders).and_then(Mirror::head) {
             self.head = Some(head);

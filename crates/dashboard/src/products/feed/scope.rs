@@ -195,7 +195,7 @@ pub(crate) fn kept(source: &Source) -> Vec<u32> {
 /// What a scope reads over the timeline's first hour through `to`: the patterns `facets` ask
 /// for, the entries of each run they reach, and the scope's slots.
 fn scoped(source: &Source, query: &Query<'_>, reader: &Reader<'_, '_>, facets: &[FacetFilter], scope: &[MembershipRun], to: i32) -> io::Result<(Vec<Pattern>, Vec<(u32, Arc<Vec<Entry>>)>, Scope)> {
-    if facets.iter().any(|filter| !filter.tags.is_empty()) {
+    if facets.iter().any(|filter| !filter.countries.is_empty()) {
         return Err(invalid("A country scope is not asked with a filter by tags"));
     }
     let selection = reader.select(facets, query.timeline.first, to)?;

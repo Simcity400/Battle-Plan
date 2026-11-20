@@ -33,9 +33,9 @@ export const occurrenceOf = (reply: LogReplyRow): ScriptOccurrence | null =>
  * first row: its opener, or a continuing row whose opening was not recorded). */
 export function cardFacets(kinds: readonly FeedKindCode[], openers: readonly EventFeedKind[], continuing: readonly EventFeedKind[]): Facet[] {
   const wanted = new Set<EventFeedKind>([...openers, ...continuing]);
-  return [{ name: 'kind', values: kinds.filter(kind => wanted.has(kind.kind)).map(kind => kind.code), tags: [] },
+  return [{ name: 'kind', values: kinds.filter(kind => wanted.has(kind.kind)).map(kind => kind.code), countries: [] },
     // A row continuing nothing has no opener read hour: its facet holds the none value.
-    { name: 'opener', values: [-1], tags: [] }];
+    { name: 'opener', values: [-1], countries: [] }];
 }
 
 /** The loaded pages' cards as `at` shows each at the head (null hides it), each page counted by them. */

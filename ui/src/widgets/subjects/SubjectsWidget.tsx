@@ -14,7 +14,7 @@ import { fitTooltip } from '../../charts/tooltip';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { mix } from '../../shell/appearance/color';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { worldFilter } from '../../dashboard/groups';
@@ -76,7 +76,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   // The categorical palette in the content's level order; levels past it share one colour.
   const other = mix(tokens.surface, tokens.text, 0.35);
   const colours = useMemo(() => levelColours(data?.levels ?? [], tokens.categories, other), [data, tokens.categories, other]);
-  const dashboardTag = track ? defaultCountryTag(track) : null;
+  const dashboardTag = track ? defaultCountryKey(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, at, lastHour),
     [widget.countries, dashboardTag, groups.data, at, lastHour]);
@@ -85,7 +85,8 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const [sortNames, setSortNames] = useState<string[]>([]);
   const identityHistories = useMemo(() => new Map(groups.data?.countryIdentities.map(history => [history.tag, history.identities]) ?? []), [groups.data]);
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
-  const { country, revision } = useCountriesAt(runtime.client, track, named, at, active, sortNames, segmentAt);
+  const { country, revision } = useCountriesAt(runtime.client, track, named, at, active, sortNames, segmentAt, undefined,
+    { clock, on: followsClock, hour: (clockHour: number) => track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour ?? null : null });
   // A tooltip names its countries as recorded at the hour hovered, asking only for those.
   const hover = useHoverLabels(runtime.client, track, active, country);
   const unobserved = views[0]?.unknown ?? known?.unobserved;

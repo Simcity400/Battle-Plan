@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef } from 'react';
 import type { LiveValues } from '../../charts/live';
 import WidgetState from '../../components/WidgetState';
@@ -10,7 +11,7 @@ import { jumpItem } from '../../charts/jump';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useShownHour } from '../../dashboard/widgetPerf';
@@ -34,10 +35,10 @@ const lineName = (line: RefitLine) => line.target ?? 'Design name unavailable';
 export default function RefitsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(YARD_OPTIONS, widget.options);
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const root = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct(runtime, widget, 'naval-refits', tag ? { tag } : null, { active, validate: validateRefits, structure: refitsStructure });
+  const head = useHeadProduct(runtime, widget, 'naval-refits', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateRefits, structure: refitsStructure });
   const { data, error, retry } = head;
   // Hourly numbers are painted from the product's live cells each frame they move, reporting the hour they are of.
   const shown = useShownHour();

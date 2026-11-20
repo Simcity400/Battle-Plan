@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo, useState } from 'react';
 import type { PartsRaceDetailProps } from '../../charts/race/ForcePartsBreakdown';
 import LiveText from '../../charts/LiveText';
@@ -12,7 +13,7 @@ import './navyManagement.css';
  * when its lines change, its refit progress and hulls painted from their live cells; else asked for the hour. */
 export default function NavyManagement({ runtime, widget, track, tag, hour, following, active }: PartsRaceDetailProps) {
   const [open, setOpen] = useState(false);
-  const head = useHeadProduct(runtime, { ...widget, trackIds: [track.id] }, 'naval-management', open ? { tag } : null,
+  const head = useHeadProduct(runtime, { ...widget, trackIds: [track.id] }, 'naval-management', open ? { country: countryFromKey(tag) } : null,
     { active: active && open, validate: validateNavalManagement, structure: managementStructure, hoverHour: following ? null : hour });
   const data = head.data;
   const texts = useMemo<LiveTexts>(() => ({ text: key => amountText(head.live.read(), key, data), subscribe: head.live.subscribe }), [head.live, data]);

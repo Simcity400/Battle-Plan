@@ -4,6 +4,7 @@
 //! equal reads one state) and its progress at each read. Read from the recorded research tables'
 //! histories over that span alone, at the cost of their changes in it.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     BONUSES, INPUTS, Joined, MODIFIERS, ResearchProgress, ResearchSlotState, all_columns, cells_at, continues, number, slice_key, slot_read,
 };
@@ -12,7 +13,6 @@ use crate::{
     metadata::check_cancel,
     products::{LoadContext, Product},
 };
-use dashboard_base::products::validate_tag;
 use dashboard_query::{Query, cost, identity::Holder};
 use replay::lanes::{self, Cell, History, Keys};
 use replay_data::{
@@ -43,7 +43,7 @@ pub struct ResearchBreakdownPart {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResearchBreakdownParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub parts: Vec<ResearchBreakdownPart>,
 }
 
@@ -87,7 +87,7 @@ impl Product for ResearchBreakdown {
         if params.parts.is_empty() || params.parts.iter().any(|part| part.last_hour < part.first_observed_hour) {
             return Err("Invalid research breakdown parts");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -101,7 +101,7 @@ impl Product for ResearchBreakdown {
         let mut parts = Vec::with_capacity(params.parts.len());
         for part in &params.parts {
             check_cancel(cancelled)?;
-            parts.push(match reads(source, &query, &params.tag, part, &localise) {
+            parts.push(match reads(source, &query, &params.country, part, &localise) {
                 Ok((states, progress)) => ResearchBreakdownSlot { slot: part.slot, first_observed_hour: part.first_observed_hour, states, progress, missing: None },
                 Err(missing) => ResearchBreakdownSlot { slot: part.slot, first_observed_hour: part.first_observed_hour, states: Vec::new(), progress: Vec::new(), missing: Some(missing) },
             });
@@ -266,7 +266,7 @@ pub(crate) fn assignment(histories: &Histories, owner: u32, index: u32, first: i
 }
 
 /// Part `part`'s states and progress, or why none are known.
-fn reads(source: &Source, query: &Query<'_>, tag: &str, part: &ResearchBreakdownPart, localise: &dyn Fn(&str) -> Option<String>) -> Result<(Vec<ResearchSlotState>, Vec<ResearchProgress>), String> {
+fn reads(source: &Source, query: &Query<'_>, tag: &Country, part: &ResearchBreakdownPart, localise: &dyn Fn(&str) -> Option<String>) -> Result<(Vec<ResearchSlotState>, Vec<ResearchProgress>), String> {
     let first = part.first_observed_hour;
     let run = query.holders.at(tag, first).ok_or("The country is not held at the assignment's first observation")?;
     let Holder::Found { slot, .. } = run.holder else { return Err("The country is not resolved at the assignment's first observation".into()) };

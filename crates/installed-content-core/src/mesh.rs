@@ -765,6 +765,48 @@ pub fn read_tree(root: &Node) -> io::Result<Mesh> {
     })
 }
 
+/// The triangles the engine ray-tests a mesh by, in the mesh's own unscaled space.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Collision {
+    pub positions: Vec<[f32; 3]>,
+    /// Three per triangle, narrowed to 16 bits as the engine stores them.
+    pub indices: Vec<u16>,
+}
+
+/// The importer keeps the last `[mesh]` of any `[object]` shape whose material's shader is
+/// `Collision` and which has both `p` and `tri`; a mesh without one is tested by its bounds.
+pub fn collision(root: &Node) -> io::Result<Option<Collision>> {
+    let mut kept = None;
+    for mesh in root
+        .children_named("object")
+        .flat_map(|object| &object.children)
+        .flat_map(|shape| shape.children_named("mesh"))
+    {
+        if mesh.child("material").and_then(|material| material.string("shader")) != Some("Collision") {
+            continue;
+        }
+        let (Some(positions), Some(indices)) = (
+            mesh.property("p").and_then(Value::floats),
+            mesh.property("tri").and_then(Value::ints),
+        ) else {
+            continue;
+        };
+        let positions: Vec<[f32; 3]> = positions.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
+        if positions.is_empty() || indices.is_empty() {
+            continue;
+        }
+        let indices: Vec<u16> = indices[..indices.len() / 3 * 3].iter().map(|&index| index as u16).collect();
+        if let Some(index) = indices.iter().find(|&&index| usize::from(index) >= positions.len()) {
+            return Err(invalid(format!(
+                "its collision mesh indexes vertex {index} of {}",
+                positions.len()
+            )));
+        }
+        kept = Some(Collision { positions, indices });
+    }
+    Ok(kept)
+}
+
 /// The skeleton the importer keeps: the first nonempty `[skeleton]` of a shape
 /// (depth 3), in source order across every `[object]`.
 fn skeleton_node(root: &Node) -> Option<&Node> {

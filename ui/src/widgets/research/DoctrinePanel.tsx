@@ -1,7 +1,8 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useState } from 'react';
 import type { ComponentType } from 'react';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
 import { useHeadHour } from '../army-size/headHour';
 import { useProduct } from '../../dashboard/products';
@@ -30,11 +31,11 @@ function DoctrinePanel({ widget, runtime, active, onDiagnostics }: WidgetProps) 
   const clock = runtime.clock;
   const playbackHour = useHeadHour(clock, active && open && widget.time.mode === 'follow', at => clock.getSnapshot().playing ? 'playing' : String(Math.floor(at)));
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track);
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window && Math.floor(window.lastHour);
   const request = track && tag && hour != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour ? {
-    sourceId: track.source.id, revision: track.source.revision, product: 'doctrines', params: { branchId: track.branch.id, tag, hour },
+    sourceId: track.source.id, revision: track.source.revision, product: 'doctrines', params: { branchId: track.branch.id, country: countryFromKey(tag), hour },
   } : null;
   const { data, error, retry } = useProduct<DoctrineReply>(runtime.client, request, active && open, validateDoctrines, track?.source);
   const diagnostics = useMemo(() => data?.warnings ?? [], [data]);

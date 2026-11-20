@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { campaignToggled, PickerOptions, toggleMapSetting } from './mapPicker.ts';
+import { campaignToggled, observedRole, observedSwitches, PickerOptions, toggleMapSetting } from './mapPicker.ts';
+import type { CountrySelection, WidgetSpec } from './model';
 import type { MapOptions } from '../shell/api';
 import type { DashboardClient, DashboardMapView, MapSettingsReply } from './client';
 
@@ -11,6 +12,26 @@ test('a picker choice keeps the map mode and slots, and the fog switch still dec
   assert.deepEqual(shown, { country: 'GER', fog: true, mapMode: 'strategic_air', mapModeSlots: ['states'] });
   // Turning fog off in the map settings reaches the map after a picker choice.
   assert.equal(maps.merge('m', { country: 'GER', fog: false })?.fog, false);
+});
+
+test("a Ctrl+click sets the default campaign's country from the campaign map, a widget map's own, never a pinned one", () => {
+  const tracks = [{ id: 'main', roleId: 'primary', label: 'Main', branchIndex: 0, anchorOffset: null },
+    { id: 'other', roleId: 'comparison', label: 'Other', branchIndex: 0, anchorOffset: null }];
+  const map = (id: string, campaign: 'default' | 'tracks', trackId: string, countries: CountrySelection = { kind: 'selected' }): WidgetSpec =>
+    ({ id, kind: 'map', configVersion: 1, title: 'Campaign map', campaign, trackIds: [trackId], countries, time: { mode: 'follow' } });
+  const followsDefault = map('default-map', 'default', 'main');
+  const fixed = map('fixed-map', 'tracks', 'other');
+  const pinned = map('pinned-map', 'tracks', 'main', { kind: 'tags', tags: ['GER'] });
+  const template = { tracks, widgets: [followsDefault, fixed, pinned] };
+  // The campaign map and the pop-out both report as the campaign map: the default campaign's choice.
+  assert.equal(observedRole('campaign-map', template, 'comparison'), 'comparison');
+  assert.equal(observedRole('campaign-map', template, null), null);
+  // A widget map on the default campaign follows the default; one fixed to a campaign sets that campaign's.
+  assert.equal(observedRole('default-map', template, 'comparison'), 'comparison');
+  assert.equal(observedRole('fixed-map', template, 'primary'), 'comparison');
+  // A pinned widget map keeps its own country; an unknown view sets nothing.
+  assert.equal(observedRole('pinned-map', template, 'primary'), null);
+  assert.equal(observedRole('gone', template, 'primary'), null);
 });
 
 test('fog clicks flip the view switch in order: two give the original, three the opposite', () => {
@@ -140,4 +161,14 @@ test('a failed campaign graphics flip does not discard the next click', async ()
   await assert.rejects(first, /save failed/);
   await next;
   assert.equal(writes, 2);
+});
+
+test("each view's Ctrl+click switches are echoed by the latest applied, never moved back by an older one", () => {
+  const observe = (viewId: string, sequence: number) => ({ viewId, country: { slot: 1, tag: 'GER', sequence } });
+  let observed = observedSwitches({}, observe('campaign-map', 5));
+  observed = observedSwitches(observed, observe('widget', 2));
+  assert.deepEqual(observed, { 'campaign-map': 5, widget: 2 }, 'each view echoes its own');
+  const kept = observedSwitches(observed, observe('campaign-map', 3));
+  assert.equal(kept, observed, 'an older switch arriving late changes nothing');
+  assert.deepEqual(observedSwitches(observed, observe('campaign-map', 9)), { 'campaign-map': 9, widget: 2 });
 });

@@ -23,10 +23,10 @@ fn index() -> AirIndex {
 }
 
 fn holders() -> Holders {
-    Holders {
-        tags: TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![HolderRun { first: 0, last: LAST, holder: Holder::Found { slot: *id, id: *id }, starts_segment: true }])).collect(),
-        unknown: vec![],
-    }
+    Holders::new(
+        TAGS.iter().map(|(tag, id)| ((*tag).to_owned(), vec![HolderRun { first: 0, last: LAST, holder: Holder::Found { slot: *id, id: *id }, starts_segment: true }])).collect(),
+        vec![],
+    )
 }
 
 fn score(country: u32, region: u32, friendly: i64, enemy: i64) -> RaidAirScoreRow {
@@ -87,7 +87,7 @@ fn params(mode: AirMode, viewpoint: Option<&str>, country: bool, sides: Option<&
         first_hour: 0,
         last_hour: LAST,
         mode: Some(mode),
-        viewpoint: viewpoint.map(String::from),
+        viewpoint: viewpoint.map(dashboard_base::products::Country::from),
         viewpoint_country: country.then_some(true),
         sides: sides.map(|keys| keys.iter().map(|key| (*key).to_owned()).collect()),
         ..AirTimelineParams::default()

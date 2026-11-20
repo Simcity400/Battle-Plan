@@ -1,11 +1,14 @@
 //! A table of declared measures across countries at one hour (the scoreboard): its rows the chosen
-//! tags, or the countries greatest (or least) by one column ([`Line::rank_at_by`]), and each row's
+//! countries, or the countries greatest (or least) by one column ([`Line::rank_at_by`]), and each row's
 //! value of every column. One read of the ranking column's table at the hour, then one read at the
 //! hour of each table the columns name, its columns and the rows' keys only: no country's history,
 //! no other hour and no other row is read.
 
 use super::{Line, invalid};
-use crate::{identity::Holder, read};
+use crate::{
+    identity::{Country, Holder},
+    read,
+};
 use replay::lanes::Keys;
 use replay_columnar::manifest::Status;
 use std::{collections::HashMap, io};
@@ -18,8 +21,8 @@ pub struct Column<'q, 'a> {
 
 /// Which countries a board holds.
 pub enum Rows<'r> {
-    /// These tags, in order: each a holder holds at the hour.
-    Tags(&'r [String]),
+    /// These countries, in order: each one held at the hour.
+    Countries(&'r [Country]),
     /// The `n` countries greatest by column `by` at the hour, greatest first, or with `least` the
     /// `n` least, least first; a country whose value is not known there never ranks.
     Top { by: usize, n: usize, least: bool },
@@ -36,6 +39,8 @@ pub struct Cell {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
+    pub country: Country,
+    /// The tag it goes by at the hour.
     pub tag: String,
     pub cells: Vec<Cell>,
 }
@@ -56,13 +61,15 @@ pub fn at(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32) -> io::Result<B
     let Some(stretch) = query.timeline.at(hour).copied() else {
         return Ok(Board { rows: Vec::new(), missing: Some(query.timeline.reason(hour)) });
     };
-    let tags: Vec<String> = match rows {
-        Rows::Tags(tags) => tags.iter().filter(|tag| query.holders.at(tag, hour).is_some()).cloned().collect(),
-        Rows::Top { by, n, least } => columns.get(by).ok_or_else(|| invalid("A board ranks by a column it does not hold"))?.line.rank_at_by(hour, n, least)?,
+    let countries: Vec<Country> = match rows {
+        Rows::Countries(countries) => countries.iter().filter(|country| query.holders.at(*country, hour).is_some()).cloned().collect(),
+        Rows::Top { by, n, least } => {
+            columns.get(by).ok_or_else(|| invalid("A board ranks by a column it does not hold"))?.line.rank_at_by(hour, n, least)?.into_iter().map(Country::from).collect()
+        }
     };
     let lines: Vec<&Line<'_, '_>> = columns.iter().flat_map(|column| std::iter::once(&column.line).chain(column.partial.as_ref())).collect();
-    let mut values = values(&lines, &tags, hour, stretch.run)?.into_iter();
-    let mut out: Vec<Row> = tags.into_iter().map(|tag| Row { tag, cells: Vec::with_capacity(columns.len()) }).collect();
+    let mut values = values(&lines, &countries, hour, stretch.run)?.into_iter();
+    let mut out: Vec<Row> = countries.into_iter().map(|country| Row { tag: query.holders.name(&country, hour), country, cells: Vec::with_capacity(columns.len()) }).collect();
     for column in columns {
         let read = values.next().expect("a column's values");
         let partial = column.partial.as_ref().map(|_| values.next().expect("a partial mark's values"));
@@ -82,18 +89,19 @@ pub fn at(columns: &[Column<'_, '_>], rows: Rows<'_>, hour: i32) -> io::Result<B
 
 /// Each line's value for each tag at `hour`, or why there is none: one read per table the lines
 /// name, of their columns and the tags' keys.
-fn values(lines: &[&Line<'_, '_>], tags: &[String], hour: i32, run: u32) -> io::Result<Vec<Vec<Result<i64, String>>>> {
+fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -> io::Result<Vec<Vec<Result<i64, String>>>> {
     let query = lines[0].query();
     let recording = query.replay.recording();
     let keys: Vec<Vec<Result<u128, String>>> = lines
         .iter()
         .map(|line| {
-            tags.iter()
-                .map(|tag| match line.missing_at(tag, hour) {
+            countries
+                .iter()
+                .map(|country| match line.missing_at(country, hour) {
                     Some(reason) => Err(reason),
-                    None => match query.holders.at(tag, hour).map(|held| held.holder) {
+                    None => match query.holders.at(country, hour).map(|held| held.holder) {
                         Some(Holder::Found { slot, id }) => Ok(line.series().key.of(slot, id)),
-                        _ => Err(format!("{tag} is held by no country")),
+                        _ => Err(line.absent(country, hour)),
                     },
                 })
                 .collect()
@@ -124,9 +132,10 @@ fn values(lines: &[&Line<'_, '_>], tags: &[String], hour: i32, run: u32) -> io::
             out[line] = Some(
                 keys[line]
                     .iter()
-                    .zip(tags)
-                    .map(|(key, tag)| {
+                    .zip(countries)
+                    .map(|(key, country)| {
                         let key = key.clone()?;
+                        let tag = query.holders.name(country, hour);
                         if !complete {
                             return Err(format!("{kind} was not recorded at this hour"));
                         }
@@ -202,15 +211,15 @@ mod tests {
     fn chosen_tags_keep_their_order_leave_out_a_country_not_held_and_never_rank_an_unknown_value() {
         let query = query();
         let columns = [power_column(&query)];
-        let tags = ["ITA".to_owned(), "GER".to_owned()];
+        let tags = [Country::from("ITA"), Country::from("GER")];
         let unrecorded = (FIRST..ITA_FROM).find(|&hour| power(9001, hour).is_none()).unwrap();
-        let board = at(&columns, Rows::Tags(&tags), unrecorded).unwrap();
+        let board = at(&columns, Rows::Countries(&tags), unrecorded).unwrap();
         assert_eq!(board.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["GER"], "ITA does not exist yet");
         assert_eq!(board.rows[0].cells[0].value_raw, None);
         assert!(board.rows[0].cells[0].missing.is_some());
         assert!(at(&columns, Rows::Top { by: 0, n: 2, least: false }, unrecorded).unwrap().rows.is_empty());
         let hour = both_recorded();
-        let board = at(&columns, Rows::Tags(&tags), hour).unwrap();
+        let board = at(&columns, Rows::Countries(&tags), hour).unwrap();
         assert_eq!(board.rows.iter().map(|row| row.tag.as_str()).collect::<Vec<_>>(), ["ITA", "GER"]);
     }
 

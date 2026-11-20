@@ -11,6 +11,7 @@
 //! Cost: per stretch of one viewer, one history of its rows and the every-viewer rows over the
 //! window (their changes, not its hours), then days x regions of arithmetic.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     LoadContext, Product, place_names,
     sea_regions::{self, SeaContent},
@@ -18,7 +19,6 @@ use super::{
 #[cfg(any(test, feature = "export-types"))]
 use super::sea_regions::Choice;
 use crate::{Source, catalogue::Refusals};
-use dashboard_base::products::validate_tag;
 use dashboard_query::identity::Holder;
 use replay::{lanes, points::Cell};
 use replay_data::rows::{NavalRegionControlRow, TableId};
@@ -56,7 +56,7 @@ pub struct NavalSupremacy;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalSupremacyParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// The window of days asked ([`super::windows`]).
     pub window: u32,
 }
@@ -309,7 +309,7 @@ impl Product for NavalSupremacy {
         if super::windows::hours(params.window).is_none() {
             return Err("Invalid naval supremacy window");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -353,7 +353,7 @@ impl Product for NavalSupremacy {
             Ok(())
         };
         for (day, (run, hour)) in hours {
-            match query.holders.at(&params.tag, hour).map(|run| run.holder) {
+            match query.holders.at(&params.country, hour).map(|run| run.holder) {
                 Some(Holder::Found { slot, .. }) => {
                     if held != Some((run, slot)) {
                         flush(held, &mut segment, &mut pieces, &mut known, &mut refused, &mut notes)?;

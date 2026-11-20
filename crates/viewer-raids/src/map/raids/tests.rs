@@ -6209,7 +6209,7 @@ fn draw(inputs: &RaidInputs<'_>, icons: &RaidIcons, batch: &mut Batch) -> usize 
         &mut PoolView::default(),
         batch,
         &mut Vec::new(),
-        &mut report,
+        &mut report, None, None,
     )
 }
 

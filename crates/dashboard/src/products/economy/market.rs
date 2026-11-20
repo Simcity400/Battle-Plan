@@ -16,6 +16,7 @@
 pub mod history;
 pub mod ledger;
 
+use dashboard_base::products::Country;
 use crate::{
     Source,
     products::{
@@ -26,7 +27,6 @@ use crate::{
             EquipmentIcon, VariantName,
             names::{self, Named},
         },
-        validate_tag,
     },
 };
 use dashboard_follow::live::{Cells, Source as Cell};
@@ -62,7 +62,7 @@ pub struct MarketLendLeaseParams {
     pub branch_id: String,
     /// Rows these countries take part in (as seller or buyer, giver or receiver); every row when
     /// empty.
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     /// The one section read; every section when absent.
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
@@ -282,7 +282,7 @@ fn section<'f, R>(shown: bool, rows: io::Result<&'f [R]>, label: &str, warnings:
 }
 
 /// The canonical slots `tags` are held by at `hour`; none when every country is asked.
-fn chosen(holders: &Holders, tags: &[String], hour: i32, warnings: &mut Vec<String>) -> Option<BTreeSet<u32>> {
+fn chosen(holders: &Holders, tags: &[Country], hour: i32, warnings: &mut Vec<String>) -> Option<BTreeSet<u32>> {
     if tags.is_empty() {
         return None;
     }
@@ -292,7 +292,7 @@ fn chosen(holders: &Holders, tags: &[String], hour: i32, warnings: &mut Vec<Stri
             Some(Holder::Found { slot, .. }) => {
                 slots.insert(slot);
             }
-            _ => warnings.push(format!("{tag} is not held by any country at this hour")),
+            _ => warnings.push(format!("{} is not held by any country at this hour", holders.name(tag, hour))),
         }
     }
     Some(slots)
@@ -310,7 +310,7 @@ impl AtHour for MarketLendLease {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        params.tags.iter().try_for_each(|tag| validate_tag(tag))
+        params.countries.iter().try_for_each(dashboard_base::products::validate_country)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -428,7 +428,7 @@ pub(crate) fn market_at(frame: &DecodedFrame, params: &MarketLendLeaseParams, ho
         }
     };
     let parties = Parties::new(links, holders, hour);
-    let wanted = chosen(holders, &params.tags, hour, &mut reply.warnings);
+    let wanted = chosen(holders, &params.countries, hour, &mut reply.warnings);
     let selected = |raw: u32| wanted.as_ref().is_none_or(|slots| parties.slot(raw).is_some_and(|slot| slots.contains(&slot)));
     let offers = section(show_offers, frame.complete::<tables::CountryMarket>(), "Market offers", &mut reply.warnings);
     let terms = section(show_contracts, frame.complete::<tables::MarketContractTerms>(), "Market requests and contracts", &mut reply.warnings);

@@ -95,7 +95,7 @@ test('the page after the head is asked only while it holds rows: past the span t
 });
 
 test('a family\'s own page is asked without the log it fixes, as its strict params require; log-page is asked with it', () => {
-  const span = { branchId: '1', log: 'market-events', facets: [{ name: 'kind', values: [20], tags: [] }], firstHour: 100, lastHour: 117 };
+  const span = { branchId: '1', log: 'market-events', facets: [{ name: 'kind', values: [20], countries: [] }], firstHour: 100, lastHour: 117 };
   const ledger = logPageRequest({ ...span, product: 'market-ledger' }, 24, 500);
   assert.equal(ledger.product, 'market-ledger');
   assert.deepEqual(ledger.params, { branchId: '1', facets: span.facets, from: 100, to: 117, cursor: '24', pageSize: 500 });

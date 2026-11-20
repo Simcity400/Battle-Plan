@@ -201,8 +201,10 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
                 *held = Some(Episodes::new(timeline.first));
             }
             let s = held.as_mut().unwrap();
-            let (pieces, identities) = pieces(&query, &params.tag, hour);
-            let mut changed = s.through.is_none();
+            let (pieces, identities) = pieces(&query, &params.country, hour);
+            let tag = query.holders.name(&params.country, hour);
+            // A slot's new tag renames the reply, whatever its projects did.
+            let mut changed = s.through.is_none() || s.data.as_ref().as_ref().is_ok_and(|reply| reply["tag"].as_str() != Some(tag.as_str()));
             for piece in pieces.into_iter().filter(|p| s.through.is_none_or(|h| p.last > h)).collect::<Vec<_>>() {
                 if s.current.as_ref().is_some_and(|c| (c.piece.first, c.piece.run) == (piece.first, piece.run)) {
                     changed |= s.advance(&query, &piece, cancelled, &mut count)?;
@@ -221,7 +223,7 @@ pub(super) fn reader(replay: Arc<Replay>, timeline: Arc<Timeline>, holders: Arc<
                 }
             }
             if changed {
-                let reply = present(&query, &params, &content, &s.fold, s.observed.clone(), identities, cancelled, &mut s.spelling)?;
+                let reply = present(&query, &params, &content, &s.fold, s.observed.clone(), identities, &tag, cancelled, &mut s.spelling)?;
                 s.data = Arc::new(Ok(serde_json::to_value(reply)?));
             }
             Ok(s.data.clone())

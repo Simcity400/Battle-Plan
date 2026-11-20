@@ -15,6 +15,9 @@ pub struct Defines {
     pub medium_half_range_percent: i32,
     pub medium_min_ships: i32,
     pub medium_min_capitals: i32,
+    /// `NIntel.NAVY_MAPICON_NAVAL_PORT_VISIBILITY_DETAIL_THRESHOLDS` in fixed5, which a naval base
+    /// tooltip's intel level is read against; `None` unless it holds the five the game indexes.
+    pub port_detail: Option<[i64; 5]>,
 }
 
 impl Defines {
@@ -31,6 +34,10 @@ impl Defines {
             medium_half_range_percent: value("INTEL_LEVEL_MEDIUM_HALF_RANGE_PERCENTAGE")?,
             medium_min_ships: value("INTEL_LEVEL_MEDIUM_HALF_RANGE_MIN_SHIPS")?,
             medium_min_capitals: value("INTEL_LEVEL_MEDIUM_HALF_RANGE_MIN_CAPITALS")?,
+            port_detail: defines
+                .fixed5_array("NIntel", "NAVY_MAPICON_NAVAL_PORT_VISIBILITY_DETAIL_THRESHOLDS")
+                .ok()
+                .and_then(|values| values.try_into().ok()),
         })
     }
 
@@ -43,7 +50,17 @@ impl Defines {
         medium_half_range_percent: 5,
         medium_min_ships: 1,
         medium_min_capitals: 1,
+        port_detail: Some([0, 10_000, 30_000, 70_000, 80_000]),
     };
+}
+
+impl Defines {
+    /// The naval base tooltip's detail level at an intel ratio in fixed5: the highest threshold
+    /// it reaches, scanned from the top, else 0.
+    pub fn port_detail_level(&self, ratio: i64) -> Option<u32> {
+        let thresholds = self.port_detail?;
+        Some((0..5).rev().find(|&at| thresholds[at] <= ratio).map_or(0, |at| at as u32))
+    }
 }
 
 /// Below this first-member visibility the count is "?" whatever it is.

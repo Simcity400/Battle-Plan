@@ -78,6 +78,7 @@ pub fn typescript_contract() -> String {
         dashboard_query::chart::MarkCluster::decl(),
         dashboard_query::chart::MarkSummary::decl(),
         dashboard_query::series::MissingSpan::decl(),
+        dashboard_query::identity::Country::decl(),
         dashboard_query::series::SeriesRun::decl(),
         dashboard_query::series::SeriesDrop::decl(),
         dashboard_query::series::SeriesState::decl(),

@@ -1,3 +1,5 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { ButterflyChart } from '../../charts/butterfly';
@@ -15,7 +17,7 @@ import CombatLogDetails from '../land-battles/CombatLogDetails';
 import { useCountryColours } from '../../charts/race/countryColours';
 import { useIdentityHour } from '../../dashboard/atHead';
 import { looksRead, useCountryLooks } from '../../dashboard/countryLooks';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { followStore } from '../../dashboard/follow/connection.ts';
 import { answered, useHandoff, useLiveFollow } from '../../dashboard/follow/liveFollowed.ts';
@@ -93,7 +95,7 @@ function CasualtyView({ widget, runtime, active, unknownLabel, onWarnings }: Wid
   const race = options.view === 'race';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const lastHour = track?.branch.lastHour ?? 0;
-  const fallbackTag = defaultCountryTag(track);
+  const fallbackTag = defaultCountryKey(track);
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
   const resolved = useMemo(() => widget.countries.kind === 'all' ? null
@@ -127,7 +129,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const members = useMemo(() => top != null ? ranked.entry && ranked.structure ? ranked.structure.split(',') : [] : tags, [top, ranked.entry, ranked.structure, tags]);
   const membersKey = members.join(',');
   const measureQuery = (measure: CasualtyMeasure) => active && following && track && members.length
-    ? { product: 'series-state', params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ tag, hour: 0 })) } } : null;
+    ? { product: 'series-state', params: { branchId: track.branch.id, family: family(measure), reads: members.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const queries = useMemo(() => MEASURES.map(measureQuery), [active, following, track?.branch.id, membersKey]);
   const read = useCallback((entry: FollowEntry) => entry, []);
@@ -154,9 +156,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const rankRequest = asked && top != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family: family(RANK), hour: moment, top: Math.min(top, 1500) } } : null;
   const rank = useFollowedProduct<SeriesStateReply>(runtime.client, rankRequest, ['hour'], active, undefined, track?.source);
-  const askedTags = useMemo(() => top != null ? (rank.data?.states ?? []).filter(state => state.run).map(state => state.tag) : tags, [top, rank.data, tags]);
+  const askedTags = useMemo(() => top != null ? (rank.data?.states ?? []).filter(state => state.run).map(state => countryKey(state.country)) : tags, [top, rank.data, tags]);
   const stateRequests = MEASURES.map(measure => asked && askedTags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: family(measure), reads: askedTags.map(tag => ({ tag, hour: moment })) } } : null);
+    params: { branchId: track.branch.id, family: family(measure), reads: askedTags.map(tag => ({ country: countryFromKey(tag), hour: moment })) } } : null);
   const states = [
     useFollowedProduct<SeriesStateReply>(runtime.client, stateRequests[0], ['reads'], active, undefined, track?.source),
     useFollowedProduct<SeriesStateReply>(runtime.client, stateRequests[1], ['reads'], active, undefined, track?.source),

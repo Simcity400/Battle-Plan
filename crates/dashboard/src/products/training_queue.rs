@@ -6,6 +6,7 @@
 //! Nothing is interpolated: training is the stored value of that read, an amount ordered never
 //! becomes invented divisions, and a stored halting reason is reported only as present.
 
+use dashboard_base::products::{Country, validate_country};
 use super::LoadContext;
 use super::divisions::{Content, Refusals};
 use crate::{
@@ -13,7 +14,6 @@ use crate::{
     catalogue::{self, Catalogue, View},
     products::at_hour::{At, AtHour},
 };
-use dashboard_base::products::validate_tag;
 use dashboard_text::{
     metadata::link_slot,
     scripted_text::ScriptedText,
@@ -57,7 +57,7 @@ pub struct TrainingQueue;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrainingQueueParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// One country's manpower entry for a division in training.
@@ -288,11 +288,11 @@ impl AtHour for TrainingQueue {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -310,7 +310,7 @@ impl AtHour for TrainingQueue {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Training queue country is unavailable at this hour"))?;
-        let mut reply = TrainingQueueReply { tag: params.tag.clone(), read_hour: None, missing: None, orders: Vec::new(), warnings: Vec::new() };
+        let mut reply = TrainingQueueReply { tag: at.holders.name(&params.country, at.hour), read_hour: None, missing: None, orders: Vec::new(), warnings: Vec::new() };
         if let Some(why) = QUEUE.iter().find_map(|&id| unavailable(frame, id)) {
             reply.missing = Some(why);
             return Ok(reply);

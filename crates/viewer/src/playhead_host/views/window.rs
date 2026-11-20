@@ -23,7 +23,7 @@ use viewer_foundation::{
         camera::{Camera, MapSize},
         counter_hovers::unit_hits::{Hit, Kind},
         counter_move::MovementFrame,
-        perspective::{Choice, Country},
+        perspective::Choice,
         province_map::HeightField,
     },
     unit_handle::Unit,
@@ -200,7 +200,7 @@ fn evaluate(document: &Document, today: &DecodedFrame, frame: &DecodedFrame, row
 
     let branch = document.playback.branch();
     let mut units = viewer_counters::map::unit_selection::Selection::default();
-    units.context(branch, &Country::Recorded, ours);
+    units.context(branch);
     for (kind, of) in [(Kind::Division, 0), (Kind::RailwayGun, 1), (Kind::TaskForce, 2)] {
         let members: Vec<u64> = picks
             .units
@@ -213,24 +213,24 @@ fn evaluate(document: &Document, today: &DecodedFrame, frame: &DecodedFrame, row
         units.click(Some(&Hit { ours: true, port: false, rect: [0.0; 4], kind, members: members.into(), layer: 0, plate: None }), true);
     }
     text("observe:units", timed(|| {
-        units.observe(branch, &Country::Recorded, ours, frame);
+        units.observe(branch, frame);
         format!("{:?}", units.units().iter().collect::<BTreeSet<_>>())
     }));
     let selected: BTreeSet<Unit> = units.units().iter().copied().collect();
     let mut air = viewer_counters::map::air_selection::Selection::default();
-    air.context(branch, &Country::Recorded, ours);
+    air.context(branch);
     air.click(&picks.wings, false);
     text("observe:air", timed(|| {
-        air.observe(branch, &Country::Recorded, ours, frame);
+        air.observe(branch, ours, frame);
         format!("{:?}", air.wings())
     }));
     let mut fleets = viewer_counters::map::naval_selection::Selection::default();
-    fleets.context(branch, &Country::Recorded, ours);
+    fleets.context(branch);
     for &fleet in &picks.fleets {
         fleets.click(fleet, true);
     }
     text("observe:fleets", timed(|| {
-        fleets.observe(branch, &Country::Recorded, ours, frame);
+        fleets.observe(branch, frame);
         format!("{:?}", fleets.fleets())
     }));
 
@@ -273,7 +273,7 @@ fn evaluate(document: &Document, today: &DecodedFrame, frame: &DecodedFrame, row
         }
         missed.extend(overlay_rows.missed());
         let (mut batch, mut report) = (Default::default(), Default::default());
-        prepared.draw_into(&hour, camera, VIEWPORT, 1.0, &OverlayLayers::omitting(Default::default()), 0.0, &mut batch, &mut report)?;
+        prepared.draw_into(&hour, camera, VIEWPORT, 1.0, &OverlayLayers::omitting(Default::default()), 0.0, &mut batch, &mut report, &mut Default::default())?;
         quads.push((format!("overlay:{stock:?}:quads"), std::mem::take(&mut batch.quads)));
     }
     Ok(Evaluated { texts, spent, reads, quads, missed })

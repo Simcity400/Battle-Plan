@@ -53,7 +53,8 @@ test('visible sampled flags retain backend reasons, clear current failures and n
               const value = state.styleFailure ?? styles.get(row.tag);
               return value === undefined ? [] : [[nameKey(row.hour, row.tag), value]];
             }));
-          };`;
+          };
+          export const useCountryFactsByKey = (...args) => useCountryFactsRead(...args);`;
       },
     }] });
   try {

@@ -8,6 +8,7 @@
 //!   each design's lines' daily units, IC and costs from them);
 //! - `t<archetype key>`, `balance`, `stock`, `available`: the holder's `LogisticsEquipment` row.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{Content, DECIMALS, NAME_TABLES, NEED_BOUND_RAW, StockType, Types, named_in};
 use crate::{
     Source,
@@ -17,7 +18,6 @@ use crate::{
         production::LineKind,
     },
 };
-use dashboard_base::products::validate_tag;
 use dashboard_follow::live::Source as Cell;
 use replay_data::{
     cadence::STAGGER_PERIOD,
@@ -37,7 +37,7 @@ use ts_rs::TS;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StockpileAtParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// Whether the game's surplus or shortage is known at the hour: the record held the country's rows
@@ -241,7 +241,7 @@ pub(super) fn reply(frame: &DecodedFrame, params: &StockpileAtParams, owner: Own
     }
     let types = types.finish(content, &mut warnings);
     Ok(StockpileAtReply {
-        tag: params.tag.clone(),
+        tag: at.holders.name(&params.country, at.hour),
         campaign_key: context.campaign_key.clone(),
         decimals: DECIMALS,
         types,
@@ -274,11 +274,11 @@ impl AtHour for EquipmentStockpileAt {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {

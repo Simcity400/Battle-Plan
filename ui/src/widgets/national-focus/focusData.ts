@@ -235,7 +235,7 @@ export function validateFocusReply(input: unknown): FocusReply {
 /** Authenticate the supplying read and preserve native per-item refusals. */
 export function validateFocusArtworkReply(value: unknown, params: FocusArtworkParams): FocusArtworkReply {
   const reply = value as FocusArtworkReply;
-  if (!reply || reply.branchId !== params.branchId || reply.hour !== params.hour || reply.tag !== params.tag || reply.database !== params.database
+  if (!reply || reply.branchId !== params.branchId || reply.hour !== params.hour || typeof reply.tag !== 'string' || (typeof params.country === 'string' && reply.tag !== params.country) || reply.database !== params.database
     || !Array.isArray(reply.items) || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string')) {
     throw new Error('Focus artwork does not match this country and hour.');
   }

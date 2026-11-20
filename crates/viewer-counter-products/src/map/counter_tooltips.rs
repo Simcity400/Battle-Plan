@@ -968,6 +968,13 @@ impl<'a> Batch<'a> {
         )
     }
 
+    /// A division's own hover, as the game builds it for a unit model: the army-list text over
+    /// every division standing in its `province`. The unit's own further lines are a debug view the
+    /// game shows only under a development switch.
+    pub fn build_location(&self, province: u32) -> Tooltip {
+        build_location(&self.context, province)
+    }
+
     pub fn build_task_force(
         &self,
         input: &viewer_foundation::map::counter_hovers::task_force::Hover,
@@ -1088,8 +1095,6 @@ fn build_divisions(
 ) -> (Tooltip, Result<bool, String>) {
     let mut out = Tooltip::default();
     let frame = context.frame;
-    let vision = context.vision;
-    let canonical = |raw| context.slot(raw).ok();
     let divisions = match frame.complete::<tables::Divisions>() {
         Ok(rows) => rows,
         Err(error) => {
@@ -1185,12 +1190,53 @@ fn build_divisions(
             handled = Err(reason);
         }
     }
+    army_list(context, &members, first, nato, &mut out);
+    context.hq(&mut out, &[first]);
+    if context.diagnostics {
+        context.template_sections(&mut out, &members);
+    }
+    children::append(context, input, &mut out);
+    // Header fragments terminate their lines; the painter supplies the newline before its divider.
+    if !out.body.is_empty() && out.title.ends_with('\n') {
+        out.title.pop();
+    }
+    (out, handled)
+}
+
+fn build_location(context: &Context<'_>, province: u32) -> Tooltip {
+    let mut out = Tooltip::default();
+    let members: Vec<u64> = match context.frame.complete::<tables::Divisions>() {
+        Ok(rows) => rows.iter().filter(|row| row.province == province).map(|row| row.id).collect(),
+        Err(error) => {
+            refuse(&mut out, "division census", error.to_string());
+            return out;
+        }
+    };
+    let Some(&first) = members.first() else {
+        return out;
+    };
+    army_list(context, &members, first, context.nato, &mut out);
+    if !out.body.is_empty() && out.title.ends_with('\n') {
+        out.title.pop();
+    }
+    out
+}
+
+/// The game's army-list text over `members`, as both a unit counter and a unit's own hover build
+/// it: the intel counts, the single division's name and real template or the template headers and
+/// attrition, then organisation and strength, supply and composition. `first` is the
+/// representative a single division's lines name.
+fn army_list(context: &Context<'_>, members: &[u64], first: u64, nato: bool, out: &mut Tooltip) {
+    let frame = context.frame;
+    let vision = context.vision;
+    let canonical = |raw| context.slot(raw).ok();
+    let members = members.to_vec();
     match context.known(&members) {
         Ok(known) => {
             let unknown = members.len().wrapping_sub(known.len()) as i32;
             let prepared = units::prepare_members(frame, &members, &canonical, vision);
             append(
-                &mut out,
+                out,
                 context,
                 false,
                 "intel header",
@@ -1200,7 +1246,7 @@ fn build_divisions(
             if members.len() == 1 {
                 if !known.is_empty() {
                     append(
-                        &mut out,
+                        out,
                         context,
                         false,
                         "division name",
@@ -1230,11 +1276,11 @@ fn build_divisions(
                             &[("REAL_TEMPLATE", Arg::Text(&name))],
                         )
                     })();
-                    append(&mut out, context, false, "real template", real);
+                    append(out, context, false, "real template", real);
                 }
             } else {
                 append(
-                    &mut out,
+                    out,
                     context,
                     false,
                     "template headers",
@@ -1244,7 +1290,7 @@ fn build_divisions(
                         .and_then(|prepared| context.template_headers(prepared)),
                 );
                 append(
-                    &mut out,
+                    out,
                     context,
                     false,
                     "attrition",
@@ -1264,7 +1310,7 @@ fn build_divisions(
                     })
                     .collect::<Result<Vec<_>, String>>();
                 append(
-                    &mut out,
+                    out,
                     context,
                     true,
                     "organisation/strength",
@@ -1274,7 +1320,7 @@ fn build_divisions(
                         .and_then(|values| statistics(context.loc, members.len() == 1, values)),
                 );
                 append(
-                    &mut out,
+                    out,
                     context,
                     true,
                     "supply",
@@ -1293,20 +1339,10 @@ fn build_divisions(
                     nato,
                 )
             });
-            append(&mut out, context, true, "composition", composition);
+            append(out, context, true, "composition", composition);
         }
-        Err(reason) => refuse(&mut out, "intel header/stat eligibility", reason),
+        Err(reason) => refuse(out, "intel header/stat eligibility", reason),
     }
-    context.hq(&mut out, &[first]);
-    if context.diagnostics {
-        context.template_sections(&mut out, &members);
-    }
-    children::append(context, input, &mut out);
-    // Header fragments terminate their lines; the painter supplies the newline before its divider.
-    if !out.body.is_empty() && out.title.ends_with('\n') {
-        out.title.pop();
-    }
-    (out, handled)
 }
 
 #[cfg(test)]
@@ -2262,6 +2298,22 @@ mod tests {
         assert_eq!(coarse.title, "2 divisions\n");
         assert_eq!(coarse.body, "");
         assert!(coarse.refused.is_empty());
+        // A unit model's own hover is the army list over every division at its location, without
+        // the counter's arrival and next-location lines.
+        let loc = loc();
+        let defines = installed_content_core::defines::Defines::new().unwrap();
+        defines
+            .load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.25,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.75,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=1.5}}")
+            .unwrap();
+        let mut subunits = installed_content_core::unit_leader::SubUnits::default();
+        subunits.read(b"sub_units={Foot={type=infantry}}", "synthetic.txt");
+        let units = units::Content::load(&defines, Ok(&subunits));
+        let names = installed_content_division_names::division_names::Database::default();
+        let context = Context { diagnostics: false, ..context(&frame, &loc, &vision, &names, &units) };
+        let location = build_location(&context, 3);
+        assert_eq!(location.title, detailed.title);
+        assert!(location.body.contains("avg org 50%\nstr 50%\n"), "{}", location.body);
+        assert!(!location.body.contains("arrival 1d") && !location.body.contains("next 2h"), "{}", location.body);        assert_eq!(build_location(&context, 4), Tooltip::default());
     }
 
     #[test]

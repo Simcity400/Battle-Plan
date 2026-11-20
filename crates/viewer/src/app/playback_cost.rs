@@ -11,6 +11,7 @@ use std::{
 mod extra_maps;
 pub(crate) mod pictures;
 pub(crate) mod toggle;
+pub(crate) mod viewpoint;
 
 /// Which hours the frames show: every `step`th hour, one hour under a camera moving `pan`
 /// map units a frame, or, `paced`, whatever the builders finished under a head running free at that

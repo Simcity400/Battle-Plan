@@ -1999,8 +1999,7 @@ fn hub_left_to_another_layer(
     }
 }
 
-/// A building's status scope: type token, location, status flags, owner override.
-pub type Scope = (u32, u32, u32, u32);
+pub use viewer_foundation::map::building_facts::Scope;
 
 #[cfg(test)]
 fn raid_targets(frame: &DecodedFrame) -> Option<BTreeMap<Scope, &[u8]>> {
@@ -2102,11 +2101,7 @@ impl Detection {
     }
 }
 
-/// Whether the viewer `ours` has detected a foreign `need_detection` building, from values:
-/// `controller(provincial, location)` is a location's raw controller, `link(raw)` a raw country's
-/// canonical slot, `target(scope)` the winning raid-target row's bit for `ours` (`None` when
-/// RaidTargetStatuses is not complete, `Some(None)` when no row holds the scope). `None` when the
-/// hour cannot decide it.
+/// [`building_facts::detected`] for one building row.
 pub fn detected(
     row: &BuildingInput,
     controller: impl FnOnce(bool, u32) -> Option<u32>,
@@ -2114,24 +2109,13 @@ pub fn detected(
     ours: u32,
     target: impl FnOnce(Scope) -> Option<Option<bool>>,
 ) -> Option<bool> {
-    // A positive override, else the province (flag bit 0) or state controller.
-    let owner = if (row.country as i32) > 0 {
-        Some(row.country)
-    } else {
-        controller(row.status_flags & 1 != 0, row.location)
-    };
-    let owner = owner.and_then(link);
-    if owner == Some(ours) {
-        return Some(true);
-    }
-    let detected =
-        target((row.building_type, row.location, row.status_flags, row.country))?.unwrap_or(false);
-    // An unresolved owner could be an alias of ours.
-    if detected {
-        Some(true)
-    } else {
-        owner.map(|_| false)
-    }
+    viewer_foundation::map::building_facts::detected(
+        (row.building_type, row.location, row.status_flags, row.country),
+        controller,
+        link,
+        ours,
+        target,
+    )
 }
 
 /// The `LexicalTokens` tokens that name a building type, with the type.

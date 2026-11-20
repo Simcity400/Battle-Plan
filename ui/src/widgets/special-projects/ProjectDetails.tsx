@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -62,7 +63,7 @@ function Project(props: Asked & { project: ProjectRuntimeDetails }) {
 function ProjectBody({ project, runtime, widget, tag, active, open, box }: Asked & {
   project: ProjectRuntimeDetails; open: boolean; box: RefObject<HTMLDetailsElement | null>;
 }) {
-  const effects = useHeadProduct<SpecialProjectEffects>(runtime, widget, 'special-project-effects', open ? { tag, owner: project.owner, project: project.id } : null,
+  const effects = useHeadProduct<SpecialProjectEffects>(runtime, widget, 'special-project-effects', open ? { country: countryFromKey(tag), owner: project.owner, project: project.id } : null,
     { active: active && open, validate: validateProjectEffects, structure: effectsStructure });
   const state = effects.error ? effects.error.message : !effects.data ? 'Loading effects…' : effects.data.unavailable;
   useLayoutEffect(() => { effects.root(box.current); }, [effects.root, box]);
@@ -124,7 +125,7 @@ function Shown({ details, asked }: { details: SpecialProjectDetails; asked: Aske
  * renders only when its structure changes; the values the game refreshes daily are painted ([`detailTexts`]). */
 export default function ProjectDetails({ runtime, widget, tag, active, onWarnings }: Asked & { onWarnings: (warnings: readonly string[]) => void }) {
   const box = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { tag },
+  const head = useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },
     { active, validate: validateProjectDetails, structure: detailsStructure });
   const { data, error, retry, root } = head;
   useDrawnPanel(box, runtime.clock, panelFeed('special-project-details', head, detailsStructure, widget, runtime), active);

@@ -62,7 +62,7 @@ fn ids(set: &[Choice]) -> std::collections::BTreeSet<&str> {
 }
 
 /// One map of the run: a viewer whose loads read the run's map service.
-fn viewer(
+pub(super) fn viewer(
     config: &dashboard::Config,
     options: &Options,
     state: &eframe::egui_wgpu::RenderState,
@@ -111,7 +111,7 @@ fn save(key: &str, set: &[Choice]) -> io::Result<()> {
 
 /// One frame of the window: the host's settings and checks followed, a finished load installed,
 /// the map drawn. What it drew: `None` while no document is installed, else its visual mods.
-fn frame(
+pub(super) fn frame(
     viewer: &mut Viewer,
     ctx: &egui::Context,
     state: &eframe::egui_wgpu::RenderState,

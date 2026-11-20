@@ -38,7 +38,7 @@ test('a detail history asks the windows its view and its moment reach, and joins
 
 const part = (key: string, kind: number, patch: Partial<FuelDemandPart> = {}): FuelDemandPart => ({ key, kind, reference: key, parent: '0', ordinal: 0, owners: null,
   wingOwner: null, group: null, topologyReason: null, site: null, amountRaw: '100', reason: null, recordedName: key, nameReason: null, ...patch });
-const demand = (): FuelDemandReply => ({ tag: 'ONE', readHour: 48, country: 7, countryInstance: 0,
+const demand = (): FuelDemandReply => ({ tag: 'ONE', asked: 'ONE', readHour: 48, country: 7, countryInstance: 0,
   consumption: { nativeDailyRaw: ['1', '2', null], knownDailyRaw: ['1', '2', '0'], positiveDailyRaw: ['1', '2', '0'], reasons: [null, null, 'navy unread'] },
   parts: [part('d1', 0, { group: '50' }), part('d2', 0, { reference: '61' }), part('d3', 0), part('w1', 1), part('t1', 2, { parent: '80' }), part('t2', 2, { amountRaw: null, reason: 'rate unread' })],
   commands: [{ reference: '50', parent: '0', country: 7, armyGroup: true, members: [], children: ['60'], recordedName: 'Group', nameReason: null },

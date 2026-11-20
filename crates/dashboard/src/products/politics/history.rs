@@ -13,6 +13,7 @@
 //!
 //! Every run is read from its column's tracks per stretch; nothing carries across a gap.
 
+use dashboard_base::products::Country;
 use super::{
     HolderTag, Holding, PoliticsRun, by_id, decimal, holdings, pieces, state::{BalanceRange, BalanceSide}, stretch_runs, tags_of, token,
     value_at, within,
@@ -20,7 +21,7 @@ use super::{
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    products::{LoadContext, Product, check_reply_budget, validate_tag},
+    products::{LoadContext, Product, check_reply_budget},
 };
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, timeline::Stretch};
@@ -58,7 +59,7 @@ pub struct PoliticsHistoryParams {
     /// The country, for [`PoliticsHistoryMode::Country`].
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub tag: Option<String>,
+    pub country: Option<Country>,
 }
 
 /// One holder's election schedule over the branch.
@@ -122,6 +123,9 @@ pub struct PoliticsHistoryReply {
     /// The branch's last hour: the history reads through it.
     pub last_hour: Option<i32>,
     pub tag: Option<String>,
+    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional = nullable))]
+    pub asked: Option<dashboard_base::products::Country>,
     /// The hours the mode's table was read; others are unknown.
     pub known: Vec<HourSpan>,
     pub elections: Vec<ElectionHistory>,
@@ -159,7 +163,7 @@ impl Product for PoliticsStateHistory {
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid politics history branch")?;
         match params.mode {
-            PoliticsHistoryMode::Country => validate_tag(params.tag.as_deref().ok_or("Missing country")?),
+            PoliticsHistoryMode::Country => dashboard_base::products::validate_country(params.country.as_ref().ok_or("Missing country")?),
             _ => Ok(()),
         }
     }
@@ -180,7 +184,8 @@ pub fn answer(query: &Query<'_>, params: &PoliticsHistoryParams, catalogue: Opti
         branch_id: params.branch_id.clone(),
         mode: params.mode,
         last_hour: Some(query.timeline.last),
-        tag: params.tag.clone(),
+        tag: params.country.as_ref().map(|country| query.holders.name(country, query.timeline.last)),
+        asked: params.country.clone(),
         known: Vec::new(),
         elections: Vec::new(),
         names: BTreeMap::new(),
@@ -191,8 +196,8 @@ pub fn answer(query: &Query<'_>, params: &PoliticsHistoryParams, catalogue: Opti
     match params.mode {
         PoliticsHistoryMode::Elections => elections(query, &held, &mut reply, cancelled)?,
         PoliticsHistoryMode::Country => {
-            let tag = params.tag.as_deref().ok_or_else(|| crate::invalid("A country history names its country"))?;
-            let holders: Vec<u32> = held.iter().filter(|(_, held)| held.iter().any(|holding| holding.tag == tag)).map(|(&slot, _)| slot).collect();
+            let country = params.country.as_ref().ok_or_else(|| crate::invalid("A country history names its country"))?;
+            let holders: Vec<u32> = held.iter().filter(|(_, held)| held.iter().any(|holding| super::super::casualties::matches(country, (holding.slot, holding.id), &holding.tag))).map(|(&slot, _)| slot).collect();
             balances(query, &held, &holders, true, catalogue, &mut reply, cancelled)?;
         }
         PoliticsHistoryMode::Memberships => {

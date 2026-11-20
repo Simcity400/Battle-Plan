@@ -11,7 +11,11 @@ import { isOrderedSpans, isSpan } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { OptionValue } from '../../dashboard/options';
-import type { ArmyAttribution, ArmyMeasure, ArmySizeParams, ArmySizeReply } from '../../generated/dashboard';
+import type { ArmyAttribution, ArmyMeasure, ArmySeries, ArmySizeParams, ArmySizeReply as ArmySizeAnswer } from '../../generated/dashboard';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
+
+/** An army reply whose lines are keyed as the widget keys them: each by its country's key (`countryKey`). */
+export type ArmySizeReply = Omit<ArmySizeAnswer, 'series'> & { series: (Omit<ArmySeries, 'country'> & { tag: string })[] };
 
 export const MEASURES = [
   { value: 'manpower', label: 'Manpower in the field' },
@@ -21,6 +25,10 @@ export const MEASURES = [
 ] as const satisfies readonly { value: ArmyMeasure; label: string }[];
 
 export function validateArmySizeReply(value: unknown): ArmySizeReply {
+  if (object(value) && Array.isArray(value.series) && value.series.some(series => object(series) && 'country' in series)) {
+    value = { ...value, series: value.series.map(series => object(series) && (typeof series.country === 'string' || typeof series.country === 'number')
+      ? (({ country, ...rest }) => ({ ...rest, tag: countryKey(country as ArmySeries['country']) }))(series) : series) };
+  }
   if (!object(value) || typeof value.branchId !== 'string' || typeof value.available !== 'boolean'
     || !isOrderedSpans(value.windows) || !(value.window === null || (int(value.window) && value.window >= 0))
     || !(value.interval === null || isSpan(value.interval))
@@ -138,7 +146,7 @@ export function armyMeasure(value: OptionValue, measures: readonly ArmyMeasure[]
 
 export function armySizeRequest(branchId: string, resolved: { tags: readonly string[]; top?: number }, measure: ArmyMeasure,
   countFor: ArmyAttribution, byType: boolean, window: number | null = null): ArmySizeParams {
-  return { branchId, tags: resolved.top == null ? [...resolved.tags] : [], top: resolved.top ?? null,
+  return { branchId, countries: resolved.top == null ? resolved.tags.map(countryFromKey) : [], top: resolved.top ?? null,
     measure, countFor, byType, window };
 }
 

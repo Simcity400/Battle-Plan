@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { PlaybackController } from '../../dashboard/playback';
@@ -29,7 +30,7 @@ export function useStabilityParts(client: DashboardClient, clock: PlaybackContro
   // Each part is named at the last hour it was held in the view, where the parts dictionary still holds it: one
   // read an hour some part last held.
   const namesRequests = useMemo(() => source && branchId && tag ? namesAt(listed.data?.parts ?? [], span.lastHour)
-    .map(([hour, parts]) => ({ sourceId: source.id, revision: source.revision, product: 'stability-part-names', params: { branchId, tag, parts, hour } })) : [],
+    .map(([hour, parts]) => ({ sourceId: source.id, revision: source.revision, product: 'stability-part-names', params: { branchId, country: countryFromKey(tag), parts, hour } })) : [],
   [source, branchId, tag, listed.data, span.lastHour]);
   const namedAll = useProducts<StabilityPartNamesReply>(client, namesRequests, active, validateStabilityPartNames, source);
   const named = useMemo(() => ({ ...namedAll, data: namedAll.data && { tag: tag ?? '', hour: span.lastHour, parts: namedAll.data.flatMap(reply => reply.parts),

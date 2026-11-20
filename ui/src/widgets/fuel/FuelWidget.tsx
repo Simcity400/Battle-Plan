@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -94,9 +95,9 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const headTags = following && active && track && !saved ? tags : null;
   const branchId = track?.branch.id;
   const fuelQuery = useMemo(() => headTags?.length ? { product: 'series-state', params: { branchId,
-    family: { kind: COUNTRY_FUEL, measure: 'fuel' }, reads: headTags.map(tag => ({ tag, hour: 0 })) } } : null, [headTags, branchId]);
+    family: { kind: COUNTRY_FUEL, measure: 'fuel' }, reads: headTags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null, [headTags, branchId]);
   const capacityQuery = useMemo(() => headTags?.length && showCapacity ? { product: 'series-state', params: { branchId,
-    family: { kind: COUNTRY_FUEL, measure: 'capacity' }, reads: headTags.map(tag => ({ tag, hour: 0 })) } } : null, [headTags, branchId, showCapacity]);
+    family: { kind: COUNTRY_FUEL, measure: 'capacity' }, reads: headTags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null, [headTags, branchId, showCapacity]);
   const fuelFollowed = useFollow(store, fuelQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const capacityFollowed = useFollow(store, capacityQuery, root, NO_PAINT);
   const fuelHead = followsHead(fuelFollowed), capacityHead = followsHead(capacityFollowed);
@@ -195,7 +196,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
       return () => stops.forEach(stop => stop()); } }), [fuel.revision, fuel.subscribe, capacity.revision, capacity.subscribe, gain.revision, gain.subscribe, burn.revision, burn.subscribe]);
   // A hovered day is asked once per country for its tooltip.
   const hoverRequests = useMemo(() => track && hoverHour !== null && !saved ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
-    product: COUNTRY_FUEL, params: { branchId: track.branch.id, tag, hour: Math.floor(hoverHour) } })) : [], [track, hoverHour, tags, saved]);
+    product: COUNTRY_FUEL, params: { branchId: track.branch.id, country: countryFromKey(tag), hour: Math.floor(hoverHour) } })) : [], [track, hoverHour, tags, saved]);
   const hovered = useProducts<CountryFuelReply>(runtime.client, hoverRequests, active, validateCountryFuel, track?.source);
   const hoverLabels = useCountryLabelsAt(runtime.client, track, hoverHour === null || single ? [] : tags.map(tag => ({ tag, hour: Math.floor(hoverHour) })), active);
   const colors = { fuel: tokens.accent, capacity: tokens.muted, gained: tokens.categories[0], burned: tokens.categories[1] };
@@ -274,12 +275,12 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     const replies = hoverHour !== null && Math.floor(hoverHour) === at ? hovered.data : undefined;
     if (single) {
       if (!isMember(membership?.get(tags[0]), at)) return fitTooltip([{ title: dayLabel(at), rows: [{ label: 'Not in the group at this date', tone: 'muted' as const }] }], viewport);
-      const reply = replies?.find(item => item.tag === tags[0]);
+      const reply = replies?.[0];
       return fitTooltip(reply ? fuelTooltips(reply, dayLabel(at), colors, digits) : [{ title: dayLabel(at), rows: [{ label: hovered.error ? 'Could not load this day' : 'Loading…', tone: 'muted' as const }] }], viewport);
     }
     const rows: TooltipRow[] = tags.flatMap((tag): TooltipRow[] => {
       const label = hoverLabels.labelAt(at)(tag);
-      const reply = replies?.find(item => item.tag === tag);
+      const reply = replies?.[tags.indexOf(tag)];
       if (!isMember(membership?.get(tag), at)) return [{ label: label.name, countryFlag: label, value: 'Not in the group', tone: 'muted' as const }];
       if (!reply) return [{ label: label.name, countryFlag: label, value: 'Loading…', tone: 'muted' as const }];
       const tip = fuelTooltips(reply, label.name, colors, digits)[0];

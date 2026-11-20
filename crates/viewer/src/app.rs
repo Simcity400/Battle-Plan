@@ -17,7 +17,6 @@ use viewer_foundation::map::native_gui::pointer::Sound;
 use viewer_foundation::map::gpu_contract::device_requirements;
 use viewer_foundation::map::gpu_contract::is_software;
 use viewer_foundation::map::perspective::Choice;
-use viewer_foundation::map::perspective::Country;
 use viewer_foundation::map::presentation::Continuity;
 use viewer_foundation::map::presentation::Target;
 use viewer_foundation::map::province_pick::{motion_ground_point, pick, terrain_height};
@@ -71,10 +70,14 @@ use {
     viewer_world::map::scene::Request,
 };
 
+mod air_orders;
 pub(crate) mod combat_rows;
 mod drop;
 mod embedded;
 pub(crate) mod faction_highlight;
+mod ground_click;
+mod held_clicks;
+mod raid_details;
 
 
 pub(crate) mod head_rows;
@@ -82,15 +85,23 @@ pub(crate) mod highlight;
 pub(crate) mod laid_proof;
 pub(crate) mod map_hits;
 mod hover_report;
+mod observe;
+mod switch_trace;
 pub(crate) mod hover_rows;
 pub(crate) mod fly;
 mod fly_aircraft;
 pub(crate) mod picker;
+pub(crate) mod find_view;
+mod minimap;
 pub(crate) mod playback_cost;
 mod presentation;
 mod profile_playback;
 #[cfg(test)]
 pub(crate) mod readback;
+mod order_cursor;
+mod pointer_changes;
+mod selection_input;
+mod unit_pick;
 mod walk;
 
 /// Guard the README's frame-budget boundary at both production entry points.
@@ -206,6 +217,12 @@ impl Presented {
         self.texture.is_none() || self.generation != generation
     }
 
+    /// The texture showing the picture last drawn, while it is still the target of the scene at
+    /// `generation`: what a frame with nothing of its own to draw keeps on screen.
+    fn kept(&self, generation: Option<u64>) -> Option<egui::TextureId> {
+        generation.filter(|&generation| !self.stale(generation)).and(self.texture)
+    }
+
     /// Gives up the texture for freeing, so the next frame registers the target afresh.
     fn take(&mut self) -> Option<egui::TextureId> {
         self.generation = 0;
@@ -218,9 +235,13 @@ impl Presented {
 fn a_map_retired_and_shown_again_registers_its_new_target() {
     let mut presented = Presented::default();
     assert!(presented.stale(1));
+    assert_eq!(presented.kept(Some(1)), None, "nothing drawn yet: nothing to keep");
     presented.texture = Some(egui::TextureId::User(7));
     presented.generation = 1;
     assert!(!presented.stale(1));
+    assert_eq!(presented.kept(Some(1)), Some(egui::TextureId::User(7)), "the picture last drawn stays on screen");
+    assert_eq!(presented.kept(Some(2)), None, "a new target holds no picture yet");
+    assert_eq!(presented.kept(None), None, "nor does a map without a scene");
     assert!(presented.stale(2));
     // A resize past the map resource budget retires the map and frees its texture.
     assert_eq!(presented.take(), Some(egui::TextureId::User(7)));
@@ -967,6 +988,9 @@ pub struct Viewer {
     /// The document on screen has shown a whole picture since it was installed; until then the
     /// spinner covers what is drawn beneath it.
     shown_whole: bool,
+    switch_trace: switch_trace::SwitchTrace,
+    /// Ctrl+click switches shown here before the host's options follow them.
+    observing: observe::Observing,
     /// The map's reader being made on a worker; today's picture is drawn until then.
     playhead_opening: Option<crate::playhead_host::Opening>,
     /// What the window last presented of the playhead's map, for its own histories.
@@ -1033,6 +1057,8 @@ pub struct Viewer {
     /// Where the camera stood when the overlay on screen was last placed;
     /// a frame whose camera stands elsewhere places it again and lays nothing out.
     overlay_placed: Option<Camera>,
+    /// The icon families the overlay last asked for can draw, which a click can reach.
+    overlay_asked: Option<viewer_counters::map::counters::Shown>,
     /// The frame size and interface scale the overlay was placed for: a window's layout is made
     /// for them, so only a camera moving over that same view may be answered by a move.
     overlay_placed_view: Option<([u32; 2], u32)>,
@@ -1068,12 +1094,18 @@ pub struct Viewer {
     overlay_looks: u64,
     /// The overlay's reads that its rows at the head do not hold yet, by name.
     overlay_loading: Vec<String>,
+    /// Clicks waiting, in order, for the rows of the hour each was made at.
+    held_clicks: std::collections::VecDeque<held_clicks::Held>,
     /// The tables the overlay's last layout read that its rows did not hold, until one is made.
     overlay_missed: Vec<replay_data::rows::TableId>,
     combat_rows: combat_rows::CombatRows,
     tooltip_refused: BTreeMap<String, usize>,
     // counters
     counter_report: CounterReport,
+    /// Where the combat window took the pointer in the picture last painted: what a press lands on.
+    combat_painted: combat::Footprint,
+    /// The overlay's own icons' hit shapes as the last draw laid them out, beside its counters'.
+    overlay_hits: crate::document::OverlayHits,
     /// The pointer resolved against the frame's hit shapes, once for each point a frame asks
     /// about ([`map_hits`]); `hits_stamp` names the shapes it was resolved against.
     map_hits: std::cell::RefCell<map_hits::Resolved>,
@@ -1096,6 +1128,9 @@ pub struct Viewer {
     counter_selecting: Option<Unit>,
     /// The picker control the held secondary press went down on.
     secondary_on: Option<viewer_combat::picker::Control>,
+    air_orders: air_orders::AirOrders,
+    /// The box a bare-map drag draws, the unit models' pick shapes, the selection sounds' queue.
+    selection_input: selection_input::SelectionInput,
     /// The last icon layer built, and the frame, camera and viewport it was
     /// built for; the two reports beside it come from the same build.
     ///
@@ -1127,6 +1162,9 @@ pub struct Viewer {
     /// The view's map mode; the picker, its shortcuts and the host set it.
     map_mode: viewer_world::map::map_mode::MapMode,
     diplomatic_selected: Option<u32>,
+    /// What the last ground click left selected, whose outline the borders draw until the next
+    /// deselection.
+    ground_selection: Option<ground_click::Outline>,
     /// The map mode picker drawn over the map, its slots and what it tells the host.
     picker: picker::PickerState,
     picker_error: Option<String>,
@@ -1358,7 +1396,7 @@ impl Viewer {
         let draw = |prepared: &mut crate::document::PreparedOverlay| {
             let (mut batch, mut report) = (Batch::default(), CounterReport::default());
             prepared
-                .draw_into(now, camera, pixels, ui_scale, &layers, time, &mut batch, &mut report)
+                .draw_into(now, camera, pixels, ui_scale, &layers, time, &mut batch, &mut report, &mut Default::default())
                 .map(|()| (batch, report, prepared.label_report().clone(), prepared.raid_report().clone()))
         };
         // Each side is drawn on a presentation whose map-icon pools start empty, and the pools
@@ -1660,6 +1698,8 @@ impl Viewer {
             seek_owed: false,
             overlay_hour: None,
             shown_whole: false,
+            switch_trace: Default::default(),
+            observing: Default::default(),
             playhead_opening: None,
             playhead_refused: None,
             presented: MapPresented::default(),
@@ -1697,6 +1737,7 @@ impl Viewer {
             overlay_shifts: Default::default(),
             overlay_camera_before: None,
             overlay_placed: None,
+            overlay_asked: None,
             overlay_layered: None,
 
             overlay_drawn_fraction: None,
@@ -1707,11 +1748,14 @@ impl Viewer {
             overlay_checked: 0,
             overlay_looks: 0,
             overlay_loading: Vec::new(),
+            held_clicks: Default::default(),
             overlay_missed: Vec::new(),
             combat_rows: Default::default(),
             tooltip_refused: Default::default(),
             // counters
             counter_report: CounterReport::default(),
+            combat_painted: Default::default(),
+            overlay_hits: Default::default(),
             map_hits: Default::default(),
             hits_stamp: 0,
             map_tooltip_target: None,
@@ -1722,6 +1766,8 @@ impl Viewer {
             pressed_on: None,
             counter_selecting: None,
             secondary_on: None,
+            air_orders: Default::default(),
+            selection_input: Default::default(),
             overlay: None,
             prepared_overlay: None,
             overlay_pools: Default::default(),
@@ -1734,6 +1780,7 @@ impl Viewer {
             perspective,
             map_mode,
             diplomatic_selected: None,
+            ground_selection: None,
             picker: Default::default(),
             picker_error: None,
             picker_refused: Default::default(),
@@ -1801,6 +1848,7 @@ impl Viewer {
         self.air_selection = Default::default();
         self.fleet_selection = Default::default();
         self.head_rows = Default::default();
+        self.held_clicks.clear();
         self.forget_overlay_builds();
         if let Some(side) = self.playhead_map.take() {
             self.drop_later(side);
@@ -2086,12 +2134,7 @@ impl Viewer {
         frame: &eframe::Frame,
         target: &dashboard::protocol::DashboardMapView,
     ) {
-        self.perspective.country = target
-            .options
-            .country
-            .clone()
-            .map_or(Country::Recorded, Country::Tag);
-        self.perspective.fog = target.options.fog;
+        self.host_perspective(&target.options);
         self.applying_options = Some(target.options.clone());
         if crate::perf_log::enabled() && self.perf_view.as_deref() != Some(target.id.as_str()) {
             self.perf_view = Some(target.id.clone());
@@ -2454,16 +2497,37 @@ impl Viewer {
     /// The overlay's builds and what they were made from belong to the content open: a build in
     /// flight for the content before gives nothing to the content after.
     fn forget_overlay_builds(&mut self) {
+        self.forget_overlay();
+        self.frame_head.forget();
+    }
+
+    /// The overlay held and what it was made from let go: the frame draws none until the next is
+    /// installed.
+    fn forget_overlay(&mut self) {
         let retired = (self.overlay_tables.take(), self.overlay_frame.take(), self.prepared_overlay.take());
         self.retire(retired);
         self.overlay_hour = None;
-        self.frame_head.forget();
         self.overlay_shifts.clear();
         self.overlay_placed_view = None;
         (self.overlay_shown, self.overlay_view, self.overlay_hour, self.overlay_drawn_fraction, self.overlay_lookups) = (None, None, None, None, None);
         self.overlay_layered = None;
         self.overlay_loading.clear();
         self.overlay_missed.clear();
+    }
+
+    /// The layout drawn last let go of on screen too, for a frame with no overlay coming: none of
+    /// its sprites is drawn and none of its icons is hit. Whether there was one to let go.
+    fn drop_overlay_drawn(&mut self) -> bool {
+        if self.overlay.take().is_none() && self.free_overlay.quads.is_empty() {
+            return false;
+        }
+        self.free_overlay = Batch::default();
+        self.overlay_written += 1;
+        self.overlay_shifts.clear();
+        self.counter_report = CounterReport::default();
+        self.overlay_hits = Default::default();
+        self.hits_stamp += 1;
+        true
     }
 
     /// The map mode of the picture on screen: the mode its layers were composed and settled
@@ -2522,6 +2586,10 @@ impl Viewer {
     fn picture_whole(&self, target: Playhead, playing: bool) -> bool {
         self.playhead_map.as_ref().is_some_and(|side| {
             side.on_screen().is_some_and(|on| {
+                // With no overlay coming for the view (its vision refused), the layers are all of it.
+                if !side.products().overlay_coming() {
+                    return layers_show(&on, target.hour, playing);
+                }
                 whole_picture(&on, self.overlay_hour(), target.hour, playing)
             })
         })
@@ -2725,12 +2793,19 @@ impl Viewer {
         Some([lines.limitations.clone(), lines.political.iter().chain(&lines.reports).cloned().collect()])
     }
 
+    /// The viewing country's vision refused, by name: every part that needs it is withheld, the
+    /// overlay with them, so the map says so with or without its diagnostics.
+    pub(crate) fn vision_refusal_line(&self) -> Option<String> {
+        self.live_map().filter(|side| side.on_screen().is_some()).and_then(|side| side.products().vision_refused.clone()).map(|why| format!("{}Viewing country: the vision layer refuses the hour: {why}", crate::playhead_host::limitations::NOT_GIVEN))
+    }
+
     fn collect_warnings(&self, document: &Document) -> Vec<String> {
+        let refused = self.vision_refusal_line();
         let Some([limitations, reports]) = self.hour_lines() else {
-            return Vec::new();
+            return refused.into_iter().collect();
         };
         // Current hover and combat gaps lead so they stay visible above persistent content notes.
-        let mut warnings: Vec<_> = tooltip_warning_lines(&self.tooltip_refused).collect();
+        let mut warnings: Vec<_> = refused.into_iter().chain(tooltip_warning_lines(&self.tooltip_refused)).collect();
         warnings.extend(self.counter_report.combat_gap_lines());
         warnings.extend(self.combat.warnings(&document.icons.combat.warnings));
         warnings.extend(
@@ -2743,6 +2818,8 @@ impl Viewer {
                 .iter()
                 .map(|(reason, count)| format!("Map mode picker: {reason} ({count} refused)")),
         );
+        warnings.extend(self.air_orders.warnings());
+        warnings.extend(self.map_window_warnings());
         warnings.extend(limitations);
         // The viewer's device, when it lacks a feature some content needs to draw exactly.
         if let Some((device, _)) = &self.gpu {
@@ -2752,11 +2829,11 @@ impl Viewer {
         warnings.extend(
             document
                 .content
-                .cursor
-                .as_ref()
-                .err()
-                .map(|why| format!("Cursor: the game's arrow is not shown: {why}")),
+                .cursors
+                .refusals()
+                .map(|why| format!("Cursor: not shown: {why}")),
         );
+        warnings.extend(self.selection_input.warnings());
         warnings.extend(
             [Unit::Division(0), Unit::RailwayGun(0), Unit::TaskForce(0)]
                 .into_iter()
@@ -3106,6 +3183,7 @@ impl Viewer {
         self.combat.close();
         self.document = None;
         self.diplomatic_selected = None;
+        self.ground_selection = None;
         self.hover_rows = Default::default();
         self.combat_rows = Default::default();
         self.tooltip_refused.clear();
@@ -3157,6 +3235,8 @@ impl Viewer {
         self.overlay_shifts.clear();
         self.overlay_written += 1;
         self.counter_report = CounterReport::default();
+        self.combat_painted = Default::default();
+        self.overlay_hits = Default::default();
         self.hits_stamp += 1;
         self.counter_held = None;
         self.unit_selection = Default::default();
@@ -3468,12 +3548,11 @@ impl Viewer {
 
     /// The frame's hit shapes, as the pointer is resolved against them.
     fn hit_shapes(&self) -> map_hits::Shapes<'_> {
-        let overlay = self.prepared_overlay.as_ref();
         map_hits::Shapes {
             report: &self.counter_report,
-            raids: overlay.map_or(&[], |map| map.raid_hits()),
-            occupation: overlay.map_or(&[], |map| map.occupation_hits()),
-            adjacency: overlay.map_or(&[], |map| map.adjacency_hits()),
+            raids: &self.overlay_hits.raids,
+            occupation: &self.overlay_hits.occupation,
+            adjacency: &self.overlay_hits.adjacency,
             looks: self.looks.as_ref(),
             shifts: self.hit_shifts(),
         }
@@ -3483,9 +3562,8 @@ impl Viewer {
     /// consumer reads the one value the frame's index gave.
     fn map_hit(&self, point: [f32; 2]) -> Option<MapHit> {
         let shapes = self.hit_shapes();
-        let overlay = self.prepared_overlay.as_ref();
         self.map_hits.borrow_mut().at(self.hits_stamp, point, &shapes, |point| {
-            overlay.and_then(|map| map.intel_at(|hit| self.icon_point(free_icons::IconFamily::Intel, hit.layer, point)))
+            self.overlay_hits.intel_at(|hit| self.icon_point(free_icons::IconFamily::Intel, hit.layer, point))
         })
     }
 
@@ -3546,12 +3624,17 @@ impl Viewer {
         let pool = self.worker_pool().map_err(|why| format!("Native map workers: {why}"))?;
         let adjacency = self.map_mode == viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::StrategicNavy);
         let color = if adjacency { &document.border_assets.adjacency_highlight_color } else { &document.border_assets.faction_highlight_color };
-        let Ok(color) = color else {
+        // A refused colour withholds that highlight alone; the selection outline keeps its own.
+        let color = color.as_ref().ok().copied();
+        let outline = self.ground_selection.clone().filter(|_| document.border_assets.selection_colors.is_ok());
+        if color.is_none() && outline.is_none() {
             return Ok(());
-        };
-        let selected = if adjacency {
+        }
+        let selected = if color.is_none() {
+            Arc::default()
+        } else if adjacency {
             point.and_then(|point| match self.map_hit(point) {
-                Some(MapHit::Adjacency(index)) => self.prepared_overlay.as_ref()?.adjacency_hits().get(index),
+                Some(MapHit::Adjacency(index)) => self.overlay_hits.adjacency.get(index),
                 _ => None,
             }).map(|hit| Arc::clone(&hit.area)).unwrap_or_default()
         } else {
@@ -3561,7 +3644,7 @@ impl Viewer {
         // While the political layer draws, the highlight is built over its picture, keyed by the
         // picture's change stamp, or at another mode over the mode fills layer's, keyed by its
         // product's hour.
-        self.highlight_wanted = !selected.is_empty() || self.scene.as_ref().is_some_and(|scene| !scene.faction_highlight_regions().is_empty());
+        self.highlight_wanted = faction_highlight::wanted(&selected, outline.as_ref(), self.scene.as_ref().is_some_and(|scene| !scene.faction_highlight_regions().is_empty()));
         let Some(side) = self.playhead_map.as_ref() else { return Ok(()) };
         // A picture copied before the borders this frame wrote stands on older borders: no
         // highlight is built over it, and one shown is taken off.
@@ -3573,7 +3656,7 @@ impl Viewer {
                 && !scene.faction_highlight_regions().is_empty()
                 && let Some(restore) = self.faction_highlight.take_restore()
             {
-                scene.apply(device, queue, SceneInput::SetFactionHighlight { plan: &restore, strategic_regions: &[], color: *color }).map_err(|why| why.to_string())?;
+                scene.apply(device, queue, SceneInput::SetFactionHighlight { plan: &restore, strategic_regions: &[], color: color.unwrap_or_default() }).map_err(|why| why.to_string())?;
                 if let Some(side) = self.playhead_map.as_mut() {
                     side.reassert(&mut crate::layers::Gpu { device, queue, scene, content: &document.content, whole: false });
                 }
@@ -3588,14 +3671,15 @@ impl Viewer {
             borders: picture,
             regions: Arc::clone(&selected),
             adjacency,
+            selection: outline.clone(),
         };
         let scene = self.scene.as_mut().expect("scene built");
         if self.faction_highlight.requested() != Some(&key)
-            && !scene.faction_highlight_regions().is_empty()
+            && scene.highlight_installed()
             && let Some(restore) = self.faction_highlight.take_restore()
         {
             scene
-                .apply(device, queue, SceneInput::SetFactionHighlight { plan: &restore, strategic_regions: &[], color: *color })
+                .apply(device, queue, SceneInput::SetFactionHighlight { plan: &restore, strategic_regions: &[], color: color.unwrap_or_default() })
                 .map_err(|why| why.to_string())?;
             if let Some(side) = self.playhead_map.as_mut() {
                 side.reassert(&mut crate::layers::Gpu { device, queue, scene, content: &document.content, whole: false });
@@ -3603,6 +3687,10 @@ impl Viewer {
         }
         let content = Arc::clone(&document.content);
         let dropper = pool.dropper();
+        // Palette entry 1 outlines selected provinces, entry 2 a selected state.
+        let outline = outline.zip(document.border_assets.selection_colors.as_ref().ok().copied()).map(|(outline, [province, state])| {
+            (outline.provinces.iter().copied().collect::<std::collections::BTreeSet<u32>>(), if outline.state { state } else { province })
+        });
         if let Some(prepared) = self.faction_highlight.update_with(
             key,
             |job| pool.try_submit(job),
@@ -3622,18 +3710,17 @@ impl Viewer {
                         })
                         .collect() };
                     let meshes = &content.border_meshes;
+                    let outline = outline.as_ref().map(|(provinces, color)| (provinces, *color));
+                    let plan = |regions: &viewer_world::map::political::Regions, zone: &viewer_world::map::demilitarized::Zone| faction_highlight::Prepared {
+                        plan: viewer_world::map::scene::FactionHighlight::with_selection(meshes, regions, zone, &provinces, outline),
+                        restore: Some(viewer_world::map::scene::FactionHighlight::new(meshes, regions, zone, &Default::default())),
+                    };
                     match source {
                         faction_highlight::Over::Layer(picture) => {
                             let (regions, zone) = picture.regions_and_zone(&content.map);
-                            faction_highlight::Prepared {
-                                plan: viewer_world::map::scene::FactionHighlight::new(meshes, &regions, &zone, &provinces),
-                                restore: Some(viewer_world::map::scene::FactionHighlight::new(meshes, &regions, &zone, &Default::default())),
-                            }
+                            plan(&regions, &zone)
                         }
-                        faction_highlight::Over::Mode(regions, zone) => faction_highlight::Prepared {
-                            plan: viewer_world::map::scene::FactionHighlight::new(meshes, &regions, &zone, &provinces),
-                            restore: Some(viewer_world::map::scene::FactionHighlight::new(meshes, &regions, &zone, &Default::default())),
-                        },
+                        faction_highlight::Over::Mode(regions, zone) => plan(&regions, &zone),
                     }
                 }
             },
@@ -3649,7 +3736,7 @@ impl Viewer {
                         .requested()
                         .expect("requested highlight")
                         .regions,
-                    color: *color,
+                    color: color.unwrap_or_default(),
                 },
             );
             dropper.drop_later(prepared.plan);
@@ -3676,15 +3763,14 @@ impl Viewer {
         extent: [f32; 2],
         ctx: &egui::Context,
     ) -> Option<(Arc<Tooltip>, [f32; 4], Option<u32>)> {
+        // Every hover text shown was made at the branch and hour the map presents.
+        self.hover_rows.present(self.layers_on_screen());
         let point = point?;
         let target = self.map_hit(point);
         // An intel entry takes the hover even when its text is empty: the province's is not
         // asked for.
         if matches!(target, Some(MapHit::Intel)) {
-            let hit = self
-                .prepared_overlay
-                .as_ref()
-                .and_then(|map| map.intel_at(|hit| self.icon_point(free_icons::IconFamily::Intel, hit.layer, point)))?;
+            let hit = self.overlay_hits.intel_at(|hit| self.icon_point(free_icons::IconFamily::Intel, hit.layer, point))?;
             let layer = Some((free_icons::IconFamily::Intel, hit.layer));
             let rect = self.shown_rect(layer, hit.bounds());
             let empty = hit.tooltip.title.is_empty()
@@ -3704,11 +3790,7 @@ impl Viewer {
             viewer_foundation::worker_priority::waking(move || ctx.request_repaint())
         };
         if let Some(MapHit::Occupation(index)) = target {
-            let hit = self
-                .prepared_overlay
-                .as_ref()?
-                .occupation_hits()
-                .get(index)?;
+            let hit = self.overlay_hits.occupation.get(index)?;
             let rect = self.shown_rect(layer, hit.bounds()?);
             use viewer_world::map::occupation_icons::Hover;
             let hover = hit.hover.clone();
@@ -3754,8 +3836,8 @@ impl Viewer {
                     let vision = self.shown_vision().ok()?;
                     let inputs = self.hover_inputs(document, &vision, ctx);
                     let (mode, selected, rosters) = (viewer_counter_products::map::province_tooltips::ModeHover::OccupationMarker, self.unit_selection.ordered_units(), document.playback.roster_sampler());
-                    let key = inputs.key(hover_rows::What::Province { province, mode: mode.clone() }, [hover_rows::id(selected), hover_rows::id(&rosters)]);
-                    self.hover_rows.ask(hover_rows::Family::Province, head, key, |caches| inputs.province(caches, province, mode, Arc::clone(selected), rosters))?
+                    let key = inputs.key(hover_rows::What::Province { province, mode: mode.clone(), routes: Vec::new() }, [hover_rows::id(selected), hover_rows::id(&rosters)]);
+                    self.hover_rows.ask(hover_rows::Family::Province, head, key, |caches| inputs.province(caches, province, mode, Vec::new(), Arc::clone(selected), rosters))?
                 }
             };
             return Some((text, rect, None));
@@ -3784,6 +3866,17 @@ impl Viewer {
                 self.shown_rect(layer, self.counter_report.base_hits[index].rect),
                 None,
             ));
+        }
+        if let Some(MapHit::Base(index)) = target
+            && let Some(&province) = self.counter_report.naval_base_hits.get(&index)
+        {
+            let vision = self.shown_vision().ok()?;
+            let inputs = self.hover_inputs(document, &vision, ctx);
+            let fleet_selected = !self.fleet_selection.fleets().is_empty()
+                || self.unit_selection.units().iter().any(|unit| matches!(unit, viewer_foundation::unit_handle::Unit::TaskForce(_)));
+            let key = inputs.key(hover_rows::What::NavalBase { province, fleet_selected }, [0, 0]);
+            let text = self.hover_rows.ask(hover_rows::Family::Counters, head, key, |_| inputs.naval_base(province, fleet_selected))?;
+            return Some((text, self.shown_rect(layer, self.counter_report.base_hits[index].rect), None));
         }
         if let Some(MapHit::AirMission(index)) = target {
             let hit = self.counter_report.air_mission_hits.get(index)?;
@@ -3918,27 +4011,56 @@ impl Viewer {
             let text = self.hover_rows.ask(hover_rows::Family::Counters, head, key, |caches| inputs.port(caches, hit.clone()))?;
             return Some((text, self.shown_rect(layer, hit.rect), None));
         }
+        if let Some(MapHit::Pin(index)) = target {
+            let (theatre, rect) = {
+                let hit = self.counter_report.faction_pin_hovers.get(index)?;
+                (hit.theatre, hit.rect)
+            };
+            let vision = self.shown_vision().ok()?;
+            let inputs = self.hover_inputs(document, &vision, ctx);
+            let key = inputs.key(hover_rows::What::FactionTheatre { faction: theatre.0, ordinal: theatre.1 }, [0, 0]);
+            let text = self.hover_rows.ask(hover_rows::Family::Counters, head, key, |_| inputs.faction_theatre(theatre.0, theatre.1))?;
+            return Some((text, self.shown_rect(layer, rect), None));
+        }
         if target.is_some() {
             return None;
+        }
+        // A unit model owns the hover before the routes and the ground: the viewing country's
+        // anywhere, any country's in the province under the pointer. The game describes its location.
+        match self.model_at(document, point, false).map(|picked| picked.map(|picked| unit_pick::location(&picked.candidates, &picked.divisions, picked.unordered))) {
+            Ok(None) => {}
+            Ok(Some(Ok(province))) => {
+                let vision = self.shown_vision().ok()?;
+                let inputs = self.hover_inputs(document, &vision, ctx);
+                let key = inputs.key(hover_rows::What::Location(province), [0, 0]);
+                let text = self.hover_rows.ask(hover_rows::Family::Counters, head, key, |_| inputs.location(province))?;
+                return Some((text, [0.0, 0.0, extent[0], extent[1]], None));
+            }
+            Ok(Some(Err(why))) | Err(why) => {
+                let mut text = Tooltip::default();
+                text.refused.insert(why.to_owned(), 1);
+                return Some((Arc::new(text), [0.0, 0.0, extent[0], extent[1]], None));
+            }
         }
         let view = self.last_view.as_ref()?;
         // The trade routes the convoys layer draws: none drawn, none hovered.
         let routes = self.open_map().and_then(|side| side.products().routes.as_ref()).map(|(_, routes)| Arc::clone(routes));
-        if self.counter_view.visibility.trade_routes
-            && routes.as_ref().is_some_and(|routes| {
+        // The lines under the pointer join the province's or region's text, as the game composes them.
+        let route_lines: Vec<_> = routes
+            .as_ref()
+            .filter(|_| self.counter_view.visibility.trade_routes)
+            .map(|routes| {
                 viewer_foundation::map::ribbon_content::trade_route_hit(
                     &routes.field.trade_route_hovers,
                     view.camera.eye(),
-                    view.camera
-                        .ray(point.map(|v| v * view.ui_scale), view.viewport),
+                    view.camera.ray(point.map(|v| v * view.ui_scale), view.viewport),
                     document.map.width as f32,
                 )
+                .into_iter()
+                .filter_map(|line| routes.field.trade_route_lines.get(line as usize).copied())
+                .collect()
             })
-        {
-            let mut text = Tooltip::default();
-            text.refused.insert("trade-route hover: transfer rows, delivery efficiency and naval-dominance explanation are not implemented".to_owned(), 1);
-            return Some((Arc::new(text), [0.0, 0.0, extent[0], extent[1]], None));
-        }
+            .unwrap_or_default();
         let province = match pick(
             &view.camera,
             point.map(|v| v * view.ui_scale),
@@ -3954,34 +4076,39 @@ impl Viewer {
             }
         };
         let vision = self.shown_vision().ok()?;
-        if *self.shown_mode()
-            == viewer_world::map::map_mode::MapMode::Stock(
-                viewer_world::map::map_mode::Stock::Terrain,
-            )
-        {
-            let text = self.combat_rows.terrain(head, document, province, &vision, repaint())?;
+        let mode = self.shown_mode().clone();
+        let counters = &document.content.counters;
+        let region = picker::picks_region(counters.kinds.get(&province).copied(), counters.region(province));
+        let mut mode_hover = picker::mode_hover(&mode, region, document.map_modes.defines.opinion_thresholds(), || self.combat_rows.infrastructure(head, document, province, repaint()));
+        if let viewer_counter_products::map::province_tooltips::ModeHover::Terrain { region } = mode_hover {
+            let text = if route_lines.is_empty() {
+                self.combat_rows.terrain(head, document, province, &vision, repaint())?
+            } else {
+                let inputs = self.hover_inputs(document, &vision, ctx);
+                let key = inputs.key(hover_rows::What::Province { province, mode: mode_hover, routes: route_lines.clone() }, [0, 0]);
+                self.hover_rows.ask(hover_rows::Family::Province, head, key, |_| inputs.terrain(Arc::clone(&document.combat), province, region, route_lines))?
+            };
             return Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)));
         }
-        let mode = self.shown_mode().clone();
-        let mut mode_hover = picker::mode_hover(&mode, document.map_modes.defines.opinion_thresholds(), || self.combat_rows.infrastructure(head, document, province, repaint()));
         if let viewer_counter_products::map::province_tooltips::ModeHover::StrategicAir(selected) =
             &mut mode_hover
         {
             *selected = Arc::clone(self.air_selection.wings());
         }
-        if let viewer_counter_products::map::province_tooltips::ModeHover::StrategicNavy(sources) =
-            &mut mode_hover
+        // The overlay's tables made from rows at the head make them; loading by name before.
+        let dominance_sources = || match &self.overlay_tables {
+            Some(tables) => tables.naval_dominance_sources(),
+            None => Arc::new(Err("naval dominance sources: the overlay's tables at the head are loading".into())),
+        };
+        if let viewer_counter_products::map::province_tooltips::ModeHover::StrategicNavy(sources)
+        | viewer_counter_products::map::province_tooltips::ModeHover::SeaRegion(sources) = &mut mode_hover
         {
-            // The overlay's tables made from rows at the head make them; loading by name before.
-            *sources = match &self.overlay_tables {
-                Some(tables) => tables.naval_dominance_sources(),
-                None => Arc::new(Err("naval dominance sources: the overlay's tables at the head are loading".into())),
-            };
+            *sources = dominance_sources();
         }
         let inputs = self.hover_inputs(document, &vision, ctx);
         let (selected, rosters) = (self.unit_selection.ordered_units(), document.playback.roster_sampler());
-        let key = inputs.key(hover_rows::What::Province { province, mode: mode_hover.clone() }, [hover_rows::id(selected), hover_rows::id(&rosters)]);
-        let text = self.hover_rows.ask(hover_rows::Family::Province, head, key, |caches| inputs.province(caches, province, mode_hover, Arc::clone(selected), rosters))?;
+        let key = inputs.key(hover_rows::What::Province { province, mode: mode_hover.clone(), routes: route_lines.clone() }, [hover_rows::id(selected), hover_rows::id(&rosters)]);
+        let text = self.hover_rows.ask(hover_rows::Family::Province, head, key, |caches| inputs.province(caches, province, mode_hover, route_lines, Arc::clone(selected), rosters))?;
         Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)))
     }
 
@@ -4143,6 +4270,8 @@ impl Viewer {
         if let Some(side) = self.playhead_map.as_ref() {
             side.views().show_through(taken);
         }
+        // A playing hover makes each hour's text ahead, from the rows prepared past the hour shown.
+        self.hover_rows.playing = self.playing && !self.saves_a_frame();
         // The map's side prepares its steps on a thread of its own: this frame asks for the view
         // and head it draws at, then takes the side in a window that never waits (a stepped frame
         // waits for the picture of exactly its hour), uploads what it settled into the scene and
@@ -4198,6 +4327,7 @@ impl Viewer {
                 view: overlay_view.clone(),
                 rosters: document.playback.air_rosters(),
             });
+            self.overlay_asked = overlay_ask.as_ref().map(|ask| ask.shown(&document.content.counters.defines));
             let wanted = builds_warnings(self.diagnostics, self.capture.as_ref());
             let saved = self.saves_a_frame();
             // The hours this frame's own place in the replay reaches: none for a picture that must
@@ -4205,6 +4335,7 @@ impl Viewer {
             // takes every change set handed over and waits for every product of its hour.
             let through = shown_head.map(|head| head.hour).filter(|_| !saved && self.playing);
             let mut installed = None;
+            let mut withdrawn = false;
             {
                 let presentation = Arc::clone(&self.counter_view.presentation);
                 let side = self.playhead_map.as_mut().expect("the map's side is open");
@@ -4228,6 +4359,7 @@ impl Viewer {
                     window.take(crate::playhead_host::side::Wants { warnings: wanted, highlight: self.highlight_wanted });
                     // The overlay of the step, taken while the side is held: its counters' memory
                     // becomes the view's here, the one place the side writes nothing.
+                    withdrawn = window.take_overlay_withdrawal();
                     if let Some(made) = window.take_overlay() {
                         // A saved frame's was laid out on the view's own memory: there is nothing
                         // to take. Any other is installed with the memory it was laid out on, which
@@ -4269,6 +4401,10 @@ impl Viewer {
                 // Behind the head, the readers stand where the timed layers wrote; past it after a
                 // seek back, at the hour sought, never at the history the seek left.
                 side.views().show_through(taken.zip(shown_head).map(|(taken, head)| taken.min(head.hour)));
+            }
+            // The overlay held is another viewing country's and none of this one's is coming: it goes.
+            if withdrawn {
+                self.forget_overlay();
             }
             if let Some(made) = installed {
                 self.install_overlay(made);
@@ -4382,11 +4518,11 @@ impl Viewer {
             self.rendered = None;
             return Ok(());
         }
-        // A reset composing: the picture is the one before it, drawn at the perspective its
-        // reader drew it at.
+        // What the frame draws of its own is at the perspective of the picture on screen: the one
+        // before a reset composing, or before a new viewing country's picture is handed over.
         let (stale_hour, perspective) = match self.live_map() {
-            Some(side) if side.composing() => (true, side.view().perspective.clone()),
-            _ => (false, self.perspective.clone()),
+            Some(side) => (side.composing(), side.on_screen().map_or_else(|| self.perspective.clone(), |_| side.view().perspective.clone())),
+            None => (false, self.perspective.clone()),
         };
         if stale_hour && profiling() {
             profile_print(format!("PROFILE stale_hour frame {}", self.profile_frame));
@@ -4480,13 +4616,14 @@ impl Viewer {
         // Escape first gives back a pointer held for looking around (the input layer does that);
         // only a later one reaches the map's interface. A mode choosing its start takes it.
         let escape = takes_keys && ui.input(|input| input.key_pressed(egui::Key::Escape));
-        if escape && !held_pointer && !self.start_pick.choosing() {
+        if escape && !held_pointer && !self.start_pick.choosing() && !self.picker.find.open {
             // Escape closes the tactics popup before the battle window.
             if self.combat.tactics_open {
                 self.combat.tactics_open = false;
             } else {
                 self.combat.close();
                 self.unit_selection.clear();
+                self.ground_selection = None;
                 self.air_selection.clear();
                 self.fleet_selection.clear();
             }
@@ -4505,6 +4642,10 @@ impl Viewer {
             .combat
             .draw(&document.combat, prepared, extent, false, animation_time, false, None)
             .map_err(|error| error.to_string())?;
+        // The window takes the pointer where this frame lays it out and where the picture on
+        // screen shows it, so a press is the window's though it moved or closed since.
+        let painted = self.combat_painted.clone();
+        let over_window = |at: [f32; 2]| combat_geometry.as_ref().is_some_and(|window| window.contains(at)) || painted.contains(at);
         let point = profile_hover_point(
             response
                 .hover_pos()
@@ -4520,25 +4661,12 @@ impl Viewer {
         // only where it lands on this map; a release, wherever it happens. Held for looking
         // around, the pointer is away from the interface.
         let reaches = !free_mode || (interface && !self.input.captured());
-        // The pointer's moves (`None`) and its primary and secondary changes, in order.
-        let (changes, held, input_time) = ui.input(|input| {
-            let changes: Vec<(egui::Pos2, Option<(egui::PointerButton, bool)>)> = input
-                .events
-                .iter()
-                .filter_map(|event| match event {
-                    egui::Event::PointerMoved(pos) => Some((*pos, None)),
-                    egui::Event::PointerButton {
-                        pos,
-                        button: button @ (egui::PointerButton::Primary
-                        | egui::PointerButton::Secondary),
-                        pressed,
-                        ..
-                    } => Some((*pos, Some((*button, *pressed)))),
-                    _ => None,
-                })
-                .collect();
-            (changes, input.pointer.primary_down(), input.time)
-        });
+        // The pointer's moves (`None`) and its primary and secondary changes, in order, each with
+        // the modifiers it came with: what a click acts with, by its change's order.
+        let ((changes, change_modifiers), held, input_time) =
+            ui.input(|input| (pointer_changes::changes(input), input.pointer.primary_down(), input.time));
+        let frame_modifiers = ui.input(|input| input.modifiers);
+        let modifiers_at = |order: usize| change_modifiers.get(order).copied().unwrap_or(frame_modifiers);
         let on_map = |pos: egui::Pos2| {
             response.interact_rect.contains(pos)
                 && ui.ctx().layer_id_at(pos) == Some(response.layer_id)
@@ -4581,6 +4709,7 @@ impl Viewer {
             }
         }).unwrap_or_default());
         if takes_keys {
+            self.confirmation_keys(ui, document, extent);
             self.picker_keys(ui, document, extent);
         }
         // The picker's lists take no scrollbar, so the wheel over them does nothing of theirs.
@@ -4603,7 +4732,9 @@ impl Viewer {
                 .cloned()
         };
         let picker_at = |at: [f32; 2]| picker_placed_at(at).map(|placed| placed.control);
-        let holder = if self.picker.picker.holding() {
+        let holder = if self.air_orders.holding() {
+            Some(Holder::Confirmation)
+        } else if self.picker.holding() {
             Some(Holder::Picker)
         } else if self.combat.holding() {
             Some(Holder::Combat)
@@ -4611,16 +4742,18 @@ impl Viewer {
             self.counter_selecting.map(|_| Holder::Counters)
         };
         let owner = |at: [f32; 2]| {
-            if picker_at(at).is_some() {
+            if self.air_orders.over(at) {
+                Some(Holder::Confirmation)
+            } else if picker_at(at).is_some() {
                 Some(Holder::Picker)
-            } else if combat_geometry.as_ref().is_some_and(|w| w.contains(at)) {
+            } else if over_window(at) {
                 Some(Holder::Combat)
             } else {
                 matches!(self.map_hit(at), Some(MapHit::Unit(_))).then_some(Holder::Counters)
             }
         };
-        let [picker_input, combat_input, counters_input] =
-            [Holder::Picker, Holder::Combat, Holder::Counters].map(|me| {
+        let [picker_input, combat_input, counters_input, confirmation_input] =
+            [Holder::Picker, Holder::Combat, Holder::Counters, Holder::Confirmation].map(|me| {
                 gui_input
                     .as_ref()
                     .map(|input| input.shared(holder, &owner, me))
@@ -4636,6 +4769,12 @@ impl Viewer {
         let mut pressed_on = self.pressed_on;
         let mut bare_clicks = Vec::new();
         let mut off_picker_clicks = Vec::new();
+        // A press on the bare map, on no icon and in no free mode, may become the game's box.
+        let mut box_press = self.selection_input.press;
+        let mut box_releases = Vec::new();
+        let boxes_from = |at: [f32; 2]| {
+            !free_mode && !self.start_pick.choosing() && owner(at).is_none() && self.map_hit(at).is_none()
+        };
         for (this, &(pos, change)) in changes.iter().enumerate().filter(|_| reaches) {
             let Some((egui::PointerButton::Primary, pressed)) = change else {
                 // A press the pointer strays too far from is a drag.
@@ -4643,6 +4782,11 @@ impl Viewer {
                     && let Some((_, from, _, far)) = &mut pressed_on
                 {
                     *far |= pos.distance(*from) > click_dist;
+                }
+                if change.is_none()
+                    && let Some(press) = &mut box_press
+                {
+                    press.moved(pos, frame_point(pos));
                 }
                 continue;
             };
@@ -4652,12 +4796,22 @@ impl Viewer {
             let at = interface_at(pos);
             if pressed {
                 pressed_on = Some((owner(at), pos, input_time, false));
+                box_press = boxes_from(at).then(|| selection_input::BoxPress::new(pos, frame_point(pos)));
+                continue;
+            }
+            // The game's release makes a box past its extent; short of it, however far or long
+            // the press was held, a click.
+            let boxed = box_press.take();
+            if let Some(press) = boxed
+                && viewer_counters::map::box_selection::boxes(press.from_frame, frame_point(pos))
+            {
+                pressed_on = None;
+                box_releases.push((interface_at(press.from), at, this));
                 continue;
             }
             if let Some((on, from, since, far)) = pressed_on.take()
-                && !far
-                && pos.distance(from) <= click_dist
-                && input_time - since <= click_time
+                && ((!far && pos.distance(from) <= click_dist && input_time - since <= click_time)
+                    || boxed.is_some())
             {
                 if on != Some(Holder::Picker) {
                     off_picker_clicks.push(this);
@@ -4669,12 +4823,23 @@ impl Viewer {
         }
         if !held || !reaches {
             pressed_on = None;
+            box_press = None;
         }
         self.pressed_on = pressed_on;
+        self.selection_input.press = box_press;
         // A right press on a picker slot configures it on its release over that slot, in order.
         let mut secondary_clicks = Vec::new();
+        let mut air_order_releases = Vec::new();
         for &(order, pos, pressed) in &secondary {
             let placed = picker_placed_at(interface_at(pos));
+            let at = interface_at(pos);
+            let free = placed.is_none()
+                && !over_window(at)
+                && !self.air_orders.over(at);
+            let under = self.map_hit(at).map(|hit| air_orders::Under::of(hit, &self.counter_report));
+            if let Some(under) = self.air_orders.secondary(pressed, free, under) {
+                air_order_releases.push((order, at, under));
+            }
             if pressed {
                 self.secondary_on = placed.map(|placed| placed.control);
             } else if let Some(pressed_on) = self.secondary_on.take()
@@ -4687,6 +4852,7 @@ impl Viewer {
         }
         if !reaches || !ui.input(|input| input.pointer.secondary_down()) {
             self.secondary_on = None;
+            self.air_orders.release();
         }
         let picker_hit = point.and_then(picker_at);
         let over_picker = picker_hit.is_some();
@@ -4696,15 +4862,8 @@ impl Viewer {
         if response.drag_stopped() {
             self.combat.dragging = false;
         }
-        let over_combat = self.combat.dragging
-            || over_picker
-            || point.is_some_and(|point| {
-                combat_geometry
-                    .as_ref()
-                    .is_some_and(|window| window.contains(point))
-            });
-        let modifiers = ui.input(|input| input.modifiers);
-        self.combat.set_modifiers(modifiers.shift, modifiers.ctrl);
+        let over_combat = self.combat.dragging || over_picker || point.is_some_and(&over_window);
+        self.combat.set_modifiers(frame_modifiers.shift, frame_modifiers.ctrl);
         if over_combat {
             if response.dragged() && self.combat.dragging {
                 let delta = response.drag_delta();
@@ -4752,7 +4911,7 @@ impl Viewer {
         }
         let owns = ui.ctx().data(|data| data.get_temp::<egui::Id>(owner)) == Some(response.id);
         let window_focused = ui.input(|input| input.focused);
-        let focused = window_focused && (!self.dashboard_map || owns);
+        let focused = window_focused && (!self.dashboard_map || owns) && !self.picker.find.typing();
         let pointed = response.hovered() && !over_combat;
         // A mode chosen from the map starts over the ground clicked next, or under the view's
         // middle at the controller's South button; Escape goes back to the map.
@@ -4841,6 +5000,11 @@ impl Viewer {
                 0.0
             }
         };
+        let presses: Vec<([f32; 2], bool, egui::Modifiers)> = primary
+            .iter()
+            .map(|&(order, pos, pressed)| (interface_at(pos), pressed, modifiers_at(order)))
+            .collect();
+        let map_pinged = self.map_windows_pointer(ui, document, camera, &floor, &picker_controls, point, &presses, held, extent, &over_window);
         let law = &document.camera_law;
         // Wheel reports (in lines, as the window system gives them) and zoom-key presses, repeats
         // included, in order; the held arrow keys.
@@ -5034,14 +5198,25 @@ impl Viewer {
         };
         crate::perf_log::frame_view(camera.free().is_some(), camera.height);
         self.grab_pointer(ui.ctx());
-        // The game shows its own arrow wherever no other cursor is asked for; looking around hides
-        // it, which a cursor image would show again.
-        if let Ok(cursor) = &document.content.cursor
-            && response.hovered()
-            && !self.pointer_grabbed
+        let mut box_stroke: Option<(egui::Rect, egui::Stroke)> = None;
+        // The game's cursor chain picks the map's cursor, its arrow where no other is asked for;
+        // looking around hides it, which a cursor image would show again.
+        if response.hovered() && !self.pointer_grabbed {
+            use viewer_playback::cursors::MapCursor;
+            let shift = ui.ctx().input(|input| input.modifiers.shift);
+            let chosen = self.map_cursor(document, point.filter(|_| !free_mode || interface), over_combat, shift);
+            let cursors = &document.content.cursors;
+            if let Ok(cursor) = cursors.get(chosen).or_else(|_| cursors.get(MapCursor::Normal)) {
+                let image = cursor.at(self.started.elapsed().as_secs_f64()).0.clone();
+                ui.ctx().output_mut(|output| output.cursor_image = Some(image));
+            }
+        }
+        if self.selection_input.dragging()
+            && let Some(press) = self.selection_input.press
         {
-            ui.ctx()
-                .output_mut(|output| output.cursor_image = Some(cursor.clone()));
+            // The game's box: a closed white line from the press to the pointer, two pixels wide.
+            let stroke = egui::Stroke::new(2.0 / ui.ctx().pixels_per_point(), egui::Color32::WHITE);
+            box_stroke = Some((egui::Rect::from_two_pos(press.from, press.at), stroke));
         }
         laps.lap("panel_camera");
         drop(_other_cost);
@@ -5135,19 +5310,19 @@ impl Viewer {
         let frame = None;
         if let Some(ours) = seen.as_ref().map(|vision| vision.ours()) {
             if self.unit_selection.units().is_empty() {
-                self.unit_selection.context(branch, &perspective.country, ours);
+                self.unit_selection.context(branch);
             } else {
-                self.head_rows.units(head, frame, |frame| self.unit_selection.observe(branch, &perspective.country, ours, frame));
+                self.head_rows.units(head, frame, |frame| self.unit_selection.observe(branch, frame));
             }
             if self.air_selection.wings().is_empty() && self.air_selection.bases().is_empty() {
-                self.air_selection.context(branch, &perspective.country, ours);
+                self.air_selection.context(branch);
             } else {
-                self.head_rows.air(head, frame, |frame| self.air_selection.observe(branch, &perspective.country, ours, frame));
+                self.head_rows.air(head, frame, |frame| self.air_selection.observe(branch, ours, frame));
             }
             if self.fleet_selection.fleets().is_empty() {
-                self.fleet_selection.context(branch, &perspective.country, ours);
+                self.fleet_selection.context(branch);
             } else {
-                self.head_rows.fleets(head, frame, |frame| self.fleet_selection.observe(branch, &perspective.country, ours, frame));
+                self.head_rows.fleets(head, frame, |frame| self.fleet_selection.observe(branch, frame));
             }
         }
         self.counter_view.selected = Arc::clone(self.unit_selection.units());
@@ -5172,6 +5347,10 @@ impl Viewer {
                 return None;
             };
             self.counter_report.unit_hits[index].units().next()
+        });
+        self.counter_view.raid_hovered = counters_point.filter(|_| !over_combat).and_then(|point| {
+            matches!(self.map_hit(point)?, MapHit::Raid).then_some(())?;
+            self.raid_hit(point).map(|hit| hit.province)
         });
         let frame_sounds = self.interface_sounds.len();
         // The counter the primary button went down on, where it went down, stays pressed until
@@ -5204,8 +5383,7 @@ impl Viewer {
         // The counter under a place, and whether its `count_bg` itself is: a counter's other
         // parts forward its selection but leave its button's state.
         let counter_at = |at: [f32; 2]| {
-            if picker_at(at).is_some() || combat_geometry.as_ref().is_some_and(|w| w.contains(at))
-            {
+            if picker_at(at).is_some() || over_window(at) {
                 return None;
             }
             let target = self.map_hit(at)?;
@@ -5276,6 +5454,14 @@ impl Viewer {
             viewer_foundation::map::redraws::note("asked.pointer", 1);
             self.overlay_fraction = None;
         }
+        // A raid bubble's details window and hover frame draw on the overlay on screen at once.
+        if let Some(prepared) = self.prepared_overlay.as_mut() {
+            let now = (self.counter_view.raid_details.clone(), self.counter_view.raid_hovered);
+            if raid_details::redraws(&prepared.raid_view(), &now) {
+                prepared.set_raid_view(now);
+                self.overlay_fraction = None;
+            }
+        }
         self.last_view = Some(View {
             camera: overlay_camera,
             viewport: pixels,
@@ -5327,14 +5513,35 @@ impl Viewer {
         // before they settle, and the layout at the latest view's height band, viewport and
         // interface scale. This frame places it at its camera and draws it; it lays nothing out.
         let left = self.overlay_left;
-        // Before the first overlay the side hands over: nothing is laid out yet.
-        let (Some(rows), Some(tables)) = (self.overlay_frame.clone(), self.overlay_tables.clone()) else {
+        // Before the first overlay the side hands over: nothing is laid out yet. Once another
+        // viewing country's has gone, the picture drawn before stays on screen whole until this
+        // one's is laid out: never a blank map. When none is coming for the view (its vision
+        // refused), the scene draws without one and its warnings name why.
+        let held = self.overlay_frame.clone().zip(self.overlay_tables.clone());
+        if held.is_none() {
             self.rendered = None;
-            ui.ctx().request_repaint();
-            return Ok(());
-        };
-        let now = crate::document::Hour::new(&document.content, &rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved));
-        let (overlay_ms, additions) = {
+            if live_of(&self.playhead_map).is_none_or(|side| side.products().overlay_coming()) {
+                if let Some(texture) = self.scene_target.kept(self.scene.as_ref().map(|scene| scene.generation())) {
+                    ui.painter().image(texture, rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                }
+                ui.ctx().request_repaint();
+                return Ok(());
+            }
+            // What the layout gave the scene goes with it.
+            if self.drop_overlay_drawn()
+                && let Some(scene) = self.scene.as_mut()
+            {
+                let (device, queue, none) = (&state.device, &state.queue, viewer_world::map::radar_symbols::Field::default());
+                for input in [SceneInput::SetAirRanges(&none), SceneInput::SetAirTransfers(&none), SceneInput::SetAirAssignment(&Default::default()), SceneInput::SetStrategicStyles(&Default::default())] {
+                    scene.apply(device, queue, input).map_err(|error| error.to_string())?;
+                }
+            }
+        }
+        let (overlay_ms, additions) = 'overlay: {
+            let Some((rows, tables)) = held.clone() else {
+                break 'overlay (0.0, Batch::default());
+            };
+            let now = crate::document::Hour::new(&document.content, &rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved));
             let _other_cost = replay_frame::cpu::scope("frame.overlay.prepare", Some("other"));
             let overlay_timer = Instant::now();
             // capture: the animation clock is the one input a live window cannot
@@ -5550,6 +5757,7 @@ impl Viewer {
                                 animation_time,
                                 self.overlay.get_or_insert_with(Batch::default),
                                 &mut self.counter_report,
+                                &mut self.overlay_hits,
                             )
                             .map_err(|error| error.to_string())?;
                         if self.label_report != *prepared.label_report() {
@@ -5731,6 +5939,9 @@ impl Viewer {
                     overlay_checks::note(&overlay_checks::NOTHING_NEW);
                 }
             }
+            // Every click this frame reads the rows of the hour of the overlay it was made on.
+            self.head_rows.click_at(self.click_hour());
+            self.head_rows.clickable(self.clickable(document));
             // An explicit fleet choice remains separate from a task-force plate
             // click. Its roster also reaches empty fleets with no map plate.
             if *self.shown_mode()
@@ -5739,6 +5950,7 @@ impl Viewer {
                 )
             {
                 let head = head_rows::head(live_of(&self.playhead_map));
+                let mut fleet_added = false;
                 response.context_menu(|ui| {
                     let choices = match ours {
                         Some(ours) => self.head_rows.clicks(head, frame, |frame| viewer_counters::map::naval_selection::fleet_choices(frame, ours)).unwrap_or_else(|| Err(std::io::Error::other("the fleets at the head are loading"))),
@@ -5758,9 +5970,12 @@ impl Viewer {
                                     .clicked()
                                 {
                                     let shift = ui.input(|input| input.modifiers.shift);
+                                    let was = self.fleet_selection.fleets().contains(&fleet);
                                     self.fleet_selection.click(fleet, shift);
+                                    fleet_added |= !was && self.fleet_selection.fleets().contains(&fleet);
                                     if !shift {
                                         self.unit_selection.clear();
+                                        self.ground_selection = None;
                                         self.air_selection.clear();
                                     }
                                     self.counter_view.selected =
@@ -5774,6 +5989,9 @@ impl Viewer {
                         }
                     }
                 });
+                if fleet_added {
+                    self.selection_sounds(document, &[], true, ours, frame, viewer_foundation::map::native_gui::pointer::LAST);
+                }
             }
             let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
             overlay_draw_cpu.finish();
@@ -5784,6 +6002,14 @@ impl Viewer {
             let engaged = self.layer_engaged();
             laps.lap("engaged");
             self.combat.set_playing(self.playing);
+            let raids = Arc::clone(&document.icons.raids);
+            self.combat.set_rule_relations(Arc::new(move |frame, rule, country| {
+                viewer_foundation::map::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
+            }));
+            self.combat.set_navy_sources(match &self.overlay_tables {
+                Some(tables) => tables.naval_dominance_sources(),
+                None => Arc::new(Err("naval dominance sources: the overlay's tables at the head are loading".into())),
+            });
             let wake = ui.ctx().clone();
             self.combat
                 .prepare_air(
@@ -5810,6 +6036,7 @@ impl Viewer {
             if self.combat.gui_active() {
                 ui.ctx().request_repaint();
             }
+            self.combat_painted = drawn.as_ref().map(combat::Drawn::footprint).unwrap_or_default();
             if let Some(drawn) = &drawn {
                 self.interface_sounds.extend(
                     drawn
@@ -5836,8 +6063,15 @@ impl Viewer {
                 }
                 None => None,
             };
-            if self.picker.picker.pointing() {
+            if self.picker.pointing() {
                 ui.ctx().request_repaint();
+            }
+            let confirmation_drawn = self.draw_confirmation(document, extent, animation_time, confirmation_input);
+            if self.confirmation_pointing() {
+                ui.ctx().request_repaint();
+            }
+            if let Some(drawn) = &confirmation_drawn {
+                self.interface_sounds.extend(drawn.drawn.sounds.iter().map(|played| InterfaceSound::new("confirmation", played)));
             }
             if let Some(picker_drawn) = &picker_drawn {
                 self.interface_sounds.extend(
@@ -5896,10 +6130,12 @@ impl Viewer {
                     .iter()
                     .map(|&order| (order, Act::Dismiss)),
             );
+            clicks.extend(confirmation_drawn.iter().flat_map(|drawn| drawn.clicked.iter()).map(|&(control, order)| (order, Act::Confirmation(control))));
+            clicks.extend(air_order_releases.iter().map(|&(order, point, under)| (order, Act::AirOrder(point, under))));
             // Resolve map clicks against this hour and camera's newly rebuilt hit regions, in order
             // with the windows'; the click that chose a free mode's start selects nothing. A counter
             // takes its button's clicks on the counters their presses went down on.
-            if !started {
+            if !started && !map_pinged {
                 clicks.extend(
                     counter_clicks
                         .iter()
@@ -5912,11 +6148,16 @@ impl Viewer {
                             .map(|&(point, order)| (order, Act::Map(point))),
                     );
                 }
+                if !self.combat.dragging && !free_mode {
+                    clicks.extend(box_releases.iter().map(|&(from, to, order)| (order, Act::Box(from, to))));
+                }
             }
             clicks.sort_by_key(|(order, _)| *order);
+            self.answer_held(document, frame, ui.ctx());
             let mut closed = false;
-            for (_, click) in clicks {
+            for (order, click) in clicks {
                 use viewer_combat::picker::Control;
+                let modifiers = modifiers_at(order);
                 match click {
                     Act::Dismiss => {
                         if self.picker.open != viewer_combat::picker::Open::None {
@@ -5931,11 +6172,42 @@ impl Viewer {
                             .iter()
                             .position(|hit| hit.units().next() == Some(unit));
                         if hit.is_some() {
-                            self.click_units(hit, ui.ctx());
+                            let before = Arc::clone(self.unit_selection.units());
+                            self.click_units(hit, modifiers.shift, ui.ctx());
+                            self.selection_added(document, &before, ours, frame, order);
                         }
                     }
+                    Act::Box(from, to) => self.select_box(document, from, to, ours, frame, modifiers, ui.ctx(), order),
                     Act::Map(point) => {
+                        // The viewing country's unit models are the game's next target after the
+                        // interface; another country's leave the click to the ground beneath.
+                        if self.map_hit(point).is_none() {
+                            match self.model_at(document, point, true) {
+                                Ok(Some(picked)) => {
+                                    self.click_model(document, picked, ours, frame, modifiers.shift, ui.ctx(), order);
+                                    continue;
+                                }
+                                Err(why) => {
+                                    self.selection_input.refuse(why);
+                                    continue;
+                                }
+                                Ok(None) => {}
+                            }
+                        }
+                        // Ctrl on a province switches the viewing country, after the model pick as the game orders it.
+                        if modifiers.ctrl
+                            && self.map_hit(point).is_none()
+                            && let Some(province) = pick(&camera, point.map(|value| value * ui_scale), pixels, &document.map, document.assets.heightmap_texels()).map_err(|error| error.to_string())?
+                            && self.ctrl_click(document, frame, ours, province, modifiers.shift, ui.ctx())
+                        {
+                            ui.ctx().request_repaint();
+                            continue;
+                        }
+                        // Shift beside a selection: the game's selection test refuses the ground, so nothing changes.
+                        let ground_blocked = modifiers.shift
+                            && !(self.unit_selection.units().is_empty() && self.fleet_selection.fleets().is_empty() && self.air_selection.wings().is_empty());
                         if matches!(self.shown_mode(), viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::Diplomacy))
+                            && !ground_blocked
                             && self.map_hit(point).is_none()
                             && let Some(province) = pick(
                                 &camera,
@@ -5954,28 +6226,10 @@ impl Viewer {
                             Some(MapHit::NavalMission(index))
                                 if self.counter_report.naval_mission_hits[index].mission != 0 =>
                             {
+                                let Some(viewer) = self.viewing(ours, "the naval mission's members") else { continue };
                                 let hit = &self.counter_report.naval_mission_hits[index];
-                                let head = head_rows::head(live_of(&self.playhead_map));
-                                // A click while the viewing country or the rows load selects nothing.
-                                let read = ours.and_then(|viewer| self.head_rows.clicks(head, frame, |frame| viewer_counters::map::naval_selection::mission_members(frame, viewer, hit.region, hit.mission)));
-                                let Some(members) = read_click(&mut self.overlay_loading, "the naval mission's members", read) else {
-                                    continue;
-                                };
-                                let selection = viewer_foundation::map::counter_hovers::unit_hits::Hit {
-                                    plate: None,
-                                    ours: true,
-                                    port: false,
-                                    rect: hit.rect,
-                                    layer: hit.layer,
-                                    kind:
-                                        viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
-                                    members: members.into(),
-                                };
-                                self.unit_selection.click(Some(&selection), false);
-                                self.air_selection.clear();
-                                self.fleet_selection.clear();
-                                self.counter_view.selected = Arc::clone(self.unit_selection.units());
-                                ui.ctx().request_repaint();
+                                let click = held_clicks::Click::NavalMission { viewer, region: hit.region, mission: hit.mission, rect: hit.rect, layer: hit.layer, order };
+                                self.click(document, click, frame, ui.ctx());
                             }
                             Some(MapHit::Base(index))
                                 if self.counter_report.air_grid_hits.contains_key(&index) =>
@@ -5983,73 +6237,70 @@ impl Viewer {
                                 if let Some(members) =
                                     self.counter_report.air_grid_hits[&index].members.clone()
                                 {
-                                    let shift = ui.input(|input| input.modifiers.shift);
-                                    let head = head_rows::head(live_of(&self.playhead_map));
-                                    let read = self.head_rows.clicks(head, frame, |frame| self.air_selection.grid_click(frame, &members, shift));
-                                    if read_click(&mut self.overlay_loading, "the air grid's selection", read).unwrap_or(false) {
-                                        self.unit_selection.clear();
-                                        self.counter_view.selected =
-                                            Arc::clone(self.unit_selection.units());
-                                        ui.ctx().request_repaint();
-                                    }
+                                    let shift = modifiers.shift;
+                                    self.click(document, held_clicks::Click::AirGrid { members, shift }, frame, ui.ctx());
                                 }
                             }
                             Some(MapHit::Base(index))
                                 if self.counter_report.air_base_hits.contains_key(&index) =>
                             {
                                 let (province, kind) = self.counter_report.air_base_hits[&index];
-                                let shift = ui.input(|input| input.modifiers.shift);
-                                let head = head_rows::head(live_of(&self.playhead_map));
-                                let read = ours.and_then(|viewer| self.head_rows.clicks(head, frame, |frame| viewer_counters::map::air_selection::base_target(frame, viewer, province, kind)));
-                                let target = read_click(&mut self.overlay_loading, "the air base's target", read).flatten();
-                                if let Some(target) = target {
-                                    self.choose_map_mode(viewer_world::map::map_mode::MapMode::Stock(
-                                        viewer_world::map::map_mode::Stock::StrategicAir,
-                                    ));
-                                    let head = head_rows::head(live_of(&self.playhead_map));
-                                    let read = self.head_rows.clicks(head, frame, |frame| self.air_selection.base_click(frame, target.clone(), shift));
-                                    read_click(&mut self.overlay_loading, "the air base's selection", read);
-                                    self.unit_selection.clear();
-                                    self.counter_view.selected = Arc::clone(self.unit_selection.units());
-                                    ui.ctx().request_repaint();
-                                }
+                                let shift = modifiers.shift;
+                                let Some(viewer) = self.viewing(ours, "the air base's target") else { continue };
+                                self.click(document, held_clicks::Click::AirBase { viewer, province, kind, shift }, frame, ui.ctx());
                             }
-                            Some(MapHit::AirMission(index))
-                                if self.counter_report.air_mission_hits[index]
-                                    .mission
-                                    .is_some() =>
+                            Some(MapHit::Base(index))
+                                if self.counter_report.naval_base_hits.contains_key(&index) =>
                             {
-                                let hit = &self.counter_report.air_mission_hits[index];
-                                let head = head_rows::head(live_of(&self.playhead_map));
-                                let read = ours.and_then(|viewer| self.head_rows.clicks(head, frame, |frame| viewer_counters::map::air_selection::mission_members(frame, viewer, hit.region, hit.mission.unwrap())));
-                                let Some(members) = read_click(&mut self.overlay_loading, "the air mission's members", read) else {
+                                // Shift opens the game's repair queue and Ctrl posts a repair order: neither is the replay's.
+                                if modifiers.shift || modifiers.ctrl {
                                     continue;
-                                };
-                                let shift = ui.input(|input| input.modifiers.shift);
-                                let read = self.head_rows.clicks(head, frame, |frame| self.air_selection.mission_click(frame, &members, shift));
-                                if read_click(&mut self.overlay_loading, "the air mission's selection", read).unwrap_or(false) {
-                                    self.unit_selection.clear();
-                                    self.counter_view.selected = Arc::clone(self.unit_selection.units());
-                                    ui.ctx().request_repaint();
                                 }
+                                let province = self.counter_report.naval_base_hits[&index];
+                                let Some(viewer) = self.viewing(ours, "the naval base's task forces") else { continue };
+                                let base = &self.counter_report.base_hits[index];
+                                let click = held_clicks::Click::NavalBase { viewer, province, rect: base.rect, layer: base.layer };
+                                self.click(document, click, frame, ui.ctx());
                             }
                             Some(MapHit::AirMission(index)) => {
-                                self.combat
-                                    .open(viewer_foundation::combat_selection::Selection::AirRegion(
-                                        self.counter_report.air_mission_hits[index].region,
-                                    ))
+                                use viewer_counters::map::counters::AirMissionClick;
+                                let hit = &self.counter_report.air_mission_hits[index];
+                                let mission = match hit.part.click() {
+                                    AirMissionClick::SelectMission(mission) => mission,
+                                    AirMissionClick::Nothing => continue,
+                                    AirMissionClick::OpenRegion => {
+                                        self.combat.open(viewer_foundation::combat_selection::Selection::AirRegion(hit.region));
+                                        continue;
+                                    }
+                                };
+                                let region = hit.region;
+                                let shift = modifiers.shift;
+                                let Some(viewer) = self.viewing(ours, "the air mission's members") else { continue };
+                                self.click(document, held_clicks::Click::AirMission { viewer, region, mission, shift }, frame, ui.ctx());
                             }
                             Some(MapHit::Combat(index)) => self
                                 .combat
                                 .open(self.counter_report.combat_hits[index].selection),
-                            None if matches!(
-                                self.shown_mode(),
-                                viewer_world::map::map_mode::MapMode::Stock(
-                                    viewer_world::map::map_mode::Stock::StrategicAir
-                                )
-                            ) =>
-                            {
-                                if let Some(region) = pick(
+                            Some(MapHit::Raid) => {
+                                let Some(hit) = self.raid_hit(point).cloned() else {
+                                    continue;
+                                };
+                                let viewer_raids::map::raids::tooltips::Key::Offer(targets) = &hit.key else {
+                                    continue;
+                                };
+                                if !raid_details::opens(self.counter_view.raid_details.as_ref().map(|(province, _)| *province), hit.province) {
+                                    self.counter_view.raid_details = None;
+                                } else {
+                                    let Some(viewer) = self.viewing(ours, "the raid targets' details") else { continue };
+                                    let click = held_clicks::Click::Raid { viewer, province: hit.province, targets: Arc::clone(targets) };
+                                    self.click(document, click, frame, ui.ctx());
+                                }
+                                ui.ctx().request_repaint();
+                            }
+                            None if ground_blocked => {}
+                            None => {
+                                self.click_units(None, modifiers.shift, ui.ctx());
+                                let Some(province) = pick(
                                     &camera,
                                     point.map(|v| v * ui_scale),
                                     pixels,
@@ -6057,14 +6308,11 @@ impl Viewer {
                                     document.assets.heightmap_texels(),
                                 )
                                 .map_err(|e| e.to_string())?
-                                .and_then(|province| document.content.counters.region(province))
-                                {
-                                    self.combat.open(
-                                        viewer_foundation::combat_selection::Selection::AirRegion(region),
-                                    );
-                                }
+                                else {
+                                    continue;
+                                };
+                                self.select_province(document, frame, province, ui.ctx());
                             }
-                            None => self.click_units(None, ui.ctx()),
                             _ => {}
                         }
                     }
@@ -6076,8 +6324,17 @@ impl Viewer {
                     Act::Combat(at) => {
                         if let Some(window) = &drawn {
                             let (path, rect, _) = &window.clicks[at];
+                            self.combat.set_modifiers(modifiers.shift, modifiers.ctrl);
                             self.combat.click(window, path, *rect);
                         }
+                    }
+                    Act::Confirmation(control) => self.confirmation_click(control),
+                    Act::AirOrder(point, under) => {
+                        let shift = modifiers.shift;
+                        let pick_at = |point: [f32; 2]| {
+                            pick(&camera, point.map(|value| value * ui_scale), pixels, &document.map, document.assets.heightmap_texels()).ok().flatten()
+                        };
+                        self.air_order(document, point, under, order, shift, pick_at, ui.ctx());
                     }
                 }
             }
@@ -6089,12 +6346,16 @@ impl Viewer {
                     .get_or_insert_with(viewer_combat::Drawn::default)
                     .add_hovers(&picker_drawn.drawn);
             }
+            if let Some(confirmation) = &confirmation_drawn {
+                drawn.get_or_insert_with(viewer_combat::Drawn::default).add_hovers(&confirmation.drawn);
+            }
             laps.lap("picker");
             drop(_picker_cost);
-            let tooltip_point = point.filter(|_| !over_combat && !over_picker);
+            let over_confirmation = point.is_some_and(|point| self.air_orders.over(point));
+            let tooltip_point = point.filter(|_| !over_combat && !over_picker && !over_confirmation);
             let map_hit = self.map_tooltip(document, tooltip_point, extent, ui.ctx());
             self.combat_rows.end_frame();
-            self.head_rows.end_frame();
+            self.head_rows.end_frame(head_rows::head(live_of(&self.playhead_map)));
             // The counter whose tooltip that is: the same rebuilt hit test, at the same point.
             let tooltip_counter = tooltip_point.and_then(|point| match self.map_hit(point)? {
                 MapHit::Unit(index) => self.counter_report.unit_hits[index].units().next(),
@@ -6222,12 +6483,14 @@ impl Viewer {
             if let Some(picker_drawn) = picker_drawn {
                 additions.quads.extend(picker_drawn.drawn.batch.quads);
             }
+            if let Some(confirmation) = confirmation_drawn {
+                additions.quads.extend(confirmation.drawn.batch.quads);
+            }
             laps.lap("combat_hover");
             (overlay_ms, additions)
         };
-        let rows = self.overlay_frame.clone().unwrap_or_else(|| Arc::clone(&rows));
-        let tables = self.overlay_tables.clone().unwrap_or_else(|| Arc::clone(&tables));
-        let now = crate::document::Hour::new(&document.content, &rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved));
+        let held = self.overlay_frame.clone().zip(self.overlay_tables.clone()).or(held);
+        let now = held.as_ref().map(|(rows, _)| crate::document::Hour::new(&document.content, rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved)));
         let _other_cost = replay_frame::cpu::scope("frame.scene-inputs", Some("other"));
         // Overlay and hover diagnostics belong to this frame.
         let warnings = if build_warnings {
@@ -6259,7 +6522,7 @@ impl Viewer {
         // A hovered province's state, from the rows the overlay was made from; the provinces are
         // among the tables the overlay's reader declares, so they are there with it.
         let state_of = |province: u32| {
-            let provinces = now.frame.complete::<replay_data::rows::tables::Provinces>().ok()?;
+            let provinces = now.as_ref()?.frame.complete::<replay_data::rows::tables::Provinces>().ok()?;
             provinces.binary_search_by_key(&province, |row| row.id).ok().map(|at| provinces[at].state)
         };
         let hovered_radar = radar_at.and_then(|(province, controller)| Some((state_of(province)?, controller)));
@@ -6376,9 +6639,9 @@ impl Viewer {
                 SceneInput::SetVisibility(self.counter_view.visibility),
             )
             .map_err(|error| error.to_string())?;
-        let ours = Some(tables.ours());
         let (head, selected) = (head_rows::head(live_of(&self.playhead_map)), self.unit_selection.units().as_ref());
-        if let Some(ours) = ours {
+        if let (Some((_, tables)), Some(now)) = (&held, &now) {
+            let ours = tables.ours();
             let mut arrows = |frame: &replay_frame::frame::DecodedFrame| {
                 crate::document::select_movement(scene, &state.device, &state.queue, &document.content, frame, ours, selected)
             };
@@ -6582,21 +6845,25 @@ impl Viewer {
         if let Some(capture) = self.capture.as_mut().filter(|capture| !capture.paced) {
             // Anything the settle decodes moves the version, which makes the overlay stale.
             document.icons.lazy.settle();
-            let laid_out = self
-                .prepared_overlay
-                .as_ref()
-                .is_some_and(|prepared| !prepared.is_stale(&now));
-            // Laid out over the newest rows at the head with tables made from them, nothing
-            // loading.
-            let at_head = self.overlay_missed.is_empty() && rows.hour == shown_at;
-            let laid_out = laid_out && at_head;
-            // And until the raid offer cycle is complete at the shown hour: every target
-            // evaluated, as a paused frame ends. That is the scripts reader's batch the tables
-            // hold.
-            let raids = Some(tables.raids());
-            let cycled =
-                raids.is_some_and(|raids| !raids.report.pending && raids.report.cycle_complete());
-            if !laid_out || document.icons.lazy.has_pending() || !cycled {
+            let laid_out = match (&held, &now) {
+                (Some((rows, tables)), Some(now)) => {
+                    let laid_out = self
+                        .prepared_overlay
+                        .as_ref()
+                        .is_some_and(|prepared| !prepared.is_stale(now));
+                    // Laid out over the newest rows at the head with tables made from them, nothing
+                    // loading.
+                    let at_head = self.overlay_missed.is_empty() && rows.hour == shown_at;
+                    // And until the raid offer cycle is complete at the shown hour: every target
+                    // evaluated, as a paused frame ends. That is the scripts reader's batch the
+                    // tables hold.
+                    let raids = tables.raids();
+                    laid_out && at_head && !raids.report.pending && raids.report.cycle_complete()
+                }
+                // No overlay is coming for the view: the picture is whole without one, its refusal named.
+                _ => true,
+            };
+            if !laid_out || document.icons.lazy.has_pending() {
                 capture.remaining = capture.remaining.max(1);
             }
         }
@@ -6659,6 +6926,9 @@ impl Viewer {
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
             egui::Color32::WHITE,
         );
+        if let Some((drag, stroke)) = box_stroke {
+            ui.painter().with_clip_rect(rect).rect_stroke(drag, 0.0, stroke, egui::StrokeKind::Middle);
+        }
         // The desktop's campaign map has no panels, so its diagnostics sit
         // over the map; dashboard maps draw theirs beside their loading status.
         // Every map on the software adapter, windowed or on a dashboard, says so.
@@ -6674,7 +6944,8 @@ impl Viewer {
             .start_pick
             .choosing()
             .then(|| start_prompt(self.camera_mode));
-        if software || diagnostics || partial || scoped || start_prompt.is_some() {
+        let vision_refused = self.vision_refusal_line();
+        if software || diagnostics || partial || scoped || start_prompt.is_some() || vision_refused.is_some() {
             map_overlay(
                 ui,
                 rect.intersect(ui.clip_rect()),
@@ -6683,6 +6954,9 @@ impl Viewer {
                 |ui, height| {
                     if let Some(prompt) = start_prompt {
                         ui.colored_label(egui::Color32::WHITE, prompt);
+                    }
+                    if let Some(refused) = &vision_refused {
+                        ui.colored_label(egui::Color32::YELLOW, refused);
                     }
                     if partial {
                         partial_notice(ui, document.playback.replay());
@@ -6710,7 +6984,10 @@ impl Viewer {
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
         self.drew_frame = true;
-        let overlay_fresh = self.prepared_overlay.as_ref().is_some_and(|prepared| !prepared.is_stale(&now));
+        let overlay_fresh = match &now {
+            Some(now) => self.prepared_overlay.as_ref().is_some_and(|prepared| !prepared.is_stale(now)),
+            None => true,
+        };
         if self.load_complete(document.icons.lazy.busy(), overlay_fresh) {
             if document.content.finish_loading()
                 && let Some(source) = &self.source
@@ -6789,10 +7066,12 @@ impl Viewer {
 
     /// A click on the counter `hit` (of [`CounterReport::unit_hits`]) or on no icon: selects its
     /// units, adding to the selection with shift.
-    fn click_units(&mut self, hit: Option<usize>, ctx: &egui::Context) {
+    fn click_units(&mut self, hit: Option<usize>, shift: bool, ctx: &egui::Context) {
         let hit = hit.map(|index| &self.counter_report.unit_hits[index]);
-        let shift = ctx.input(|input| input.modifiers.shift);
         let units_changed = self.unit_selection.click(hit, shift);
+        if !shift {
+            self.ground_selection = None;
+        }
         let fleets_changed = if !shift {
             self.fleet_selection.clear()
         } else {
@@ -6869,10 +7148,16 @@ enum Act {
     Combat(usize),
     /// A click off the picker, which closes its open list.
     Dismiss,
+    /// A confirmation pop-up's button clicked.
+    Confirmation(viewer_combat::confirmation::Control),
+    /// A right release on the map, with what its press went down on.
+    AirOrder([f32; 2], Option<air_orders::Under>),
     /// A counter's click, which selects it.
     Counter(Unit),
     /// A click on the bare map there.
     Map([f32; 2]),
+    /// A primary drag released as a box, between these interface points.
+    Box([f32; 2], [f32; 2]),
 }
 
 /// What takes the primary button's press on the map's interface.
@@ -6881,6 +7166,7 @@ enum Holder {
     Picker,
     Combat,
     Counters,
+    Confirmation,
 }
 
 /// The emitter keys of interface sounds, apart from the map's events; clicks take the upper half.
@@ -7040,6 +7326,7 @@ impl eframe::App for Viewer {
         let pass = replay_frame::cpu::scope("frame.ui", Some("other"));
         engine_executable::executable_tables::scope(tables, || self.campaign_ui(ui, frame));
         drop(pass);
+        self.trace_switch_frame();
         crate::perf_log::frame_end();
     }
 }
@@ -7122,6 +7409,7 @@ impl Viewer {
                             embedded.report_view_toggle(&view, toggle)
                         }
                         picker::ViewEvent::Modes(modes) => embedded.report_view_modes(&view, modes),
+                        picker::ViewEvent::Observe(country) => embedded.report_view_observe(&view, country),
                     }
                 }
             }
@@ -7140,6 +7428,9 @@ impl Viewer {
                     }
                     picker::ViewEvent::Modes(modes) => {
                         embedded.report_view_modes(dashboard::protocol::CAMPAIGN_MAP_VIEW, modes)
+                    }
+                    picker::ViewEvent::Observe(country) => {
+                        embedded.report_view_observe(dashboard::protocol::CAMPAIGN_MAP_VIEW, country)
                     }
                 }
             }
@@ -7475,7 +7766,7 @@ fn layers_behind_reason(on: &crate::playhead_host::OnScreen) -> String {
 }
 
 /// A click's read: none while its rows load; a failed read is a named line and selects nothing.
-fn read_click<T>(lines: &mut Vec<String>, what: &str, read: Option<std::io::Result<T>>) -> Option<T> {
+pub(super) fn read_click<T>(lines: &mut Vec<String>, what: &str, read: Option<std::io::Result<T>>) -> Option<T> {
     match read.transpose() {
         Ok(value) => value,
         Err(error) => {
@@ -8197,6 +8488,7 @@ pub(crate) mod tests {
             .faction_pin_hovers
             .push(viewer_counters::map::counters::faction_pings::PinHover {
                 rect,
+                theatre: (0, 0),
                 regions: Arc::from([1]),
                 layer: layer(-3, 0, 0),
             });
@@ -8223,6 +8515,7 @@ pub(crate) mod tests {
                 reference_type: 4,
                 incoming: false,
             },
+            province: 0,
             layer: layer(-2, 0, 0),
             supported: true,
         };
@@ -8302,6 +8595,7 @@ pub(crate) mod tests {
             .faction_pin_hovers
             .push(viewer_counters::map::counters::faction_pings::PinHover {
                 rect,
+                theatre: (0, 0),
                 regions: Arc::from([1]),
                 layer: layer(4, 0, 0),
             });

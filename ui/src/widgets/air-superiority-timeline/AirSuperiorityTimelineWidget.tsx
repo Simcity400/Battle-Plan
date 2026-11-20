@@ -14,7 +14,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useAtHead } from '../../dashboard/atHead';
-import { defaultCountryTag, selectedTags } from '../../dashboard/countrySelection';
+import { defaultCountryKey, selectedCountryKeys } from '../../dashboard/countrySelection';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
@@ -42,7 +42,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const campaign = track?.source.metadata.campaignKey ?? '';
-  const currentCountry = selectedTags(widget.countries, track)[0] ?? defaultCountryTag(track);
+  const currentCountry = selectedCountryKeys(widget.countries, track)[0] ?? defaultCountryKey(track);
   const mode = useMemo(() => airMode(options, campaign, currentCountry),
     [options.mode, options.viewpoint, options.sides, options.regions, options.theatres, campaign, currentCountry]); // eslint-disable-line react-hooks/exhaustive-deps
   const needsViewpoint = mode.mode === 'viewpoint' && !mode.viewpoint;

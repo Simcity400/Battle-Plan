@@ -1910,7 +1910,17 @@ impl<'a> Walk<'a> {
                 at[1] + button.position[1] + track_at[1],
             ];
             place[axis] = place[axis].wrapping_add(thumb);
-            self.drag_part(element, button, button.frame, place, None, clip)?;
+            if self.shown(element) {
+                let first = self.regions.len();
+                self.drag_button(element, button, button.frame, place, clip)?;
+                for region in &mut self.regions[first..] {
+                    region.slide = Some(Slide {
+                        vertical: !bar.horizontal,
+                        travel,
+                        thumb,
+                    });
+                }
+            }
         }
         let _ = element;
         Ok(())
@@ -1930,6 +1940,7 @@ impl<'a> Walk<'a> {
         let Some(text) = self.shown_text(element, &edit.text) else {
             return Ok(());
         };
+        self.edit_caret(element, edit, &text, origin, parent, clip)?;
         if flags & 0x2 == 0 {
             return self.edit_text_sprite(element, edit, &text, origin, clip);
         }
@@ -1966,6 +1977,28 @@ impl<'a> Walk<'a> {
             },
             clip,
         )
+    }
+
+    /// An edit box's caret, while its code shows one: the `cursor` sprite where its text buffer
+    /// puts it, the text's own origin (the box's orientation, position and border) plus the
+    /// measured width of the line's text before the caret.
+    fn edit_caret(
+        &mut self,
+        element: &Element,
+        edit: &native::EditBox,
+        text: &str,
+        origin: [i32; 2],
+        parent: [i32; 2],
+        clip: Option<Clip>,
+    ) -> Result<(), Refusal> {
+        let Some(caret) = self.bound(element).and_then(|bound| bound.caret) else {
+            return Ok(());
+        };
+        let prefix: String = text.chars().take(caret).collect();
+        let width = edit_measure(self.resources, &self.refused, element, edit, &prefix)?;
+        let [x, y] = edit_text_origin(edit, origin, parent);
+        self.sprite_part(element, EDIT_CARET, -1, 1.0, 0.0, [x + width, y], Centre::None, clip)?;
+        Ok(())
     }
 
     /// A drop-down retains its viewport-evaluated position after parenting.
@@ -2137,4 +2170,101 @@ impl Walk<'_> {
         )?;
         Ok(())
     }
+}
+
+/// Where an edit box's text starts in its parent's content at `origin`: its position as its
+/// orientation anchors it in `parent`, then its border.
+fn edit_text_origin(edit: &native::EditBox, origin: [i32; 2], parent: [i32; 2]) -> [i32; 2] {
+    let [x, y] = [origin[0] + edit.position()[0], origin[1] + edit.position()[1]];
+    let [w, h] = parent;
+    let [bx, by] = edit.border_size().map(|side| side.max(0));
+    let anchored = match edit.orientation() {
+        1 => [x + w, y],
+        2 => [x, y + h],
+        3 => [x + w, y + h],
+        4 => [x + w / 2, y + h / 2],
+        5 => [x + w / 2, y],
+        6 => [x + w / 2, y + h],
+        _ => [x, y],
+    };
+    [anchored[0] + bx, anchored[1] + by]
+}
+
+/// The width the edit box's font measures for `text`, as its text buffer measures the line
+/// before the caret.
+fn edit_measure(
+    resources: &dyn Resources,
+    refused: &RefCell<Refusals>,
+    element: &Element,
+    edit: &native::EditBox,
+    text: &str,
+) -> Result<i32, Refusal> {
+    let font = text_font(resources, element, &edit.font)?;
+    let sprite = |name: &[u8]| icon_sprite(resources, refused, &element.path, name);
+    let chars: Vec<char> = text.chars().collect();
+    Ok(native_text::lay_out(
+        font,
+        &sprite,
+        &chars,
+        native_text::Limits {
+            width: 0,
+            height: i32::MAX,
+            border: [0, 0],
+            newlines: false,
+            preserve_indent: false,
+            ellipsis: false,
+            multiline: false,
+            special: edit.flags() & 0x4 != 0,
+            icons_add_height: font.facts.icons_add_height,
+        },
+    )
+    .map_err(|why| Refusal::new(&element.path, RefusalKind::DivideByZero, why))?
+    .widths
+    .first()
+    .copied()
+    .unwrap_or(0))
+}
+
+/// The caret a press at `point` (in the box's parent content, the box at `origin` there) puts
+/// in an edit box showing `text`: the first prefix whose measured width reaches the press, or
+/// the one before it when that is nearer, as the game's text buffer chooses.
+pub fn edit_caret_at(
+    resources: &dyn Resources,
+    element: &Element,
+    text: &str,
+    origin: [i32; 2],
+    parent: [i32; 2],
+    point: [i32; 2],
+) -> Result<usize, Refusal> {
+    let Fields::EditBox(edit) = &element.fields else {
+        return Err(Refusal::new(
+            &element.path,
+            RefusalKind::Reader,
+            "is not an edit box",
+        ));
+    };
+    let refused = RefCell::new(Refusals::new());
+    let start = edit_text_origin(edit, origin, parent);
+    let x = point[0] - start[0];
+    let chars: Vec<char> = text.chars().collect();
+    let width = |count: usize| -> Result<i32, Refusal> {
+        edit_measure(
+            resources,
+            &refused,
+            element,
+            edit,
+            &chars[..count].iter().collect::<String>(),
+        )
+    };
+    let mut caret = chars.len();
+    for count in 1..=chars.len() {
+        if x <= width(count)? {
+            caret = count - 1;
+            break;
+        }
+    }
+    if caret < chars.len() && (width(caret + 1)? - x).abs() < (width(caret)? - x).abs() {
+        caret += 1;
+    }
+    Ok(caret.min(chars.len()))
 }

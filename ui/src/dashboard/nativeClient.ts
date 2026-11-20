@@ -7,7 +7,7 @@ import { desktopAvailable } from '../shell/api';
 import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
 import { MAX_PENDING_REQUESTS } from '../generated/dashboard.ts';
-import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
+import type { DashboardClient, DashboardMapState, MapObserveEvent, MapOptionsEvent, MapToggleEvent, DashboardSource, MapSettingsReply, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 import { keepDigest } from './replyDigest.ts';
 import { parseReplyBytes } from './replyParse.ts';
@@ -205,5 +205,10 @@ export const nativeDashboardClient: DashboardClient = {
   async onMapToggle(callback) {
     if (!desktopAvailable) return () => {};
     return listen<MapToggleEvent>('dashboard-map-toggle', event => callback(event.payload));
+  },
+
+  async onMapObserve(callback) {
+    if (!desktopAvailable) return () => {};
+    return listen<MapObserveEvent>('dashboard-map-observe', event => callback(event.payload));
   },
 };

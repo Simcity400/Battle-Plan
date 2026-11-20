@@ -83,7 +83,7 @@ export function validateStockpileReply(data: unknown): EquipmentStockpileReply {
  * spans ordered, and each group's peak exact. */
 export function validateStockpileCatalogue(data: unknown): StockpileCatalogueReply {
   const reply = data as StockpileCatalogueReply;
-  const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && strings(reply.tags)
+  const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && Array.isArray(reply.countries) && reply.countries.every((country: unknown) => typeof country === 'string' || typeof country === 'number')
     && typeof reply.campaignKey === 'string' && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
     && typesValid(reply.types)
     && Array.isArray(reply.variants) && reply.variants.every(variant => RAW.test(variant.id) && typeof variant.token === 'string'

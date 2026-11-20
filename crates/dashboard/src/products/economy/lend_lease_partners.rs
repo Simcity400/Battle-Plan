@@ -4,12 +4,13 @@
 //! partner is shown from its first row on; once its row leaves it is held at zero, as the game
 //! drops the history. Hours the histories were not read, or the tag had no holder, are not known.
 
+use dashboard_base::products::validate_country;
+use dashboard_base::products::Country;
 use super::{
     super::{LoadContext, Product, country_ids::Names, subjects::settle},
     lend_lease_balance::SCALE,
 };
 use crate::{Source, span::HourSpan};
-use dashboard_base::products::validate_tag;
 use dashboard_query::identity::Holder;
 use replay::lanes::{self, Cell, Keys};
 use replay_data::rows::TableId;
@@ -48,7 +49,7 @@ impl LendLeaseMeasure {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LendLeasePartnersParams {
     pub branch_id: String,
-    pub holder: String,
+    pub holder: Country,
     pub measure: LendLeaseMeasure,
     /// The hours read; the whole timeline when absent.
     #[serde(default)]
@@ -182,7 +183,7 @@ impl Product for LendLeasePartners {
         {
             return Err("Invalid lend-lease hours");
         }
-        validate_tag(&params.holder)
+        validate_country(&params.holder)
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -293,7 +294,7 @@ impl Product for LendLeasePartners {
         }
         let domain = first_row.map(|first| from_on(&known, first)).unwrap_or_default();
         Ok(LendLeasePartnersReply {
-            holder: params.holder.clone(),
+            holder: query.holders.name(&params.holder, to),
             scale: SCALE,
             first_hour: from,
             last_hour: to,

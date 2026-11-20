@@ -126,6 +126,12 @@ fn any_country_and_either_fog_setting_rebuild_from_the_same_hour() {
         true,
     );
     assert_eq!(absent.resolution(), &Resolution::Absent("XXX".into()));
+    // A slot chosen by Ctrl+click is followed whatever tag it holds now; its label only names it.
+    let by_slot = view(&frame, &links, &tags, &content, Country::Slot { slot: 2, tag: "OLD".into() }, true);
+    assert_eq!((by_slot.ours(), by_slot.resolution()), (2, &Resolution::Requested));
+    assert_eq!(by_slot.sees_land(7, 2, 2), english.sees_land(7, 2, 2));
+    let gone = view(&frame, &links, &tags, &content, Country::Slot { slot: 9, tag: "D01".into() }, true);
+    assert_eq!((gone.ours(), gone.resolution()), (1, &Resolution::Absent("D01".into())));
 }
 
 #[test]

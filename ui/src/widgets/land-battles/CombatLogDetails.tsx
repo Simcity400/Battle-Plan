@@ -1,9 +1,10 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useProduct } from '../../dashboard/products';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { formatDateTime } from '../../dashboard/calendar';
@@ -34,14 +35,14 @@ export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps
   const hour = window ? Math.floor(window.lastHour) : null;
   const inBranch = !!track && hour !== null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');
-  const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));
+  const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const countries = useMemo(() => countryMatchFilter(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const request = track && inBranch && match.ready && !match.reason ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'combat-log-history', params: { branchId: track.branch.id, hour: hour!, countries } } : null;
+    product: 'combat-log-history', params: { branchId: track.branch.id, hour: hour!, countries: { countries: countries.tags?.map(countryFromKey) ?? null, membership: countries.membership, unobserved: countries.unobserved } } } : null;
   const state = useProduct<Reply>(runtime.client, request, active, validateCombatLog, track?.source);
   const shown = useShownHour();
   shown(state.data?.hour ?? null);

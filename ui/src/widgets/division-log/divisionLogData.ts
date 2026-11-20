@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
@@ -9,7 +10,7 @@ import type { LogPage, LogRow } from '../../charts/log/logData';
 import type { LogCounts, LogReplyRow } from '../../charts/log/logSource';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import type { DivisionLogManifestReply, LogCell, PlaceName } from '../../generated/dashboard';
+import type { CountryRef, DivisionLogManifestReply, LogCell, PlaceName } from '../../generated/dashboard';
 
 /** The division log's own kinds, as the recorder's log keys them. */
 export const KINDS = { created: 0, lost: 1, transfer: 2 } as const;
@@ -73,14 +74,14 @@ export function selectedTemplates(value: string, campaign: string, branch: strin
 export const shownKinds = (events: string): DivisionKind[] => events === 'created' ? ['created'] : events === 'lost' ? ['lost', 'transfer'] : ['created', 'lost', 'transfer'];
 
 /** A facet filter as the wire carries it: values are JSON numbers. */
-export interface DivisionFacet { name: string; values: number[]; tags: string[] }
+export interface DivisionFacet { name: string; values: number[]; countries: CountryRef[] }
 
 /** The log's facets for the kinds shown, the chosen templates (none chosen: every one) and the countries' tags (none:
  * every country). */
 export function divisionFacets(kinds: readonly DivisionKind[], templates: readonly string[] | null, tags: readonly string[] | null): DivisionFacet[] {
-  const facets: DivisionFacet[] = [{ name: 'kind', values: kinds.map(kind => KINDS[kind]), tags: [] }];
-  if (templates !== null) facets.push({ name: 'template', values: templates.map(Number), tags: [] });
-  if (tags !== null) facets.push({ name: 'slot', values: [], tags: [...tags] });
+  const facets: DivisionFacet[] = [{ name: 'kind', values: kinds.map(kind => KINDS[kind]), countries: [] }];
+  if (templates !== null) facets.push({ name: 'template', values: templates.map(Number), countries: [] });
+  if (tags !== null) facets.push({ name: 'slot', values: [], countries: tags.map(countryFromKey) });
   return facets;
 }
 

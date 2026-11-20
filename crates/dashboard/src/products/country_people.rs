@@ -3,6 +3,7 @@
 //! recorder's own sums (`CountryDeployedManpower`); everything else is read from the hour's
 //! recorded rows. Totals use the recorded controlled-state order.
 
+use dashboard_base::products::Country;
 use super::{
     LoadContext, finite_fixed64,
     at_hour::{At, AtHour, Owner, Read},
@@ -24,7 +25,7 @@ use ts_rs::TS;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PeopleParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -68,6 +69,8 @@ pub struct PeopleExile {
 pub struct PeopleReply {
     pub branch_id: String,
     pub tag: String,
+    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    pub asked: dashboard_base::products::Country,
     pub hour: i32,
     pub read_hour: Option<i32>,
     pub manpower: Vec<PeopleFact>,
@@ -557,7 +560,7 @@ pub const PEOPLE_TABLES: [TableId; 13] = [
 
 /// One country's people at `frame`'s hour: its manpower, its election schedule and the exiles it
 /// is or hosts.
-pub fn read(frame: &DecodedFrame, branch_id: &str, tag: &str, owner: Owner, defines: Option<RecruitmentDefines>) -> io::Result<PeopleReply> {
+pub fn read(frame: &DecodedFrame, branch_id: &str, asked: &dashboard_base::products::Country, tag: &str, owner: Owner, defines: Option<RecruitmentDefines>) -> io::Result<PeopleReply> {
     let links = Links::new(frame)?;
     let countries = frame.complete::<tables::Countries>()?;
     let country = countries
@@ -589,6 +592,7 @@ pub fn read(frame: &DecodedFrame, branch_id: &str, tag: &str, owner: Owner, defi
     Ok(PeopleReply {
         branch_id: branch_id.to_owned(),
         tag: tag.to_owned(),
+        asked: asked.clone(),
         hour: frame.hour,
         read_hour: manpower.read_hour,
         manpower: manpower.facts,
@@ -622,11 +626,11 @@ impl AtHour for CountryPeople {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid people branch")?;
-        super::validate_tag(&params.tag)
+        super::validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_: &Self::Params) -> Vec<TableId> {
@@ -694,7 +698,7 @@ impl AtHour for CountryPeople {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Country people names no country"))?;
-        let mut reply = read(frame, &params.branch_id, &params.tag, owner, at.context.defines.as_ref().ok().copied())?;
+        let mut reply = read(frame, &params.branch_id, &params.country, &at.holders.name(&params.country, at.hour), owner, at.context.defines.as_ref().ok().copied())?;
         if let Err(reason) = &at.context.defines {
             reply.warnings.push(format!("1 refused mobilisation rate: {reason}"));
         }

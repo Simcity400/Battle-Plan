@@ -8,6 +8,7 @@ pub mod clock;
 mod inputs;
 mod mode_lines;
 pub mod naval_accidents;
+pub mod naval_base;
 pub mod naval_mines;
 mod occupation;
 mod operatives;
@@ -15,8 +16,11 @@ mod resources;
 mod selected_attack;
 mod selection;
 mod strategic_air;
-pub use strategic_air::{RegionalDetection, regional_detection};
+pub use strategic_air::{RegionalDetection, assignment_checks, regional_detection};
 mod strategic_navy;
+pub use strategic_navy::{dominance_hover, region_dominance};
+pub use selected_attack::template_display_name;
+mod trade_routes;
 pub(super) mod units;
 mod weather;
 
@@ -29,6 +33,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+use viewer_foundation::map::ribbon_content::TradeRouteLine;
 use viewer_foundation::table_access::TokenNames;
 use {
     viewer_foundation::map::perspective::Vision, viewer_foundation::tooltip_text::Tooltip,
@@ -61,6 +66,18 @@ pub struct Content {
     network_base_target: Result<i64, String>,
     /// What the resources mode's hover reads of the content.
     resources: Result<viewer_foundation::resource_origins::Content, String>,
+}
+
+impl Content {
+    /// Whether the state's content template is impassable.
+    pub fn impassable_state(&self, state: u32) -> bool {
+        self.impassable.contains(&state)
+    }
+
+    /// The resource declarations and building grants the resources hover reads.
+    pub fn resources(&self) -> Result<&viewer_foundation::resource_origins::Content, &str> {
+        self.resources.as_ref().map_err(String::as_str)
+    }
 }
 
 impl Content {
@@ -176,7 +193,7 @@ impl Content {
 
     /// The temperature `province`'s record holds at the frame's hour, which the game reads:
     /// recorded, or derived from the frame's anchor and pass with the recorded content.
-    fn temperature_at(
+    pub fn temperature_at(
         &self,
         frame: &DecodedFrame,
         rows: &[replay_data::rows::WeatherProvinceRow],
@@ -206,6 +223,16 @@ pub enum ModeHover {
     StrategicNavy(
         Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>,
     ),
+    /// A sea province's strategic region in the default mode, as the game's pointer picks it:
+    /// the region's dominance for the viewing country, and its ratio list delayed.
+    SeaRegion(
+        Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>,
+    ),
+    /// A sea province's strategic region in a mode whose region text is nothing of its own.
+    Region,
+    /// The terrain mode's text, which viewer-combat's terrain mode makes, over the province or,
+    /// with `region`, over the sea province's strategic region.
+    Terrain { region: bool },
     /// Nothing of the mode's own.
     Nothing,
     /// The state's population.
@@ -232,9 +259,35 @@ pub enum ModeHover {
     Unbuilt(String),
 }
 
+impl ModeHover {
+    /// Whether the hover is a strategic region's, which follows the trade routes' text.
+    pub fn region(&self) -> bool {
+        matches!(
+            self,
+            Self::StrategicAir(_) | Self::StrategicNavy(_) | Self::SeaRegion(_) | Self::Region | Self::Terrain { region: true }
+        )
+    }
+}
+
+/// `below` under the trade-route lines' text, as the game composes the province's tooltip or,
+/// with `region`, the strategic region's.
+pub fn under_routes(
+    content: &counter_content::Content,
+    frame: &DecodedFrame,
+    ours: u32,
+    routes: &[TradeRouteLine],
+    region: bool,
+    below: impl FnOnce() -> Tooltip,
+) -> Tooltip {
+    if routes.is_empty() {
+        return below();
+    }
+    trade_routes::compose(region, route_text(content, frame, ours, routes), below)
+}
+
 /// The province, viewing country and fog setting a tooltip was built for,
-/// whether NATO counters were on, and the map mode's hover.
-type CacheKey = (u32, u32, bool, bool, ModeHover);
+/// whether NATO counters were on, the map mode's hover and the trade-route lines over it.
+type CacheKey = (u32, u32, bool, bool, ModeHover, Vec<TradeRouteLine>);
 type TooltipSources = (
     Arc<counter_content::Content>,
     Arc<DecodedFrame>,
@@ -261,9 +314,10 @@ impl Cache {
         selected: &Arc<Vec<Unit>>,
         rosters: &Arc<air_region::Sampler>,
         mode: &ModeHover,
+        routes: &[TradeRouteLine],
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Arc<Tooltip> {
-        let key = (province, vision.ours(), vision.fog(), nato, mode.clone());
+        let key = (province, vision.ours(), vision.fog(), nato, mode.clone(), routes.to_vec());
         let same = self.source.as_ref().is_some_and(
             |(held_content, held_frame, held_vision, held_selected)| {
                 Arc::ptr_eq(content, held_content)
@@ -273,9 +327,9 @@ impl Cache {
             },
         );
         let text = self.held.get(key, same, rosters, wake, |rosters| {
-            build(
-                content, reads, frame, province, vision, nato, selected, rosters, mode,
-            )
+            under_routes(content, frame, vision.ours(), routes, mode.region(), || {
+                build(content, reads, frame, province, vision, nato, selected, rosters, mode)
+            })
         });
         self.source = Some((
             Arc::clone(content),
@@ -516,8 +570,87 @@ fn build(
     let _selection_span = viewer_foundation::profiling::span("pt_selection");
     let selected = selection::build(&context, selected, nato);
     selection::append(&mut out, selected, &content.localisation);
-    // Native click/ping/order footers are omitted: replay has no such actions.
+    click_footer(&content.localisation, content.kinds.get(&id).copied(), &mut out);
     out
+}
+
+/// The trade-route lines' text over the hour's rows. The lines drawn are the viewing country's
+/// own, so their route set is disclosed.
+fn route_text(content: &counter_content::Content, frame: &DecodedFrame, ours: u32, routes: &[TradeRouteLine]) -> trade_routes::Routes {
+    let links: Result<BTreeMap<u32, u32>, String> = frame
+        .complete::<tables::CountryLinks>()
+        .map(|rows| rows.iter().map(|row| (row.id, row.canonical_slot)).collect())
+        .map_err(|error| error.to_string());
+    let countries = Names::new(frame, &content.localisation);
+    let loc = |key: &str, args: &[(&str, Arg<'_>)]| localise(&content.localisation, key, args);
+    let state = |id: u32| state_name_of(content, frame, id);
+    let country = |raw: u32| {
+        let slot = links.as_ref().map_err(Clone::clone)?.get(&raw).copied().ok_or_else(|| format!("CountryLinks lacks {raw}"))?;
+        countries.name(slot)
+    };
+    let resource = |id: u32| {
+        let resources = content.province_hover.resources.as_ref().map_err(Clone::clone)?;
+        let declared = (id as usize)
+            .checked_sub(1)
+            .and_then(|at| resources.resources.get(at))
+            .ok_or_else(|| format!("recorded resource {id} has no declaration in the content's resource files"))?;
+        let key = format!("PRODUCTION_MATERIALS_{}", installed_content_localisation::localisation::crt_case_text(&declared.token, true, false));
+        localise(&content.localisation, &key, &[])
+    };
+    let viewed = |raw: u32| Ok(links.as_ref().map_err(Clone::clone)?.get(&raw) == Some(&ours));
+    let weight = |region: u32| {
+        let weights = frame.complete::<tables::StrategicRegionWeights>().map_err(|error| error.to_string())?;
+        weights
+            .binary_search_by_key(&region, |row| row.region)
+            .map(|at| weights[at].weight)
+            .map_err(|_| format!("strategic region {region} has no recorded route weight"))
+    };
+    let controls = |raw: u32, region: u32| {
+        let links = links.as_ref().map_err(Clone::clone)?;
+        let slot = links.get(&raw).copied().ok_or_else(|| format!("CountryLinks lacks {raw}"))?;
+        strategic_navy::region_dominance(content, frame, slot, region, links).map(|(_, control, _)| control == 1)
+    };
+    let names = trade_routes::Names {
+        loc: &loc,
+        state: &state,
+        country: &country,
+        resource: &resource,
+        viewed: &viewed,
+        weight: &weight,
+        controls: &controls,
+        factor: &content.province_hover.navy.convoy,
+    };
+    trade_routes::assemble(routes, true, &|key| loc(key, &[]), |line| trade_routes::describe(frame, &names, line))
+}
+
+/// A state's display name at the hour: its stored custom or owner name, else its template's.
+fn state_name_of(content: &counter_content::Content, frame: &DecodedFrame, id: u32) -> Result<String, String> {
+    let state = frame
+        .complete::<tables::States>()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .find(|s| s.id == id)
+        .ok_or("state row absent")?;
+    tooltip_text_state_name(&content.localisation, &content.recorded_language, id, &state.custom_name, &state.owner_name, || {
+        let key = content.state_name_keys.get(&id).ok_or("state content name absent")?.as_ref().map_err(Clone::clone)?;
+        localise(&content.localisation, key, &[])
+    })
+}
+
+/// The delayed "click to view state" line the Default and States modes give a land province, as
+/// the ground click opens its state view.
+fn click_footer(loc: &Localisation, kind: Option<installed_content_core::map::ProvinceKind>, out: &mut Tooltip) {
+    match kind {
+        Some(installed_content_core::map::ProvinceKind::Land) => match localise(loc, "PROVINCE_CLICK_VIEW", &[]) {
+            Ok(text) => {
+                viewer_foundation::tooltip_text::ensure_newlines(&mut out.body, 1);
+                out.body.push_str(&text);
+            }
+            Err(why) => out.refuse("click footer", why),
+        },
+        Some(_) => {}
+        None => out.refuse("click footer", "the province has no class in the content".into()),
+    }
 }
 
 struct Context<'a> {
@@ -572,7 +705,8 @@ impl Context<'_> {
             &self.content.localisation,
             scripted,
             self.vision.ours(),
-        );
+        )
+        .viewing(self.vision.ours());
         let effects = scripted.effects()?;
         let context = dashboard_text::effect_description::Context::new(
             &text,
@@ -587,30 +721,7 @@ impl Context<'_> {
         self.state_name_of(self.province.state)
     }
     fn state_name_of(&self, id: u32) -> Result<String, String> {
-        let state = self
-            .frame
-            .complete::<tables::States>()
-            .map_err(|e| e.to_string())?
-            .iter()
-            .find(|s| s.id == id)
-            .ok_or("state row absent")?;
-        tooltip_text_state_name(
-            &self.content.localisation,
-            &self.content.recorded_language,
-            id,
-            &state.custom_name,
-            &state.owner_name,
-            || {
-                let key = self
-                    .content
-                    .state_name_keys
-                    .get(&id)
-                    .ok_or("state content name absent")?
-                    .as_ref()
-                    .map_err(Clone::clone)?;
-                self.loc(key, &[])
-            },
-        )
+        state_name_of(self.content, self.frame, id)
     }
     fn location(&self, out: &mut Tooltip, category: bool) {
         let p = self.province;

@@ -44,6 +44,7 @@ use std::sync::OnceLock;
 use viewer_foundation::map::province_map::province_at;
 use viewer_foundation::trigger_content::TriggerContent;
 pub mod cycle;
+mod details;
 pub mod eligibility;
 pub mod launch;
 pub mod offers;

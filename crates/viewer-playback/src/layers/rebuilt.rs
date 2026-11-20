@@ -331,13 +331,15 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         self.shared.wake.notify_all();
     }
 
-    /// What it builds for: the next build is for it.
-    pub fn set_seen(&self, seen: Seen) {
+    /// What it builds for: the next build is for it. The generation a build for it carries.
+    pub fn set_seen(&self, seen: Seen) -> u64 {
         let mut state = self.shared.lock();
         state.seen = Some(seen);
         state.generation += 1;
+        let generation = state.generation;
         drop(state);
         self.shared.wake.notify_all();
+        generation
     }
 
     /// What it builds for changed: the next build is for it. The generation a build after the
@@ -861,14 +863,20 @@ impl<B: Build> super::Layer for Whole<B> {
     fn inputs(&mut self, view: &super::View, inputs: &mut super::Inputs<'_>) -> io::Result<()> {
         self.open = (self.drawn)(&self.build, view);
         self.rebuilt.set_open(self.open);
+        let mut renewed = None;
         if let Some(window) = &mut self.window
             && window.perspective.as_ref() != Some(&view.perspective)
         {
-            window.perspective = Some(view.perspective.clone());
-            self.rebuilt.set_seen((view.perspective.clone(), None));
+            let changed = window.perspective.replace(view.perspective.clone()).is_some();
+            let generation = self.rebuilt.set_seen((view.perspective.clone(), None));
+            // Another viewing country: what was made for the one before is never shown for it.
+            renewed = changed.then_some(generation);
         }
         if self.build.viewed(view) {
-            self.since = self.rebuilt.renew();
+            renewed = Some(self.rebuilt.renew());
+        }
+        if let Some(generation) = renewed {
+            self.since = generation;
             if let Some(old) = self.held.take() {
                 self.rebuilt.retire(old);
             }

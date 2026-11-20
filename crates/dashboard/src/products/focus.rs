@@ -9,10 +9,10 @@
 //! while the country was read the hour before; any other change of the list, behind which a reset
 //! can hide, and a list first read after an hour not read, leave its focuses undated.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     CountryParams, LoadContext, Product, check_reply_budget,
     at_hour::{At, AtHour, Keys as AtKeys, Read as AtRead},
-    validate_tag,
 };
 use crate::{FocusEntry, FocusHistory, FocusOrder, FocusProgress, FocusSegment, Source, metadata::check_cancel};
 use dashboard_query::{Query, cost, identity::Holder};
@@ -133,10 +133,10 @@ fn place(history: &History, column: usize) -> io::Result<usize> {
 
 /// `tag`'s focus over `query`'s timeline: per stretch, each holder's `Focus` row and completed
 /// rows read as their history (the hours they change), folded in hour order.
-pub(crate) fn read(query: &Query<'_>, tag: &str, cancelled: &AtomicBool) -> io::Result<Fold> {
+pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> io::Result<Fold> {
     let columns = Columns::new()?;
     let mut fold = Fold::default();
-    let runs = query.holders.tags.get(tag).map(Vec::as_slice).unwrap_or_default();
+    let runs = query.holders.runs(tag);
     for unheld in &query.timeline.unheld {
         fold.miss(unheld.first, unheld.last, &unheld.reason);
     }
@@ -420,18 +420,18 @@ fn order_of(done: &History, written: &BTreeMap<i32, FocusRow>, cells: Option<&[C
 
 /// The last fold read, kept for the next request of the same country.
 #[derive(Default)]
-struct Kept(Option<(u64, String, Arc<Fold>)>);
+struct Kept(Option<(u64, Country, Arc<Fold>)>);
 
 /// `tag`'s fold on `branch` of `source`: the one kept when it is that country's.
-pub(crate) fn fold(source: &Source, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::Result<Arc<Fold>> {
+pub(crate) fn fold(source: &Source, branch: u64, tag: &Country, cancelled: &AtomicBool) -> io::Result<Arc<Fold>> {
     let state = source.state::<Kept>();
-    let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && held == tag).map(|(_, _, fold)| Arc::clone(fold));
+    let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && *held == *tag).map(|(_, _, fold)| Arc::clone(fold));
     if let Some(fold) = held {
         return Ok(fold);
     }
     let query = crate::answer::query(source, branch)?;
     let fold = Arc::new(read(&query, tag, cancelled)?);
-    state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, tag.to_owned(), Arc::clone(&fold)));
+    state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, tag.clone(), Arc::clone(&fold)));
     Ok(fold)
 }
 
@@ -475,7 +475,7 @@ fn pages(first: usize, rows: usize) -> FocusPages {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusHourParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub hour: i32,
 }
 
@@ -514,7 +514,7 @@ pub struct FocusHourReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusOrderPageParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub hour: i32,
     /// The pages `focus-hour` gave for the hour.
     pub pages: FocusPages,
@@ -598,11 +598,11 @@ impl Product for FocusHourProduct {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     fn load(source: &Source, params: &Self::Params, _: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let fold = fold(source, branch_of(&params.branch_id)?, &params.tag, cancelled)?;
+        let fold = fold(source, branch_of(&params.branch_id)?, &params.country, cancelled)?;
         Ok(hour_reply(&fold, params.hour))
     }
 }
@@ -622,11 +622,11 @@ impl Product for FocusOrderPageProduct {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     fn load(source: &Source, params: &Self::Params, _: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let fold = fold(source, branch_of(&params.branch_id)?, &params.tag, cancelled)?;
+        let fold = fold(source, branch_of(&params.branch_id)?, &params.country, cancelled)?;
         order_page(&fold, params.hour, &params.pages, params.page)
     }
 }
@@ -649,7 +649,7 @@ impl Product for FocusCompletionsProduct {
     }
 
     fn load(source: &Source, params: &Self::Params, _: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let fold = fold(source, params.branch(), &params.tag, cancelled)?;
+        let fold = fold(source, params.branch(), &params.country, cancelled)?;
         let reply = FocusCompletions { completions: fold.completions.clone(), warnings: Vec::new() };
         check_reply_budget(&reply)?;
         Ok(reply)

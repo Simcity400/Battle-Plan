@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -26,7 +27,7 @@ import type { BoundTrack } from '../../dashboard/model';
 import { resolveWindow } from '../../dashboard/model';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt.ts';
 import { nameReadMetadata, nameReadFailure } from '../../dashboard/nameReads.ts';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
@@ -70,7 +71,7 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   const view: ConvoyView = options.view === 'trade' ? 'trade' : 'regions';
   const count = typeof options.rowCount === 'number' && options.rowCount > 0 ? options.rowCount : 10;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const following = widget.time.mode === 'follow';
   // Where the window sits needs an hour only for a range or a pin; while following the head is painted.
   const window = track && resolveWindow(widget, track, runtime.tracks, following ? track.branch.lastHour - track.axisOffset : runtime.clock.getSnapshot().position);
@@ -80,7 +81,7 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   // A non-null playhead while following keeps the chart in its playback look; the live head moves it.
   const playhead = following && track ? Math.floor(runtime.clock.getSnapshot().position + track.axisOffset) : pinnedHour;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: CONVOY_HEALTH,
-    params: { branchId: track.branch.id, view, tag, from: extent[0], to: extent[1] } } : null;
+    params: { branchId: track.branch.id, view, country: countryFromKey(tag), from: extent[0], to: extent[1] } } : null;
   const { data, error, retry } = useProduct<ConvoyHealthReply>(runtime.client, request, active, VALIDATORS[view], track?.source);
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);

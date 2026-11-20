@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { eventsThrough, raidAt, raidChangeHours, raidPreparationAt, raidPreparationText, raidStatus, raidTally, recordedSpans, startedBy, validateRaidLog } from './raids.ts';
 import { phaseRun, syntheticEpisode, syntheticRaidLog } from './raids.fixtures.ts';
+import { countryKey } from './countryKey.ts';
 
 const episodes = [
   syntheticEpisode('1', 10, 'ENG', 20, 30, true),
@@ -37,6 +38,13 @@ test('chosen countries are listed at zero when they raided none, and only they a
   const tally = raidTally(episodes, SPAN, [], ['GER', 'ENG'], null);
   assert.deepEqual(tally.series.map(item => item.tag), ['ENG', 'GER']);
   assert.deepEqual(at(tally, 'GER', 100), [0, 0]);
+});
+
+test('a chosen slot counts its country under every tag it held, and never another country holding one of them', () => {
+  // Slot 3 goes by ENG through hour 35, then by PRC from 50; ENG is another country's after.
+  const slot = countryKey(3);
+  const tally = raidTally(episodes, SPAN, [], [slot, 'ENG'], null, (raider, hour) => (raider === 'ENG' && hour <= 35) || (raider === 'PRC' && hour >= 50) ? slot : raider);
+  assert.deepEqual([at(tally, slot, 100), at(tally, 'ENG', 100)], [[2, 2], [1, 0]]);
 });
 
 test('a top keeps each country for the spans it is among the leaders, ties in tag order', () => {

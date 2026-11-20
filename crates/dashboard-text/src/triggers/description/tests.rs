@@ -53,6 +53,11 @@ impl Combat for Side {
 }
 
 fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<String, String> {
+    run_at(source, scripted, entries, extra, None)
+}
+
+/// [`run`] through [`describe_at`] at `at`'s indent and mode, else through [`describe`].
+fn run_at(source: &str, scripted: &str, entries: &str, extra: &str, at: Option<(usize, u8)>) -> Result<String, String> {
     let (catalogue, _folder) = folder_catalogue(&[
         (
             "common/defines/test.lua",
@@ -108,16 +113,13 @@ fn run(source: &str, scripted: &str, entries: &str, extra: &str) -> Result<Strin
         .unwrap()
         .items;
     let mut refusals = BTreeMap::new();
-    let result = describe(
-        &items,
-        &evaluator,
-        &text,
-        &catalogue.localisation,
-        Scopes::combat(),
-        &[b"opening".to_vec()],
-        &|name| Ok(name.to_vec()),
-        &mut refusals,
-    );
+    let (localisation, phases, tactic) = (&catalogue.localisation, &[b"opening".to_vec()], &|name: &[u8]| -> Result<Vec<u8>, String> { Ok(name.to_vec()) });
+    let result = match at {
+        None => describe(&items, &evaluator, &text, localisation, Scopes::combat(), phases, tactic, &mut refusals),
+        Some((indent, mode)) => {
+            describe_at(&items, &evaluator, &text, localisation, Scopes::combat(), phases, tactic, indent, mode, &mut refusals)
+        }
+    };
     assert_eq!(
         evaluator.description_depth.get(),
         0,
@@ -153,6 +155,38 @@ fn groups_share_evaluation_and_reset_descendant_mode() {
         run("SYN_CHECK={arg=yes}", "SYN_CHECK={is_attacker=yes}", "", "").unwrap(),
         "[no]Defend\n"
     );
+}
+
+#[test]
+fn an_indented_conjunction_heads_its_children_without_checks_in_mode_zero() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let source = "is_attacker=yes OR={is_attacker=yes frontage_full=yes} NOT={has_reserves=no}";
+    assert_eq!(
+        run_at(source, "", "", "", Some((1, 0))).unwrap(),
+        "   All:
+      Attack
+      Any:
+         Attack
+         Full
+      Reserve
+"
+    );
+    assert_eq!(
+        run_at(source, "", "", "", Some((2, 0))).unwrap(),
+        "      All:
+         Attack
+         Any:
+            Attack
+            Full
+         Reserve
+"
+    );
+    // One child is not grouped; it keeps the indent.
+    assert_eq!(run_at("is_attacker=yes", "", "", "", Some((2, 0))).unwrap(), "      Attack
+");
+    // Indent zero and mode one is the tactic requirements' description.
+    assert_eq!(run_at(source, "", "", "", Some((0, 1))), run(source, "", "", ""));
 }
 
 #[test]

@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { nameReadText } from '../../dashboard/nameReads.ts';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -16,7 +17,7 @@ import { contentTitleHint } from '../../dashboard/contentTitles';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
 import { useChoiceHour } from '../../dashboard/atHead';
@@ -107,7 +108,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
 
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const selected = selectedTags(widget.countries, track);
+  const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
@@ -130,7 +131,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
     setOpened({ owner, tag: member.tag, token: row.token });
   }, [owner, choiceAt, match]);
   const request = track && open ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'country', tag: open.tag } } : null;
+    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(open.tag) } } : null;
   const history = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateCountryBalances, track?.source);
   // Every holder's memberships once per branch, for how long each row's balance has been held.
   const membershipRequest = track ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,

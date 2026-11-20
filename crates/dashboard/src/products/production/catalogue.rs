@@ -3,6 +3,7 @@
 //! hour, asked for an hour and followed as a panel at the head; and a country's saved designs with
 //! the hours each was its and flagged obsolete (`equipment-designs`), over the branch.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{
     EquipmentIcon, VariantName, held_hours, link_slots,
     names::{self, Named},
@@ -10,7 +11,7 @@ use super::{
 use crate::{
     Source,
     products::{
-        LoadContext, Product, check_reply_budget, validate_tag,
+        LoadContext, Product, check_reply_budget,
         at_hour::{At, AtHour, Owner, Read},
     },
     span::HourSpan,
@@ -100,7 +101,7 @@ pub struct ProductionLicencesReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IndustrialOrganisationsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// One organisation of the country at the hour; its state null where its details were not read.
@@ -149,7 +150,7 @@ pub struct IndustrialOrganisationsReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EquipmentDesignsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// One saved design of the country over the branch.
@@ -284,11 +285,11 @@ impl AtHour for IndustrialOrganisations {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         validate_branch(&params.branch_id)?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -321,7 +322,7 @@ impl AtHour for IndustrialOrganisations {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Industrial organisations country is unavailable at this hour"))?;
-        let mut reply = IndustrialOrganisationsReply { branch_id: params.branch_id.clone(), tag: params.tag.clone(), organisations: Vec::new(), missing: None, details_missing: None, icons: Vec::new(), warnings: Vec::new() };
+        let mut reply = IndustrialOrganisationsReply { branch_id: params.branch_id.clone(), tag: at.holders.name(&params.country, at.hour), organisations: Vec::new(), missing: None, details_missing: None, icons: Vec::new(), warnings: Vec::new() };
         let rows = match organisations_of(frame, owner) {
             Ok(rows) => rows,
             Err(error) => {
@@ -406,7 +407,7 @@ impl Product for EquipmentDesigns {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         validate_branch(&params.branch_id)?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -421,7 +422,7 @@ impl Product for EquipmentDesigns {
         let mut last_seen: BTreeMap<u64, (u32, i32)> = BTreeMap::new();
         for stretch in query.timeline.within(query.timeline.first, query.timeline.last) {
             crate::metadata::check_cancel(cancelled)?;
-            let held: Vec<_> = query.holders.within(&params.tag, stretch.first, stretch.last).into_iter().filter(|run| matches!(run.holder, Holder::Found { .. })).collect();
+            let held: Vec<_> = query.holders.within(&params.country, stretch.first, stretch.last).into_iter().filter(|run| matches!(run.holder, Holder::Found { .. })).collect();
             let (Some(first), Some(last)) = (held.first().map(|run| run.first), held.last().map(|run| run.last)) else { continue };
             let slots = link_slots(recording, stretch.run, stretch.last)?;
             let creators = read::runs(recording, stretch.run, TableId::VariantDefinitions, Column::Cell(creator), None, first, last)?;
@@ -462,18 +463,18 @@ impl Product for EquipmentDesigns {
             names::name_at(recording, *run, *hour, ids, &[], &content, &mut named)?;
         }
         let mut warnings: Vec<String> = std::mem::take(&mut named.warnings).into_iter().collect();
-        if !query.holders.named(&params.tag) {
-            warnings.push(format!("{} is held by no country in this branch", params.tag));
+        if !query.holders.named(&params.country) {
+            warnings.push(query.holders.say(&params.country, query.timeline.last, |name| format!("{name} is held by no country in this branch")));
         }
         let icons = named.icons();
         let reply = EquipmentDesignsReply {
             branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
+            tag: query.holders.name(&params.country, query.timeline.last),
             designs: designs
                 .into_iter()
                 .filter_map(|(id, (lives, obsolete))| Some(DesignHistory { id: id.to_string(), lives, obsolete, name: named.variants.remove(&id)? }))
                 .collect(),
-            known: held_hours(&query, &params.tag, query.timeline.first, query.timeline.last),
+            known: held_hours(&query, &params.country, query.timeline.first, query.timeline.last),
             icons,
             warnings,
         };

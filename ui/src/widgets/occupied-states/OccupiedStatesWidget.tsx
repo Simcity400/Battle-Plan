@@ -10,7 +10,7 @@ import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
 import { useChoiceHour } from '../../dashboard/atHead';
@@ -57,7 +57,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   const hour = head.at ?? track?.branch.lastHour ?? 0;
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const selected = selectedTags(widget.countries, track);
+  const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);

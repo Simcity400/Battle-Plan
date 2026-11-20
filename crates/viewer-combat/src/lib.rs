@@ -9,6 +9,19 @@ use std::time::Duration;
 use std::time::Instant;
 #[cfg(test)]
 use viewer_foundation::engaged::Ambiguity;
+use viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap as NavySources;
+
+/// An adjacency rule's relation for a country slot at a frame, with the branch that decided it,
+/// read with the movement content the app holds.
+pub type RuleRelations = Arc<
+    dyn Fn(
+            &replay_frame::frame::DecodedFrame,
+            &installed_content_core::adjacency_rules::AdjacencyRule,
+            u32,
+        ) -> Result<viewer_foundation::map::movement_reads::RuleReason, String>
+        + Send
+        + Sync,
+>;
 use viewer_foundation::engagement_history::CombatFlags;
 use viewer_foundation::engagement_history::History;
 use viewer_foundation::map::native_gui::lifecycle;
@@ -21,7 +34,7 @@ use viewer_foundation::map::visibility::FogContent;
 use viewer_foundation::map::visibility::Relations;
 use viewer_foundation::tooltip_painter::HoverState;
 use viewer_foundation::tooltip_painter::TooltipDefines;
-use viewer_foundation::tooltip_painter::TooltipPosition;
+use viewer_foundation::tooltip_painter::{Explicit, TooltipPosition};
 mod air_menu;
 mod assets;
 pub(crate) mod availability;
@@ -29,11 +42,13 @@ mod battle_name;
 pub(crate) mod binding;
 mod border_marker;
 mod commander_tooltips;
+pub mod confirmation;
 mod content;
 mod defines;
 pub(crate) mod details;
 mod division_icons;
 mod division_tooltips;
+pub mod find_view;
 mod fixed;
 mod gui;
 mod gui_resources;
@@ -42,6 +57,7 @@ mod keyed;
 pub(crate) mod land_details;
 pub mod land_marker_tooltips;
 mod land_terrain;
+pub mod minimap;
 pub mod modifier_text;
 mod naval_air_groups;
 mod naval_air_tooltips;
@@ -52,6 +68,7 @@ mod naval_escape;
 pub mod naval_labels;
 pub mod naval_marker_tooltips;
 mod naval_positioning;
+mod naval_region_view;
 mod naval_results;
 mod naval_screening;
 mod naval_ship_tooltips;
@@ -63,11 +80,12 @@ mod naval_variants;
 pub mod picker;
 mod presentation;
 pub mod reads;
+mod state_view;
 mod tactics;
 mod template_icons;
 pub mod terrain_mode;
 mod tooltips;
-pub use content::Content;
+pub use content::{Content, Occupation};
 pub use division_tooltips::division_panel;
 
 pub use assets::Assets;
@@ -89,12 +107,17 @@ pub enum Selector {
     Id(u64),
     Province(u32),
     AirRegion(u32),
+    State(u32),
+    NavalRegion(u32),
 }
 
 impl Selector {
     pub fn resolve(self, frame: &replay_frame::frame::DecodedFrame) -> io::Result<Selection> {
-        if let Self::AirRegion(region) = self {
-            return Ok(Selection::AirRegion(region));
+        match self {
+            Self::AirRegion(region) => return Ok(Selection::AirRegion(region)),
+            Self::State(province) => return Ok(Selection::State(province)),
+            Self::NavalRegion(region) => return Ok(Selection::NavalRegion(region)),
+            Self::Id(_) | Self::Province(_) => {}
         }
         use replay_data::rows::tables;
         use viewer_foundation::map::tables::rows;
@@ -103,7 +126,7 @@ impl Selector {
             if match self {
                 Self::Id(id) => id == row.id,
                 Self::Province(id) => id == row.province,
-                Self::AirRegion(_) => unreachable!(),
+                Self::AirRegion(_) | Self::State(_) | Self::NavalRegion(_) => unreachable!(),
             } {
                 matches.push(Selection::Land(row.id));
             }
@@ -112,7 +135,7 @@ impl Selector {
             if match self {
                 Self::Id(id) => id == row.id,
                 Self::Province(id) => id == row.province,
-                Self::AirRegion(_) => unreachable!(),
+                Self::AirRegion(_) | Self::State(_) | Self::NavalRegion(_) => unreachable!(),
             } {
                 matches.push(Selection::Naval(row.id));
             }
@@ -128,7 +151,7 @@ impl Selector {
                         && match self {
                             Self::Id(id) => id == row.id,
                             Self::Province(id) => id == row.province,
-                            Self::AirRegion(_) => unreachable!(),
+                            Self::AirRegion(_) | Self::State(_) | Self::NavalRegion(_) => unreachable!(),
                         }
                 })
                 .max_by_key(|row| (row.result_hour, row.id));
@@ -177,6 +200,10 @@ pub struct Window {
     air_rosters: Option<viewer_counter_products::map::province_tooltips::air_region::PassRosters>,
     /// Viewer playback pause state.
     playing: bool,
+    /// The hour's regional naval dominance sources, which the naval region view's bar hovers read.
+    navy_sources: Option<Arc<NavySources>>,
+    /// The adjacency rule relations the state view's required rule hover reads.
+    rule_relations: Option<RuleRelations>,
     pub selection: Option<Selection>,
     pub offset: [f32; 2],
     air_offset: [f32; 2],
@@ -337,7 +364,7 @@ fn update(selection: Selection, flags: &CombatFlags) -> Update {
             Update::Hold { combat, undecided }
         }
         Selection::NavalResult(_) => Update::Refresh(true),
-        Selection::AirRegion(_) => Update::Refresh(true),
+        Selection::AirRegion(_) | Selection::State(_) | Selection::NavalRegion(_) => Update::Refresh(true),
     }
 }
 
@@ -402,6 +429,14 @@ impl Window {
     /// The speed-above-3 night picture depends on whether playback is paused.
     pub fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
+    }
+    /// The hour's regional naval dominance sources ([`viewer_foundation::map::naval_dominance_sources`]).
+    pub fn set_navy_sources(&mut self, sources: Arc<NavySources>) {
+        self.navy_sources = Some(sources);
+    }
+    /// The adjacency rule relations ([`RuleRelations`]), set once per loaded content.
+    pub fn set_rule_relations(&mut self, relations: RuleRelations) {
+        self.rule_relations = Some(relations);
     }
     /// What the open window cannot show exactly: its bindings' gaps and the
     /// combat artwork's. Built only for diagnostics and exports; empty when no
@@ -616,8 +651,16 @@ impl Window {
                     hit.shortcut.as_deref(),
                     hit.rect,
                     None,
-                    (hit.anchor == TooltipAnchor::NavalWindow)
-                        .then(|| drawn.expect("combat hover has a drawn window").rect),
+                    match hit.anchor {
+                        TooltipAnchor::NavalWindow => Some(Explicit::NavalWindow(
+                            drawn.expect("combat hover has a drawn window").rect,
+                        )),
+                        TooltipAnchor::At { x, y, below } => Some(Explicit::At {
+                            at: [x as f32, y as f32],
+                            below,
+                        }),
+                        TooltipAnchor::Pointer | TooltipAnchor::Authored(_) => None,
+                    },
                 )
             })
             .or_else(|| {
@@ -633,7 +676,7 @@ impl Window {
             self.tooltip_from_map = combat_hit.is_none();
             self.hover.anchor = window.zip(point).map(|(window, point)| TooltipPosition {
                 point,
-                naval_window: Some(window),
+                anchor: Some(window),
             });
         }
         // Explicit anchors retain their position while the hide timer runs.
@@ -650,7 +693,7 @@ impl Window {
                     text,
                     anchor.unwrap_or(TooltipPosition {
                         point,
-                        naval_window: None,
+                        anchor: None,
                     }),
                 )
             })
@@ -795,6 +838,8 @@ impl Window {
             playing: self.playing,
             air: self.air.clone(),
             details: self.result_details_open,
+            navy_sources: self.navy_sources.clone(),
+            rule_relations: self.rule_relations.clone(),
         }
     }
 
@@ -1011,6 +1056,8 @@ struct Request {
     air: air_menu::State,
     /// Whether a retained result's detail panels are open.
     details: bool,
+    navy_sources: Option<Arc<NavySources>>,
+    rule_relations: Option<RuleRelations>,
 }
 
 /// What makes two reads the same window's: its selection and every setting it was read under.
@@ -1054,7 +1101,7 @@ enum Want {
 
 /// The window's read of its request's frame: its scope, the combat's flags and what it shows.
 fn read(request: &Request) -> io::Result<Fresh> {
-    let Request { content: document, branch, hour, frame, selection, perspective, engaged, nato, playing, air, details } = request;
+    let Request { content: document, branch, hour, frame, selection, perspective, engaged, nato, playing, air, details, navy_sources, rule_relations } = request;
     let frame = frame.as_deref().map_err(|why| invalid(why.clone()))?;
     let vision = cached_vision(frame, perspective, FogContent::loaded(&document.fog), &document.vision_memo)?;
     let mut air = air.clone();
@@ -1080,7 +1127,7 @@ fn read(request: &Request) -> io::Result<Fresh> {
         playing: *playing,
         nato: *nato,
     };
-    let flags = if matches!(selection, Selection::AirRegion(_)) {
+    let flags = if matches!(selection, Selection::AirRegion(_) | Selection::State(_) | Selection::NavalRegion(_)) {
         CombatFlags::default()
     } else {
         combat_flags(frame, vision.ours(), engaged.as_deref())?
@@ -1092,7 +1139,9 @@ fn read(request: &Request) -> io::Result<Fresh> {
             let mut bindings = if let Selection::AirRegion(region) = *selection {
                 air_menu::bind(document, frame, &vision, region, &air)?
             } else {
-                Bindings::read(document, frame, *selection, &vision, &flags, !*playing, *nato)?
+                let unset = Err("the naval dominance sources were not given to the window".to_owned());
+                let sources = navy_sources.as_deref().unwrap_or(&unset);
+                Bindings::read(document, frame, *selection, &vision, &flags, !*playing, *nato, sources, rule_relations.as_ref())?
             };
             if matches!(selection, Selection::NavalResult(_)) {
                 naval_results::show_details(&mut bindings.values, *details);
@@ -1185,15 +1234,15 @@ impl std::fmt::Debug for Read {
 #[derive(Clone, Default)]
 pub struct Drawn {
     air_controls: Vec<(String, air_menu::Action)>,
-    air_details_rect: Option<[f32; 4]>,
-    air_combat_rect: Option<[f32; 4]>,
     pub batch: Batch,
     pub refused: BTreeMap<String, usize>,
     pub rect: [f32; 4],
+    /// Where each of the window's windows and controls drew, which may stand past [`Self::rect`]:
+    /// the window takes the pointer over all of them.
+    areas: Vec<[f32; 4]>,
     pub close: Option<[f32; 4]>,
     dismiss: Option<[f32; 4]>,
     result_details_button: Option<[f32; 4]>,
-    result_details_rects: Vec<[f32; 4]>,
     lists: Vec<([f32; 4], ScrollTarget)>,
     scroll_buttons: Vec<([f32; 4], ScrollTarget, i32)>,
     /// Hover regions in draw order; the last containing one wins.
@@ -1246,13 +1295,27 @@ struct TooltipHit {
     anchor: TooltipAnchor,
 }
 
-/// Producer-specific placement; ship groups anchor beside the naval window.
-/// Pride, sunk ships and air entries keep their own default placement.
+/// Placement: ship groups anchor beside the naval window, a control's authored
+/// `pdx_tooltip_anchor` holds where it says, and the rest follow the pointer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TooltipAnchor {
     #[default]
     Pointer,
     NavalWindow,
+    Authored(installed_content_core::gui::native::TooltipAnchor),
+    /// An authored anchor resolved on screen, in interface pixels.
+    At { x: i32, y: i32, below: bool },
+}
+
+/// Where a drawn window takes the pointer: the window, each window and control it drew past it,
+/// and its popup.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Footprint(Vec<[f32; 4]>);
+
+impl Footprint {
+    pub fn contains(&self, point: [f32; 2]) -> bool {
+        self.0.iter().any(|rect| contains(*rect, point))
+    }
 }
 
 impl Drawn {
@@ -1261,17 +1324,11 @@ impl Drawn {
     }
     pub fn contains(&self, point: [f32; 2]) -> bool {
         contains(self.rect, point)
-            || self
-                .air_details_rect
-                .is_some_and(|rect| contains(rect, point))
-            || self
-                .air_combat_rect
-                .is_some_and(|rect| contains(rect, point))
+            || self.areas.iter().any(|rect| contains(*rect, point))
             || self.in_popup(point)
-            || self
-                .result_details_rects
-                .iter()
-                .any(|rect| contains(*rect, point))
+    }
+    pub fn footprint(&self) -> Footprint {
+        Footprint(std::iter::once(self.rect).chain(self.areas.iter().copied()).chain(self.tactics_rect).collect())
     }
     pub fn closes(&self, point: [f32; 2]) -> bool {
         !self.in_popup(point)
@@ -1321,6 +1378,12 @@ pub struct Widget {
     pub progress: Option<i32>,
     pub frame: Option<u32>,
     pub rotation: Option<f32>,
+    /// The drawable's stretch along its unrotated height, about its centre.
+    pub stretch: Option<f32>,
+    /// The drawable's uniform scale, in place of its authored one.
+    pub scale: Option<f32>,
+    /// An edit box's shown caret: the codepoint index it stands before.
+    pub caret: Option<usize>,
     pub opacity: Option<f32>,
     pub color: Option<[f32; 4]>,
     /// Runtime button state; absent restores the GUI's authored enabled state.

@@ -6,7 +6,8 @@
 //! channel or an unresolved sender's list is not known, it is not known. Observed deployments, not
 //! dispatches: nothing is integrated or carried across a gap.
 
-use super::{LoadContext, Product, validate_tag};
+use dashboard_base::products::Country;
+use super::{LoadContext, Product};
 use crate::Source;
 use dashboard_base::span::HourSpan;
 use dashboard_query::{Query, identity::Holder, read};
@@ -41,7 +42,7 @@ pub struct VolunteersExpeditionariesParams {
     pub branch_id: String,
     pub kind: MilitaryAidKind,
     /// Links touching these tags only; none for every link.
-    pub tags: Option<Vec<String>>,
+    pub countries: Option<Vec<Country>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -103,8 +104,8 @@ impl Product for VolunteersExpeditionaries {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid aid branch")?;
-        for tag in params.tags.iter().flatten() {
-            validate_tag(tag)?;
+        for tag in params.countries.iter().flatten() {
+            dashboard_base::products::validate_country(tag)?;
         }
         Ok(())
     }
@@ -187,7 +188,7 @@ fn aid(query: &Query<'_>, params: &VolunteersExpeditionariesParams, lifetimes: i
         MilitaryAidKind::Land => MilitaryAidRow::VOLUNTEERS,
         MilitaryAidKind::Expeditionary => MilitaryAidRow::EXPEDITIONARIES,
     };
-    let wanted: Option<BTreeSet<&str>> = params.tags.as_ref().map(|tags| tags.iter().map(String::as_str).collect());
+    let chosen = |slot: u32, tag: &str| params.countries.as_ref().is_none_or(|countries| countries.iter().any(|country| super::casualties::matches(country, (slot, 0), tag)));
     let holders = slot_holders(query);
     let divisions = summary_source()?;
     let recording = query.replay.recording();
@@ -236,7 +237,7 @@ fn aid(query: &Query<'_>, params: &VolunteersExpeditionariesParams, lifetimes: i
                 let value = |hour: i32| pair_value(pair_runs, &available, lives(unknown, hour) || lives(nobody, hour), hour);
                 for &(sender_first, sender_last, sender_tag, sender_id) in holders.get(&sender).into_iter().flatten() {
                     for &(host_first, host_last, host_tag, host_id) in holders.get(&host).into_iter().flatten() {
-                        if wanted.as_ref().is_some_and(|tags| !tags.contains(sender_tag) && !tags.contains(host_tag)) {
+                        if !chosen(sender, sender_tag) && !chosen(host, host_tag) {
                             continue;
                         }
                         let lo = sender_first.max(host_first).max(stretch.first);

@@ -107,7 +107,7 @@ fn recording() -> Source {
 fn asked(source: &Source, from: i32, to: i32) -> super::PowerSpendingReply {
     let query = crate::answer::query(source, 1).unwrap();
     let naming = naming::context(source, &LoadContext { content: None }).unwrap();
-    let params = PowerSpendingParams { branch_id: "1".into(), tag: "GER".into(), currency: SpendCurrency::Political, from, to };
+    let params = PowerSpendingParams { branch_id: "1".into(), country: "GER".into(), currency: SpendCurrency::Political, from, to };
     spending(source, &query, &params, &naming, &AtomicBool::new(false)).unwrap()
 }
 
@@ -149,7 +149,7 @@ fn a_tag_no_holder_held_lists_nothing_and_no_hour_as_covered() {
     assert!(!held.payments.is_empty() && !held.coverage.is_empty(), "the recording holds another tag's spending");
     let query = crate::answer::query(&source, 1).unwrap();
     let naming = naming::context(&source, &LoadContext { content: None }).unwrap();
-    let params = PowerSpendingParams { branch_id: "1".into(), tag: "ENG".into(), currency: SpendCurrency::Political, from: FIRST, to: LAST };
+    let params = PowerSpendingParams { branch_id: "1".into(), country: "ENG".into(), currency: SpendCurrency::Political, from: FIRST, to: LAST };
     let reply = spending(&source, &query, &params, &naming, &AtomicBool::new(false)).unwrap();
     assert!(reply.payments.is_empty() && reply.days.is_empty() && reply.items.is_empty());
     assert!(reply.coverage.is_empty(), "hours no holding names are not recorded, never covered");

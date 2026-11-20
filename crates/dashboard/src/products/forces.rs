@@ -8,6 +8,7 @@
 //! part without a row then holds none; otherwise every part is not known. A total not recorded is
 //! a gap, never zero.
 
+use dashboard_base::products::Country;
 use super::{
     LoadContext, Product,
     army::{ArmyIdentityRun, ArmySpan},
@@ -15,7 +16,6 @@ use super::{
 use crate::Source;
 use dashboard_base::{
     catalogue::{self, Catalogue, View},
-    products::validate_tag,
 };
 use dashboard_declare::{Measure, Series};
 use dashboard_query::{
@@ -95,7 +95,7 @@ pub enum NavyGrouping {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirForceParams {
     pub branch_id: String,
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     pub top: Option<usize>,
     pub measure: AirForceMeasure,
     pub ownership: AirForceOwnership,
@@ -110,7 +110,7 @@ pub struct AirForceParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavyParams {
     pub branch_id: String,
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     pub top: Option<usize>,
     pub ownership: NavyOwnership,
     pub grouping: NavyGrouping,
@@ -153,7 +153,7 @@ pub struct ForceRun {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ForceSeries {
-    pub tag: String,
+    pub country: Country,
     pub identities: Vec<ArmyIdentityRun>,
     pub runs: Vec<ForceRun>,
     pub segments: Vec<ArmySpan>,
@@ -221,7 +221,7 @@ fn navy_race(measure: NavyMeasure, ownership: NavyOwnership) -> Race {
     Race { totals: "navy-totals", total, reference: Some(reference), parts: "navy-classes", part, ownership_shift: 32, ownership: owner }
 }
 
-fn validate_selection(branch_id: &str, tags: &[String], top: Option<usize>) -> Result<(), &'static str> {
+fn validate_selection(branch_id: &str, tags: &[Country], top: Option<usize>) -> Result<(), &'static str> {
     if branch_id.parse::<u64>().is_err() {
         return Err("Invalid branch");
     }
@@ -229,7 +229,7 @@ fn validate_selection(branch_id: &str, tags: &[String], top: Option<usize>) -> R
         return Err("Invalid country selection");
     }
     for tag in tags {
-        validate_tag(tag)?;
+        dashboard_base::products::validate_country(tag)?;
     }
     Ok(())
 }
@@ -254,14 +254,14 @@ impl Product for AirForceSize {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_selection(&params.branch_id, &params.tags, params.top)
+        validate_selection(&params.branch_id, &params.countries, params.top)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| invalid("Invalid branch"))?;
         let query = crate::answer::query(source, branch)?;
         let race = air_race(params.measure, params.ownership);
-        let asked = Asked { branch_id: &params.branch_id, tags: &params.tags, top: params.top, window: params.window };
+        let asked = Asked { branch_id: &params.branch_id, tags: &params.countries, top: params.top, window: params.window };
         window_reply(source, &query, race, asked, cancelled, |recording, run, hour, parts, warnings| {
             let content = Content::read(source, context, "Air equipment type names", warnings);
             match params.measure {
@@ -284,14 +284,14 @@ impl Product for NavySize {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_selection(&params.branch_id, &params.tags, params.top)
+        validate_selection(&params.branch_id, &params.countries, params.top)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().map_err(|_| invalid("Invalid branch"))?;
         let query = crate::answer::query(source, branch)?;
         let race = navy_race(params.measure, params.ownership);
-        let asked = Asked { branch_id: &params.branch_id, tags: &params.tags, top: params.top, window: params.window };
+        let asked = Asked { branch_id: &params.branch_id, tags: &params.countries, top: params.top, window: params.window };
         let mut reply = window_reply(source, &query, race, asked, cancelled, |recording, run, hour, parts, warnings| {
             let content = Content::read(source, context, "Ship class names", warnings);
             navy_classes(recording, run, hour, &parts.keys().copied().collect(), &content, params.grouping, warnings)
@@ -310,7 +310,7 @@ impl Product for NavySize {
 #[derive(Clone, Copy)]
 struct Asked<'a> {
     branch_id: &'a str,
-    tags: &'a [String],
+    tags: &'a [Country],
     top: Option<usize>,
     window: Option<usize>,
 }
@@ -363,13 +363,11 @@ fn split(total: Option<i64>, held: &[(usize, Option<i64>)], groups: usize) -> Ve
 
 /// `tag`'s identity segments meeting `first..=last`: each keeps its first hour and ends at the
 /// window's end at the latest.
-pub(crate) fn segments(query: &Query<'_>, tag: &str, first: i32, last: i32) -> Vec<ArmySpan> {
+pub(crate) fn segments(query: &Query<'_>, tag: &Country, first: i32, last: i32) -> Vec<ArmySpan> {
     query
         .holders
-        .tags
-        .get(tag)
-        .into_iter()
-        .flatten()
+        .runs(tag)
+        .iter()
         .filter(|run| matches!(run.holder, Holder::Found { .. }) && run.first <= last && run.last >= first)
         .map(|run| ArmySpan { first_hour: run.first, last_hour: run.last.min(last) })
         .collect()
@@ -444,21 +442,21 @@ fn window_reply(
     let line = Line::new(query, totals, measure(totals, race.total)?)?;
     // A ranked window's members from the summaries' top N at six-hour bins: no country's runs are
     // read unless it ranks.
-    let membership: Option<BTreeMap<String, Vec<(i32, i32)>>> = match asked.top {
+    let membership: Option<BTreeMap<Country, Vec<(i32, i32)>>> = match asked.top {
         Some(top) => {
             let width = ((i64::from(last) - i64::from(first) + 1) / 6).max(1) as u32;
-            Some(line.ranked(first, last, width, top)?.into_iter().map(|line| (line.tag, line.membership)).collect())
+            Some(line.ranked(first, last, width, top)?.into_iter().map(|line| (Country::from(line.tag), line.membership)).collect())
         }
         None => None,
     };
-    let tags: Vec<String> = match &membership {
+    let tags: Vec<Country> = match &membership {
         Some(members) => members.keys().cloned().collect(),
         None => {
             let mut seen = BTreeSet::new();
             asked.tags.iter().filter(|tag| seen.insert((*tag).clone())).cloned().collect()
         }
     };
-    let mut held: BTreeMap<String, Vec<Part>> = BTreeMap::new();
+    let mut held: BTreeMap<Country, Vec<Part>> = BTreeMap::new();
     for tag in &tags {
         crate::metadata::check_cancel(cancelled)?;
         let parts: Vec<Part> = line.parts(tag, first, last).into_iter().filter(|part| part.run == run).collect();
@@ -527,7 +525,7 @@ fn window_reply(
             }
         }
         reply.series.push(ForceSeries {
-            tag: tag.clone(),
+            country: tag.clone(),
             identities: if asked.top.is_none() { identities } else { Vec::new() },
             runs,
             segments: segments(query, tag, first, last),

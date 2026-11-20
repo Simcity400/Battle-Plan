@@ -6,7 +6,6 @@ use replay_frame::frame::TableView;
 use std::collections::HashSet;
 use std::path::Path;
 use std::{path::PathBuf, sync::Arc, time::Instant};
-use viewer_foundation::map::perspective::Country;
 use viewer_foundation::map::presentation::Target;
 use viewer_foundation::map::ui_scale::Setting;
 
@@ -403,11 +402,7 @@ impl Viewer {
                 }
             }
             MapAction::Configure { options } => {
-                self.perspective.country = options
-                    .country
-                    .clone()
-                    .map_or(Country::Recorded, Country::Tag);
-                self.perspective.fog = options.fog;
+                self.host_perspective(&options);
                 // The campaign map's picker choices come back here, so a restarted viewer
                 // shows them again.
                 self.apply_host_options(&options);

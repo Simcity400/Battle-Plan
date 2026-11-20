@@ -1,6 +1,7 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo } from 'react';
 import { contributionExtent } from './tradeDrill';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import { resolveCountries } from '../../dashboard/groups';
 import type { ResolvedCountries } from '../../dashboard/groups';
@@ -19,7 +20,7 @@ import type { TradeFlowsReply } from '../../generated/dashboard';
 export function tradeFlowsRequest(track: Pick<BoundTrack, 'source' | 'branch'>, tags: readonly string[] | null, from: number, to: number, window: number): ProductRequest {
   const first = window * WINDOW_HOURS;
   return { sourceId: track.source.id, revision: track.source.revision, product: 'trade-flows',
-    params: { branchId: track.branch.id, tags, window, from: Math.max(from, first), to: Math.min(to, first + WINDOW_HOURS - 1) } };
+    params: { branchId: track.branch.id, countries: tags?.map(countryFromKey) ?? null, window, from: Math.max(from, first), to: Math.min(to, first + WINDOW_HOURS - 1) } };
 }
 
 /** The trade of `from..=to`, joined from its windows of hours once every one is held: never the campaign in one reply. */
@@ -53,7 +54,7 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
   const grouped = widget.countries.kind === 'group';
   const all = widget.countries.kind === 'all';
   const groups = useCountryGroups(runtime, track, active && (grouped || marketView && !all));
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const lastHour = track?.branch.lastHour ?? 0;
   const resolved = useMemo<ResolvedCountries | null>(() => all ? null
     : resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [all, widget.countries, fallback, groups.data, lastHour]);

@@ -8,6 +8,8 @@ import type { WidgetProps } from './definitions';
 import { resolveWindow } from './model';
 import { useIdentityHour } from './atHead.ts';
 import { useDiagnostics } from './useDiagnostics';
+import { isSlotKey } from './countryKey.ts';
+import { keyNameAt, useSlotTags } from './countrySlots.ts';
 import type { HourSpan } from '../generated/dashboard';
 import './countryComparisons.css';
 
@@ -53,8 +55,11 @@ export default function CountryComparisons({ component: Component, ...props }: W
     if (held.length === warnings.length && held.every((note, index) => note === warnings[index])) return before;
     return new Map(before).set(tag, warnings);
   })])), [countries.tags]);
+  const slots = useSlotTags(runtime.client, track, active && countries.tags.some(isSlotKey));
+  // A slot's notes are named by the tag its country goes by at the hour shown.
   const diagnostics = useMemo(() => [...(contentPending ? ['Group names are updating from the recorded content.'] : []),
-    ...new Set(countries.tags.flatMap(tag => (notes.get(tag) ?? []).map(note => `${tag}: ${note}`)))], [countries.tags, notes, contentPending]);
+    ...new Set(countries.tags.flatMap(tag => (notes.get(tag) ?? []).map(note => `${keyNameAt(slots, tag, hour) ?? 'Country name unavailable'}: ${note}`)))],
+  [countries.tags, notes, contentPending, slots, hour]);
   useDiagnostics(onDiagnostics, diagnostics);
   // Each mounted panel keeps its widget while this one re-renders, so its own hooks do not re-run.
   const panels = useMemo(() => new Map(shown.map(tag => [tag, { ...widget, countries: { kind: 'tags' as const, tags: [tag] } }])), [widget, shown]);

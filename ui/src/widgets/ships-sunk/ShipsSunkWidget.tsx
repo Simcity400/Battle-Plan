@@ -11,7 +11,7 @@ import { jumpItem } from '../../charts/jump';
 import { aheadEnd, useRevealClock } from '../../charts/reveal';
 import { useAheadHour } from '../../dashboard/aheadHour';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -69,7 +69,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   // The last hour whose sinkings are drawn: following, the block's last; else the hour shown.
   const drawnThrough = hour === undefined ? undefined : following ? hour + block.until - 1 - Math.floor(block.hour) : hour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
-  const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));
+  const fallbackKey = JSON.stringify(selectedCountryKeys(widget.countries, track));
   const fallback = useMemo<string[]>(() => JSON.parse(fallbackKey), [fallbackKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);

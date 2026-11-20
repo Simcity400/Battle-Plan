@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -6,7 +7,7 @@ import { dayLabel } from '../../charts/draw';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -54,7 +55,7 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   const liveHead = useMemo(() => following && track ? { read: () => clock.getSnapshot().position + axisOffset, subscribe: (changed: () => void) => clock.subscribeFrame(changed) }
     : undefined, [following, track, clock, axisOffset]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const pinned = widget.time.mode === 'pin';
   const playhead = window && (following || pinned) ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -66,7 +67,7 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   const saved = typeof options.balance === 'string' ? options.balance : '';
 
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'country', tag } } : null;
+    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(tag) } } : null;
   const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateCountryBalances, track?.source);
   const branchFirst = track?.branch.firstHour ?? 0;
   const unknown = useMemo(() => unknownHours(track?.branch.gaps ?? [], data?.known ?? [], branchFirst, data?.lastHour ?? null),

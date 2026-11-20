@@ -37,7 +37,7 @@ function reply(tags: readonly string[], binHours: number, index: number, lastHou
   const last = first + TILE_BINS * binHours - 1;
   return { branchId: '1', measure: 'politicalPower', decimals: 2, binHours, index, firstHour: first, immutable: last < lastHour,
     filled: first <= lastHour ? Math.min(last, lastHour) : null, rawValues: true, hourBytes: 2,
-    lines: tags.map(tag => ({ tag, missing: [], parts: [{ firstHour: first, lastHour: last, slot: 1, countryId: 1, segmentFirstHour: first }] })), bins: btoa(binary) };
+    lines: tags.map(tag => ({ country: tag, missing: [], parts: [{ firstHour: first, lastHour: last, slot: 1, countryId: 1, segmentFirstHour: first }] })), bins: btoa(binary) };
 }
 
 const value = (tag: number, hour: number) => hour % 977 < 20 ? null : (hour * 7 + tag * 1000) % 50_000 - 25_000;

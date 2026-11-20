@@ -2,8 +2,9 @@
 //! values at an hour (formula terms, modifier tree lines), and the names of the parts of the
 //! declared `stability-parts` series.
 
+use dashboard_base::products::{Country, validate_country};
 use super::at_hour::{At, AtHour, Keys, Owner, Read};
-use super::{LoadContext, validate_tag};
+use super::LoadContext;
 use crate::Source;
 use dashboard_base::products::politics_content::{PoliticsContent, politics_content};
 use dashboard_text::idea_names::IdeaCountry;
@@ -111,7 +112,7 @@ pub struct StabilityBreakdown {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StabilityBreakdownParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -131,7 +132,7 @@ pub struct StabilityBreakdownReply {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StabilityPartNamesParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// Parts of the `stability-parts` series, as `series-parts` names them: measure and handle.
     pub parts: Vec<String>,
 }
@@ -378,11 +379,11 @@ impl AtHour for CountryStabilityBreakdown {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid stability branch");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -451,12 +452,12 @@ impl AtHour for CountryStabilityBreakdown {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Stability breakdown country is unavailable at this hour"))?;
         let mut warnings = Vec::new();
-        let (breakdown, missing) = match breakdown_at(frame, owner, &params.tag, &at.context.content, &mut warnings) {
+        let (breakdown, missing) = match breakdown_at(frame, owner, &at.holders.name(&params.country, at.hour), &at.context.content, &mut warnings) {
             Ok(breakdown) => (Some(breakdown), None),
             Err(why) => (None, Some(why)),
         };
         at.context.finish(&mut warnings);
-        let reply = StabilityBreakdownReply { tag: params.tag.clone(), hour: frame.hour, breakdown, missing, warnings };
+        let reply = StabilityBreakdownReply { tag: at.holders.name(&params.country, at.hour), hour: frame.hour, breakdown, missing, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
@@ -520,11 +521,11 @@ impl AtHour for StabilityPartNames {
         if params.parts.iter().any(|part| part_of(part).is_none()) {
             return Err("Invalid stability part");
         }
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -556,7 +557,8 @@ impl AtHour for StabilityPartNames {
         let mut warnings = Vec::new();
         let keys = frame.complete::<tables::StabilityPartKeys>();
         let look = look(frame, owner);
-        let country = IdeaCountry { tag: &params.tag, slot: owner.slot, look: look.as_ref().map(Look::country_look) };
+        let tag = at.holders.name(&params.country, at.hour);
+        let country = IdeaCountry { tag: &tag, slot: owner.slot, look: look.as_ref().map(Look::country_look) };
         let parts = params
             .parts
             .iter()
@@ -581,7 +583,7 @@ impl AtHour for StabilityPartNames {
             })
             .collect();
         at.context.finish(&mut warnings);
-        let reply = StabilityPartNamesReply { tag: params.tag.clone(), hour: frame.hour, parts, warnings };
+        let reply = StabilityPartNamesReply { tag: at.holders.name(&params.country, at.hour), hour: frame.hour, parts, warnings };
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }

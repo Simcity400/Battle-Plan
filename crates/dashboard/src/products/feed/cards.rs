@@ -125,7 +125,7 @@ pub struct ScriptPageRow {
     pub ordinal: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub tag: Option<String>,
+    pub country: Option<dashboard_base::products::Country>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub own_ordinal: Option<String>,
@@ -174,8 +174,8 @@ pub(crate) fn continuing(query: &Query<'_>, list: List, openers: &[(u64, u64, i3
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let filters = [
-        FacetFilter { name: "kind".into(), values: list.continuing().iter().filter_map(|kind| kind.code()).map(i64::from).collect(), tags: Vec::new() },
-        FacetFilter { name: "opener".into(), values: hours.iter().map(|hour| i64::from(*hour)).collect(), tags: Vec::new() },
+        FacetFilter { name: "kind".into(), values: list.continuing().iter().filter_map(|kind| kind.code()).map(i64::from).collect(), countries: Vec::new() },
+        FacetFilter { name: "opener".into(), values: hours.iter().map(|hour| i64::from(*hour)).collect(), countries: Vec::new() },
     ];
     let selection = reader.select(&filters, query.timeline.first, to)?;
     let columns = super::row::Columns::new()?;
@@ -214,7 +214,7 @@ fn cards(list: List, source: &Source, params: &FeedPageParams, context: &LoadCon
     let names = Names::new(&query.holders);
     let mut notices = Notices::default();
     let presenter = Presenter::new(&query, content(source, context, &mut notices), kept_naming(source));
-    let tagged = params.facets.iter().any(|filter| !filter.tags.is_empty());
+    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
     // Each row's kind as the list shows it, and an opener's continuing rows.
     let cards: Vec<(Option<EventFeedKind>, Vec<FeedEvent>)> = rows
         .iter()
@@ -245,7 +245,7 @@ fn cards(list: List, source: &Source, params: &FeedPageParams, context: &LoadCon
             hour: paged.hour,
             key: paged.key.to_string(),
             ordinal: paged.ordinal.to_string(),
-            tag: paged.tag,
+            country: paged.tag,
             own_ordinal: tagged.then(|| paged.own.to_string()),
             cells: Vec::new(),
             occurrence,

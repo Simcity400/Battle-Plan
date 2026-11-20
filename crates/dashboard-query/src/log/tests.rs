@@ -134,8 +134,8 @@ fn a_page_reads_only_the_buckets_holding_its_rows() {
 fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
     let query = query();
     let reader = market(&query);
-    let kinds = FacetFilter { name: "kind".into(), values: vec![1, 7], tags: Vec::new() };
-    let countries = FacetFilter { name: "country".into(), values: Vec::new(), tags: vec!["ITA".into(), "GER".into()] };
+    let kinds = FacetFilter { name: "kind".into(), values: vec![1, 7], countries: Vec::new() };
+    let countries = FacetFilter { name: "country".into(), values: Vec::new(), countries: vec!["ITA".into(), "GER".into()] };
     for (filters, keep) in [
         (vec![kinds.clone()], Box::new(|_: i32, kind: u8, _: u32| kind == 1 || kind == 7) as Box<dyn Fn(i32, u8, u32) -> bool>),
         (vec![countries.clone()], Box::new(|_: i32, _: u8, _: u32| true)),
@@ -143,7 +143,7 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
     ] {
         let selection = reader.select(&filters, query.timeline.first, LAST).unwrap();
         let wanted = events(&query, FIRST, LAST, &keep);
-        let tagged = filters.iter().any(|filter| !filter.tags.is_empty());
+        let tagged = filters.iter().any(|filter| !filter.countries.is_empty());
         let groups = selection.groups.len();
         // Every page from the first, each from the cursor the one before gave.
         let (mut rows, mut cursor) = (Vec::new(), 0);
@@ -186,7 +186,7 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
             }
         }
     }
-    assert!(reader.select(&[FacetFilter { name: "kind".into(), values: Vec::new(), tags: vec!["GER".into()] }], FIRST, LAST).is_err(), "a kind holds no country");
+    assert!(reader.select(&[FacetFilter { name: "kind".into(), values: Vec::new(), countries: vec!["GER".into()] }], FIRST, LAST).is_err(), "a kind holds no country");
     assert!(reader.select(&[FacetFilter { name: "nope".into(), ..FacetFilter::default() }], FIRST, LAST).is_err());
 }
 
@@ -197,9 +197,9 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
 fn a_tag_filter_over_two_facets_keeps_the_rows_either_names() {
     let query = query();
     let reader = market(&query);
-    let parties = FacetFilter { name: "country|receiver".into(), values: Vec::new(), tags: vec!["ITA".into(), "GER".into()] };
+    let parties = FacetFilter { name: "country|receiver".into(), values: Vec::new(), countries: vec!["ITA".into(), "GER".into()] };
     let selection = reader.select(&[parties], query.timeline.first, LAST).unwrap();
-    assert_eq!(selection.groups, vec![Some("ITA".to_owned()), Some("GER".to_owned())]);
+    assert_eq!(selection.groups, vec![Some("ITA".into()), Some("GER".into())]);
     let mut wanted = Vec::new();
     for (hour, key, kind, country) in events(&query, FIRST, LAST, |_, _, _| true) {
         let receiver = fixture::receiver(country, kind, hour);
@@ -228,7 +228,7 @@ fn a_tag_filter_over_two_facets_keeps_the_rows_either_names() {
             assert_eq!(counts.bins.iter().map(|(_, count)| count).sum::<u64>(), wanted.iter().filter(|row| row.1 == group).count() as u64, "group {group}, bins of {bin_hours}");
         }
     }
-    assert!(reader.select(&[FacetFilter { name: "kind|country".into(), values: vec![1], tags: Vec::new() }], FIRST, LAST).is_err(), "values name one facet");
+    assert!(reader.select(&[FacetFilter { name: "kind|country".into(), values: vec![1], countries: Vec::new() }], FIRST, LAST).is_err(), "values name one facet");
 }
 
 /// The balance drops' pages on the generic log: every drop of the tags in hour then tag order, each
@@ -258,8 +258,8 @@ fn balance_drops_page_and_mark_as_the_values_fall() {
         assert_eq!(page.total, wanted.len().to_string());
         assert_eq!(page.first_ordinal, cursor.max(before.len() as u64).to_string());
         for event in &page.rows {
-            let at = TAGS.iter().position(|tag| *tag == event.tag).unwrap();
-            assert_eq!(event.ordinal, own[at].to_string(), "{}'s drop at {}", event.tag, event.hour);
+            let at = TAGS.iter().position(|tag| event.country.tag() == Some(*tag)).unwrap();
+            assert_eq!(event.ordinal, own[at].to_string(), "{}'s drop at {}", event.country, event.hour);
             own[at] += 1;
             let id = 9001 + at as u32;
             assert_eq!((event.row.before_raw.clone(), event.row.after_raw.clone()), (power(id, event.hour - 1).unwrap().to_string(), power(id, event.hour).unwrap().to_string()));

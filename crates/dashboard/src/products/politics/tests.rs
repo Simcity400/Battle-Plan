@@ -92,7 +92,7 @@ fn run(first: i32, last: i32, value: impl ToString) -> PoliticsRun {
 fn an_election_schedule_is_held_by_an_owner_of_states_and_an_unread_eligibility_is_refused_not_denied() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Elections, tag: None };
+    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Elections, country: None };
     let reply = history::answer(&query, &params, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.known.len(), 1);
     assert_eq!((reply.known[0].first_hour, reply.known[0].last_hour), (FIRST, LAST));
@@ -115,7 +115,7 @@ fn a_holders_balances_follow_the_records_listing_it_with_their_ranges_and_leanin
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
     let country = |tag: &str| {
-        let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, tag: Some(tag.into()) };
+        let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Country, country: Some(tag.into()) };
         let reply = history::answer(&query, &params, None, &AtomicBool::new(false)).unwrap();
         assert_eq!(reply.holder_balances.len(), 1, "{tag} has one holder");
         reply.holder_balances[0].clone()
@@ -144,7 +144,7 @@ fn a_holders_balances_follow_the_records_listing_it_with_their_ranges_and_leanin
 fn memberships_list_every_holders_balances_by_the_records_listing_it_without_reading_their_values() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Memberships, tag: None };
+    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Memberships, country: None };
     let reply = history::answer(&query, &params, None, &AtomicBool::new(false)).unwrap();
     let holders: Vec<&str> = reply.holder_balances.iter().map(|holder| holder.holder.as_str()).collect();
     assert_eq!(holders, ["7", "8"], "every holder listed by a record");
@@ -208,7 +208,7 @@ fn a_holders_schedule_across_its_raw_ids_is_in_hour_order() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[snapshot_records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(crate::SourceKey { source_id: "politics-ids".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let query = crate::answer::query(&source, 1).unwrap();
-    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Elections, tag: None };
+    let params = history::PoliticsHistoryParams { branch_id: "1".into(), mode: history::PoliticsHistoryMode::Elections, country: None };
     let reply = history::answer(&query, &params, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.elections.len(), 1);
     let ger = &reply.elections[0];

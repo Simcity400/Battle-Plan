@@ -97,6 +97,8 @@ pub enum Country {
     Recorded,
     /// A named country tag.
     Tag(String),
+    /// A canonical country slot, followed through tag changes; `tag` names it in messages.
+    Slot { slot: u32, tag: String },
 }
 
 impl Country {
@@ -124,6 +126,8 @@ impl fmt::Display for Country {
         match self {
             Country::Recorded => f.write_str("recorded"),
             Country::Tag(tag) => f.write_str(tag),
+            Country::Slot { tag, .. } if !tag.is_empty() => f.write_str(tag),
+            Country::Slot { slot, .. } => write!(f, "country slot {slot}"),
         }
     }
 }
@@ -245,11 +249,11 @@ pub enum Resolution {
     /// The recording client's stored viewpoint.
     #[default]
     Recorded,
-    /// The tag the caller named.
+    /// The tag or slot the caller named.
     Requested,
     /// No client viewpoint available: the viewer takes the lowest canonical slot.
     NoPlayer,
-    /// The named tag has no country this hour; the default is used instead.
+    /// The named tag or slot has no country this hour; the default is used instead.
     Absent(String),
 }
 

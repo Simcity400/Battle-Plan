@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { ResearchHistory, ResearchSlotHistory } from './types';
@@ -66,7 +67,7 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
   history: ResearchHistory; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; description?: string | null;
 }) {
   const parts = breakdownParts(slots, slot, entry, hour);
-  const request = { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, tag, parts } };
+  const request = { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), parts } };
   const { data, error, retry } = useProduct<ResearchBreakdownReply>(client, request, true, validateResearchBreakdown, track.source);
   const joined = useMemo<ResearchHistory>(() => ({ coverage: history.coverage, slots: withBreakdown(history.slots, data) }), [history, data]);
   const joinedSlots = useMemo(() => withBreakdown(slots, data), [slots, data]);

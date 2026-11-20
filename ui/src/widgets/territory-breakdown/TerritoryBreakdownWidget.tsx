@@ -10,7 +10,9 @@ import { usNumber } from '../../charts/numberFormat';
 import { motionOf } from '../../charts/easing.ts';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
+import { countryKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useFactionColours } from '../../dashboard/FactionColours';
 import { factionNameLabel } from '../../dashboard/factionNames';
 import { resolveCountries } from '../../dashboard/groups';
@@ -51,21 +53,27 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
     product: 'territory-breakdown', params: { branchId: track.branch.id, hour: Math.floor(end), measure, rule } } : null, active, validateBreakdownReply, track?.source);
   const groups = useCountryGroups(runtime, track, active);
   const colours = useFactionColours(runtime.client, track?.source);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const lastHour = track?.branch.lastHour ?? 0;
   const resolved = useMemo(() => widget.countries.kind === 'all' ? null
     : resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [widget.countries, fallback, groups.data, lastHour]);
+  const slots = useSlotTags(runtime.client, track, active && !!resolved?.tags.some(isSlotKey));
   const tags = useMemo(() => [...new Set([...(breakdown.data?.rows ?? []), ...(fill ? ending.data?.rows ?? [] : [])].flatMap(row => row.tag === null ? [] : [row.tag]))], [breakdown.data, fill, ending.data]);
   // Pushed, countries are named where one of them last changed, never at each push's hour.
   const named = usePushedLooksHour(runtime, widget, track, tags, active && breakdown.read === 'followed', hour);
   const looks = useCountryLooks(runtime.client, track, tags, named.hour, active, undefined, undefined, named.exact);
+  // A row names its country by tag: a country chosen by its slot is the one holding that tag at the hour.
+  const selectedSlot = useCallback((tag: string, at: number) => {
+    const slot = slots?.slotOf(tag, at);
+    return slot != null && !!resolved?.tags.includes(countryKey(slot));
+  }, [slots, resolved]);
   const itemsAt = useCallback((reply: TerritoryBreakdownReply, values: LiveValues<number>, at: number, nameAt = at) => groups.data
     ? breakdownItems(reply, values, measure, affiliation(groups.data, at), {
       country: tag => ({ name: looks.name(tag, nameAt), flag: looks.flag(tag, nameAt), flagPending: looks.flagPending(tag, nameAt), flagReason: looks.flagReason(tag, nameAt) }),
       faction: faction => factionNameLabel(faction, at, colours.displayNames.get(faction.id)),
       colour: id => colours.colours.get(id),
-      selected: tag => resolved === null || (tag !== null && resolved.tags.includes(tag)),
-    }) : [], [groups.data, measure, looks, colours.colours, colours.displayNames, resolved]);
+      selected: tag => resolved === null || (tag !== null && (resolved.tags.includes(tag) || selectedSlot(tag, at))),
+    }) : [], [groups.data, measure, looks, colours.colours, colours.displayNames, resolved, selectedSlot]);
   const endingItems = useMemo(() => fill && ending.data ? itemsAt(ending.data, repliedCells(ending.data).read(), end) : null, [fill, ending.data, itemsAt, end]);
   const epochs = useMemo(() => groups.data ? affiliationEpochs(groups.data) : [], [groups.data]);
   // The amounts as the cells hold them, made again only when the cells move or a faction's membership does: the

@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../draw';
@@ -101,7 +102,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   // leaving one, asks no member value again.
   const named = useStickyMembers(JSON.stringify([track?.branch.id, kind, measure, following]), members, stickyLimit(members.length));
   const query = useMemo(() => following && track && named.length
-    ? { product: 'series-state', params: { branchId: track.branch.id, family, reads: named.map(tag => ({ tag, hour: moment })) } } : null,
+    ? { product: 'series-state', params: { branchId: track.branch.id, family, reads: named.map(tag => ({ country: countryFromKey(tag), hour: moment })) } } : null,
   // The reads' hour is not what a followed query follows.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [following, track?.branch.id, family, named]);
@@ -119,7 +120,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   // Not followed (pinned, a range, or the service cannot), the members' states are asked for the hour.
   const asked = useProduct<SeriesStateReply>(runtime.client, track && view === 'race' && !pushed && members.length ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family, reads: members.map(tag => ({ tag, hour: moment })) } } : null, active, validateStates, track?.source);
+    params: { branchId: track.branch.id, family, reads: members.map(tag => ({ country: countryFromKey(tag), hour: moment })) } } : null, active, validateStates, track?.source);
   const live = useMemo(() => valuesEntry ? liveRace(runtime.clock, axisOffset,
     hour => { shown(hour); return factionEntries(rosterOf(hour), answerValues(valuesEntry.answer, named, DECIMALS), slots, hour, format).entries; },
     () => valuesEntry.version, !!group) : null,

@@ -1,3 +1,5 @@
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { setAttr, setStyle, setText } from '../../charts/domText';
 import { createPortal } from 'react-dom';
@@ -29,7 +31,7 @@ import CountryComparisons from '../../dashboard/CountryComparisons';
 import type { ComparisonProps } from '../../dashboard/CountryComparisons';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { datedCountryToken, readDatedCountry } from '../../dashboard/datedCountry';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -81,7 +83,7 @@ function ResourceCountry(props: ComparisonProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const saved = options.show === BREAKDOWN.id;
   const savedCountry = saved && track ? savedCountryOf(widget, track) : null;
-  const tag = saved ? savedCountry?.tag ?? null : selectedTags(widget.countries, track)[0] ?? null;
+  const tag = saved ? savedCountry?.tag ?? null : selectedCountryKeys(widget.countries, track)[0] ?? null;
   if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see resources." />;
   if (saved && !savedCountry) return <WidgetState kind="unavailable" message="Saved country selection unavailable. Choose it again." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
@@ -120,7 +122,7 @@ function ResourceCountryView(props: ComparisonProps & { track: BoundTrack; tag: 
   const drillFollows = following && (drill.breakdown === null ? !!saved : drill.follow);
   const drillAt = drillFollows ? null : drill.breakdown !== null && drill.hour !== null ? drill.hour : playhead ?? extent[1];
   const followSpec = useMemo<WidgetSpec>(() => ({ ...widget, time: { mode: 'follow' } }), [widget]);
-  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, drillFollows ? followSpec : widget, RESOURCE_BALANCE, shown ? { tag } : null,
+  const breakdown = useHeadProduct<ResourceBalanceReply>(runtime, drillFollows ? followSpec : widget, RESOURCE_BALANCE, shown ? { country: countryFromKey(tag) } : null,
     { active: active && shown, validate: validateResourceBalance, hoverHour: drillFollows ? null : drillAt });
   const drillData = breakdown.data;
   const savedKey = contentKey(String(options.partResource ?? ''));
@@ -207,10 +209,10 @@ function ResourceBars({ widget, runtime, active, onDiagnostics, within, tag, tra
   const menu = useContextMenu('Resource actions');
   const owner = useId();
   const sizes = useProduct(runtime.client, campaign ? { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
-    params: { branchId: track.branch.id, tag } } : null, active, validateResourceSizes, track.source);
+    params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null, active, validateResourceSizes, track.source);
   const colours = useMemo(() => partColours(tokens), [tokens]);
   const cells = useRef(new Map<number, RowCells>());
-  const head = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { tag, order, ...hideEmpty ? { hideEmpty } : {} },
+  const head = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { country: countryFromKey(tag), order, ...hideEmpty ? { hideEmpty } : {} },
     { active, validate: validateResourceBalance, structure: barStructure });
   const data = head.data;
   const report = useShownHour();
@@ -337,11 +339,11 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const atHead = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { tag }, { active, validate: validateResourceBalance,
+  const atHead = useHeadProduct<ResourceBalanceReply>(runtime, widget, RESOURCE_BALANCE, { country: countryFromKey(tag) }, { active, validate: validateResourceBalance,
     structure: reply => JSON.stringify([reply.resources, reply.pools, reply.poolsMissing]) });
-  const request = (hour: number) => ({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_BALANCE, params: { branchId: track.branch.id, tag, hour } });
+  const request = (hour: number) => ({ sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_BALANCE, params: { branchId: track.branch.id, country: countryFromKey(tag), hour } });
   const sizes = useProduct(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: RESOURCE_SIZES,
-    params: { branchId: track.branch.id, tag, from: extent[0], to: extent[1] } }, active, validateResourceSizes, track.source);
+    params: { branchId: track.branch.id, country: countryFromKey(tag), from: extent[0], to: extent[1] } }, active, validateResourceSizes, track.source);
   const hovered = useProduct(runtime.client, hoverHour === null ? null : request(Math.floor(hoverHour)), active, validateResourceBalance, track.source);
   useDiagnostics(onDiagnostics, atHead.data ? [...atHead.data.warnings, ...(sizes.data?.warnings ?? [])] : NO_WARNINGS);
   const resources = useMemo(() => atHead.data?.resources ?? [], [atHead.data]);
@@ -362,6 +364,8 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const partners = useMemo(() => hoverHour === null ? [] : [...new Set(hovered.data?.deals.map(deal => deal.partner) ?? [])].map(partner => ({ tag: partner, hour: Math.floor(hoverHour) })),
     [hovered.data, hoverHour]);
   const labels = useCountryLabelsAt(runtime.client, track, partners, active);
+  const slots = useSlotTags(runtime.client, track, active && isSlotKey(tag));
+  const name = keyNameAt(slots, tag, playhead ?? extent[1]);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
   const shade = lines.length === 1 && options.gap !== false;
@@ -451,7 +455,7 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
     }} options={[{ value: '', label: 'Choose resource…', disabled: true },
       ...chosenInfo.filter(resource => selection.ids.includes(String(resource.id))).map(resource => ({ value: String(resource.id), label: resourceName(resource) }))]} /></div>}
     <div className="resource-chart">
-      <TimeChart label={`Resources of ${tag} over time`} extent={extent} playhead={playhead} liveHead={liveHead}
+      <TimeChart label={name === null ? 'Resources over time' : `Resources of ${name} over time`} extent={extent} playhead={playhead} liveHead={liveHead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}

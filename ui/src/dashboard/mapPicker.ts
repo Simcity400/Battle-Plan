@@ -1,12 +1,35 @@
 import type { MapOptions } from '../shell/api';
 import { MAP_OPTION_DEFAULTS } from '../generated/dashboard.ts';
-import type { DashboardClient, DashboardMapView, MapOptionsEvent, MapSettingsTarget, MapToggle, MapToggleEvent, DashboardSource } from './client';
+import type { DashboardClient, DashboardMapView, MapObserveEvent, MapOptionsEvent, MapSettingsTarget, MapToggle, MapToggleEvent, DashboardSource } from './client';
+import type { DashboardTemplate } from './model';
+import { resolveWidgetCampaign } from './campaigns.ts';
 
 /** The view id the desktop's campaign map reports its picker changes under. */
 export const CAMPAIGN_MAP_VIEW = 'campaign-map';
 
 /** A map view's options before any choice: no country chosen, fog at the map option default. */
 export const DEFAULT_MAP_OPTIONS: MapOptions = { country: null, fog: MAP_OPTION_DEFAULTS.fog };
+
+/** A campaign's chosen country: its canonical slot, which the map and the dashboard follow through tag changes, and
+ * the tag it went by when chosen. */
+export interface CountryChoice { tag: string; slot: number }
+
+/** Each view's latest Ctrl+click switch applied, which its options echo: never moved back by an older one. */
+export function observedSwitches(previous: Record<string, number>, event: MapObserveEvent): Record<string, number> {
+  const held = previous[event.viewId];
+  return held !== undefined && held >= event.country.sequence ? previous : { ...previous, [event.viewId]: event.country.sequence };
+}
+
+/** The campaign whose chosen country a map's Ctrl+click sets: the default campaign's for the campaign map and the
+ * pop-out (both report as the campaign map), an unpinned widget map's own campaign's; none for a widget map whose
+ * country is pinned, which keeps its own. */
+export function observedRole(viewId: string, template: Pick<DashboardTemplate, 'tracks' | 'widgets'>, defaultRoleId: string | null): string | null {
+  if (viewId === CAMPAIGN_MAP_VIEW) return defaultRoleId;
+  const widget = template.widgets.find(item => item.id === viewId);
+  if (!widget || widget.countries.kind === 'tags') return null;
+  const trackId = resolveWidgetCampaign(widget, template, defaultRoleId).trackIds[0];
+  return template.tracks.find(track => track.id === trackId)?.roleId ?? null;
+}
 
 /** A view's options with fog flipped: a picker fog click applied to the value the host holds now. */
 export const flipFog = (options: MapOptions): MapOptions => ({ ...options, fog: !options.fog });

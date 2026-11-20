@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useState } from 'react';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { ChartSummary } from '../../charts/chartSummary';
@@ -49,7 +50,7 @@ export function useStockpileChart(client: DashboardClient, track: BoundTrack, ca
   const [hover, setHover] = useState<number | null>(null);
   const tag = hover === null ? null : holderAt(holders, hover);
   const pointed = useProduct<StockpileAtReply>(client, tag && hover !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'equipment-stockpile-at', params: { branchId: track.branch.id, tag, hour: hover } } : null, active, validateStockpileAt, track.source);
+    product: 'equipment-stockpile-at', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hover } } : null, active, validateStockpileAt, track.source);
   const data = useMemo(() => catalogue && pointed.data && hover !== null
     ? stockpileView(catalogue, atReply(pointed.data, repliedCells(pointed.data).read(), hover, track.branch.id), hover) : undefined,
   [catalogue, pointed.data, hover, track.branch.id]);

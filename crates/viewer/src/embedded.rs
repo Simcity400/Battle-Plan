@@ -248,6 +248,8 @@ struct Outgoing {
     view_toggles: VecDeque<(String, dashboard::protocol::MapToggle)>,
     /// Each view's latest mode list not yet sent; a newer list replaces it.
     view_modes: BTreeMap<String, Vec<dashboard::protocol::MapModeChoice>>,
+    /// Each view's latest Ctrl+click country not yet sent; a newer one replaces it.
+    view_observes: BTreeMap<String, dashboard::protocol::ObservedCountry>,
 }
 
 impl Outgoing {
@@ -283,6 +285,7 @@ impl Outgoing {
             && self.view_options.is_empty()
             && self.view_toggles.is_empty()
             && self.view_modes.is_empty()
+            && self.view_observes.is_empty()
             && self.ready.is_none()
             && self.details.is_none()
             && self.state.is_none()
@@ -689,6 +692,10 @@ impl Parent {
                                 .view_modes
                                 .pop_first()
                                 .map(|(view_id, modes)| NativeEvent::MapModes { view_id, modes }),
+                            outgoing
+                                .view_observes
+                                .pop_first()
+                                .map(|(view_id, country)| NativeEvent::ObserveCountry { view_id, country }),
                         ];
                     drop(outgoing);
                     for event in events.into_iter().flatten() {
@@ -852,6 +859,18 @@ impl Controller {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         outgoing.view_options.insert(view_id.to_owned(), options);
+        drop(outgoing);
+        self.shared.output_ready.notify_one();
+    }
+
+    /// Reports the country a view's Ctrl+click chose; the host owns the choice.
+    pub fn report_view_observe(&self, view_id: &str, country: dashboard::protocol::ObservedCountry) {
+        let mut outgoing = self
+            .shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        outgoing.view_observes.insert(view_id.to_owned(), country);
         drop(outgoing);
         self.shared.output_ready.notify_one();
     }

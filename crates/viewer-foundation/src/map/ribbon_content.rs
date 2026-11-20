@@ -510,14 +510,34 @@ pub struct OrderDraw {
     pub kind: dashboard_core::protocol::PlanKind,
 }
 
+/// One drawn trade-route line: its layer and the convoy client it draws for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TradeRouteLine {
+    /// The line's layer, in the game's collection order.
+    pub layer: u8,
+    /// Its route's `TradeRoutes` key (country, class, other).
+    pub route: (u32, u8, u32),
+    /// Its convoy client's handle; 0 for a resource origin or grouped market contracts.
+    pub client: u32,
+}
+
+/// A stored control of a drawn trade-route line, `[x, y, z, radius]` in world space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TradeRouteSample {
+    pub at: [f32; 4],
+    pub line: u32,
+}
+
 /// Every order of one hour, in one buffer pair, and the plan labels.
 #[derive(Clone, Debug, Default)]
 pub struct OrderField {
     pub vertices: Vec<OrderVertex>,
     pub native_vertices: Vec<Vertex>,
     pub draws: Vec<OrderDraw>,
-    /// Trade-route stored control samples and their world-space picking radius.
-    pub trade_route_hovers: Vec<[f32; 4]>,
+    /// Trade-route stored control samples, each with its world-space picking radius and line.
+    pub trade_route_hovers: Vec<TradeRouteSample>,
+    /// The trade-route lines drawn, in draw order: what a sample's `line` indexes.
+    pub trade_route_lines: Vec<TradeRouteLine>,
     /// The name labels, drawn by a `mapname` pass after the ribbons.
     pub labels: Placements,
     /// The raid arrows' flying units ([`super::raid_arrows`]), which the
@@ -1028,16 +1048,25 @@ fn page(
 }
 
 /// Native route picker: compare stored samples to the point on the normalized pointer ray
-/// whose eye-distance equals the sample's eye-distance, including equality at the radius.
-pub fn trade_route_hit(samples: &[[f32; 4]], eye: [f32; 3], ray: [f32; 3], width: f32) -> bool {
-    samples.iter().any(|&[x, y, z, radius]| {
-        let p = [super::unit_pose::unwrap(x, eye[0], width), y, z];
-        let distance = (0..3).map(|i| (p[i] - eye[i]).powi(2)).sum::<f32>().sqrt();
-        (0..3)
-            .map(|i| (p[i] - (eye[i] + ray[i] * distance)).powi(2))
-            .sum::<f32>()
-            <= radius * radius
-    })
+/// whose eye-distance equals the sample's eye-distance, including equality at the radius. The
+/// lines hit, each once, in draw order.
+pub fn trade_route_hit(samples: &[TradeRouteSample], eye: [f32; 3], ray: [f32; 3], width: f32) -> Vec<u32> {
+    let mut hit: Vec<u32> = samples
+        .iter()
+        .filter(|sample| {
+            let [x, y, z, radius] = sample.at;
+            let p = [super::unit_pose::unwrap(x, eye[0], width), y, z];
+            let distance = (0..3).map(|i| (p[i] - eye[i]).powi(2)).sum::<f32>().sqrt();
+            (0..3)
+                .map(|i| (p[i] - (eye[i] + ray[i] * distance)).powi(2))
+                .sum::<f32>()
+                <= radius * radius
+        })
+        .map(|sample| sample.line)
+        .collect();
+    hit.sort_unstable();
+    hit.dedup();
+    hit
 }
 
 #[cfg(test)]
@@ -1053,15 +1082,16 @@ mod trade_hover_tests {
     fn route_picking_uses_stored_samples_and_keeps_radius_equality() {
         let ray = [0., 0., 1.];
         let eye = [0.; 3];
-        assert!(trade_route_hit(&[[0., 0., 10., 0.]], eye, ray, 100.));
+        let at = |samples: &[([f32; 4], u32)]| {
+            samples.iter().map(|&(at, line)| TradeRouteSample { at, line }).collect::<Vec<_>>()
+        };
+        assert_eq!(trade_route_hit(&at(&[([0., 0., 10., 0.], 0)]), eye, ray, 100.), [0]);
         // A continuous line joining these samples crosses the ray, but no stored sample hits.
-        assert!(!trade_route_hit(
-            &[[-10., 0., 10., 1.], [10., 0., 10., 1.]],
-            eye,
-            ray,
-            100.
-        ));
-        assert!(trade_route_hit(&[[0., 0., -10., 20.]], eye, ray, 100.));
-        assert!(!trade_route_hit(&[[0., 0., -10., 19.99]], eye, ray, 100.));
+        assert!(trade_route_hit(&at(&[([-10., 0., 10., 1.], 0), ([10., 0., 10., 1.], 0)]), eye, ray, 100.).is_empty());
+        assert_eq!(trade_route_hit(&at(&[([0., 0., -10., 20.], 0)]), eye, ray, 100.), [0]);
+        assert!(trade_route_hit(&at(&[([0., 0., -10., 19.99], 0)]), eye, ray, 100.).is_empty());
+        // Every line hit, each once, in draw order, whatever order its samples were stored in.
+        let crossing = at(&[([0., 0., 10., 1.], 4), ([0., 0., 11., 1.], 2), ([0., 0., 12., 1.], 4), ([5., 0., 10., 1.], 3)]);
+        assert_eq!(trade_route_hit(&crossing, eye, ray, 100.), [2, 4]);
     }
 }

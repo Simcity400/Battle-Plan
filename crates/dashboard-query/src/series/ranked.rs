@@ -54,7 +54,7 @@ pub(super) fn top(line: &Line<'_, '_>, top: Option<u32>) -> io::Result<Option<us
 /// The `n` countries greatest at `hour` and each one's state there, greatest first.
 pub(super) fn states(line: &Line<'_, '_>, hour: Option<f64>, n: usize) -> io::Result<Vec<SeriesState>> {
     let hour = hour_of(hour, "hour")?;
-    let reads: Vec<SeriesRead> = line.rank_at(hour, n)?.into_iter().map(|tag| SeriesRead { tag, hour, part: None }).collect();
+    let reads: Vec<SeriesRead> = line.rank_at(hour, n)?.into_iter().map(|tag| SeriesRead { country: tag.into(), hour, part: None }).collect();
     line.states(&reads, None)
 }
 

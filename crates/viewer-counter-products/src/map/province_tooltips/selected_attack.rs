@@ -285,7 +285,20 @@ fn country_tag(frame: &DecodedFrame, raw: i32) -> Fact<&[u8]> {
 /// `LAND_COMBAT_ATTACK_PROVINCE_MODIFIERS` with the representative's template
 /// display name.
 fn heading(context: &Context<'_>, template: u64) -> Fact<String> {
-    let frame = context.frame;
+    let name = template_display_name(&context.content.localisation, context.frame, template)?;
+    localise(
+        &context.content.localisation,
+        "LAND_COMBAT_ATTACK_PROVINCE_MODIFIERS",
+        &[("DIVISION", Arg::Text(&name))],
+    )
+}
+
+/// A division template's display name at the frame's hour.
+pub fn template_display_name(
+    localisation: &installed_content_localisation::localisation::Localisation,
+    frame: &DecodedFrame,
+    template: u64,
+) -> Fact<String> {
     let icon = keyed::<tables::DivisionTemplateIcons>(
         frame,
         template,
@@ -314,15 +327,9 @@ fn heading(context: &Context<'_>, template: u64) -> Fact<String> {
     let parts = icon
         .display_name_inputs(frame.hour, daily)
         .map_err(str::to_owned)?;
-    let localisation = &context.content.localisation;
-    let name = dashboard_text::unit_names::template_name(parts, icon.country, |raw, key| {
+    dashboard_text::unit_names::template_name(parts, icon.country, |raw, key| {
         localise_template_fallback(localisation, country_tag(frame, raw)?, key)
-    })?;
-    localise(
-        localisation,
-        "LAND_COMBAT_ATTACK_PROVINCE_MODIFIERS",
-        &[("DIVISION", Arg::Text(&name))],
-    )
+    })
 }
 
 /// The attack-modifier line: the kind's name, ": " and the first value as a

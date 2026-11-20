@@ -4,6 +4,7 @@
 //! others, and the civilian group's exports and consumers. A rows-at-an-hour product reading the
 //! country's one row. The counts the widget ranks are the declared `country-factories` series.
 
+use dashboard_base::products::{Country, validate_country};
 use super::rows;
 use crate::{
     Source,
@@ -12,7 +13,6 @@ use crate::{
         at_hour::{At, AtHour, Owner, Read},
     },
 };
-use dashboard_base::products::validate_tag;
 use replay_data::rows::{CountryFactoriesRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,7 @@ pub struct FactoryParts;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactoryPartsParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
 }
 
 /// One recorded part of a group, in whole factories.
@@ -117,11 +117,11 @@ impl AtHour for FactoryParts {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         super::branch(&params.branch_id)?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -141,10 +141,10 @@ impl AtHour for FactoryParts {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Factory parts country is unavailable at this hour"))?;
-        let mut reply = FactoryPartsReply { hour: frame.hour, tag: params.tag.clone(), parts: Vec::new(), unexplained: Vec::new(), missing: None, warnings: Vec::new() };
+        let mut reply = FactoryPartsReply { hour: frame.hour, tag: at.holders.name(&params.country, at.hour), parts: Vec::new(), unexplained: Vec::new(), missing: None, warnings: Vec::new() };
         match rows::<tables::CountryFactories>(frame).map(|held| held.iter().find(|row| row.country == owner.id)) {
             Err(reason) => reply.missing = Some(format!("Factories are not known at this hour: {reason}")),
-            Ok(None) => reply.missing = Some(format!("country factories held no row for {} at this hour", params.tag)),
+            Ok(None) => reply.missing = Some(at.holders.say(&params.country, at.hour, |name| format!("country factories held no row for {name} at this hour"))),
             Ok(Some(row)) => match parts(row) {
                 Some((parts, unexplained)) => {
                     reply.parts = parts;

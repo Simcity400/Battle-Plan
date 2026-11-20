@@ -78,6 +78,16 @@ pub struct Target {
     pub origin: [f32; 3],
 }
 
+/// A land figure as a frame draws it: its province, the stack kind of the native slot it shows
+/// ([`Target::order`]), and its mesh and instance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LandFigure {
+    pub province: u32,
+    pub order: u32,
+    pub mesh: usize,
+    pub instance: ModelInstance,
+}
+
 /// What one native unit slot holds: a land stack or a naval formation.
 type Slot = (Kind, u64);
 
@@ -838,6 +848,8 @@ pub struct History {
     /// The raid units' incarnation: a load-equivalent reset recreates them
     /// too, so their animation starts again ([`History::reset`]).
     raid_epoch: u32,
+    /// [`Self::land_stamp`].
+    land_stamp: u64,
 }
 
 /// Where an entity's root is drawn this frame, against where the hour placed it.
@@ -883,6 +895,17 @@ impl MovementDelta {
 }
 
 impl History {
+    /// Changes whenever [`Self::land_figures`] may, to a value no other history has held, so a
+    /// reader keeps what it built from the figures until it does.
+    pub fn land_stamp(&self) -> u64 {
+        self.land_stamp
+    }
+
+    fn land_changed(&mut self) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.land_stamp = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn set_selection(&mut self, selected: &BTreeSet<Unit>) {
         self.naval.set_selection(selected);
     }
@@ -898,6 +921,7 @@ impl History {
         positions: impl Iterator<Item = (Unit, &'a Position, f32, f32)>,
         history: &SharedMovement,
     ) {
+        self.land_changed();
         self.movement.clear();
         let mut history = history.lock().unwrap_or_else(|error| error.into_inner());
         self.movement_delta = history.delta();
@@ -925,6 +949,7 @@ impl History {
         if !self.bounds.is_empty() {
             return;
         }
+        self.land_changed();
         self.bounds = if known.is_empty() {
             Arc::new(province_boxes(&ProvinceMap {
                 width: map.width,
@@ -966,6 +991,7 @@ impl History {
     /// Recorded roster/route inputs; mutable animator and attachment state
     /// belongs to this viewer's frame history.
     pub fn set_naval(&mut self, sources: NavalSources) {
+        self.land_changed();
         let changed = self
             .provinces
             .ensure(sources.candidates.iter().map(|candidate| candidate.province));
@@ -1023,6 +1049,7 @@ impl History {
         steady: bool,
         join: bool,
     ) {
+        self.land_changed();
         let mut changed = false;
         if !bounds.is_empty() && !Arc::ptr_eq(&self.bounds, &bounds) {
             // Native updates the show bits of empty provinces too: a stack
@@ -1073,6 +1100,7 @@ impl History {
     /// or a tag switch does ([`viewer_foundation::map::presentation::UnitRestart`]): their entities go and their
     /// show bits drop, so what shows next grows in on a new clock.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
+        self.land_changed();
         (self.held_slots, self.held_walks, self.unbudgeted) = (0, 0, true);
         self.naval.reset(provinces);
         self.combats.reset(provinces);
@@ -1325,6 +1353,7 @@ impl History {
         province_frame: Option<&ProvinceFrame>,
         deadline: Option<std::time::Instant>,
     ) -> crate::map::models::Moving {
+        self.land_changed();
         // The walk after a load, a seek or a tag switch makes a whole picture, not an hour's
         // change to one, so no frame's clock cuts it.
         let deadline = deadline.filter(|_| !std::mem::take(&mut self.unbudgeted));
@@ -1617,6 +1646,33 @@ impl History {
         self.drawn_at = now;
     }
 
+    /// Each land figure this frame draws and is not fading out, with each part where the frame
+    /// draws it.
+    pub fn land_figures(&self) -> Vec<LandFigure> {
+        let mut figures = Vec::new();
+        for at in self.provinces.populated.iter() {
+            let record = &self.provinces.records[at];
+            for (slot, entity) in &record.province.entities {
+                if slot.0 != Kind::Land || entity.shrinking {
+                    continue;
+                }
+                let delta = self
+                    .movement
+                    .binary_search_by_key(slot, |entry| entry.0)
+                    .ok()
+                    .map(|index| self.movement[index].1);
+                let order = entity.parts.values().next().map_or(0, |part| part.target.order);
+                figures.extend(entity.placed().map(|(mesh, instance)| LandFigure {
+                    province: record.id,
+                    order,
+                    mesh,
+                    instance: delta.map_or(instance, |delta| delta.apply(instance)),
+                }));
+            }
+        }
+        figures
+    }
+
     pub fn combat_warnings(&self) -> Vec<String> {
         self.combats.warnings()
     }
@@ -1697,6 +1753,22 @@ pub mod tests {
         walk(&mut empty, 0.0);
         empty.field_replaced();
         assert!(walk(&mut empty, 0.1).standing.is_some_and(|standing| standing.is_empty()), "an hour with no unit clears the uploaded field");
+    }
+
+    #[test]
+    fn the_land_stamp_holds_while_the_figures_stand_and_changes_with_any_walk_or_install() {
+        let mut h = history(vec![target(1, Kind::Land)], true);
+        walk(&mut h, 0.0);
+        let (stamp, figures) = (h.land_stamp(), h.land_figures());
+        assert_eq!(figures.len(), 1);
+        assert_eq!((h.land_stamp(), h.land_figures()), (stamp, figures), "reading the figures changes nothing");
+        walk(&mut h, 0.1);
+        let walked = h.land_stamp();
+        assert_ne!(walked, stamp, "a walk may move the figures");
+        h.set(vec![target(2, Kind::Land)], Arc::default(), true);
+        assert_ne!(h.land_stamp(), walked, "so may an hour's targets");
+        let other = history(vec![target(1, Kind::Land)], true);
+        assert_ne!(other.land_stamp(), h.land_stamp(), "no two histories share a stamp");
     }
 
     fn limited(h: &mut History, time: f32, limit: i32) -> Vec<(usize, ModelInstance)> {

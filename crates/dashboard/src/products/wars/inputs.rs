@@ -182,7 +182,7 @@ pub(crate) trait Resolve {
     /// The tag holding `slot` and the raw id of its country.
     fn holder(&self, slot: u32) -> Option<(&str, u32)>;
     /// The slot holding `tag`.
-    fn tag_slot(&self, tag: &str) -> Option<u32>;
+    fn country_slot(&self, country: &dashboard_base::products::Country) -> Option<u32>;
 }
 
 /// What the viewpoint reads at an hour, resolved to canonical slots.
@@ -222,15 +222,15 @@ impl Countries {
 impl Hour {
     /// What `view` (the recording client's country where none) reads in `state`, or why it
     /// cannot: the overview's own refusals, in the order it reads its tables.
-    pub fn build(state: &State, resolve: &dyn Resolve, view: Option<&str>) -> Result<Self, String> {
+    pub fn build(state: &State, resolve: &dyn Resolve, view: Option<&dashboard_base::products::Country>) -> Result<Self, String> {
         if !state.unknown.is_empty() {
             return Err("Not recorded: a war overview row holds a cell not recorded".into());
         }
         let mut countries = Countries::default();
         let recorded_view = state.local.as_ref().and_then(|r| countries.add(resolve, if r.country as i32 > 0 { r.country } else { r.observer_country }).ok());
         let view = match view {
-            Some(tag) => {
-                let slot = resolve.tag_slot(tag).ok_or_else(|| format!("Not in this recording: viewpoint {tag}"))?;
+            Some(country) => {
+                let slot = resolve.country_slot(country).ok_or_else(|| country.tag().map_or_else(|| "Not in this recording: viewpoint".to_owned(), |tag| format!("Not in this recording: viewpoint {tag}")))?;
                 countries.held(resolve, slot)?;
                 slot
             }

@@ -33,7 +33,10 @@ export interface DesktopState {
 
 /** `mapMode` is a picker mode's token or `scripted:<name>`; null is the political map. */
 /** `pickerHidden` hides the native picker (the map-only window); its keys still work. */
-export interface MapOptions { country: string | null; fog: boolean; mapMode?: string | null; mapModeSlots?: string[]; pickerHidden?: boolean }
+/** A map view's options. `countrySlot` (a canonical country slot, the catalogue's country id) follows that country
+ * through tag changes and overrides `country`, which then names it; `countryPinned` keeps Ctrl+click from switching it.
+ * `observed` is the latest of the view's Ctrl+click switches (by its sequence) the country choice has applied. */
+export interface MapOptions { country: string | null; countrySlot?: number | null; countryPinned?: boolean; fog: boolean; mapMode?: string | null; mapModeSlots?: string[]; pickerHidden?: boolean; observed?: number | null }
 export interface ContentFolders { game: string; user: string; contentReady: boolean }
 export interface MapDetails extends ContentFolders { error: string | null; path: string | null; branch: string | null; hour: number | null; messages: string[] }
 export type MapAction = { kind: 'configure'; options: MapOptions } | { kind: 'inspect' } | { kind: 'unload'; path: string } | { kind: 'cameraMode'; mode: CameraMode; overlays: boolean } | { kind: 'flyAircraft'; aircraft: string | null } | { kind: 'refreshVisualMods' };

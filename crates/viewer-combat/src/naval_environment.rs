@@ -5,7 +5,7 @@ use installed_content_localisation::localisation::Localisation;
 use replay_data::{
     rows::CountryCounterInputRow, rows::NavalCombatShipRow, rows::NavalCombatSideDetails,
     rows::NavalShipModifierSource, rows::NavalShipWeaponContext, rows::ShipModelRow, rows::ShipRow,
-    rows::TaskForceRow, rows::WeatherRegionRow, rows::tables,
+    rows::Recorded, rows::TaskForceRow, rows::WeatherRegionRow, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -425,7 +425,7 @@ fn bounded_total(ships: i64, convoys: i64, bound: Result<[i64; 2], &str>) -> Opt
 }
 
 // the game has different precedence from map weather-particle selection.
-fn weather_suffix(weather: &WeatherRegionRow) -> &'static str {
+pub(super) fn weather_suffix(weather: &WeatherRegionRow) -> &'static str {
     if weather.heavy_rain != 0 {
         "storm"
     } else if weather.light_rain != 0 {
@@ -438,7 +438,7 @@ fn weather_suffix(weather: &WeatherRegionRow) -> &'static str {
         ""
     }
 }
-fn picture_names(terrain: Option<&str>, night: bool, weather: &str, ongoing: bool) -> Vec<String> {
+pub(super) fn picture_names(terrain: Option<&str>, night: bool, weather: &str, ongoing: bool) -> Vec<String> {
     let time = if night { "night" } else { "day" };
     let prefix = if ongoing {
         "GFX_terrain_ongoing_sea_battle_"
@@ -946,15 +946,19 @@ pub(super) fn bind(
             } else {
                 out.warnings.push("Naval environment: no consistent recorded province-night operand joins a live task force at the battle province; terrain image remains empty.".into());
             }
-            weather_icons(
-                out,
-                static_content,
-                frame,
-                weather,
-                region,
-                detail.custom_sea.as_deref(),
-                detail.custom_sea_error,
-            )?;
+            let custom_sea = match (detail.custom_sea.as_deref(), detail.custom_sea_error) {
+                (Some(bytes), 0) => Ok(custom_sea_words(bytes)),
+                _ => Err("guarded native read failed".to_owned()),
+            };
+            let entries = weather_entries(out, static_content, frame, weather, region, custom_sea.as_deref().map_err(Clone::clone))?;
+            out.values.insert(
+                "header_container/modifier_grid".into(),
+                Widget {
+                    entry_template: Some(MODIFIER_ENTRY.into()),
+                    entries,
+                    ..Widget::default()
+                },
+            );
         } else {
             out.warnings.push("Naval environment: WeatherRegions has no row for this battle; weather widgets remain empty.".into());
         }
@@ -1123,7 +1127,7 @@ pub(super) fn bind(
     Ok(())
 }
 /// Lead decision: recorded speed plus viewer pause decides picture (the pause state).
-fn night_picture(recorded_speed: i32, viewer_paused: bool) -> bool {
+pub(super) fn night_picture(recorded_speed: i32, viewer_paused: bool) -> bool {
     recorded_speed <= 3 || viewer_paused
 }
 /// Read a weather key's localised text: empty output sets nothing. Otherwise
@@ -1206,44 +1210,75 @@ fn active_weather_events(
 }
 
 /// Test each live signed 16-bit value in the template's order.
-fn active_custom_sea<'a>(
+pub(super) fn active_custom_sea<'a>(
     names: &'a [String],
-    values: &'a [u8],
+    values: &'a [i16],
 ) -> Option<impl Iterator<Item = &'a str>> {
-    (values.len() == names.len().checked_mul(2)?).then(|| {
+    (values.len() == names.len()).then(|| {
         names
             .iter()
-            .zip(values.chunks_exact(2))
-            .filter_map(|(name, pair)| {
-                (i16::from_le_bytes([pair[0], pair[1]]) != 0).then_some(name.as_str())
-            })
+            .zip(values)
+            .filter_map(|(name, &value)| (value != 0).then_some(name.as_str()))
     })
 }
 
-fn weather_icons(
+/// A naval combat's custom sea values, held as little-endian signed 16-bit words.
+pub(super) fn custom_sea_words(bytes: &[u8]) -> Vec<i16> {
+    bytes.chunks_exact(2).map(|pair| i16::from_le_bytes([pair[0], pair[1]])).collect()
+}
+
+/// The region's custom sea values: a live naval combat's in it, else its weather row's.
+pub(super) fn region_custom_sea(
+    region_of: &std::collections::BTreeMap<u32, u32>,
+    frame: &DecodedFrame,
+    weather: &WeatherRegionRow,
+    region: u32,
+) -> Result<Vec<i16>, String> {
+    let details = frame.complete::<tables::NavalCombatDetails>().map_err(|e| e.to_string())?;
+    if let Some(bytes) = details
+        .iter()
+        .filter(|row| region_of.get(&row.province) == Some(&region))
+        .find_map(|row| row.custom_sea.as_deref())
+    {
+        return Ok(custom_sea_words(bytes));
+    }
+    match &weather.custom_sea {
+        Recorded::Value(Some(values)) => Ok(values.clone()),
+        Recorded::Value(None) => Err("the region's custom sea values were refused when read".into()),
+        Recorded::NotRecorded => Err("the region's custom sea values are not recorded".into()),
+    }
+}
+
+/// The entry template the game's regional modifier grid helper instances.
+pub(super) const MODIFIER_ENTRY: &str = "naval_region_modifier_entry";
+
+/// The regional modifier grid's entries: the region's active custom sea modifiers, then its
+/// weather events, each shown only with a category one effect and a localised icon.
+/// `custom_sea` holds the region's custom sea values, or why they are unavailable.
+pub(super) fn weather_entries(
     out: &mut Bindings,
     static_content: &StaticContent,
     frame: &DecodedFrame,
     weather: &WeatherRegionRow,
     region: u32,
-    custom_sea: Option<&[u8]>,
-    custom_sea_error: u8,
-) -> io::Result<()> {
+    custom_sea: Result<&[i16], String>,
+) -> io::Result<Vec<Values>> {
     let mut entries = Vec::new();
     let definitions = Definitions::read(frame, &static_content.modifier_names)?;
     // Visit the strategic template's custom sea modifiers before weather.
     // Each corresponding signed 16-bit value must be nonzero.
     if let Some(template) = static_content.strategic_regions.get(&region) {
         let names = &template.static_modifier_names;
-        if custom_sea_error != 0 {
-            if !names.is_empty() {
-                out.refuse(format!("Naval strategic region {region} custom sea grid is unavailable: guarded native read failed."));
+        match &custom_sea {
+            Err(reason) if !names.is_empty() => {
+                out.refuse(format!("Naval strategic region {region} custom sea grid is unavailable: {reason}."));
             }
-        } else if custom_sea.is_none_or(|bytes| active_custom_sea(names, bytes).is_none()) {
-            if !names.is_empty() {
-                out.refuse(format!("Naval strategic region {region} custom sea grid is withheld: captured bytes do not match {} content modifier names.", names.len()));
+            Ok(values) if !names.is_empty() && active_custom_sea(names, values).is_none() => {
+                out.refuse(format!("Naval strategic region {region} custom sea grid is withheld: captured values do not match {} content modifier names.", names.len()));
             }
-        } else if let Some(custom_sea) = custom_sea {
+            _ => {}
+        }
+        if let Some(custom_sea) = custom_sea.ok().filter(|values| active_custom_sea(names, values).is_some()) {
             for name in active_custom_sea(names, custom_sea).expect("length checked") {
                 let result = (|| {
                     let modifier = static_content
@@ -1367,15 +1402,7 @@ fn weather_icons(
             Err(reason) => out.refuse(format!("Naval weather icon {key} is hidden: {reason}.")),
         }
     }
-    out.values.insert(
-        "header_container/modifier_grid".into(),
-        Widget {
-            entry_template: Some("naval_region_modifier_entry".into()),
-            entries,
-            ..Widget::default()
-        },
-    );
-    Ok(())
+    Ok(entries)
 }
 /// Localise a weather key (an absent key shows its own bytes), then read
 /// [`weather_icon_text`]. Errors name why the icon is refused.

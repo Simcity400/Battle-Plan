@@ -19,6 +19,6 @@ export const definition = {
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 12 },
   countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   defaultCountries: { kind: 'all' },
-  availability: { product: 'casualty-pairs', params: { tags: [], between: false, window: null } },
+  availability: { product: 'casualty-pairs', params: { countries: [], between: false, window: null } },
   options: OPTIONS, variants: breakdownVariants('Casualties between countries', OPTIONS),
 } as const satisfies WidgetMeta;

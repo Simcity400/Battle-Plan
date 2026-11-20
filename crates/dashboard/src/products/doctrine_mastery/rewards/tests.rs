@@ -44,7 +44,7 @@ fn content() -> Context {
 }
 
 fn params(track: u32) -> DoctrineRewardsParams {
-    DoctrineRewardsParams { branch_id: "1".into(), tag: "MOD".into(), folder: 0, track }
+    DoctrineRewardsParams { branch_id: "1".into(), country: "MOD".into(), folder: 0, track }
 }
 
 #[test]

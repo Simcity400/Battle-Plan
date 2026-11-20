@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -15,7 +16,7 @@ import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { reporting } from '../../dashboard/follow/liveCells.ts';
 import { countryMatch } from '../../dashboard/groups';
@@ -55,10 +56,10 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const fallback = useMemo(() => selectedTags(widget.countries, track), [widget.countries, track]);
+  const fallback = useMemo(() => selectedCountryKeys(widget.countries, track), [widget.countries, track]);
   // Chosen tags are asked by name; all countries and groups ask every row and match here, as the rows' hour reads them.
   const tags = useMemo(() => widget.countries.kind === 'tags' || widget.countries.kind === 'selected' ? [...fallback].sort() : [], [widget.countries.kind, fallback]);
-  const params = useMemo(() => track ? { tags, only: view === 'inventory' ? 'offers' : 'contracts' } : null, [track, tags, view]);
+  const params = useMemo(() => track ? { countries: tags.map(countryFromKey), only: view === 'inventory' ? 'offers' : 'contracts' } : null, [track, tags, view]);
   const head = useHeadProduct<MarketLendLeaseReply>(runtime, widget, MARKET, params, { active, validate: validateMarketReply });
   const data = useMemo(() => head.data && head.at !== null ? { ...head.data, hour: head.at } : undefined, [head.data, head.at]);
   const hour = data?.hour ?? track?.branch.lastHour ?? 0;

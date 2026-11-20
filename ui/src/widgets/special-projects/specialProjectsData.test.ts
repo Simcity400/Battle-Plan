@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { panelStructure, panelValues } from '../../draw/panels/views.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -186,6 +187,18 @@ test('manual project requests retain original roots and all their holders withou
   assert.equal(aliasRoot.match.matches('X', 105), true, 'the original choice may select an earlier alias');
   assert.equal(aliasRoot.match.matches('X', 130), false, 'projected X is not another selection root');
   assert.equal(projectCountries({ kind: 'tags', tags: ['X'] }, [], undefined, 100, 150).ready, false);
+});
+
+test('the dashboard country chosen by slot asks by each tag it held, which its replies name, never a tag another country held', () => {
+  // Slot 1 is X through 109, then Y; from 120 X and Y are other countries'. A reply names its country by the tag asked.
+  const scope = projectCountries({ kind: 'selected' }, [countryKey(1)], countryGroups(), 100, 150);
+  assert.equal(scope.ready, true);
+  assert.deepEqual([...scope.tags].sort(), ['X', 'Y'], 'asked by tag, never by the slot key a reply cannot name');
+  assert.equal(scope.match.matches('X', 105), true);
+  assert.equal(scope.match.matches('Y', 112), true);
+  assert.equal(scope.match.matches('X', 130), false, 'X held by another country later is not the choice');
+  assert.equal(scope.match.matches('Y', 130), false);
+  assert.deepEqual(scope.memberships.get('Y')!.map(run => [run.firstHour, run.lastHour]), [[110, 114], [117, 119]]);
 });
 
 test('smart project membership keeps its dated hour, end and ever rules', () => {

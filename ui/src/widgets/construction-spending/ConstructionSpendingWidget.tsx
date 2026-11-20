@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Sunburst from '../../charts/sunburst/Sunburst';
@@ -5,7 +6,7 @@ import type { SunburstText, SunburstValues } from '../../charts/sunburst/Sunburs
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions';
 import { liveAt } from '../../charts/live';
 import { motionOf } from '../../charts/easing.ts';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -28,9 +29,9 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = sunburstSettings(options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'construction-spending',
-    params: { branchId: track.branch.id, tag } } : null;
+    params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
   const { data, error, retry } = useProduct(runtime.client, request, active, validateSpendingReply, track?.source);
   const following = active && widget.time.mode === 'follow' && !!track && !!data;
   const range = widget.time.mode === 'range';

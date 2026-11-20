@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -41,7 +42,7 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   // The three shares at the head, followed: each line's head bin is drawn at them.
   const store = useMemo(() => source ? followStore(client, source, clock, axisOffset) : null, [client, clock, source, axisOffset]);
   const headQuery = (measure: string) => following && active && enabled ? { product: 'series-state', params: { branchId,
-    family: { kind: SUPPLY_FAMILY, measure }, reads: tags.map(tag => ({ tag, hour: 0 })) } } : null;
+    family: { kind: SUPPLY_FAMILY, measure }, reads: tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
   const queries = useMemo(() => SHARE_MEASURES.map(headQuery), [following, active, enabled, branchId, tags]); // eslint-disable-line react-hooks/exhaustive-deps
   // An answer landing moves no tile: the charts hear it from the follows' painters and read its version.
   const answered = useRef(new Set<() => void>()).current;
@@ -89,7 +90,7 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
     if (!enabled || !active) return;
     navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', STATES[0], { tags, measures: STATES.slice(1), key, from,
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', STATES[0], { countries: tags.map(countryFromKey), measures: STATES.slice(1), key, from,
       firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }), controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The keyboard reply is malformed.');

@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import type { ChartSummary } from '../chartSummary';
 import type { CountryRaceEntry } from './countryRace';
 import { CELL, cellNumber, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
@@ -54,7 +55,7 @@ export function stateValues(reply: SeriesStateReply | undefined, hour: number): 
   const out = new Map<string, number>();
   if (!reply) return out;
   const divisor = 10 ** reply.decimals;
-  for (const state of reply.states) if (state.run && state.hour === hour) out.set(state.tag, Number(state.run.valueRaw) / divisor);
+  for (const state of reply.states) if (state.run && state.hour === hour) out.set(countryKey(state.country), Number(state.run.valueRaw) / divisor);
   return out;
 }
 

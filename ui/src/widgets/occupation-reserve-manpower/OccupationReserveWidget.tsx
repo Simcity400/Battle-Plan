@@ -12,7 +12,7 @@ import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatchFilter, noMembersAt, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -60,7 +60,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const manual = widget.countries.kind === 'tags' || widget.countries.kind === 'selected';
   const groups = useCountryGroups(runtime, track, active && (grouped || manual || drill.breakdown !== null || pinned));
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);

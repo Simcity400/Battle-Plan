@@ -14,6 +14,9 @@ pub(crate) fn describe(control: Option<&Control>, unit: Option<Unit>) -> Option<
             Control::Entry(token) => format!("button:entry:{token}"),
             Control::SlotEntry(slot) => format!("button:slot-entry:{slot}"),
             Control::Default => "button:default".to_owned(),
+            Control::FindView => "button:find-view".to_owned(),
+            Control::Minimap(control) => format!("button:minimap:{}", control.name()),
+            Control::Find(control) => format!("button:find:{}", control.name()),
             Control::Window => "button:window".to_owned(),
         });
     }

@@ -370,8 +370,111 @@ fn a_job_out_is_not_carried_and_the_layer_publishes_the_hour_its_product_stands_
     assert!((30..50).contains(&stands), "the product stands for the rows before the change, at {stands}");
     assert_eq!(layer(&side).published(), Published::At(stands));
     assert_eq!(side.last_frame().layers[0].shown, Some(stands), "the host shows the hour the product stands for");
+    // A still publication runs under the side's lock: it polls the job out and never waits on it.
+    let waited = layer(&side).blocking_waits;
+    side.frame_still(side.applied().expect("a step applied")).unwrap();
+    assert_eq!(layer(&side).blocking_waits, waited, "a still publication waits on no convoy job");
+    assert!(layer(&side).in_flight > 0, "the job out joins a later publication");
     routes.set(true);
     frames_within(&mut side, 56, |side, _| layer(side).in_flight == 0 && layer(side).carried().entities == 0);
     assert_eq!(layer(&side).published(), Published::Current);
     assert_eq!(drawn(&side), (2, 5), "the newest convoys");
+}
+
+/// A change of viewing country withholds the lines made for the country before at once, and a job
+/// asked for that country and answered after the change is never taken. Before, the worker's
+/// products carried no viewer: the lines of the country before stayed published for the new one,
+/// and a job out at the change replaced them with that country's lines again.
+#[test]
+fn a_viewing_country_change_withholds_the_lines_made_for_the_country_before() {
+    use viewer_foundation::map::perspective::Country;
+    let entry = open(recorded::record("convoys-viewer-change", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let routes = Arc::new(HeldLines::default());
+    routes.set(true);
+    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Convoys::new(Arc::clone(&routes) as Arc<dyn Routes>))], supply()).unwrap();
+    layer(&side).set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
+    entry.playhead().play(4.0);
+    entry.playhead().seek(0);
+    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    through(&mut side, 30);
+    side.settle_all().unwrap();
+    assert!(layer(&side).shown().is_some_and(|(_, lines)| lines.report.drawn == 2), "slot 3's lines are shown for slot 3");
+    // A job for slot 3 out (the convoys changed at hours 50 and 51), held on the worker.
+    routes.set(false);
+    let at = |side: &MapSide| side.parts().and_then(|(mirrors, _)| mirrors.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head));
+    frames_within(&mut side, 56, |side, _| at(side).is_some_and(|hour| hour >= 51) && layer(side).in_flight > 0);
+    layer(&side).set_vision(Choice { country: Country::Tag("other".into()), ..Choice::default() }, Arc::new(Vision::sharing(7, [])));
+    frames_within(&mut side, 60, |side, _| layer(side).vision.as_ref().is_some_and(|&(_, ours)| ours == 7));
+    assert!(layer(&side).shown().is_none(), "slot 3's lines are withheld for slot 7 while its own are made");
+    routes.set(true);
+    frames_within(&mut side, 60, |side, _| {
+        assert!(layer(side).shown().is_none_or(|_| layer(side).product_for == Some(7)), "the job asked for slot 3 is never taken for slot 7");
+        layer(side).in_flight == 0
+    });
+    assert_eq!(layer(&side).product_for, Some(7));
+    assert!(layer(&side).shown().is_some(), "slot 7's own lines are shown");
+}
+
+/// In the window the convoys take the viewing country from the vision layer: once it has none (its
+/// vision refused), the lines made for the country before are withheld at once, never shown for
+/// the refused view.
+#[test]
+fn a_refused_vision_withholds_the_lines_made_for_the_country_before() {
+    let entry = open(recorded::record("convoys-refused-viewer", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let routes = Arc::new(Lines::default());
+    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Convoys::new(Arc::clone(&routes) as Arc<dyn Routes>).in_window())], supply()).unwrap();
+    layer(&side).set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
+    entry.playhead().play(4.0);
+    entry.playhead().seek(0);
+    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    through(&mut side, 30);
+    side.settle_all().unwrap();
+    assert!(layer(&side).shown().is_some(), "slot 3's lines are shown for slot 3");
+    let refused = crate::layers::vision::Vision::new(Arc::new(crate::layers::vision::Content::new(Err("no fog content".into()))));
+    assert_eq!(refused.ours(), None, "a vision not made has no viewing country");
+    let upstream: Vec<Box<dyn Layer>> = vec![Box::new(refused)];
+    let convoys = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Convoys>()).expect("the convoys layer");
+    convoys.settle_with(&crate::playhead_host::mirror::Mirrors::default(), &crate::layers::Upstream::new(&upstream), crate::layers::Settling::Whole).unwrap();
+    assert!(convoys.shown().is_none(), "slot 3's lines are withheld once the vision has no viewing country");
+}
+
+/// While the vision is refused the layer carries nothing: rows that change then, and a job out
+/// from before, keep no paused map from settling, and that job's lines are never taken; given a
+/// vision again, every row is read again and the lines are made for it. Before, the changed rows
+/// stayed carried and the job out stayed published, so the map never settled.
+#[test]
+fn a_refused_vision_carries_nothing_and_the_next_vision_reads_every_row_again() {
+    use crate::layers::Published;
+    let entry = open(recorded::record("convoys-refused-settled", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
+    let routes = Arc::new(HeldLines::default());
+    routes.set(true);
+    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Convoys::new(Arc::clone(&routes) as Arc<dyn Routes>).in_window())], supply()).unwrap();
+    layer(&side).set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
+    entry.playhead().play(4.0);
+    entry.playhead().seek(0);
+    frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
+    through(&mut side, 30);
+    side.settle_all().unwrap();
+    // A job for slot 3 out (the convoys changed at hours 50 and 51), held on the worker.
+    routes.set(false);
+    let at = |side: &MapSide| side.parts().and_then(|(mirrors, _)| mirrors.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head));
+    frames_within(&mut side, 56, |side, _| at(side).is_some_and(|hour| hour >= 51) && layer(side).in_flight > 0);
+    let refused = crate::layers::vision::Vision::new(Arc::new(crate::layers::vision::Content::new(Err("no fog content".into()))));
+    let upstream: Vec<Box<dyn Layer>> = vec![Box::new(refused)];
+    let convoys = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Convoys>()).expect("the convoys layer");
+    convoys.settle_with(&crate::playhead_host::mirror::Mirrors::default(), &crate::layers::Upstream::new(&upstream), crate::layers::Settling::Whole).unwrap();
+    // The client is replaced at hour 130 while the vision is refused; the map then holds at 140.
+    frames_within(&mut side, 140, |side, frame| at(side).is_some_and(|hour| hour >= 134) && frame.steps == 0);
+    side.frame(140).unwrap();
+    assert!(layer(&side).refused().is_some_and(|why| why.contains("vision")), "{:?}", layer(&side).refused());
+    assert_eq!((layer(&side).carried().entities, layer(&side).published(), layer(&side).in_flight), (0, Published::Current, 0), "a refused layer carries and publishes no work");
+    assert!(side.on_screen().is_some_and(|on| on.settled), "the held map settles while the vision is refused");
+    assert!(layer(&side).shown().is_none());
+    routes.set(true);
+    layer(&side).set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
+    side.settle_all().unwrap();
+    assert_eq!(layer(&side).refused(), None);
+    assert_eq!(layer(&side).product_for, Some(3));
+    assert_eq!(drawn(&side), (2, 7), "the client that replaced the one before, read again");
+    composed_equal(&side);
 }

@@ -20,7 +20,7 @@ import { useAtHead, useIdentityHour } from '../../dashboard/atHead';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { lookHour, looksRead, useCountryLooks } from '../../dashboard/countryLooks';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -73,7 +73,7 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   const [capacity, setCapacity] = useState(8);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const fallback = useMemo(() => selectedTags(widget.countries, track), [widget.countries, track]);
+  const fallback = useMemo(() => selectedCountryKeys(widget.countries, track), [widget.countries, track]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour), [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
   const data = head.data;
   const listed = useMemo(() => data && match.ready && !match.reason ? licencesAt(data, hour, match.matches) : NO_LICENCES, [data, match, hour]);

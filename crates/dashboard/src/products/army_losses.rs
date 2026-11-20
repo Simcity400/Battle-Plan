@@ -12,6 +12,7 @@
 //! Every amount is a live cell of its row: the reply carries armies, months and designs; the
 //! numbers are painted from followed cells at the head.
 
+use dashboard_base::products::Country;
 use super::{
     LoadContext, ReplyWarnings,
     at_hour::{At, AtHour, Read},
@@ -69,7 +70,7 @@ const UNWITNESSED: &str = "Combat Log equipment months whose rows the recording 
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArmyLossesParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     #[serde(default)]
     pub view: LossView,
 }
@@ -364,7 +365,7 @@ impl AtHour for ArmyLosses {
     type Context = Content;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        super::CountryParams { branch_id: params.branch_id.clone(), tag: params.tag.clone() }.validate()
+        super::CountryParams { branch_id: params.branch_id.clone(), country: params.country.clone() }.validate()
     }
 
     #[cfg(any(test, feature = "export-types"))]
@@ -399,7 +400,7 @@ impl AtHour for ArmyLosses {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let content = at.context;
         let mut reply = ArmyLossesReply {
-            tag: params.tag.clone(),
+            tag: at.holders.name(&params.country, at.hour),
             absent: false,
             armies: Vec::new(),
             manpower: Vec::new(),
@@ -416,9 +417,9 @@ impl AtHour for ArmyLosses {
             },
             warnings: content.catalogue.as_ref().err().cloned().into_iter().collect(),
         };
-        let slot = match at.holders.at(&params.tag, at.hour).map(|run| run.holder) {
+        let slot = match at.holders.at(&params.country, at.hour).map(|run| run.holder) {
             Some(Holder::Found { slot, .. }) => slot,
-            Some(Holder::Unresolved) => return Err(dashboard_core::refused(format!("{} has no resolved country identity at this hour", params.tag))),
+            Some(Holder::Unresolved) => return Err(dashboard_core::refused(at.holders.say(&params.country, at.hour, |name| format!("{name} has no resolved country identity at this hour")))),
             None => {
                 reply.absent = true;
                 return Ok(reply);

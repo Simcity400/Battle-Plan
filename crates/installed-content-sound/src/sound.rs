@@ -209,6 +209,8 @@ pub struct Defines {
     pub height_min_volume: f32,
     pub height_max_volume: f32,
     pub voice_category: String,
+    /// `VOICE_OVER_COOL_DOWN`: the seconds after a voice-over starts before another may.
+    pub voice_cool_down: f32,
 }
 
 impl Defines {
@@ -228,6 +230,7 @@ impl Defines {
             height_min_volume: number("HEIGHT_SOUND_MIN_VOLUME")?,
             height_max_volume: number("HEIGHT_SOUND_MAX_VOLUME")?,
             voice_category: defines.text("NSound", "VOICE_OVER_CATEGORY")?,
+            voice_cool_down: number("VOICE_OVER_COOL_DOWN")?,
         })
     }
 

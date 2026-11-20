@@ -1,3 +1,4 @@
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
@@ -25,7 +26,7 @@ import { useCountryColours } from '../../charts/race/countryColours';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet, resolveOptions } from '../../dashboard/options';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { useProduct } from '../../dashboard/products';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -46,12 +47,12 @@ const reportKey = (report: MineReport) => `${report.kind}:${report.ordinal}`;
 export default function MinefieldsWidget({ widget, runtime, active, onDiagnostics, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
-  const tags = selectedTags(widget.countries, track);
+  const tags = selectedCountryKeys(widget.countries, track);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement | null>(null);
   const menu = useContextMenu('Minefields');
-  const head = useHeadProduct(runtime, widget, 'minefields', useMemo(() => tags.length ? { tags } : {}, [JSON.stringify(tags)]), // eslint-disable-line react-hooks/exhaustive-deps
+  const head = useHeadProduct(runtime, widget, 'minefields', useMemo(() => tags.length ? { countries: tags.map(countryFromKey) } : {}, [JSON.stringify(tags)]), // eslint-disable-line react-hooks/exhaustive-deps
     { active, validate: validateMinefields, structure: minefieldsStructure });
   const { data, error, retry } = head;
   const live = head.live;
@@ -146,7 +147,7 @@ function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, co
   const menu = useContextMenu('Minefields');
   const tags = region.owners.map(owner => owner.tag);
   const history = useProduct(runtime.client, tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefield-history',
-    params: { branchId: track.branch.id, region: Number(region.region), tags, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour } } : null,
+    params: { branchId: track.branch.id, region: Number(region.region), countries: tags, firstHour: track.branch.firstHour, lastHour: track.branch.lastHour } } : null,
   active, validateHistory, track.source);
   const reports = useHeadProduct<MinefieldReportsReply>(runtime, widget, 'minefield-reports', { region: Number(region.region) }, { active, validate: validateReports, hoverHour: at });
   // A report's countries need not own mines here: they are named at the reports' own hour.
@@ -155,7 +156,7 @@ function RegionDrill({ widget, runtime, active, region, hoursPerSecond, name, co
     .flatMap(tag => tag === null ? [] : [tag]))].map(tag => ({ hour: namedAt, tag })), [reports.data, namedAt]);
   const reportNames = useCountryNamesAt(runtime.client, track, reportTags, active);
   const reportName = useCallback((tag: string) => namedAt === null ? name(tag) : nameReadText(reportNames.get(nameKey(namedAt, tag))), [reportNames, namedAt, name]);
-  const lines = useMemo(() => (history.data?.lines ?? []).map(line => ({ id: line.tag, label: name(line.tag), color: colour(line.tag), runs: historyRuns(line, history.data!.scale) })),
+  const lines = useMemo(() => (history.data?.lines ?? []).map(line => { const tag = countryKey(line.country); return { id: tag, label: name(tag), color: colour(tag), runs: historyRuns(line, history.data!.scale) }; }),
     [history.data, name, colour]);
   return <div className="minefields-drill" ref={reports.root}>
     <div className="minefields-history">{history.error ? <WidgetState kind="error" what="the region’s history" failure={history.error} onRetry={history.retry} />

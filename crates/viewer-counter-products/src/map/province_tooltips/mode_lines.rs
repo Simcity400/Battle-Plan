@@ -58,6 +58,12 @@ impl Context<'_> {
         if let ModeHover::StrategicNavy(sources) = mode {
             return super::strategic_navy::append(self, sources, out);
         }
+        if let ModeHover::SeaRegion(sources) = mode {
+            return super::strategic_navy::default_region(self, sources, out);
+        }
+        if let ModeHover::Terrain { .. } = mode {
+            return out.refuse("map mode hover", "the terrain mode's text is made from the combat content".into());
+        }
         // The infrastructure line shows for every province, a stateless one at level zero.
         if let ModeHover::Infrastructure(level) = mode {
             let text = level.clone().and_then(|level| {
@@ -80,7 +86,7 @@ impl Context<'_> {
             | ModeHover::Nothing
             | ModeHover::Infrastructure(_)
             | ModeHover::StrategicAir(_) => {}
-            ModeHover::StrategicNavy(_) => {}
+            ModeHover::StrategicNavy(_) | ModeHover::SeaRegion(_) | ModeHover::Region | ModeHover::Terrain { .. } => {}
             ModeHover::Manpower => line(out, "population", 0, self.population()),
             ModeHover::Diplomacy {
                 very_good,
@@ -537,6 +543,7 @@ impl Context<'_> {
             },
         ]);
         ScriptedText::new(self.frame, &self.content.localisation, content, viewer)
+            .viewing(viewer)
             .expand_in(&text, &scopes)
             .map_err(|why| format!("{key}: {why}"))
     }

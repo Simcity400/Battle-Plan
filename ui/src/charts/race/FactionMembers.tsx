@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import TimeChart from '../TimeChart';
@@ -54,7 +55,7 @@ export default function FactionMembers({ runtime, track, active, options, kind, 
   const looks = useCountryLooks(runtime.client, track, tags, hour, active);
   const colours = useMemo(() => partColours(tags.map(tag => ({ id: tag, label: tag })), tokens.categories), [tags, tokens.categories]);
   const asked = useProduct<SeriesStateReply>(runtime.client, head === null && at.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family: { kind, measure }, reads: at.map(tag => ({ tag, hour })) } } : null, active, validateStates, track.source);
+    params: { branchId: track.branch.id, family: { kind, measure }, reads: at.map(tag => ({ country: countryFromKey(tag), hour })) } } : null, active, validateStates, track.source);
   const summaries = useCallback((): ChartSummary[] | null => {
     const out: ChartSummary[] = [];
     for (const tag of tags) {

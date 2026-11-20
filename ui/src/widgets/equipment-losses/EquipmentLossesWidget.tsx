@@ -31,7 +31,9 @@ import type { ChartLayer } from '../../charts/TimeChart';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { countryTagAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveWindow } from '../../dashboard/model';
@@ -77,7 +79,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const anchor = useRef<HTMLDivElement>(null), menu = useContextMenu('Equipment loss actions');
   const shown = useShownHour();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const options = resolveOptions(OPTIONS, widget.options), settings = sunburstSettings(options);
   const hasSavedCountry = Object.hasOwn(widget.options ?? {}, 'lossCountry');
   const bindingKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, widget.time,
@@ -100,14 +102,19 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   if (originRef.current?.owner !== bindingOwner) originRef.current = origin === null ? null : { owner: bindingOwner, hour: origin };
   const savedCountry = useMemo(() => readDrillCountry(widget.options?.lossCountry, track, widget.countries),
     [widget.options?.lossCountry, track, widget.countries]);
-  const selectedCountry = useMemo(() => savedCountry ?? (hasSavedCountry ? null
-    : catalogue.data && track && tag && originRef.current ? chooseDrillCountry(catalogue.data.countryIdentities, track, tag, originRef.current.hour) : null),
-  [savedCountry, hasSavedCountry, catalogue.data, track, tag, bindingOwner]); // eslint-disable-line react-hooks/exhaustive-deps
+  const bySlot = !!tag && isSlotKey(tag);
+  const slots = useSlotTags(runtime.client, track, active && bySlot);
+  const slotsPending = bySlot && !slots;
+  const selectedCountry = useMemo(() => {
+    if (savedCountry || hasSavedCountry) return savedCountry;
+    const originTag = tag && originRef.current ? countryTagAt(slots, countryFromKey(tag), originRef.current.hour) : null;
+    return catalogue.data && track && originTag && originRef.current ? chooseDrillCountry(catalogue.data.countryIdentities, track, originTag, originRef.current.hour) : null;
+  }, [savedCountry, hasSavedCountry, catalogue.data, track, tag, slots, bindingOwner]); // eslint-disable-line react-hooks/exhaustive-deps
   const actorSpans = useMemo(() => selectedCountry && catalogue.data && track ? drillCountrySpans(catalogue.data.countryIdentities, selectedCountry, track) : null,
     [selectedCountry, catalogue.data, track]);
   const selection: LossSelection | null = useMemo(() => track && selectedCountry && actorSpans ? {
-    branchId: track.branch.id, tag: selectedCountry.tag, landSource: options.landSource as LandSource,
-    country: { slot: selectedCountry.slot, countryId: selectedCountry.countryId },
+    branchId: track.branch.id, country: selectedCountry.tag, landSource: options.landSource as LandSource,
+    identity: { slot: selectedCountry.slot, countryId: selectedCountry.countryId },
   } : null, [track, selectedCountry, actorSpans, options.landSource]);
   // The drill follows the head only beside a followed view; pinned, it reads its own hour exactly.
   const following = followView && (drill.breakdown === null || drill.follow);
@@ -115,7 +122,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const product = useLossHistory(runtime.client, track, selection, requestedView,
     [...(followView ? [] : [requestedView?.hour ?? 0]), ...(pinnedDetail === null ? [] : [Math.floor(pinnedDetail)])], active, open);
   const head = useHeadProduct<LossHeadReply>(runtime, widget, 'equipment-loss-head',
-    followView && selection ? { tag: selection.tag, country: selection.country } : null,
+    followView && selection ? { country: selection.country, identity: selection.identity } : null,
     { active, validate: validateHead, structure: reply => reply.leaves.join(',') });
   const retained = useMemo(() => new NumericReply<LossesReply>(), [runtime.client]);
   const identity = JSON.stringify([track?.source.id, track?.source.revision, selection]);
@@ -147,7 +154,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const shownTag = actorSpans && detailView ? countryDrillTagAt(actorSpans, detailView.hour) : null;
   const countryLabels = useCountryLabelsAt(runtime.client, track, saved && savedCountry && shownTag && detailView ? [{ tag: shownTag, hour: detailView.hour }] : [], active);
   const actorReason = hasSavedCountry && !savedCountry ? 'Choose a country again.'
-    : !catalogue.data ? 'Loading country…'
+    : !catalogue.data || slotsPending ? 'Loading country…'
       : !selectedCountry || !actorSpans ? 'Country unavailable at this time.'
         : !shownTag ? 'Country unavailable at this time.' : null;
   const countryHeader = saved && countrySlot ? createPortal(<DatedCountryChip hour={detailView?.hour ?? null}
@@ -246,7 +253,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const unavailable = !track || !tag ? <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its equipment losses." />
     : !view ? <WidgetState kind="unavailable" message="This time is outside the recording." />
       : selectionPick === undefined ? <WidgetState kind="unavailable" message="Choose losses again." />
-        : (hasSavedCountry && !savedCountry) || (catalogue.data && (!selectedCountry || !actorSpans))
+        : (hasSavedCountry && !savedCountry) || (catalogue.data && !slotsPending && (!selectedCountry || !actorSpans))
           ? <WidgetState kind="unavailable" message={actorReason!} />
           : catalogue.error && !catalogue.data ? <WidgetState kind="error" failure={catalogue.error} onRetry={catalogue.retry} />
             : productError ? <WidgetState kind="error" failure={productError} onRetry={product.retry} />

@@ -1392,7 +1392,7 @@ pub(super) fn bind(
             );
         };
     let id = match selection {
-        Selection::AirRegion(_) => return Ok(()),
+        Selection::AirRegion(_) | Selection::State(_) | Selection::NavalRegion(_) => return Ok(()),
         Selection::Naval(id) => {
             let details = rows::<tables::NavalCombatDetails>(frame)?;
             if let Some(detail) = details.rows().iter().find(|row| row.combat == id) {

@@ -6,11 +6,10 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::map::perspective::Country;
 
 #[derive(Default)]
 pub struct Selection {
-    context: Option<(BranchId, Country, u32)>,
+    context: Option<BranchId>,
     wings: Arc<Vec<u64>>,
     bases: Arc<Vec<u64>>,
 }
@@ -127,6 +126,49 @@ impl Selection {
         Ok(*before.0 != *self.wings || *before.1 != *self.bases)
     }
 
+    /// A box appends the live wings it takes, in order, each with its pool base as a wing-grid
+    /// click does. Without Shift it first clears wings and base references; it never takes a
+    /// wing away.
+    pub fn box_click(
+        &mut self,
+        frame: &DecodedFrame,
+        members: &[u64],
+        shift: bool,
+    ) -> io::Result<bool> {
+        let wings = frame.complete::<tables::AirWings>().map_err(unavailable)?;
+        let witnesses = frame
+            .complete::<tables::AirReferenceWitnesses>()
+            .map_err(unavailable)?;
+        let before = (Arc::clone(&self.wings), Arc::clone(&self.bases));
+        if !shift {
+            self.clear();
+        }
+        for &handle in members {
+            let Ok(at) = wings.binary_search_by_key(&handle, |wing| wing.id) else {
+                continue;
+            };
+            if self.wings.contains(&handle) {
+                continue;
+            }
+            Arc::make_mut(&mut self.wings).push(handle);
+            let base = wings[at].air_base;
+            if base != 0
+                && witnesses
+                    .binary_search_by_key(&base, |row| row.handle)
+                    .ok()
+                    .is_some_and(|at| witnesses[at].base_kind.is_some())
+                && !self.bases.contains(&base)
+            {
+                Arc::make_mut(&mut self.bases).push(base);
+            }
+        }
+        if *before.0 == *self.wings && *before.1 == *self.bases {
+            (self.wings, self.bases) = before;
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     /// Base buttons append every unselected registered wing, including empty
     /// wings. Shift preserves the previous selection; it never toggles it off.
     /// A base without positive-plane wings also selects the base itself.
@@ -214,23 +256,22 @@ impl Selection {
         }
     }
 
-    /// A new branch, country or viewer clears the selection; it reads no rows.
-    pub fn context(&mut self, branch: BranchId, country: &Country, viewer: u32) {
-        let context = (branch, country.clone(), viewer);
-        if self.context.as_ref() != Some(&context) {
+    /// A new branch clears the selection; a new viewing country keeps it, as the game's
+    /// observer switch deselects nothing. It reads no rows.
+    pub fn context(&mut self, branch: BranchId) {
+        if self.context != Some(branch) {
             self.clear();
-            self.context = Some(context);
+            self.context = Some(branch);
         }
     }
 
     pub fn observe(
         &mut self,
         branch: BranchId,
-        country: &Country,
         viewer: u32,
         frame: &DecodedFrame,
     ) {
-        self.context(branch, country, viewer);
+        self.context(branch);
         if let Ok(rows) = frame.complete::<tables::AirWings>() {
             Arc::make_mut(&mut self.wings)
                 .retain(|wing| rows.binary_search_by_key(wing, |row| row.id).is_ok());
@@ -495,7 +536,7 @@ mod tests {
     fn registration_gates_disable_buttons_without_erasing_selected_base_references() {
         let mut frame = base_frame(0);
         let mut selection = Selection::default();
-        selection.observe(1, &Country::Recorded, 5, &frame);
+        selection.observe(1, 5, &frame);
         selection
             .base_click(
                 &frame,
@@ -512,7 +553,7 @@ mod tests {
                 },
             ]));
         assert!(base_target(&frame, 5, 3, 0).unwrap().is_none());
-        selection.observe(1, &Country::Recorded, 5, &frame);
+        selection.observe(1, 5, &frame);
         assert_eq!(selection.bases().as_slice(), [8]);
         assert_eq!(selection.wings().as_slice(), [2, 1]);
         let TableView::Complete(TableRows::AirBaseRegistrations(rows)) =
@@ -521,7 +562,7 @@ mod tests {
             panic!()
         };
         rows[0].capacity_raw = 0;
-        selection.observe(1, &Country::Recorded, 5, &frame);
+        selection.observe(1, 5, &frame);
         assert_eq!(selection.bases().as_slice(), [8]);
         let TableView::Complete(TableRows::AirBaseRegistrations(rows)) =
             &mut *frame.tables[TableId::AirBaseRegistrations.index()]
@@ -529,7 +570,7 @@ mod tests {
             panic!()
         };
         rows.clear();
-        selection.observe(1, &Country::Recorded, 5, &frame);
+        selection.observe(1, 5, &frame);
         assert!(selection.bases().is_empty());
     }
 
@@ -572,6 +613,14 @@ mod tests {
         selected.grid_click(&observed, &[1, 1], false).unwrap();
         assert!(selected.wings().is_empty());
         assert_eq!(selected.bases().as_slice(), [8]);
+        // A box only adds, live wings in order with their pool bases; without Shift it replaces.
+        assert!(selected.box_click(&observed, &[2, 99, 2], true).unwrap());
+        assert_eq!((selected.wings().as_slice(), selected.bases().as_slice()), ([2].as_slice(), [8, 9].as_slice()));
+        assert!(!selected.box_click(&observed, &[2], true).unwrap());
+        assert!(selected.box_click(&observed, &[1], false).unwrap());
+        assert_eq!((selected.wings().as_slice(), selected.bases().as_slice()), ([1].as_slice(), [8].as_slice()));
+        assert!(selected.box_click(&observed, &[], false).unwrap());
+        assert!(selected.wings().is_empty() && selected.bases().is_empty());
     }
 
     #[test]
@@ -692,15 +741,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_censuses_keep_selection_but_complete_censuses_and_view_changes_retire_it() {
+    fn missing_censuses_keep_selection_but_complete_censuses_and_branch_changes_retire_it() {
         let mut selected = Selection::default();
-        selected.observe(1, &Country::Recorded, 5, &frame(None));
+        selected.observe(1, 5, &frame(None));
         selected.click(&[1, 3], false);
-        selected.observe(1, &Country::Recorded, 5, &frame(None));
+        selected.observe(1, 5, &frame(None));
         assert_eq!(selected.wings().as_slice(), [1, 3]);
         selected.observe(
             1,
-            &Country::Recorded,
             5,
             &frame(Some(vec![AirWingRow {
                 id: 3,
@@ -708,7 +756,7 @@ mod tests {
             }])),
         );
         assert_eq!(selected.wings().as_slice(), [3]);
-        selected.observe(2, &Country::Recorded, 5, &frame(None));
+        selected.observe(2, 5, &frame(None));
         assert!(selected.wings().is_empty());
     }
     #[test]

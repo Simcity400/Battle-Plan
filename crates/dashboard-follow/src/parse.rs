@@ -7,10 +7,11 @@ use crate::{
     query::{Identity, Query},
 };
 use dashboard_declare::Series;
+use dashboard_query::identity::Country;
 use serde_json::Value;
 use std::io;
 
-/// The followed query `request` asks, its tags read through `identity`.
+/// The followed query `request` asks, its countries read through `identity`.
 pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
     let product = request.get("product").and_then(Value::as_str).ok_or_else(|| invalid("A followed query names no product"))?;
     let params = request.get("params").ok_or_else(|| invalid("A followed query has no params"))?;
@@ -20,15 +21,14 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
             let kind = text(family, "kind")?;
             let series = dashboard_declare::series(kind).ok_or_else(|| invalid(format!("No declared series {kind}")))?;
             let measure = measure(series, text(family, "measure")?)?;
-            let mut tags: Vec<String> = Vec::new();
-            let mut seen = std::collections::HashSet::new();
+            let mut tags: Vec<Country> = Vec::new();
             for read in params.get("reads").and_then(Value::as_array).into_iter().flatten() {
                 if read.get("part").is_some_and(|part| !part.is_null()) {
                     return Err(invalid("A followed series follows an owner's parts, all or the top N, not one part"));
                 }
-                let tag = text(read, "tag")?;
-                if seen.insert(tag) {
-                    tags.push(tag.to_owned());
+                let country = country(read.get("country"))?;
+                if !tags.contains(&country) {
+                    tags.push(country);
                 }
             }
             let top = match params.get("top").filter(|top| !top.is_null()) {
@@ -45,12 +45,12 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
                 return Ok(if params.get("least").and_then(Value::as_bool) == Some(true) { top.least() } else { top });
             }
             if tags.is_empty() {
-                return Err(invalid("A followed series names a tag or more"));
+                return Err(invalid("A followed series names a country or more"));
             }
             if top.is_some() && !parts {
                 return Err(invalid(format!("{} ranks its countries by a top naming no tag", series.kind)));
             }
-            Ok(Query::Series { series, measure, tags, top, least: false, parts, identity: identity.clone() })
+            Ok(Query::Series { series, measure, countries: tags, top, least: false, parts, identity: identity.clone() })
         }
         "log-page" => {
             let name = text(params, "log")?;
@@ -79,12 +79,12 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
                 (measure, count) => return Err(invalid(format!("No army measure {measure} counted for {count}"))),
             };
             let measure = measure(series, name)?;
-            let tags: Vec<String> = params.get("tags").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+            let tags = countries(params.get("countries"))?;
             let top = params.get("top").and_then(Value::as_u64).and_then(|top| usize::try_from(top).ok());
             match (tags.is_empty(), top) {
                 (true, Some(n)) if n >= 1 => Ok(Query::series_top(series, measure, n, identity.clone())),
-                (false, _) => Ok(Query::Series { series, measure, tags, top: None, least: false, parts: false, identity: identity.clone() }),
-                _ => Err(invalid("A followed army size names a tag or more, or a top of one row or more")),
+                (false, _) => Ok(Query::Series { series, measure, countries: tags, top: None, least: false, parts: false, identity: identity.clone() }),
+                _ => Err(invalid("A followed army size names a country or more, or a top of one row or more")),
             }
         }
         "air-force-size" | "navy-size" => {
@@ -101,12 +101,12 @@ pub fn parse(request: &Value, identity: &Identity) -> io::Result<Query> {
             };
             let series = dashboard_declare::series(kind).ok_or_else(|| invalid(format!("{kind} is not declared")))?;
             let measure = measure(series, name)?;
-            let tags: Vec<String> = params.get("tags").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+            let tags = countries(params.get("countries"))?;
             let top = params.get("top").and_then(Value::as_u64).and_then(|top| usize::try_from(top).ok());
             match (tags.is_empty(), top) {
                 (true, Some(n)) if n >= 1 => Ok(Query::series_top(series, measure, n, identity.clone())),
-                (false, _) => Ok(Query::Series { series, measure, tags, top: None, least: false, parts: false, identity: identity.clone() }),
-                _ => Err(invalid(format!("A followed {product} names a tag or more, or a top of one row or more"))),
+                (false, _) => Ok(Query::Series { series, measure, countries: tags, top: None, least: false, parts: false, identity: identity.clone() }),
+                _ => Err(invalid(format!("A followed {product} names a country or more, or a top of one row or more"))),
             }
         }
         other => Err(invalid(format!("{other} is not followed at the head"))),
@@ -119,4 +119,17 @@ fn text<'a>(value: &'a Value, name: &str) -> io::Result<&'a str> {
 
 fn measure(series: &'static Series, name: &str) -> io::Result<&'static dashboard_declare::Measure> {
     series.measure(name).ok_or_else(|| invalid(format!("{} has no measure {name}", series.kind)))
+}
+
+/// A country a request names: a canonical slot or a tag.
+fn country(value: Option<&Value>) -> io::Result<Country> {
+    value.and_then(|value| serde_json::from_value(value.clone()).ok()).ok_or_else(|| invalid("A followed read names no country"))
+}
+
+/// The countries a request lists; none where it lists none.
+fn countries(value: Option<&Value>) -> io::Result<Vec<Country>> {
+    match value {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|_| invalid("A followed request's countries are slots or tags")),
+    }
 }

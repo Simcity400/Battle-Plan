@@ -117,6 +117,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::OwnerTransportSpeeds,
             TableId::OperativeMissions,
             TableId::Operations,
+            TableId::LandUnitOrder,
             TableId::Players,
             TableId::PropagandaEfforts,
             TableId::ProvinceSupply,
@@ -145,6 +146,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::ShipModels,
             TableId::Ships,
             TableId::SliceReads,
+            TableId::StateBuildingInputs,
             TableId::StateFlags,
             TableId::StateVisibility,
             TableId::StationedUnits,
@@ -190,6 +192,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::ResourceOrigins,
             TableId::ResourceRights,
             TableId::StateTemporaryResources,
+            TableId::StrategicRegionWeights,
             TableId::TradeRoutes,
             // Border-event and medal hovers describe authored effects through the
             // shared renderer, including its country, operative and project scopes.

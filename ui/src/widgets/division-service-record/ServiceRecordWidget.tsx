@@ -1,8 +1,9 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useMemo } from 'react';
 import type { ComponentProps } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { logSettings } from '../../charts/log/logOptions';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -38,10 +39,10 @@ function TopDivisionRecord({ widget, ...record }: Omit<ComponentProps<typeof Rec
   const { runtime, hour, active } = record;
   const track = runtime.tracks.find(t => t.id === record.trackId);
   const dashboard = widget.countries.kind === 'selected';
-  const tag = dashboard ? defaultCountryTag(track) : null;
+  const tag = dashboard ? defaultCountryKey(track) : null;
   const selection = useCountriesSelectionAt(widget, runtime, hour, active);
   const tags = selection.countries === undefined ? undefined : selection.countries === null ? null : [...selection.countries].sort();
-  const state = useHeadProduct(runtime, widget, 'division-careers', track && tags !== undefined && !selection.selectionReason ? { tags } : null,
+  const state = useHeadProduct(runtime, widget, 'division-careers', track && tags !== undefined && !selection.selectionReason ? { countries: tags?.map(countryFromKey) ?? null } : null,
     { active, validate: validateDivisionCareers, structure: careersStructure });
   useShownEachFrame(runtime.clock, state.shownAt, state.live);
   const data = state.data;

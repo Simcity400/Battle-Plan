@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
@@ -16,7 +17,7 @@ import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { nameReadFailure, nameReadText } from '../../dashboard/nameReads.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
 import { useShownEachFrame } from '../../dashboard/widgetPerf.ts';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import type { WidgetSpec } from '../../dashboard/model';
@@ -38,8 +39,8 @@ const UNNAMED = 'Design name unavailable';
 /** The country's designs over the branch, read once; the rows at an hour are worked out here. */
 function useDesigns(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-designs', params: { branchId: track.branch.id, tag } } : null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
+  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-designs', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
   return { track, tag, ...useProduct<EquipmentDesignsReply>(runtime.client, request, active, validateDesigns, track?.source) };
 }
 

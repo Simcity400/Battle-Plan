@@ -22,7 +22,7 @@ test('a card page asks the opening and continuing kinds that continue nothing, b
   const kinds: FeedKindCode[] = [{ kind: 'scriptEventFired', code: 8, category: 'politics' }, { kind: 'newsEventFired', code: 9, category: 'politics' },
     { kind: 'eventOptionSelected', code: 10, category: 'politics' }, { kind: 'decisionSelected', code: 11, category: 'politics' }];
   assert.deepEqual(cardFacets(kinds, ['newsEventFired'], ['eventOptionSelected']),
-    [{ name: 'kind', values: [9, 10], tags: [] }, { name: 'opener', values: [-1], tags: [] }]);
+    [{ name: 'kind', values: [9, 10], countries: [] }, { name: 'opener', values: [-1], countries: [] }]);
 });
 
 test('the hour a card list reads moves only where a held card changes', () => {

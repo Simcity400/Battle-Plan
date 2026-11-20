@@ -1,3 +1,5 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { type Failure, asFailure } from '../../dashboard/queryError.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -66,7 +68,7 @@ export function useMeasureSeries(client: DashboardClient, source: DashboardSourc
     if (!enabled || !active) return;
     navigation.current?.abort();
     const controller = new AbortController(); navigation.current = controller;
-    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { tags, key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }),
+    void loadTransientProduct<{ hour: unknown }>(client, request('series-next-change', { countries: tags.map(countryFromKey), key, from, firstHour: x[0], lastHour: Math.min(x[1], until ?? x[1]) }),
       controller.signal).then(reply => {
       if (controller.signal.aborted || alive.current !== owner) return;
       if (reply.hour !== null && (typeof reply.hour !== 'number' || !Number.isFinite(reply.hour))) throw new Error('The keyboard reply is malformed.');
@@ -85,6 +87,6 @@ export function useMeasureSeries(client: DashboardClient, source: DashboardSourc
     summaries: shown, held: tiles.lines, live: tiles.live, lineOf, marksOf, revision: readLines, subscribe: tiles.subscribe, head: tiles.head, onSummaryView, onNavigateHour,
     keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined,
     keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,
-    hourLoaded: (tag: string, hour: number) => stateRead.data?.states.some(state => state.tag === tag && state.hour === hour) ?? false,
+    hourLoaded: (tag: string, hour: number) => stateRead.data?.states.some(state => countryKey(state.country) === tag && state.hour === hour) ?? false,
     error, retry, notRecorded: tiles.unrecorded };
 }

@@ -17,7 +17,7 @@ import { useAtHead } from '../../dashboard/atHead';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -91,7 +91,7 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateElectionsReply, track?.source);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const selected = selectedTags(widget.countries, track);
+  const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);

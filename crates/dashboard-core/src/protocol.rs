@@ -118,6 +118,26 @@ pub enum NativeEvent {
         view_id: String,
         toggle: MapToggle,
     },
+    /// A Ctrl+click switched the view's viewing country, as the game's observer switches the
+    /// observed country. The host owns the choice and sends it back in [`MapOptions`].
+    ObserveCountry {
+        #[serde(rename = "viewId")]
+        view_id: String,
+        country: ObservedCountry,
+    },
+}
+
+/// The country a Ctrl+click chose: its canonical slot, which the choice follows, and its tag at
+/// the hour of the click.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObservedCountry {
+    pub slot: u32,
+    pub tag: String,
+    /// The switch's place among the view's switches, increasing; the host echoes the latest it
+    /// applied in [`MapOptions::observed`].
+    #[serde(default)]
+    pub sequence: u64,
 }
 
 /// The full map's chosen aircraft and whether it can be flown.
@@ -481,7 +501,15 @@ pub fn validate_tag(tag: &str) -> Result<(), &'static str> {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapOptions {
+    /// The viewing country by tag; `None` is the recording client's viewpoint.
     pub country: Option<String>,
+    /// The viewing country by canonical slot (the catalogue's country id), which follows that
+    /// country through tag changes. It overrides `country`, which then only names it.
+    #[serde(default)]
+    pub country_slot: Option<u32>,
+    /// The view's own country choice (a widget's pinned country): Ctrl+click never switches it.
+    #[serde(default)]
+    pub country_pinned: bool,
     pub fog: bool,
     /// The view's map mode token (a picker mode's token or `scripted:<name>`); `None` is the
     /// political map. The viewer echoes picker changes back in [`NativeEvent::MapOptions`].
@@ -494,6 +522,10 @@ pub struct MapOptions {
     /// Hides the map mode picker, as the map-only window does; its keys still work.
     #[serde(default)]
     pub picker_hidden: bool,
+    /// The latest of the view's Ctrl+click switches ([`ObservedCountry::sequence`]) the country
+    /// choice has applied: until it reaches the view's latest, the view keeps its own switch.
+    #[serde(default)]
+    pub observed: Option<u64>,
 }
 
 /// The view id the desktop's campaign map reports its picker changes under.
@@ -548,10 +580,13 @@ impl Default for MapOptions {
     fn default() -> Self {
         Self {
             country: None,
+            country_slot: None,
+            country_pinned: false,
             fog: crate::map_display::option_defaults::FOG,
             map_mode: None,
             map_mode_slots: Vec::new(),
             picker_hidden: false,
+            observed: None,
         }
     }
 }
@@ -984,6 +1019,28 @@ b"
             serde_json::to_string(&event).unwrap(),
             r#"{"event":"map_toggle","viewId":"m","toggle":{"setting":"dayNight"}}"#
         );
+        let observe = super::NativeEvent::ObserveCountry {
+            view_id: "campaign-map".into(),
+            country: super::ObservedCountry {
+                slot: 1499,
+                tag: "D01".into(),
+                sequence: 7,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&observe).unwrap(),
+            r#"{"event":"observe_country","viewId":"campaign-map","country":{"slot":1499,"tag":"D01","sequence":7}}"#
+        );
+        // The host's options carry the choice back by slot, with the switch it applied; older
+        // hosts' options still read.
+        let back: super::MapOptions =
+            serde_json::from_str(r#"{"country":"D01","countrySlot":1499,"fog":true,"observed":7}"#).unwrap();
+        assert_eq!((back.country_slot, back.country_pinned, back.observed), (Some(1499), false, Some(7)));
+        let older: super::MapOptions =
+            serde_json::from_str(r#"{"country":"D01","countrySlot":1499,"fog":true}"#).unwrap();
+        assert_eq!(older.observed, None);
+        let plain: super::MapOptions = serde_json::from_str(r#"{"country":null,"fog":true}"#).unwrap();
+        assert_eq!(plain.country_slot, None);
         let modes = super::NativeEvent::MapModes {
             view_id: "m".into(),
             modes: vec![super::MapModeChoice {

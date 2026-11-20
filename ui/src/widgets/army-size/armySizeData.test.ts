@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { countryValueAt, countryValuesModel } from '../../charts/race/countryValues.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import { resolveOptions, sectionFields } from '../../dashboard/options.ts';
-import type { ArmySizeReply } from '../../generated/dashboard';
+import type { ArmySizeReply } from './armySizeData';
 import '../definitions.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { armyAbsent, armyMeasure, armySizeRequest, armyTooltips, armyWindows, formatArmyValue, formatArmyRaw, formatArmyRawFast,
@@ -19,6 +20,10 @@ const REPLY: ArmySizeReply = {
 
 test('Army size validates capabilities alongside the shared history shape', () => {
   assert.equal(validateArmySizeReply(REPLY), REPLY);
+  // The service names each line by its country; the widget keys it by that country's key.
+  const asked = { ...REPLY, series: [...REPLY.series, { ...REPLY.series[0], tag: undefined, country: 5 }, { ...REPLY.series[0], tag: undefined, country: '5' }]
+    .map(({ tag, ...series }) => tag === undefined ? series : { ...series, country: tag }) };
+  assert.deepEqual(validateArmySizeReply(asked).series.map(series => series.tag), ['opaque tag', countryKey(5), '5'], 'a slot and a mod tag spelled as its number stay apart');
   assert.throws(() => validateArmySizeReply({ ...REPLY, measures: ['unknown'] }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, available: 1 }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, warnings: [1] }));
@@ -60,10 +65,11 @@ test('new Army size widgets share the top 10, race, date-off and owner defaults'
 });
 
 test('requests preserve opaque country tags, owner/host, recorded measures and mix attribution', () => {
-  assert.deepEqual(armySizeRequest('synthetic', { tags: ['opaque tag'] }, 'battalions', 'host', true),
-    { branchId: 'synthetic', tags: ['opaque tag'], top: null, measure: 'battalions', countFor: 'host', byType: true, window: null });
+  assert.deepEqual(armySizeRequest('synthetic', { tags: ['opaque tag', countryKey(1499), '1499'] }, 'battalions', 'host', true),
+    { branchId: 'synthetic', countries: ['opaque tag', 1499, '1499'], top: null, measure: 'battalions', countFor: 'host', byType: true, window: null },
+    'a picked tag is asked as a tag, the dashboard country by its slot');
   assert.deepEqual(armySizeRequest('synthetic', { tags: [], top: 30 }, 'strength', 'owner', false, 7),
-    { branchId: 'synthetic', tags: [], top: 30, measure: 'strength', countFor: 'owner', byType: false, window: 7 });
+    { branchId: 'synthetic', countries: [], top: 30, measure: 'strength', countFor: 'owner', byType: false, window: 7 });
 });
 
 test('land tooltips name content groups and the exact hourly read without inventing a missing mix', () => {

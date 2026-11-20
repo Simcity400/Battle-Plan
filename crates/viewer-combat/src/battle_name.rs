@@ -37,22 +37,22 @@ struct Province<'a> {
 }
 
 /// What the state display name reads.
-struct StateNames<'a> {
-    id: u32,
+pub(crate) struct StateNames<'a> {
+    pub(crate) id: u32,
     /// The state's recorded custom and owner names.
-    custom_name: &'a [u8],
-    owner_name: &'a [u8],
+    pub(crate) custom_name: &'a [u8],
+    pub(crate) owner_name: &'a [u8],
     /// The recording client's language, in which the game stored those two.
-    recorded_language: &'a str,
+    pub(crate) recorded_language: &'a str,
     /// The definition's `name` key, or why the
     /// definition's reading cannot be followed.
-    name_key: Result<&'a str, &'a str>,
+    pub(crate) name_key: Result<&'a str, &'a str>,
 }
 
 /// State display naming through [`viewer_foundation::tooltip_text::state_name`]:
 /// the template's `name` key is localised when the definition is read.
 /// A key the localisation lacks is its own text.
-fn state_display_name(
+pub(crate) fn state_display_name(
     icons: &dyn TextIcons,
     loc: &Localisation,
     state: &StateNames<'_>,

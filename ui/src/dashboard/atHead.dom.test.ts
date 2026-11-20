@@ -52,6 +52,24 @@ async function calendarFollowsTheHead(t: { diagnostic: (message: string) => void
   await act('toggleCalendar()');
 }
 
+/** One country at one hour has one name: a widget's header chip, by tag or by slot, and a lane timeline whose caller
+ * holds an older hour all name it as the recording's name resolver does at the hour shown, as the breakdown's chip and
+ * the dashboard's own header do, never by its catalogue entry's hour or the hour the lanes last changed. */
+async function countriesNamedAtTheHourShown(t: { diagnostic: (message: string) => void }, act: Act) {
+  await act('seek(1000)');
+  await act('mountCountries(1000)');
+  assert.deepEqual(await act('countries()'), { tag: 'Germany', slot: 'Germany', lanes: 'Germany' });
+  await act('seek(6000)');
+  t.diagnostic(`after the rename at 5000: ${JSON.stringify(await act('countries()'))}`);
+  assert.deepEqual(await act('countries()'), { tag: 'German Reich', slot: 'German Reich', lanes: 'German Reich' },
+    'renamed at 5000, it is named as then wherever it shows');
+  await act('seek(4800)');
+  const across = await act<Played>('play(1440, 40)');
+  assert.ok(across.from < 5000 && across.to > 5000);
+  for (const id of ['tagChip', 'slotChip', 'lanes']) assert.equal(across.renders[id], 1, `${id} renders once for the rename`);
+  await act('seek(1000)');
+}
+
 interface Played { tooltips: number; changes: number; from: number; to: number; elapsed: number; renders: Record<string, number>; requests: string[]; dates: number; chip: string; identity: string }
 
 test('nothing that reads the hour at the head renders or asks as it moves; a name that changes renders once', async t => {
@@ -79,6 +97,7 @@ test('nothing that reads the hour at the head renders or asks as it moves; a nam
     const seek = await act<Record<string, number>>('seek(200)');
     assert.equal(seek.fallback, 1);
     assert.ok((seek.map ?? 0) >= 1, 'the map renders on an anchor');
+    await countriesNamedAtTheHourShown(t, act);
     await calendarFollowsTheHead(t, act);
   }, 120_000));
 });

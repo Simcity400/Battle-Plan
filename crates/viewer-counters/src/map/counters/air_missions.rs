@@ -1120,7 +1120,7 @@ impl Prepared {
                                 (native::Kind::TextBox, "supply_count_small"),
                             ] {
                                 if let Some(hit) = viewer_foundation::map::gui_resources::observer_hit_rectangle(named(item, kind, name)?, &layout, drawn.origin, &resources, &mut report.icon_gui_notes, viewer_foundation::map::gui_resources::HitMode::NativeGeometry) {
-                                    hits.push(AirMissionHover { region: drawn.owner, mission: None, rect: hit.rect, layer: draw_layer, text: Arc::clone(hover) });
+                                    hits.push(AirMissionHover { region: drawn.owner, part: AirMissionPart::Supply, rect: hit.rect, layer: draw_layer, text: Arc::clone(hover) });
                                 }
                             }
                         }
@@ -1133,7 +1133,7 @@ impl Prepared {
                         ) {
                             hits.push(AirMissionHover {
                                 region: drawn.owner,
-                                mission: Some(kind),
+                                part: AirMissionPart::Mission(kind),
                                 rect: hit.rect,
                                 layer: draw_layer,
                                 text: self
@@ -1170,7 +1170,7 @@ impl Prepared {
             {
                 hits.push(AirMissionHover {
                     region: drawn.owner,
-                    mission: None,
+                    part: AirMissionPart::GroundCrews,
                     rect: hit.rect,
                     layer: draw_layer,
                     text: Arc::clone(hover),
@@ -1229,6 +1229,12 @@ mod tests {
         );
         assert!(ground(0, None, 20).is_err());
         assert!(ground(2, Some(100), 20).is_err());
+    }
+    #[test]
+    fn a_ground_crew_click_does_nothing_and_the_other_parts_keep_their_actions() {
+        assert_eq!(AirMissionPart::GroundCrews.click(), AirMissionClick::Nothing);
+        assert_eq!(AirMissionPart::Mission(4).click(), AirMissionClick::SelectMission(4));
+        assert_eq!(AirMissionPart::Supply.click(), AirMissionClick::OpenRegion);
     }
     #[test]
     fn interception_uses_the_trace_gate_and_any_proved_alert_overrides_unknown_entries() {

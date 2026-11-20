@@ -52,7 +52,7 @@ fn a_view_holds_the_measure_drawn_or_every_part_of_one_month() {
     assert!(month.manpower(5) && month.ledger(0, 5) && month.ledger(super::ENEMY_LEDGER, 5));
     assert!(!month.manpower(6) && !month.ledger(0, 6));
     let asked = |json: serde_json::Value| serde_json::from_value::<ArmyLossesParams>(json).unwrap().view;
-    assert_eq!(asked(serde_json::json!({ "branchId": "1", "tag": "GER" })), LossView::Manpower);
-    assert_eq!(asked(serde_json::json!({ "branchId": "1", "tag": "GER", "view": { "kind": "equipment", "ledgers": [1, 2, 3] } })), equipment);
-    assert_eq!(asked(serde_json::json!({ "branchId": "1", "tag": "GER", "view": { "kind": "month", "month": 5 } })), month);
+    assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER" })), LossView::Manpower);
+    assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "equipment", "ledgers": [1, 2, 3] } })), equipment);
+    assert_eq!(asked(serde_json::json!({ "branchId": "1", "country": "GER", "view": { "kind": "month", "month": 5 } })), month);
 }

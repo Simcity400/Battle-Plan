@@ -1,6 +1,6 @@
 import { clipToSpans, isOrderedSpans, runAt } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
-import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
+import { countryDrillSpans, historyAt } from '../../dashboard/countryIdentity.ts';
 import type { BoundTrack, CountrySelection } from '../../dashboard/model';
 import { object, opaqueTag, signed32 } from '../../dashboard/validation.ts';
 import type { CountryIdentityHistory } from '../../generated/dashboard';
@@ -12,9 +12,10 @@ export interface DrillCountry {
 /** An origin and recorded native identity survive aliases, never a replacement holder. */
 export function chooseDrillCountry(histories: readonly CountryIdentityHistory[], track: BoundTrack, tag: string, hour: number): DrillCountry | null {
   const origin = Math.floor(hour);
-  const identity = runAt(histories.find(history => history.tag === tag)?.identities ?? [], origin);
-  return identity && origin >= track.branch.firstHour && origin <= track.branch.lastHour
-    ? { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag,
+  const history = historyAt(histories, tag, origin);
+  const identity = runAt(history?.identities ?? [], origin);
+  return history && identity && origin >= track.branch.firstHour && origin <= track.branch.lastHour
+    ? { campaign: track.source.metadata.campaignKey, branch: track.branch.id, tag: history.tag,
       originOffset: origin - track.branch.firstHour, slot: identity.slot, countryId: identity.countryId } : null;
 }
 

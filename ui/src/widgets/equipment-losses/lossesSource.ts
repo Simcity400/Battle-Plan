@@ -27,7 +27,7 @@ export const exactLossHour = (reply: LossesReply, hour: number) => reply.exactHo
 /** A leaf's part in the declared series: its totals key below the identity. */
 export const leafPart = (key: string) => (BigInt(key) & ((1n << PART_BITS) - 1n)).toString();
 
-export interface LossSelection { branchId: string; tag: string; landSource: LossesParams['landSource']; country?: LossesParams['country'] }
+export interface LossSelection { branchId: string; country: LossesParams['country']; landSource: LossesParams['landSource']; identity?: LossesParams['identity'] }
 
 /** The window's history: one request per selection, chart view and exact hours, never the playhead's hour (a followed
  * view asks for the whole branch and paints the head from followed cells). `exact` are the hours read to the hour. */
@@ -88,7 +88,7 @@ export function useLossHistory(client: DashboardClient, track: BoundTrack | unde
     };
     if (!leaves.length) { land(ships); return; }
     void loadTransientProduct<{ hour: unknown }>(client, { sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change',
-      params: { branchId: selection.branchId, family: SERIES, lines: leaves.map(([, leaf]) => ({ tag: selection.tag, part: leafPart(leaf) })),
+      params: { branchId: selection.branchId, family: SERIES, lines: leaves.map(([, leaf]) => ({ country: selection.country, part: leafPart(leaf) })),
         key, from: origin, firstHour, lastHour } }, controller.signal).then(reply => {
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) throw new Error('The equipment-loss navigation is malformed.');
       land(nearest(key, reply.hour as number | null, ships));

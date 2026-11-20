@@ -367,6 +367,14 @@ impl NativeHost {
                 );
                 return;
             }
+            NativeEvent::ObserveCountry { view_id, country } => {
+                drop(inner);
+                let _ = app.emit(
+                    "dashboard-map-observe",
+                    serde_json::json!({ "viewId": view_id, "country": country }),
+                );
+                return;
+            }
             NativeEvent::MapStates { mut states } => {
                 let Some(requested) = inner.dashboard_views.as_ref() else {
                     return;

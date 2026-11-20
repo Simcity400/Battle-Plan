@@ -10,7 +10,7 @@ pub(crate) mod proof;
 mod tests;
 
 use crate::playhead_host::views::{AtHead, Pace, Views};
-use replay_data::{Hour, rows::TableId};
+use replay_data::{BranchId, Hour, rows::TableId};
 use replay_frame::frame::{DecodedFrame, discovering};
 use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
@@ -19,8 +19,8 @@ use std::{
 use viewer_counter_products::map::{
     counter_content::Content,
     counter_tooltips::{self, Batch, Style},
-    occupation_modifier_tooltips,
-    province_tooltips::{self, ModeHover, naval_accidents, naval_mines},
+    faction_theatre_tooltips, occupation_modifier_tooltips,
+    province_tooltips::{self, ModeHover, naval_accidents, naval_base, naval_mines},
 };
 use viewer_foundation::{
     map::{
@@ -91,7 +91,13 @@ pub(crate) enum What {
     TaskForce(task_force::Hover),
     Port(task_force_port::Hover),
     AirBase { province: u32, kind: i32 },
-    Province { province: u32, mode: ModeHover },
+    NavalBase { province: u32, fleet_selected: bool },
+    /// A faction-theatre pin: its theatre's faction and ordinal.
+    FactionTheatre { faction: u64, ordinal: u32 },
+    /// A unit model: every division at its location.
+    Location(u32),
+    /// The province, and the trade-route lines drawn over it under the pointer.
+    Province { province: u32, mode: ModeHover, routes: Vec<viewer_foundation::map::ribbon_content::TradeRouteLine> },
     Mines(u32),
     Accidents(u32),
     Occupation { state: u32, token: String },
@@ -99,17 +105,32 @@ pub(crate) enum What {
 }
 
 /// What is hovered and the identities of the sources its text is made from: a new key is a new
-/// text, and the newest text made is shown only for its own key.
+/// text, and the newest text made is shown only for its own key, at its own hour. Its second
+/// source is the vision; `seen` is that vision's country and fog.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Key {
     pub what: What,
     pub sources: [usize; 4],
     pub style: (bool, bool),
+    pub seen: (u32, bool),
 }
+
+/// The source a key holds the vision's identity in.
+const VISION: usize = 1;
 
 impl Key {
     pub(crate) fn new(what: What, sources: [usize; 4], style: (bool, bool)) -> Self {
-        Self { what, sources, style }
+        Self { what, sources, style, seen: (0, false) }
+    }
+
+    /// Whether a text made for `self` is the text for `other` at the same hour: the same key, or
+    /// one that differs only in its copy of the same country's vision, which the map remakes
+    /// within an hour as its units settle.
+    fn shows_for(&self, other: &Key) -> bool {
+        self.what == other.what
+            && self.style == other.style
+            && self.seen == other.seen
+            && (0..self.sources.len()).all(|at| at == VISION || self.sources[at] == other.sources[at])
     }
 }
 
@@ -196,7 +217,8 @@ pub(crate) struct Made {
     pub key: Key,
     pub frame: usize,
     pub text: Option<Arc<Tooltip>>,
-    /// The hour of the frame it was made over.
+    /// The branch and hour of the frame it was made over.
+    pub branch: BranchId,
     pub hour: Hour,
     /// Tables the rows lacked, which the reader declares from now on.
     pub missed: Vec<TableId>,
@@ -209,13 +231,33 @@ pub(crate) struct Caches {
     pub provinces: Arc<Mutex<province_tooltips::Cache>>,
 }
 
+/// Texts a hover keeps, newest last: the presented hour's and those made ahead of it.
+const TEXTS_KEPT: usize = 8;
+
+/// Hours past the presented one a playing hover looks for rows prepared ahead.
+const AHEAD: i32 = 96;
+
+/// The hour a playing hover makes its next text for: the earliest hour after the presented one
+/// whose rows are prepared (`ahead`) and that has no text yet, so each hour's text is made
+/// before that hour is presented; the presented hour itself only when nothing ahead is owed.
+pub(crate) fn next_hour(presented: Hour, ahead: &[Hour], made: impl Fn(Hour) -> bool) -> Option<Hour> {
+    ahead
+        .iter()
+        .copied()
+        .filter(|&hour| hour > presented)
+        .find(|&hour| !made(hour))
+        .or_else(|| (!made(presented)).then_some(presented))
+}
+
 struct Hover {
     rows: AtHead,
     worker: Option<Worker>,
     posted: Option<(Key, usize)>,
-    /// The newest text made, always with a text.
-    shown: Option<Made>,
+    /// The texts made, newest last, each with a text.
+    texts: std::collections::VecDeque<Made>,
     loading: Loading,
+    /// The presented hour its text is still being made for.
+    pending: Option<Hour>,
     asked: bool,
 }
 
@@ -227,7 +269,7 @@ impl Hover {
         // since no later post would apply them.
         let rows = AtHead::with(family.name(), &[], Pace::Step);
         let rows = if family == Family::Capture { rows } else { rows.keeps_its_answer() };
-        Self { rows, worker: None, posted: None, shown: None, loading: Loading::default(), asked: false }
+        Self { rows, worker: None, posted: None, texts: Default::default(), loading: Loading::default(), pending: None, asked: false }
     }
 
     /// Takes in what the worker made since: a text is shown; tables its rows lacked are learned.
@@ -243,12 +285,52 @@ impl Hover {
             self.loading.learned(&made.missed);
         }
         if made.text.is_some() {
-            self.shown = Some(made);
+            if self.texts.len() == TEXTS_KEPT {
+                self.texts.pop_front();
+            }
+            self.texts.push_back(made);
         }
     }
 
-    fn shown_for(&self, key: &Key) -> Option<Arc<Tooltip>> {
-        self.shown.as_ref().filter(|made| made.key == *key).and_then(|made| made.text.clone())
+    /// The newest text made.
+    fn newest(&self) -> Option<&Made> {
+        self.texts.back()
+    }
+
+    /// Whether a text for `key` at `branch` and `hour` is made.
+    fn made_at(&self, key: &Key, branch: BranchId, hour: Hour) -> bool {
+        self.texts.iter().any(|made| (made.branch, made.hour) == (branch, hour) && made.key.shows_for(key))
+    }
+
+    /// The rows a playing hover makes its next text over: [`next_hour`]'s, among the frames the
+    /// side prepared ahead of the presented hour; none while every hour it holds has its text.
+    fn ahead(&mut self, views: Head<'_>, key: &Key, (branch, presented): (BranchId, Hour)) -> Option<Arc<DecodedFrame>> {
+        // `frame` stops at the hour shown; the rows prepared past it are asked for by hour.
+        let newest = self.rows.frame_through(views, presented.saturating_add(AHEAD))?;
+        let mut frames = Vec::new();
+        for hour in presented + 1..=newest.hour.min(presented.saturating_add(AHEAD)) {
+            if let Some(frame) = self.rows.frame_through(views, hour)
+                && frame.hour == hour
+                && frame.branch == branch
+            {
+                frames.push(frame);
+            }
+        }
+        let hours: Vec<Hour> = frames.iter().map(|frame| frame.hour).collect();
+        match next_hour(presented, &hours, |hour| self.made_at(key, branch, hour))? {
+            hour if hour == presented => self.rows.frame_through(views, presented).filter(|frame| frame.hour == presented && frame.branch == branch),
+            hour => frames.into_iter().find(|frame| frame.hour == hour),
+        }
+    }
+
+    /// The text made for `key` at the presented branch and hour `at`; with none presented (the
+    /// capture's exact frames), the text made for `key` itself.
+    fn shown_for(&self, key: &Key, at: Option<(BranchId, Hour)>) -> Option<Arc<Tooltip>> {
+        let made = match at {
+            Some(at) => self.texts.iter().rev().find(|made| (made.branch, made.hour) == at && made.key.shows_for(key)),
+            None => self.newest().filter(|made| made.key == *key),
+        };
+        made.and_then(|made| made.text.clone())
     }
 }
 
@@ -257,14 +339,20 @@ pub(crate) struct HoverRows {
     hovers: [Hover; 5],
     caches: Caches,
     refused: bool,
+    /// The branch and hour the map presents, which every text shown was made at.
+    presented: Option<(BranchId, Hour)>,
     /// Timed (the paced harness): this frame's thread CPU spent asking, and the hour of the text
     /// the last ask showed, and what it was loading.
     timed: Option<(Duration, Option<Hour>, Option<String>)>,
+    /// Playing: a live hover makes its texts ahead of the presented hour from the rows the side
+    /// prepares past the hour the display shows ([`next_hour`]). Still, it makes them over the
+    /// rows of the hour shown ([`Views::show_through`]).
+    pub(crate) playing: bool,
 }
 
 impl Default for HoverRows {
     fn default() -> Self {
-        Self { hovers: Family::ALL.map(Hover::new), caches: Caches::default(), refused: false, timed: None }
+        Self { hovers: Family::ALL.map(Hover::new), caches: Caches::default(), refused: false, presented: None, timed: None, playing: false }
     }
 }
 
@@ -279,11 +367,24 @@ impl HoverRows {
         hovers
     }
 
-    /// The newest text made for `key`, none before the first; a text is asked of the family's
-    /// worker over rows at `head` when the key or the rows changed. Never runs a leaf, and never
-    /// reads another frame: while the rows lack a table the text reads, the family is loading.
+    /// The branch and hour the map presents this frame; none before its first picture.
+    pub(crate) fn present(&mut self, at: Option<(BranchId, Hour)>) {
+        self.presented = at;
+    }
+
+    /// The newest text made for `key` at the presented hour, none before the first; a text is
+    /// asked of the family's worker over rows at `head` when the key or the rows changed. Never
+    /// runs a leaf, and never reads another frame: while the rows lack a table the text reads,
+    /// the family is loading, and while its text at the presented hour is being made it shows
+    /// none and says so by name.
     pub(crate) fn ask(&mut self, family: Family, head: Head<'_>, key: Key, make: impl FnOnce(&Caches) -> Job) -> Option<Arc<Tooltip>> {
-        self.timed_ask(family, |hovers| hovers.post_head(family, head, key, make).0)
+        let at = self.presented;
+        self.timed_ask(family, |hovers| {
+            let (text, frame, _) = hovers.post_head(family, head, key, at, make);
+            let hover = &mut hovers.hovers[family as usize];
+            hover.pending = at.filter(|_| text.is_none() && frame.is_some() && hover.loading.state().is_none()).map(|(_, hour)| hour);
+            text
+        })
     }
 
     /// `ask`, timed for the paced harness when it times.
@@ -293,7 +394,7 @@ impl HoverRows {
         if let (Some((spent, shown, loading)), Some(before)) = (&mut self.timed, before) {
             *spent += viewer_foundation::profiling::current_thread_cpu_time().map_or(Duration::ZERO, |now| now.saturating_sub(before));
             let hover = &self.hovers[family as usize];
-            *shown = text.as_ref().and(hover.shown.as_ref()).map(|made| made.hour);
+            *shown = text.as_ref().and(hover.newest()).map(|made| made.hour);
             *loading = hover.loading.state().map(str::to_owned);
         }
         text
@@ -321,7 +422,14 @@ impl HoverRows {
 
     /// Every open hover's loading state and the map's vision's, named for the window's refusals.
     pub(crate) fn loading(&self) -> Vec<(String, usize)> {
-        Family::ALL.into_iter().filter_map(|family| self.hovers[family as usize].loading.reason(&format!("the {} hover", family.name()))).map(|reason| (reason, 1)).collect()
+        Family::ALL
+            .into_iter()
+            .filter_map(|family| {
+                let hover = &self.hovers[family as usize];
+                hover.loading.reason(&format!("the {} hover", family.name())).or_else(|| hover.pending.map(|hour| format!("the {} hover: loading: its text at hour {hour}", family.name())))
+            })
+            .map(|reason| (reason, 1))
+            .collect()
     }
 
     /// The next text `family`'s worker makes, whatever asked it (a leaf's late answer, a prepare
@@ -361,7 +469,7 @@ impl HoverRows {
     fn wait_head(&mut self, family: Family, head: Head<'_>, key: Key, make: &dyn Fn(&Caches) -> Job, until: Instant) -> Result<Arc<Tooltip>, String> {
         let late = |hover: &Hover| format!("the {} hover is still loading {:?} at its deadline", family.name(), hover.loading.state());
         loop {
-            let (text, frame, posted) = self.post_head(family, head, key.clone(), make);
+            let (text, frame, posted) = self.post_head(family, head, key.clone(), None, make);
             let hover = &mut self.hovers[family as usize];
             let left = until.saturating_duration_since(Instant::now());
             let Some(frame) = frame else {
@@ -397,25 +505,43 @@ impl HoverRows {
 
     /// The text shown for `key` over rows at `head`, the frame asked over, and whether a text was
     /// asked now; no frame while the rows do not hold what the family reads.
-    fn post_head(&mut self, family: Family, views: Head<'_>, key: Key, make: impl FnOnce(&Caches) -> Job) -> (Option<Arc<Tooltip>>, Option<usize>, bool) {
+    fn post_head(&mut self, family: Family, views: Head<'_>, key: Key, presented: Option<(BranchId, Hour)>, make: impl FnOnce(&Caches) -> Job) -> (Option<Arc<Tooltip>>, Option<usize>, bool) {
+        let playing = self.playing;
         let hover = &mut self.hovers[family as usize];
         hover.asked = true;
         hover.take();
-        let Some(rows) = hover.rows.frame(views) else {
+        let rows = match (playing, presented) {
+            (true, Some(at)) => {
+                if hover.rows.frame(views).is_none() {
+                    None
+                } else {
+                    hover.loading.joined();
+                    // Every hour it holds has its text: nothing to make.
+                    let Some(rows) = hover.ahead(views, &key, at) else {
+                        return (hover.shown_for(&key, presented), Some(0), false);
+                    };
+                    Some(rows)
+                }
+            }
+            _ => hover.rows.frame(views),
+        };
+        let Some(rows) = rows else {
             hover.loading.no_rows();
-            return (hover.shown_for(&key), None, false);
+            return (hover.shown_for(&key, presented), None, false);
         };
         hover.loading.joined();
-        let (text, frame, posted) = self.post(family, rows, true, key, make);
+        let (text, frame, posted) = self.post(family, rows, true, key, presented, make);
         (text, Some(frame), posted)
     }
 
-    /// The text shown for `key`, posting a text over `frame` when the key or the frame changed.
-    fn post(&mut self, family: Family, frame: Arc<DecodedFrame>, at_head: bool, key: Key, make: impl FnOnce(&Caches) -> Job) -> (Option<Arc<Tooltip>>, usize, bool) {
+    /// The text shown for `key` at `presented`, posting a text over `frame` when the key or the
+    /// frame changed.
+    fn post(&mut self, family: Family, frame: Arc<DecodedFrame>, at_head: bool, key: Key, presented: Option<(BranchId, Hour)>, make: impl FnOnce(&Caches) -> Job) -> (Option<Arc<Tooltip>>, usize, bool) {
         let hover = &mut self.hovers[family as usize];
         let at = id(&frame);
         let mut posted = false;
-        if !hover.posted.as_ref().is_some_and(|(held, held_at)| *held == key && *held_at == at) {
+        // A new copy of the same vision does not make the same rows' text again.
+        if !hover.posted.as_ref().is_some_and(|(held, held_at)| held.shows_for(&key) && *held_at == at) {
             if hover.worker.is_none() && !self.refused {
                 match Worker::spawn(family) {
                     Ok(worker) => hover.worker = Some(worker),
@@ -431,12 +557,12 @@ impl HoverRows {
                 posted = true;
             }
         }
-        (hover.shown_for(&key), at, posted)
+        (hover.shown_for(&key, presented), at, posted)
     }
 
     /// The text shown for `family`, with the hour it was made at: the proof's freshness.
     pub(crate) fn shown(&self, family: Family) -> Option<&Made> {
-        self.hovers[family as usize].shown.as_ref()
+        self.hovers[family as usize].newest()
     }
 
     /// Closes every family not asked since the last call: its reader's tables are retired, its
@@ -455,8 +581,9 @@ impl HoverRows {
             hover.rows.end_frame();
             hover.worker = None;
             hover.posted = None;
-            hover.shown = None;
+            hover.texts.clear();
             hover.loading = Loading::default();
+            hover.pending = None;
             if family == Family::Province {
                 self.caches.provinces = Arc::default();
             }
@@ -469,7 +596,7 @@ impl HoverRows {
     #[cfg(test)]
     pub(crate) fn is_open(&self, family: Family) -> bool {
         let hover = &self.hovers[family as usize];
-        hover.rows.is_open() || hover.worker.is_some() || hover.shown.is_some()
+        hover.rows.is_open() || hover.worker.is_some() || !hover.texts.is_empty()
     }
 
     /// Joins every worker thread `family` has started, which must all be closed: how many ended.
@@ -625,7 +752,7 @@ fn run(shared: &Arc<Shared>) {
             Err(_) => {
                 let mut text = Tooltip::default();
                 text.refused.insert("hover text: its worker panicked making it".into(), 1);
-                Made { key: posted.key.clone(), frame: posted.frame, text: Some(Arc::new(text)), hour: posted.rows.hour, missed: Vec::new() }
+                Made { key: posted.key.clone(), frame: posted.frame, text: Some(Arc::new(text)), branch: posted.rows.branch, hour: posted.rows.hour, missed: Vec::new() }
             }
         };
         let mut slot = lock(&shared.slot);
@@ -651,9 +778,9 @@ fn run(shared: &Arc<Shared>) {
 /// reference): made as it is.
 pub(crate) fn make(posted: &mut Posted, retry: &Retry) -> Made {
     let Posted { key, frame, rows, at_head, job } = posted;
-    let (key, frame, hour, at_head) = (key.clone(), *frame, rows.hour, *at_head);
+    let (key, frame, branch, hour, at_head) = (key.clone(), *frame, rows.branch, rows.hour, *at_head);
     if !at_head {
-        return Made { key, frame, text: Some((job.build)(rows, retry)), hour, missed: Vec::new() };
+        return Made { key, frame, text: Some((job.build)(rows, retry)), branch, hour, missed: Vec::new() };
     }
     if let Some(prepare) = &job.prepare
         && !rows.tables[TableId::WeatherProvinces.index()].is_not_declared()
@@ -661,7 +788,7 @@ pub(crate) fn make(posted: &mut Posted, retry: &Retry) -> Made {
         prepare.prepare(rows);
     }
     let (text, missed) = discovering(|| (job.build)(rows, retry));
-    Made { key, frame, text: missed.is_empty().then_some(text), hour, missed }
+    Made { key, frame, text: missed.is_empty().then_some(text), branch, hour, missed }
 }
 
 impl super::Viewer {
@@ -700,7 +827,7 @@ impl super::Viewer {
             }
             Family::Counters => self.counter_report.land_hovers.first().map(|hover| middle(hover.rect)),
             Family::Naval => self.counter_report.naval_region_hovers.iter().find(|hover| matches!(hover.control, viewer_counters::map::counters::NavalRegionalControl::Mines | viewer_counters::map::counters::NavalRegionalControl::Accidents)).map(|hover| middle(hover.rect)),
-            Family::Occupation => self.prepared_overlay.as_ref()?.occupation_hits().iter().find(|hit| matches!(hit.hover, viewer_world::map::occupation_icons::Hover::Modifier { .. })).and_then(|hit| hit.bounds()).map(middle),
+            Family::Occupation => self.overlay_hits.occupation.iter().find(|hit| matches!(hit.hover, viewer_world::map::occupation_icons::Hover::Modifier { .. })).and_then(|hit| hit.bounds()).map(middle),
             Family::Capture => None,
         }
     }
@@ -724,7 +851,7 @@ pub(crate) struct Inputs {
 
 impl Inputs {
     pub(crate) fn key(&self, what: What, more: [usize; 2]) -> Key {
-        Key::new(what, [id(&self.content), id(&self.vision), more[0], more[1]], (self.style.nato, self.style.diagnostics))
+        Key { seen: (self.vision.ours(), self.vision.fog()), ..Key::new(what, [id(&self.content), id(&self.vision), more[0], more[1]], (self.style.nato, self.style.diagnostics)) }
     }
 
     fn job(&self, build: Build) -> Job {
@@ -751,6 +878,21 @@ impl Inputs {
         self.job(Box::new(move |frame, _| Arc::new(Batch::new(&inputs.content, inputs.raids.movement_reads(), frame, &inputs.vision, inputs.style).build_air_base(province, kind, &wings))))
     }
 
+    pub(crate) fn naval_base(&self, province: u32, fleet_selected: bool) -> Job {
+        let inputs = self.clone();
+        self.job(Box::new(move |frame, _| Arc::new(naval_base::build(&inputs.content, frame, &inputs.vision, province, fleet_selected))))
+    }
+
+    pub(crate) fn faction_theatre(&self, faction: u64, ordinal: u32) -> Job {
+        let inputs = self.clone();
+        self.job(Box::new(move |frame, _| Arc::new(faction_theatre_tooltips::build(&inputs.content, frame, faction, ordinal))))
+    }
+
+    pub(crate) fn location(&self, province: u32) -> Job {
+        let inputs = self.clone();
+        self.job(Box::new(move |frame, _| Arc::new(Batch::new(&inputs.content, inputs.raids.movement_reads(), frame, &inputs.vision, inputs.style).build_location(province))))
+    }
+
     pub(crate) fn naval(&self, region: u32, mines: bool) -> Job {
         let inputs = self.clone();
         self.job(Box::new(move |frame, _| Arc::new(if mines { naval_mines::build(&inputs.content, frame, &inputs.vision, region, false) } else { naval_accidents::build(&inputs.content, frame, &inputs.vision, region) })))
@@ -758,17 +900,27 @@ impl Inputs {
 
     pub(crate) fn occupation(&self, state: u32, definition: installed_content_core::occupation_modifiers::Definition) -> Job {
         let inputs = self.clone();
-        self.job(Box::new(move |frame, _| Arc::new(occupation_modifier_tooltips::build(&inputs.content, frame, state, &definition))))
+        self.job(Box::new(move |frame, _| Arc::new(occupation_modifier_tooltips::build(&inputs.content, frame, state, &definition, inputs.vision.ours()))))
     }
 
     /// The province hover in `mode`; the roster history's answers make it again when they come.
-    pub(crate) fn province(&self, caches: &Caches, province: u32, mode: ModeHover, selected: Arc<Vec<Unit>>, rosters: Arc<province_tooltips::air_region::Sampler>) -> Job {
+    pub(crate) fn province(&self, caches: &Caches, province: u32, mode: ModeHover, routes: Vec<viewer_foundation::map::ribbon_content::TradeRouteLine>, selected: Arc<Vec<Unit>>, rosters: Arc<province_tooltips::air_region::Sampler>) -> Job {
         let (inputs, cache) = (self.clone(), Arc::clone(&caches.provinces));
         let build: Build = Box::new(move |frame, retry| {
             let retry = Arc::clone(retry);
-            lock(&cache).request(&inputs.content, inputs.raids.movement_reads(), frame, province, &inputs.vision, inputs.style.nato, &selected, &rosters, &mode, move || retry())
+            lock(&cache).request(&inputs.content, inputs.raids.movement_reads(), frame, province, &inputs.vision, inputs.style.nato, &selected, &rosters, &mode, &routes, move || retry())
         });
         self.job(build).preparing(Arc::clone(&self.content.province_hover) as Arc<dyn Prepare>)
+    }
+
+    /// The terrain mode's text over `province`, or over its strategic region with `region`, under
+    /// the trade-route lines' text.
+    pub(crate) fn terrain(&self, combat: Arc<viewer_combat::Content>, province: u32, region: bool, routes: Vec<viewer_foundation::map::ribbon_content::TradeRouteLine>) -> Job {
+        let inputs = self.clone();
+        self.job(Box::new(move |frame, _| {
+            let below = || viewer_combat::terrain_mode::hover(&combat, frame, province, &inputs.vision);
+            Arc::new(province_tooltips::under_routes(&inputs.content, frame, inputs.vision.ours(), &routes, region, below))
+        }))
     }
 
     /// Every presented counter hover's refusals, as the capture inventories them.

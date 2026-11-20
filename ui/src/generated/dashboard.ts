@@ -401,6 +401,7 @@ runs?: Array<ChartRun>, };
 export type MarkCluster = { firstHour: number, lastHour: number, firstOrdinal: string, count: string, };
 export type MarkSummary = { from: number, to: number, width: number, clusters: Array<MarkCluster>, };
 export type MissingSpan = { firstHour: number, lastHour: number, reason: string, };
+export type CountryRef = number | string;
 export type SeriesRun = { firstHour: number, lastHour: number, valueRaw: string, slot: number, countryId: number, startsSegment: boolean, segmentFirstHour: number,
 /**
  * Whether the value held before `firstHour` (after `lastHour`) is known to differ: a state
@@ -408,7 +409,7 @@ export type SeriesRun = { firstHour: number, lastHour: number, valueRaw: string,
  */
 firstExact: boolean, lastExact: boolean, };
 export type SeriesDrop = { hour: number, beforeRaw: string, afterRaw: string, };
-export type SeriesState = { tag: string,
+export type SeriesState = { country: CountryRef,
 /**
  * The part's key, for a sub-keyed series.
  */
@@ -419,7 +420,7 @@ part?: string, hour: number, run: SeriesRun | null, drop: SeriesDrop | null,
 missing: string | null, };
 export type SeriesStateReply = { branchId: string, measure: string, decimals: number, states: Array<SeriesState>, };
 export type SeriesKeyReply = { hour: number | null, };
-export type SeriesEvent = { tag: string, hour: number, ordinal: string, row: SeriesDrop, };
+export type SeriesEvent = { country: CountryRef, hour: number, ordinal: string, row: SeriesDrop, };
 export type SeriesEventPage = { firstOrdinal: string, total: string, rows: Array<SeriesEvent>, cursor: string | null, };
 export type TilePart = { firstHour: number, lastHour: number, slot: number, countryId: number,
 /**
@@ -427,7 +428,7 @@ export type TilePart = { firstHour: number, lastHour: number, slot: number, coun
  */
 segmentFirstHour: number, };
 export type TileMarks = { before: string, bins: Array<[number, number]>, };
-export type TileLine = { tag: string,
+export type TileLine = { country: CountryRef,
 /**
  * The part's key, for a sub-keyed series.
  */
@@ -466,18 +467,18 @@ hourBytes: number, lines: Array<TileLine>,
  */
 bins: string, };
 export type NavigationKey = "ArrowLeft" | "ArrowRight" | "Home" | "End";
-export type SeriesRead = { tag: string, hour: number,
+export type SeriesRead = { country: CountryRef, hour: number,
 /**
  * For a sub-keyed series, one part's key; none reads every part the owner holds at the hour.
  */
 part?: string, };
-export type SeriesLineAsk = { tag: string, part?: string, };
+export type SeriesLineAsk = { country: CountryRef, part?: string, };
 export type SeriesPartLife = { part: string,
 /**
  * The content id the part holds (a token, a text id), when the series declares one.
  */
 id?: string, firstHour: number, lastHour: number, };
-export type SeriesOwnerParts = { tag: string, parts: Array<SeriesPartLife>,
+export type SeriesOwnerParts = { country: CountryRef, parts: Array<SeriesPartLife>,
 /**
  * The span's hours whose parts are not known, with why.
  */
@@ -494,7 +495,7 @@ export type SeriesRankedLine = { tag: string,
  */
 parts: Array<TilePart>, summary: ChartSummary, membership: Array<RankedSpan>, missing: Array<MissingSpan>, };
 export type SeriesRankedReply = { branchId: string, measure: string, decimals: number, lines: Array<SeriesRankedLine>, };
-export type ArmyChartLine = { tag: string, identities: Array<ArmyIdentityRun>, summary: ChartSummary, membership: Array<ArmySpan> | null, missing: Array<MissingSpan>, };
+export type ArmyChartLine = { country: CountryRef, identities: Array<ArmyIdentityRun>, summary: ChartSummary, membership: Array<ArmySpan> | null, missing: Array<MissingSpan>, };
 export type ArmyChartReply = { series: Array<ArmyChartLine>, };
 export type CampaignClockParams = { branchId: string, firstHour: number, lastHour: number, };
 export type CampaignClockReply = { available: boolean, recordedSeconds: number | null, playingSeconds: number | null, pausedSeconds: number | null, complete: boolean, warnings: Array<string>, };
@@ -510,7 +511,7 @@ gaps: boolean, };
 export type ApmBucket = { firstHour: number, lastHour: number, value: ApmValue, };
 export type ApmSeries = { id: string, name: string, tag: string | null, hour: number, summary: ApmValue, points: Array<ApmBucket>, };
 export type ApmMembership = { tag: string, firstHour: number, lastHour: number, };
-export type CountryParams = { branchId: string, tag: string, };
+export type CountryParams = { branchId: string, country: CountryRef, };
 export type FocusReply = { history: FocusHistory,
 /**
  * Hours of the branch the country's focus was not known, with why.
@@ -531,7 +532,7 @@ staticText?: Array<Artwork>,
  */
 continuousStaticText: Array<Artwork>, warnings: Array<string>, };
 export type FocusMissing = { firstHour: number, lastHour: number, reason: string, };
-export type FocusArtworkParams = { branchId: string, hour: number, tag: string,
+export type FocusArtworkParams = { branchId: string, hour: number, country: CountryRef,
 /**
  * The database every token is looked up in.
  */
@@ -575,7 +576,7 @@ export type CountryFlagParams = {
  */
 flags: Array<CountryFlagChoice>, size: CountryFlagSize, };
 export type CountryFlagReply = { size: CountryFlagSize, flags: Array<CountryFlagImage>, unavailable: Array<CountryFlagUnavailable>, warnings: Array<string>, };
-export type DoctrineParams = { branchId: string, tag: string, hour: number, };
+export type DoctrineParams = { branchId: string, country: CountryRef, hour: number, };
 export type DoctrineFact = { name: string, value: string, };
 export type DoctrineReward = { name: string, mastery: string, unlocked: boolean | null, description: string, };
 export type DoctrineTrack = { ordinal: number, name: string, subDoctrine: string | null, rewards: number, mastery: string, masteryBank: string, dailyMastery: string, unitDailyMastery: string, rewardRequirements: Array<string>, benefits: string, authoredCost: string, rewardBenefits: Array<DoctrineReward>, commanders: Array<DoctrineFact>, };
@@ -668,7 +669,7 @@ recorded?: string,
 icon: string | null, };
 export type ArmyMeasure = "manpower" | "divisions" | "strength" | "battalions";
 export type ArmyAttribution = "owner" | "host";
-export type ArmySizeParams = { branchId: string, tags: Array<string>, top: number | null, measure: ArmyMeasure, countFor: ArmyAttribution, byType: boolean,
+export type ArmySizeParams = { branchId: string, countries: Array<CountryRef>, top: number | null, measure: ArmyMeasure, countFor: ArmyAttribution, byType: boolean,
 /**
  * None is the window manifest; histories name a window by its index.
  */
@@ -682,7 +683,7 @@ export type ArmyMixRun = { firstHour: number, lastHour: number, values: Array<nu
 rawValues?: Array<string | null>, };
 export type ArmyIdentityRun = { firstHour: number, lastHour: number, slot: number, countryId: number, };
 export type ArmySpan = { firstHour: number, lastHour: number, };
-export type ArmySeries = { tag: string, identities?: Array<ArmyIdentityRun>, runs: Array<ArmyRun>, segments: Array<ArmySpan>, membership: Array<ArmySpan> | null, mix?: Array<ArmyMixRun>, };
+export type ArmySeries = { country: CountryRef, identities?: Array<ArmyIdentityRun>, runs: Array<ArmyRun>, segments: Array<ArmySpan>, membership: Array<ArmySpan> | null, mix?: Array<ArmyMixRun>, };
 export type ArmySizeReply = { branchId: string, windows: Array<ArmySpan>, window: number | null, interval: ArmySpan | null, available: boolean, measures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, warnings: Array<string>, };
 export type CountryIdentityRun = { firstHour: number, lastHour: number, slot: number, countryId: number, };
 export type IdentitySpan = { firstHour: number, lastHour: number, };
@@ -805,7 +806,7 @@ countryIdentities: Array<CountryIdentityHistory>,
 unobserved: UnobservedHours, warnings: Array<string>, };
 export type LandOwnersParams = Record<string, never>;
 export type LandOwners = { countries: Array<CountryMetadata>, warnings: Array<string>, };
-export type FacetFilter = { name: string, values: Array<number>, tags: Array<string>, };
+export type FacetFilter = { name: string, values: Array<number>, countries: Array<CountryRef>, };
 export type LogPageParams = { branchId: string, log: string, facets: Array<FacetFilter>,
 /**
  * The timeline's first hour when none.
@@ -830,11 +831,11 @@ key: string,
  */
 ordinal: string,
 /**
- * The tag whose filter it matched, when a facet is filtered by tags.
+ * The country whose filter it matched, when a facet is filtered by countries.
  */
-tag?: string,
+country?: CountryRef,
 /**
- * Its ordinal among its tag's rows from the timeline's first hour, with a tag.
+ * Its ordinal among its country's rows from the timeline's first hour, with a country.
  */
 ownOrdinal?: string,
 /**
@@ -856,7 +857,7 @@ binHours: number,
  * scope reads (the feed's); every row when none.
  */
 scope: Array<MembershipRun> | null, };
-export type LogCountLine = { tag?: string,
+export type LogCountLine = { country?: CountryRef,
 /**
  * Its rows on the timeline before the range: a mark's ordinals count from it.
  */
@@ -914,12 +915,16 @@ export type PoliticsHistoryParams = { branchId: string, mode: PoliticsHistoryMod
 /**
  * The country, for [`PoliticsHistoryMode::Country`].
  */
-tag?: string, };
+country?: CountryRef, };
 export type PoliticsHistoryReply = { branchId: string, mode: PoliticsHistoryMode,
 /**
  * The branch's last hour: the history reads through it.
  */
 lastHour: number | null, tag: string | null,
+/**
+ * The country the request named, which a reply is matched to: a slot follows its country through any tag.
+ */
+asked?: CountryRef | null,
 /**
  * The hours the mode's table was read; others are unknown.
  */
@@ -1099,7 +1104,7 @@ export type FactoryGroupsReply = { groups: Array<FactoryGroupNames>,
  * Why no group can be named: the content is not configured or cannot be read.
  */
 missing: string | null, warnings: Array<string>, };
-export type AirForceParams = { branchId: string, tags: Array<string>, top: number | null, measure: AirForceMeasure, ownership: AirForceOwnership,
+export type AirForceParams = { branchId: string, countries: Array<CountryRef>, top: number | null, measure: AirForceMeasure, ownership: AirForceOwnership,
 /**
  * None is the window manifest; a window's runs name it by its index.
  */
@@ -1122,8 +1127,8 @@ values: Array<number | null>,
  * recorded; absent for the air force.
  */
 referenceTotal?: number | null, };
-export type ForceSeries = { tag: string, identities: Array<ArmyIdentityRun>, runs: Array<ForceRun>, segments: Array<ArmySpan>, membership: Array<ArmySpan> | null, };
-export type NavyParams = { branchId: string, tags: Array<string>, top: number | null, ownership: NavyOwnership, grouping: NavyGrouping, measure: NavyMeasure, window?: number, };
+export type ForceSeries = { country: CountryRef, identities: Array<ArmyIdentityRun>, runs: Array<ForceRun>, segments: Array<ArmySpan>, membership: Array<ArmySpan> | null, };
+export type NavyParams = { branchId: string, countries: Array<CountryRef>, top: number | null, ownership: NavyOwnership, grouping: NavyGrouping, measure: NavyMeasure, window?: number, };
 export type NavyMeasure = "ships" | "strength";
 export type NavyOwnership = "roster" | "logical";
 export type NavyGrouping = "class" | "type";
@@ -1131,7 +1136,7 @@ export type VolunteersExpeditionariesParams = { branchId: string, kind: Military
 /**
  * Links touching these tags only; none for every link.
  */
-tags: Array<string> | null, };
+countries: Array<CountryRef> | null, };
 export type VolunteersExpeditionariesReply = { links: Array<MilitaryAidLink>,
 /**
  * The game's own tally of each sender's volunteer hosts (kind `land` only).
@@ -1188,7 +1193,7 @@ runs: Array<SubjectRun>,
  * next to one of these is a gap, not an end or a start.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
-export type DiplomaticPactsParams = { branchId: string, tag: string, };
+export type DiplomaticPactsParams = { branchId: string, country: CountryRef, };
 export type DiplomacyKind = {
 /**
  * The relation's id as the game spells it.
@@ -1224,7 +1229,7 @@ presentAtEnd: boolean,
  */
 endedBy: boolean, };
 export type DiplomacyPactsReply = { kinds: Array<DiplomacyKind>, pacts: Array<DiplomacyPact>, unobserved: Array<HourSpan>, warnings: Array<string>, };
-export type OperativesDepartedParams = { branchId: string, tags: Array<string>, hour: number, };
+export type OperativesDepartedParams = { branchId: string, countries: Array<CountryRef>, hour: number, };
 export type DepartedOperative = {
 /**
  * The first and last hour the census held it on the list.
@@ -1394,7 +1399,7 @@ from: number | null, to: number | null,
 /**
  * Raids by or against these countries; every raid when empty.
  */
-tags: Array<string>,
+countries: Array<CountryRef>,
 /**
  * Only the raid types and whether raids are available: no raid is read.
  */
@@ -1454,7 +1459,7 @@ artwork: Array<RaidArtwork>,
  * By first hour.
  */
 episodes: Array<RaidEpisode>, missing: Array<MissingSpan>, warnings: Array<string>, };
-export type ResourceSizesParams = { branchId: string, tag: string,
+export type ResourceSizesParams = { branchId: string, country: CountryRef,
 /**
  * The span; the whole timeline when absent.
  */
@@ -1473,7 +1478,7 @@ id: number,
  * Its longest bar, fixed5; null where no hour of it is recorded.
  */
 longestRaw: string | null, };
-export type LendLeasePartnersParams = { branchId: string, holder: string, measure: LendLeaseMeasure,
+export type LendLeasePartnersParams = { branchId: string, holder: CountryRef, measure: LendLeaseMeasure,
 /**
  * The hours read; the whole timeline when absent.
  */
@@ -1578,7 +1583,7 @@ endedBy: number | null,
  * It ran at the first recorded hour of its country: it began before recording.
  */
 beforeRecording: boolean, };
-export type ProductionLinesParams = { branchId: string, tag: string, };
+export type ProductionLinesParams = { branchId: string, country: CountryRef, };
 export type ProductionLinesReply = { branchId: string, tag: string, decimals: number,
 /**
  * Every line of the country in the branch, in the order first seen.
@@ -1639,7 +1644,7 @@ key: string, runs: Array<LineRun>,
  * Its output rows over the window, where recorded.
  */
 output: Array<OutputRun>, };
-export type ProductionDetailParams = { branchId: string, tag: string, window: number, };
+export type ProductionDetailParams = { branchId: string, country: CountryRef, window: number, };
 export type ProductionLineDetailReply = { branchId: string, tag: string, decimals: number, window: number,
 /**
  * The window's hours, both included.
@@ -1649,7 +1654,7 @@ firstHour: number, lastHour: number,
  * Every line with an hour in the window, in the order first seen.
  */
 lines: Array<LineDetail>, warnings: Array<string>, };
-export type ProductionBreakdownParams = { branchId: string, tag: string,
+export type ProductionBreakdownParams = { branchId: string, country: CountryRef,
 /**
  * The line's key in `production-lines`.
  */
@@ -1675,7 +1680,7 @@ export type ProductionModifierGroup = { id: string, label: string,
 totalRaw: string | null, decimals: number, unit: string, parts: Array<ProductionModifierPart>, note: string, };
 export type ProductionModifierRun = { firstHour: number, lastHour: number, groups: Array<ProductionModifierGroup>, warnings: Array<string>, };
 export type ProductionModifierChoice = { id: string, label: string, };
-export type EquipmentDesignsParams = { branchId: string, tag: string, };
+export type EquipmentDesignsParams = { branchId: string, country: CountryRef, };
 export type EquipmentDesignsReply = { branchId: string, tag: string, designs: Array<DesignHistory>,
 /**
  * Hours a holder of the tag was recorded: outside them its designs are not known.
@@ -1704,10 +1709,10 @@ export type StateNameRequest = { stateId: number, hour: number, };
 export type PlaceName = { provinceId: number, hour: number, name: string | null, missing: string | null, };
 export type PlaceStateName = { stateId: number, hour: number, name: string | null, missing: string | null, };
 export type PlaceNamesReply = { places: Array<PlaceName>, states: Array<PlaceStateName>, warnings: Array<string>, };
-export type MinefieldHistoryParams = { branchId: string, region: number, tags: Array<string>, firstHour: number, lastHour: number, };
-export type MineLine = { tag: string, runs: Array<[number, number, string | null]>, };
+export type MinefieldHistoryParams = { branchId: string, region: number, countries: Array<CountryRef>, firstHour: number, lastHour: number, };
+export type MineLine = { country: CountryRef, runs: Array<[number, number, string | null]>, };
 export type MinefieldHistoryReply = { region: number, lines: Array<MineLine>, scale: number, warnings: Array<string>, };
-export type NavalSupremacyParams = { branchId: string, tag: string,
+export type NavalSupremacyParams = { branchId: string, country: CountryRef,
 /**
  * The window of days asked ([`super::windows`]).
  */
@@ -1813,7 +1818,7 @@ days: Array<number>,
  * decimal text; none without a value.
  */
 values?: Array<[string, string, string] | null>, };
-export type FocusHourParams = { branchId: string, tag: string, hour: number, };
+export type FocusHourParams = { branchId: string, country: CountryRef, hour: number, };
 export type FocusHourReply = { focus: FocusHour | null, missing: FocusMissing | null, warnings: Array<string>, };
 export type FocusHour = { slot: number, countryId: number, hour: number, lastHour: number, orderFirstHour: number | null, current: string | null, continuous: string | null, paused: boolean, completed: FocusPages, at: number, progressRaw: string, dailyGainRaw: string | null, };
 export type FocusPages = {
@@ -1821,14 +1826,18 @@ export type FocusPages = {
  * The order's place among the country's orders.
  */
 first: string, count: string, rows: string, };
-export type FocusOrderPageParams = { branchId: string, tag: string, hour: number,
+export type FocusOrderPageParams = { branchId: string, country: CountryRef, hour: number,
 /**
  * The pages `focus-hour` gave for the hour.
  */
 pages: FocusPages, page: string, };
 export type FocusOrderPage = { entries: Array<FocusEntry> | null, warnings: Array<string>, };
 export type FocusCompletions = { completions: Array<FocusEntry>, warnings: Array<string>, };
-export type IdeaHistoryReply = { branchId: string, tag: string, spans: Array<IdeaSpan>, ideas: Array<IdeaInfo>, artwork: Array<Artwork>,
+export type IdeaHistoryReply = { branchId: string, tag: string,
+/**
+ * The country the request named, which a reply is matched to: a slot follows its country through any tag.
+ */
+asked: CountryRef, spans: Array<IdeaSpan>, ideas: Array<IdeaInfo>, artwork: Array<Artwork>,
 /**
  * Each recorded holder of an advisor idea with that character's own name and portrait.
  */
@@ -2000,7 +2009,11 @@ export type CategoryInfo = { token: string, name: string | null,
  * `type`, such as `national_spirit`.
  */
 kind: string | null, hidden: boolean, politicsTab: boolean, slots: Array<SlotInfo>, };
-export type PartyHistoryReply = { branchId: string, tag: string, decimals: number, parties: Array<PartySeries>, ruling: Array<RulingRun>,
+export type PartyHistoryReply = { branchId: string, tag: string,
+/**
+ * The country the request named, which a reply is matched to: a slot follows its country through any tag.
+ */
+asked: CountryRef, decimals: number, parties: Array<PartySeries>, ruling: Array<RulingRun>,
 /**
  * The ruling party's leader; an hour without a run was not read.
  */
@@ -2074,7 +2087,7 @@ export type IdeologyInfo = { token: string, name: string | null,
  * sRGB bytes; null when the content's colour is refused (the warnings name why).
  */
 color: [number, number, number] | null, };
-export type CasualtyPairsParams = { branchId: string, tags: Array<string>,
+export type CasualtyPairsParams = { branchId: string, countries: Array<CountryRef>,
 /**
  * Otherwise each chosen country's casualties with every enemy.
  */
@@ -2102,7 +2115,7 @@ observed: Array<HourSpan>, pairs: Array<CasualtyPairSeries>,
  * The window has hours the casualty tables were not written.
  */
 hasGap: boolean, warnings: Array<string>, };
-export type CasualtyBreakdownParams = { branchId: string, tag: string, window: number | null, };
+export type CasualtyBreakdownParams = { branchId: string, country: CountryRef, window: number | null, };
 export type CasualtyBreakdownRun = { firstHour: number, lastHour: number, readHour: number, hourly: boolean, groupingHour: number, groupingHourly: boolean, enemyHour: number, enemyHourly: boolean,
 /**
  * What the country took in this lifetime.
@@ -2238,7 +2251,7 @@ export type ConvoyHealthParams = { branchId: string, view: ConvoyView,
 /**
  * The one country shown.
  */
-tag: string,
+country: CountryRef,
 /**
  * The hours read; the whole timeline when not given.
  */
@@ -2308,7 +2321,7 @@ export type TradeFlowParams = { branchId: string,
 /**
  * Every country's trade when none; else the flows any holder of these tags sold or bought.
  */
-tags: Array<string> | null,
+countries: Array<CountryRef> | null,
 /**
  * The window of hours read ([`super::windows`]): never the whole timeline in one reply.
  */
@@ -2374,7 +2387,7 @@ ordinal: number, name: string | null,
  * An artwork URL; null when content has no icon for it.
  */
 icon: string | null, };
-export type ProductionSpendingParams = { branchId: string, tag: string,
+export type ProductionSpendingParams = { branchId: string, country: CountryRef,
 /**
  * Also read the producer's dockyard repair rates.
  */
@@ -2648,7 +2661,7 @@ projects: Array<ConstructionProject>,
  * The names of the states its lines name.
  */
 states: Array<ConstructionStateName>, warnings: Array<string>, };
-export type ConstructionSpendingParams = { branchId: string, tag: string, };
+export type ConstructionSpendingParams = { branchId: string, country: CountryRef, };
 export type SpentStep = { knownAt: number,
 /**
  * Fixed5; null where the total is not recorded (past what the recording holds).
@@ -2755,7 +2768,7 @@ reasons: Array<string>,
  * (first hour, reason, hours).
  */
 warnings: Array<[number, number, number]>, rows: Array<LandBattleHistory>, contentWarnings: Array<string>, };
-export type BattleCountryFilter = { tags: Array<string> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
+export type BattleCountryFilter = { countries: Array<CountryRef> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
 export type LandBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: BattleCountryFilter, };
 export type LandBattlesRankingReply = { rows: Array<LandBattleHistory>,
 /**
@@ -2804,7 +2817,7 @@ export type NavalBattleRun = { firstHour: number, lastHour: number, row: BattleR
 measures: Array<BattleValue>, };
 export type NavalBattlesRankingParams = { branchId: string, firstHour: number, lastHour: number, topN: number, measure: string, countries: NavalBattleCountryFilter, };
 export type NavalBattlesRankingReply = { rows: Array<NavalBattleHistory>, censusHour: number | null, effectiveMeasure: string, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
-export type NavalBattleCountryFilter = { tags: Array<string> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
+export type NavalBattleCountryFilter = { countries: Array<CountryRef> | null, membership: Array<MembershipRun> | null, unobserved: Array<HourSpan>, };
 export type NavalBattleDetailsParams = { branchId: string, battles: Array<NavalBattleDetailRequest>, };
 export type NavalBattleDetailsReply = { rows: Array<NavalBattleDetail>, warnings: Array<string>, };
 export type NavalBattleDetailRequest = { id: string, hour: number, };
@@ -2862,7 +2875,7 @@ knownAt: number, name: string | null, classIndex: number, recordedNameIndex: num
  * Always null: both countries are named at the sinking hour.
  */
 victimAsOf: number | null, attackerAsOf: number | null, placeIndex: number | null, cause: ShipSinkingCause, attributionName: string | null, assistedKill: boolean, };
-export type NavalLossesParams = { branchId: string, tags: Array<string>, top: number | null, attribution: NavalAttribution, kind: NavalKind, period: NavalPeriod,
+export type NavalLossesParams = { branchId: string, countries: Array<CountryRef>, top: number | null, attribution: NavalAttribution, kind: NavalKind, period: NavalPeriod,
 /**
  * None is the window manifest; a window's runs name it by its index.
  */
@@ -2903,7 +2916,7 @@ export type ResearchCoverage = { firstHour: number, lastHour: number, };
 export type ResearchDefinitionText = { token: string, databaseIndex: number, name: string | null, description: string | null, };
 export type ResearchFolder = { key: string, name: string | null, };
 export type ResearchTechnologyFolder = { token: string, databaseIndex?: number | null, folder: string | null, };
-export type ResearchBreakdownParams = { branchId: string, tag: string, parts: Array<ResearchBreakdownPart>, };
+export type ResearchBreakdownParams = { branchId: string, country: CountryRef, parts: Array<ResearchBreakdownPart>, };
 export type ResearchBreakdownReply = { parts: Array<ResearchBreakdownSlot>, warnings: Array<string>, };
 export type ResearchBreakdownPart = { slot: number, firstObservedHour: number, lastHour: number, started: boolean, };
 export type ResearchBreakdownSlot = { slot: number, firstObservedHour: number, states: Array<ResearchSlotState>, progress: Array<ResearchProgress>,
@@ -3004,7 +3017,7 @@ state: number | null, buildingLevels: number | null,
  */
 warSupport: number | null, units: number | null, manpowerLost: number | null, equipmentLost: number | null, notRecorded: Array<string>, };
 export type EventFeedUnavailable = { kind: string, label: string, reason: string, count: number | null, };
-export type EventFeedPageRow = { hour: number, key: string, ordinal: string, tag?: string, ownOrdinal?: string, cells: Array<LogCell>, row: EventFeedRow | null, };
+export type EventFeedPageRow = { hour: number, key: string, ordinal: string, country?: CountryRef, ownOrdinal?: string, cells: Array<LogCell>, row: EventFeedRow | null, };
 export type EventFeedPage = { branchId: string, log: string, columns: Array<string>, firstOrdinal: string, total: string, cursor: string | null, rows: Array<EventFeedPageRow>, missing: Array<MissingSpan>,
 /**
  * What the page's rows could not show, each reason once with its count.
@@ -3039,7 +3052,7 @@ export type ScriptOccurrence = { id: string,
  * recorded or joined.
  */
 opened: boolean, edges: Array<ScriptEdge>, };
-export type ScriptPageRow = { hour: number, key: string, ordinal: string, tag?: string, ownOrdinal?: string, cells: Array<LogCell>, occurrence: ScriptOccurrence | null, };
+export type ScriptPageRow = { hour: number, key: string, ordinal: string, country?: CountryRef, ownOrdinal?: string, cells: Array<LogCell>, occurrence: ScriptOccurrence | null, };
 export type ScriptOccurrencePage = { branchId: string, log: string, columns: Array<string>, firstOrdinal: string, total: string, cursor: string | null, rows: Array<ScriptPageRow>, missing: Array<MissingSpan>, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
 export type EventFeedSpanParams = { branchId: string,
 /**
@@ -3085,7 +3098,7 @@ agreements: Array<EndedLease>,
  */
 variants: Array<VariantName>, icons: Array<EquipmentIcon>, warnings: Array<string>, };
 export type MarketLedgerParams = { branchId: string, facets: Array<FacetFilter>, from: number | null, to: number, cursor: string | null, pageSize: number, };
-export type FuelAwardsParams = { branchId: string, tag: string,
+export type FuelAwardsParams = { branchId: string, country: CountryRef,
 /**
  * Any hour the read holds: the reply names the read.
  */
@@ -3108,7 +3121,7 @@ firstHour: number, lastHour: number,
  * Fixed5 country fuel it received over the day.
  */
 amountRaw: string, recordedName: string | null, nameReason: string | null, };
-export type FuelAwardHistoryParams = { branchId: string, tag: string,
+export type FuelAwardHistoryParams = { branchId: string, country: CountryRef,
 /**
  * The hour the recipient was picked at: the country is its holder then.
  */
@@ -3119,12 +3132,16 @@ hour: number,
 window: number, recipientKey: string, };
 export type FuelAwardHistoryReply = { tag: string, country: number, window: number, recipientKey: string, firstHour: number, lastHour: number, runs: Array<FuelAwardRun>, warnings: Array<string>, };
 export type FuelAwardRun = { firstHour: number, lastHour: number, startsSegment: boolean, amountRaw: string | null, reason: string | null, };
-export type FuelDemandParams = { branchId: string, tag: string,
+export type FuelDemandParams = { branchId: string, country: CountryRef,
 /**
  * Any hour the read holds: the reply names the read.
  */
 hour: number, };
 export type FuelDemandReply = { tag: string,
+/**
+ * The country the request named, which a reply is matched to: a slot follows its country through any tag.
+ */
+asked: CountryRef,
 /**
  * The read the pack is of.
  */
@@ -3146,7 +3163,7 @@ export type FuelDemandAirSite = { list: number, ordinal: number, base: string, c
  * Its wings' consumer keys.
  */
 wings: Array<string>, };
-export type FuelDemandHistoryParams = { branchId: string, tag: string,
+export type FuelDemandHistoryParams = { branchId: string, country: CountryRef,
 /**
  * The hour the consumers were picked at: the country is its holder then.
  */
@@ -3162,7 +3179,7 @@ export type FuelDemandHistoryReply = { tag: string, country: number, window: num
 parts: Array<FuelDemandHistoryPart>, warnings: Array<string>, };
 export type FuelDemandHistoryPart = { key: string, runs: Array<FuelDemandRun>, };
 export type FuelDemandRun = { firstHour: number, lastHour: number, startsSegment: boolean, amountRaw: string | null, reason: string | null, };
-export type StockpileHolder = { tag: string, within?: Array<HourSpan>, };
+export type StockpileHolder = { country: CountryRef, within?: Array<HourSpan>, };
 export type StockpileCatalogueParams = { branchId: string, holders: Array<StockpileHolder>,
 /**
  * The types a group counts; empty counts every type.
@@ -3191,7 +3208,7 @@ export type StockpileCatalogueLogistics = {
  * The archetype key, or the unresolved mark and the recorded token's spelling.
  */
 key: string, nonzero: boolean, };
-export type StockpileCatalogueReply = { branchId: string, tags: Array<string>, campaignKey: string, decimals: number,
+export type StockpileCatalogueReply = { branchId: string, countries: Array<CountryRef>, campaignKey: string, decimals: number,
 /**
  * Every archetype a design or logistics type belongs to, in the equipment database's order.
  */
@@ -3218,7 +3235,11 @@ group: string, measure: StockpileMeasure, };
 export type StockpileChartParams = { branchId: string, holders: Array<StockpileHolder>, included: Array<string>, lines: Array<StockpileLine>, from: number, to: number, width: number, };
 export type StockpileChartLine = { group: string, measure: StockpileMeasure, summary: ChartSummary, };
 export type StockpileChartReply = { branchId: string, lines: Array<StockpileChartLine>, warnings: Array<string>, };
-export type FactionStateParams = { "view": "rules", branchId: string, faction: string, } | { "view": "manpower", branchId: string, faction: string, };
+export type FactionStateParams = { "view": "rules", branchId: string, faction: string,
+/**
+ * None follows the recording client's playing or observer country.
+ */
+viewpoint: CountryRef | null, } | { "view": "manpower", branchId: string, faction: string, };
 export type FactionSelectionRun = { firstHour: number, lastHour: number, token: string | null, name: string | null, reason: string | null, startsSegment: boolean, };
 export type FactionSelectionLane = { slot: number, runs: Array<FactionSelectionRun>, };
 export type FactionMinimumLane = {
@@ -3253,7 +3274,7 @@ export type WarsParams = { branchId: string,
 /**
  * None follows the recording client's playing or observer country.
  */
-viewpointTag: string | null, };
+viewpoint: CountryRef | null, };
 export type WarName = {
 /**
  * Exact plain text, or "Not recorded" with a reason.
@@ -3291,7 +3312,7 @@ viewpoints: Array<MembershipRun>,
  * only, never for naming a country at an hour.
  */
 countryNames: Array<string>, wars: Array<WarTimeline>, unobserved: Array<HourSpan>, capitulationsUnobserved: Array<HourSpan>, warnings: Array<string>, };
-export type WarLossesParams = { branchId: string, viewpointTag: string | null, hour: number, };
+export type WarLossesParams = { branchId: string, viewpoint: CountryRef | null, hour: number, };
 export type WarCasualtyRun = [number, number, string, string, string, string];
 export type WarCasualties = {
 /**
@@ -3303,7 +3324,7 @@ export type WarLossesReply = { branchId: string, hour: number,
  * Each war the viewpoint saw at the hour, in the order of the wars.
  */
 wars: Array<WarCasualties>, warnings: Array<string>, };
-export type SpecialProjectsParams = { hour?: number, branchId: string, tag: string, };
+export type SpecialProjectsParams = { hour?: number, branchId: string, country: CountryRef, };
 export type ProjectDate = { hour: number,
 /**
  * False: it happened by this hour, not at it.
@@ -3389,11 +3410,11 @@ export type LogActiveSide = { combat: string, attacker: boolean, terminal: boole
 export type CombatLogAvailability = { groups: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, templates: string | null, battles: string | null, active: string | null, terminal: string | null, };
 export type LandSource = "destruction" | "combatLog";
 export type LossCountry = { slot: number, countryId: number, };
-export type LossesParams = { branchId: string, tag: string, landSource: LandSource,
+export type LossesParams = { branchId: string, country: CountryRef, landSource: LandSource,
 /**
- * The identity; the tag's holder at `to` when none.
+ * The identity; the country's holder at `to` when none.
  */
-country?: LossCountry | null, from: number, to: number, width: number,
+identity?: LossCountry | null, from: number, to: number, width: number,
 /**
  * Hours whose totals are read exactly.
  */
@@ -3458,7 +3479,7 @@ from: number, to: number, width: number, exactHours: Array<number>,
  * The first hour of each stretch after hours the timeline does not hold, where totals restart.
  */
 restarts: Array<number>, warnings: Array<string>, };
-export type AirStatisticsRegionsParams = { branchId: string, tag: string, };
+export type AirStatisticsRegionsParams = { branchId: string, country: CountryRef, };
 export type AirStatisticsRegionsReply = {
 /**
  * Every region the country held statistics in over the timeline, in region order.
@@ -3484,7 +3505,7 @@ export type ScoreboardParams = { branchId: string, hour: number, columns: Array<
 /**
  * The countries shown, in order; ignored with `top`.
  */
-tags: Array<string>, top?: ScoreboardTop, };
+countries: Array<CountryRef>, top?: ScoreboardTop, };
 export type ScoreboardReply = { branchId: string, hour: number,
 /**
  * Why the hour holds no rows.
@@ -3503,7 +3524,15 @@ sort: ScoreboardColumnKey,
  * The greatest first; else the least, least first.
  */
 descending: boolean, };
-export type ScoreboardRow = { tag: string,
+export type ScoreboardRow = {
+/**
+ * The country asked, or a ranked country's tag.
+ */
+country: CountryRef,
+/**
+ * The tag it goes by at the hour.
+ */
+tag: string,
 /**
  * One a column asked, in its order.
  */
@@ -3521,7 +3550,7 @@ export type EquipmentProducedParams = { branchId: string,
 /**
  * Chosen countries; none with a top N.
  */
-tags: Array<string>, top?: number,
+countries: Array<CountryRef>, top?: number,
 /**
  * The hour a top N is ranked at: the view's last hour, or the cursor.
  */
@@ -3578,7 +3607,15 @@ unknown: Array<ProducedGap>,
  * Runs starting another holder's or stretch's totals: nothing is measured across them.
  */
 breaks: Array<number>, };
-export type ProducedLine = { tag: string, identities: Array<CountryIdentityRun>, series: ProducedSeries, };
+export type ProducedLine = {
+/**
+ * The country asked, or a ranked country's tag.
+ */
+country: CountryRef,
+/**
+ * The tag it goes by at the window's last hour.
+ */
+tag: string, identities: Array<CountryIdentityRun>, series: ProducedSeries, };
 export type ProducedTypesParams = { branchId: string, refits: boolean, };
 export type ProducedTypesReply = { branchId: string,
 /**
@@ -3592,8 +3629,12 @@ types: Array<ProducedType>,
  */
 mostDelivered: string | null, warnings: Array<string>, };
 export type ProducedType = { key: string, name: string | null, domain: Domain | null, };
-export type ProducedCountryParams = { branchId: string, tag: string, count: ProducedCount, measure: ProducedMeasure, refits: boolean, };
-export type ProducedCountryReply = { branchId: string, tag: string, count: ProducedCount, measure: ProducedMeasure, decimals: number, identities: Array<CountryIdentityRun>, models: Array<ProducedModel>,
+export type ProducedCountryParams = { branchId: string, country: CountryRef, count: ProducedCount, measure: ProducedMeasure, refits: boolean, };
+export type ProducedCountryReply = { branchId: string, tag: string,
+/**
+ * The country the request named, which a reply is matched to: a slot follows its country through any tag.
+ */
+asked: CountryRef, count: ProducedCount, measure: ProducedMeasure, decimals: number, identities: Array<CountryIdentityRun>, models: Array<ProducedModel>,
 /**
  * Every design together, lines and Rocket output: exact however it splits.
  */
@@ -3603,8 +3644,12 @@ export type ProducedModel = { variant: string, rocket: boolean, typeKey: string,
  * False when the design's type was not recorded: it could be of any type.
  */
 typeRecorded: boolean, names: Array<StockVariantName>, series: ProducedSeries, };
-export type ProducedAtParams = { branchId: string, tag: string, hour: number, measure: ProducedMeasure, refits: boolean, };
-export type ProducedAtReply = { branchId: string, tag: string, hour: number, measure: ProducedMeasure,
+export type ProducedAtParams = { branchId: string, country: CountryRef, hour: number, measure: ProducedMeasure, refits: boolean, };
+export type ProducedAtReply = { branchId: string, tag: string,
+/**
+ * The country the request named, which a reply is matched to: a slot follows its country through any tag.
+ */
+asked: CountryRef, hour: number, measure: ProducedMeasure,
 /**
  * The country's production totals are recorded at the hour: a design it has no row of is zero.
  */
@@ -3627,7 +3672,7 @@ export type ProducedModelAt = { variant: string, rocket: boolean, typeKey: strin
  * The design's name as recorded at the hour; null where not known.
  */
 name: string | null, units: ProducedAmount, ic: ProducedAmount, };
-export type PowerSpendingParams = { branchId: string, tag: string, currency: SpendCurrency,
+export type PowerSpendingParams = { branchId: string, country: CountryRef, currency: SpendCurrency,
 /**
  * The span's first and last hour: a payment read in it is listed.
  */
@@ -3763,9 +3808,9 @@ export type StabilityReadsParams = { branchId: string, from: number, to: number,
 export type StabilityReadsReply = { reads: Array<HourSpan>, warnings: Array<string>, };
 export type AirTimelineParams = { branchId: string, firstHour: number, lastHour: number, mode?: AirMode,
 /**
- * A side's key, or a country's tag with `viewpointCountry`.
+ * A side's key, or a country (its slot or tag) with `viewpointCountry`.
  */
-viewpoint?: string, viewpointCountry?: boolean,
+viewpoint?: CountryRef, viewpointCountry?: boolean,
 /**
  * The side keys compared; all when none.
  */
@@ -3847,10 +3892,10 @@ types: Array<OperationTypeTokens>,
  * Why there are none: the content is not configured or not read.
  */
 missing: string | null, warnings: Array<string>, };
-export type TemplateRosterParams = { branchId: string, tag: string, };
+export type TemplateRosterParams = { branchId: string, country: CountryRef, };
 export type TemplateRosterReply = { sections: Array<string>, warnings: Array<string>, };
 export type TemplateRosterParamsAtHour = TemplateRosterParams & { hour: number };
-export type AirStatisticsParams = { branchId: string, tag: string,
+export type AirStatisticsParams = { branchId: string, country: CountryRef,
 /**
  * Pair index in recorded schema order, not the interface's button order.
  */
@@ -3913,8 +3958,12 @@ export type CurrentBalance = { tag: string, record: number, };
 export type PoliticsUnavailable = { label: string, reason: string, count: number, };
 export type StateExile = { id: string, tag: string, host: string | null, };
 export type PoliticsStateParamsAtHour = PoliticsStateParams & { hour: number };
-export type PeopleParams = { branchId: string, tag: string, };
-export type PeopleReply = { branchId: string, tag: string, hour: number, readHour: number | null, manpower: Array<PeopleFact>, politics: Array<PeopleFact>, states: Array<PeopleState>, exiles: Array<PeopleExile>, warnings: Array<string>, };
+export type PeopleParams = { branchId: string, country: CountryRef, };
+export type PeopleReply = { branchId: string, tag: string,
+/**
+ * The country the request named, which a reply is matched to: a slot follows its country through any tag.
+ */
+asked: CountryRef, hour: number, readHour: number | null, manpower: Array<PeopleFact>, politics: Array<PeopleFact>, states: Array<PeopleState>, exiles: Array<PeopleExile>, warnings: Array<string>, };
 export type PeopleFact = { label: string, value: string | null, unit: string, };
 export type PeopleState = { state: number, available: number, locked: number | null, total: number | null, effective: string | null, recruitable: number | null, };
 export type PeopleExile = { tag: string, host: string | null, legitimacy: string | null, manpower: number | null, cap: number | null, leaders: number | null, deployedAir: number | null, readHour: number | null, };
@@ -4098,7 +4147,7 @@ sources: Array<TensionSource>,
  */
 missing: string | null, warnings: Array<string>, };
 export type WorldTensionParamsAtHour = WorldTensionParams & { hour: number };
-export type FactoryPartsParams = { branchId: string, tag: string, };
+export type FactoryPartsParams = { branchId: string, country: CountryRef, };
 export type FactoryPartValue = {
 /**
  * `military`, `naval` or `civilian`.
@@ -4114,7 +4163,7 @@ unexplained: Array<string>,
  */
 missing: string | null, warnings: Array<string>, };
 export type FactoryPartsParamsAtHour = FactoryPartsParams & { hour: number };
-export type ExperienceParams = { branchId: string, tag: string, };
+export type ExperienceParams = { branchId: string, country: CountryRef, };
 export type ExperienceReply = { tag: string,
 /**
  * Units per experience point for every value.
@@ -4127,7 +4176,7 @@ scale: number, dayHours: number,
 readHour: number | null, banked: ExperienceValues | null, bankedMissing: string | null, change: ExperienceValues | null, changeMissing: string | null, gain: ExperienceValues | null, gainMissing: string | null, warnings: Array<string>, };
 export type ExperienceValues = { armyRaw: string, navyRaw: string, airRaw: string, };
 export type ExperienceParamsAtHour = ExperienceParams & { hour: number };
-export type TrainingQueueParams = { branchId: string, tag: string, };
+export type TrainingQueueParams = { branchId: string, country: CountryRef, };
 export type TrainingQueueReply = { tag: string,
 /**
  * The read the queue is from; none when none falls within a day.
@@ -4195,7 +4244,7 @@ needRaw: string,
  */
 heldRaw: string, };
 export type TrainingQueueParamsAtHour = TrainingQueueParams & { hour: number };
-export type DiplomaticRelationsParams = { branchId: string, tags: Array<string>, };
+export type DiplomaticRelationsParams = { branchId: string, countries: Array<CountryRef>, };
 export type OpinionOwner = { tag: string,
 /**
  * Its holder's raw id at the hour (the part a pair's `relation-opinions` line names it by);
@@ -4212,14 +4261,18 @@ known: boolean,
 reason: string | null, };
 export type DiplomaticRelationsReply = { owners: Array<OpinionOwner>, warnings: Array<string>, };
 export type DiplomaticRelationsParamsAtHour = DiplomaticRelationsParams & { hour: number };
-export type WargoalsParams = { branchId: string, tag: string, };
+export type WargoalsParams = { branchId: string, country: CountryRef, };
 export type WargoalEntry = { handle: string, name: string, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, };
 export type WargoalJustification = {
 /**
  * Its row key: the row of its live cell `points`, the stored fixed5 progress.
  */
 id: string, ordinal: number, name: string, actor: string, recipient: string, states: Array<number>, total: string, daily: string, payUpfront: boolean, start: number | null, completion: number, paused: boolean | null, };
-export type WargoalsReply = { branchId: string, tag: string, standings: Array<WargoalPair>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
+export type WargoalsReply = { branchId: string, tag: string,
+/**
+ * The country the request named, which a reply is matched to: a slot follows its country through any tag.
+ */
+asked: CountryRef, standings: Array<WargoalPair>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
 export type WargoalPair = { actor: string, recipient: string,
 /**
  * What the recorded wars and factions prove about the pair; none when neither applies.
@@ -4351,7 +4404,7 @@ export type OperativesRosterParams = { branchId: string,
 /**
  * The countries whose agencies are shown, each once.
  */
-tags: Array<string>, };
+countries: Array<CountryRef>, };
 export type RosterOperative = {
 /**
  * The full handle, as a decimal string.
@@ -4429,7 +4482,7 @@ export type EspionageOperationsParams = { branchId: string,
 /**
  * Only this country's operations, run by it or against it; every one when none.
  */
-tag: string | null, };
+country: CountryRef | null, };
 export type OperationState = {
 /**
  * Written by the launch with the duration: none before it.
@@ -4511,7 +4564,7 @@ networks: Array<IntelNetwork>,
  */
 readHour: number | null, missing: string | null, warnings: Array<string>, };
 export type IntelCoverageParamsAtHour = IntelCoverageParams & { hour: number };
-export type FuelBranchesParams = { branchId: string, tag: string, };
+export type FuelBranchesParams = { branchId: string, country: CountryRef, };
 export type FuelBranchesReply = { tag: string, scale: number,
 /**
  * Each consumer index's label from the recorded content; null where it names none.
@@ -4535,7 +4588,7 @@ export type FuelConsumerRow = {
  */
 index: number, requested: string, received: string, priority: number, };
 export type FuelBranchesParamsAtHour = FuelBranchesParams & { hour: number };
-export type ResourceBalanceParams = { branchId: string, tag: string,
+export type ResourceBalanceParams = { branchId: string, country: CountryRef,
 /**
  * The order `shown` lists the resources in; the game's when absent.
  */
@@ -4590,7 +4643,7 @@ export type LendLeaseBalanceParams = { branchId: string,
 /**
  * One country's partners; every country's totals when absent.
  */
-holder?: string, };
+holder?: CountryRef, };
 export type LendLeaseBalanceReply = { holder: string | null, scale: number,
 /**
  * Every country with a history or on the rosters, or the holder's partners with a history;
@@ -4607,7 +4660,7 @@ export type LendLeaseRow = { slot: number,
  */
 tag: string | null, values: [string, string, string, string], };
 export type LendLeaseBalanceParamsAtHour = LendLeaseBalanceParams & { hour: number };
-export type ProductionLinesAtParams = { branchId: string, tag: string,
+export type ProductionLinesAtParams = { branchId: string, country: CountryRef,
 /**
  * The game's queue order when absent.
  */
@@ -4668,7 +4721,7 @@ lent: number, required: number,
  */
 since: number, designs: Array<LicenceDesign>, };
 export type ProductionLicencesParamsAtHour = ProductionLicencesParams & { hour: number };
-export type IndustrialOrganisationsParams = { branchId: string, tag: string, };
+export type IndustrialOrganisationsParams = { branchId: string, country: CountryRef, };
 export type IndustrialOrganisationsReply = { branchId: string, tag: string, organisations: Array<OrganisationNow>,
 /**
  * Why the organisations are not known at the hour, when they are not.
@@ -4701,7 +4754,7 @@ policyUnknown: string | null,
  */
 cooldownHour: number | null, };
 export type IndustrialOrganisationsParamsAtHour = IndustrialOrganisationsParams & { hour: number };
-export type DoctrineMasteryParams = { branchId: string, tag: string, };
+export type DoctrineMasteryParams = { branchId: string, country: CountryRef, };
 export type MasteryChoice = { id: string, name: string | null, icon: string | null, };
 export type MasteryReward = { id: string, name: string | null, threshold: string | null, };
 export type MasteryTrack = { ordinal: number, name: string | null, sub: MasteryChoice | null, rewards: Array<MasteryReward>, unlocked: number, };
@@ -4716,7 +4769,7 @@ id: string, name: string | null, icon: string | null,
 grand: MasteryChoice | null, completed: Array<MasteryChoice>, tracks: Array<MasteryTrack>, };
 export type DoctrineMasteryReply = { folders: Array<MasteryFolder>, warnings: Array<string>, };
 export type DoctrineMasteryParamsAtHour = DoctrineMasteryParams & { hour: number };
-export type DoctrineRewardsParams = { branchId: string, tag: string,
+export type DoctrineRewardsParams = { branchId: string, country: CountryRef,
 /**
  * The folder's and the track's ordinals, as `doctrine-mastery` lists them.
  */
@@ -4732,7 +4785,7 @@ export type MinefieldsParams = { branchId: string,
 /**
  * The owners shown; every owner when none.
  */
-tags: Array<string> | null, };
+countries: Array<CountryRef> | null, };
 export type MineOwner = { tag: string, };
 export type MinedRegion = { region: number, owners: Array<MineOwner>, unknownOwners: number, };
 export type UnknownRegion = { region: number, unknownOwners: number, };
@@ -4750,7 +4803,7 @@ export type MinefieldReportsReply = { region: number,
  */
 readHour: number | null, reports: Array<MineReport>, warnings: Array<string>, };
 export type MinefieldReportsParamsAtHour = MinefieldReportsParams & { hour: number };
-export type NavalYardsParams = { branchId: string, tag: string, };
+export type NavalYardsParams = { branchId: string, country: CountryRef, };
 export type YardShip = { handle: string, name: string | null, nameRebuilt: string | null, design: string | null, class: string | null, hull: string | null, maximum: string | null, taskForce: string | null, policy: string | null, };
 export type RepairPort = { province: number, name: string | null, priority: number | null,
 /**
@@ -4794,7 +4847,7 @@ costRead: number | null, censusComplete: boolean,
  */
 missing: string | null, warnings: Array<string>, };
 export type UnitLeadersParams = { branchId: string, selection: LeaderSelection, leaders: LeaderKinds, };
-export type LeaderSelection = { "kind": "all" } | { "kind": "countries", tags: Array<string>, };
+export type LeaderSelection = { "kind": "all" } | { "kind": "countries", countries: Array<CountryRef>, };
 export type LeaderKinds = "all" | "land" | "navy";
 export type LeaderTrait = { token: string, name: string | null, icon: string | null,
 /**
@@ -4837,7 +4890,7 @@ export type LeaderHourReply = { reference: string,
  */
 missing: string | null, name: string | null, role: LeaderRole | null, skill: number | null, components: [number, number, number, number], traits: Array<number> | null, traitDates: Array<[number, number] | null>, traitCatalogue: Array<LeaderTrait>, fought: number, won: number, lost: number, battlesPartialFrom: number | null, progress: LeaderProgress | null, warnings: Array<string>, };
 export type LeaderHourParamsAtHour = LeaderHourParams & { hour: number };
-export type NavalManagementParams = { branchId: string, tag: string, };
+export type NavalManagementParams = { branchId: string, country: CountryRef, };
 export type NavalManagementAmount = { row: string, column: string, raw: string | null, of: string | null, unit: string, };
 export type NavalManagementLine = { text: string, amount: NavalManagementAmount | null, };
 export type NavalManagementSection = { key: string, title: string, lines: Array<NavalManagementLine>, };
@@ -4909,7 +4962,7 @@ export type FocusUnavailableParams = { branchId: string, };
 export type FocusUnavailable = { hour: number, reasons: Array<FocusTableRefusal>, warnings: Array<string>, };
 export type FocusTableRefusal = { table: string, reason: string | null, missingRows: string | null, };
 export type FocusUnavailableParamsAtHour = FocusUnavailableParams & { hour: number };
-export type StabilityBreakdownParams = { branchId: string, tag: string, };
+export type StabilityBreakdownParams = { branchId: string, country: CountryRef, };
 export type StabilityBreakdownReply = { tag: string, hour: number,
 /**
  * None where the hour holds no breakdown; `missing` says why.
@@ -4995,7 +5048,7 @@ group: string | null,
  */
 groupKind: string | null, };
 export type StabilityBreakdownParamsAtHour = StabilityBreakdownParams & { hour: number };
-export type StabilityPartNamesParams = { branchId: string, tag: string,
+export type StabilityPartNamesParams = { branchId: string, country: CountryRef,
 /**
  * Parts of the `stability-parts` series, as `series-parts` names them: measure and handle.
  */
@@ -5034,7 +5087,7 @@ line: BreakdownLine | null,
  */
 missing: string | null, };
 export type StabilityPartNamesParamsAtHour = StabilityPartNamesParams & { hour: number };
-export type DivisionTemplatesParams = { branchId: string, tag: string, countFor: ArmyAttribution, };
+export type DivisionTemplatesParams = { branchId: string, country: CountryRef, countFor: ArmyAttribution, };
 export type DivisionTemplatesReply = { tag: string, countFor: ArmyAttribution, templates: Array<TemplateEntry>,
 /**
  * Why fielded counts are unknown, when they all are.
@@ -5084,7 +5137,7 @@ export type DivisionCareersParams = { branchId: string,
 /**
  * The countries whose divisions rank; none ranks every country's.
  */
-tags: Array<string> | null, };
+countries: Array<CountryRef> | null, };
 export type DivisionCareersReply = { divisions: Array<CareerRow>, medals: Array<CareerMedal>, templates: Array<CareerTemplate>,
 /**
  * Why divisions are unknown at this hour, when they are.
@@ -5136,7 +5189,7 @@ hour: number, description: string | null, descriptionMissing: string | null, pro
  */
 medal: number | null, };
 export type DivisionRecordParamsAtHour = DivisionRecordParams & { hour: number };
-export type DivisionEquipmentParams = { branchId: string, tag: string, countFor: ArmyAttribution, template: string | null, division: string | null, };
+export type DivisionEquipmentParams = { branchId: string, country: CountryRef, countFor: ArmyAttribution, template: string | null, division: string | null, };
 export type DivisionEquipmentReply = { tag: string, countFor: ArmyAttribution,
 /**
  * Why the country's division equipment is not known at this hour, when it is not.
@@ -5201,7 +5254,7 @@ export type DivisionPool = { division: string, name: string | null, template: st
  */
 poolKnown: boolean, };
 export type DivisionEquipmentParamsAtHour = DivisionEquipmentParams & { hour: number };
-export type ResearchSlotsParams = { branchId: string, tag: string, };
+export type ResearchSlotsParams = { branchId: string, country: CountryRef, };
 export type ResearchSlotsReply = { tag: string,
 /**
  * The holder's research read the slots are from.
@@ -5251,7 +5304,7 @@ unavailable: string | null, };
 export type ResearchGrant = { id: number, ordinal: number, kind: string, token: string, name: string | null, uses: number, activeClaims: number | null, speedBonusRaw: string | null, aheadReductionRaw: string | null, costReductionRaw: string | null, technologies: Array<GrantRestriction>, categories: Array<GrantRestriction>, };
 export type GrantRestriction = { token: string, name: string | null, databaseIndex: number | null, };
 export type ResearchSlotsParamsAtHour = ResearchSlotsParams & { hour: number };
-export type AirMissionsParams = { branchId: string, tag: string, };
+export type AirMissionsParams = { branchId: string, country: CountryRef, };
 export type AirMissionsReply = {
 /**
  * The hour of the registrations' read the rows hold; none when not known.
@@ -5284,7 +5337,7 @@ missing: string | null,
  */
 missions: Array<string>, };
 export type AirMissionsParamsAtHour = AirMissionsParams & { hour: number };
-export type AirMissionWingsParams = { branchId: string, tag: string, region: number, };
+export type AirMissionWingsParams = { branchId: string, country: CountryRef, region: number, };
 export type AirMissionWingsReply = { readHour: number | null, region: number, wings: Array<AirMissionWing>,
 /**
  * Why the region's wings are not shown at the hour, when they are not.
@@ -5348,13 +5401,13 @@ export type OccupationDetailParams = { branchId: string,
 /**
  * None asks every occupier with a row at the hour.
  */
-tags: Array<string>, collaboration: boolean, };
+countries: Array<CountryRef>, collaboration: boolean, };
 export type OccupationDetailReply = { occupiers: Array<OccupationDetailRow>,
 /**
  * Why collaboration is not shown, when asked and not known.
  */
 collaborationMissing: string | null, warnings: Array<string>, };
-export type OccupationDetailRow = { tag: string,
+export type OccupationDetailRow = { country: CountryRef,
 /**
  * Why the tag names no occupier at the hour.
  */
@@ -5370,7 +5423,7 @@ export type MarketLendLeaseParams = { branchId: string,
  * Rows these countries take part in (as seller or buyer, giver or receiver); every row when
  * empty.
  */
-tags: Array<string>,
+countries: Array<CountryRef>,
 /**
  * The one section read; every section when absent.
  */
@@ -5424,7 +5477,7 @@ id: string, giver: string | null, receiver: string | null, revision: string, act
  */
 percentage: Array<MarketItem>, once: Array<MarketItem>, delivered: Array<MarketItem>, sunk: Array<MarketItem>, fuelDailyRaw: string, fuelPercentageRaw: string, lastFuelDeliveredRaw: string, };
 export type MarketLendLeaseParamsAtHour = MarketLendLeaseParams & { hour: number };
-export type CountryFuelParams = { branchId: string, tag: string, };
+export type CountryFuelParams = { branchId: string, country: CountryRef, };
 export type CountryFuelReply = { tag: string,
 /**
  * Units per fuel of the level, capacity, burned and transfer values.
@@ -5497,7 +5550,7 @@ dayHour: number | null, day: FuelDay | null, leftOut: DayLeftOut | null,
 awardsReason: string | null, continuityStartHour: number | null, };
 export type FuelConsumptionAt = { nativeDailyRaw: [string | null, string | null, string | null], knownDailyRaw: [string | null, string | null, string | null], positiveDailyRaw: [string | null, string | null, string | null], reasons: [string | null, string | null, string | null], };
 export type CountryFuelParamsAtHour = CountryFuelParams & { hour: number };
-export type StockpileAtParams = { branchId: string, tag: string, };
+export type StockpileAtParams = { branchId: string, country: CountryRef, };
 export type StockType = { key: string,
 /**
  * The localised key; null when the content does not name it.
@@ -5549,7 +5602,7 @@ stockMissing: string | null,
  */
 linesMissing: string | null, balance: StockBalance, balanceMissing: string | null, needBoundRaw: string, warnings: Array<string>, };
 export type StockpileAtParamsAtHour = StockpileAtParams & { hour: number };
-export type StockpileArtworkParams = { branchId: string, tag: string,
+export type StockpileArtworkParams = { branchId: string, country: CountryRef,
 /**
  * Designs that need their own pictures, instead of a type's best.
  */
@@ -5569,7 +5622,11 @@ export type FactionDetailParams = { branchId: string,
 /**
  * The recorded faction id, as a decimal string.
  */
-faction: string, };
+faction: string,
+/**
+ * None follows the recording client's playing or observer country.
+ */
+viewpoint: CountryRef | null, };
 export type FactionProgressBand = { name: string | null, min: number | null, max: number | null, };
 export type FactionGoalDefinition = {
 /**
@@ -5649,7 +5706,7 @@ export type WarContributionsParams = { branchId: string,
 /**
  * None follows the recording client's playing or observer country.
  */
-viewpointTag: string | null, };
+viewpoint: CountryRef | null, };
 export type WarContributionCountry = { tag: string, side: WarSide,
 /**
  * All quantities are exact signed fixed5 words.
@@ -5666,7 +5723,7 @@ available: boolean,
  */
 contributions: Array<WarContributionGroup>, warnings: Array<string>, };
 export type WarContributionsParamsAtHour = WarContributionsParams & { hour: number };
-export type SpecialProjectDetailsParams = { branchId: string, tag: string, };
+export type SpecialProjectDetailsParams = { branchId: string, country: CountryRef, };
 export type SpecialProjectDetails = { hour: number,
 /**
  * None where the hour's scientist roster is not known (never an empty one).
@@ -5702,7 +5759,7 @@ export type ProjectChoice = { ordinal: number, date: number, reward: ProjectLabe
 export type SpecializationProgress = { specialization: ProjectLabel, points: number, readHour: number, };
 export type ProjectRuntimeDetails = { owner: number, id: number, label: ProjectLabel, readHour: number, pendingKnown: boolean, pending: PendingProjectReward | null, seed: number | null, variables: Array<ProjectVariableValue> | null, choices: Array<ProjectChoice> | null, };
 export type SpecialProjectDetailsParamsAtHour = SpecialProjectDetailsParams & { hour: number };
-export type SpecialProjectEffectsParams = { branchId: string, tag: string,
+export type SpecialProjectEffectsParams = { branchId: string, country: CountryRef,
 /**
  * The project's raw owner id and its id within it.
  */
@@ -5720,9 +5777,9 @@ export type ProjectEffects = { text: string, refusals: { [key in string]?: numbe
 export type SpecialProjectEffectsParamsAtHour = SpecialProjectEffectsParams & { hour: number };
 export type AirSuperiorityParams = { branchId: string, mode?: AirMode,
 /**
- * A side's key, or a country's tag with `viewpointCountry`.
+ * A side's key, or a country (its slot or tag) with `viewpointCountry`.
  */
-viewpoint?: string, viewpointCountry?: boolean,
+viewpoint?: CountryRef, viewpointCountry?: boolean,
 /**
  * The side keys compared; all when none.
  */
@@ -5797,10 +5854,10 @@ nameMissing: string | null,
  */
 active: boolean, cell: AirCell, wings: AirWings, };
 export type AirSuperiorityParamsAtHour = AirSuperiorityParams & { hour: number };
-export type LossHeadParams = { branchId: string, tag: string, country?: LossCountry | null, };
+export type LossHeadParams = { branchId: string, country: CountryRef, identity?: LossCountry | null, };
 export type LossHeadReply = { leaves: Array<string>, warnings: Array<string>, };
 export type LossHeadParamsAtHour = LossHeadParams & { hour: number };
-export type ArmyLossesParams = { branchId: string, tag: string, view: LossView, };
+export type ArmyLossesParams = { branchId: string, country: CountryRef, view: LossView, };
 export type ArmyLossesReply = { tag: string,
 /**
  * No country holds the tag at this hour.
@@ -5826,7 +5883,7 @@ export type ArmyLossDesign = { variant: string, name: string | null, archetype: 
 export type LossMonth = { army: string, ledger: number, month: number, date: number, reason: string | null, };
 export type ArmyLossesAvailability = { armies: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, };
 export type ArmyLossesParamsAtHour = ArmyLossesParams & { hour: number };
-export type PowerDayParams = { branchId: string, tag: string, currency: SpendCurrency, };
+export type PowerDayParams = { branchId: string, country: CountryRef, currency: SpendCurrency, };
 export type PowerDayReply = { currency: SpendCurrency,
 /**
  * The open day's midnight.

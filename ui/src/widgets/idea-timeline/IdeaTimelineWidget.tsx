@@ -1,4 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { countryFromKey, keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useEffect, useMemo } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -22,6 +23,7 @@ import './ideaTimeline.css';
 import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
+const COUNTRY_NOT_RECORDED = 'country not recorded';
 
 /** One idea category over time: a lane per law or designer slot and per advisor
  * seat, with each slot's holder at the playhead in the left column. */
@@ -48,6 +50,8 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   const menu = useContextMenu('Timeline actions');
   // Each idea's effects, formatted as the game's tooltip shows them.
   const tooltips = useIdeaTooltips(data, track, runtime.client, active);
+  const slots = useSlotTags(runtime.client, track, active && !!tag && typeof countryFromKey(tag) === 'number');
+  const country = tag ? keyNameAt(slots, tag, at) ?? COUNTRY_NOT_RECORDED : COUNTRY_NOT_RECORDED;
 
   useEffect(() => {
     onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
@@ -75,7 +79,7 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   }).join('. ')}.`;
   return <div className="idea-timeline">
     {error && <WidgetState kind="error" failure={error} onRetry={retry} />}
-    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`${contentTitle(category.name, category.token, 'Category name unavailable')} of ${tag}`} extent={extent} playhead={playhead} liveHead={liveHead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} description={description}
+    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`${contentTitle(category.name, category.token, 'Category name unavailable')} of ${country}`} extent={extent} playhead={playhead} liveHead={liveHead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} description={description}
       showIcons showNames unobserved={gaps} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={data}
       tooltip={(lane, span, hour, full) => {
         if (!span) return { title: lane.label, rows: [{ label: inSpans(data.unobserved, hour) ? 'Not recorded' : 'Empty',

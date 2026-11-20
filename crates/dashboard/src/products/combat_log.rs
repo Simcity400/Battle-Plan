@@ -6,6 +6,7 @@
 //! game finalized at the hour (`land-combat-results`). Countries are named by the one identity
 //! rule; a reference no country holds is named by its raw id and reported.
 
+use dashboard_query::identity::Holders;
 use super::{LoadContext, Product, country_ids::Names, divisions::Content, land_battles::BattleCountryFilter};
 use crate::{
     Source,
@@ -203,9 +204,9 @@ fn unavailable(frame: &DecodedFrame, sources: &[TableId]) -> Option<String> {
     (!missing.is_empty()).then(|| missing.join("; "))
 }
 
-/// Whether `tag` is chosen at `hour`: by tag, or a membership run holding it.
-pub fn matches_country(filter: &BattleCountryFilter, tag: &str, hour: i32) -> bool {
-    filter.tags.as_ref().is_none_or(|tags| tags.iter().any(|chosen| chosen == tag))
+/// Whether `tag` is chosen at `hour`: by a country going by it, or a membership run holding it.
+pub fn matches_country(filter: &BattleCountryFilter, holders: &Holders, tag: &str, hour: i32) -> bool {
+    filter.countries.as_ref().is_none_or(|countries| countries.iter().any(|chosen| holders.goes_by(chosen, tag, hour)))
         && (filter.membership.is_none()
             || !filter.unobserved.iter().any(|span| span.first_hour <= hour && hour <= span.last_hour)
                 && filter.membership.as_ref().is_some_and(|runs| runs.iter().any(|run| run.tag == tag && run.first_hour <= hour && hour <= run.last_hour)))
@@ -213,11 +214,11 @@ pub fn matches_country(filter: &BattleCountryFilter, tag: &str, hour: i32) -> bo
 
 /// Whether a side whose countries are `tags` (none where a reference holds no tag) is chosen: a
 /// participant not known never leaves a side out, nor does a side with no country.
-pub fn matches_side(filter: &BattleCountryFilter, tags: impl IntoIterator<Item = Option<String>>, hour: i32) -> bool {
+pub fn matches_side(filter: &BattleCountryFilter, holders: &Holders, tags: impl IntoIterator<Item = Option<String>>, hour: i32) -> bool {
     let mut empty = true;
     for tag in tags {
         empty = false;
-        if tag.is_none_or(|tag| matches_country(filter, &tag, hour)) {
+        if tag.is_none_or(|tag| matches_country(filter, holders, &tag, hour)) {
             return true;
         }
     }
@@ -435,8 +436,9 @@ impl Product for CombatLog {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
-        for tag in params.countries.tags.iter().flatten().chain(params.countries.membership.iter().flatten().map(|run| &run.tag)) {
-            dashboard_base::products::validate_tag(tag)?;
+        params.countries.countries.iter().flatten().try_for_each(dashboard_base::products::validate_country)?;
+        for run in params.countries.membership.iter().flatten() {
+            dashboard_base::products::validate_tag(&run.tag)?;
         }
         Ok(())
     }
@@ -454,9 +456,9 @@ impl Product for CombatLog {
         let links = crate::answer::links(source, run)?;
         let content = Content::load(source, context);
         let filter = &params.countries;
-        let every = filter.tags.is_none() && filter.membership.is_none();
+        let every = filter.countries.is_none() && filter.membership.is_none();
         let tag_of = |country: u32| names.tag_at(&links, country, hour).map(str::to_owned);
-        let owner = |country: u32| tag_of(country).map_or(every, |tag| matches_country(filter, &tag, hour));
+        let owner = |country: u32| tag_of(country).map_or(every, |tag| matches_country(filter, &query.holders, &tag, hour));
         let tag = |country: u32| tag_of(country).unwrap_or_else(|| format!("Country {country}"));
         let mut unresolved = BTreeSet::new();
         let mut country = |id: u32| {
@@ -498,7 +500,7 @@ impl Product for CombatLog {
         let modifiers = if availability.battles.is_none() && !referenced.is_empty() {
             let columns = [dashboard_declare::field(TableId::CombatLogBattleModifiers, "modifier")?, dashboard_declare::field(TableId::CombatLogBattleModifiers, "hours")?];
             let from = referenced.values().copied().min().unwrap_or(hour).max(query.timeline.first);
-            let filters = [log::FacetFilter { name: "battle".into(), values: referenced.keys().map(|&id| i64::from(id)).collect(), tags: Vec::new() }];
+            let filters = [log::FacetFilter { name: "battle".into(), values: referenced.keys().map(|&id| i64::from(id)).collect(), countries: Vec::new() }];
             modifiers_of(&logged(&query, MODIFIERS, &filters, from, hour)?, &referenced, &columns)
         } else {
             BTreeMap::new()
@@ -727,7 +729,7 @@ impl Product for CombatLog {
             operands.sort_unstable_by_key(|row| row.logical_order());
             let facts: Vec<(u8, u64, [u64; 5])> = operands.iter().map(|row| row.fact()).collect();
             let countries: Vec<Option<String>> = operands.iter().filter(|row| row.kind == CombatLogObserverKind::Country as u8).map(|row| tag_of(row.identity as u32)).collect();
-            if !matches_side(filter, countries, hour) {
+            if !matches_side(filter, &query.holders, countries, hour) {
                 continue;
             }
             let losses = progress.as_ref().map_err(Clone::clone).and_then(|rows| {
@@ -747,7 +749,7 @@ impl Product for CombatLog {
         for result in &ended {
             for attacker in [true, false] {
                 let facts: Vec<(u8, u64, [u64; 5])> = result.observers.iter().filter(|row| row.attacker == attacker).map(|row| (row.kind, row.item, row.values)).collect();
-                if facts.is_empty() || !matches_side(filter, side_tags(&facts), hour) {
+                if facts.is_empty() || !matches_side(filter, &query.holders, side_tags(&facts), hour) {
                     continue;
                 }
                 let loss = &result.losses[usize::from(!attacker)];

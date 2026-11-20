@@ -443,7 +443,7 @@ test('actual Wars participant hover preserves completed native UI-word and empty
     '/dashboard/FactionColours.tsx': 'export const useFactionColours = () => ({ colours: new Map(), warnings: [] });',
     '/dashboard/useCountriesAt.ts': 'export const STYLES = {}; export const useCountriesAt = () => ({ country: () => globalThis.__warsName, revision: 0 });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: () => globalThis.__warsName.name, color: () => null, revision: 0 });',
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map(); export const useCountryFactsByKey = () => new Map();',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask(hour, tags) { globalThis.__warsAsked?.push(...tags); }, labelAt: () => () => globalThis.__warsName, revision: 0 });',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ surface: '#111111', text: '#dddddd', countryColours: 'raw', categories: ['#123456', '#654321'] }); export const useViewportHeight = () => 1000;`,
     '/charts/timeline/Timeline.tsx': `export default props => { globalThis.__warsTips = props.lanes.filter(lane => lane.spans.length).map(lane => props.tooltip(lane, lane.spans[0], 15, true)); return null; };`,

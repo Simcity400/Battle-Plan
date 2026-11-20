@@ -6,7 +6,8 @@ import { createServer } from 'vite';
 import { mergeViewPreferences } from '../model.ts';
 import type { BoundTrack, CountrySelection, DashboardTemplate, WidgetSpec } from '../model';
 import type { WidgetRuntime } from '../definitions';
-import { selectedTags } from '../countrySelection.ts';
+import { countryKey } from '../countryKey.ts';
+import { selectedCountryKeys } from '../countrySelection.ts';
 import { parseTemplate } from '../storage.ts';
 
 const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
@@ -68,8 +69,8 @@ test('a fixed single-country picker saves a matching dashboard tag explicitly', 
     template.widgets[0] = mergeViewPreferences(widget, widget, { ...widget, countries: changes[0] }, new Set(['main']));
     const restored = parseTemplate(JSON.parse(JSON.stringify(template)))!;
     assert.ok(restored);
-    assert.deepEqual(selectedTags(restored.widgets[0].countries, { ...reference, selectedTag: 'Another native country' }),
-      [fixed ? tag : 'Another native country']);
+    assert.deepEqual(selectedCountryKeys(restored.widgets[0].countries, { ...reference, selectedSlot: 41 }),
+      [fixed ? tag : countryKey(41)]);
     choose('Another native country');
     choose(null);
     assert.deepEqual(changes.slice(1), [{ kind: 'tags', tags: ['Another native country'] }, { kind: 'selected' }]);

@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
@@ -45,7 +46,7 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   const countryName = countryLabel.name;
   const nameDetail = countryLabel.nameFailure ? <span data-detail={countryLabel.nameFailure.message}>{countryName}</span> : undefined;
   const options = resolveOptions(OPTIONS, widget.options);
-  const state = useHeadProduct(runtime, widget, 'training-queue', track && window && tag ? { tag } : null,
+  const state = useHeadProduct(runtime, widget, 'training-queue', track && window && tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateTrainingQueue, structure: queueStructure });
   const data = state.data;
   const rows = useMemo(() => data ? queueRows(data) : [], [data]);

@@ -1,3 +1,5 @@
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useCallback, useId, useMemo, useReducer, useRef, useState } from 'react';
 import { setStyle, setText } from '../../charts/domText';
 import WidgetState from '../../components/WidgetState';
@@ -20,7 +22,7 @@ import Legend from '../../charts/Legend';
 import { motionOf } from '../../charts/easing.ts';
 import CountryComparisons from '../../dashboard/CountryComparisons';
 import type { ComparisonProps } from '../../dashboard/CountryComparisons';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -38,6 +40,7 @@ import './fuelBranches.css';
 import type { FuelBranchesReply } from '../../generated/dashboard';
 
 const NO_WARNINGS: readonly string[] = [];
+const UNNAMED = 'Country name unavailable';
 const SHARE = { kind: FUEL_CONSUMERS, measure: 'receivedShare' } as const;
 /** The received share's fixed-point places. */
 const SHARE_PLACES = 4;
@@ -55,7 +58,7 @@ function FuelBranchesCountry(props: ComparisonProps) {
   const { widget, runtime } = props;
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   if (!track) return <WidgetState kind="empty" icon="droplet" message="Load a campaign to see fuel." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
   return options.view === 'time' ? <FuelBranchesOverTime {...props} tag={tag} /> : <FuelBranchBars {...props} tag={tag} />;
@@ -74,6 +77,7 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
   const owner = useId();
   const digits = fuelDecimals(options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0])!;
+  const slots = useSlotTags(runtime.client, track, active && isSlotKey(tag));
   const cells = useRef(new Map<number, RowCells>());
   const paint = useCallback((reply: FuelBranchesReply) => {
     const rows = branchesAt(reply), widths = barWidths(rows);
@@ -87,7 +91,7 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
       setStyle(held.short, 'width', width.unmet);
     }
   }, [digits]);
-  const head = useHeadProduct<FuelBranchesReply>(runtime, widget, FUEL_BRANCHES, { tag }, { active, validate: validateFuelBranches, structure: fuelStructure, paint });
+  const head = useHeadProduct<FuelBranchesReply>(runtime, widget, FUEL_BRANCHES, { country: countryFromKey(tag) }, { active, validate: validateFuelBranches, structure: fuelStructure, paint });
   const data = head.data;
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const rows = useMemo(() => data ? branchesAt(data) : [], [data]);
@@ -120,7 +124,7 @@ function FuelBranchBars({ widget, runtime, active, onDiagnostics, within, tag }:
   else if (!data) body = <WidgetState kind="loading" label="Loading fuel by branch…" />;
   else if (!isMember(within, hour)) body = <WidgetState kind="unavailable" message="This country is not in the group at this date." />;
   else if (data.missing) body = <WidgetState kind="unavailable" message={data.missing} />;
-  else if (!rows.length) body = <WidgetState kind="empty" icon="droplet" message={`${tag} requested no fuel at this date.`} />;
+  else if (!rows.length) body = <WidgetState kind="empty" icon="droplet" message={`${keyNameAt(slots, tag, hour ?? track.branch.lastHour) ?? UNNAMED} requested no fuel at this date.`} />;
   else body = <div className="resource-balance fuel-branches">
     <ol className="resource-bars" aria-label={hour === null ? 'Fuel by branch' : `Fuel by branch on ${dayLabel(hour)}`}>
       {rows.map(row => {
@@ -181,6 +185,7 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
   const menu = useContextMenu('Fuel by branch actions');
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0])!;
+  const slots = useSlotTags(runtime.client, track, active && isSlotKey(tag));
   const following = widget.time.mode === 'follow';
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
@@ -194,7 +199,7 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
     [following, runtime.clock, axisOffset]);
   const parts = useSeriesParts(runtime.client, track.source, track.branch.id, SHARE, tag, { firstHour: extent[0], lastHour: extent[1] }, active);
   const names = useProduct<FuelBranchesReply>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: FUEL_BRANCHES,
-    params: { branchId: track.branch.id, tag, hour: extent[1] } }, active, validateFuelBranches, track.source);
+    params: { branchId: track.branch.id, country: countryFromKey(tag), hour: extent[1] } }, active, validateFuelBranches, track.source);
   const consumerNames = names.data?.consumerNames ?? [];
   const keys = useMemo(() => (parts.data?.parts ?? []).map(part => ({ tag, part: part.part })).sort((a, b) => Number(a.part) - Number(b.part)), [parts.data, tag]);
   const membership = useMemo(() => within ? new Map(keys.map(key => [keyId(key), within])) : undefined, [keys, within]);
@@ -230,11 +235,12 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
     },
   }], [lines, series.summaryByKey, reachedByKey, ends]);
 
+  const shownTag = keyNameAt(slots, tag, playhead ?? extent[1]);
   if (parts.error) return <WidgetState kind="error" failure={parts.error} onRetry={parts.retry} />;
   if (!parts.data) return <WidgetState kind="loading" label="Loading fuel by branch…" />;
   if (!keys.length) return parts.data.missing.length
-    ? <WidgetState kind="unavailable" message={`${tag} has no recorded fuel consumers here: ${parts.data.missing[0].reason}`} />
-    : <WidgetState kind="empty" icon="droplet" message={`${tag} requested no fuel in this time.`} />;
+    ? <WidgetState kind="unavailable" message={`${shownTag ?? UNNAMED} has no recorded fuel consumers here: ${parts.data.missing[0].reason}`} />
+    : <WidgetState kind="empty" icon="droplet" message={`${shownTag ?? UNNAMED} requested no fuel in this time.`} />;
   if (series.error && !series.summaryByKey.size) return <WidgetState kind="error" failure={series.error} onRetry={series.retry} />;
   const tooltip = (at: number) => {
     if (!isMember(within, at)) return fitTooltip([{ title: dayLabel(at), rows: [{ label: 'Not in the group at this date', tone: 'muted' as const }] }], viewport);
@@ -250,7 +256,7 @@ function FuelBranchesOverTime({ widget, runtime, active, onDiagnostics, within, 
   return <div className="fuel-branches-time" ref={setRoot}>
     <Legend label="Branches" items={lines.map(line => ({ id: line.key.part, label: line.name, color: line.color }))} />
     <div className="fuel-branches-chart">
-      <TimeChart label={`Fuel received by branch of ${tag}`} extent={extent} playhead={playhead} liveHead={liveHead}
+      <TimeChart label={`Fuel received by branch of ${shownTag ?? UNNAMED}`} extent={extent} playhead={playhead} liveHead={liveHead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: axis.top, log: false }} valueTicks={axis.ticks}

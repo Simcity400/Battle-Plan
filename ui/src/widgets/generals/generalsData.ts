@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { clipToSpans } from '../../charts/series.ts';
@@ -214,7 +215,7 @@ export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<
 
 /** The request's selection: every country, or the tags shown; group memberships filter the rows at their hour. */
 export function leaderRequestSelection(tags: readonly string[] | null): LeaderSelection {
-  return tags === null ? { kind: 'all' } : { kind: 'countries', tags: [...tags] };
+  return tags === null ? { kind: 'all' } : { kind: 'countries', countries: tags.map(countryFromKey) };
 }
 
 /** What a leaderboard renders: which rows and every number they show, so a push that changes none renders nothing. */

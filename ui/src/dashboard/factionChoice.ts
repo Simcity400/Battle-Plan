@@ -1,10 +1,12 @@
+import { countryFromKey } from './countryKey.ts';
+import { countryIdentityIndex } from './countryIdentity.ts';
 import { useCallback, useMemo } from 'react';
 import type { CountryGroupReply, FactionDetailReply, FactionGroup } from '../generated/dashboard';
 import type { BoundTrack } from './model';
 import type { OptionChoices, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
 import { contentKey, setToken } from './options.ts';
-import { selectedTags } from './countrySelection.ts';
+import { selectedCountryKeys } from './countrySelection.ts';
 import { factionNameAt as recordedNameAt } from './factionNames.ts';
 import { headRead, useHeadProduct } from './headProduct.ts';
 import { detailsStructure, validateFactionDetails } from './factionDetails.ts';
@@ -16,9 +18,12 @@ export { FACTION_OPTION } from './factionOption.ts';
 
 const covers = (run: { firstHour: number; lastHour: number }, hour: number) => run.firstHour <= hour && hour <= run.lastHour;
 
-/** The faction a country is a member of at `hour`: the recorded roster, never a guess. */
-export function factionOfCountry(groups: CountryGroupReply, tag: string, hour: number): FactionGroup | null {
-  return groups.factions.find(faction => faction.members.some(run => run.tag === tag && covers(run, hour))) ?? null;
+/** The faction a country (a [`countryKey`]) is a member of at `hour`: the recorded roster, never a guess. A country
+ * chosen by its slot is a member under whichever tag it goes by then. */
+export function factionOfCountry(groups: CountryGroupReply, key: string, hour: number): FactionGroup | null {
+  const index = countryIdentityIndex(groups.countryIdentities);
+  const tags = new Set(typeof countryFromKey(key) === 'number' ? index.aliasesAt(index.selected([key]), hour) : [key]);
+  return groups.factions.find(faction => faction.members.some(run => tags.has(run.tag) && covers(run, hour))) ?? null;
 }
 
 export type NoFaction = 'none' | 'unobserved' | 'unknown' | 'absent';
@@ -69,7 +74,7 @@ export const memberAt = (faction: FactionGroup, tag: string, hour: number) => fa
 export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean) {
   const groups = useCountryGroups(runtime, track, active);
   const saved = typeof widget.options?.faction === 'string' && widget.options.faction ? contentKey(widget.options.faction) : null;
-  const tag = selectedTags(widget.countries, track)[0] ?? null;
+  const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const { hourAt } = headRead(widget, track, runtime.tracks, null);
   const data = groups.data;
   const following = active && widget.time.mode === 'follow' && !!data;
@@ -83,9 +88,13 @@ export function useChosenFaction(widget: WidgetSpec, runtime: WidgetRuntime, tra
   return { groups, pick, tag, hour };
 }
 
-/** One faction's state at the head (a pushed panel while following; asked for the pinned hour otherwise). */
+/** One faction's state at the head (a pushed panel while following; asked for the pinned hour otherwise). Its
+ * scripted texts expand in the widget's country, the viewpoint the game's faction view expands them in. */
 export function useFactionDetails(runtime: WidgetRuntime, widget: WidgetSpec, faction: string | null, active: boolean) {
-  return useHeadProduct<FactionDetailReply>(runtime, widget, 'faction-details', faction ? { faction } : null,
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const viewpointTag = selectedCountryKeys(widget.countries, track)[0] ?? null;
+  const params = useMemo(() => faction ? { faction, viewpoint: viewpointTag === null ? null : countryFromKey(viewpointTag) } : null, [faction, viewpointTag]);
+  return useHeadProduct<FactionDetailReply>(runtime, widget, 'faction-details', params,
     { active, validate: validateFactionDetails, structure: detailsStructure });
 }
 

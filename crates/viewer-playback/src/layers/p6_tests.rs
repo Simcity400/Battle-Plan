@@ -564,38 +564,47 @@ impl super::trains::Yard for Asked {
 /// The perspective's country changed at a held hour is a change for the engagements, trains and
 /// labels the window registers after vision: each takes vision's slot without a reopening, and
 /// equals itself made from the mirrors as a reader opened on that country makes it.
-#[test]
-fn a_viewing_country_change_reaches_engagements_trains_and_labels_through_vision_as_a_reader_opened_on_it() {
-    use super::{Upstream, engagements::Engagements, labels::Labels, rails::{Rails, tests::Stub}, trains::Trains};
-    use viewer_foundation::map::perspective::{Choice, Country};
-    const HOUR: i32 = 8;
+/// The window's layers that read the viewing country (vision, engagements, rails, trains and labels)
+/// over a recording of two countries, `asked` hearing the trains' plans.
+fn viewing_world(asked: &Arc<Asked>) -> (Arc<crate::playhead_host::Entry>, Vec<Box<dyn Layer>>) {
+    use super::{engagements::Engagements, labels::Labels, rails::{Rails, tests::Stub}, trains::Trains};
     let extra = [
         TableId::Politics, TableId::CountryAppearance, TableId::ProvinceNames, TableId::LexicalTokens, TableId::SupplyNodes, TableId::TrainInventory,
         TableId::VariantDefinitions, TableId::RailEdges, TableId::RailCooldowns, TableId::ProvinceSupply, TableId::NavalBases,
     ];
-    let asked = Arc::new(Asked(std::sync::Mutex::new(Vec::new())));
     let layers: Vec<Box<dyn Layer>> = vec![
         Box::new(Vision::new(vision_content())),
         Box::new(Engagements::new(None, None).reading_vision()),
         Box::new(Rails::new(Arc::new(Stub))),
-        Box::new(Trains::new(Arc::clone(&asked) as Arc<dyn super::trains::Yard>, None).reading_vision()),
+        Box::new(Trains::new(Arc::clone(asked) as Arc<dyn super::trains::Yard>, None).reading_vision()),
         Box::new(Labels::new(Arc::new(installed_content_localisation::localisation::Localisation::default()), None).reading_vision()),
     ];
-    let entry = open(vision_world_with(&extra), quick()).unwrap();
+    (open(vision_world_with(&extra), quick()).unwrap(), layers)
+}
+
+#[test]
+fn a_viewing_country_change_reaches_engagements_trains_and_labels_through_vision_as_a_reader_opened_on_it() {
+    use super::{Upstream, engagements::Engagements, labels::Labels, trains::Trains};
+    use viewer_foundation::map::perspective::{Choice, Country};
+    const HOUR: i32 = 8;
+    let asked = Arc::new(Asked(std::sync::Mutex::new(Vec::new())));
+    let (entry, layers) = viewing_world(&asked);
     let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
     side.anchor(HOUR, false, 0.0, true);
+    let shows = |side: &MapSide, slot: u32| {
+        side.applied() == Some(HOUR) && !side.composing() && side.parts().is_some_and(|(_, layers)| {
+            layers.iter().all(|layer| layer.carried().entities == 0)
+                && layers[0].any().downcast_ref::<Vision>().unwrap().ours() == Some(slot)
+                && layers[3].any().downcast_ref::<Trains>().unwrap().ours() == Some(slot)
+                && layers[4].any().downcast_ref::<Labels>().unwrap().ours() == Some(slot)
+                && layers[1].any().downcast_ref::<Engagements>().unwrap().viewer() == Some(slot)
+        })
+    };
     let settled = |side: &mut MapSide, slot: u32, what: &str| {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
             let frame = side.frame(HOUR).unwrap();
-            let done = side.applied() == Some(HOUR) && !side.composing() && side.parts().is_some_and(|(_, layers)| {
-                layers.iter().all(|layer| layer.carried().entities == 0)
-                    && layers[0].any().downcast_ref::<Vision>().unwrap().ours() == Some(slot)
-                    && layers[3].any().downcast_ref::<Trains>().unwrap().ours() == Some(slot)
-                    && layers[4].any().downcast_ref::<Labels>().unwrap().ours() == Some(slot)
-                    && layers[1].any().downcast_ref::<Engagements>().unwrap().viewer() == Some(slot)
-            });
-            if done {
+            if shows(side, slot) {
                 return;
             }
             assert!(std::time::Instant::now() < deadline, "{what} within 120 s: applied {:?}, composing {}", side.applied(), side.composing());
@@ -622,6 +631,119 @@ fn a_viewing_country_change_reaches_engagements_trains_and_labels_through_vision
     side.set_view(View { perspective: Choice { country: Country::Tag("text 1".into()), ..Choice::default() }, ..View::default() }).unwrap();
     settled(&mut side, 2, "the chosen country, slot 2, reaching every layer");
     opened_on(&side, 2, "text 1");
+}
+
+/// While a compose has the layers away (a seek), what every window asks of the vision is answered
+/// without them, as unknown: never a reach into layers that are not home.
+#[test]
+fn a_compose_answers_the_windows_vision_questions_without_its_layers() {
+    const HOUR: i32 = 8;
+    const SOUGHT: i32 = 30;
+    let asked = Arc::new(Asked(std::sync::Mutex::new(Vec::new())));
+    let (entry, layers) = viewing_world(&asked);
+    let mut side = MapSide::new(Arc::clone(&entry), layers, View::default()).unwrap();
+    side.anchor(HOUR, false, 0.0, true);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !(side.applied() == Some(HOUR) && !side.composing() && side.viewer() == Some(1)) {
+        side.frame(HOUR).unwrap();
+        assert!(std::time::Instant::now() < deadline, "the recorded viewer, slot 1, within 120 s");
+        std::thread::yield_now();
+    }
+    side.anchor(SOUGHT, false, 0.0, true);
+    let mut asked_while_away = 0;
+    while !(asked_while_away > 0 && side.applied() == Some(SOUGHT) && !side.composing()) {
+        side.frame(SOUGHT).unwrap();
+        if side.composing() {
+            asked_while_away += 1;
+            assert_eq!(side.viewer(), None, "no viewer while the layers are away");
+            assert_eq!(side.vision_refused(), None, "no refusal while the layers are away");
+            assert!(!side.take_overlay_withdrawal(), "no layout let go while the layers are away");
+        }
+        assert!(std::time::Instant::now() < deadline, "the seek's compose within 120 s");
+        std::thread::yield_now();
+    }
+    assert_eq!(side.viewer(), Some(1), "the viewer answered again once the layers are home");
+}
+
+/// A switch of the viewing country is never a freeze and never a mix: with the new country's
+/// vision not made (its settles held, as a fold or an overlay that never arrives) the frame is still
+/// handed windows and the new view, every part of it that needs the vision withheld; once made it is
+/// handed whole; and a country whose vision is refused is handed over with that refusal named. No
+/// window ever hands a view with a part made for another viewing country, either way round.
+#[test]
+fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before() {
+    use crate::playhead_host::{Head, side::SideThread};
+    use viewer_foundation::map::perspective::{Choice, Country};
+    const HOUR: i32 = 8;
+    let asked = Arc::new(Asked(std::sync::Mutex::new(Vec::new())));
+    let (entry, layers) = viewing_world(&asked);
+    let mut side = SideThread::new(MapSide::new(entry, layers, View::default()).unwrap()).unwrap();
+    side.anchor(HOUR, false, 0.0, true);
+    let chosen = View { perspective: Choice { country: Country::Tag("text 1".into()), ..Choice::default() }, ..View::default() };
+    let refused = View { perspective: Choice { country: Country::Tag("no such tag".into()), ..Choice::default() }, ..View::default() };
+    // The slot each view's parts may hold: the recorded viewer is slot 1, the chosen one slot 2, and
+    // a refused one none at all.
+    let slot = |view: &View| if view.perspective == chosen.perspective { Some(2) } else if view.perspective == refused.perspective { None } else { Some(1) };
+    // Every viewer the side holds for the frame: the vision copied out, then each drawn layer's.
+    let viewers = |side: &MapSide| -> (Option<u32>, Vec<Option<u32>>) {
+        (side.vision().ok().map(|vision| vision.ours()), side.caught_up().iter().map(|layer| layer.viewer).collect())
+    };
+    let wholly = |side: &MapSide, slot: u32| {
+        let (shown, layers) = viewers(side);
+        side.applied() == Some(HOUR) && !side.composing() && shown == Some(slot) && layers.iter().all(|held| held.is_none_or(|held| held == slot))
+    };
+    // Each part handed is withheld or made for the viewing country of the view handed with it.
+    let never_mixed = |side: &MapSide| {
+        let want = slot(side.view_shown());
+        let (shown, layers) = viewers(side);
+        let other = |held: &Option<u32>| held.is_some_and(|held| Some(held) != want);
+        assert!(!other(&shown) && !layers.iter().any(other), "a part made for another viewing country handed with {:?}: {:?}; {}", side.view_shown().perspective, viewers(side), side.shown_states());
+    };
+    // Windows until one hands a picture `done` accepts, each checked; how many were handed.
+    let windows = |side: &mut SideThread, what: &str, done: &dyn Fn(&MapSide) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut handed = 0;
+        loop {
+            if let Some(mut window) = side.window() {
+                never_mixed(window.side());
+                let finished = done(window.side());
+                window.take(Default::default());
+                handed += 1;
+                if finished {
+                    return handed;
+                }
+            }
+            assert!(Instant::now() < deadline, "{what} within 120 s, {handed} windows handed");
+            std::thread::yield_now();
+        }
+    };
+    side.ask(View::default(), Head::Paced(HOUR), None);
+    windows(&mut side, "the recorded viewer, slot 1, wholly", &|side| wholly(side, 1));
+    // The chosen country's vision is never made while the settles are held: the frame is handed
+    // the chosen view all the same, never a freeze, with nothing of slot 1 on it.
+    let held = side.with_side(MapSide::hold_settles);
+    side.ask(chosen.clone(), Head::Paced(HOUR), None);
+    windows(&mut side, "the chosen view handed while its vision is not made", &|side| side.view_shown().perspective == chosen.perspective);
+    assert_eq!(side.view().perspective, chosen.perspective, "the frame draws the chosen view while its vision is made");
+    assert!(side.products().overlay_coming(), "the frame keeps its picture while the vision is made");
+    windows(&mut side, "a further window handed while the vision is not made", &|_| true);
+    drop(held);
+    windows(&mut side, "the chosen country, slot 2, wholly", &|side| wholly(side, 2));
+    // A tag the hour does not hold: its vision is refused, named, and nothing of slot 2 stands for it.
+    side.ask(refused.clone(), Head::Paced(HOUR), None);
+    windows(&mut side, "the refused country handed over, its refusal named", &|side| side.view_shown().perspective == refused.perspective && side.vision_refused().is_some());
+    assert_eq!(side.view().perspective, refused.perspective, "the refused country is handed over, not held off");
+    assert!(side.products().vision.is_err(), "the frame's vision is withheld: {:?}", side.products().vision.as_ref().map(|vision| vision.ours()));
+    assert!(side.products().vision_refused.as_deref().is_some_and(|why| !why.is_empty()), "the frame is told why the vision is withheld");
+    assert!(!side.products().overlay_coming(), "no overlay is laid out without a vision: the frame draws without one");
+    assert_eq!(side.with_side(|side| side.parts().map(|(_, layers)| layers[0].carried().entities)), Some(0), "a settled refusal is the vision's whole answer: it carries nothing");
+    windows(&mut side, "the refused view settled, so a paused map is ready", &|side| side.view_shown().perspective == refused.perspective && side.on_screen().is_some_and(|on| on.settled));
+    // A layout the frame holds for this same choice, made at an hour that held its tag (a seek to
+    // one that does not): the settled refusal lets it go.
+    side.with_side_mut(|side| {
+        side.hand_viewer(refused.perspective.clone(), 2);
+        assert!(side.take_overlay_withdrawal(), "a refused vision never keeps the layout of the hour before");
+    });
 }
 
 /// Plays from hour 0 a step a frame, as at 1,440 hours a second: between two steps, frames at the

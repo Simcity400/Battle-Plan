@@ -131,6 +131,9 @@ pub struct Labels {
     /// What the window lays out: the labels as today's product holds them, made again once stale.
     drawn: Arc<Display>,
     drawn_stale: bool,
+    /// The settled hours [`Self::drawn`] holds for, from the hour it was made; none while it was
+    /// made over a settle left unfinished.
+    drawn_hours: Option<(Hour, Hour)>,
 }
 
 impl Labels {
@@ -180,11 +183,17 @@ impl Labels {
             marked: [0; 3],
             drawn: Arc::default(),
             drawn_stale: true,
+            drawn_hours: None,
         }
     }
 
     pub fn fresh(&self) -> Self {
         Self { columns: self.columns, shown: self.shown, reads_vision: self.reads_vision, ..Self::new(Arc::clone(&self.localisation), self.ours) }
+    }
+
+    /// The settled hours the labels the window lays out hold for; none until a settle finished.
+    pub fn drawn_hours(&self) -> Option<std::ops::RangeInclusive<Hour>> {
+        self.drawn_hours.map(|(from, to)| from..=to)
     }
 
     /// The window's: it reads the viewing slot of the vision layer registered before it.
@@ -928,11 +937,14 @@ impl Layer for Labels {
     /// changed. Made here, on the side's thread: the layer writes nothing to the GPU, so this is
     /// its whole install.
     fn stage(&mut self) -> io::Result<()> {
-        if !self.drawn_stale {
-            return Ok(());
+        let (settled, hour) = (self.carried().entities == 0, self.hour);
+        if self.drawn_stale {
+            self.drawn = Arc::new(self.display());
+            self.drawn_stale = false;
+            self.drawn_hours = settled.then_some((hour, hour));
+        } else if settled {
+            self.drawn_hours = Some(self.drawn_hours.map_or((hour, hour), |(from, to)| (from.min(hour), to.max(hour))));
         }
-        self.drawn = Arc::new(self.display());
-        self.drawn_stale = false;
         Ok(())
     }
 
@@ -973,6 +985,23 @@ impl Layer for Labels {
     fn any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+/// The labels the window lays out, with the viewing slot, branch and hours they hold for.
+#[derive(Clone, Debug)]
+pub struct Stamped {
+    pub labels: Arc<Display>,
+    pub ours: u32,
+    pub branch: replay_data::BranchId,
+    pub hours: std::ops::RangeInclusive<Hour>,
+}
+
+/// [`drawn`], stamped with the side's branch and the hours they hold for; none while the side has
+/// no branch or the labels hold for no settled hour.
+pub fn stamped(side: &crate::playhead_host::MapSide) -> Option<Stamped> {
+    let (labels, ours) = drawn(side)?;
+    let layer = side.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<Labels>())?;
+    Some(Stamped { labels, ours, branch: side.branch()?, hours: layer.drawn_hours()? })
 }
 
 /// The labels the window lays out while the labels layer draws them, and the viewing slot they are for.

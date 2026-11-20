@@ -159,7 +159,7 @@ impl Viewer {
 
     fn with<F: Tables + ?Sized>(frame: &F, country: &Country, inputs: &Arc<Inputs>) -> io::Result<Self> {
         // `perspective::viewer` reads only the lowest slot (its fallback) and
-        // the requested tag's, so only those two tags are made text.
+        // the requested tag's or slot's, so only those are made text.
         let countries = whole_core::<tables::Countries, F>(frame)?;
         let mut tags = BTreeMap::new();
         if let Some(lowest) = countries.iter().min_by_key(|c| c.canonical_slot) {
@@ -176,6 +176,11 @@ impl Viewer {
                 found.canonical_slot,
                 String::from_utf8_lossy(&found.tag).into_owned(),
             );
+        }
+        if let Country::Slot { slot, .. } = country
+            && countries.iter().any(|c| c.canonical_slot == *slot)
+        {
+            tags.insert(*slot, String::new());
         }
         let (slot, _) = viewer_foundation::fold_tables::viewer(frame, &inputs.links, &tags, country)?;
         Ok(Self { slot, inputs: Arc::clone(inputs) })

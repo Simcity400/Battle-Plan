@@ -538,6 +538,15 @@ pub fn profile_frame(line: &str) {
     );
 }
 
+/// A named moment on this map's thread, with `fields` (a JSON object) as its detail.
+pub fn mark(name: &str, fields: serde_json::Value) {
+    let Some(log) = log() else {
+        return;
+    };
+    let at = epoch_ms();
+    log.send(format!(r#"{{"t":"map_mark","at":{at:.3},"map":{},"name":{},"fields":{fields}}}"#, log.map, json_string(name)), at);
+}
+
 /// The camera this frame drew with: a free eye (the fly and walk cameras) or the map's own, and
 /// its height. A free eye's world layers draw every map copy its far plane reaches, so a frame's
 /// cost cannot be read without knowing which camera drew it.

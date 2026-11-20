@@ -1,5 +1,6 @@
 //! A selected country's complete doctrine state at the requested replay hour.
-use super::{LoadContext, Product, validate_tag};
+use dashboard_base::products::{Country, validate_country};
+use super::{LoadContext, Product};
 use crate::{
     Source,
     catalogue::{self, View},
@@ -76,7 +77,7 @@ fn reward_benefits(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoctrineParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub hour: i32,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -170,7 +171,7 @@ impl Product for Doctrines {
     type Params = DoctrineParams;
     type Reply = DoctrineReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_tag(&params.tag)?;
+        validate_country(&params.country)?;
         params
             .branch_id
             .parse::<u64>()
@@ -286,10 +287,10 @@ fn text(bytes: &[u8]) -> io::Result<String> {
 /// The country holding `tag` this hour, as every per-country product resolves it.
 fn doctrine_country<'a>(
     frame: &'a DecodedFrame,
-    tag: &str,
+    country: &Country,
 ) -> io::Result<(&'a replay_data::rows::CountryRow, u32)> {
     let (countries, links) = metadata::country_tables(frame)?;
-    match metadata::tagged_country(countries, links, tag) {
+    match dashboard_base::products::country_in_frame(countries, links, country) {
         metadata::TaggedCountry::Found(country, slot) => Ok((country, slot)),
         metadata::TaggedCountry::Absent => Err(dashboard_core::refused(
             "Selected doctrine country is not recorded at this hour",
@@ -307,7 +308,7 @@ fn project(
     localisation: &installed_content_localisation::localisation::Localisation,
     default_reward: Option<i64>,
 ) -> io::Result<DoctrineReply> {
-    let (country, slot) = doctrine_country(frame, &params.tag)?;
+    let (country, slot) = doctrine_country(frame, &params.country)?;
     let status = frame
         .complete::<tables::DoctrineCountries>()?
         .iter()
@@ -537,7 +538,7 @@ fn project(
     let reply = DoctrineReply {
         branch_id: params.branch_id.clone(),
         hour: params.hour,
-        tag: params.tag.clone(),
+        tag: std::str::from_utf8(&country.tag).unwrap_or_default().to_owned(),
         folders,
         inventory,
         warnings,
@@ -559,7 +560,7 @@ fn enrich(
         effect_description::{self, Context},
         scripted_text::{EventObject, EventScope, EventScopes, ScriptedText},
     };
-    let (_, slot) = doctrine_country(frame, &reply.tag)?;
+    let (_, slot) = doctrine_country(frame, &Country::from(reply.tag.as_str()))?;
     let content = catalogue.scripted_content().map_err(invalid)?;
     let scripted = ScriptedText::new(frame, &catalogue.localisation, content, slot);
     let context = Context::new(
@@ -975,7 +976,7 @@ mod tests {
         }
         let params = DoctrineParams {
             branch_id: "1".into(),
-            tag: "MOD".into(),
+            country: "MOD".into(),
             hour: 7,
         };
         let render = |frame: &DecodedFrame| {
@@ -1167,7 +1168,7 @@ mod tests {
         }
         let params = DoctrineParams {
             branch_id: "1".into(),
-            tag: "MOD".into(),
+            country: "MOD".into(),
             hour: 7,
         };
         let reply = project(
@@ -1284,7 +1285,7 @@ mod tests {
         }
         let params = DoctrineParams {
             branch_id: "1".into(),
-            tag: "GER".into(),
+            country: "GER".into(),
             hour: 7,
         };
         let read = |frame: &DecodedFrame| {
@@ -1305,7 +1306,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1]
         );
-        assert_eq!(doctrine_country(&frame, "GER").unwrap().1, 7);
+        assert_eq!(doctrine_country(&frame, &"GER".into()).unwrap().1, 7);
         *frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(Vec::new()));
         let unresolved = read(&frame).unwrap_err();

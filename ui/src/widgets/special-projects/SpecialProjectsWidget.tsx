@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react';
 import type { CSSProperties, HTMLAttributes, KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -19,7 +20,7 @@ import { useViewportHeight } from '../../charts/useChartTokens';
 import { HeaderActionsSlot } from '../../charts/ZoomReset';
 import { useIdentityHour } from '../../dashboard/atHead';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -142,17 +143,17 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const following = widget.time.mode === 'follow';
   const axisOffset = track?.axisOffset ?? 0;
   const groups = useCountryGroups(runtime, track, active);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const resolved = useMemo(() => projectCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 0),
     [widget.countries, track, fallback, groups.data]);
   const tags = resolved.tags;
   // Each country's episodes over its branch, asked once: the head moves nothing here, it is read from the reply.
   const requests = useMemo(() => track && resolved.ready && view === 'history' ? tags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision, product: 'special-projects',
-    params: { branchId: track.branch.id, tag } })) : [], [track, resolved.ready, tags, view]);
+    params: { branchId: track.branch.id, country: countryFromKey(tag) } })) : [], [track, resolved.ready, tags, view]);
   const history = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
   const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
   const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));
-  const live = useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { tag } : null,
+  const live = useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateSpecialProjectsReply, structure: projectStructure });
   const currentData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
   const data = view === 'history' ? history.data : currentData;
@@ -302,7 +303,7 @@ export default function SpecialProjectsWidget(props: WidgetProps) {
   const actions = useContext(HeaderActionsSlot);
   const track = props.runtime.tracks.find(item => item.id === props.widget.trackIds[0]);
   const groups = useCountryGroups(props.runtime, track, props.active);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const selected = useMemo(() => projectCountries(props.widget.countries, fallback ? [fallback] : [], groups.data,
     track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 0), [props.widget.countries, fallback, groups.data, track]);
   const axisOffset = track?.axisOffset ?? 0;

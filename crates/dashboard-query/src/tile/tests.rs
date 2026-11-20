@@ -1,9 +1,9 @@
 use super::*;
-use crate::{Query, chart::ChartRun, fixture::*, identity::{Holder, HolderRun}, series::grid};
+use crate::{Query, chart::ChartRun, fixture::*, identity::{Country, Holder, HolderRun}, series::grid};
 
 /// The lines of a series without parts.
 fn whole(tags: &[&str]) -> Vec<Ask> {
-    tags.iter().map(|tag| Ask::whole(tag)).collect()
+    tags.iter().map(|tag| Ask::whole(*tag)).collect()
 }
 
 fn line<'q>(query: &'q Query<'static>) -> Line<'q, 'static> {
@@ -47,7 +47,7 @@ fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
         let from = first - bin_hours;
         let width = ((last - from + 1) / bin_hours) as u32;
         assert_eq!(grid(last - from + 1, width).1, bin_hours);
-        let drawn: Vec<(Ask, Vec<(i32, i32)>)> = TAGS.iter().map(|tag| (Ask::whole(tag), vec![(from as i32, last as i32)])).collect();
+        let drawn: Vec<(Ask, Vec<(i32, i32)>)> = TAGS.iter().map(|tag| (Ask::whole(*tag), vec![(from as i32, last as i32)])).collect();
         let view = line.summaries_within(&drawn, from as i32, last as i32, width).unwrap();
         for index in first_tile..=last_tile {
             let (reply, tiles) = wire(&line, bin_hours, index);
@@ -59,13 +59,13 @@ fn a_tile_holds_the_bins_a_view_of_its_hours_reads_at_every_level() {
                     .collect();
                 assert_eq!(tiles[at], expected, "{tag}, bins of {bin_hours} hours, tile {index}");
                 compared += tiles[at].iter().flatten().count();
-                assert_eq!(reply.lines[at].tag, *tag);
+                assert_eq!(reply.lines[at].country, Country::from(*tag));
             }
         }
         for (at, tag) in TAGS.iter().enumerate() {
             let pieces = (first_tile..=last_tile).flat_map(|index| wire(&line, bin_hours, index).0.lines.swap_remove(at).missing);
-            let parts = line.parts(tag, first as i32, last as i32);
-            assert_eq!(joined(pieces), line.missing(tag, first as i32, last as i32, &parts).unwrap(), "{tag}'s hours not recorded, bins of {bin_hours}");
+            let parts = line.parts(*tag, first as i32, last as i32);
+            assert_eq!(joined(pieces), line.missing(*tag, first as i32, last as i32, &parts).unwrap(), "{tag}'s hours not recorded, bins of {bin_hours}");
         }
     }
     assert!(compared > 1_000, "{compared} bins compared");
@@ -327,7 +327,7 @@ fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
             false => TAGS.to_vec(),
         };
         let chart = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" },
-            "tags": keys, "from": from, "to": to, "width": width, "withMarks": true });
+            "countries": keys, "from": from, "to": to, "width": width, "withMarks": true });
         let (asked, requests) = view::requests(&chart).unwrap();
         assert_eq!(asked, view::View { from, to, width });
         let bin_hours = asked.bin_hours();
@@ -342,7 +342,7 @@ fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
             .collect();
         let assembled = view::assemble(asked, &replies).unwrap();
         assert_eq!(assembled.bin_hours, bin_hours);
-        assert_eq!(assembled.series.iter().map(|line| line.tag.as_str()).collect::<Vec<_>>(), keys);
+        assert_eq!(assembled.series.iter().map(|line| line.country.tag().unwrap()).collect::<Vec<_>>(), keys);
         let tags: Vec<String> = TAGS.map(str::to_owned).to_vec();
         let (first_bin, last_bin) = (i64::from(from).div_euclid(bin_hours) * bin_hours, i64::from(to).div_euclid(bin_hours) * bin_hours + bin_hours - 1);
         let walked = match bin_hours {
@@ -374,7 +374,7 @@ fn a_view_assembled_from_tiles_holds_the_chart_of_its_whole_bins() {
             })
             .collect();
         for assembled in &assembled.series {
-            let tag = assembled.tag.as_str();
+            let tag = assembled.country.tag().unwrap();
             let own = TAGS.iter().position(|held| *held == tag).unwrap();
             let expected: Vec<Option<ChartBucket>> = walked[own].0.buckets.iter().map(|bucket| bucket.map(|bucket| ChartBucket { absolute_total: 0, ..bucket })).collect();
             assert_eq!(assembled.summary.buckets, expected, "{tag}'s bins over {from}..{to} at {width}");

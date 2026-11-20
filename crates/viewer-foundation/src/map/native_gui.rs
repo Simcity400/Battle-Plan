@@ -634,6 +634,12 @@ pub struct Bound {
     pub rotation: Option<f32>,
     /// Code-written drawable scale.
     pub scale: Option<f32>,
+    /// A clip rectangle the code sets on a window, in its root's layout pixels: its children draw
+    /// within it as well as within any clip of its own (the game's clip propagation).
+    pub clip: Option<Clip>,
+    /// An edit box's caret while it shows: the codepoint index of the text it stands before.
+    /// The edit box draws the content's `cursor` sprite there.
+    pub caret: Option<usize>,
     /// A window's opacity as its instance keeps it: every sprite part of it and of
     /// its children is drawn with its alpha times this, and every text's `ModColor` alpha is
     /// set to it.
@@ -1104,11 +1110,42 @@ pub struct Region {
     pub owner: Option<String>,
     /// A scrollbar action as `(vertical, direction)`.
     pub scroll: Option<(bool, i32)>,
+    /// A scrollbar's slider: the axis it slides along and where it stands on its travel.
+    pub slide: Option<Slide>,
     pub rect: Rect,
     pub clip: Option<Clip>,
     /// Native pointer geometry, kept separately from cropped/scaled draw bounds.
     pub hit: Option<HitGeometry>,
     pub disabled: bool,
+}
+
+/// A scrollbar slider's place: it slides vertically or not, over `travel` pixels of its rail,
+/// and stands `thumb` pixels along it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Slide {
+    pub vertical: bool,
+    pub travel: i32,
+    pub thumb: i32,
+}
+
+impl Slide {
+    /// The scrollbar value a drag moving the slider by `moved` pixels from this place asks for,
+    /// over the range `[low, high]`: the slider held on its rail, the value its share of the
+    /// range, rounded half away from zero.
+    pub fn dragged(self, moved: i32, [low, high]: [i32; 2]) -> i32 {
+        let travel = self.travel.max(0);
+        if travel == 0 {
+            return low;
+        }
+        let offset = self.thumb.wrapping_add(moved).clamp(0, travel);
+        let low_f = low as f32;
+        truncate_half_away((high as f32 - low_f) * (offset as f32 / travel as f32) + low_f)
+    }
+}
+
+/// Rounds half away from zero, then truncates, as the game's float to integer conversions here do.
+pub(crate) fn truncate_half_away(value: f32) -> i32 {
+    installed_content_core::crt::truncate_f32(if value >= 0.0 { value + 0.5 } else { value - 0.5 })
 }
 
 impl Layout {
@@ -1614,6 +1651,9 @@ pub(super) fn own_sprite(element: &Element) -> Option<(&[u8], bool)> {
         _ => None,
     }
 }
+
+/// The sprite every edit box draws its caret with.
+pub(super) const EDIT_CARET: &[u8] = b"cursor";
 
 /// Whether `element` is shown: its visible bit as its instance keeps it (every Show checks the
 /// Hide bit first, [`lifecycle::Shown::show`]); in a layout with no lifecycle, as a window its
@@ -2146,6 +2186,7 @@ impl<'a> Walk<'a> {
         clip: Option<Clip>,
     ) -> Result<bool, Refusal> {
         let bound = self.bound(window);
+        let own_clip = bound.and_then(|bound| bound.clip);
         if !self.shown(window) || !window_draws(window, bound)? {
             return Ok(false);
         }
@@ -2155,6 +2196,7 @@ impl<'a> Walk<'a> {
                 path: window.path.clone(),
                 owner: self.region_owner.clone(),
                 scroll: None,
+                slide: None,
                 rect: [
                     origin[0] as f32,
                     origin[1] as f32,
@@ -2200,6 +2242,10 @@ impl<'a> Walk<'a> {
             )
         } else {
             clip
+        };
+        let clip = match own_clip {
+            Some(own) => intersect(clip, own),
+            None => clip,
         };
         // The laid-out window's own children name the parts drawn for them and in them.
         let root = self.top.is_none();
@@ -2350,16 +2396,7 @@ impl<'a> Walk<'a> {
                 frame.size[0] - (left + right) - (button.position[0] + moved[0]),
                 frame.size[1] - (top + bottom) - (button.position[1] + moved[1]),
             ]);
-            let drawn = self.sprite_part(
-                background,
-                &button.sprite,
-                button.frame,
-                1.0,
-                0.0,
-                at,
-                Centre::None,
-                clip,
-            );
+            let drawn = self.drag_button(background, button, button.frame, at, clip);
             self.sized = None;
             if let Err(refusal) = drawn {
                 self.refusals.push(Refusal {
@@ -2435,8 +2472,8 @@ impl<'a> Walk<'a> {
             }
             // Window opacity does not reach overlapping-list items.
             Fields::List(_) => self.hold(child, origin, parent, clip, 1.0, None)?,
-            // No instance factory: it draws nothing.
-            Fields::PositionType(_) => {}
+            // It draws nothing; it holds the window the code places at its position.
+            Fields::PositionType(_) => self.hold(child, origin, parent, clip, self.opacity, None)?,
             Fields::ListBox(list) => self.list_box(child, list, origin, parent, clip)?,
             Fields::EditBox(edit) => self.edit_box(child, edit, origin, parent, clip)?,
             Fields::Scrollbar(bar) => self.scrollbar_child(child, bar, origin, clip)?,
@@ -2485,6 +2522,7 @@ impl<'a> Walk<'a> {
                 )
             }
             Fields::List(list) => (list_origin(list, parent, set), list.size),
+            Fields::PositionType(place) => (set.unwrap_or(place.position), [0, 0]),
             Fields::ListBox(list) => (
                 if let Some(place) = placed {
                     place
@@ -2506,11 +2544,12 @@ impl<'a> Walk<'a> {
                 ));
             }
         };
-        if self.bindings.regions {
+        if self.bindings.regions && element.kind != Kind::PositionType {
             self.regions.push(Region {
                 path: element.path.clone(),
                 owner: self.region_owner.clone(),
                 scroll: None,
+                slide: None,
                 rect: [
                     (origin[0] + at[0]) as f32,
                     (origin[1] + at[1]) as f32,
@@ -2601,6 +2640,55 @@ impl<'a> Walk<'a> {
                 }
             }
         }
+    }
+
+    /// A `buttonDrag` (a window background, a scrollbar slider) in the state the pointer gives
+    /// it, taking the pointer as a button does unless it is `alwaystransparent`.
+    fn drag_button(
+        &mut self,
+        element: &Element,
+        button: &native::Button,
+        frame: i32,
+        at: [i32; 2],
+        clip: Option<Clip>,
+    ) -> Result<(), Refusal> {
+        let path = &element.path;
+        let bound = self.bound(element);
+        let pointer = self.bindings.pointer.as_ref();
+        let state = if pointer.is_some_and(|pointer| pointer.pressed.as_deref() == Some(path)) {
+            State::Down(self.pointer_since(bound, 2))
+        } else if self.hovered.as_deref() == Some(path) {
+            State::Over(self.pointer_since(bound, 3))
+        } else {
+            State::Up
+        };
+        if let State::Down(_) | State::Over(_) = state {
+            self.pointed = Some(Pointed {
+                path: path.clone(),
+                down: matches!(state, State::Down(_)),
+            });
+        }
+        if let Some((part, hit)) = self.state_part(
+            element,
+            &button.sprite,
+            FrameSource::Own(frame),
+            state,
+            1.0,
+            0.0,
+            at,
+            Centre::None,
+            clip,
+        )? && !button.always_transparent
+        {
+            self.hits.push(Hittable {
+                path: path.clone(),
+                part,
+                hit,
+                check_box: false,
+                checked: false,
+            });
+        }
+        Ok(())
     }
 
     /// Places an icon or button-centred drawable, drawing it in the Up state.
@@ -3133,6 +3221,7 @@ impl<'a> Walk<'a> {
                         path: path.clone(),
                         owner: self.region_owner.clone(),
                         scroll: None,
+                        slide: None,
                         rect: [x, y, extent[0] as f32, extent[1] as f32],
                         clip,
                         hit: None,
@@ -3188,6 +3277,7 @@ impl<'a> Walk<'a> {
                 path: path.clone(),
                 owner: self.region_owner.clone(),
                 scroll: None,
+                slide: None,
                 rect,
                 clip,
                 hit,
@@ -3686,6 +3776,7 @@ impl<'a> Walk<'a> {
                 path: element.path.clone(),
                 owner: self.region_owner.clone(),
                 scroll: None,
+                slide: None,
                 rect: [
                     origin[0]
                         .wrapping_add(text_box.position[0])
@@ -4864,6 +4955,7 @@ fn collect_assets<'a>(
         Fields::EditBox(edit) => {
             assets.fonts.insert(edit.font.clone());
             assets.add_localised(localisation, &edit.text);
+            assets.sprites.insert(EDIT_CARET.to_vec());
             // A text sprite of the empty name over `textureFile`.
             if edit.flags() & 0x2 == 0 {
                 assets.sprites.insert(Vec::new());
@@ -5330,6 +5422,7 @@ impl Holder {
                     path: region.path.clone(),
                     owner: region.owner.clone(),
                     scroll: region.scroll,
+                    slide: region.slide,
                     rect: [
                         at[0] + k * region.rect[0],
                         at[1] + k * region.rect[1],

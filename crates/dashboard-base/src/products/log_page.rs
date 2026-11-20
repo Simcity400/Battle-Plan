@@ -56,11 +56,11 @@ pub struct LogPageRow {
     pub key: String,
     /// Its ordinal among the asked rows from the timeline's first hour.
     pub ordinal: String,
-    /// The tag whose filter it matched, when a facet is filtered by tags.
+    /// The country whose filter it matched, when a facet is filtered by countries.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub tag: Option<String>,
-    /// Its ordinal among its tag's rows from the timeline's first hour, with a tag.
+    pub country: Option<dashboard_query::identity::Country>,
+    /// Its ordinal among its country's rows from the timeline's first hour, with a country.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub own_ordinal: Option<String>,
@@ -132,7 +132,7 @@ pub fn missing(query: &Query<'_>, log: &dashboard_declare::Log, from: i32, to: i
 }
 
 /// A page of `params.log`'s rows, each mapped by `map` (a product's own row shape).
-pub fn page<R>(query: &Query<'_>, params: &LogPageParams, mut map: impl FnMut(&log::Paged, Option<&str>) -> R) -> io::Result<(log::Page, Vec<R>, Vec<MissingSpan>)> {
+pub fn page<R>(query: &Query<'_>, params: &LogPageParams, mut map: impl FnMut(&log::Paged, Option<&dashboard_query::identity::Country>) -> R) -> io::Result<(log::Page, Vec<R>, Vec<MissingSpan>)> {
     let log = declared(&params.log)?;
     let reader = log::Reader::new(query, log)?;
     let to = hour_of(Some(params.to), "to")?;
@@ -143,6 +143,6 @@ pub fn page<R>(query: &Query<'_>, params: &LogPageParams, mut map: impl FnMut(&l
     let cursor = params.cursor.as_deref().unwrap_or("0").parse::<u64>().map_err(|_| invalid("Invalid cursor"))?;
     let selection = reader.select(&params.facets, query.timeline.first, to)?;
     let page = reader.page(&selection.patterns, selection.groups.len(), from, to, cursor, params.page_size)?;
-    let rows = page.rows.iter().map(|paged| map(paged, selection.groups[paged.group].as_deref())).collect();
+    let rows = page.rows.iter().map(|paged| map(paged, selection.groups[paged.group].as_ref())).collect();
     Ok((page, rows, missing(query, log, from, to)?))
 }

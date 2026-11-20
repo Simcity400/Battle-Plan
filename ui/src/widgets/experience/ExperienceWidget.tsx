@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -15,7 +16,7 @@ import { useChartTokens } from '../../charts/useChartTokens';
 import { shownUntil } from '../../charts/view';
 import type { PlaybackMode } from '../../charts/view';
 import { motionOf } from '../../charts/easing.ts';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { countryLineColours } from '../../dashboard/countryLineColours';
 import { useCountryLineStyles } from '../../dashboard/useCountryLineStyles';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -54,7 +55,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const grouped = widget.countries.kind === 'group';
   const groups = useCountryGroups(runtime, track, active && grouped);
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   const lastHour = track?.branch.lastHour ?? 0;
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, definition.countries.max),
     [widget.countries, fallback, groups.data, lastHour]);
@@ -77,7 +78,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
   const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const headQuery = (branch: ExperienceBranch) => following && active && track && resolved.tags.length && branches.includes(branch)
-    ? { product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ tag, hour: 0 })) } } : null;
+    ? { product: 'series-state', params: { branchId: track.branch.id, family: experienceFamily(measure, branch), reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null;
   const followed = {
     army: useFollow(store, useMemo(() => headQuery('army'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT), // eslint-disable-line react-hooks/exhaustive-deps
     navy: useFollow(store, useMemo(() => headQuery('navy'), [following, active, track?.branch.id, measure, branches.join(), resolved.tags]), root, NO_PAINT), // eslint-disable-line react-hooks/exhaustive-deps
@@ -89,7 +90,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
     [heads.army, heads.navy, heads.air, resolved.tags, tiles.army.head, tiles.navy.head, tiles.air.head]); // eslint-disable-line react-hooks/exhaustive-deps
   const first = resolved.tags[0] ?? null;
   const [hover, setHover] = useState<number | null>(null);
-  const card = useHeadProduct(runtime, widget, 'country-experience', track && first ? { tag: first } : null,
+  const card = useHeadProduct(runtime, widget, 'country-experience', track && first ? { country: countryFromKey(first)} : null,
     { active, validate: validateExperienceReply, structure: experienceStructure, hoverHour: hover });
   const setRoots = useCallback((element: HTMLDivElement | null) => { setRoot(element); card.root(element); }, [card.root]);
   const styleAt = Math.max(extent[0], Math.min(moment, extent[1]));

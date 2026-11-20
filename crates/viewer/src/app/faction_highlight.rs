@@ -14,6 +14,14 @@ pub(super) struct Key {
     pub borders: u64,
     pub regions: Arc<[u32]>,
     pub adjacency: bool,
+    /// The ground selection outlined beside it.
+    pub selection: Option<super::ground_click::Outline>,
+}
+
+/// Whether the frame wants the picture a highlight is built over: for a hovered pin's regions or
+/// adjacency area, a ground selection's outline, or a highlight on screen to take off.
+pub(super) fn wanted(hovered: &[u32], selection: Option<&super::ground_click::Outline>, shown: bool) -> bool {
+    !hovered.is_empty() || selection.is_some() || shown
 }
 
 /// A highlight and, when it was built over the political layer's picture, the plain plans that
@@ -94,7 +102,7 @@ impl<T: Send + 'static> Lane<T> {
                 Err(mpsc::TryRecvError::Empty) => return None,
             }
         }
-        if self.installed || key.regions.is_empty() {
+        if self.installed || (key.regions.is_empty() && key.selection.is_none()) {
             return None;
         }
         let build = prepare();

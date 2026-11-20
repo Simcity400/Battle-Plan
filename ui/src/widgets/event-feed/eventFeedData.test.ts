@@ -32,10 +32,10 @@ test('a page row is its named row, validated, shown at its hour from its read, a
 test('the kind facet takes the codes of the chosen categories, never a code no category holds', () => {
   const kinds: FeedKindCode[] = [{ kind: 'warDeclared', code: 0, category: 'warsPeace' }, { kind: 'scriptEventFired', code: 8, category: 'politics' },
     { kind: 'guaranteeGranted', code: 129, category: 'diplomacy' }];
-  assert.deepEqual(feedFacets(kinds, new Set(['warsPeace', 'diplomacy'])), [{ name: 'kind', values: [0, 129], tags: [] }]);
+  assert.deepEqual(feedFacets(kinds, new Set(['warsPeace', 'diplomacy'])), [{ name: 'kind', values: [0, 129], countries: [] }]);
   assert.equal(feedFacets(kinds, new Set()), null);
   assert.equal(feedFacets(kinds, new Set(['milestones'])), null, 'no kind of the log is a milestone: the log is not asked with an empty filter');
-  assert.deepEqual(feedFacets(kinds, new Set(['milestones', 'politics'])), [{ name: 'kind', values: [8], tags: [] }]);
+  assert.deepEqual(feedFacets(kinds, new Set(['milestones', 'politics'])), [{ name: 'kind', values: [8], countries: [] }]);
 });
 
 test('a row matches a chosen country through any country it names at its own hour, a vanished one at its last', () => {

@@ -1,3 +1,5 @@
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { countryTagAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
@@ -17,7 +19,7 @@ import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryColours } from '../../charts/race/countryColours';
 import { useCountryLooks } from '../../dashboard/countryLooks';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -71,10 +73,14 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   // A followed head renders only when the reply differs; names, groups and colours are read at the clock's hour then.
   const hour = head.hour ?? Math.floor(runtime.clock.getHour());
-  const fallback = useMemo(() => selectedTags({ kind: 'selected' }, track), [track]);
+  const selected = useMemo(() => selectedCountryKeys({ kind: 'selected' }, track), [track]);
+  // Rows name their countries by tag: the dashboard's slot is matched by the tag it holds at the hour shown.
+  const bySlot = widget.countries.kind === 'selected' && selected.some(isSlotKey);
+  const slotTags = useSlotTags(runtime.client, track, active && bySlot);
+  const fallback = useMemo(() => bySlot ? selected.flatMap(key => countryTagAt(slotTags, countryFromKey(key), hour) ?? []) : selected, [bySlot, selected, slotTags, hour]);
   const all = useMemo(() => data ? balanceRows(data, measure) : [], [data, measure]);
-  const chosen = useMemo(() => balanceSelection(widget.countries, fallback, groups.data, hour, track?.branch.lastHour ?? hour),
-    [widget.countries, fallback, groups.data, hour, track?.branch.lastHour]);
+  const chosen = useMemo(() => bySlot && !slotTags ? null : balanceSelection(widget.countries, fallback, groups.data, hour, track?.branch.lastHour ?? hour),
+    [bySlot, slotTags, widget.countries, fallback, groups.data, hour, track?.branch.lastHour]);
   const rows = useMemo(() => chosen ? rankedRows(all, chosen) : [], [all, chosen]);
   const items = useItems(runtime, track, rows, hour, active);
   const slots = widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? widget.countries.group.count : items.length;
@@ -132,7 +138,7 @@ function Partners({ widget, runtime, active, tag, name, hour, measure, following
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0])!;
   const asked = useProduct<LendLeasePartnersReply>(runtime.client, { sourceId: track.source.id, revision: track.source.revision, product: LEND_LEASE_PARTNERS,
-    params: { branchId: track.branch.id, holder: tag, measure } }, active, validateLendLeasePartners, track.source);
+    params: { branchId: track.branch.id, holder: countryFromKey(tag), measure } }, active, validateLendLeasePartners, track.source);
   const data = asked.data;
   const rows = useMemo(() => data ? partnersAt(data, hour) : [], [data, measure, hour]);
   const items = useItems(runtime, track, rows, hour, active);

@@ -28,6 +28,9 @@ pub const LAND_COMBAT_WINDOW: &str = "land_combat_mapicon";
 pub const VICTORY_POINT_WINDOW: &str = "victory_point_mapicon";
 pub const CAPITAL_WINDOW: &str = "capital_mapicon";
 pub const RAID_WINDOW: &str = "raid_map_icon";
+pub const RAID_DETAILS_WINDOW: &str = "raid_map_target_details_window";
+pub const RAID_DETAILS_ITEM_WINDOW: &str = "raid_target_entries_item";
+pub const RAID_TYPE_ICON_WINDOW: &str = "raid_type_icon_entry";
 pub const FACTION_PING_WINDOW: &str = "faction_ping_map_icon";
 /// The Operatives map mode's per-state intel container and its entry windows.
 pub const INTEL_CONTAINER_WINDOW: &str = "intel_map_mode_map_icon";
@@ -213,6 +216,9 @@ impl NativeWindows {
             CAPITAL_WINDOW.as_bytes(),
             FACTION_PING_WINDOW.as_bytes(),
             RAID_WINDOW.as_bytes(),
+            RAID_DETAILS_WINDOW.as_bytes(),
+            RAID_DETAILS_ITEM_WINDOW.as_bytes(),
+            RAID_TYPE_ICON_WINDOW.as_bytes(),
             AIR_BASE_WINDOW.as_bytes(),
             AIR_WING_WINDOW.as_bytes(),
             AIR_MISSION_WINDOW.as_bytes(),

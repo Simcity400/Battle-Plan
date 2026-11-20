@@ -6,13 +6,13 @@
 //! there a holder with no row has counted none. A month counts from its first hour, or from the
 //! baseline where that is later.
 
+use dashboard_base::products::Country;
 use super::super::{
     LoadContext, Product,
     army::{self, ArmySpan},
     forces::{self, ForcePart, ForceRun, ForceSeries, ForceSizeReply},
 };
 use crate::Source;
-use dashboard_base::products::validate_tag;
 use dashboard_declare::Key;
 use dashboard_query::{
     Query,
@@ -74,7 +74,7 @@ pub enum NavalPeriod {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NavalLossesParams {
     pub branch_id: String,
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     pub top: Option<usize>,
     pub attribution: NavalAttribution,
     pub kind: NavalKind,
@@ -235,10 +235,10 @@ fn validate(params: &NavalLossesParams) -> Result<(), &'static str> {
     if params.branch_id.parse::<u64>().is_err() {
         return Err("Invalid branch");
     }
-    if params.top.is_some_and(|top| top == 0 || !params.tags.is_empty()) {
+    if params.top.is_some_and(|top| top == 0 || !params.countries.is_empty()) {
         return Err("Invalid country selection");
     }
-    params.tags.iter().try_for_each(|tag| validate_tag(tag))
+    params.countries.iter().try_for_each(dashboard_base::products::validate_country)
 }
 
 fn parts(kind: NavalKind) -> Vec<ForcePart> {
@@ -381,14 +381,14 @@ pub fn reply(query: &Query<'_>, params: &NavalLossesParams, cancelled: &AtomicBo
     let run = stretch.run;
     let series = dashboard_declare::series("naval-losses").ok_or_else(|| invalid("naval-losses is not declared"))?;
     let line = Line::new(query, series, series.measure("total").ok_or_else(|| invalid("naval-losses has no total"))?)?;
-    let tags: Vec<String> = match params.top {
-        Some(top) => ranked(query, run, params, last, top, &mut reply.warnings)?,
+    let tags: Vec<Country> = match params.top {
+        Some(top) => ranked(query, run, params, last, top, &mut reply.warnings)?.into_iter().map(Country::from).collect(),
         None => {
             let mut seen = BTreeSet::new();
-            params.tags.iter().filter(|tag| seen.insert((*tag).clone())).cloned().collect()
+            params.countries.iter().filter(|tag| seen.insert((*tag).clone())).cloned().collect()
         }
     };
-    let mut held: BTreeMap<String, Vec<Part>> = BTreeMap::new();
+    let mut held: BTreeMap<Country, Vec<Part>> = BTreeMap::new();
     for tag in &tags {
         crate::metadata::check_cancel(cancelled)?;
         held.insert(tag.clone(), line.parts(tag, first, last).into_iter().filter(|part| part.run == run).collect());
@@ -415,7 +415,7 @@ pub fn reply(query: &Query<'_>, params: &NavalLossesParams, cancelled: &AtomicBo
             }
         }
         reply.series.push(ForceSeries {
-            tag: tag.clone(),
+            country: tag.clone(),
             identities: if params.top.is_none() { forces::identities(parts) } else { Vec::new() },
             runs,
             segments: forces::segments(query, tag, first, last),

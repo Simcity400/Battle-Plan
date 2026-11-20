@@ -778,6 +778,11 @@ impl Folder {
         (self.worker_ns, self.worker_runs)
     }
 
+    /// A perspective change's restart is not taken yet: what is shown is the viewer's before it.
+    pub(super) fn restarting(&self) -> bool {
+        self.answered < self.asked
+    }
+
     /// What vision has published: current once the product of the last hour applied is taken;
     /// otherwise the hour of the newest taken, or while a restart is unanswered, the hour shown
     /// when it was asked.

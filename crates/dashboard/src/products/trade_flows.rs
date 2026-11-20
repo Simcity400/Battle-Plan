@@ -6,11 +6,11 @@
 //! country holds, a resource no definition names, a sum not recorded) are counted per hour as
 //! left out, never drawn as trade and never as none.
 
+use dashboard_base::products::Country;
 use super::{LoadContext, Product, identities::CountryIdentityRun};
 use crate::{Source, span::HourSpan};
 use dashboard_base::products::{
     resources::{RESOURCE_DECIMALS, ResourceInfo, ResourceNaming},
-    validate_tag,
 };
 use dashboard_query::{Query, identity::Holder};
 use replay::lanes::{self, Cell, Keys, Step};
@@ -37,7 +37,7 @@ pub struct TradeFlows;
 pub struct TradeFlowParams {
     pub branch_id: String,
     /// Every country's trade when none; else the flows any holder of these tags sold or bought.
-    pub tags: Option<Vec<String>>,
+    pub countries: Option<Vec<Country>>,
     /// The window of hours read ([`super::windows`]): never the whole timeline in one reply.
     pub window: u32,
     /// The hours of the window read; all of it when not given.
@@ -360,8 +360,8 @@ impl Product for TradeFlows {
         {
             return Err("Invalid trade flow hours");
         }
-        for tag in params.tags.iter().flatten() {
-            validate_tag(tag)?;
+        for tag in params.countries.iter().flatten() {
+            dashboard_base::products::validate_country(tag)?;
         }
         Ok(())
     }
@@ -378,7 +378,7 @@ impl Product for TradeFlows {
         warnings.extend(notes);
         let defined: BTreeSet<u32> = resources.iter().map(|resource| resource.id).collect();
         let tags = identity_tags(&query);
-        let chosen: Option<HashSet<(u32, u32)>> = params.tags.as_ref().map(|asked| {
+        let chosen: Option<HashSet<(u32, u32)>> = params.countries.as_ref().map(|asked| {
             asked
                 .iter()
                 .flat_map(|tag| query.holders.within(tag, from, to))

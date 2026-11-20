@@ -8,8 +8,8 @@ const number = (value: string): LogCell => ({ kind: 'number', value });
 const textCell = (value: string): LogCell => ({ kind: 'text', value });
 
 test('a country\'s ledger asks either party\'s facet by its tags; every country asks the kinds alone', () => {
-  assert.deepEqual(ledgerFacets([11, 20], ['GER']), [{ name: 'kind', values: [11, 20], tags: [] }, { name: 'country|receiver', values: [], tags: ['GER'] }]);
-  assert.deepEqual(ledgerFacets([11], null), [{ name: 'kind', values: [11], tags: [] }]);
+  assert.deepEqual(ledgerFacets([11, 20], ['GER']), [{ name: 'kind', values: [11, 20], countries: [] }, { name: 'country|receiver', values: [], countries: ['GER'] }]);
+  assert.deepEqual(ledgerFacets([11], null), [{ name: 'kind', values: [11], countries: [] }]);
   assert.deepEqual(shownKinds(key => key !== 'payments'), [10, 11, 12, 20, 34], 'unavailable amounts follow deliveries');
   assert.deepEqual(shownKinds(key => key === 'payments'), [21]);
 });

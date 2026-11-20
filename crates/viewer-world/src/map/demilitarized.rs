@@ -378,6 +378,9 @@ pub struct DemilitarizedPass {
     /// Hover highlights share the pipeline/textures, with their own palette entry.
     hover: Vec<Run>,
     hover_color: Option<[f32; 4]>,
+    /// The ground selection's outline, palette entry 1 or 2, drawn before the zone's 7.
+    selection: Vec<Run>,
+    selection_color: Option<[f32; 4]>,
 }
 
 impl DemilitarizedPass {
@@ -420,6 +423,8 @@ impl DemilitarizedPass {
             color: assets.demilitarized_color,
             hover: Vec::new(),
             hover_color: None,
+            selection: Vec::new(),
+            selection_color: None,
         })
     }
 
@@ -458,6 +463,21 @@ impl DemilitarizedPass {
     pub fn clear_hover(&mut self) {
         self.hover.clear();
         self.hover_color = None;
+    }
+
+    /// The ground selection's outline in `color`, or none.
+    pub fn set_selection(&mut self, device: &wgpu::Device, plan: Option<(&ZonePlan, [f32; 4])>) -> io::Result<()> {
+        match plan {
+            Some((plan, color)) => {
+                Self::upload_plan(device, plan, &mut self.selection)?;
+                self.selection_color = Some(color);
+            }
+            None => {
+                self.selection.clear();
+                self.selection_color = None;
+            }
+        }
+        Ok(())
     }
 
     fn upload_plan(device: &wgpu::Device, plan: &ZonePlan, runs: &mut Vec<Run>) -> io::Result<()> {
@@ -503,6 +523,9 @@ impl DemilitarizedPass {
         // interaction feedback, not a border, and draws whatever the border switches say.
         let mut batches = Vec::new();
         for class in BorderClass::ALL {
+            if let Some(color) = self.selection_color {
+                batches.push(self.batch(class, &self.selection, color, coarse));
+            }
             let mut zone = self.batch(class, &self.runs, self.color, coarse);
             edges.apply(class, &mut zone.alpha, &mut zone.selection, &mut zone.runs);
             batches.push(zone);

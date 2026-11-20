@@ -84,7 +84,7 @@ test('a saved pair round-trips with its hour and the raw ids its lines name', ()
 test('a top N is the Scoreboard’s ranking at the hour, greatest first, of countries ranked by a recorded value', () => {
   const cell = (valueRaw: string | null) => ({ valueRaw, missing: valueRaw === null ? 'Not recorded' : null, partial: false });
   const ranking: ScoreboardReply = { branchId: 'b', hour: 0, missing: null, warnings: [],
-    rows: [{ tag: 'SOV', cells: [cell('152')] }, { tag: 'ENG', cells: [cell('94')] }, { tag: 'XXX', cells: [cell(null)] }] };
+    rows: [{ country: 'SOV', tag: 'SOV', cells: [cell('152')] }, { country: 'ENG', tag: 'ENG', cells: [cell('94')] }, { country: 'XXX', tag: 'XXX', cells: [cell(null)] }] };
   assert.deepEqual(replyTopTags(ranking), ['SOV', 'ENG']);
   assert.deepEqual(replyTopTags({ ...ranking, rows: [], missing: 'Not recorded at this hour' }), []);
 });

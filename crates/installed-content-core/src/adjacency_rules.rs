@@ -54,8 +54,11 @@ pub struct AdjacencyRule {
     /// Permission bits by [`Verdict`].
     pub permissions: [u8; 4],
     pub required_provinces: Vec<u32>,
-    /// A custom-tooltip AND block: its `tooltip` is not a trigger.
+    /// A custom-tooltip AND block: its `tooltip` and `not_tooltip` are not triggers.
     pub is_disabled: Triggers,
+    /// The key the game localises for why the rule is disabled: `not_tooltip`, else `tooltip`
+    /// with `_NOT` appended, else empty; or why it cannot be read.
+    pub disabled_reason: Result<Vec<u8>, String>,
     pub is_enemy: Triggers,
     pub is_friend: Triggers,
     pub is_neutral: Triggers,
@@ -143,6 +146,7 @@ fn rule(items: &[Item]) -> AdjacencyRule {
         permissions: [0; 4],
         required_provinces: Vec::new(),
         is_disabled: Triggers::default(),
+        disabled_reason: Ok(Vec::new()),
         is_enemy: Triggers::default(),
         is_friend: Triggers::default(),
         is_neutral: Triggers::default(),
@@ -198,6 +202,7 @@ fn read_rule(items: &[Item], name: &str) -> io::Result<AdjacencyRule> {
         permissions: [0x0f; 4],
         required_provinces: Vec::new(),
         is_disabled: Triggers::default(),
+        disabled_reason: Ok(Vec::new()),
         is_enemy: Triggers::default(),
         is_friend: Triggers::default(),
         is_neutral: Triggers::default(),
@@ -219,7 +224,8 @@ fn read_rule(items: &[Item], name: &str) -> io::Result<AdjacencyRule> {
             }
             b"is_disabled" => {
                 let mut triggers = trigger(&item.value, &what)?;
-                triggers.retain(|trigger| !trigger.keyword_is("tooltip"));
+                rule.disabled_reason = disabled_reason(&triggers, &what);
+                triggers.retain(|trigger| !trigger.keyword_is("tooltip") && !trigger.keyword_is("not_tooltip"));
                 rule.is_disabled = triggers;
             }
             b"is_enemy" => rule.is_enemy = trigger(&item.value, &what)?,
@@ -229,6 +235,30 @@ fn read_rule(items: &[Item], name: &str) -> io::Result<AdjacencyRule> {
         }
     }
     Ok(rule)
+}
+
+/// The failure key of an `is_disabled` block: its last `not_tooltip`, else its last `tooltip`
+/// with `_NOT` appended when that is not empty. A bound localisation with arguments is refused.
+fn disabled_reason(items: &[Item], what: &str) -> Result<Vec<u8>, String> {
+    let key = |name: &str| -> Result<Option<Vec<u8>>, String> {
+        let Some(value) = last(items, name) else {
+            return Ok(None);
+        };
+        value
+            .read_string()
+            .map(|key| Some(key.to_vec()))
+            .ok_or_else(|| format!("{what} {name} is not a plain localisation key, which the port does not read"))
+    };
+    if let Some(key) = key("not_tooltip")? {
+        return Ok(key);
+    }
+    Ok(match key("tooltip")? {
+        Some(mut key) if !key.is_empty() => {
+            key.extend_from_slice(b"_NOT");
+            key
+        }
+        _ => Vec::new(),
+    })
 }
 
 /// The first `@` variable a definition or unquoted value names, at any depth: the
@@ -394,7 +424,17 @@ mod tests {
         assert_eq!(rule.permissions, [0x0c, 0x00, 0x07, 0x0f]);
         assert_eq!(rule.required_provinces, [3, 4]);
         assert_eq!(rule.is_disabled.len(), 1);
+        assert_eq!(rule.disabled_reason.as_deref(), Ok(&b"blocked_tt_NOT"[..]));
         assert_eq!(rule.is_friend.len(), 1);
+        let reason = |body: &str| {
+            parse(format!("adjacency_rule = {{ name = R is_disabled = {{ {body} }} }}").as_bytes()).unwrap()[0].clone()
+        };
+        let named = reason("tooltip = a not_tooltip = b always = yes");
+        assert_eq!(named.disabled_reason.as_deref(), Ok(&b"b"[..]));
+        // Neither key is a trigger.
+        assert_eq!(named.is_disabled.len(), 1);
+        assert_eq!(reason("always = yes").disabled_reason.as_deref(), Ok(&b""[..]));
+        assert!(reason("tooltip = { localization_key = a } always = yes").disabled_reason.is_err());
         assert!(rule.permits(Some(Verdict::Neutral), ARMY));
         assert!(!rule.permits(Some(Verdict::Enemy), ARMY));
         assert!(!rule.permits(None, ARMY));

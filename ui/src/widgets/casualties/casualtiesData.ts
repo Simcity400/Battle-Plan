@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { dayLabel } from '../../charts/draw.ts';
 import { formatRatio } from '../../charts/butterfly/layout.ts';
 import { formatFixed } from '../../charts/valueAxis.ts';
@@ -35,7 +36,7 @@ export function answerHeld(answer: FollowedAnswer | undefined, asked: readonly s
 /** A `series-state` reply's values by tag. */
 export function stateHeld(reply: SeriesStateReply | undefined): Held | null {
   if (!reply) return null;
-  return new Map(reply.states.map(state => [state.tag, state.run ? BigInt(state.run.valueRaw) : null]));
+  return new Map(reply.states.map(state => [countryKey(state.country), state.run ? BigInt(state.run.valueRaw) : null]));
 }
 
 /** The countries a ranked answer names, in its order. */

@@ -1,3 +1,5 @@
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { countryTagAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { failureDetails } from '../../dashboard/queryError.ts';
 import { nameReadText, nameReadFailure } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -18,7 +20,7 @@ import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryFlagsRead } from '../../dashboard/countryFlags';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
@@ -62,9 +64,9 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const [chartRange, setChartRange] = useState<readonly [number, number] | null>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'casualty-breakdown', params: { branchId: track.branch.id, tag, window: null } } : null;
+    product: 'casualty-breakdown', params: { branchId: track.branch.id, country: countryFromKey(tag), window: null } } : null;
   const manifest = useProduct<CasualtyBreakdownReply>(runtime.client, request, active, validateBreakdown, track?.source);
   // Following, the widget renders when the head enters another window (the sunburst paints the hours inside one from
   // the clock), and a breakdown that follows renders where its rows (or their subtotal marks) change: its numbers are painted.
@@ -81,6 +83,9 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     ? { breakdown: DETAIL.id, follow: widget.time.mode === 'follow', hour } : CLOSED;
   const clockHour = track ? Math.floor(playback) + track.axisOffset : null;
   const detailHour = (open ? drillHour(effectiveDrill, clockHour) : hour) ?? hour;
+  // A pin keeps the tag the country went by at the hour pinned; a stored selection holds tags.
+  const pinSlots = useSlotTags(runtime.client, track, active && !!tag && isSlotKey(tag));
+  const pinTag = tag && isSlotKey(tag) ? countryTagAt(pinSlots, countryFromKey(tag), Math.floor(detailHour)) : tag;
   const outside = !!track && (hour < track.branch.firstHour || hour > track.branch.lastHour);
   const detailOutside = !!track && (detailHour < track.branch.firstHour || detailHour > track.branch.lastHour);
   const pickDay = (at: number) => setDrill(state => reduceDrill(state.breakdown ? state : effectiveDrill, { type: 'pick', hour: at }));
@@ -93,7 +98,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const wanted = [...new Set([...currentWindows, ...detailWindows, ...chartWindows, ...(finalIndex >= 0 ? [finalIndex] : [])])].sort((a, b) => a - b);
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, content]) : null;
   const histories = useProductWindows<CasualtyBreakdownReply>(runtime.client, identity, index => ({ ...request!,
-    params: { branchId: track!.branch.id, tag: tag!, window: index } }), wanted, active && manifest.data?.available === true, validateBreakdown, track?.source, true);
+    params: { branchId: track!.branch.id, country: countryFromKey(tag!), window: index } }), wanted, active && manifest.data?.available === true, validateBreakdown, track?.source, true);
   const current = currentWindows[0] === undefined ? undefined : histories.data.get(currentWindows[0]);
   const detail = detailWindows[0] === undefined ? undefined : histories.data.get(detailWindows[0]);
   const final = histories.data.get(finalIndex);
@@ -221,10 +226,10 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     {pinned ? detailBody : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Recorded losses"
       day={dayShown} following={effectiveDrill.follow} canFollow
       onClose={() => setDrill(CLOSED)} onFollow={follow}
-      onPin={runtime.addWidgetBelow ? () => {
+      onPin={pinTag && runtime.addWidgetBelow ? () => {
         const pin = pinnedBreakdown(widget, DETAIL, track.id);
         const offset = Math.floor(detailHour) - track.branch.firstHour;
-        runtime.addWidgetBelow?.(widget.id, { ...pin, countries: { kind: 'tags', tags: [tag] },
+        runtime.addWidgetBelow?.(widget.id, { ...pin, countries: { kind: 'tags', tags: [pinTag] },
           time: effectiveDrill.follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } });
       } : undefined}
       anchor={anchor} main={main}>{detailBody}</DrillHost>}

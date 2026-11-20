@@ -1,3 +1,5 @@
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { keyNameAt, useSlotTags } from '../../dashboard/countrySlots.ts';
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import ArtFallback from '../../components/ArtFallback';
@@ -19,7 +21,7 @@ import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatAmount } from '../../charts/valueAxis';
 import { movingRowClass, useRowMotion } from '../../charts/useRowMotion';
 import { useAtHead } from '../../dashboard/atHead';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { readDatedCountry } from '../../dashboard/datedCountry';
 import type { WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -46,8 +48,8 @@ type Part = 'efficiency' | 'output';
 /** The country's lines over the branch: their steps, final counts and names. */
 export function useProductionLines(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-lines', params: { branchId: track.branch.id, tag } } : null;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
+  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-lines', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
   return { track, tag, ...useProduct<ProductionLinesReply>(runtime.client, request, active, validateProductionReply, track?.source) };
 }
 
@@ -56,7 +58,7 @@ export function useLineBreakdown(runtime: WidgetRuntime, widget: WidgetSpec, tag
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const start = hour == null ? null : windowOf(detailHours, hour) * detailHours;
   const request = track && tag && key && start != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'production-line-breakdown',
-    params: { branchId: track.branch.id, tag, key, group, hour: start } } : null;
+    params: { branchId: track.branch.id, country: countryFromKey(tag), key, group, hour: start } } : null;
   return useProduct<ProductionLineBreakdownReply>(runtime.client, request, active, validateBreakdownReply, track?.source);
 }
 
@@ -71,7 +73,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const live = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const pinned = options.show === 'efficiency' || options.show === 'output';
   const order: LineOrder = options.order === 'factories' || options.order === 'output' ? options.order : 'game';
-  const head = useHeadProduct<ProductionLinesAtReply>(runtime, widget, 'production-lines-at', live && !pinned && tag ? { tag, ...order === 'game' ? {} : { order } } : null,
+  const head = useHeadProduct<ProductionLinesAtReply>(runtime, widget, 'production-lines-at', live && !pinned && tag ? { country: countryFromKey(tag), ...order === 'game' ? {} : { order } } : null,
     { active, validate: validateAtReply });
   const reportShown = useShownHour();
   const shownAt = useRef(head.shownAt);
@@ -96,7 +98,9 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const shown: [number, number] = widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : extent;
   const savedCountry = pinned && track ? readDatedCountry(options.productionCountry, track.source.metadata.campaignKey, track.branch.id, widget.countries) : null;
-  const pinnedKey = pinned && track && tag ? productionLineKey(track.source.metadata.campaignKey, track.branch.id, savedCountry?.tag ?? tag, options.line) : null;
+  // The settings name a line by the reply's tag, which is a slot's tag at the branch's end.
+  const lineTag = savedCountry?.tag ?? (tag && isSlotKey(tag) ? data?.tag : tag);
+  const pinnedKey = pinned && track && lineTag ? productionLineKey(track.source.metadata.campaignKey, track.branch.id, lineTag, options.line) : null;
   const key = pinned ? pinnedKey : opened?.key ?? null;
   const part: Part = (pinned ? options.show : opened?.part) === 'output' ? 'output' : 'efficiency';
   const group = factor ?? (pinned && typeof options.factor === 'string' && options.factor ? options.factor : part);
@@ -105,6 +109,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const warnings = useMemo(() => [...new Set([...data?.warnings ?? NO_WARNINGS, ...head.data?.warnings ?? NO_WARNINGS, ...breakdown.data?.warnings ?? NO_WARNINGS,
     ...breakdown.data?.runs.flatMap(run => run.warnings) ?? NO_WARNINGS])], [data, head.data, breakdown.data]);
   useDiagnostics(onDiagnostics, warnings);
+  const slots = useSlotTags(runtime.client, track, active && !!tag && isSlotKey(tag));
 
   const open = (handleOrKey: string, nextPart: Part, hour: number, isKey = false) => {
     const lineKey = isKey ? handleOrKey : lineKeyAt(data, handleOrKey, hour);
@@ -115,7 +120,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   };
 
   if (!track || !tag) return <WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its production lines." />;
-  const drillView = !key ? <p className="drill-empty">Choose a production line in the widget settings.</p>
+  const drillView = !key ? pinned && !lineTag ? error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : <WidgetState kind="loading" label="Loading production lines…" /> : <p className="drill-empty">Choose a production line in the widget settings.</p>
     : breakdown.error ? <WidgetState kind="error" what="the breakdown" failure={breakdown.error} onRetry={breakdown.retry} />
       : !breakdown.data ? <WidgetState kind="loading" label="Loading breakdown…" />
         : <ProductionDrill data={breakdown.data} selected={group} onFactor={setFactor} hour={breakdownHour} active={active} hoursPerSecond={motion}
@@ -131,7 +136,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
           glide={Math.round(3 * easeTau(tokens.motion, motion, tokens.reducedMotion))} onBreakdown={(handle, nextPart) => open(handle, nextPart, head.hour ?? headHour())} />}
   </div>
     : !data ? <WidgetState kind="loading" label="Loading production lines…" />
-      : <History data={data} tag={tag} extent={shown} showEnded={options.ended !== 'hidden'} active={active} hoursPerSecond={motion}
+      : <History data={data} name={keyNameAt(slots, tag, shown[1])} extent={shown} showEnded={options.ended !== 'hidden'} active={active} hoursPerSecond={motion}
         onMenu={(hour, x, y, lineKey) => menu.open(x, y, [jumpItem(runtime, track.id, hour), ...lineKey ? [
           { label: 'Efficiency breakdown', run: () => open(lineKey, 'efficiency', hour, true) },
           { label: 'Output breakdown', run: () => open(lineKey, 'output', hour, true) }] : []])} />;
@@ -260,8 +265,8 @@ function LiveTable({ reply, history, live, report, more, glide, onBreakdown }: {
 
 /** One lane per line across the campaign (or the chosen range): a band whose thickness is the factories assigned,
  * accented while it runs and grey once it has ended, named with its factories or when it ended. */
-function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu }: {
-  data: ProductionLinesReply; tag: string; extent: [number, number]; showEnded: boolean; active: boolean; hoursPerSecond: number | undefined;
+function History({ data, name, extent, showEnded, active, hoursPerSecond, onMenu }: {
+  data: ProductionLinesReply; name: string | null; extent: [number, number]; showEnded: boolean; active: boolean; hoursPerSecond: number | undefined;
   onMenu: (hour: number, x: number, y: number, key?: string) => void;
 }) {
   const height = useViewportHeight();
@@ -280,9 +285,9 @@ function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu 
     return spans;
   }, [data, extent]);
   if (!lanes.length) return <WidgetState kind={data.lineHours.length ? 'empty' : 'unavailable'}
-    message={data.lineHours.length ? 'No production lines recorded in this time.' : `${tag}'s production lines weren't recorded.`} />;
+    message={data.lineHours.length ? 'No production lines recorded in this time.' : name === null ? "Production lines weren't recorded." : `${name}'s production lines weren't recorded.`} />;
   return <div className="production-history">
-    <Timeline label={`Production lines of ${tag}`} extent={extent} playhead={null} lanes={lanes} showIcons={false} showNames={false} bandMax={most}
+    <Timeline label={name === null ? 'Production lines' : `Production lines of ${name}`} extent={extent} playhead={null} lanes={lanes} showIcons={false} showNames={false} bandMax={most}
       unobserved={unobserved} stickyAxis={false} fadePresentation truncateLabels={false} holderIconAlign="top" hoursPerSecond={hoursPerSecond} active={active} revision={data}
       tooltip={(lane, _span, hour, full) => {
         const line = byKey.get(lane.id);

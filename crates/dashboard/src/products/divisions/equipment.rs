@@ -8,6 +8,7 @@
 //! the hour's divisions, their pools and their templates' needs and compares each division as the
 //! writer does. National stock is dated context only, never part of a shortfall.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{ArmyAttribution, Content, Countries, Refusals, attributed, design_handle, find, side, templates::slot_side_range, token_key, unavailable};
 use crate::{
     Source,
@@ -17,7 +18,6 @@ use crate::{
         at_hour::{At, AtHour, Keys, Owner, Read},
     },
 };
-use dashboard_base::products::validate_tag;
 use dashboard_text::subunit_requirements::{Content as Needs, Sources};
 use replay_data::rows::{DivisionEquipmentCountRow, DivisionEquipmentDesignRow, DivisionEquipmentRow, DivisionEquipmentTemplateRow, DivisionEquipmentTypeRow, DivisionRow, DivisionStatusRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
@@ -63,7 +63,7 @@ pub struct DivisionEquipment;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionEquipmentParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     pub count_for: ArmyAttribution,
     #[serde(default)]
     pub template: Option<String>,
@@ -232,7 +232,7 @@ impl AtHour for DivisionEquipment {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate_tag(&params.tag)?;
+        validate_country(&params.country)?;
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
         if params.template.is_some() && params.division.is_some() {
             return Err("Choose a template or a division, not both");
@@ -245,8 +245,8 @@ impl AtHour for DivisionEquipment {
         Ok(())
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(params: &Self::Params) -> Vec<TableId> {
@@ -304,7 +304,7 @@ impl AtHour for DivisionEquipment {
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Division equipment country is unavailable at this hour"))?;
         let mut refusals = Refusals::default();
-        let mut reply = overview(frame, params, owner.slot, &at.context.content, &mut refusals)?;
+        let mut reply = overview(frame, params, at.holders.name(&params.country, at.hour), owner.slot, &at.context.content, &mut refusals)?;
         if params.template.is_some() || params.division.is_some() {
             drill(frame, params, owner.slot, at, &mut reply, &mut refusals)?;
         }
@@ -405,9 +405,9 @@ fn design(frame: &DecodedFrame, content: &Content, id: Option<u32>, refusals: &m
 }
 
 /// The country's overview from its rows of the derived tables.
-fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, slot: u32, content: &Content, refusals: &mut Refusals) -> io::Result<DivisionEquipmentReply> {
+fn overview(frame: &DecodedFrame, params: &DivisionEquipmentParams, tag: String, slot: u32, content: &Content, refusals: &mut Refusals) -> io::Result<DivisionEquipmentReply> {
     let mut reply = DivisionEquipmentReply {
-        tag: params.tag.clone(),
+        tag,
         count_for: params.count_for,
         missing: None,
         pool_hour: None,

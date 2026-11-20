@@ -1,5 +1,6 @@
 // The market's occurrences as the market ledger and the market drill's deliveries read them: rows of `market-ledger`
 // (pages of the declared log `market-events`, parties and equipment named at each row's hour).
+import { countryFromKey } from './countryKey.ts';
 import type { LogRow } from '../charts/log/logData';
 import type { LogReplyRow } from '../charts/log/logSource';
 import type { FacetFilter, LogCell } from '../generated/dashboard';
@@ -57,8 +58,8 @@ export function ledgerEntry(row: LogReplyRow): LogRow<LedgerItem> {
 
 /** The facets a page asks: the kinds shown, and the chosen countries as either side; every country with `tags` null. */
 export function ledgerFacets(kinds: readonly number[], tags: readonly string[] | null): FacetFilter[] {
-  const facets: FacetFilter[] = [{ name: 'kind', values: [...kinds], tags: [] }];
-  if (tags) facets.push({ name: 'country|receiver', values: [], tags: [...tags] });
+  const facets: FacetFilter[] = [{ name: 'kind', values: [...kinds], countries: [] }];
+  if (tags) facets.push({ name: 'country|receiver', values: [], countries: tags.map(countryFromKey) });
   return facets;
 }
 

@@ -23,7 +23,7 @@ struct Power;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PowerParams {
     branch_id: String,
-    tag: String,
+    country: Country,
 }
 
 #[derive(Serialize)]
@@ -54,8 +54,8 @@ impl AtHour for Power {
         params.branch_id.parse::<u64>().map(|_| ()).map_err(|_| "Invalid branch")
     }
 
-    fn owner(params: &Self::Params) -> Option<&str> {
-        Some(&params.tag)
+    fn owner(params: &Self::Params) -> Option<&Country> {
+        Some(&params.country)
     }
 
     fn tables(_params: &Self::Params) -> Vec<TableId> {
@@ -140,8 +140,8 @@ fn asked(source: &Source, request: Value) -> Result<Value, dashboard_core::Query
     Ok(reply["data"].take())
 }
 
-fn requested(source: &Source, tag: &str, hour: i32) -> Result<Value, dashboard_core::QueryError> {
-    asked(source, json!({ "branchId": "1", "tag": tag, "hour": hour }))
+fn requested(source: &Source, country: impl Serialize, hour: i32) -> Result<Value, dashboard_core::QueryError> {
+    asked(source, json!({ "branchId": "1", "country": country, "hour": hour }))
 }
 
 fn refused(error: dashboard_core::QueryError) -> String {
@@ -193,7 +193,7 @@ fn cell_json(value: &CellValue) -> Value {
 #[test]
 fn a_rows_at_an_hour_product_answers_a_request_and_its_panel_with_one_reply() {
     let (source, pages) = recording();
-    let mut panel = (entry::<Power>().panel)(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "tag": "GER" })).unwrap();
+    let mut panel = (entry::<Power>().panel)(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "GER" })).unwrap();
     assert_eq!(panel.tables(), [TableId::Countries, TableId::CountryLinks]);
     let (mut rowless, mut unavailable, mut valueless) = (0, 0, 0);
     for hour in FIRST..=LAST {
@@ -232,6 +232,7 @@ fn a_rows_at_an_hour_product_answers_a_request_and_its_panel_with_one_reply() {
     assert_eq!(valueless, 1, "a value not recorded is missing, never zero");
     let at = |hour| requested(&source, "GER", hour).unwrap()["live"]["groups"].clone();
     assert_eq!(at(125).as_array().unwrap().iter().flat_map(|group| group["values"].as_array().unwrap().clone()).filter(|value| *value == NO_VALUE).count(), 1);
+    assert_eq!(requested(&source, 7, 110).unwrap(), requested(&source, "GER", 110).unwrap(), "a slot asks the country holding its tag");
     // The host pushes a panel only when its data differs: the structure holds while the numbers move.
     assert_eq!(followed(&source, &mut *panel, 101), followed(&source, &mut *panel, 128));
 }
@@ -241,12 +242,14 @@ fn a_refused_reply_is_the_same_named_refusal_on_both_paths() {
     let (source, _) = recording();
     let unheld = "Power country is unavailable at this hour";
     assert_eq!(refused(requested(&source, "FRA", 110).unwrap_err()), unheld);
-    let mut panel = (entry::<Power>().panel)(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "tag": "FRA" })).unwrap();
+    assert_eq!(refused(requested(&source, 8, ITA_LEAVES).unwrap_err()), unheld, "a country holding no tag at the hour is not recorded there");
+    assert!(requested(&source, 8, ITA_LEAVES - 1).is_ok());
+    let mut panel = (entry::<Power>().panel)(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "FRA" })).unwrap();
     assert_eq!(followed(&source, &mut *panel, 110), Err(unheld.to_owned()));
     assert!(panel.live().is_none(), "a refused reply names no cells");
     assert_eq!(refused(requested(&source, "GER", LAST + 50).unwrap_err()), "Power hour is not recorded");
-    assert!(asked(&source, json!({ "branchId": "1", "tag": "GER" })).unwrap_err().to_string().contains("names no hour"));
-    assert!((entry::<Power>().panel)(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "tag": "GER", "hour": 3 })).is_err(), "a panel takes the head's hour");
+    assert!(asked(&source, json!({ "branchId": "1", "country": "GER" })).unwrap_err().to_string().contains("names no hour"));
+    assert!((entry::<Power>().panel)(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "GER", "hour": 3 })).is_err(), "a panel takes the head's hour");
 }
 
 

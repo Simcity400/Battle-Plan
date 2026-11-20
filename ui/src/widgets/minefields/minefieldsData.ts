@@ -24,7 +24,7 @@ export function validateHistory(value: unknown): MinefieldHistoryReply {
   const run = (item: unknown) => Array.isArray(item) && item.length === 3 && Number.isSafeInteger(item[0]) && Number.isSafeInteger(item[1])
     && (item[0] as number) <= (item[1] as number) && (item[2] === null || decimal(item[2]));
   if (!reply || typeof reply !== 'object' || !count(reply.region) || !Number.isSafeInteger(reply.scale) || reply.scale <= 0 || !strings(reply.warnings)
-    || !Array.isArray(reply.lines) || !reply.lines.every((line: MineLine) => !!line && text(line.tag) && Array.isArray(line.runs) && line.runs.every(run)))
+    || !Array.isArray(reply.lines) || !reply.lines.every((line: MineLine) => !!line && (typeof line.country === 'number' || text(line.country)) && Array.isArray(line.runs) && line.runs.every(run)))
     throw new Error('The minefield history reply is malformed.');
   return reply;
 }

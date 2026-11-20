@@ -98,11 +98,11 @@ function laneOf(product: unknown, params: unknown): string {
   return JSON.stringify([product, kept]);
 }
 
-/** A chart tile request's address: its chart (branch, family, tags), bin hours and index on the grid. */
+/** A chart tile request's address: its chart (branch, family, countries), bin hours and index on the grid. */
 function tileOf(product: unknown, params: unknown): { key: string; bins: unknown; index: unknown } | undefined {
   if (product !== 'series-tiles' || !params || typeof params !== 'object') return undefined;
-  const named = params as { branchId?: unknown; family?: unknown; tags?: unknown; binHours?: unknown; index?: unknown };
-  return { key: JSON.stringify([named.branchId, named.family, named.tags]), bins: named.binHours, index: named.index };
+  const named = params as { branchId?: unknown; family?: unknown; countries?: unknown; binHours?: unknown; index?: unknown };
+  return { key: JSON.stringify([named.branchId, named.family, named.countries]), bins: named.binHours, index: named.index };
 }
 
 export type ExactPicture = (hour: number) => Promise<{ values: ReadonlyMap<string, string>; ranked?: boolean } | null>;

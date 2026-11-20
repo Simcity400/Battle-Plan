@@ -397,6 +397,11 @@ impl BakeLabels {
 }
 
 impl ModelLibrary {
+    /// The layers its entities were read through; none before the first.
+    pub fn layers(&self) -> Option<&ResolvedLayers> {
+        self.layers.as_deref()
+    }
+
     pub fn rig(&self, slot: usize) -> &Rig {
         &self.rigs[slot]
     }
@@ -2458,6 +2463,31 @@ impl ModelPass {
     }
 
     /// The player an instance placed in `mesh` is animated by ([`ModelInstance::animation_key`]).
+    /// Where this frame poses the root entity's skeleton joints of a placed instance, in its own
+    /// space after its entity scale, before the instance's scale and place: what the engine's
+    /// animated bounds are made of. Empty for an entity without a skeleton; `None` when the
+    /// instance has no player this frame, so nothing of it is posed.
+    pub fn root_joints(&self, mesh: usize, instance: &ModelInstance) -> Option<Result<Vec<[f32; 3]>, String>> {
+        let slot = self.drawn_slot(mesh);
+        let rig = self.rigs.get(slot)?;
+        let player = self.player(mesh, instance)?;
+        let root = rig.nodes.first()?;
+        if root.native.as_ref().is_none_or(|source| source.skeleton.is_empty()) {
+            return Some(Ok(Vec::new()));
+        }
+        if !(root.mesh_scale > 0.0) {
+            return Some(Err(format!("unit model {mesh} has no pdxmesh scale to take its joints out of")));
+        }
+        let entity = root.scale / root.mesh_scale;
+        let actors = self.actors(slot, self.player_key(mesh, instance), rig, Some(player), false);
+        let pose = match actors.first().map(|actor| &actor.pose) {
+            Some(Ok(pose)) => pose,
+            Some(Err(why)) => return Some(Err(why.clone())),
+            None => return Some(Err(format!("unit model {mesh} has no root actor"))),
+        };
+        Some(Ok(pose.joints.iter().map(|joint| [0, 1, 2].map(|axis| joint[3][axis] * entity)).collect()))
+    }
+
     fn player_key(&self, mesh: usize, instance: &ModelInstance) -> (usize, u32, u32) {
         let (seed, identity) = instance.animation_key();
         (self.drawn_slot(mesh), seed, identity)

@@ -9,11 +9,11 @@
 //! hour the source's coverage says spending is unknown every total is unknown, with its reason.
 //! Each holder stretch starts its totals again: its first run breaks from the one before.
 
+use dashboard_base::products::{Country, validate_country};
 use super::{LoadContext, Product};
 use crate::Source;
 use dashboard_base::{
     catalogue::{self, Catalogue},
-    products::validate_tag,
 };
 use dashboard_query::{Query, cost, identity::Holder};
 use dashboard_text::variant_names::{self, Tags, Texts};
@@ -50,7 +50,7 @@ fn invalid(what: impl Into<String>) -> io::Error {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionSpendingParams {
     pub branch_id: String,
-    pub tag: String,
+    pub country: Country,
     /// Also read the producer's dockyard repair rates.
     pub repairs: bool,
     /// The window of hours asked ([`super::windows`]): running totals over its hours alone.
@@ -272,7 +272,7 @@ pub(crate) struct Span {
     pub(crate) breaks: bool,
 }
 
-pub(crate) fn spans(query: &Query<'_>, tag: &str) -> Vec<Span> {
+pub(crate) fn spans(query: &Query<'_>, tag: &Country) -> Vec<Span> {
     let mut out: Vec<Span> = Vec::new();
     for stretch in &query.timeline.stretches {
         for run in query.holders.within(tag, stretch.first, stretch.last) {
@@ -834,7 +834,7 @@ fn sorted(hours: impl IntoIterator<Item = i32>) -> Vec<i32> {
 
 /// The reply for `params` on `query`'s timeline.
 /// The tag's spans cut to `first..=last`: one cut at its start no longer starts its totals afresh.
-fn spans_within(query: &Query<'_>, tag: &str, (first, last): (i32, i32)) -> Vec<Span> {
+fn spans_within(query: &Query<'_>, tag: &Country, (first, last): (i32, i32)) -> Vec<Span> {
     spans(query, tag)
         .into_iter()
         .filter_map(|span| {
@@ -847,7 +847,7 @@ fn spans_within(query: &Query<'_>, tag: &str, (first, last): (i32, i32)) -> Vec<
 fn reply(source: &Source, query: &Query<'_>, params: &ProductionSpendingParams, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<ProductionSpendingReply> {
     let (first_hour, last_hour) = super::windows::within(query, params.window)?;
     let mut read = Vec::new();
-    for span in spans_within(query, &params.tag, (first_hour, last_hour)) {
+    for span in spans_within(query, &params.country, (first_hour, last_hour)) {
         crate::metadata::check_cancel(cancelled)?;
         read.push(SpanRead::read(query, span, params.repairs)?);
     }
@@ -883,7 +883,7 @@ fn reply(source: &Source, query: &Query<'_>, params: &ProductionSpendingParams, 
     }
     let reply = ProductionSpendingReply {
         branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
+        tag: query.holders.name(&params.country, query.timeline.last),
         decimals: 5,
         reads: sorted(equipment_reads.iter().chain(&rocket_reads).copied()),
         observations: sorted(equipment_observations.iter().chain(&rocket_observations).copied()),
@@ -919,7 +919,7 @@ impl Product for ProductionSpending {
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid branch")?;
         super::windows::hours(params.window).ok_or("Invalid production spending window")?;
-        validate_tag(&params.tag)
+        validate_country(&params.country)
     }
 
     #[cfg(any(test, feature = "export-types"))]

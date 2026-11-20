@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { ChipSet } from '../../components/ChipSet';
@@ -14,7 +15,7 @@ import { useAheadHour } from '../../dashboard/aheadHour';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -69,7 +70,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const chosen = useMemo(() => { const keys = contentSet(types).map(contentKey); return keys.length ? new Set(keys) : null; }, [types]);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const selected = selectedTags(widget.countries, track);
+  const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => selected, [selectedKey]);
@@ -102,8 +103,8 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   // the rows held.
   const tagged = widget.countries.kind === 'tags' || widget.countries.kind === 'selected';
   const serverRole = tagged && role !== 'either' ? role : null;
-  const facets = useMemo<FacetFilter[]>(() => [...(tokens ? [{ name: 'operation', values: tokens, tags: [] }] : []),
-    ...(serverRole ? [{ name: serverRole, values: [], tags: fallback }] : [])], [tokens, serverRole, fallback]);
+  const facets = useMemo<FacetFilter[]>(() => [...(tokens ? [{ name: 'operation', values: tokens, countries: [] }] : []),
+    ...(serverRole ? [{ name: serverRole, values: [], countries: fallback.map(countryFromKey) }] : [])], [tokens, serverRole, fallback]);
   const spec = useMemo<LogSpec | null>(() => track && tokens !== undefined && !(tokens && tokens.length === 0) ? { source: track.source, branchId: track.branch.id, log: 'operation-completions',
     product: 'espionage-log', ...(facets.length ? { facets } : {}), firstHour: from ?? track.branch.firstHour, lastHour: track.branch.lastHour } : null,
   [track, tokens, facets, from]);

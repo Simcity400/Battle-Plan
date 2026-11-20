@@ -57,7 +57,7 @@ fn recording() -> Source {
 fn a_countrys_parties_ruling_party_leader_and_elections_are_runs_that_never_bridge_a_gap() {
     let source = recording();
     let query = crate::answer::query(&source, 1).unwrap();
-    let parties = read(&query, "GER", &AtomicBool::new(false)).unwrap();
+    let parties = read(&query, &"GER".into(), &AtomicBool::new(false)).unwrap();
     assert_eq!(parties.parties["democratic"].parts, [1]);
     assert_eq!(parties.parties["fascism"].parts, [2]);
     let ruling = |token: &str, first, last, starts_segment| RulingRun { token: token.into(), first_hour: first, last_hour: last, starts_segment };

@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { failureText, failureDetails, failureKey, type Failure } from '../../dashboard/queryError.ts';
 import { VirtualList } from '../../components/VirtualList';
 import ArtFallback from '../../components/ArtFallback';
@@ -5,7 +6,7 @@ import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatDate, gameDate } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
 import { useHeadHour } from '../army-size/headHour';
 import { setAttr, setHidden, setText } from '../../charts/domText';
@@ -165,11 +166,11 @@ export function CurrentFocus({ order, art, progress, live, reason, failure, fail
 export default function NationalFocusWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   const menu = useContextMenu('National focus actions');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   const live = widget.time.mode === 'follow';
   // A pinned moment shows the focus in progress then, like Live but held still.
   const moment = live || widget.time.mode === 'pin';
-  const request = track && tag ? focusRequest(track.source.id, track.source.revision, { branchId: track.branch.id, tag }) : null;
+  const request = track && tag ? focusRequest(track.source.id, track.source.revision, { branchId: track.branch.id, country: countryFromKey(tag) }) : null;
   const { data, error, retry } = useProduct<FocusReply>(runtime.client, request, active, validateFocusReply);
   const trackHour = (clockHour: number): number | null => {
     const hour = track ? resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour : undefined;

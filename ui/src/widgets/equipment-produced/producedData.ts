@@ -2,6 +2,8 @@
  * hours (`crates/dashboard/src/products/equipment_produced.rs`); the windows held join into one model, so the race at
  * any hour they hold, the playhead's included, and the lines are lookups in it, never a request. An unknown value
  * stays unknown here: it is never drawn, ranked or summed as zero. */
+import type { CountryRef } from '../../generated/dashboard';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import type { CountryRaceEntry } from '../../charts/race/countryRace';
 import type { Run, Span } from '../../charts/series';
 import { shownRuns } from '../../charts/race/lines.ts';
@@ -60,8 +62,13 @@ export function validSeries(series: ProducedSeries): boolean {
     && ascending(series.breaks) && series.breaks.every(index => index >= 0 && index < count);
 }
 
+/** A reply whose lines are keyed as the widget keys them: each `tag` its country's key (`countryKey`). */
 export function validateProducedReply(data: unknown): ProducedData {
-  const reply = data as ProducedData;
+  const asked = data as ProducedData;
+  const reply = asked && typeof asked === 'object' && Array.isArray(asked.lines)
+    && asked.lines.some(line => line && (typeof line.country === 'string' || typeof line.country === 'number') && line.tag !== countryKey(line.country))
+    ? { ...asked, lines: asked.lines.map(line => line && (typeof line.country === 'string' || typeof line.country === 'number') ? { ...line, tag: countryKey(line.country) } : line) }
+    : asked;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && REPLY_MEASURES.includes(reply.measure)
     && (reply.count === 'units' || reply.count === 'ic') && INT(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
     && Array.isArray(reply.types) && reply.types.every(type => typeof type === 'string')
@@ -77,14 +84,14 @@ export function validateProducedReply(data: unknown): ProducedData {
 /** What the widget asks for: chosen countries, or the top N ranked once at `rankHour` (the view's last hour or the
  * cursor); never an hour that moves with the playhead. */
 export interface ProducedRequest {
-  branchId: string; tags: string[]; top?: number; rankHour?: number;
+  branchId: string; countries: CountryRef[]; top?: number; rankHour?: number;
   count: Count; measure: Measure; types: string[]; refits: boolean;
 }
 
 export function producedRequest(branchId: string, resolved: { tags: readonly string[]; top?: number }, rankHour: number, count: Count,
   measure: Measure, types: readonly string[], refits: boolean): ProducedRequest {
   const common = { branchId, count, measure, types: [...types], refits };
-  return resolved.top != null ? { ...common, tags: [], top: resolved.top, rankHour: Math.floor(rankHour) } : { ...common, tags: [...resolved.tags] };
+  return resolved.top != null ? { ...common, countries: [], top: resolved.top, rankHour: Math.floor(rankHour) } : { ...common, countries: resolved.tags.map(countryFromKey) };
 }
 
 /** The hour a top N is ranked at: the pinned moment; following, the hour shown whenever paused or sought, kept while
@@ -254,6 +261,6 @@ export function mergeProducedWindows(windows: ReadonlyMap<number, EquipmentProdu
   }
   const { branchId, count, measure, decimals, types, rankHour } = held[0];
   return { branchId, count, measure, decimals, types, rankHour,
-    lines: [...lines].map(([tag, line]) => ({ tag, identities: [...line.identities], series: line.series })),
+    lines: [...lines].map(([tag, line]) => ({ country: countryFromKey(tag), tag, identities: [...line.identities], series: line.series })),
     reads: [...reads].sort((a, b) => a - b), observations: [...observations].sort((a, b) => a - b), warnings: [...warnings] };
 }

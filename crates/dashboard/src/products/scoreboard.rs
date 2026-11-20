@@ -5,6 +5,7 @@
 //! pause): the chosen countries or the greatest by one column, with every column's value
 //! ([`dashboard_query::series::board`]). Unknown is a named reason, never zero, and never ranks.
 
+use dashboard_base::products::Country;
 use super::{BranchParams, LoadContext, Product};
 use crate::{Source, catalogue};
 use dashboard_query::{
@@ -266,7 +267,7 @@ pub struct ScoreboardParams {
     pub columns: Vec<ScoreboardColumnKey>,
     /// The countries shown, in order; ignored with `top`.
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     #[serde(default)]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub top: Option<ScoreboardTop>,
@@ -287,6 +288,9 @@ pub struct ScoreboardCell {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardRow {
+    /// The country asked, or a ranked country's tag.
+    pub country: Country,
+    /// The tag it goes by at the hour.
     pub tag: String,
     /// One a column asked, in its order.
     pub cells: Vec<ScoreboardCell>,
@@ -336,7 +340,7 @@ impl Product for Scoreboard {
         if params.top.as_ref().is_some_and(|top| top.count == 0) {
             return Err("A scoreboard's top names at least one country");
         }
-        params.tags.iter().try_for_each(|tag| super::validate_tag(tag))
+        params.countries.iter().try_for_each(dashboard_base::products::validate_country)
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -377,13 +381,14 @@ pub(crate) fn answer(query: &Query<'_>, params: &ScoreboardParams) -> io::Result
             let by = keys.iter().position(|key| *key == top.sort).ok_or_else(|| dashboard_core::invalid(format!("{} is not a measure to rank by", def_of(top.sort).label)))?;
             Rows::Top { by, n: top.count as usize, least: !top.descending }
         }
-        None => Rows::Tags(&params.tags),
+        None => Rows::Countries(&params.countries),
     };
-    let board = if columns.is_empty() { unmeasured(query, &params.tags, params.hour) } else { board::at(&columns, rows, params.hour)? };
+    let board = if columns.is_empty() { unmeasured(query, &params.countries, params.hour) } else { board::at(&columns, rows, params.hour)? };
     let rows = board
         .rows
         .into_iter()
         .map(|row| ScoreboardRow {
+            country: row.country,
             tag: row.tag,
             cells: params
                 .columns
@@ -409,11 +414,15 @@ fn line_of<'q, 'a>(query: &'q Query<'a>, measure: (&str, &str)) -> io::Result<Op
 }
 
 /// The chosen countries held at `hour`, for columns none of which is a measure.
-fn unmeasured(query: &Query<'_>, tags: &[String], hour: i32) -> board::Board {
+fn unmeasured(query: &Query<'_>, countries: &[Country], hour: i32) -> board::Board {
     if query.timeline.at(hour).is_none() {
         return board::Board { rows: Vec::new(), missing: Some(query.timeline.reason(hour)) };
     }
-    let rows = tags.iter().filter(|tag| query.holders.at(tag, hour).is_some()).map(|tag| board::Row { tag: tag.clone(), cells: Vec::new() }).collect();
+    let rows = countries
+        .iter()
+        .filter(|country| query.holders.at(*country, hour).is_some())
+        .map(|country| board::Row { tag: query.holders.name(country, hour), country: country.clone(), cells: Vec::new() })
+        .collect();
     board::Board { rows, missing: None }
 }
 

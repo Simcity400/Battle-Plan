@@ -4,7 +4,11 @@
 //! for marks and totals. Which rows are asked is a list of [`Pattern`]s: a run's hours and a mask
 //! over the row's facet values, each in a group (a tag) whose rows also carry their own ordinals.
 
-use crate::{Query, identity::Holder, pieces, read};
+use crate::{
+    Query,
+    identity::{Country, Holder},
+    pieces, read,
+};
 use dashboard_declare::{FacetFrom, Holds, Log};
 use replay::cells::TableReader;
 use replay_columnar::{
@@ -105,9 +109,10 @@ pub struct Counts {
     pub bins: Vec<(u32, u64)>,
 }
 
-/// A request's choice of a log's rows by one facet: the values it keeps, or the tags whose holders'
-/// rows it keeps (each tag a group). A tag filter may name several facets holding a country,
-/// `a|b`: a row is kept for a tag when any of them holds its holder, once for each that does.
+/// A request's choice of a log's rows by one facet: the values it keeps, or the countries whose
+/// holders' rows it keeps (each country a group). A country filter may name several facets holding
+/// a country, `a|b`: a row is kept for a country when any of them holds its holder, once for each
+/// that does.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FacetFilter {
@@ -116,14 +121,14 @@ pub struct FacetFilter {
     #[ts(type = "Array<number>")]
     pub values: Vec<i64>,
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
 }
 
-/// The asked rows: their patterns, and each group's tag (one unnamed group without a tag filter).
+/// The asked rows: their patterns, and each group's country (one unnamed group without a country filter).
 #[derive(Clone, Debug)]
 pub struct Selection {
     pub patterns: Vec<Pattern>,
-    pub groups: Vec<Option<String>>,
+    pub groups: Vec<Option<Country>>,
 }
 
 /// Where a row's facet value is read.
@@ -188,7 +193,7 @@ impl<'q, 'a> Reader<'q, 'a> {
             .within(from, to)
             .map(|stretch| Pattern { run: stretch.run, first: stretch.first, last: stretch.last, mask: 0, value: 0, group: 0 })
             .collect();
-        let mut groups: Vec<Option<String>> = vec![None];
+        let mut groups: Vec<Option<Country>> = vec![None];
         let mut seen: Vec<usize> = Vec::new();
         for filter in filters {
             let mut named = Vec::new();
@@ -205,7 +210,7 @@ impl<'q, 'a> Reader<'q, 'a> {
                 seen.push(at);
                 named.push(at);
             }
-            match (filter.values.is_empty(), filter.tags.is_empty()) {
+            match (filter.values.is_empty(), filter.countries.is_empty()) {
                 (false, true) => {
                     let &[at] = named.as_slice() else {
                         return Err(invalid(format!("The facets {} are filtered by tags only", filter.name)));
@@ -228,10 +233,10 @@ impl<'q, 'a> Reader<'q, 'a> {
                     if groups.len() > 1 || groups[0].is_some() {
                         return Err(invalid("One filter at most is by tags"));
                     }
-                    groups = filter.tags.iter().cloned().map(Some).collect();
+                    groups = filter.countries.iter().cloned().map(Some).collect();
                     let mut out = Vec::new();
                     for pattern in &patterns {
-                        for (group, tag) in filter.tags.iter().enumerate() {
+                        for (group, tag) in filter.countries.iter().enumerate() {
                             for run in self.query.holders.within(tag, pattern.first, pattern.last) {
                                 let Holder::Found { slot, id } = run.holder else { continue };
                                 for &(shift, key) in &owners {

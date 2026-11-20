@@ -17,7 +17,7 @@ pub fn combat_limitations(frame: &DecodedFrame, selection: Selection) -> Limitat
         "combat flags cannot resolve a missing ideology token",
     );
     match selection {
-        Selection::AirRegion(_) => {}
+        Selection::AirRegion(_) | Selection::State(_) | Selection::NavalRegion(_) => {}
         Selection::Land(_) => {
             out.note::<tables::LandCombatDetails>(
                 frame,

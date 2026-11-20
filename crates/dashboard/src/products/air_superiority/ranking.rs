@@ -111,7 +111,7 @@ fn owners(params: &AirTimelineParams, index: &AirIndex, holders: &Holders, hour:
         Some(Holder::Found { id, .. }) => Some(id),
         _ => None,
     };
-    let viewpoint = params.viewpoint.as_deref().unwrap_or_default();
+    let viewpoint = super::viewpoint_name(params.viewpoint.as_ref(), params.viewpoint_country == Some(true), holders, hour);
     let sides: &[AssignedSide] = index.epoch(hour).and_then(|epoch| epoch.sides.as_deref()).map_or(&[], Vec::as_slice);
     let mut tags: Vec<&str> = Vec::new();
     match params.mode.unwrap_or_default() {

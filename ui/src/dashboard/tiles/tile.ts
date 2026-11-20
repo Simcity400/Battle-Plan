@@ -1,3 +1,4 @@
+import { countryKey } from '../countryKey.ts';
 import type { MissingSpan, SeriesTileReply, TilePart } from '../../generated/dashboard';
 
 /** Bins in a tile. */
@@ -92,7 +93,7 @@ export function tilesOf(reply: TileReply, tags: readonly string[], binHours: num
   const scale = reply.rawValues ? 10 ** reply.decimals : 1;
   const line = (at: number) => {
     const held = reply.lines[at];
-    if (!held || held.tag !== tags[at] || !Array.isArray(held.missing) || !Array.isArray(held.parts)) throw malformed();
+    if (!held || countryKey(held.country) !== tags[at] || !Array.isArray(held.missing) || !Array.isArray(held.parts)) throw malformed();
     return { key: key(tags[at]), tag: tags[at], binHours, index, firstHour: reply.firstHour, immutable: reply.immutable, filled: reply.filled,
       scale, decimals: reply.decimals, missing: held.missing, parts: held.parts, ...(held.marks ? { marks: held.marks } : {}) };
   };

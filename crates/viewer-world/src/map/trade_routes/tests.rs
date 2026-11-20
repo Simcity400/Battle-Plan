@@ -148,6 +148,30 @@ fn each_layer_takes_the_viewed_countrys_clients_and_its_route_kinds() {
     assert_eq!(lines[3].convoys_assigned, 7);
 }
 
+/// A line's layer id is the game's route collection and the kind its hover text switches on:
+/// production, supply transfers, exports, imports, lend-lease given and received, market bought
+/// and sold. The hover walks the collections in this order; the lines draw in another.
+#[test]
+fn layer_ids_are_the_games_route_collections() {
+    assert_eq!(
+        Layer::ALL.map(Layer::index),
+        [0, 1, 2, 3, 4, 5, 6, 7]
+    );
+    assert_eq!(
+        Layer::ALL,
+        [
+            Layer::Production,
+            Layer::SupplyTransfer,
+            Layer::Export,
+            Layer::Import,
+            Layer::LendLeaseGiven,
+            Layer::LendLeaseReceived,
+            Layer::MarketBought,
+            Layer::MarketSold,
+        ]
+    );
+}
+
 #[test]
 fn layer_kind_filters_match_the_game() {
     let admitted = |layer: Layer| {

@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { selectedTags } from './countrySelection.ts';
+import { selectedCountryKeys } from './countrySelection.ts';
 import type { WidgetRuntime } from './definitions';
 import { resolveCountries } from './groups.ts';
 import { groupNumbers } from './groupsReply.ts';
@@ -17,7 +17,7 @@ export function useComparisonCountries(widget: WidgetSpec, runtime: WidgetRuntim
   const retained = useMemo(() => new NumericReply<CountryGroupReply>(), [runtime.client]);
   const key = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries]);
   const numbers = retained.update(key, groups.data, groupNumbers);
-  const countries = useMemo(() => resolveCountries(widget.countries, grouped ? [] : selectedTags(widget.countries, track), numbers,
+  const countries = useMemo(() => resolveCountries(widget.countries, grouped ? [] : selectedCountryKeys(widget.countries, track), numbers,
     track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER), [widget.countries, grouped ? undefined : track, numbers, track?.branch.lastHour]);
   return { track, countries, error: numbers ? undefined : groups.error, refreshError: numbers ? groups.error : undefined, retry: groups.retry,
     contentPending: grouped && !!numbers && !groups.data && !groups.error,

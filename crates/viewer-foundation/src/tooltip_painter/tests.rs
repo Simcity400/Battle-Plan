@@ -100,7 +100,7 @@ fn naval_tooltip_width_uses_authored_fallback_and_counts_missing_or_wrong_types(
             "ship",
             TooltipPosition {
                 point: [700., 300.],
-                naval_window: Some([600., 100., 900., 650.]),
+                anchor: Some(Explicit::NavalWindow([600., 100., 900., 650.])),
             },
             [2400., 900.],
             &TooltipDefines {
@@ -135,7 +135,7 @@ fn naval_ship_tooltip_anchors_to_the_free_window_side_at_y_plus_250() {
     );
     let at = TooltipPosition {
         point: [700., 500.],
-        naval_window: Some(window),
+        anchor: Some(Explicit::NavalWindow(window)),
     };
     assert_eq!(
         placed(at, [420., 100.], [2400., 900.], [0; 4], 500.),
@@ -153,6 +153,24 @@ fn naval_ship_tooltip_anchors_to_the_free_window_side_at_y_plus_250() {
         placed(right, [500., 100.], [2400., 900.], [0; 4], 500.),
         [1500., 350.]
     );
+}
+
+#[test]
+fn authored_anchor_takes_no_pointer_offset_and_flips_by_size_plus_twenty() {
+    // A relative anchor x = -158 from a control at [1700, 1000], resolved by its window.
+    let at = |below| TooltipPosition {
+        point: [1750., 1010.],
+        anchor: Some(Explicit::At { at: [1542., 1000.], below }),
+    };
+    assert_eq!(placed(at(true), [300., 60.], [2400., 1100.], [0; 4], 500.), [1542., 1000.]);
+    // Past the bottom edge it flips up by its height and the twenty-pixel gap.
+    assert_eq!(placed(at(true), [300., 200.], [2400., 1100.], [0; 4], 500.), [1542., 780.]);
+    // Past the right edge the flip is from the anchor, not the pointer.
+    assert_eq!(placed(at(true), [900., 60.], [2400., 1100.], [0; 4], 500.), [622., 1000.]);
+    // `below = no` lifts it by its height before the edge test.
+    assert_eq!(placed(at(false), [300., 60.], [2400., 1100.], [0; 4], 500.), [1542., 940.]);
+    // The screen offsets clamp it first.
+    assert_eq!(placed(at(false), [300., 60.], [2400., 1100.], [1600, 0, 0, 0], 500.), [1600., 940.]);
 }
 
 #[test]

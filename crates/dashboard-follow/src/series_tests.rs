@@ -113,7 +113,7 @@ fn replay() -> &'static Replay {
 fn query() -> dashboard_query::Query<'static> {
     let timeline = Timeline { id: 1, first: FIRST, last: LAST, stretches: vec![Stretch { run: 0, first: FIRST, last: LAST, join: Join::Start }], unheld: Vec::new() };
     let run = |first: i32, slot: u32, id: u32| vec![HolderRun { first, last: LAST, holder: Holder::Found { slot, id }, starts_segment: true }];
-    let holders = Holders { tags: [("GER".to_owned(), run(FIRST, 7, 9001)), ("ITA".to_owned(), run(ITA_FROM, 8, 9002))].into(), unknown: Vec::new() };
+    let holders = Holders::new([("GER".to_owned(), run(FIRST, 7, 9001)), ("ITA".to_owned(), run(ITA_FROM, 8, 9002))].into(), Vec::new());
     dashboard_query::Query { replay: replay(), timeline: Arc::new(timeline), holders: Arc::new(holders) }
 }
 
@@ -191,7 +191,7 @@ fn a_followed_computed_column_equals_series_state_at_every_step() {
     assert_eq!(dashboard_declare::field(TableId::Countries, "command_power_raw").unwrap(), COMMAND);
     let state = query();
     let identity = Identity { holders: Arc::clone(&state.holders), timeline: Arc::clone(&state.timeline) };
-    let followed = Query::Series { series: &NEGATED, measure: &NEGATED.measures[0], tags: vec!["GER".into(), "ITA".into()], top: None, least: false, parts: false, identity };
+    let followed = Query::Series { series: &NEGATED, measure: &NEGATED.measures[0], countries: vec!["GER".into(), "ITA".into()], top: None, least: false, parts: false, identity };
     let line = Line::new(&state, &NEGATED, &NEGATED.measures[0]).unwrap();
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(replay::columnar_frames::Recording::open(replay().bytes().to_vec()).unwrap(), Span::Whole).unwrap());
     let edge = FIRST + UNIT_ORDINALS as i32;
@@ -204,12 +204,12 @@ fn a_followed_computed_column_equals_series_state_at_every_step() {
                 assert_eq!(lane.step(hour, &mut changes).unwrap(), hour);
             }
             let answer = Answer::parse(&answer_at(&followed, &lane).unwrap()).unwrap();
-            let states = line.states(&[SeriesRead { tag: "GER".into(), hour, part: None }, SeriesRead { tag: "ITA".into(), hour, part: None }], None).unwrap();
+            let states = line.states(&[SeriesRead { country: "GER".into(), hour, part: None }, SeriesRead { country: "ITA".into(), hour, part: None }], None).unwrap();
             for (row, state) in states.iter().enumerate() {
                 let held = rows(&answer)[row].1;
-                assert_eq!(held, value(state), "{} at {hour}: {state:?}", state.tag);
+                assert_eq!(held, value(state), "{} at {hour}: {state:?}", state.country);
                 let id = 9001 + row as u32;
-                assert_eq!(held, exists(id, hour).then(|| power(id, hour).map(|power| -power)).flatten(), "{} at {hour}", state.tag);
+                assert_eq!(held, exists(id, hour).then(|| power(id, hour).map(|power| -power)).flatten(), "{} at {hour}", state.country);
                 valued += usize::from(held.is_some());
                 unrecorded += usize::from(held.is_none() && exists(id, hour));
             }
@@ -233,7 +233,7 @@ fn a_followed_owners_parts_equal_series_state_of_every_part_at_every_step() {
     let columns = dashboard_query::read::columns_of(&dashboard_declare::source(series.table, measure).unwrap());
     let mut compared = 0;
     for top in [None, Some(2)] {
-        let followed = Query::Series { series, measure, tags: vec!["GER".into(), "ITA".into()], top, least: false, parts: true, identity: identity.clone() };
+        let followed = Query::Series { series, measure, countries: vec!["GER".into(), "ITA".into()], top, least: false, parts: true, identity: identity.clone() };
         for (from, to) in [(FIRST + 880, FIRST + 920), (FIRST + 1_180, FIRST + 1_220), (ITA_FROM - 5, ITA_FROM + 5)] {
             let mut lane = lane(&pages, &followed, columns.clone(), from);
             let mut changes = Changes::default();
@@ -242,13 +242,13 @@ fn a_followed_owners_parts_equal_series_state_of_every_part_at_every_step() {
                     assert_eq!(lane.step(hour, &mut changes).unwrap(), hour);
                 }
                 let answer = Answer::parse(&answer_at(&followed, &lane).unwrap()).unwrap();
-                let states = line.states(&[SeriesRead { tag: "GER".into(), hour, part: None }, SeriesRead { tag: "ITA".into(), hour, part: None }], top).unwrap();
+                let states = line.states(&[SeriesRead { country: "GER".into(), hour, part: None }, SeriesRead { country: "ITA".into(), hour, part: None }], top).unwrap();
                 let wanted: Vec<(u128, Option<i64>, String)> = states
                     .iter()
                     .map(|state| {
-                        let id = if state.tag == "GER" { 9001u128 } else { 9002 };
+                        let id = if state.country.tag() == Some("GER") { 9001u128 } else { 9002 };
                         let key = state.part.as_ref().map_or(0, |part| parts.key(id, part.parse().unwrap()));
-                        (key, value(state), state.tag.clone())
+                        (key, value(state), state.country.to_string())
                     })
                     .collect();
                 assert_eq!(rows(&answer), wanted, "top {top:?} at {hour}");

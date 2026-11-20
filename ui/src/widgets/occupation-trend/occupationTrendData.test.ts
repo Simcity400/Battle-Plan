@@ -8,8 +8,8 @@ import type { OccupationDetailReply } from '../../generated/dashboard';
 const labelAt = () => (tag: string) => ({ name: `Name ${tag}` });
 const cells = (rows: Record<string, Record<string, number>>) => valuesOf(new Map(Object.entries(rows).flatMap(([tag, columns]) =>
   Object.entries(columns).map(([column, value]) => [liveKey(tag, column), value] as const))), 'Not recorded at this hour');
-const reply: OccupationDetailReply = { occupiers: [{ tag: 'GER', missing: null, collaboration: [{ slot: 4, tag: 'POL', progressRaw: '25000' }, { slot: 9, tag: null, progressRaw: null }] },
-  { tag: 'ITA', missing: null, collaboration: [] }, { tag: 'SOV', missing: 'No country holds this tag at this hour', collaboration: [] }], collaborationMissing: null, warnings: [] };
+const reply: OccupationDetailReply = { occupiers: [{ country: 'GER', missing: null, collaboration: [{ slot: 4, tag: 'POL', progressRaw: '25000' }, { slot: 9, tag: null, progressRaw: null }] },
+  { country: 'ITA', missing: null, collaboration: [] }, { country: 'SOV', missing: 'No country holds this tag at this hour', collaboration: [] }], collaborationMissing: null, warnings: [] };
 const detail = (hour: number): DetailAt => ({ hour, reply, values: cells({
   GER: { resistanceSum: 3000001, complianceSum: 900000, states: 3, heldStates: 4, heldComplete: 1 },
   ITA: { resistanceSum: 5000000, complianceSum: 0, states: 1, heldStates: 1, heldComplete: 0 } }) });
@@ -39,5 +39,5 @@ test('the line tooltip ranks the shown occupiers by the ranked measure', () => {
 
 test('the detail reply is checked whole', () => {
   assert.equal(validateOccupationDetail(reply).occupiers.length, 3);
-  assert.throws(() => validateOccupationDetail({ ...reply, occupiers: [{ tag: 'GER', missing: null, collaboration: [{ slot: 'x', tag: null, progressRaw: null }] }] }));
+  assert.throws(() => validateOccupationDetail({ ...reply, occupiers: [{ country: 'GER', missing: null, collaboration: [{ slot: 'x', tag: null, progressRaw: null }] }] }));
 });

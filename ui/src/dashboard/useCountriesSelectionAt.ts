@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
-import { defaultCountryTag } from './countrySelection.ts';
+import { defaultCountryKey } from './countrySelection.ts';
 import { worldFilter, worldRequestTags } from './groups.ts';
 import { useCountryGroups } from './useCountryGroups';
 
@@ -10,7 +10,7 @@ export function useCountriesSelectionAt(widget: WidgetSpec, runtime: WidgetRunti
   const needsGroups = widget.countries.kind !== 'all';
   const group = useCountryGroups(runtime, needsGroups ? track : undefined, active);
   const selected = useMemo(() => {
-    const tag = defaultCountryTag(track);
+    const tag = defaultCountryKey(track);
     const fallback = tag ? [tag] : [];
     const lastHour = track?.branch.lastHour ?? hour;
     const filter = worldFilter(widget.countries, fallback, group.data ?? undefined, hour, lastHour);

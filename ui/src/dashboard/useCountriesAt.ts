@@ -5,10 +5,12 @@ import type { DashboardClient } from './client';
 import { flagReadMetadata } from './countryFlagsAt.ts';
 import { useCountryFlagsRead } from './countryFlags.ts';
 import type { CountryLabel } from './countryFlagsAt';
-import { nameKey, useCountryFactsRead } from './countryNamesAt.ts';
+import { nameKey, useCountryFactsByKey } from './countryNamesAt.ts';
 import { isFailedFact } from './countryFacts.ts';
 import type { FactSpec, NameAt } from './countryFacts';
-import { lookPlan } from './countryLooks.ts';
+import { lookPlan, looksRead } from './countryLooks.ts';
+import { useIdentityHour } from './atHead.ts';
+import { PlaybackController } from './playback.ts';
 import { sampledLooks } from './looks.ts';
 import type { Look, LookRead } from './looks';
 import type { BoundTrack } from './model';
@@ -46,12 +48,22 @@ export type CountryAt = CountryLabel;
  * the current identity bound from recorded evidence, or null when unknown. Even
  * before the throttle advances, an older holder's sample is never applied. Name
  * status follows the read; a held native name remains known while its replacement loads. */
+/** The playback head a view follows: its clock, the hour shown at a clock hour, and whether it follows now. */
+export interface CountriesHead { clock: PlaybackController; hour: (clockHour: number) => number | null; on: boolean }
+const IDLE = new PlaybackController();
+const noHour = () => null;
+
 export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, tags: readonly string[],
   hour: number, active: boolean, nameTags: readonly string[] = tags,
-  segmentAt?: (tag: string, hour: number) => number | null, wording?: { pending: string; missing: string }): { country: CountryAt; revision: number } {
+  segmentAt?: (tag: string, hour: number) => number | null, wording?: { pending: string; missing: string }, head?: CountriesHead): { country: CountryAt; revision: number } {
   const content = useContentRevision(client);
   const moment = Math.floor(hour);
-  const shownHour = useThrottled(moment, FOLLOW_MS);
+  const throttled = useThrottled(moment, FOLLOW_MS);
+  // Following the head, names are read where one of them last changed at or before it: as at the hour shown, whatever
+  // hour the caller last rendered at.
+  const identityHour = useIdentityHour(client, track, nameTags, head?.clock ?? IDLE, active && !!head?.on, head?.hour ?? noHour);
+  const read = looksRead(active && !!head?.on, identityHour, throttled, segmentAt);
+  const shownHour = read.hour;
   const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : '';
   const shown = useRef<{ trackKey: string; client: DashboardClient; looks: Map<string, Look>; segments: Map<string, number>; revision: number }>({ trackKey, client, looks: new Map(), segments: new Map(), revision: 0 });
   if (shown.current.trackKey !== trackKey || shown.current.client !== client) shown.current = { trackKey, client, looks: new Map(), segments: new Map(), revision: 0 };
@@ -60,17 +72,17 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
   const nameTagsKey = JSON.stringify(nameTags);
   const tagSets = useMemo(() => ({ flags: new Set(JSON.parse(tagsKey) as string[]), names: new Set(JSON.parse(nameTagsKey) as string[]) }), [tagsKey, nameTagsKey]);
   const allTags = useMemo(() => [...new Set([...tagSets.flags, ...tagSets.names])].sort(), [tagSets]);
-  const plan = useMemo(() => lookPlan(track?.branch, allTags, shownHour, segmentAt, undefined, true), [track?.branch, allTags, shownHour, segmentAt]);
+  const plan = useMemo(() => lookPlan(track?.branch, allTags, shownHour, read.segmentAt, undefined, true), [track?.branch, allTags, shownHour, read.segmentAt]);
   // Held looks are replaced, never changed in place, so the map's identity stands for its countries.
   const heldTags = useMemo(() => JSON.stringify([...new Set([...held.looks.keys(), ...allTags])].sort()), [held.looks, allTags]);
   // Retained leaving rows are guarded too, without asking for their artwork.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const segments = useMemo(() => new Map(lookPlan(track?.branch, JSON.parse(heldTags) as string[], moment, segmentAt, undefined, true).samples.map(sample => [sample.tag, sample.stretch])),
-    [heldTags, track?.branch, moment, segmentAt]);
+  const segments = useMemo(() => new Map(lookPlan(track?.branch, JSON.parse(heldTags) as string[], read.segmentAt ? moment : shownHour, read.segmentAt, undefined, true).samples.map(sample => [sample.tag, sample.stretch])),
+    [heldTags, track?.branch, moment, shownHour, read.segmentAt]);
   const samples = useMemo(() => plan.samples.filter(sample => segments.get(sample.tag) === sample.stretch), [plan, segments]);
   const wanted = useMemo<NameAt[]>(() => samples.filter(sample => tagSets.flags.has(sample.tag)).map(({ tag, hour }) => ({ tag, hour })), [samples, tagSets]);
   const nameWanted = useMemo<NameAt[]>(() => samples.filter(sample => tagSets.names.has(sample.tag)).map(({ tag, hour }) => ({ tag, hour })), [samples, tagSets]);
-  const styles = useCountryFactsRead(client, track, nameWanted, active, STYLES);
+  const styles = useCountryFactsByKey(client, track, nameWanted, active, STYLES);
   const flags = useCountryFlagsRead(client, track, wanted, active);
   return useMemo(() => {
     // Merging what finished is idempotent, so a repeated render changes nothing.

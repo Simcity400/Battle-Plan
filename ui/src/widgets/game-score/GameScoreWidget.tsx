@@ -10,7 +10,9 @@ import { jumpItem } from '../../charts/jump';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { countryFromKey, isSlotKey } from '../../dashboard/countryKey.ts';
+import { countryTagAt, useSlotTags } from '../../dashboard/countrySlots.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { isMember } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -62,7 +64,7 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
   const all = widget.countries.kind === 'all';
   const needsGroups = options.factions === true || (widget.countries.kind === 'group' && widget.countries.group.type !== 'top');
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const resolved = useMemo(() => scoreCountries(widget.countries, [...selectedTags(widget.countries, track)], groups.data, lastHour),
+  const resolved = useMemo(() => scoreCountries(widget.countries, [...selectedCountryKeys(widget.countries, track)], groups.data, lastHour),
     [widget.countries, track, groups.data, lastHour]);
   const head = useHeadProduct<GameScoreReply>(runtime, widget, 'game-score', track ? PARAMS : null, { active, validate: validateGameScore, structure: scoreStructure });
   const reply = head.data;
@@ -72,6 +74,11 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
   shownAt.current = head.shownAt;
   const score = useCallback<ScoreOf>((tag, part) => live.read().get(liveKey(tag, part)), [live]);
   const hour = head.at ?? lastHour;
+  // Rows name their countries by tag: a chosen slot is matched by the tag it holds at the rows' hour.
+  const bySlot = resolved.tags.some(isSlotKey);
+  const slots = useSlotTags(runtime.client, track, active && bySlot);
+  const chosenTags = useMemo(() => bySlot ? resolved.tags.flatMap(key => countryTagAt(slots, countryFromKey(key), hour) ?? []) : resolved.tags,
+    [bySlot, resolved.tags, slots, hour]);
   const membership = resolved.membership;
   const member = useMemo(() => membership ? (tag: string, hour: number) => isMember(membership.get(tag), hour) : null, [membership]);
   const top = resolved.top ?? null;
@@ -80,16 +87,16 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
   const woken = useMemo(() => new Set<() => void>(), []);
   useEffect(() => live.subscribe(() => { for (const wake of [...woken]) wake(); }), [live, woken]);
   const ranked = useHeadHour(runtime.clock, active && top != null && !!reply, () => reply && top != null
-    ? scoreRows(reply, { all, tags: resolved.tags, top, hour }, member, by, score).map(row => row.tag).sort().join(',') : '', woken);
+    ? scoreRows(reply, { all, tags: chosenTags, top, hour }, member, by, score).map(row => row.tag).sort().join(',') : '', woken);
   // The scores are painted from the live cells, each frame they move; the table renders only for its rows. A new source
   // for each set of a top's members: the table sorts the rows it is given by the scores now, in the commit that shows
   // them, never by the last order it took (which lacks a new member) and again a slot later.
   const tableLive = useMemo(() => reporting(live, () => shown(shownAt.current())), [live, shown, ranked]); // eslint-disable-line react-hooks/exhaustive-deps
   // A top's rows are its members as this render reads them (paused, `ranked`'s hour holds while they change).
-  const members = reply && top != null ? scoreRows(reply, { all, tags: resolved.tags, top, hour }, member, by, score) : null;
+  const members = reply && top != null ? scoreRows(reply, { all, tags: chosenTags, top, hour }, member, by, score) : null;
   const membersKey = members?.map(row => row.tag).sort().join(',') ?? '';
-  const rows = useMemo(() => members ?? (reply ? scoreRows(reply, { all, tags: resolved.tags, top, hour }, member, by, score) : NO_ROWS),
-    [reply, all, resolved, top, member, by, score, membersKey, hour]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rows = useMemo(() => members ?? (reply ? scoreRows(reply, { all, tags: chosenTags, top, hour }, member, by, score) : NO_ROWS),
+    [reply, all, chosenTags, top, member, by, score, membersKey, hour]); // eslint-disable-line react-hooks/exhaustive-deps
   const [visible, setVisible] = useState<readonly GameScoreRow[]>(NO_ROWS);
   // Pushed at the head, every row is named, so the table re-sorting as scores move renders nothing more.
   const pushed = head.read === 'followed';
@@ -125,7 +132,7 @@ function ScoreTable({ widget, runtime, active, onDiagnostics, setOption }: Widge
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     if (needsGroups && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-    if (!reply || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading game scores…" />;
+    if (!reply || (needsGroups && !groups.data) || (bySlot && !slots)) return <WidgetState kind="loading" label="Loading game scores…" />;
     if (reply.missing) return <WidgetState kind="unavailable" message={reply.missing} />;
     if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
     if (!rows.length) return <WidgetState kind="unavailable" message={`No country’s scores recorded on ${dayLabel(hour)}.`} />;

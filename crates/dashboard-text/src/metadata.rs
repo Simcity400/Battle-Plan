@@ -1053,6 +1053,25 @@ pub fn tagged_country<'a>(
         .unwrap_or(TaggedCountry::Unresolved)
 }
 
+/// The country in canonical slot `slot` this hour: the first row in it the links resolve, told
+/// apart from no row in the slot and from rows the links cannot resolve, as [`tagged_country`]
+/// tells a tag's.
+pub fn slotted_country<'a>(
+    countries: &'a [CountryRow],
+    links: &[CountryLinkRow],
+    slot: u32,
+) -> TaggedCountry<'a> {
+    let mut held = countries
+        .iter()
+        .filter(|country| country.canonical_slot == slot)
+        .peekable();
+    if held.peek().is_none() {
+        return TaggedCountry::Absent;
+    }
+    held.find(|country| mapped_slot(country, links).is_ok())
+        .map_or(TaggedCountry::Unresolved, |country| TaggedCountry::Found(country, slot))
+}
+
 /// Every tag's [`TaggedCountry`] this hour in one pass over the rows, each as
 /// [`tagged_country`] gives it, for a product that reads every country at once.
 /// Tags are the recorded bytes.

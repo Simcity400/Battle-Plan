@@ -101,6 +101,9 @@ viewer --playback-cost <replay> --from-hour H --hours N --speed max --out <direc
 viewer --visual-toggle <replay> --hour H --out <directory> [--mod-a <mod>]... [--mod-b <mod>]...
          [--toggles N] [--refresh-hz HZ] [--settle-frames N] [--timeout S] [--no-fresh]
          toggles visual mods through the app's path; a mod by its listed name or its id
+viewer --viewpoint-switch <replay> --hour H --out <directory> --countries <TAG,TAG,...> [--rounds N]
+         [--play-switches N] [--play-speed H/S] [--hour-steps N] [--refresh-hz HZ] [--timeout S]
+         times switches of the viewing country to the first changed and the settled frame
 viewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>
 viewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>
 viewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]
@@ -125,6 +128,7 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
            (these four default to the user folder's settings.txt, else the game's defaults)
          --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result
          --air-region <region>, open the strategic air dialog; --air-details expands its history
+         --state-view <province> | --naval-region <region>, open the state or naval region view
          --air-range days|months|years --air-channels <bitmask>, select the history range and series
          --diagnostics, technical stats and data limitations; dumps and captures report the
            limitations either way
@@ -160,6 +164,8 @@ Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, 
            --counters-json <out.json>, submitted plates with interface rectangles
              (device pixels at --ui-scale 1), sprite frames and text
            --province-hover <id>, print hover text and set the local strategic-name hover
+           --raid-details <province>, open the raid offer bubble's target details window there
+           --find <query>, draw the find view with the query typed and print its results
            --intel-hover <x,y>, print an Operatives map entry's hover (repeatable)
              under that interface point, or that none takes it
            --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel
@@ -434,6 +440,11 @@ struct Options {
     /// control codepoints escaped, and its refusals. Also supplies the local picked
     /// province for strategic-name admission; no pointer means the native whole layer.
     province_hover: Option<u32>,
+    /// Dump-only: open the target details window of the raid offer bubble at this province, as
+    /// its click opens it.
+    raid_details: Option<u32>,
+    /// Dump-only: draw the find view with this query typed.
+    find: Option<String>,
     /// Dump-only: print the hover text of the intel entry under this interface point.
     intel_hover: Vec<[f32; 2]>,
     /// `--ui-scale`: device pixels per interface pixel of the screen-space map
@@ -495,7 +506,7 @@ impl Options {
         let (mut walk, mut walk_keys, mut walk_flying) = (None, None, false);
         while let Some(arg) = args.next() {
             match arg.to_str() {
-                Some("--combat" | "--combat-at" | "--air-region") => {
+                Some("--combat" | "--combat-at" | "--air-region" | "--state-view" | "--naval-region") => {
                     if options.combat.is_some() {
                         return Err(invalid("choose exactly one --combat or --combat-at"));
                     }
@@ -503,7 +514,11 @@ impl Options {
                         .next()
                         .and_then(|s| s.into_string().ok())
                         .ok_or_else(|| invalid("combat selection requires an integer"))?;
-                    options.combat = Some(if arg == "--air-region" {
+                    options.combat = Some(if arg == "--state-view" {
+                        combat::Selector::State(value.parse().map_err(|_| invalid("province must be a u32"))?)
+                    } else if arg == "--naval-region" {
+                        combat::Selector::NavalRegion(value.parse().map_err(|_| invalid("naval region must be a u32"))?)
+                    } else if arg == "--air-region" {
                         combat::Selector::AirRegion(
                             value
                                 .parse()
@@ -594,6 +609,23 @@ impl Options {
                         return Err(invalid("--intel-hover needs an interface point x,y"));
                     };
                     options.intel_hover.push([x, y]);
+                }
+                Some("--raid-details") => {
+                    let value = args.next().ok_or_else(|| invalid(USAGE))?;
+                    options.raid_details = Some(
+                        value
+                            .to_string_lossy()
+                            .parse()
+                            .map_err(|_| invalid("--raid-details needs a province id"))?,
+                    );
+                }
+                Some("--find") => {
+                    let value = args.next().ok_or_else(|| invalid(USAGE))?;
+                    options.find = Some(
+                        value
+                            .into_string()
+                            .map_err(|_| invalid("--find needs a query in Unicode"))?,
+                    );
                 }
                 Some("--province-hover") => {
                     let value = args.next().ok_or_else(|| invalid(USAGE))?;
@@ -947,6 +979,12 @@ impl Options {
         }
         if options.province_hover.is_some() && !options.headless_dump {
             return Err(invalid("--province-hover requires --dump"));
+        }
+        if options.raid_details.is_some() && !options.headless_dump {
+            return Err(invalid("--raid-details requires --dump"));
+        }
+        if options.find.is_some() && !options.headless_dump {
+            return Err(invalid("--find requires --dump"));
         }
         if !options.intel_hover.is_empty() && !options.headless_dump {
             return Err(invalid("--intel-hover requires --dump"));
@@ -1453,6 +1491,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             options.counter_settings(&document.game_options),
             &options.map_mode,
         )?;
+        if let Some(province) = options.raid_details {
+            match dump_overlay.open_raid_details(province) {
+                Ok(targets) => println!("Raid details: province {province}, {targets} targets"),
+                Err(why) => eprintln!("Warning: raid details: {why}"),
+            }
+        }
         let mut combat_warnings = Vec::new();
         if let Some(selector) = options.combat {
             let mut window = combat::Window::default();
@@ -1551,6 +1595,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     dump_overlay.extra.quads.extend(picker.drawn.batch.quads);
                 }
                 Err(error) => eprintln!("Warning: map-mode picker: {error}"),
+            }
+        }
+        if let Some(query) = &options.find {
+            match app::find_view::dump(&document, &options, query) {
+                Ok((drawn, lines)) => {
+                    println!("Find view: {query:?}");
+                    for line in lines {
+                        println!("  find view: {line}");
+                    }
+                    dump_overlay.extra.quads.extend(drawn.batch.quads);
+                }
+                Err(error) => eprintln!("Warning: find view: {error}"),
             }
         }
         let report = render::dump_png(
@@ -1681,7 +1737,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<String>()
             };
             let [x, y] = point;
-            match dump_overlay.prepared().intel_at(|hit| {
+            match dump_overlay.hits.intel_at(|hit| {
                 // A dump lays its overlay out for the camera it draws, so no window is offset.
                 crate::app::map_hits::local(
                     None,
@@ -1712,6 +1768,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 options.map_mode,
                 viewer_world::map::map_mode::MapMode::Stock(
                     viewer_world::map::map_mode::Stock::StrategicNavy
+                        | viewer_world::map::map_mode::Stock::Default
                 )
             ))
         .then(|| dump_overlay.naval_dominance_sources());
@@ -1762,8 +1819,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let (Some(province), crate::playback::Current::Frame(frame)) =
             (options.province_hover, document.playback.current())
         {
+            let counters = &document.content.counters;
             let mut mode = crate::app::picker::mode_hover(
                 &options.map_mode,
+                crate::app::picker::picks_region(
+                    counters.kinds.get(&province).copied(),
+                    counters.region(province),
+                ),
                 document.map_modes.defines.opinion_thresholds(),
                 || {
                     document
@@ -1773,34 +1835,48 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
             );
             if let (
-                viewer_counter_products::map::province_tooltips::ModeHover::StrategicNavy(sources),
+                viewer_counter_products::map::province_tooltips::ModeHover::StrategicNavy(sources)
+                | viewer_counter_products::map::province_tooltips::ModeHover::SeaRegion(sources),
                 Some(prepared_sources),
             ) = (&mut mode, naval_hover_sources)
             {
                 *sources = prepared_sources;
             }
-            // The hover's air statistics wait for the roster history worker, as the
-            // interactive hover does through its wake: ask again until nothing is pending.
-            let mut cache = viewer_counter_products::map::province_tooltips::Cache::default();
-            let selected = Arc::new(Vec::new());
-            let rosters = document.playback.roster_sampler();
-            let text = loop {
-                let text = cache.request(
-                    &document.counter_content,
-                    document.icons.raids.movement_reads(),
+            let text = if let viewer_counter_products::map::province_tooltips::ModeHover::Terrain {
+                ..
+            } = mode
+            {
+                Arc::new(viewer_combat::terrain_mode::hover(
+                    &document.combat,
                     frame,
                     province,
                     &counter_report.perspective,
-                    options.counter_settings(&document.game_options).nato,
-                    &selected,
-                    &rosters,
-                    &mode,
-                    || {},
-                );
-                if !cache.pending() {
-                    break text;
+                ))
+            } else {
+                // The hover's air statistics wait for the roster history worker, as the
+                // interactive hover does through its wake: ask again until nothing is pending.
+                let mut cache = viewer_counter_products::map::province_tooltips::Cache::default();
+                let selected = Arc::new(Vec::new());
+                let rosters = document.playback.roster_sampler();
+                loop {
+                    let text = cache.request(
+                        &document.counter_content,
+                        document.icons.raids.movement_reads(),
+                        frame,
+                        province,
+                        &counter_report.perspective,
+                        options.counter_settings(&document.game_options).nato,
+                        &selected,
+                        &rosters,
+                        &mode,
+                        &[],
+                        || {},
+                    );
+                    if !cache.pending() {
+                        break text;
+                    }
+                    cache.wait();
                 }
-                cache.wait();
             };
             let escaped = |text: &str| {
                 text.chars()

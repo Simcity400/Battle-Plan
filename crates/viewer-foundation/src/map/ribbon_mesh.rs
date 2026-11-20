@@ -30,8 +30,10 @@ pub fn append_into(mut out: OrderField, more: &OrderField) -> OrderField {
     out.native_vertices.extend_from_slice(&more.native_vertices);
     out.raid_units.extend_from_slice(&more.raid_units);
     out.held.extend_from_slice(&more.held);
+    let lines = out.trade_route_lines.len() as u32;
     out.trade_route_hovers
-        .extend_from_slice(&more.trade_route_hovers);
+        .extend(more.trade_route_hovers.iter().map(|sample| TradeRouteSample { line: sample.line + lines, ..*sample }));
+    out.trade_route_lines.extend_from_slice(&more.trade_route_lines);
     append_draws(&mut out.draws, base, more);
     out
 }
@@ -55,7 +57,16 @@ pub fn append_kept(
         vertices: joined(&field.vertices, &more.vertices),
         native_vertices: joined(&field.native_vertices, &more.native_vertices),
         draws,
-        trade_route_hovers: joined(&field.trade_route_hovers, &more.trade_route_hovers),
+        trade_route_hovers: field
+            .trade_route_hovers
+            .iter()
+            .copied()
+            .chain(more.trade_route_hovers.iter().map(|sample| TradeRouteSample {
+                line: sample.line + field.trade_route_lines.len() as u32,
+                ..*sample
+            }))
+            .collect(),
+        trade_route_lines: joined(&field.trade_route_lines, &more.trade_route_lines),
         labels: field.labels.clone(),
         raid_units: joined(&field.raid_units, &more.raid_units),
         held: joined(&field.held, &more.held),

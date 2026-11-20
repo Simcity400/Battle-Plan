@@ -18,6 +18,11 @@ pub struct Law {
     /// Visibility and availability triggers are stored separately.
     pub visible: Vec<crate::parser::Item>,
     pub available: Vec<crate::parser::Item>,
+    /// The description key; empty when the law declares none.
+    pub tooltip: String,
+    pub state_modifier: Vec<crate::parser::Item>,
+    /// `None` when the law declares no suppressed modifier, which the game then leaves out.
+    pub suppressed_state_modifier: Option<Vec<crate::parser::Item>>,
 }
 
 /// Default occupation-law sprite name.
@@ -85,8 +90,28 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<Law>> {
             frame: 1,
             visible: Vec::new(),
             available: Vec::new(),
+            tooltip: String::new(),
+            state_modifier: Vec::new(),
+            suppressed_state_modifier: None,
         };
         for field in item.value.items().unwrap_or_default() {
+            if field.keyword_is("state_modifier") {
+                law.state_modifier
+                    .extend_from_slice(field.value.items().unwrap_or_default());
+                continue;
+            }
+            if field.keyword_is("suppressed_state_modifier") {
+                law.suppressed_state_modifier
+                    .get_or_insert_with(Vec::new)
+                    .extend_from_slice(field.value.items().unwrap_or_default());
+                continue;
+            }
+            if field.keyword_is("tooltip") {
+                law.tooltip = std::str::from_utf8(crate::parser::c_string(field.value.scalar().unwrap_or_default()))
+                    .map_err(|e| invalid(format!("{} tooltip: {e}", law.token)))?
+                    .into();
+                continue;
+            }
             if field.keyword_is("visible") {
                 law.visible
                     .extend_from_slice(field.value.items().unwrap_or_default());
@@ -194,6 +219,24 @@ mod tests {
         assert!(laws[0].visible[1].keyword_is("has_dlc"));
         assert_eq!(laws[0].available.len(), 1);
         assert!(laws[0].available[0].keyword_is("FROM"));
+    }
+
+    #[test]
+    fn the_tooltip_key_and_both_modifier_blocks_are_kept() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let laws = parse(
+            b"strict={tooltip=first tooltip=strict_tt state_modifier={compliance_gain=0.1} state_modifier={resistance_growth=-0.2} suppressed_state_modifier={local_manpower=0.5}} plain={}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(laws[0].tooltip, "strict_tt");
+        assert_eq!(laws[0].state_modifier.len(), 2);
+        assert!(laws[0].state_modifier[1].keyword_is("resistance_growth"));
+        assert_eq!(laws[0].suppressed_state_modifier.as_ref().map(Vec::len), Some(1));
+        assert_eq!(laws[1].tooltip, "");
+        assert!(laws[1].state_modifier.is_empty());
+        assert_eq!(laws[1].suppressed_state_modifier, None);
     }
 
     #[test]

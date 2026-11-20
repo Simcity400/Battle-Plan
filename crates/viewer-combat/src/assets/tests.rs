@@ -72,6 +72,53 @@ fn combat_native_assets_follow_global_templates_and_scrollbars() {
 }
 
 #[test]
+fn every_window_the_map_opens_loads_its_own_and_its_entries_sprites() {
+    use viewer_foundation::combat_selection::Selection;
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let opened: Vec<&[u8]> = [
+        Selection::Land(0),
+        Selection::Naval(0),
+        Selection::NavalResult(0),
+        Selection::AirRegion(0),
+        Selection::State(0),
+        Selection::NavalRegion(0),
+    ]
+    .map(|selection| crate::gui::window_name(selection).as_bytes())
+    .into_iter()
+    .chain(crate::state_view::TEMPLATES.iter().copied())
+    .chain(crate::naval_region_view::TEMPLATES.iter().copied())
+    .collect();
+    let sprite = |name: &[u8]| format!("GFX_own_{}", String::from_utf8_lossy(name));
+    let mut declaration = String::from(
+        "guiTypes = { containerWindowType = { name = unit_counter_navy } containerWindowType = { name = naval_combat_mapicon }",
+    );
+    for name in &opened {
+        declaration.push_str(&format!(
+            " containerWindowType = {{ name = {} iconType = {{ name = icon spriteType = {} }} }}",
+            String::from_utf8_lossy(name),
+            sprite(name)
+        ));
+    }
+    declaration.push('}');
+    let windows = NativeWindows::of(gui::native::Guis::new(vec![(
+        "windows.gui".into(),
+        gui::native::read(declaration.as_bytes()),
+    )]))
+    .unwrap();
+    let assets = native_window_assets(&windows, &Default::default());
+    for name in opened {
+        assert!(
+            assets.sprites.contains(sprite(name).as_bytes()),
+            "{} is not loaded",
+            sprite(name)
+        );
+    }
+    // The find view writes the victory point strip into its results.
+    assert!(assets.sprites.contains(b"GFX_onmap_victorypoints_strip".as_slice()));
+}
+
+#[test]
 fn combat_shortcut_assets_request_the_first_keycap_without_localisation() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -459,4 +506,32 @@ fn content_preload_uses_the_same_native_glyph_names_and_type_masks() {
             .sprites
             .contains(b"GFX_unit_Boat_icon_small".as_slice())
     );
+}
+
+#[test]
+fn sprites_the_state_view_names_from_its_content_load_with_the_windows() {
+    let (root, assets, _) = synthetic_assets("content_named", "", |root| {
+        for directory in ["common/occupation_laws", "common/dynamic_modifiers", "gfx/bound"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        std::fs::write(root.join("common/occupation_laws/laws.txt"), b"bound_law = { icon = GFX_bound_law }").unwrap();
+        std::fs::write(root.join("common/dynamic_modifiers/modifiers.txt"), b"bound_modifier = { icon = GFX_bound_modifier }").unwrap();
+        std::fs::write(root.join("gfx/bound/one.tga"), tga(4, 4)).unwrap();
+        std::fs::write(
+            root.join("interface/bound.gfx"),
+            br#"spriteTypes = {
+                spriteType = { name = "GFX_bound_law" textureFile = "gfx/bound/one.tga" }
+                spriteType = { name = "GFX_bound_modifier" textureFile = "gfx/bound/one.tga" }
+                spriteType = { name = "GFX_unbound" textureFile = "gfx/bound/one.tga" }
+            }"#,
+        )
+        .unwrap();
+    });
+    assert!(assets.has_sprite("GFX_bound_law"));
+    assert!(assets.has_sprite("GFX_bound_modifier"));
+    // A declared sprite nothing names stays unloaded.
+    assert!(!assets.has_sprite("GFX_unbound"));
+    // The fixture declares no building, which is named.
+    assert!(assets.warnings.iter().any(|warning| warning.contains("building special icons")), "{:?}", assets.warnings);
+    std::fs::remove_dir_all(root).unwrap();
 }

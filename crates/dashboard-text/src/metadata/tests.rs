@@ -644,8 +644,8 @@ fn metadata_catalogue_lists_every_country_once_across_branches_within_the_reply_
 }
 
 #[test]
-fn a_tag_is_found_absent_or_unresolved() {
-    use crate::metadata::{TaggedCountry, tagged_country};
+fn a_tag_or_slot_is_found_absent_or_unresolved() {
+    use crate::metadata::{TaggedCountry, slotted_country, tagged_country};
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
         id,
         canonical_slot,
@@ -676,6 +676,16 @@ fn a_tag_is_found_absent_or_unresolved() {
         TaggedCountry::Unresolved
     );
     assert_eq!(tagged_country(&countries, &links[..1], "GER").found(), None);
+    assert_eq!(
+        slotted_country(&countries, &links, 7),
+        TaggedCountry::Found(&countries[1], 7)
+    );
+    assert_eq!(slotted_country(&countries, &links, 5), TaggedCountry::Absent);
+    assert_eq!(
+        slotted_country(&countries, &links[..1], 7),
+        TaggedCountry::Unresolved,
+        "a row in the slot whose link is missing is unresolved, not absent"
+    );
 }
 
 fn daily_slot_of(table: TableId) -> i32 {

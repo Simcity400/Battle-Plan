@@ -67,9 +67,9 @@ pub struct AirTimelineParams {
     pub last_hour: i32,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub mode: Option<AirMode>,
-    /// A side's key, or a country's tag with `viewpointCountry`.
+    /// A side's key, or a country (its slot or tag) with `viewpointCountry`.
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub viewpoint: Option<String>,
+    pub viewpoint: Option<dashboard_base::products::Country>,
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
     pub viewpoint_country: Option<bool>,
     /// The side keys compared; all when none.
@@ -210,6 +210,7 @@ fn score((country, region, friendly, enemy): (u32, u32, i64, i64)) -> RaidAirSco
 /// A day composed.
 pub(crate) struct Composed<'c> {
     pub epoch: usize,
+    pub hour: i32,
     pub sides: &'c [AssignedSide],
     pub compose: &'c Compose<'c>,
     pub scores: &'c HourScores,
@@ -238,8 +239,8 @@ impl<'a> Days<'a> {
         self.params.sides.as_ref().filter(|keys| !keys.is_empty()).map(|keys| keys.iter().map(String::as_str).collect())
     }
 
-    fn view(&self, sides: &[AssignedSide]) -> View<'a> {
-        let viewpoint = self.params.viewpoint.as_deref().unwrap_or_default();
+    fn view(&self, sides: &[AssignedSide], hour: i32) -> View<'a> {
+        let viewpoint = super::viewpoint_name(self.params.viewpoint.as_ref(), self.params.viewpoint_country == Some(true), self.holders, hour);
         match self.params.mode.unwrap_or_default() {
             AirMode::Sides => View::Sides,
             AirMode::Viewpoint if self.params.viewpoint_country == Some(true) => View::Country(viewpoint),
@@ -279,8 +280,8 @@ impl<'a> Days<'a> {
             let scores = hour_scores(&rows, day.complete, day.links.as_deref().map(Vec::as_slice), self.holders, present, day.hour);
             let sides: &[AssignedSide] = held.and_then(|held| held.sides.as_deref()).map_or(&[], Vec::as_slice);
             let roster = held.and_then(|held| held.sides.as_deref()).map(|sides| Roster::new(sides));
-            let compose = Compose::new(roster.as_ref(), &scores.operands, self.view(sides));
-            each(at, Some(&Composed { epoch, sides, compose: &compose, scores: &scores }));
+            let compose = Compose::new(roster.as_ref(), &scores.operands, self.view(sides, day.hour));
+            each(at, Some(&Composed { epoch, hour: day.hour, sides, compose: &compose, scores: &scores }));
         }
         Ok(())
     }
@@ -385,7 +386,7 @@ impl<'a> Days<'a> {
                 if matches!(self.params.mode.unwrap_or_default(), AirMode::Sides) {
                     excluded[day] = composed.compose.excluded() as u32;
                 }
-                if let View::Side(Some(position)) = self.view(composed.sides) {
+                if let View::Side(Some(position)) = self.view(composed.sides, composed.hour) {
                     viewpoint = Some(dictionary.index(index, composed.epoch, composed.sides, position));
                 }
             }

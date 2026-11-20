@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import type { CountryRaceEntry, LiveRaceEntries } from './countryRace';
 import type { Decoded } from '../chartSummary';
 import { chartSummaryLines } from '../chartSummary.ts';
@@ -19,7 +20,7 @@ function validState(value: unknown): value is SeriesState {
   if (!value || typeof value !== 'object') return false;
   const state = value as Record<string, unknown>;
   const run = state.run as Record<string, unknown> | null;
-  return typeof state.tag === 'string' && isInteger(state.hour) && (state.missing === null || typeof state.missing === 'string')
+  return (typeof state.country === 'string' || typeof state.country === 'number') && isInteger(state.hour) && (state.missing === null || typeof state.missing === 'string')
     && (run === null || (!!run && typeof run === 'object' && isRaw(run.valueRaw) && isInteger(run.firstHour) && isInteger(run.lastHour)));
 }
 
@@ -51,7 +52,7 @@ export const rawNumber = (raw: string | bigint | number, decimals: number) => Nu
  * value first, ties by tag, the first `slots`. */
 export function stateEntries(states: readonly SeriesState[], decimals: number, format: (raw: string, decimals: number) => string,
   hour: number, slots: number): CountryRaceEntry[] {
-  const held = states.flatMap(state => state.run ? [{ tag: state.tag, raw: BigInt(state.run.valueRaw), text: state.run.valueRaw }] : []);
+  const held = states.flatMap(state => state.run ? [{ tag: countryKey(state.country), raw: BigInt(state.run.valueRaw), text: state.run.valueRaw }] : []);
   held.sort((a, b) => (a.raw < b.raw ? 1 : a.raw > b.raw ? -1 : 0) || compareTags(a.tag, b.tag));
   return held.slice(0, Math.max(0, slots)).map(({ tag, text }) => ({ tag, value: rawNumber(text, decimals), label: format(text, decimals), stretch: null, hour }));
 }

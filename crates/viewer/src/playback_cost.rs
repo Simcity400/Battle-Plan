@@ -15,6 +15,7 @@ pub(crate) mod flight;
 pub(crate) mod paced;
 pub(crate) mod proof;
 pub(crate) mod toggle;
+pub(crate) mod viewpoint;
 
 const CAPTURES: &str = "BATTLE_PLAN_CAPTURES";
 const ROWS: &[(&str, &str, f64)] = &[
@@ -60,6 +61,8 @@ pub(crate) fn dispatch(args: &[OsString]) -> Option<io::Result<()>> {
         |args, _| proof::run(args)
     } else if args.iter().any(|arg| arg == "--visual-toggle") {
         |args, _| toggle::run(args)
+    } else if args.iter().any(|arg| arg == "--viewpoint-switch") {
+        |args, _| viewpoint::run(args)
     } else if args.iter().any(|arg| arg == "--playback-cost") {
         run
     } else {

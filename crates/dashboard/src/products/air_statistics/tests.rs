@@ -72,7 +72,7 @@ fn a_holders_other_link_ids_add_their_regions_and_a_region_two_ids_hold_is_the_l
 
 #[test]
 fn every_step_reads_each_table_once_as_a_frame_refuses_a_table_read_twice() {
-    let params = AirStatisticsParams { branch_id: "1".to_owned(), tag: "GER".to_owned(), channel: 0 };
+    let params = AirStatisticsParams { branch_id: "1".to_owned(), country: "GER".into(), channel: 0 };
     let held = DecodedFrame { branch: 1, hour: 0, tables: std::array::from_fn(|_| not_selected()), metrics: Metrics::default() };
     let once = |tables: Vec<TableId>| {
         let mut indices: Vec<usize> = tables.iter().map(|table| table.index()).collect();

@@ -192,8 +192,8 @@ impl Product for MarketLedger {
             page_size: params.page_size,
             columns: None,
         };
-        let tagged = params.facets.iter().any(|filter| !filter.tags.is_empty());
-        let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.map(str::to_owned)))?;
+        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
+        let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
         let columns = Columns::read()?;
         let tags = Names::new(&query.holders);
         let mut by_run: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
@@ -268,7 +268,7 @@ impl Product for MarketLedger {
                     hour: row.hour,
                     key: row.key.to_string(),
                     ordinal: ordinal.to_string(),
-                    tag,
+                    country: tag,
                     own_ordinal: tagged.then(|| own.to_string()),
                     cells: mapped.cells,
                 })

@@ -76,16 +76,22 @@ impl LeaderKinds {
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum LeaderSelection {
     All,
-    Countries { tags: Vec<String> },
+    Countries { countries: Vec<dashboard_base::products::Country> },
 }
 
 impl LeaderSelection {
-    fn keeps(&self, owner: Option<&str>) -> bool {
+    /// Whether a leader whose owner is (canonical slot, tag) is chosen.
+    fn keeps(&self, owner: Option<(u32, &str)>) -> bool {
         match self {
             Self::All => true,
-            Self::Countries { tags } => owner.is_some_and(|owner| tags.iter().any(|tag| tag == owner)),
+            Self::Countries { countries } => owner.is_some_and(|(slot, tag)| countries.iter().any(|country| super::casualties::matches(country, (slot, 0), tag))),
         }
     }
+}
+
+/// A raw owner's (canonical slot, tag) at the frame's hour, when both are named.
+fn owned(tags: &Tags, raw: u32) -> Option<(u32, String)> {
+    Some((tags.slot(raw)?, tags.tag(raw)?))
 }
 
 /// A trait a reply names by its place in the reply's list.
@@ -687,8 +693,8 @@ impl AtHour for UnitLeaders {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         parse_branch(&params.branch_id)?;
-        if let LeaderSelection::Countries { tags } = &params.selection {
-            tags.iter().try_for_each(|tag| dashboard_base::products::validate_tag(tag))?;
+        if let LeaderSelection::Countries { countries } = &params.selection {
+            countries.iter().try_for_each(dashboard_base::products::validate_country)?;
         }
         Ok(())
     }
@@ -706,7 +712,7 @@ impl AtHour for UnitLeaders {
             let tags = Tags::read(held).ok();
             leaders
                 .iter()
-                .filter(|row| params.leaders.includes(row.kind) && params.selection.keeps(tags.as_ref().and_then(|tags| tags.tag(row.owner)).as_deref()))
+                .filter(|row| params.leaders.includes(row.kind) && params.selection.keeps(tags.as_ref().and_then(|tags| owned(tags, row.owner)).as_ref().map(|(slot, tag)| (*slot, tag.as_str()))))
                 .collect()
         };
         match step {
@@ -786,7 +792,7 @@ impl AtHour for UnitLeaders {
                 }
                 continue;
             }
-            if !params.selection.keeps(owner.as_deref()) {
+            if !params.selection.keeps(tags.as_ref().ok().and_then(|tags| owned(tags, row.owner)).as_ref().map(|(slot, tag)| (*slot, tag.as_str()))) {
                 continue;
             }
             let verdict = match decided.get(&handle(row)) {

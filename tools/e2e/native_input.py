@@ -13,6 +13,7 @@ carries the epoch milliseconds each event was sent at, the clock the viewer stam
     {"op": "keys", "x": x, "y": y, "keys": ["ArrowRight"], "ms": 1500}  (holds keys with the pointer over the map)
     {"op": "drag", "points": [[x, y], ...], "interval_ms": 16}          (a middle-button drag)
     {"op": "click", "x": x, "y": y}                                     (a primary click on the map)
+    {"op": "mods", "ctrl": b, "shift": b, "alt": b}                     (the modifiers held from then on)
     {"op": "save_dialog", "path": "C:/...png", "seconds": 20}          (fills and confirms the host's save dialog)
     {"op": "color_dialog", "rgb": [r, g, b], "seconds": 10}            (fills and confirms a colour input's dialog)
 """
@@ -155,6 +156,9 @@ class Desktop:
         self.send({"button": "primary", "at": at, "pressed": False})
         return {"posted": [posted]}
 
+    def mods(self, ctrl=False, shift=False, alt=False):
+        return {"posted": [self.send({"ctrl": ctrl, "shift": shift, "alt": alt})]}
+
     def save_dialog(self, path, seconds):
         """Fills the host's save dialog's file name and confirms it, as a user does."""
         deadline = time.monotonic() + seconds
@@ -227,7 +231,7 @@ def main():
             command = json.loads(line)
             op = command.pop("op")
             reply = {"move": desktop.move, "wheel": desktop.wheel, "keys": desktop.keys, "drag": desktop.drag, "click": desktop.click,
-                     "save_dialog": desktop.save_dialog, "color_dialog": desktop.color_dialog}[op](**command)
+                     "mods": desktop.mods, "save_dialog": desktop.save_dialog, "color_dialog": desktop.color_dialog}[op](**command)
         except Exception as error:
             reply = {"error": f"{type(error).__name__}: {error}"}
         print(json.dumps(reply), flush=True)

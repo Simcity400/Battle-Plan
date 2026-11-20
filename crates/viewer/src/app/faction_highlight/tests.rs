@@ -15,6 +15,7 @@ fn key() -> Key {
         borders: 3,
         regions: vec![7].into(),
         adjacency: false,
+        selection: None,
     }
 }
 
@@ -233,4 +234,27 @@ fn hover_results_are_rejected_after_hour_perspective_border_or_selection_changes
             );
         }
     }
+}
+
+#[test]
+fn a_ground_selection_alone_builds_a_plan_and_nothing_builds_none() {
+    let dropper = Dropper::new().unwrap();
+    let outline = crate::app::ground_click::Outline { provinces: vec![4, 5].into(), state: true };
+    let selected = Key { regions: Arc::default(), selection: Some(outline), ..key() };
+    let mut lane = Lane::default();
+    let mut submitted = false;
+    lane.update(selected, |_| { submitted = true; true }, plan, &dropper);
+    assert!(submitted);
+    let mut lane = Lane::default();
+    let nothing = Key { regions: Arc::default(), ..key() };
+    lane.update(nothing, |_| panic!("nothing to outline"), plan, &dropper);
+}
+
+#[test]
+fn a_ground_selection_alone_wants_the_picture_its_outline_is_built_over() {
+    let outline = crate::app::ground_click::Outline { provinces: vec![4, 5].into(), state: true };
+    assert!(wanted(&[], Some(&outline), false), "a selected state with nothing hovered");
+    assert!(wanted(&[7], None, false));
+    assert!(wanted(&[], None, true), "a highlight on screen is taken off over it");
+    assert!(!wanted(&[], None, false));
 }

@@ -5,7 +5,7 @@ use replay_data::{rows::AirCountryRelationRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
 use viewer_foundation::map::{
-    allegiance::NativeRelations, directed_wars::Owner, naval_mine_levels::Levels,
+    allegiance::NativeRelations, directed_wars::Owner, naval_mine_levels::{self, Levels},
     naval_region_control::raw_roster, perspective::Vision,
 };
 
@@ -70,6 +70,33 @@ pub fn build(
     out
 }
 
+/// The enemies' mine density in the region as the observed country feels it: their mines against
+/// the content maximum, reduced by its mine reduction and its intel lead over them.
+pub fn enemy_share(
+    content: &counter_content::Content,
+    frame: &DecodedFrame,
+    vision: &Vision,
+    region: u32,
+) -> Fact<i64> {
+    let links: BTreeMap<u32, u32> = frame
+        .complete::<tables::CountryLinks>()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|row| (row.id, row.canonical_slot))
+        .collect();
+    let inputs = Inputs {
+        content,
+        frame,
+        vision,
+        region,
+        links,
+        countries: Names::new(frame, &content.localisation),
+    };
+    let levels = Levels::read(frame, &inputs.links)?;
+    let enemies = raw_roster(frame, vision.ours(), AirCountryRelationRow::ENEMY)?;
+    inputs.penalty(inputs.raw()?, &enemies, &levels)
+}
+
 struct Inputs<'a> {
     content: &'a counter_content::Content,
     frame: &'a DecodedFrame,
@@ -120,14 +147,7 @@ impl Inputs<'_> {
         if !self.positive_states(raw)? {
             return Ok((String::new(), None));
         }
-        let [features] = self
-            .frame
-            .complete::<tables::SimulationFeatures>()
-            .map_err(|e| e.to_string())?
-        else {
-            return Err("mine summary simulation features singleton is unavailable".into());
-        };
-        if features.dlc_mask & (1 << 19) == 0 {
+        if !naval_mine_levels::enabled(self.frame)? {
             return Ok((String::new(), None));
         }
         let levels = Levels::read(self.frame, &self.links)?;
@@ -417,7 +437,8 @@ impl Inputs<'_> {
             &self.content.localisation,
             scripted,
             self.vision.ours(),
-        );
+        )
+        .viewing(self.vision.ours());
         let effects = scripted.effects()?;
         let context = dashboard_text::effect_description::Context::new(
             &text,

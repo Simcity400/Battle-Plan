@@ -7,7 +7,7 @@ import type { PartyHistoryReply } from '../../generated/dashboard';
 
 const transition: LedgerGovernment = { country: 1, instance: 1, epoch: '1', sequence: '1', hour: 24, readHour: 26,
   beforeToken: 'mod_old', afterToken: 'mod_new', cause: 'CoupCompletion', covered: false };
-const parties: PartyHistoryReply = { branchId: '1', tag: 'mod country', decimals: 5, parties: [], leaders: [], people: [],
+const parties: PartyHistoryReply = { branchId: '1', tag: 'mod country', asked: 'mod country', decimals: 5, parties: [], leaders: [], people: [],
   ideologyTypes: [], ideologies: [], partyNames: [], partyNameRuns: [], unobserved: [], warnings: [], elections: [26],
   ruling: [{ token: 'mod_old', firstHour: 24, lastHour: 25, startsSegment: true },
     { token: 'mod_new', firstHour: 26, lastHour: 30, startsSegment: false }] };

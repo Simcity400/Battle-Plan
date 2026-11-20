@@ -1,6 +1,6 @@
 /** The view of an hour the stockpile widget's data functions read (a UI shape: the catalogue's designs and types with
  * the hour's values as runs); the family's replies are the contract's. */
-import type { ChartSummary, Domain, HourSpan, StockType, StockVariantName, StockpileCatalogueLogistics, StockpileCatalogueVariant, StockpileChoicePeak } from '../../generated/dashboard';
+import type { ChartSummary, CountryRef, Domain, HourSpan, StockType, StockVariantName, StockpileCatalogueLogistics, StockpileCatalogueVariant, StockpileChoicePeak } from '../../generated/dashboard';
 
 export type { ChartSummary, Domain, HourSpan, StockVariantName };
 
@@ -24,7 +24,7 @@ export interface EquipmentStockpileReply {
 }
 
 export interface StockpileCatalogueReply {
-  branchId: string; tags: string[]; campaignKey: string; decimals: number; types: StockType[];
+  branchId: string; countries: CountryRef[]; campaignKey: string; decimals: number; types: StockType[];
   variants: StockpileCatalogueVariant[]; logistics: StockpileCatalogueLogistics[];
   reads: number[]; lineReads: number[]; logisticsReads: number[];
   stockHours: HourSpan[]; lineHours: HourSpan[]; balanceHours: HourSpan[]; aiHours: HourSpan[];

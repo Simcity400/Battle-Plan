@@ -16,6 +16,8 @@ fn constant_and_scoped_values_keep_line_order() {
     .unwrap();
     let first = &definitions[0];
     assert_eq!(first.name, "SYN");
+    assert_eq!(first.icon, b"other");
+    assert!(definitions[1].icon.is_empty());
     assert_eq!(first.modifiers.values[0].value, 20_000);
     assert_eq!(
         first.scoped_modifiers,

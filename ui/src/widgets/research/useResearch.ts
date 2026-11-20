@@ -1,7 +1,8 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo } from 'react';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import { useHeadProduct } from '../../dashboard/headProduct.ts';
 import { useProduct } from '../../dashboard/products.ts';
 import { setToken } from '../../dashboard/options';
@@ -27,7 +28,7 @@ export function historyTokens(history: ResearchHistory): ResearchUse[] {
 /** The widget's track and country. */
 export function researchTarget(widget: WidgetSpec, runtime: WidgetRuntime) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
+  const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryKey(track) ?? undefined;
   return { track, tag };
 }
 
@@ -35,7 +36,7 @@ export function researchTarget(widget: WidgetSpec, runtime: WidgetRuntime) {
  * shared by every research widget showing it; never asked again as playback moves. */
 export function useResearchReply(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const { track, tag } = researchTarget(widget, runtime);
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'research', params: { branchId: track.branch.id, tag } } : null;
+  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'research', params: { branchId: track.branch.id, country: countryFromKey(tag) } } : null;
   return { track, tag, ...useProduct<ResearchData>(runtime.client, request, active, validateResearchReply, track?.source) };
 }
 
@@ -46,7 +47,7 @@ export function useResearchReply(widget: WidgetSpec, runtime: WidgetRuntime, act
 export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, structure: (reply: ResearchSlotsReply) => string,
   root: RefObject<HTMLElement | null>, hoverHour: number | null = null) {
   const { tag, track } = researchTarget(widget, runtime);
-  const params = useMemo(() => tag ? { tag } : null, [tag]);
+  const params = useMemo(() => tag ? { country: countryFromKey(tag) } : null, [tag]);
   const now = useHeadProduct<ResearchSlotsReply>(runtime, widget, 'research-slots', params,
     { active, validate: validateResearchSlots, structure, hoverHour });
   const attach = useCallback((element: HTMLElement | null) => {

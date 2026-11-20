@@ -185,17 +185,25 @@ pub fn seam_copies(x0: f32, x1: f32, width: f32) -> Vec<i32> {
 /// Footprint x coordinates in top-left, top-right, bottom-left, bottom-right order, with normalized
 /// rays and the fixed downward threshold/range cap.
 pub(super) fn footprint(camera: Camera, viewport: [u32; 2]) -> [f32; 4] {
+    let [top_left, top_right, bottom_left, bottom_right, _] = water_footprint(camera, viewport);
+    [top_left[0], top_right[0], bottom_left[0], bottom_right[0]]
+}
+
+/// Where the rays through the viewport's top-left, top-right, bottom-left and bottom-right
+/// corners and its middle meet the water plane, as world `(x, z)`: each ray capped at five eye
+/// heights, and a ray that never descends taken the whole cap.
+pub fn water_footprint(camera: Camera, viewport: [u32; 2]) -> [[f32; 2]; 5] {
     let [width, height] = viewport.map(|size| size.max(1) as f32);
-    let x = |screen| {
+    let eye = camera.eye();
+    let point = |screen| {
         let [a, b, c] = camera.ray(screen, viewport);
         //  divides each component by length (unlike the plane's reciprocal).
         let length = (a * a + b * b + c * c).sqrt();
-        let [a, b] = if length == 0.0 {
-            [0.0; 2]
+        let [a, b, c] = if length == 0.0 {
+            [0.0; 3]
         } else {
-            [a / length, b / length]
+            [a / length, b / length, c / length]
         };
-        let eye = camera.eye();
         let cap = eye[1] * 5.0;
         let distance = if b < -0.001 {
             let water = (eye[1] - super::camera::WATER_HEIGHT) / b.abs();
@@ -207,13 +215,14 @@ pub(super) fn footprint(camera: Camera, viewport: [u32; 2]) -> [f32; 4] {
         } else {
             cap
         };
-        a * distance + eye[0]
+        [a * distance + eye[0], c * distance + eye[2]]
     };
     [
-        x([0.0, 0.0]),
-        x([width, 0.0]),
-        x([0.0, height]),
-        x([width, height]),
+        point([0.0, 0.0]),
+        point([width, 0.0]),
+        point([0.0, height]),
+        point([width, height]),
+        point([width * 0.5, height * 0.5]),
     ]
 }
 

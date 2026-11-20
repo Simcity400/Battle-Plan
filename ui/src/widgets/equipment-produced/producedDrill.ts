@@ -1,6 +1,7 @@
 /** A country's breakdown over time: the `equipment-produced-country` reply as the shared parts drill reads it. The
  * chart stacks one type's models, or (IC, no type chosen) every type, the largest `CHART_TYPES` in colour and the
  * rest together; values stay the product's exact integers, plotted in the count's own unit. */
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
@@ -21,7 +22,7 @@ const OTHER_TYPES = { id: 'other types', label: 'Other types' };
 export function validateCountryReply(data: unknown): ProducedCountryReply {
   const reply = data as ProducedCountryReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
-    && (reply.count === 'units' || reply.count === 'ic') && Number.isInteger(reply.decimals)
+    && (typeof reply.asked === 'string' || typeof reply.asked === 'number') && (reply.count === 'units' || reply.count === 'ic') && Number.isInteger(reply.decimals)
     && validCountryIdentityRuns(reply.identities) && validSeries(reply.total)
     && Array.isArray(reply.models) && reply.models.every(model => typeof model.variant === 'string' && typeof model.typeKey === 'string'
       && typeof model.typeRecorded === 'boolean' && Array.isArray(model.names) && validSeries(model.series))
@@ -93,9 +94,11 @@ export function producedDrillData(reply: ProducedCountryReply, spec: ChartSpec):
   const parts = chartParts(reply, spec);
   const models = reply.models.map(model => seriesModel(model.series));
   const total = seriesModel(reply.total);
+  // The drill names its country by the key it asked with (`asked`), never by the tag the reply names it by then.
+  const asked = countryKey(reply.asked);
   const involved = spec.type == null ? [total, ...models] : models.filter((_, index) => reply.models[index].typeKey === spec.type || !reply.models[index].typeRecorded);
   const at = (tag: string, hour: number) => {
-    if (tag !== reply.tag) return null;
+    if (tag !== asked) return null;
     const totalAt = valueAt(total, hour);
     if (!totalAt) return null;
     const held = partsAt(reply, models, parts, spec, model => { const found = valueAt(model, hour); return found ? found.value : undefined; }, totalAt.value);
@@ -105,7 +108,7 @@ export function producedDrillData(reply: ProducedCountryReply, spec: ChartSpec):
   };
   const bands = (tag: string, range: Span): Run[][] => {
     const out: Run[][] = Array.from({ length: parts.length + 1 }, () => []);
-    if (tag !== reply.tag) return out;
+    if (tag !== asked) return out;
     const hours = boundaries(involved);
     const breaks = new Set(reply.total.breaks.map(index => reply.total.firstHours[index]));
     for (let index = 0; index + 1 < hours.length; index++) {
@@ -131,8 +134,8 @@ export function producedDrillData(reply: ProducedCountryReply, spec: ChartSpec):
     warnings: reply.warnings,
     parts: hour => parts.map(part => ({ id: part.id, label: part.label(hour) })),
     at, bands,
-    segmentAt: (tag, hour) => tag === reply.tag ? valueAt(total, hour)?.stretch ?? null : null,
-    readHour: (tag, hour) => tag === reply.tag && valueAt(total, hour) ? readAt(reply.reads, hour) : null,
+    segmentAt: (tag, hour) => tag === asked ? valueAt(total, hour)?.stretch ?? null : null,
+    readHour: (tag, hour) => tag === asked && valueAt(total, hour) ? readAt(reply.reads, hour) : null,
     keyHours: reply.reads,
     tooltip: (tag, hour, name, colours) => {
       const value = at(tag, hour);

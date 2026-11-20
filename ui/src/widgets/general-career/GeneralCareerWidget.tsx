@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import { resolveOptions } from '../../dashboard/options';
@@ -29,7 +29,7 @@ function TopGeneralCareer(props: WidgetProps) {
   const { widget, runtime, active } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const dashboard = widget.countries.kind === 'selected';
-  const tag = dashboard ? defaultCountryTag(track) : null;
+  const tag = dashboard ? defaultCountryKey(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const selection = useCountriesSelectionAt(widget, runtime, lastHour, active);
   const params = useMemo(() => selection.requestTags === undefined ? null : { selection: leaderRequestSelection(selection.requestTags), leaders: 'land' },

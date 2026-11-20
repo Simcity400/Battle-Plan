@@ -13,7 +13,7 @@ import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useRowTooltips } from '../../charts/useRowTooltips';
 import { useViewportHeight } from '../../charts/useChartTokens';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
@@ -45,7 +45,7 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const hour = head.at ?? shownHour(runtime, widget, head) ?? 0;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');
-  const selection = useMemo(() => countryMatch(widget.countries, selectedTags(widget.countries, track), groups.data, track?.branch.lastHour ?? hour),
+  const selection = useMemo(() => countryMatch(widget.countries, selectedCountryKeys(widget.countries, track), groups.data, track?.branch.lastHour ?? hour),
     [widget.countries, track, groups.data, hour]);
   const data = head.data;
   const rows = useMemo(() => data && selection.ready ? raceRows(data, options.order as RaceOrder, options.countrySide as CountrySide, hour,

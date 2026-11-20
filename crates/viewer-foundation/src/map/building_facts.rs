@@ -18,6 +18,41 @@ pub const RADAR: usize = 3;
 /// How many icon kinds [`SiteSlots`] places.
 pub const ICON_KINDS: usize = 4;
 
+/// A building's status scope: type token, location, status flags, owner override.
+pub type Scope = (u32, u32, u32, u32);
+
+/// Whether the viewer `ours` has detected a foreign `need_detection` building, from values:
+/// `controller(provincial, location)` is a location's raw controller, `link(raw)` a raw country's
+/// canonical slot, `target(scope)` the winning raid-target row's bit for `ours` (`None` when
+/// RaidTargetStatuses is not complete, `Some(None)` when no row holds the scope). `None` when the
+/// hour cannot decide it.
+pub fn detected(
+    (building_type, location, status_flags, country): Scope,
+    controller: impl FnOnce(bool, u32) -> Option<u32>,
+    link: impl FnOnce(u32) -> Option<u32>,
+    ours: u32,
+    target: impl FnOnce(Scope) -> Option<Option<bool>>,
+) -> Option<bool> {
+    // A positive override, else the province (flag bit 0) or state controller.
+    let owner = if (country as i32) > 0 {
+        Some(country)
+    } else {
+        controller(status_flags & 1 != 0, location)
+    };
+    let owner = owner.and_then(link);
+    if owner == Some(ours) {
+        return Some(true);
+    }
+    let detected =
+        target((building_type, location, status_flags, country))?.unwrap_or(false);
+    // An unresolved owner could be an alias of ours.
+    if detected {
+        Some(true)
+    } else {
+        owner.map(|_| false)
+    }
+}
+
 /// One admitted authored building record, as the game appends it to its
 /// province in `map/buildings.txt` order.
 struct SiteSlot {

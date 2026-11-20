@@ -56,6 +56,7 @@ pub mod map {
     pub mod mesh_shader;
     pub mod model_labels;
     pub mod model_multi_fallback;
+    pub mod model_pick;
     pub mod model_selection;
     pub mod models;
     pub mod movement_arrows;

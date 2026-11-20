@@ -31,6 +31,7 @@ impl Fixture {
             height_min_volume: 0.2,
             height_max_volume: 1.0,
             voice_category: "Voices".into(),
+            voice_cool_down: 2.8,
         };
         let mut engine = Engine::new(7);
         engine.set_content(Some(Arc::new(Content::new(catalog, Some(defines)))));

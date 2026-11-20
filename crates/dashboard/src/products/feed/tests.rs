@@ -492,10 +492,10 @@ fn a_scope_keeps_the_rows_naming_its_countries_by_every_role_at_the_hour_they_ar
     use dashboard_query::identity::{Holder, HolderRun, Holders};
     let names = Names { slots: HashMap::from([(7, vec![("GER".to_owned(), 0, 99), ("DDR".to_owned(), 100, 200)]), (8, vec![("POL".to_owned(), 0, 200)])]) };
     let held = |slot: u32, first: i32, last: i32| HolderRun { first, last, holder: Holder::Found { slot, id: slot }, starts_segment: true };
-    let holders = Holders {
-        tags: [("GER".to_owned(), vec![held(7, 0, 99)]), ("DDR".to_owned(), vec![held(7, 100, 200)]), ("POL".to_owned(), vec![held(8, 0, 200)])].into_iter().collect(),
-        unknown: Vec::new(),
-    };
+    let holders = Holders::new(
+        [("GER".to_owned(), vec![held(7, 0, 99)]), ("DDR".to_owned(), vec![held(7, 100, 200)]), ("POL".to_owned(), vec![held(8, 0, 200)])].into_iter().collect(),
+        Vec::new(),
+    );
     let scope = |tag: &str, first_hour: i32, last_hour: i32| Scope::resolve(&holders, &[MembershipRun { tag: tag.to_owned(), first_hour, last_hour }]);
     let war = entry(50, 1, 0, &event(1, 50, Slot::Of(7), Slot::Of(8)), &names);
     assert_eq!((war.at, war.slots), (50, [7, 8, u32::MAX]));
@@ -531,7 +531,7 @@ fn a_scoped_page_and_its_counts_number_only_the_rows_kept() {
     use crate::products::groups::MembershipRun;
     use dashboard_query::{identity::{Holder, HolderRun, Holders}, log::Pattern};
     use std::sync::Arc;
-    let holders = Holders { tags: [("GER".to_owned(), vec![HolderRun { first: 0, last: 400, holder: Holder::Found { slot: 7, id: 7 }, starts_segment: true }])].into_iter().collect(), unknown: Vec::new() };
+    let holders = Holders::new([("GER".to_owned(), vec![HolderRun { first: 0, last: 400, holder: Holder::Found { slot: 7, id: 7 }, starts_segment: true }])].into_iter().collect(), Vec::new());
     let scope = Scope::resolve(&holders, &[MembershipRun { tag: "GER".to_owned(), first_hour: 0, last_hour: 400 }]);
     let row = |hour: i32, key: u128, kind: u128, slot: u32| Entry { hour, at: hour, key, facet: kind << 96, slots: [slot, u32::MAX, u32::MAX] };
     let first = Arc::new(vec![row(10, 1, 1, 7), row(10, 2, 1, 8), row(20, 3, 2, 7), row(30, 4, 1, 7), row(40, 5, 1, 7)]);

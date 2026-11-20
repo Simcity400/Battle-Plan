@@ -1,3 +1,4 @@
+import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CountryPicker from '../../components/CountryPicker';
 import MeasureRace from '../../charts/race/MeasureRace';
@@ -5,7 +6,7 @@ import { mixCountry } from '../../charts/race/options.ts';
 import type { RaceView } from '../../charts/race/options';
 import type { LabelAt } from '../../charts/race/lines';
 import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
-import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { defaultCountryKey } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { resolveOptions } from '../../dashboard/options';
@@ -42,7 +43,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
 
   // One country's mix: the chosen country, the dashboard's, or one picked; its aliases over the spans its holder held them.
   const groups = useCountryGroups(runtime, track, active && view === 'mix');
-  const fallback = defaultCountryTag(track);
+  const fallback = defaultCountryKey(track);
   // The hour the mix's choices are of: the moment shown, read while paused, pinned or on a range; held while playing.
   const readHour = useCallback(() => track ? Math.floor(resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour) : 0,
     [widget, track, runtime.tracks, runtime.clock]);
@@ -51,11 +52,11 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   if (!playing) held.current = settled;
   const choiceHour = held.current;
   const occupiers = useProduct<OccupationDetailReply>(runtime.client, view === 'mix' && track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceHour, tags: [], collaboration: false } } : null, active, validateOccupationDetail, track?.source);
+    product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceHour, countries: [], collaboration: false } } : null, active, validateOccupationDetail, track?.source);
   const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   // As main: the countries of the choice holding an occupation at that moment.
-  const candidates = useMemo(() => (occupiers.data?.occupiers ?? []).filter(row => row.missing === null && match.matches(row.tag, choiceHour)).map(row => row.tag),
+  const candidates = useMemo(() => (occupiers.data?.occupiers ?? []).filter(row => row.missing === null && match.matches(countryKey(row.country), choiceHour)).map(row => countryKey(row.country)),
     [occupiers.data, match, choiceHour]);
   const [picked, setPicked] = useState<{ tag: string; hour: number } | null>(null);
   const originHour = picked?.hour ?? choiceHour;
@@ -79,7 +80,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     queueMicrotask(() => setDetailHour(at));
   }, []);
   const request = track && detailHour !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-at',
-    params: { branchId: track.branch.id, hour: detailHour, tags: [], collaboration } } : null;
+    params: { branchId: track.branch.id, hour: detailHour, countries: [], collaboration } } : null;
   const read = useProduct<OccupationDetailReply>(runtime.client, request, active, validateOccupationDetail, track?.source);
   const detail = useMemo<DetailAt | null>(() => read.data && detailHour !== null ? { hour: detailHour, reply: read.data, values: repliedCells(read.data).read() } : null,
     [read.data, detailHour]);

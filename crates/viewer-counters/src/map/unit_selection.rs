@@ -9,8 +9,6 @@ use viewer_foundation::unit_handle::Unit;
 use replay_data::{BranchId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
-use viewer_foundation::map::perspective::Country;
-
 /// The game checks selection before owner and
 /// coarse grouping. Splitting keeps each selected unit on its own plate.
 pub fn joins(selected: &BTreeSet<Unit>, first: Unit, candidate: Unit, split: bool) -> bool {
@@ -21,7 +19,7 @@ pub fn joins(selected: &BTreeSet<Unit>, first: Unit, candidate: Unit, split: boo
 
 #[derive(Default)]
 pub struct Selection {
-    context: Option<(BranchId, Country, u32)>,
+    context: Option<BranchId>,
     units: Arc<BTreeSet<Unit>>,
     ordered: Arc<Vec<Unit>>,
 }
@@ -77,13 +75,89 @@ impl Selection {
         changed
     }
 
-    /// A new branch, country or viewer clears the selection; it reads no rows.
-    pub fn context(&mut self, branch: BranchId, country: &Country, viewer: u32) -> bool {
-        let context = (branch, country.clone(), viewer);
-        if self.context.as_ref() == Some(&context) {
+    /// A box replaces the selection with `units`, clearing it when they are none; with Shift it
+    /// adds them and never takes one away.
+    pub fn select_box(&mut self, units: impl IntoIterator<Item = Unit>, shift: bool) -> bool {
+        let before = (Arc::clone(&self.units), Arc::clone(&self.ordered));
+        if !shift {
+            self.units = Arc::default();
+            self.ordered = Arc::default();
+        }
+        for unit in units {
+            if !self.units.contains(&unit) {
+                Arc::make_mut(&mut self.units).insert(unit);
+                Arc::make_mut(&mut self.ordered).push(unit);
+            }
+        }
+        self.keep_unless_changed(before)
+    }
+
+    /// A click on a unit model: Shift on a selected `picked` unit takes it away; otherwise the
+    /// selection is cleared unless Shift is held, and `picked`'s stack `mates` are added when they
+    /// are ours, of the first selected object's kind and of its land theatre (`theatre`, 0 for
+    /// none), or of `picked`'s when nothing stays selected. A picked unit not ours, which the
+    /// game's list keeps after an observer's switch, adds nothing and does not fall through. A
+    /// theatre not answered adds no mate, and its reason is returned.
+    pub fn model_click(
+        &mut self,
+        picked: Unit,
+        mates: &[Unit],
+        ours: bool,
+        shift: bool,
+        theatre: &dyn Fn(Unit) -> Result<u64, &'static str>,
+    ) -> (bool, Option<&'static str>) {
+        let before = (Arc::clone(&self.units), Arc::clone(&self.ordered));
+        if shift && self.units.contains(&picked) {
+            Arc::make_mut(&mut self.units).remove(&picked);
+            Arc::make_mut(&mut self.ordered).retain(|unit| *unit != picked);
+            return (true, None);
+        }
+        if !shift {
+            self.units = Arc::default();
+            self.ordered = Arc::default();
+        }
+        let kind = |unit: &Unit| std::mem::discriminant(unit);
+        let anchor = self.ordered.first().copied().unwrap_or(picked);
+        let mut withheld = None;
+        if ours && kind(&anchor) == kind(&picked) {
+            let admitted: Result<Vec<Unit>, &'static str> = match picked {
+                Unit::TaskForce(_) => Ok(mates.to_vec()),
+                Unit::Division(_) | Unit::RailwayGun(_) => theatre(anchor).and_then(|home| {
+                    mates.iter().filter_map(|&unit| theatre(unit).map(|at| (at == home).then_some(unit)).transpose()).collect()
+                }),
+            };
+            match admitted {
+                Ok(admitted) => {
+                    for unit in admitted {
+                        if !self.units.contains(&unit) {
+                            Arc::make_mut(&mut self.units).insert(unit);
+                            Arc::make_mut(&mut self.ordered).push(unit);
+                        }
+                    }
+                }
+                Err(why) => withheld = Some(why),
+            }
+        }
+        (self.keep_unless_changed(before), withheld)
+    }
+
+    /// Whether the selection changed since `before`; when it did not, `before` is kept, so held
+    /// tooltip identities stay.
+    fn keep_unless_changed(&mut self, before: (Arc<BTreeSet<Unit>>, Arc<Vec<Unit>>)) -> bool {
+        let changed = *before.0 != *self.units || *before.1 != *self.ordered;
+        if !changed {
+            (self.units, self.ordered) = before;
+        }
+        changed
+    }
+
+    /// A new branch clears the selection; a new viewing country keeps it, as the game's
+    /// observer switch deselects nothing. It reads no rows.
+    pub fn context(&mut self, branch: BranchId) -> bool {
+        if self.context == Some(branch) {
             return false;
         }
-        self.context = Some(context);
+        self.context = Some(branch);
         self.clear()
     }
 
@@ -91,14 +165,8 @@ impl Selection {
     /// Complete censuses can retire missing handles; an absent or partial class
     /// census cannot prove disappearance, so it preserves that class. Ownership
     /// admits a new click but does not invalidate an already-selected handle.
-    pub fn observe(
-        &mut self,
-        branch: BranchId,
-        country: &Country,
-        viewer: u32,
-        frame: &DecodedFrame,
-    ) -> bool {
-        let mut changed = self.context(branch, country, viewer);
+    pub fn observe(&mut self, branch: BranchId, frame: &DecodedFrame) -> bool {
+        let mut changed = self.context(branch);
         if self.units.is_empty() {
             return changed;
         }
@@ -246,6 +314,45 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_box_clears_without_shift_and_shift_adds_without_toggling() {
+        let mut selection = Selection::default();
+        assert!(selection.select_box([Unit::Division(1), Unit::Division(2)], false));
+        assert!(selection.select_box([Unit::Division(2), Unit::Division(3)], true));
+        assert_eq!(
+            selection.ordered_units().as_slice(),
+            [Unit::Division(1), Unit::Division(2), Unit::Division(3)]
+        );
+        let held = Arc::clone(selection.ordered_units());
+        assert!(!selection.select_box([Unit::Division(1)], true));
+        assert!(!selection.select_box([], true));
+        assert!(Arc::ptr_eq(&held, selection.ordered_units()));
+        assert!(selection.select_box([Unit::Division(3)], false));
+        assert_eq!(selection.ordered_units().as_slice(), [Unit::Division(3)]);
+        assert!(selection.select_box([], false));
+        assert!(selection.units().is_empty());
+    }
+
+    #[test]
+    fn a_model_click_selects_our_mates_clears_on_a_unit_not_ours_and_shift_toggles_the_picked() {
+        let mut selection = Selection::default();
+        let theatres = |unit: Unit| -> Result<u64, &'static str> { Ok(if unit == Unit::Division(3) { 4 } else { 0 }) };
+        let click = |selection: &mut Selection, picked, mates: &[Unit], ours, shift| {
+            selection.model_click(picked, mates, ours, shift, &theatres)
+        };
+        let mates = [Unit::Division(1), Unit::Division(2), Unit::Division(3)];
+        assert_eq!(click(&mut selection, Unit::Division(1), &mates, true, false), (true, None));
+        assert_eq!(selection.ordered_units().as_slice(), [Unit::Division(1), Unit::Division(2)], "another theatre's mate stays out");
+        assert_eq!(click(&mut selection, Unit::Division(9), &[Unit::Division(9)], false, true), (false, None));
+        assert_eq!(click(&mut selection, Unit::Division(2), &mates, true, true), (true, None));
+        assert_eq!(selection.ordered_units().as_slice(), [Unit::Division(1)]);
+        assert_eq!(click(&mut selection, Unit::RailwayGun(5), &[Unit::RailwayGun(5)], true, true), (false, None));
+        let unrecorded = selection.model_click(Unit::Division(7), &[Unit::Division(7)], true, true, &|_| Err("unit theatre not recorded"));
+        assert_eq!(unrecorded, (false, Some("unit theatre not recorded")));
+        assert_eq!(click(&mut selection, Unit::Division(9), &[Unit::Division(9)], false, false), (true, None));
+        assert!(selection.units().is_empty());
+    }
+
+    #[test]
     fn normal_click_reordering_changes_tooltip_identity_without_changing_membership() {
         let mut selection = Selection::default();
         assert!(selection.click(Some(&hit(Kind::Division, &[8, 7, 8])), false));
@@ -293,7 +400,7 @@ mod tests {
     fn shift_readdition_appends_and_retirement_keeps_survivor_order() {
         let mut frame = test_frame(42);
         let mut selection = Selection::default();
-        selection.observe(frame.branch, &Country::Recorded, 1, &frame);
+        selection.observe(frame.branch, &frame);
         selection.click(Some(&hit(Kind::Division, &[8, 9, 7])), false);
         // Two toggles preserve membership but move the removed/readded member last.
         assert!(selection.click(Some(&hit(Kind::Division, &[9, 9])), true));
@@ -315,7 +422,7 @@ mod tests {
                 },
             ]),
         );
-        assert!(selection.observe(frame.branch, &Country::Recorded, 1, &frame));
+        assert!(selection.observe(frame.branch, &frame));
         assert_eq!(
             selection.ordered_units().as_slice(),
             [Unit::Division(7), Unit::Division(9), Unit::RailwayGun(7)]
@@ -328,20 +435,16 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             **selection.units()
         );
-        assert!(selection.observe(frame.branch, &Country::Recorded, 2, &frame));
-        assert!(selection.ordered_units().is_empty());
-        assert!(selection.units().is_empty());
     }
 
     #[test]
     fn missing_censuses_preserve_selection_and_complete_censuses_retire_only_their_class() {
         let mut frame = test_frame(42);
         let mut selection = Selection::default();
-        let country = Country::Recorded;
-        selection.observe(frame.branch, &country, 1, &frame);
+        selection.observe(frame.branch, &frame);
         selection.click(Some(&hit(Kind::Division, &[7, 8])), false);
         selection.click(Some(&hit(Kind::RailwayGun, &[7])), true);
-        assert!(!selection.observe(frame.branch, &country, 1, &frame));
+        assert!(!selection.observe(frame.branch, &frame));
         put(
             &mut frame,
             TableRows::Divisions(vec![DivisionRow {
@@ -349,7 +452,7 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        assert!(selection.observe(frame.branch, &country, 1, &frame));
+        assert!(selection.observe(frame.branch, &frame));
         assert_eq!(
             selection.units().iter().copied().collect::<Vec<_>>(),
             [Unit::Division(8), Unit::RailwayGun(7)]
@@ -358,9 +461,6 @@ mod tests {
             selection.ordered_units().as_slice(),
             [Unit::Division(8), Unit::RailwayGun(7)]
         );
-        assert!(selection.observe(frame.branch, &Country::Tag("other".into()), 1, &frame));
-        assert!(selection.units().is_empty());
-        assert!(selection.ordered_units().is_empty());
     }
 
     #[test]
@@ -374,7 +474,7 @@ mod tests {
             (STEADY, 101, 101, 0),
         ]);
         let mut selection = Selection::default();
-        selection.observe(frame.branch, &Country::Recorded, 1, &frame);
+        selection.observe(frame.branch, &frame);
         for kind in [Kind::Division, Kind::TaskForce, Kind::RailwayGun] {
             selection.click(Some(&hit(kind, &[STEADY, TRANSFERRED, ALIASED])), true);
         }
@@ -388,7 +488,7 @@ mod tests {
             (ALIASED, 102, 201, 201),
             (STEADY, 101, 101, 0),
         ]);
-        assert!(!selection.observe(frame.branch, &Country::Recorded, 1, &frame));
+        assert!(!selection.observe(frame.branch, &frame));
         assert!(Arc::ptr_eq(&held, selection.ordered_units()));
         assert!(Arc::ptr_eq(&members, selection.units()));
         assert_eq!(
@@ -407,14 +507,14 @@ mod tests {
             (ALIASED, 201, 201, 201),
             (STEADY, 101, 101, 0),
         ]);
-        assert!(!selection.observe(frame.branch, &Country::Recorded, 1, &frame));
+        assert!(!selection.observe(frame.branch, &frame));
         assert!(Arc::ptr_eq(&held, selection.ordered_units()));
         assert!(Arc::ptr_eq(&members, selection.units()));
 
         // Only disappearance from complete class censuses retires the handle,
         // retaining the survivor order and the held tooltip's previous order.
         frame = ownership_frame(&[(ALIASED, 201, 201, 201), (STEADY, 101, 101, 0)]);
-        assert!(selection.observe(frame.branch, &Country::Recorded, 1, &frame));
+        assert!(selection.observe(frame.branch, &frame));
         assert_eq!(
             selection.ordered_units().as_slice(),
             [
@@ -444,12 +544,12 @@ mod tests {
 
         let mut frame = ownership_frame(&[(7, 999, 201, 201), (8, 101, 101, 0)]);
         let mut selection = Selection::default();
-        selection.observe(frame.branch, &Country::Recorded, 1, &frame);
+        selection.observe(frame.branch, &frame);
         for kind in [Kind::Division, Kind::RailwayGun, Kind::TaskForce] {
             selection.click(Some(&hit(kind, &[8, 7])), true);
         }
         let held = Arc::clone(selection.ordered_units());
-        assert!(!selection.observe(frame.branch, &Country::Recorded, 1, &frame));
+        assert!(!selection.observe(frame.branch, &frame));
         assert!(Arc::ptr_eq(&held, selection.ordered_units()));
 
         frame = ownership_frame(&[(7, 201, 101, 101), (8, 101, 101, 0)]);
@@ -467,7 +567,7 @@ mod tests {
             },
         ] {
             frame.tables[TableId::CountryLinks.index()] = unknown.into();
-            assert!(!selection.observe(frame.branch, &Country::Recorded, 1, &frame));
+            assert!(!selection.observe(frame.branch, &frame));
             assert!(Arc::ptr_eq(&held, selection.ordered_units()));
         }
         frame.tables[TableId::CountryLinks.index()] = links;
@@ -493,7 +593,7 @@ mod tests {
             missing: 1,
         }
         .into();
-        assert!(!selection.observe(frame.branch, &Country::Recorded, 1, &frame));
+        assert!(!selection.observe(frame.branch, &frame));
         assert!(Arc::ptr_eq(&held, selection.ordered_units()));
 
         // A complete census can still prove disappearance without owner links.
@@ -502,7 +602,7 @@ mod tests {
         }
         .into();
         put(&mut frame, TableRows::Divisions(Vec::new()));
-        assert!(selection.observe(frame.branch, &Country::Recorded, 1, &frame));
+        assert!(selection.observe(frame.branch, &frame));
         assert_eq!(
             selection.ordered_units().as_slice(),
             [
@@ -545,12 +645,12 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_census_holds_members_and_a_branch_change_clears_them() {
+    fn a_partial_census_holds_members_and_only_a_branch_change_clears_them() {
         use replay_data::rows::TableId;
         use replay_frame::frame::TableView;
         let mut frame = test_frame(42);
         let mut selection = Selection::default();
-        selection.observe(frame.branch, &Country::Recorded, 1, &frame);
+        selection.observe(frame.branch, &frame);
         selection.click(Some(&hit(Kind::Division, &[7, 8])), false);
         frame.tables[TableId::Divisions.index()] = TableView::Truncated {
             rows: TableRows::Divisions(vec![DivisionRow {
@@ -560,17 +660,14 @@ mod tests {
             missing: 1,
         }
         .into();
-        assert!(!selection.observe(frame.branch, &Country::Recorded, 1, &frame));
+        assert!(!selection.observe(frame.branch, &frame));
         assert_eq!(selection.units().len(), 2);
         assert_eq!(
             selection.ordered_units().as_slice(),
             [Unit::Division(7), Unit::Division(8)]
         );
-        assert!(selection.observe(frame.branch + 1, &Country::Recorded, 1, &frame));
+        assert!(selection.observe(frame.branch + 1, &frame));
         assert!(selection.units().is_empty());
         assert!(selection.ordered_units().is_empty());
-        selection.click(Some(&hit(Kind::Division, &[7])), false);
-        assert!(selection.observe(frame.branch + 1, &Country::Recorded, 2, &frame));
-        assert!(selection.units().is_empty());
     }
 }

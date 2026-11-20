@@ -117,7 +117,7 @@ fn updated_clock(
     ))
 }
 
-fn clock(
+pub(crate) fn clock(
     content: &Content,
     frame: &DecodedFrame,
     province: u32,

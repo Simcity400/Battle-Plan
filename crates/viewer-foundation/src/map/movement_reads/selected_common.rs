@@ -519,13 +519,8 @@ impl<'w, 'a> Moves<'w, 'a> {
         self.common_discloses_access(owner, self.controller_raw(target)?, true)
     }
 
-    pub fn common_railway_message(
-        &self,
-        handle: u64,
-        target: u32,
-        text: &mut String,
-        content: &impl CommonMoveText,
-    ) -> Fact<bool> {
+    /// The railway gun's scalars, as [`Self::common_army_scalars`] gives a division's.
+    pub(super) fn common_gun_scalars(&self, handle: u64) -> Fact<(Army, u32, u32)> {
         let row = self.common_gun(handle)?;
         let army = Army {
             location: row.province,
@@ -536,11 +531,22 @@ impl<'w, 'a> Moves<'w, 'a> {
             organisation: 10_000_000,
             ..Default::default()
         };
+        Ok((army, row.logical_owner, row.combat_count))
+    }
+
+    pub fn common_railway_message(
+        &self,
+        handle: u64,
+        target: u32,
+        text: &mut String,
+        content: &impl CommonMoveText,
+    ) -> Fact<bool> {
+        let (army, logical_owner_raw, combat_count) = self.common_gun_scalars(handle)?;
         let unit = CommonUnit {
             class: CommonClass::RailwayGun,
             handle,
-            logical_owner_raw: row.logical_owner,
-            combat_count: row.combat_count,
+            logical_owner_raw,
+            combat_count,
             army: &army,
         };
         let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;

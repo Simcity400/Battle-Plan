@@ -291,6 +291,10 @@ fn player_text_uses_recorded_perspective_and_reserved_zero() {
             text.expand("[Player.GetTag]/[ROOT.GetTag]").as_deref(),
             Ok(expected)
         );
+        // A view that chose SOV (slot 2) is an observer of SOV, whoever the client views.
+        let chosen = ScriptedText::new(&f, &catalogue.localisation, content, 1).viewing(2);
+        assert_eq!(chosen.expand("[Player.GetTag]/[ROOT.GetTag]").as_deref(), Ok("SOV/GER"));
+        assert_eq!(chosen.for_root(2).expand("[Player.GetTag]").as_deref(), Ok("SOV"));
     }
 }
 

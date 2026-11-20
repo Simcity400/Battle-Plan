@@ -247,6 +247,27 @@ fn a_settled_layer_does_not_keep_failed_builds() {
     assert_eq!(*layer.get_or_build(&hour, |_| Ok::<_, ()>(5)).unwrap(), 5);
 }
 
+/// A value built over rows at the head whose reader had not declared a table it read is not kept:
+/// the discovery around it still learns the table, and the next ask, over rows that hold it, builds
+/// again. Before, the naval missions memo kept its first build of the hour, whose dominance sources
+/// refused AirCountryRelations, and every later build of that hour took it.
+#[test]
+fn a_value_built_over_an_undeclared_table_is_not_kept() {
+    let recent = Recent::<u32, bool>::new();
+    let read = |frame: &DecodedFrame| frame.complete::<replay_data::rows::tables::WeatherProvinces>().is_ok();
+    let other = weather(0);
+    let undeclared = frame(1, &replay_frame::frame::not_declared(TableId::WeatherProvinces), &other);
+    let (first, learned) = replay_frame::frame::discovering(|| recent.get_or_insert_with(1, || Ok::<_, ()>(Arc::new(read(&undeclared)))).unwrap());
+    assert!(!*first);
+    assert_eq!(learned, [TableId::WeatherProvinces], "the discovery around the build learns the table");
+    let declared = frame(1, &weather(2), &other);
+    let (second, _) = replay_frame::frame::discovering(|| recent.get_or_insert_with(1, || Ok::<_, ()>(Arc::new(read(&declared)))).unwrap());
+    assert!(*second, "built again over the rows that hold it, while the first value is still held");
+    drop(first);
+    let (kept, _) = replay_frame::frame::discovering(|| recent.get_or_insert_with(1, || Ok::<_, ()>(Arc::new(false))).unwrap());
+    assert!(*kept, "a whole build is kept");
+}
+
 #[test]
 fn recent_values_live_while_held_and_failures_are_not_kept() {
     let recent = Recent::<u32, u32>::new();

@@ -1110,16 +1110,25 @@ pub fn build_lines<O: OriginFields, C: ClientFields, R: RouteFields, G: Regional
         };
         report.drawn += 1;
         let scale = arrow.global_scale(shaped.controls.len());
+        let drawn = out.field.trade_route_lines.len() as u32;
+        out.field.trade_route_lines.push(viewer_foundation::map::ribbon_content::TradeRouteLine {
+            layer: line.layer.index() as u8,
+            route: (line.route.country(), line.route.class(), line.route.other()),
+            client: line.client,
+        });
         out.field
             .trade_route_hovers
             .extend(shaped.controls.iter().map(|&point| {
                 let [x, z] = viewer_foundation::map::ribbon_fixed::to_world(point);
-                [
-                    x,
-                    viewer_foundation::map::ribbon_mesh::ribbon_height(inputs.heights, x, z),
-                    z,
-                    arrow.body_width[0] * scale * arrow.body_uv_scale * defines.intersect_distance,
-                ]
+                viewer_foundation::map::ribbon_content::TradeRouteSample {
+                    at: [
+                        x,
+                        viewer_foundation::map::ribbon_mesh::ribbon_height(inputs.heights, x, z),
+                        z,
+                        arrow.body_width[0] * scale * arrow.body_uv_scale * defines.intersect_distance,
+                    ],
+                    line: drawn,
+                }
             }));
         if shaped.variants.iter().any(|&variant| variant != 0) {
             report.hotspots += 1;

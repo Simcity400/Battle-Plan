@@ -88,6 +88,15 @@ pub fn discovering<T>(read: impl FnOnce() -> T) -> (T, Vec<TableId>) {
     (value, found.into_iter().map(|(table, _)| table).collect())
 }
 
+/// [`discovering`] inside a discovery under way on this thread, which notes the tables too; outside
+/// one, `read` alone, naming none.
+pub fn discovering_within<T>(read: impl FnOnce() -> T) -> (T, Vec<TableId>) {
+    if DEPTH.with(Cell::get) == 0 {
+        return (read(), Vec::new());
+    }
+    discovering(read)
+}
+
 /// [`discovering`] with the fields each table was read for: the union of every read's, every
 /// field for a read that named none.
 pub fn discovering_fields<T>(read: impl FnOnce() -> T) -> (T, Vec<(TableId, u64)>) {

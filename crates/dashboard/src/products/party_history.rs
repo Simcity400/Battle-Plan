@@ -11,6 +11,7 @@
 //! first shows a new date under the same holder. A party's name and a leader's character are read where their inputs change: a rename
 //! of the same character, or a naming input of another country changing alone, is not seen.
 
+use dashboard_base::products::Country;
 use super::{
     CountryParams, LoadContext, Product, check_reply_budget,
     character_portraits::{RecordedPortrait, portrait_png, recorded_portrait},
@@ -124,6 +125,8 @@ pub struct LeaderArtwork {
 pub struct PartyHistoryReply {
     pub branch_id: String,
     pub tag: String,
+    /// The country the request named, which a reply is matched to: a slot follows its country through any tag.
+    pub asked: dashboard_base::products::Country,
     pub decimals: u8,
     pub parties: Vec<PartySeries>,
     pub ruling: Vec<RulingRun>,
@@ -275,10 +278,10 @@ pub(crate) fn observed_reads(recording: &replay::columnar_frames::Recording, run
 }
 
 /// `tag`'s party history over `query`'s timeline.
-pub(crate) fn read(query: &Query<'_>, tag: &str, cancelled: &AtomicBool) -> io::Result<Parties> {
+pub(crate) fn read(query: &Query<'_>, tag: &Country, cancelled: &AtomicBool) -> io::Result<Parties> {
     let columns = Columns::new()?;
     let mut parties = Parties::default();
-    let runs = query.holders.tags.get(tag).map(Vec::as_slice).unwrap_or_default();
+    let runs = query.holders.runs(tag);
     let mut holes: Vec<(i32, i32)> = query.timeline.unheld.iter().map(|unheld| (unheld.first, unheld.last)).collect();
     for stretch in &query.timeline.stretches {
         check_cancel(cancelled)?;
@@ -292,7 +295,7 @@ pub(crate) fn read(query: &Query<'_>, tag: &str, cancelled: &AtomicBool) -> io::
             }
             covered = last.saturating_add(1);
             match run.holder {
-                Holder::Found { slot, id } => parties.country(query, &columns, stretch.run, (slot, id), tag, first, last, cancelled)?,
+                Holder::Found { slot, id } => parties.country(query, &columns, stretch.run, (slot, id), &query.holders.name(tag, first), first, last, cancelled)?,
                 Holder::Unresolved => {
                     holes.push((first, last));
                     parties.last = None;
@@ -541,7 +544,7 @@ fn ideology_infos(politics: &PoliticsContent, warnings: &mut Vec<String>) -> Vec
 
 /// The reply to `params` from `parties`, joined with `politics` (names, colours and portraits)
 /// where the content loaded.
-pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &CountryParams, parties: &Parties, cancelled: &AtomicBool) -> io::Result<PartyHistoryReply> {
+pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &CountryParams, tag: &str, parties: &Parties, cancelled: &AtomicBool) -> io::Result<PartyHistoryReply> {
     let mut warnings = Vec::new();
     // Without the game folders the chart still draws, in palette colours and with tokens for names.
     let politics = match politics {
@@ -590,7 +593,7 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
         warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
     }
     if parties.parties.is_empty() {
-        warnings.push(format!("{}: no recorded parties in this branch", params.tag));
+        warnings.push(format!("{tag}: no recorded parties in this branch"));
     }
     // Names left out for a localisation refusal, by reason and key.
     if let Some(politics) = politics {
@@ -598,7 +601,8 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
     }
     Ok(PartyHistoryReply {
         branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
+        tag: tag.to_owned(),
+        asked: params.country.clone(),
         decimals: POPULARITY_DECIMALS,
         parties: parties.parties.values().cloned().collect(),
         ruling: parties.ruling.clone(),
@@ -616,17 +620,17 @@ pub(crate) fn present(politics: Result<&PoliticsContent, String>, params: &Count
 
 /// The last country read, kept for the next request of it.
 #[derive(Default)]
-struct Kept(Option<(u64, String, Arc<Parties>)>);
+struct Kept(Option<(u64, Country, Arc<Parties>)>);
 
-fn history(source: &Source, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::Result<Arc<Parties>> {
+fn history(source: &Source, branch: u64, tag: &Country, cancelled: &AtomicBool) -> io::Result<Arc<Parties>> {
     let state = source.state::<Kept>();
-    let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && held == tag).map(|(_, _, read)| Arc::clone(read));
+    let held = state.lock().unwrap_or_else(PoisonError::into_inner).0.as_ref().filter(|(at, held, _)| *at == branch && *held == *tag).map(|(_, _, read)| Arc::clone(read));
     if let Some(read) = held {
         return Ok(read);
     }
     let query = crate::answer::query(source, branch)?;
     let read = Arc::new(read(&query, tag, cancelled)?);
-    state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, tag.to_owned(), Arc::clone(&read)));
+    state.lock().unwrap_or_else(PoisonError::into_inner).0 = Some((branch, tag.clone(), Arc::clone(&read)));
     Ok(read)
 }
 
@@ -658,9 +662,10 @@ impl Product for PartyHistory {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        let parties = history(source, params.branch(), &params.tag, cancelled)?;
+        let parties = history(source, params.branch(), &params.country, cancelled)?;
         let politics = context.content().and_then(|content| politics_content(source, content)).map_err(|error| error.to_string());
-        let reply = present(politics.as_deref().map_err(Clone::clone), params, &parties, cancelled)?;
+        let query = crate::answer::query(source, params.branch())?;
+        let reply = present(politics.as_deref().map_err(Clone::clone), params, &query.holders.name(&params.country, query.timeline.last), &parties, cancelled)?;
         check_reply_budget(&reply)?;
         Ok(reply)
     }

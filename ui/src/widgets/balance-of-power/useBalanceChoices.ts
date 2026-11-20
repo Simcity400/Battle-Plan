@@ -1,4 +1,5 @@
-import { selectedTags } from '../../dashboard/countrySelection';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { POLITICS_HISTORY } from '../../dashboard/politicsHistory';
@@ -10,9 +11,9 @@ import type { PoliticsHistoryReply } from '../../generated/dashboard';
 /** The gear's Balance choices: every balance a holder of the country's tag had, by in-game name. */
 export function useBalanceChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const tag = singleCountry(widget.countries) ? selectedTags(widget.countries, track)[0] ?? null : null;
+  const tag = singleCountry(widget.countries) ? selectedCountryKeys(widget.countries, track)[0] ?? null : null;
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'country', tag } } : null;
+    params: { branchId: track.branch.id, mode: 'country', country: countryFromKey(tag) } } : null;
   const { data } = useProduct<PoliticsHistoryReply>(runtime.client, request, true, validateCountryBalances, track?.source);
   if (!data) return { balance: [] };
   const choices = new Map<string, string>();

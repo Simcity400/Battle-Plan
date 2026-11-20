@@ -1,3 +1,5 @@
+use dashboard_base::products::Country;
+use dashboard_query::identity::Holders;
 use super::{
     battles::{BattleCells, NavalBattleCountryFilter, battle_id, live_run, parse_id, result_history, sides_at},
     losses::{Counts, NavalPeriod, month_bases, month_start, row_key, run_key, score},
@@ -148,15 +150,15 @@ fn the_country_filter_keeps_sides_not_known_whole() {
     sides[0].countries.insert("ENG".into());
     sides[1].countries.insert("GER".into());
     let run = live_run("combat:1:1", &cells, Some(&sides), 5, 5);
-    let tags = |tags: &[&str]| NavalBattleCountryFilter { tags: Some(tags.iter().map(|tag| (*tag).to_owned()).collect()), membership: None, unobserved: Vec::new() };
-    assert!(tags(&["GER"]).matches(&run.row.sides, 5));
-    assert!(!tags(&["ITA"]).matches(&run.row.sides, 5));
-    let member = NavalBattleCountryFilter { tags: None, membership: Some(vec![MembershipRun { tag: "ENG".into(), first_hour: 6, last_hour: 9 }]), unobserved: Vec::new() };
-    assert!(!member.matches(&run.row.sides, 5));
-    assert!(member.matches(&run.row.sides, 7));
+    let tags = |tags: &[&str]| NavalBattleCountryFilter { countries: Some(tags.iter().map(|tag| Country::from(*tag)).collect()), membership: None, unobserved: Vec::new() };
+    assert!(tags(&["GER"]).matches(&Holders::default(), &run.row.sides, 5));
+    assert!(!tags(&["ITA"]).matches(&Holders::default(), &run.row.sides, 5));
+    let member = NavalBattleCountryFilter { countries: None, membership: Some(vec![MembershipRun { tag: "ENG".into(), first_hour: 6, last_hour: 9 }]), unobserved: Vec::new() };
+    assert!(!member.matches(&Holders::default(), &run.row.sides, 5));
+    assert!(member.matches(&Holders::default(), &run.row.sides, 7));
     sides[1].unknown = true;
     let unknown = live_run("combat:1:1", &cells, Some(&sides), 5, 5);
-    assert!(tags(&["ITA"]).matches(&unknown.row.sides, 5));
+    assert!(tags(&["ITA"]).matches(&Holders::default(), &unknown.row.sides, 5));
 }
 
 #[test]

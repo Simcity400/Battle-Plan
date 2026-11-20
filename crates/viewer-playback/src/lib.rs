@@ -4,6 +4,7 @@
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 pub mod comparison;
+pub mod cursors;
 pub mod presentation;
 pub mod document;
 pub mod engaged_index;

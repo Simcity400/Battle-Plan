@@ -572,6 +572,18 @@ impl Vision {
         self.fold.province_byte(province)
     }
 
+    /// A perspective change's fold is still being made: what the layer shows is the viewer's before.
+    pub fn restarting(&self) -> bool {
+        self.fold.restarting()
+    }
+
+    /// Its fold has answered for its choice since it was composed or the choice changed: what it
+    /// shows, a refusal included, is its own rather than a state of being made.
+    pub fn made(&self) -> bool {
+        use crate::layers::Layer as _;
+        !self.restarting() && !matches!(self.published(), crate::layers::Published::Nothing)
+    }
+
     /// The viewing country's canonical slot; none without a vision.
     pub fn ours(&self) -> Option<u32> {
         self.refused().is_none().then_some(self.global.ours)
@@ -1234,7 +1246,11 @@ impl Layer for Vision {
 
 
     fn carried(&self) -> Carried {
-        // The fold's steps are its worker's: published, not carried.
+        // The fold's steps are its worker's: published, not carried. Refused, a settle can do none
+        // of the marked work; it waits there for the next vision.
+        if self.refused().is_some() {
+            return Carried::default();
+        }
         let entities = self.units.list.len() + usize::from(self.lanes_dirty) + self.intel.len() + usize::from(self.intel_all) + self.lane_slots.len();
         Carried { entities }
     }

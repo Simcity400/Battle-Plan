@@ -30,10 +30,10 @@ test('a value at an hour is its run, with why where it is not known and the stre
 
 test('the race ranks known values greatest first and leaves out unknown ones, and zero ones for a top N', () => {
   const model = producedModel(validateProducedReply(reply([
-    { tag: 'AAA', identities: identity, series: series([[0, 100, 5]]) },
-    { tag: 'BBB', identities: identity, series: series([[0, 100, 9]]) },
-    { tag: 'CCC', identities: identity, series: series([[0, 100, null]], [{ run: 0, reason: 'unitsInexact' }]) },
-    { tag: 'DDD', identities: identity, series: series([[0, 100, 0]]) },
+    { country: 'AAA', tag: 'AAA', identities: identity, series: series([[0, 100, 5]]) },
+    { country: 'BBB', tag: 'BBB', identities: identity, series: series([[0, 100, 9]]) },
+    { country: 'CCC', tag: 'CCC', identities: identity, series: series([[0, 100, null]], [{ run: 0, reason: 'unitsInexact' }]) },
+    { country: 'DDD', tag: 'DDD', identities: identity, series: series([[0, 100, 0]]) },
   ])));
   assert.deepEqual(rankProduced(model, model.tags, 50, 10).map(entry => entry.tag), ['BBB', 'AAA', 'DDD']);
   assert.deepEqual(rankProduced(model, model.tags, 50, 10, true).map(entry => entry.tag), ['BBB', 'AAA']);
@@ -46,12 +46,12 @@ test('the race ranks known values greatest first and leaves out unknown ones, an
 });
 
 test('a malformed reply is refused, and a request ranks a top N at a fixed hour', () => {
-  assert.throws(() => validateProducedReply(reply([{ tag: 'AAA', identities: identity, series: series([[0, 10, null]]) }])), /malformed/);
-  assert.throws(() => validateProducedReply(reply([{ tag: 'AAA', identities: identity, series: series([[5, 10, 1], [8, 12, 2]]) }])), /malformed/);
+  assert.throws(() => validateProducedReply(reply([{ country: 'AAA', tag: 'AAA', identities: identity, series: series([[0, 10, null]]) }])), /malformed/);
+  assert.throws(() => validateProducedReply(reply([{ country: 'AAA', tag: 'AAA', identities: identity, series: series([[5, 10, 1], [8, 12, 2]]) }])), /malformed/);
   assert.deepEqual(producedRequest('1', { tags: [], top: 10 }, 99.7, 'units', 'day', ['infantry_equipment'], false),
-    { branchId: '1', count: 'units', measure: 'day', types: ['infantry_equipment'], refits: false, tags: [], top: 10, rankHour: 99 });
+    { branchId: '1', count: 'units', measure: 'day', types: ['infantry_equipment'], refits: false, countries: [], top: 10, rankHour: 99 });
   assert.deepEqual(producedRequest('1', { tags: ['AAA'] }, 99, 'ic', 'total', [], true),
-    { branchId: '1', count: 'ic', measure: 'total', types: [], refits: true, tags: ['AAA'] });
+    { branchId: '1', count: 'ic', measure: 'total', types: [], refits: true, countries: ['AAA'] });
 });
 
 test('a followed top N is ranked at the hour shown when paused or sought, and kept while playing, never at the branch end', () => {
@@ -68,12 +68,12 @@ const windowReply = (window: number, firstHour: number, lastHour: number, lines:
 test('the windows held join in hour order into the reply of their hours together, a run across their edge one run', () => {
   const W = WINDOW_HOURS;
   const first = windowReply(0, 100, W - 1, [
-    { tag: 'AAA', identities: identity, series: series([[100, 199, null], [200, W - 1, 4]], [{ run: 0, reason: 'windowIncomplete' }]) },
-    { tag: 'BBB', identities: identity, series: series([[100, W - 1, null]], [{ run: 0, reason: 'typeNotRecorded' }]) },
+    { country: 'AAA', tag: 'AAA', identities: identity, series: series([[100, 199, null], [200, W - 1, 4]], [{ run: 0, reason: 'windowIncomplete' }]) },
+    { country: 'BBB', tag: 'BBB', identities: identity, series: series([[100, W - 1, null]], [{ run: 0, reason: 'typeNotRecorded' }]) },
   ], [100, 124], [0]);
   const second = windowReply(1, W, 2 * W - 1, [
-    { tag: 'AAA', identities: identity, series: series([[W, W + 9, 4], [W + 10, 2 * W - 1, 4]], [], [1]) },
-    { tag: 'BBB', identities: identity, series: series([[W, W + 5, null], [W + 6, 2 * W - 1, 2]], [{ run: 0, reason: 'typeNotRecorded' }]) },
+    { country: 'AAA', tag: 'AAA', identities: identity, series: series([[W, W + 9, 4], [W + 10, 2 * W - 1, 4]], [], [1]) },
+    { country: 'BBB', tag: 'BBB', identities: identity, series: series([[W, W + 5, null], [W + 6, 2 * W - 1, 2]], [{ run: 0, reason: 'typeNotRecorded' }]) },
   ], [W + 4], [0, W + 10]);
   const merged = mergeProducedWindows(new Map([[1, validateProducedWindow(second)], [0, validateProducedWindow(first)]]));
   assert.ok(merged);
@@ -86,7 +86,7 @@ test('the windows held join in hour order into the reply of their hours together
   assert.deepEqual(merged.observations, [0, W + 10]);
   assert.equal(validateProducedReply(merged), merged);
   // A window missing between two held leaves a gap, never a joined run.
-  const third = windowReply(3, 3 * W, 3 * W + 9, [{ tag: 'AAA', identities: identity, series: series([[3 * W, 3 * W + 9, 4]]) }], [], [0]);
+  const third = windowReply(3, 3 * W, 3 * W + 9, [{ country: 'AAA', tag: 'AAA', identities: identity, series: series([[3 * W, 3 * W + 9, 4]]) }], [], [0]);
   const gapped = mergeProducedWindows(new Map([[0, first], [3, third]]));
   assert.deepEqual(gapped?.lines[0].series.firstHours, [100, 200, 3 * W]);
   assert.equal(mergeProducedWindows(new Map()), null);
@@ -97,7 +97,7 @@ test('a window names the windows of an hour span, and one reaching outside its o
   assert.deepEqual(producedWindows(W - 1, W), [0, 1]);
   assert.deepEqual(producedWindows(5 * W + 3, 5 * W + 3), [5]);
   assert.deepEqual(producedWindows(10, 5), []);
-  const outside = windowReply(1, W, 2 * W - 1, [{ tag: 'AAA', identities: identity, series: series([[W - 1, W + 3, 1]]) }], [], []);
+  const outside = windowReply(1, W, 2 * W - 1, [{ country: 'AAA', tag: 'AAA', identities: identity, series: series([[W - 1, W + 3, 1]]) }], [], []);
   assert.throws(() => validateProducedWindow(outside), /malformed/);
   assert.throws(() => validateProducedWindow({ ...outside, lines: [], firstHour: 0 }), /malformed/);
   assert.equal(validateProducedWindow({ ...outside, lines: [], firstHour: 2 * W + 5, lastHour: 2 * W - 1 }).lines.length, 0, 'a window the timeline holds none of');

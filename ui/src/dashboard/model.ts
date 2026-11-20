@@ -25,7 +25,9 @@ export type CountrySelection = { kind: 'selected' } | { kind: 'all' } | { kind: 
 export type WidgetTime = { mode: 'follow' } | { mode: 'campaign' }
   | ({ mode: 'range' } & OffsetWindow)
   | { mode: 'pin'; windows: Record<string, OffsetWindow> };
-export interface SourceRole { id: string; label: string; selectedTag: string | null }
+/** `selectedSlot` is the session's Ctrl+click choice, which the map follows through tag changes; never saved.
+ * `observed` is each map view's latest Ctrl+click switch the choice has applied, by view id. */
+export interface SourceRole { id: string; label: string; selectedTag: string | null; selectedSlot?: number | null; observed?: Record<string, number> }
 export interface TrackSpec {
   id: string;
   roleId: string;
@@ -63,6 +65,8 @@ export interface BoundTrack extends TrackSpec {
   branch: DashboardSource['metadata']['branches'][number];
   axisOffset: number;
   selectedTag: string | null;
+  selectedSlot?: number | null;
+  observed?: Record<string, number>;
 }
 
 export function createWidget(kind: WidgetKind, trackId: string, id: string = newId()): WidgetSpec {
@@ -125,8 +129,9 @@ export function bindTracks(template: DashboardTemplate, sources: ReadonlyMap<str
     if (template.alignment === 'anchors' && track.anchorOffset == null) return [];
     const anchor = branch.firstHour + (track.anchorOffset ?? 0);
     if (template.alignment === 'anchors' && (anchor < branch.firstHour || anchor > branch.lastHour)) return [];
+    const role = template.roles.find((item) => item.id === track.roleId);
     return [{ ...track, source, branch, axisOffset: template.alignment === 'calendar' ? 0 : anchor,
-      selectedTag: template.roles.find((role) => role.id === track.roleId)?.selectedTag ?? null }];
+      selectedTag: role?.selectedTag ?? null, selectedSlot: role?.selectedSlot ?? null, observed: role?.observed }];
   });
 }
 

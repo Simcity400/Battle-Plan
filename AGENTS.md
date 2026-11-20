@@ -23,11 +23,12 @@ Use these words for these things.
 
 ## Ways to hurt yourself
 
-1. **Killing by pattern.** Never `Stop-Process -Name`, `taskkill /IM`, or kill a PID you found by matching a name, path or worktree string. Your own process has this worktree's path in its arguments, and other agents' builds, Boat runs, dev servers, the game and the recorder run on this machine at the same time. Kill only a PID you captured at spawn.
-2. **Touching real user data.** `%LOCALAPPDATA%\HOI4Replay` (captures, replay library, caches), the game install and the Paradox user folder are the user's. Read them or copy from them. Never write to them, clean them up or delete from them, and never point the recorder at them with its default output: pass your own `--out`. Test against a copy in your own capture folder.
-3. **Baking in the machine.** Never commit a machine path, user name, port or host name. Take folders from arguments, settings or the environment (`BATTLE_PLAN_CAPTURES` for capture folders). `tools/check-machine-paths.py` fails any path naming this machine; only the runner scripts listed in `tools/machine-paths.allow` are exempt.
-4. **Leaving a mess.** Make worktrees with T3 Code, or `git worktree add` beside the existing ones, never in a temp folder or inside the repo. A new worktree runs `tools/setup_worktree.py` (`npm ci`) in the background: while `.t3/setup-running` names a live process, wait for it; `.t3/setup-failed` holds the error. When you are done, delete the worktree, branch, build folder and captures.
+1. **Killing by pattern.** Never `Stop-Process -Name`, `taskkill /IM`, or kill a PID you found by matching a name, path or worktree. Your process carries this worktree's path, and other agents' builds, Boat runs, dev servers, the game and the recorder share this machine. Kill only a PID you captured at spawn.
+2. **Touching real user data.** `%LOCALAPPDATA%\HOI4Replay` (captures, replay library, caches), the game install and the Paradox user folder are the user's. Read or copy them; never write to, clean or delete from them, and never point the recorder at them with its default output: pass your own `--out`. Test against a copy in your own capture folder.
+3. **Baking in the machine.** Never commit a machine path, user name, port or host name. Take folders from arguments, settings or the environment (`BATTLE_PLAN_CAPTURES` for capture folders). `tools/check-machine-paths.py` fails any path naming this machine; only scripts in `tools/machine-paths.allow` are exempt.
+4. **Leaving a mess.** Make worktrees with T3 Code, or `git worktree add` beside the existing ones, not in a temp folder or the repo. A new worktree runs `tools/setup_worktree.py` (`npm ci`) in the background: while `.t3/setup-running` names a live process, wait for it; `.t3/setup-failed` holds the error. When done, delete the worktree, branch, build folder and captures.
 5. **Shared state.** Never use plain `git stash`; the stash is shared.
+6. **Stale agents.** Never message an agent idle over an hour, except Astra or Sol; brief a fresh one.
 
 ## The game
 
@@ -43,7 +44,7 @@ Use these words for these things.
 
 ## Hit every surface
 
-The most common defect here is a change that works on the path you tested and is missing everywhere else. Before calling work done, walk this list and say which entries applied:
+The most common defect here is a change that works on the tested path and is missing elsewhere. Before calling work done, walk this list and say which entries applied:
 
 - **Format ends.** A recording-format change touches the collector, the recorder, the replay reader and writer, the query layer, the viewer, the dashboard and the UI together, in one PR. No upgrader: proven older formats play, new data missing, changed tables and damage withheld; others are refused by name.
 - **Entry points.** A stat reachable from one dashboard widget is usually also wanted in the map viewer, other widgets, the tray app and the command-line recorder. Fixing one is not fixing the feature.

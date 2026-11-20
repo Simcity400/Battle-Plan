@@ -294,6 +294,17 @@ impl Block {
         Ok((block, dropped))
     }
 
+    /// The accumulator getter's value of `index`: zero without an entry or for an ineligible
+    /// definition, clamped to [0, 1] by its definition's clamp flag.
+    pub(super) fn value(&self, definitions: &Definitions<'_>, index: u32) -> Result<i64, Refusal> {
+        let Some(&raw) = self.values.get(&index) else { return Ok(0) };
+        let row = definitions.row(index)?;
+        if !definitions.eligible(row)? {
+            return Ok(0);
+        }
+        Ok(if row.flags & CLAMP != 0 { raw.clamp(0, ONE) } else { raw })
+    }
+
     /// Whether the game keeps a sub-unit's block: custom tooltip keys, a
     /// child, or an entry whose definition is eligible.
     pub(super) fn kept(&self, definitions: &Definitions<'_>) -> Result<bool, Refusal> {
@@ -342,6 +353,21 @@ impl Block {
         prefix: &str,
         include_mask: u32,
     ) -> Result<String, Refusal> {
+        self.describe_at(definitions, icons, loc, scale, prefix, include_mask, 2)
+    }
+
+    /// [`Self::describe`] with the caller's precision cap.
+    #[allow(clippy::too_many_arguments, reason = "the native description options, each its own operand")]
+    pub(super) fn describe_at(
+        &self,
+        definitions: &Definitions<'_>,
+        icons: &dyn TextIcons,
+        loc: &Localisation,
+        scale: i64,
+        prefix: &str,
+        include_mask: u32,
+        precision: i32,
+    ) -> Result<String, Refusal> {
         let mut text = String::new();
         let mut marker = 0;
         for (&index, &raw) in &self.values {
@@ -374,7 +400,7 @@ impl Block {
             text.push_str(prefix);
             text.push_str(&name(row, icons, loc)?);
             text.push_str(": ");
-            text.push_str(&value_text(row, value, 2, false, false, icons, loc)?);
+            text.push_str(&value_text(row, value, precision, false, false, icons, loc)?);
         }
         // The key set in slot order; the game skips an empty key.
         for key in self.custom_tooltips.iter().filter(|key| !key.is_empty()) {

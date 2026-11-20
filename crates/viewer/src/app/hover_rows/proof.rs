@@ -61,6 +61,7 @@ struct Targets {
     task_forces: Vec<task_force::Hover>,
     ports: Vec<task_force_port::Hover>,
     air_bases: BTreeSet<(u32, i32)>,
+    naval_bases: BTreeSet<u32>,
     /// Region, and mines (true) or accidents.
     naval: BTreeSet<(u32, bool)>,
     occupation: BTreeSet<(u32, String)>,
@@ -297,6 +298,7 @@ impl Line {
                 targets.task_forces.extend(report.task_force_hovers.iter().filter(|hover| hover.supported).cloned());
                 targets.ports.extend(report.task_force_port_hovers.iter().filter(|hover| hover.supported && hover.has_tooltip()).cloned());
                 targets.air_bases.extend(report.air_base_hits.values().copied());
+                targets.naval_bases.extend(report.naval_base_hits.values().copied());
                 for hover in &report.naval_region_hovers {
                     use viewer_counters::map::counters::NavalRegionalControl;
                     match hover.control {
@@ -305,7 +307,7 @@ impl Line {
                         _ => false,
                     };
                 }
-                for hit in overlay.prepared().occupation_hits() {
+                for hit in &overlay.hits.occupation {
                     if let viewer_world::map::occupation_icons::Hover::Modifier { state, token } = &hit.hover {
                         targets.occupation.insert((*state, token.clone()));
                     }
@@ -327,11 +329,15 @@ impl Line {
         let stride = (ids.len() / PROVINCES).max(1);
         targets.provinces = ids.iter().step_by(stride).copied().take(PROVINCES).collect();
         for stock in Stock::ALL.into_iter().filter(|&stock| stock != Stock::Terrain) {
-            let mut mode = picker::mode_hover(&MapMode::Stock(stock), document.map_modes.defines.opinion_thresholds(), || Err("the infrastructure level is the infrastructure hover's reader".into()));
+            let mut mode = picker::mode_hover(&MapMode::Stock(stock), false, document.map_modes.defines.opinion_thresholds(), || Err("the infrastructure level is the infrastructure hover's reader".into()));
             if let (ModeHover::StrategicNavy(sources), Some(prepared)) = (&mut mode, &navy_sources) {
                 *sources = Arc::clone(prepared);
             }
             targets.modes.push(mode);
+        }
+        // The default mode's sea province hover is its region's.
+        if let Some(prepared) = &navy_sources {
+            targets.modes.push(ModeHover::SeaRegion(Arc::clone(prepared)));
         }
         Ok(targets)
     }
@@ -535,14 +541,18 @@ fn all(family: Family, document: &Document, targets: &Targets, inputs: &Inputs) 
                 let inputs = inputs.clone();
                 out.push((format!("air base {province}/{kind}"), inputs.key(What::AirBase { province, kind }, [0, 0]), Box::new(move |_| inputs.air_base(province, kind, Arc::default()))));
             }
+            for &province in &targets.naval_bases {
+                let inputs = inputs.clone();
+                out.push((format!("naval base {province}"), inputs.key(What::NavalBase { province, fleet_selected: false }, [0, 0]), Box::new(move |_| inputs.naval_base(province, false))));
+            }
         }
         Family::Province => {
             for mode in &targets.modes {
                 for &province in &targets.provinces {
                     let (inputs, mode, selected, replay) = (inputs.clone(), mode.clone(), Arc::clone(&selected), Arc::clone(&replay));
                     let label = format!("province {province} {}", format!("{mode:?}").split('(').next().unwrap_or_default());
-                    let key = inputs.key(What::Province { province, mode: mode.clone() }, [id(&selected), id(&replay)]);
-                    out.push((label, key, Box::new(move |caches| inputs.province(caches, province, mode.clone(), Arc::clone(&selected), Arc::clone(&replay)))));
+                    let key = inputs.key(What::Province { province, mode: mode.clone(), routes: Vec::new() }, [id(&selected), id(&replay)]);
+                    out.push((label, key, Box::new(move |caches| inputs.province(caches, province, mode.clone(), Vec::new(), Arc::clone(&selected), Arc::clone(&replay)))));
                 }
             }
         }

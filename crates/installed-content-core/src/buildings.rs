@@ -117,6 +117,14 @@ pub struct BuildingType {
     /// read. They then hold their defaults, the map fields stay usable, and
     /// a raid consumer refuses the type rather than read the defaults.
     pub raid_refused: Option<String>,
+    /// `only_display_if_exists`: the state view lists the type only where it is built.
+    pub only_display_if_exists: bool,
+    /// `special_icon`: the sprite the state view's landmark entry draws; empty when undeclared.
+    pub special_icon: String,
+    /// `dlc_allowed`, evaluated in an empty scope.
+    pub dlc_allowed: Vec<crate::parser::Item>,
+    /// `state_modifiers`, as authored.
+    pub state_modifiers: Vec<crate::parser::Item>,
 }
 
 impl BuildingType {
@@ -589,6 +597,22 @@ fn parse_declarations(
                             boolean(bytes, &mut building.naval_headquarter)
                         }
                         Some(b"only_costal") => boolean(bytes, &mut building.only_costal),
+                        Some(b"only_display_if_exists") => {
+                            boolean(bytes, &mut building.only_display_if_exists)
+                        }
+                        Some(b"special_icon") => {
+                            building.special_icon = field
+                                .value
+                                .read_str()
+                                .map_err(|e| invalid(format!("{what}: {e}")))?
+                                .into()
+                        }
+                        Some(b"dlc_allowed") => building
+                            .dlc_allowed
+                            .extend_from_slice(field.value.items().unwrap_or_default()),
+                        Some(b"state_modifiers") => building
+                            .state_modifiers
+                            .extend_from_slice(field.value.items().unwrap_or_default()),
                         Some(b"has_destroyed_mesh") => {
                             boolean(bytes, &mut building.has_destroyed_mesh)
                         }

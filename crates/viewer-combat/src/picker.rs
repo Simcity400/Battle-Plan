@@ -15,7 +15,7 @@
 //!   configurable slot opens `WindowWithMapModeSlots` with `WindowWithAllMapModes` beside it.
 
 use super::{
-    Drawn, HoverText, TooltipAnchor, Values, Widget,
+    Drawn, HoverText, Values, Widget,
     binding::Bindings,
     gui::{self, Group, Retained, Row},
     gui_resources,
@@ -135,6 +135,12 @@ pub enum Control {
     /// A slot entry of the configuration window.
     SlotEntry(usize),
     Default,
+    /// `open_find_view_button`: opens or closes the find view.
+    FindView,
+    /// A control of the minimap window.
+    Minimap(super::minimap::Control),
+    /// A control of the find view.
+    Find(super::find_view::Control),
     /// The window background: absorbs clicks without an action.
     Window,
 }
@@ -153,7 +159,7 @@ pub struct Placed {
 }
 
 impl Placed {
-    fn new(rect: [f32; 4], control: Control) -> Self {
+    pub(crate) fn new(rect: [f32; 4], control: Control) -> Self {
         Self {
             rect,
             control,
@@ -165,7 +171,7 @@ impl Placed {
 
     /// `region` of the window at `origin`, testing its sprite's alpha where it asks to; `None`
     /// when its sprite passes the pointer through.
-    fn region(
+    pub(crate) fn region(
         rect: [f32; 4],
         control: Control,
         region: &native_gui::Region,
@@ -591,6 +597,9 @@ fn picker_control(leaf: &str, state: &State<'_>) -> Option<Control> {
     if leaf == "mapmodes_all" {
         return Some(Control::All);
     }
+    if leaf == "open_find_view_button" {
+        return Some(Control::FindView);
+    }
     if let Some(toggle) = TOGGLES.iter().find(|name| **name == leaf) {
         return Some(Control::Toggle(toggle));
     }
@@ -629,6 +638,15 @@ pub fn shortcuts(
 ) -> io::Result<Vec<(Control, String)>> {
     let windows = content.window_cache.at(extent.map(|value| value as u32))?;
     let root = gui::template(&windows, PICKER_WINDOW).map_err(super::invalid)?;
+    Ok(shortcuts_in(root, four_buttons, slots))
+}
+
+/// [`shortcuts`] of the picker's template.
+fn shortcuts_in(
+    root: &installed_content_core::gui::native::Element,
+    four_buttons: bool,
+    slots: usize,
+) -> Vec<(Control, String)> {
     let layout = layout_name(four_buttons);
     let mut out = Vec::new();
     for slot in 0..slots {
@@ -647,7 +665,10 @@ pub fn shortcuts(
     if let Some(shortcut) = authored_shortcut(root, "mapmodes_all") {
         out.push((Control::All, shortcut));
     }
-    Ok(out)
+    if let Some(shortcut) = authored_shortcut(root, "open_find_view_button") {
+        out.push((Control::FindView, shortcut));
+    }
+    out
 }
 
 /// Binds every slot button pair, the layout choice and the toggles.
@@ -713,7 +734,6 @@ fn picker_values(state: &State<'_>, root: &installed_content_core::gui::native::
                 )),
                 tooltip_description: hover(&mode.description),
                 tooltip_shortcut: hover(&shortcut),
-                tooltip_anchor: TooltipAnchor::Pointer,
                 hover_owned: true,
                 ..Default::default()
             };
@@ -768,14 +788,6 @@ fn picker_values(state: &State<'_>, root: &installed_content_core::gui::native::
         Widget {
             tooltip: hover(state.all_tooltip),
             hover_owned: true,
-            ..Default::default()
-        },
-    );
-    // The find view has no replay counterpart.
-    values.insert(
-        "open_find_view_button".to_owned(),
-        Widget {
-            enabled: Some(false),
             ..Default::default()
         },
     );
@@ -1173,6 +1185,44 @@ mod tests {
         // A rectangle's far edges are outside it.
         assert_eq!(drawn.control_at([30.0, 15.0]), Some(&Control::Window));
         assert_eq!(drawn.control_at([100.0, 15.0]), None);
+    }
+
+    #[test]
+    fn the_find_view_button_opens_the_find_view_by_click_and_shortcut() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let windows = viewer_foundation::map::native_windows::NativeWindows::read(
+            b"guiTypes = { containerWindowType = { name = unit_counter_navy }               containerWindowType = { name = naval_combat_mapicon }               containerWindowType = { name = MapmodesInterface_Ingame                 buttonType = { name = open_find_view_button shortcut = \"ctrl+f\" } } }",
+            [1280, 720],
+        )
+        .unwrap();
+        let root = gui::template(&windows, PICKER_WINDOW).unwrap();
+        let state = State {
+            four_buttons: false,
+            slots: &[],
+            configurable_from: 4,
+            modes: &[],
+            selected: "default",
+            toggles: Toggles::default(),
+            open: Open::None,
+            click_info: "",
+            click_info_assign: "",
+            all_tooltip: "",
+            default_tooltip: "",
+        };
+        // The button keeps its authored enabled state.
+        assert!(
+            picker_values(&state, root)
+                .get("open_find_view_button")
+                .is_none_or(|widget| widget.enabled != Some(false))
+        );
+        assert_eq!(
+            picker_control("open_find_view_button", &state),
+            Some(Control::FindView)
+        );
+        assert!(
+            shortcuts_in(root, false, 0).contains(&(Control::FindView, "ctrl+f".to_owned()))
+        );
     }
 
     #[test]

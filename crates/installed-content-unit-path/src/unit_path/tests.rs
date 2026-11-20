@@ -1410,6 +1410,17 @@ fn verdict(
     .verdict(rule, country)
 }
 
+fn relation(graph: &ProvinceGraph, world: &World, rule: &str, country: Country) -> Fact<RuleReason> {
+    let geometry = map().1;
+    let moves = MoveGraph::new(graph, &geometry);
+    let rule = crate::adjacency_rules::find(moves.rules(), rule).unwrap();
+    Mover {
+        graph: &moves,
+        world,
+    }
+    .relation(rule, country)
+}
+
 #[test]
 fn the_fallback_verdict_reads_war_and_disclosure() {
     let (graph, _) = map();
@@ -1419,7 +1430,9 @@ fn the_fallback_verdict_reads_war_and_disclosure() {
     assert_eq!(verdict(&graph, &world, "N", 3), Ok(Some(Verdict::Enemy)));
     world.wars.insert((1, 3));
     assert_eq!(verdict(&graph, &world, "R", 3), Ok(Some(Verdict::Enemy)));
+    assert_eq!(relation(&graph, &world, "R", 3), Ok(RuleReason::Enemy(1)));
     assert_eq!(verdict(&graph, &world, "SHUT", 3), Ok(None));
+    assert_eq!(relation(&graph, &world, "SHUT", 3), Ok(RuleReason::Disabled));
 }
 
 #[test]
@@ -1433,6 +1446,8 @@ fn required_provinces_at_war_contest_the_rule() {
         verdict(&graph, &world, "C", 3),
         Ok(Some(Verdict::Contested))
     );
+    // The reason names the matched country of each province's chain, the first's first.
+    assert_eq!(relation(&graph, &world, "C", 3), Ok(RuleReason::Contested(1, 2)));
     // Contested forbids armies on this rule.
     cross(&mut graph, 1, 2, ruled("C"));
     world.controllers.insert(4, 1);
@@ -1454,6 +1469,7 @@ fn overlord_chains_decide_the_fallback_and_a_loop_is_unknown() {
     world.wars.clear();
     world.overlords.insert(4, 1);
     assert_eq!(verdict(&graph, &world, "R", 3), Ok(Some(Verdict::Friend)));
+    assert_eq!(relation(&graph, &world, "R", 3), Ok(RuleReason::Friend(1)));
     world.overlords.insert(1, 3);
     assert!(
         verdict(&graph, &world, "R", 3)

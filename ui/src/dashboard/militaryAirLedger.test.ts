@@ -1,3 +1,4 @@
+import { countryKey } from './countryKey.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BOMBING_SUNBURST_TEXT, airLossParts, partAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerHeaderTag, ledgerPinnedIdentity, ledgerRuns, ledgerTotals, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
@@ -140,6 +141,8 @@ test('manual ledger roots include all their native holders without recursively s
   assert.deepEqual(select(13).rows.map(row => row.identity), ['4:10'], 'the original holder has no value in its native presence gap');
   assert.deepEqual(new Set(ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'selected' }, ['X'], undefined,
     12, 14, 'taken', data.countries).rows.map(row => row.identity)), new Set(['3:9', '4:10']));
+  assert.deepEqual(new Set(ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'selected' }, [countryKey(3)], undefined,
+    12, 14, 'taken', data.countries).rows.map(row => row.identity)), new Set(['3:9']), 'the dashboard’s slot is its holders under any tag, never another holder of one');
   const missing = ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'tags', tags: ['unknown'] }, [], undefined, 12, 14, 'taken', data.countries);
   assert.deepEqual(missing.rows, []); assert.equal(missing.reason, 'Selected countries are unavailable in this campaign.');
   assert.deepEqual(ledgerCountries(militaryAirAt(index, 10, 12), { kind: 'tags', tags: ['X'] }, [], undefined, 12, 14).rows, [],

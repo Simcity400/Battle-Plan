@@ -1,4 +1,5 @@
-import type { CountryGroupReply } from '../generated/dashboard';
+import type { CountryGroupReply, CountryIdentityHistory } from '../generated/dashboard';
+import { countryFromKey } from './countryKey.ts';
 import type { EventBadge } from '../charts/badges';
 import { badgeRows } from '../charts/badges.ts';
 import { runAt } from '../charts/series.ts';
@@ -11,19 +12,23 @@ export function provisionalGroupEvent(groups: unknown, hour: number): boolean {
 }
 
 /** Callers supply the drawn native-holder histories, including selected aliases.
- * An absent legacy identity field uses proven coverage; an empty field proves none. */
+ * An absent legacy identity field uses proven coverage; an empty field proves none. A row keyed by a slot
+ * (`countryKey`) takes the capitulations of each tag its country held when it did, read from `histories`. */
 export function countryCapitulationBadges(groups: Pick<CountryGroupReply, 'capitulations'> | undefined,
   countries: readonly { tag: string; identities?: readonly Span[]; segments: readonly Span[]; membership?: readonly Span[] | null }[],
-  extent: readonly [number, number]): ReadonlyMap<string, readonly EventBadge[]> {
+  extent: readonly [number, number], histories: readonly CountryIdentityHistory[] = []): ReadonlyMap<string, readonly EventBadge[]> {
   const byTag = new Map(countries.map(country => [country.tag, country]));
+  const bySlot = new Map(countries.flatMap(country => { const slot = countryFromKey(country.tag); return typeof slot === 'number' ? [[slot, country] as const] : []; }));
+  const runs = bySlot.size ? new Map(histories.map(history => [history.tag, history.identities])) : null;
   const badges = new Map<string, EventBadge[]>();
   for (const event of groups?.capitulations ?? []) {
     if (event.hour < extent[0] || event.hour > extent[1]) continue;
-    const country = byTag.get(event.tag);
+    const held = runs && runAt(runs.get(event.tag) ?? [], event.hour)?.slot;
+    const country = byTag.get(event.tag) ?? (held == null ? undefined : bySlot.get(held));
     if (!country || !runAt(country.identities ?? country.segments, event.hour)
       || country.membership && !runAt(country.membership, event.hour)) continue;
-    const rows = badges.get(event.tag) ?? [];
-    if (!badges.has(event.tag)) badges.set(event.tag, rows);
+    const rows = badges.get(country.tag) ?? [];
+    if (!badges.has(country.tag)) badges.set(country.tag, rows);
     rows.push({ hour: event.hour, glyph: '\u00d7', label: 'Country capitulated', capitulationTag: event.tag,
       ...(provisionalGroupEvent(groups, event.hour) ? { approximate: true } : {}) });
   }

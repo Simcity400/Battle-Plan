@@ -6,6 +6,7 @@
 //! `goal:<ordinal>` · `progress`; `resource:<ordinal>` · `amount`; `manpower:<ordinal>` ·
 //! `value`), so the panel is pushed when the goals, members or pools change, not each hour.
 
+use dashboard_base::products::Country;
 use super::{
     Art,
     goals::{self, FactionGoalDefinition, Texts},
@@ -42,6 +43,8 @@ pub struct FactionDetailParams {
     pub branch_id: String,
     /// The recorded faction id, as a decimal string.
     pub faction: String,
+    /// None follows the recording client's playing or observer country.
+    pub viewpoint: Option<Country>,
 }
 
 /// A goal the faction holds at the hour; its progress is the live cell `goal:<ordinal>` ·
@@ -258,7 +261,7 @@ fn reply(frame: &DecodedFrame, params: &FactionDetailParams, faction: u64, at: &
     }
     let mut reply = blank(params);
     let cat = at.context.catalogue.as_ref().map(Arc::as_ref);
-    let texts = cat.ok().map(|cat| Texts::new(frame, faction, cat, &at.context.art));
+    let texts = cat.ok().map(|cat| Texts::new(frame, faction, cat, &at.context.art, params.viewpoint.as_ref()));
     goal_lists(frame, faction, texts.as_ref(), cat.err().map(String::as_str), &mut reply, at.live)?;
     if let Some(texts) = &texts {
         reply.warnings.extend(texts.warnings());

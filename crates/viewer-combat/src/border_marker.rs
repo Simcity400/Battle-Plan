@@ -300,7 +300,7 @@ pub(super) fn append(
         .scripted
         .as_ref()
         .as_ref()
-        .map(|content| ScriptedText::new(frame, loc, content, viewer).with_nato_counters(nato));
+        .map(|content| ScriptedText::new(frame, loc, content, viewer).viewing(viewer).with_nato_counters(nato));
     let event = |id: &[u8], index: usize, enemy_win: bool| {
         let result = (|| {
             let event = icons.border_events.get(id)?;

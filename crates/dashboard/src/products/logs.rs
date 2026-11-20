@@ -46,7 +46,7 @@ pub struct LogCountsParams {
 pub struct LogCountLine {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
-    pub tag: Option<String>,
+    pub country: Option<dashboard_base::products::Country>,
     /// Its rows on the timeline before the range: a mark's ordinals count from it.
     pub before: String,
     pub total: String,
@@ -116,12 +116,12 @@ impl Product for LogPage {
             None => (0..all.len()).collect(),
             Some(names) => names.iter().map(|name| dashboard_declare::field(log.table, name)).collect::<io::Result<_>>()?,
         };
-        let tagged = params.facets.iter().any(|filter| !filter.tags.is_empty());
+        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
         let (page, rows, missing) = page(&query, params, |paged, tag| LogPageRow {
             hour: paged.row.hour,
             key: paged.row.key.to_string(),
             ordinal: paged.ordinal.to_string(),
-            tag: tag.map(str::to_owned),
+            country: tag.cloned(),
             own_ordinal: tagged.then(|| paged.own.to_string()),
             cells: shown.iter().map(|&column| paged.row.cells.get(column).map_or(LogCell::NotRecorded, cell)).collect(),
         })?;
@@ -181,8 +181,8 @@ impl Product for LogCounts {
             lines: counts
                 .into_iter()
                 .zip(groups)
-                .map(|(counts, tag)| LogCountLine {
-                    tag,
+                .map(|(counts, country)| LogCountLine {
+                    country,
                     before: counts.before.to_string(),
                     total: counts.bins.iter().map(|(_, count)| count).sum::<u64>().to_string(),
                     bins: counts.bins,

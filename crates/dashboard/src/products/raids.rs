@@ -6,12 +6,12 @@
 //! are its row of the `raid-ends` log; a raid with no end row in the span (live at its end, or
 //! already ended at the run's first read) is read from its target's history at its last hour.
 
+use dashboard_base::products::Country;
 use crate::{
     Source,
     products::{LoadContext, Product, country_ids::Names},
 };
 use dashboard_base::catalogue::{self, CachedResult, Catalogue, View};
-use dashboard_base::products::validate_tag;
 use dashboard_query::{Query, log, read, series::MissingSpan};
 use engine_native::craid_instance as native;
 use installed_content_raids::raids::Catalog;
@@ -633,9 +633,9 @@ fn span(query: &Query<'_>, from: Option<i32>, to: Option<i32>) -> io::Result<(i3
     Ok((from, to))
 }
 
-fn validate(branch_id: &str, tags: &[String]) -> Result<(), &'static str> {
+fn validate(branch_id: &str, countries: &[Country]) -> Result<(), &'static str> {
     crate::products::intelligence::branch(branch_id)?;
-    tags.iter().try_for_each(|tag| validate_tag(tag))
+    countries.iter().try_for_each(dashboard_base::products::validate_country)
 }
 
 pub struct RaidLog;
@@ -652,7 +652,7 @@ pub struct RaidLogParams {
     pub to: Option<i32>,
     /// Raids by or against these countries; every raid when empty.
     #[serde(default)]
-    pub tags: Vec<String>,
+    pub countries: Vec<Country>,
     /// Only the raid types and whether raids are available: no raid is read.
     #[serde(default)]
     pub catalogue: bool,
@@ -704,7 +704,7 @@ impl Product for RaidLog {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        validate(&params.branch_id, &params.tags)
+        validate(&params.branch_id, &params.countries)
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
@@ -715,8 +715,10 @@ impl Product for RaidLog {
         let types = content.types();
         let mut warnings: BTreeSet<String> = content.warnings().into_iter().collect();
         let (mut episodes, artwork) = if params.catalogue { (Vec::new(), BTreeMap::new()) } else { episodes(source, &query, from, to, &content, &mut warnings)? };
-        if !params.tags.is_empty() {
-            episodes.retain(|episode| [&episode.raider, &episode.victim].into_iter().flatten().any(|tag| params.tags.contains(tag)));
+        if !params.countries.is_empty() {
+            episodes.retain(|episode| {
+                [&episode.raider, &episode.victim].into_iter().flatten().any(|tag| params.countries.iter().any(|country| query.holders.goes_by(country, tag, episode.first_hour)))
+            });
         }
         let none = content.raids.as_ref().is_ok_and(|raids| raids.types.is_empty() && raids.uncertain.is_empty());
         let available = if none { Some(false) } else { recorded(source, &query)?.then_some(true) };

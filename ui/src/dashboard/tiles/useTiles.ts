@@ -1,3 +1,4 @@
+import { countryFromKey } from '../countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Live } from '../../charts/live.ts';
 import { mapLive } from '../../charts/live.ts';
@@ -48,7 +49,8 @@ export function useTiles(client: DashboardClient, series: TileSeries | null, act
     if (!active || !key || !lane) return;
     const tileRequest = (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): ProductRequest =>
       ({ sourceId: lane.source.id, revision: lane.source.revision, product: 'series-tiles',
-        params: { branchId: lane.branchId, family: lane.family, binHours, index, tags, ...(within ? { within } : {}), ...(lane.marks ? { withMarks: true } : {}) } });
+        params: { branchId: lane.branchId, family: lane.family, binHours, index, countries: tags.map(countryFromKey),
+          ...(within ? { within: tags.map(tag => [countryFromKey(tag), within[tag] ?? []]) } : {}), ...(lane.marks ? { withMarks: true } : {}) } });
     const ask = async (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
       const request = tileRequest(binHours, index, tags, within);
       return validateProductReply(await client.product<TileReply>(request, new AbortController().signal), request).data;

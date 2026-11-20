@@ -7,7 +7,9 @@ import { loadTransientProduct } from './products';
 import { nameKey, useCountryNamesAt } from './countryNamesAt';
 import type { BoundTrack, WidgetSpec } from './model';
 import type { WidgetRuntime } from './definitions';
-import { selectedTags } from './countrySelection.ts';
+import { selectedCountryKeys } from './countrySelection.ts';
+import { countryFromKey } from './countryKey.ts';
+import { useSlotTags } from './countrySlots.ts';
 import { choiceAt, resolveChoice, type CountryHolder, type ReachedCountry } from './reachedCountry.ts';
 import { datedCountryToken, readDatedCountry, type DatedCountrySelection } from './datedCountry.ts';
 import { useCountryGroups } from './useCountryGroups';
@@ -38,7 +40,11 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
   const histories = groups.data?.countryIdentities;
-  const chosen = selectedTags(widget.countries, track)[0] ?? null;
+  const chosen = selectedCountryKeys(widget.countries, track)[0] ?? null;
+  // A slot follows its country through tag changes by itself: it is asked by the tag it goes by at the hour, never bound.
+  const slot = chosen === null ? null : countryFromKey(chosen);
+  const bySlot = typeof slot === 'number';
+  const slots = useSlotTags(runtime.client, track, active && bySlot);
   const campaign = track?.source.metadata.campaignKey, branch = track?.branch.id;
   const owner = JSON.stringify([campaign, branch, chosen]);
   const saved = useMemo(() => {
@@ -52,8 +58,8 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
     setLocal({ owner, selection });
     setOption?.('country', datedCountryToken(selection));
   };
-  const fresh = !held && chosen && track && campaign !== undefined ? choiceAt(campaign, track.branch.id, track.branch.firstHour, chosen, hour) : null;
-  const selection = held ?? fresh;
+  const fresh = !bySlot && !held && chosen && track && campaign !== undefined ? choiceAt(campaign, track.branch.id, track.branch.firstHour, chosen, hour) : null;
+  const selection = bySlot ? null : held ?? fresh;
   const resolved = useMemo(() => selection && histories && track
     ? resolveChoice(histories, groups.complete, selection, track.branch.firstHour, track.branch.lastHour, hour) : null,
   [selection, histories, groups.complete, track, hour]);
@@ -65,12 +71,14 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
     // `kept` names the binding to keep; `keep` and the objects are rebuilt each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kept]);
+  const slotTag = typeof slot === 'number' && slots ? slots.tagAt(slot, hour) : null;
   const country: ReachedCountry = !chosen ? { chosen: null, tag: null, absent: false, reason: null }
+    : bySlot ? { chosen, tag: slotTag, absent: !!slots && slotTag === null, reason: null }
     : resolved?.country ?? { chosen, tag: null, absent: false, reason: null };
   return { ...country, holders: resolved?.holders ?? null,
     pick: holder => { if (campaign !== undefined && branch !== undefined && chosen && track)
       keep({ campaign, branch, tag: chosen, originOffset: holder.origin - track.branch.firstHour }); },
-    error: groups.error, retry: groups.retry, historyHeld: !!histories };
+    error: groups.error, retry: groups.retry, historyHeld: bySlot || !!histories };
 }
 
 /** Preserve the dated name state for the widget's messages and developer detail. */

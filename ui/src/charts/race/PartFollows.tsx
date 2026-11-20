@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useEffect, useMemo, useState } from 'react';
 import type { RefObject } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
@@ -89,7 +90,7 @@ export function usePartStates(client: DashboardClient, source: DashboardSource |
     if (!key || !parts) return;
     const controller = new AbortController();
     const ask = (family: unknown) => loadProduct(client, { sourceId: source!.id, revision: source!.revision, product: 'series-state',
-      params: { branchId, family, reads: tags.map(tag => ({ tag, hour })) } }, controller.signal, validateStates, source);
+      params: { branchId, family, reads: tags.map(tag => ({ country: countryFromKey(tag), hour })) } }, controller.signal, validateStates, source);
     const made = parts.kind === 'keyed'
       ? ask(parts.family).then(reply => keyedStates(reply, hour))
       : Promise.all(parts.items.map(item => ask(item.measure).then(reply => [item.id, measureStates(reply, hour)] as const)))

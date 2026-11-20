@@ -17,7 +17,7 @@ import { jumpItem } from '../../charts/jump';
 import { AHEAD_ROWS, aheadEnd, useRevealClock } from '../../charts/reveal';
 import { useAheadHour } from '../../dashboard/aheadHour';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { selectedTags } from '../../dashboard/countrySelection';
+import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
@@ -99,7 +99,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   // The hour shown is the target's once its window is held.
   const { manifest, log, hour, error, retry, onDrawn } = useConstructionLog(runtime, track, active, inBranch ? target : null, live);
   // Tags stay an array end to end: a mod's tag may hold any character, spaces included.
-  const tags = selectedTags(widget.countries, track);
+  const tags = selectedCountryKeys(widget.countries, track);
   const tagsKey = JSON.stringify(tags);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fallback = useMemo(() => tags, [tagsKey]);
