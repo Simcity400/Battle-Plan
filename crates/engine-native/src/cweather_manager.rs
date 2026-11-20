@@ -60,12 +60,17 @@ pub const DISPLAY_REFRESH_IDENTITY: usize = 0x340;
 pub const DISPLAY_GRID_SNOW: usize = 0x388;
 #[cfg(any(test, feature = "test-support"))]
 pub const DISPLAY_GRID_MUD: usize = 0x390;
-/// Queued graphics cells, i32: one entry per cell awaiting the timed threaded rebuild,
-/// which empties the queue whole and zeroes this after its jobs join. A changed province
-/// queues only cells clamped short of the last row and column; a whole-grid mark queues
-/// every cell, so a count at the grid's cell extent is the only queue that can move the
-/// retained boundary.
+/// Queued graphics cells, i32 count of [`DISPLAY_WORK_QUEUE`] awaiting the timed threaded
+/// rebuild, which empties the queue whole and zeroes this after its jobs join.
 pub const DISPLAY_WORK_COUNT: usize = 0x3b4;
+/// Queued grid-cell indices, an i32 array. A changed province appends every cell of its
+/// box clamped short of the last row and column, repeating cells boxes share, so the
+/// count alone can pass the grid's extent. A whole-grid mark empties the queue and
+/// appends every index in order; only it reaches the last column.
+pub const DISPLAY_WORK_QUEUE: usize = 0x3a8;
+/// The queue's capacity in entries, an i32 between [`DISPLAY_WORK_QUEUE`] and
+/// [`DISPLAY_WORK_COUNT`]: the three are the queue's header, read together.
+pub const DISPLAY_WORK_CAPACITY: usize = 0x3b0;
 /// Province day/night array, sized to the live weather province count.
 pub const PROVINCE_CLOCKS: usize = 0x370;
 /// Held seasonal direction used by regional day/night forecasts.

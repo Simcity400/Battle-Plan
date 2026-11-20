@@ -3,9 +3,9 @@
 //! weather change never reaches the last row and column; only a whole-grid mark
 //! publishes every cell, and only that can move the boundary. No load history is
 //! needed. The refresh token is stored before copying and rebuilding; the queued
-//! count clears only after job joins. Read the token, require no whole-grid rebuild,
-//! select and copy, require it again, then compare the token. Equality alone can
-//! admit a running rebuild. Never retry or wait.
+//! count clears only after job joins. Read the token, require no whole-grid mark
+//! queued, select and copy, require it again, then compare the token. Equality alone
+//! can admit a running rebuild. Never retry or wait.
 
 use super::*;
 
@@ -44,12 +44,6 @@ pub struct DisplayGrid {
 }
 
 impl DisplayGrid {
-    fn cells(&self) -> Result<usize, &'static str> {
-        (self.size[0] as usize)
-            .checked_mul(self.size[1] as usize)
-            .ok_or("weather display grid extent overflow")
-    }
-
     pub fn edge_bytes(&self) -> Result<usize, &'static str> {
         (self.size[0] as usize)
             .checked_add(self.size[1] as usize)
@@ -99,7 +93,7 @@ impl DisplayGrid {
                 return Err("weather display edge row unreadable");
             }
         }
-        require_boundary_unqueued(memory, self.manager, self.cells()?)?;
+        require_boundary_unqueued(memory, self.manager, self.size)?;
         if read_display_identity(memory, self.manager)? != self.refresh_identity {
             return Err("weather display refreshed during boundary copy");
         }
@@ -118,18 +112,41 @@ fn read_display_identity(memory: &impl Memory, manager: usize) -> Result<u64, &'
         .map_err(|_| "weather display refresh identity unreadable")
 }
 
-/// A queue that can still move the boundary. The queue holds one entry per cell and
-/// is emptied whole, so it reaches the grid's cell count only while a whole-grid mark
-/// is outstanding; anything shorter is interior cells the rebuild clamps away from the
-/// last row and column.
+/// Refuses a queue that can still move the boundary: a whole-grid mark, which holds the
+/// last column's first index at that same position. A changed province never queues a
+/// last-column cell, however often its box repeats cells, so any other queue is interior.
 fn require_boundary_unqueued(
     memory: &impl Memory,
     manager: usize,
-    cells: usize,
+    size: [u32; 2],
 ) -> Result<(), &'static str> {
     let queued: i32 = movement_field(memory, manager, DISPLAY_WORK_COUNT)
         .map_err(|_| "weather display work count unreadable")?;
-    if queued < 0 || queued as usize >= cells {
+    let corner = size[0] as usize - 1;
+    let queued = usize::try_from(queued).map_err(|_| "weather display work count invalid")?;
+    if queued <= corner {
+        return Ok(());
+    }
+    // The queue's storage (pointer and capacity, one read) must hold the count read above, the
+    // entry is read only inside it, and the storage is read again unchanged: a count that ran
+    // ahead of the storage it was read with, or storage moved during the read, refuses rather
+    // than reads past it.
+    let storage = || movement_field::<[u8; 12]>(memory, manager, DISPLAY_WORK_QUEUE).map_err(|_| "weather display work queue unreadable");
+    let held = storage()?;
+    let pointer = u64::from_le_bytes(held[..8].try_into().unwrap());
+    let capacity = i32::from_le_bytes(held[DISPLAY_WORK_CAPACITY - DISPLAY_WORK_QUEUE..][..4].try_into().unwrap());
+    if usize::try_from(capacity).map_or(true, |capacity| queued > capacity) || pointer == 0 {
+        return Err("weather display work queue inconsistent");
+    }
+    let entry: i32 = usize::try_from(pointer)
+        .ok()
+        .and_then(|queue| queue.checked_add(corner.checked_mul(4)?))
+        .and_then(|address| read(memory, address))
+        .ok_or("weather display work queue unreadable")?;
+    if storage()? != held {
+        return Err("weather display work queue moved during its read");
+    }
+    if usize::try_from(entry) == Ok(corner) {
         return Err("weather display whole-grid rebuild queued");
     }
     Ok(())
@@ -149,7 +166,7 @@ pub fn read_display_grid(
     // Keep these separate and ordered: the timestamp is stored before work
     // finishes, so selecting it in a header batch cannot certify completion.
     let refresh_identity = read_display_identity(memory, manager)?;
-    require_boundary_unqueued(memory, manager, extent)?;
+    require_boundary_unqueued(memory, manager, size)?;
     let fields = FieldBatch::gather(
         memory,
         movement_fields(
@@ -220,6 +237,7 @@ mod tests {
             source.put(0x2000 + DISPLAY_WORK_COUNT, &0_i32.to_le_bytes());
             source.put(0x2000 + DISPLAY_GRID_SNOW, &0x3000_u64.to_le_bytes());
             source.put(0x2000 + DISPLAY_GRID_MUD, &0x3100_u64.to_le_bytes());
+            source.put(0x2000 + DISPLAY_WORK_QUEUE, &0x3200_u64.to_le_bytes());
             source.put(0x3000, &[0, 1, 2, 3, 4, 5]);
             source.put(0x3100, &[20, 21, 22, 23, 24, 25]);
             source
@@ -314,20 +332,37 @@ mod tests {
         let reads = source.reads.borrow();
         let token = (0x2000 + DISPLAY_REFRESH_IDENTITY, 8);
         let work = (0x2000 + DISPLAY_WORK_COUNT, 4);
-        assert_eq!(&reads[..2], &[token, work]);
+        // The grid's size is read first; then the token and the work count open the read,
+        // before any edge cell of the planes (0x3000 to 0x4000).
+        let opened = reads.iter().position(|&read| read == token).expect("the token is read");
+        assert_eq!(&reads[opened..opened + 2], &[token, work]);
+        assert!(reads[..opened].iter().all(|&(address, _)| !(0x3000..0x4000).contains(&address)), "no edge before the token: {reads:?}");
         assert_eq!(&reads[reads.len() - 2..], &[work, token]);
         assert_eq!(reads.iter().filter(|&&read| read == token).count(), 2);
         assert_eq!(reads.iter().filter(|&&read| read == work).count(), 2);
     }
 
     #[test]
-    fn weather_display_completion_guard_refuses_a_whole_grid_rebuild_or_unreadable_work_before_edges()
-    {
-        // A partial queue is interior cells the rebuild clamps away from the last row
-        // and column, so the retained boundary still reads.
-        for work in [1_i32, 5] {
+    fn weather_display_completion_guard_refuses_only_a_queued_whole_grid_mark_before_edges() {
+        let queued = |entries: &[i32]| {
             let mut source = Source::grid();
-            source.put(0x2000 + DISPLAY_WORK_COUNT, &work.to_le_bytes());
+            source.put(
+                0x2000 + DISPLAY_WORK_COUNT,
+                &(entries.len() as i32).to_le_bytes(),
+            );
+            source.put(
+                0x2000 + DISPLAY_WORK_CAPACITY,
+                &(entries.len() as i32).to_le_bytes(),
+            );
+            for (index, entry) in entries.iter().enumerate() {
+                source.put(0x3200 + index * 4, &entry.to_le_bytes());
+            }
+            source
+        };
+        // Changed provinces queue interior cells only, repeating the cells their boxes
+        // share, so the count can pass the grid's six cells and the boundary still reads.
+        for entries in [&[1][..], &[0, 1, 1, 0, 1], &[0, 1, 0, 1, 1, 0, 0]] {
+            let source = queued(entries);
             let reader = Reader::with_manager(&source, 0, 0x2000).unwrap();
             let mut edges = [0; 8];
             reader
@@ -337,23 +372,50 @@ mod tests {
                 .unwrap();
             assert_eq!(edges, [2, 3, 4, 5, 22, 23, 24, 25]);
         }
-        // The grid's six cells queued whole, more than whole, or a nonsense count.
-        for work in [6_i32, 7, -1] {
-            let mut source = Source::grid();
-            source.put(0x2000 + DISPLAY_WORK_COUNT, &work.to_le_bytes());
-            let reader = Reader::with_manager(&source, 0, 0x2000).unwrap();
-            assert_eq!(
-                reader.display_grid(),
-                Err("weather display whole-grid rebuild queued")
-            );
-            assert!(
-                !source
-                    .reads
-                    .borrow()
-                    .iter()
-                    .any(|&(address, _)| (0x3000..0x3200).contains(&address))
-            );
-        }
+        // A whole-grid mark queues every index in order; only it reaches the last column.
+        let mark = queued(&[0, 1, 2, 3, 4, 5]);
+        let reader = Reader::with_manager(&mark, 0, 0x2000).unwrap();
+        assert_eq!(
+            reader.display_grid(),
+            Err("weather display whole-grid rebuild queued")
+        );
+        assert!(
+            !mark
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(address, _)| (0x3000..0x3200).contains(&address))
+        );
+        // A count past the capacity it was read with (a header torn while the queue grows)
+        // refuses without reading an entry past the storage.
+        let mut torn = queued(&[0, 1, 0, 1, 1, 0, 0]);
+        torn.put(0x2000 + DISPLAY_WORK_CAPACITY, &4_i32.to_le_bytes());
+        let reader = Reader::with_manager(&torn, 0, 0x2000).unwrap();
+        assert_eq!(
+            reader.display_grid(),
+            Err("weather display work queue inconsistent")
+        );
+        assert!(
+            !torn
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(address, _)| (0x3200..0x3300).contains(&address))
+        );
+        let mut negative = Source::grid();
+        negative.put(0x2000 + DISPLAY_WORK_COUNT, &(-1_i32).to_le_bytes());
+        let reader = Reader::with_manager(&negative, 0, 0x2000).unwrap();
+        assert_eq!(
+            reader.display_grid(),
+            Err("weather display work count invalid")
+        );
+        let mut unreadable = queued(&[0, 1, 0, 1]);
+        unreadable.fault = Some(0x3208);
+        let reader = Reader::with_manager(&unreadable, 0, 0x2000).unwrap();
+        assert_eq!(
+            reader.display_grid(),
+            Err("weather display work queue unreadable")
+        );
         let mut source = Source::grid();
         source.fault = Some(0x2000 + DISPLAY_WORK_COUNT);
         let reader = Reader::with_manager(&source, 0, 0x2000).unwrap();

@@ -1151,7 +1151,30 @@ fn weather_display_memory(fault: Option<usize>) -> AttackWeatherMemory {
             &(start..start + 9).collect::<Vec<_>>(),
         );
     }
+    // Interior cells only, as changed provinces queue them.
+    put(
+        &mut source.bytes,
+        0x2000 + cweather_manager::DISPLAY_WORK_QUEUE,
+        &0x4f00_u64.to_le_bytes(),
+    );
+    put(&mut source.bytes, 0x4f00, &[0; 4 * 9]);
+    put(
+        &mut source.bytes,
+        0x2000 + cweather_manager::DISPLAY_WORK_CAPACITY,
+        &9_i32.to_le_bytes(),
+    );
     source
+}
+
+/// The fixture grid's nine cells queued in order, as a whole-grid mark queues them.
+fn queue_whole_grid_mark(source: &mut AttackWeatherMemory) {
+    for cell in 0..9_i32 {
+        put(
+            &mut source.bytes,
+            0x4f00 + cell as usize * 4,
+            &cell.to_le_bytes(),
+        );
+    }
 }
 
 #[test]
@@ -1409,8 +1432,10 @@ fn weather_display_whole_grid_rebuild_with_equal_token_refuses_only_the_boundary
         }
     }
     for raw in [false, true] {
+        let mut marked = weather_display_memory(None);
+        queue_whole_grid_mark(&mut marked);
         let source = Refreshing {
-            source: weather_display_memory(None),
+            source: marked,
             completed: Cell::new(false),
         };
         // Prove the scheduled interleaving would admit a never-existing pair
@@ -1512,8 +1537,10 @@ fn weather_display_completion_guard_refuses_pending_or_faulted_work_after_edges(
     }
     for raw in [false, true] {
         for fault_after_copy in [false, true] {
+            let mut marked = weather_display_memory(None);
+            queue_whole_grid_mark(&mut marked);
             let source = Refreshing {
-                source: weather_display_memory(None),
+                source: marked,
                 copied_snow: Cell::new(false),
                 fault_after_copy,
             };
