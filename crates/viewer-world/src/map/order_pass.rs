@@ -600,6 +600,21 @@ impl<'a, P> PlanSubmissions<'a, P> {
     }
 }
 
+impl PlanSubmissions<'_> {
+    /// Whether the shown plans cast any shadow this frame.
+    pub fn casts_shadows(&self) -> bool {
+        self.shown.is_some_and(|plans| {
+            plans.native_vertices.is_some()
+                && plans
+                    .native_plans
+                    .get(&Mode::Shadow)
+                    .is_some_and(|views| {
+                        views.iter().flat_map(|view| &view.buckets).any(|bucket| !bucket.is_empty())
+                    })
+        })
+    }
+}
+
 impl ShadowCasting<'_> {
     /// Submits view `view`'s plan shadows after mesh and tree casters and before receivers.
     pub fn draw_shadow(

@@ -1352,7 +1352,8 @@ fn same_draws(kept: &DrawList, list: &kept::Kept, fresh: &DrawList) {
 /// The retained casters equal a fresh caster walk draw for draw, byte for byte: after the walk
 /// that makes them, in a kept frame (no walk), after an instance moved (its own nodes rewritten)
 /// and after the camera moved (walked again); a figure leaving and another joining are walked
-/// alone into the list.
+/// alone into the list. Each frame says whether its casters draw what the frame before drew:
+/// only a kept frame whose read bytes are all the same does.
 #[test]
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
@@ -1419,33 +1420,59 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
             seen: None,
             alpha: 1.,
         };
-        model.prepare_casters(&arena, frame, inputs).unwrap();
-        compare(model, frame, inputs)
+        let repeated = model.prepare_casters(&arena, frame, inputs).unwrap();
+        (compare(model, frame, inputs), repeated)
     };
-    let walks = |counts: kept::Counts| (counts.walks, counts.kept);
+    let walks = |(counts, _): (kept::Counts, bool)| (counts.walks, counts.kept);
+    let repeats = |(_, repeated): (kept::Counts, bool)| repeated;
     assert_eq!(walks(step(&mut model, camera, 1)), (1, 0), "the first frame walks");
     assert_eq!(walks(step(&mut model, camera, 2)), (1, 1), "the same inputs walk nothing");
     assert_eq!(walks(step(&mut model, camera, 3)), (1, 2));
+    // Kept, but the casters read the shared block that changed: they draw otherwise.
+    assert!(!repeats(step(&mut model, camera, 4)), "another shared block");
+    assert!(repeats(step(&mut model, camera, 4)), "the same inputs draw the same");
     model.update_placed(placed(0.), 128.);
-    assert_eq!(walks(step(&mut model, camera, 4)), (1, 3), "placements made again unchanged");
+    assert_eq!(walks(step(&mut model, camera, 4)), (1, 5), "placements made again unchanged");
+    assert!(repeats(step(&mut model, camera, 4)), "and draw the same");
     model.update_placed(placed(0.5), 128.);
-    assert_eq!(walks(step(&mut model, camera, 5)), (1, 4), "a move rewrites its nodes in place");
+    let moved = step(&mut model, camera, 4);
+    assert!(!repeats(moved), "a move draws otherwise");
+    assert_eq!(walks(moved), (1, 7), "a move rewrites its nodes in place");
+    assert!(repeats(step(&mut model, camera, 4)));
     camera.center[0] += 1.;
-    assert_eq!(walks(step(&mut model, camera, 6)), (2, 4), "the camera walks again");
-    assert_eq!(walks(step(&mut model, camera, 7)), (2, 5));
+    let walked = step(&mut model, camera, 4);
+    assert!(!repeats(walked), "a walk draws otherwise");
+    assert_eq!(walks(walked), (2, 8), "the camera walks again");
+    assert_eq!(walks(step(&mut model, camera, 7)), (2, 9));
     // The first entity's figure leaves and the second's is another actor: that one is walked
     // alone and the list equals a fresh walk, draw for draw.
     let mut other = placed(0.5);
     other.remove(0);
     other[0].1.animation_identity = 100;
     model.update_placed(other.clone(), 128.);
-    let counts = step(&mut model, camera, 8);
+    let (counts, repeated) = step(&mut model, camera, 7);
     assert_eq!((counts.walks, counts.spliced, counts.figures), (2, 1, 1));
+    assert!(!repeated, "a splice draws otherwise");
     // The first entity's figure comes back: walked alone again, the others kept.
     model.update_placed(placed(0.5).into_iter().take(1).chain(other).collect(), 128.);
-    let counts = step(&mut model, camera, 9);
+    let (counts, repeated) = step(&mut model, camera, 7);
     assert_eq!((counts.walks, counts.spliced, counts.figures), (2, 2, 2));
-    assert_eq!(walks(step(&mut model, camera, 10)), (2, 8));
+    assert!(!repeated);
+    let kept = step(&mut model, camera, 7);
+    assert_eq!(walks(kept), (2, 12));
+    assert!(repeats(kept));
+    // A field that places nothing casts nothing: otherwise than figures, as nothing did before.
+    model.update_placed(Vec::new(), 128.);
+    let nothing = |model: &ModelPass| {
+        arena.reset();
+        let scene = [7; 416];
+        let frames = [scene.as_slice()];
+        let inputs = Inputs { samples: 1, frames: &frames, grid: &[0; 16], textures: [&globals; 10] };
+        let frame = ModelFrame { camera, offsets: &[0.], visible: None, seen: None, alpha: 1. };
+        model.prepare_casters(&arena, frame, inputs).unwrap()
+    };
+    assert!(!nothing(&model), "casting nothing draws otherwise");
+    assert!(nothing(&model), "and nothing again draws the same");
     queue.submit([]);
 }
 

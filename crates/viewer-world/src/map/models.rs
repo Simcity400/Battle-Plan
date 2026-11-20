@@ -2297,6 +2297,9 @@ pub struct ModelPass {
     refusals: RefCell<(u64, ActorRefusals)>,
     /// Actor refusals made, ever: a caster walk that made one is walked again.
     refused: Cell<u64>,
+    /// Whether the last frame's casters placed any figure.
+    cast: Cell<bool>,
+    caster: crate::map::shadow::CasterId,
     /// Raised by every change a caster walk reads beyond the camera, actor poses and the
     /// figures placed: hidden actors, redirects, the content stack, a library that did more than
     /// grow, too many actors given a player unread.
@@ -3105,6 +3108,8 @@ impl ModelPass {
             seen: Cell::new(None),
             refusals: Default::default(),
             refused: Cell::new(0),
+            cast: Cell::new(false),
+            caster: crate::map::shadow::CasterId::next(),
             revision: 0,
             born: RefCell::default(),
             walked: RefCell::default(),
@@ -3722,15 +3727,25 @@ impl ModelPass {
             .collect()
     }
 
-    /// Native material-selected shadow techniques, declarations and actor palettes.
-    pub fn draw_casters(
+    /// Readies this frame's shadow casters (native material-selected shadow techniques,
+    /// declarations and actor palettes); whether they draw what the last frame's drew, byte for
+    /// byte.
+    pub fn ready_casters(
         &self,
         arena: &shader_pipeline::gpu::Arena,
-        pass: &mut wgpu::RenderPass<'_>,
         frame: ModelFrame<'_>,
         native: NativeInputs<'_>,
-    ) -> io::Result<()> {
-        self.record_casters(arena, pass, frame, native)
+    ) -> io::Result<bool> {
+        self.prepare_casters(arena, frame, native)
+    }
+
+    pub fn caster_id(&self) -> crate::map::shadow::CasterId {
+        self.caster
+    }
+
+    /// Draws the casters [`Self::ready_casters`] readied this frame.
+    pub fn draw_casters(&self, arena: &shader_pipeline::gpu::Arena, pass: &mut wgpu::RenderPass<'_>) {
+        self.record_casters(arena, pass);
     }
 }
 

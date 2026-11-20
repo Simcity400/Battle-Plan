@@ -1430,16 +1430,12 @@ impl ModelPass {
         Ok(())
     }
 
-    /// The shadow casters, from the retained list when it was made from this frame's inputs;
-    /// otherwise walked, and the walk kept as the list.
+    /// The shadow casters [`Self::prepare_casters`] readied this frame.
     pub(crate) fn record_casters(
         &self,
         arena: &shader_pipeline::gpu::Arena,
         pass: &mut wgpu::RenderPass<'_>,
-        frame: ModelFrame<'_>,
-        inputs: Inputs<'_>,
-    ) -> io::Result<()> {
-        self.prepare_casters(arena, frame, inputs)?;
+    ) {
         let mut renderer = self.native.borrow_mut();
         if let Some(native) = renderer.as_mut()
             && !self.field.native_order.is_empty()
@@ -1448,20 +1444,21 @@ impl ModelPass {
             draws.bundle(arena.device(), CASTER_TARGET);
             draws.record_range(pass, 0..draws.draws.len(), CASTER_TARGET);
         }
-        Ok(())
     }
 
-    /// Keeps, splices by figure or walks the casters' list for this frame.
-    fn prepare_casters(
+    /// Keeps, splices by figure or walks the casters' list for this frame, from the retained
+    /// list when it was made from this frame's inputs; otherwise walked, and the walk kept as the
+    /// list. Whether the casters draw what the last frame's drew, byte for byte.
+    pub(crate) fn prepare_casters(
         &self,
         arena: &shader_pipeline::gpu::Arena,
         frame: ModelFrame<'_>,
         inputs: Inputs<'_>,
-    ) -> io::Result<()> {
+    ) -> io::Result<bool> {
         let _wall = viewer_foundation::profiling::span("native_caster_prepare");
         let _pass = viewer_foundation::profiling::span(prepare_span(self.label, Queue::Caster));
         if self.field.native_order.is_empty() {
-            return Ok(());
+            return Ok(!self.cast.replace(false));
         }
         let walk = Walk {
             id: ListId::Casters,
@@ -1474,7 +1471,10 @@ impl ModelPass {
             incoming: None,
             userdata: None,
         };
-        self.prepare_list(arena, frame, inputs, &walk, None)
+        let cast = self.cast.replace(false);
+        self.prepare_list(arena, frame, inputs, &walk, None)?;
+        self.cast.set(true);
+        Ok(cast && self.native.borrow().as_ref().is_some_and(|native| native.casters.repeated()))
     }
 
     /// One lit queue's draws for this frame from its retained list (the walk's call in the frame

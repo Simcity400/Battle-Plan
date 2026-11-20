@@ -3669,7 +3669,10 @@ impl Scene {
         // earlier draws. An errored encoder is never submitted. Shadow casters precede screen-space
         // receivers and both blurs before lit terrain samples them. Receivers sample the depth
         // map without casters too, so it is clear whenever casters do not draw.
-        self.shadow.clear_depth_map(&mut encoder, shadow_casters);
+        let casting = shadow_casters && shadow_prepared.is_some() && visible.is_some();
+        if !casting {
+            self.shadow.ready_depth_map(&mut encoder, None);
+        }
         match (shadow_prepared, visible) {
             (Some(shadow_prepared), Some(visible)) => {
                 if shadow_casters {
@@ -3704,97 +3707,86 @@ impl Scene {
                         frames: &caster_bytes,
                         ..native_mesh_inputs
                     };
-                    if let Some(mut pass) = self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
+                    let mut meshes: Vec<(&ModelPass, ModelFrame<'_>)> = Vec::new();
+                    if let Some(frame) = &self.native_map_frame {
+                        meshes.push((frame, ModelFrame { visible: None, seen: None, ..caster_frame(1.) }));
+                    }
+                    if let Some(sprawl) = &self.sprawl
+                        && self.graphics.city_sprawl
+                        && draws_city_sprawl(&camera)
                     {
-                        if let Some(frame) = &self.native_map_frame {
-                            frame.draw_casters(
-                                arena,
-                                &mut pass,
-                                ModelFrame {
-                                    visible: None,
-                                    seen: None,
-                                    ..caster_frame(1.)
-                                },
-                                native_caster_inputs,
-                            )?;
-                        }
-                        if let Some(sprawl) = &self.sprawl
-                            && self.graphics.city_sprawl
-                            && draws_city_sprawl(&camera)
-                        {
-                            sprawl.draw_casters(
-                                arena,
-                                &mut pass,
-                                caster_frame(1.0),
-                                native_caster_inputs,
-                            )?;
-                        }
-                        if let Some(buildings) = &self.map_buildings
-                            && self.graphics.buildings
-                        {
-                            buildings.draw_casters(
-                                arena,
-                                &mut pass,
-                                caster_frame(1.0),
-                                native_caster_inputs,
-                            )?;
-                        }
-                        if let Some(units) = &self.unit_models
-                            && self.graphics.unit_figures()
-                        {
-                            units.draw_casters(
-                                arena,
-                                &mut pass,
-                                caster_frame(1.0),
-                                native_caster_inputs,
-                            )?;
-                        }
-                        if let Some((aircraft, _, _)) = &self.aircraft
-                            && self.graphics.aircraft()
-                            && crate::map::aircraft::draws(&camera)
-                        {
-                            aircraft.draw_casters(
-                                arena,
-                                &mut pass,
-                                caster_frame(1.0),
-                                native_caster_inputs,
-                            )?;
-                        }
-                        if let Some((trains, _, _)) = &self.trains
-                            && trains_visible
-                        {
-                            trains.draw_casters(
-                                arena,
-                                &mut pass,
-                                caster_frame(1.0),
-                                native_caster_inputs,
-                            )?;
-                        }
-                        if let Some(bridges) = &self.bridges
-                            && bridges_visible
-                        {
-                            bridges.draw_casters(
-                                arena,
-                                &mut pass,
-                                caster_frame(1.0),
-                                native_caster_inputs,
-                            )?;
-                        }
-                        // The player casts as every caster does: on the canonical and each seam
-                        // view, with the light matrix translated for each, inside the light.
-                        if let Some(player) = &self.player {
-                            player.pass.draw_casters(
-                                arena,
-                                &mut pass,
-                                caster_frame(1.0),
-                                native_caster_inputs,
-                            )?;
+                        meshes.push((sprawl, caster_frame(1.0)));
+                    }
+                    if let Some(buildings) = &self.map_buildings
+                        && self.graphics.buildings
+                    {
+                        meshes.push((buildings, caster_frame(1.0)));
+                    }
+                    if let Some(units) = &self.unit_models
+                        && self.graphics.unit_figures()
+                    {
+                        meshes.push((units, caster_frame(1.0)));
+                    }
+                    if let Some((aircraft, _, _)) = &self.aircraft
+                        && self.graphics.aircraft()
+                        && crate::map::aircraft::draws(&camera)
+                    {
+                        meshes.push((aircraft, caster_frame(1.0)));
+                    }
+                    if let Some((trains, _, _)) = &self.trains
+                        && trains_visible
+                    {
+                        meshes.push((trains, caster_frame(1.0)));
+                    }
+                    if let Some(bridges) = &self.bridges
+                        && bridges_visible
+                    {
+                        meshes.push((bridges, caster_frame(1.0)));
+                    }
+                    // The player casts as every caster does: on the canonical and each seam
+                    // view, with the light matrix translated for each, inside the light.
+                    if let Some(player) = &self.player {
+                        meshes.push((&player.pass, caster_frame(1.0)));
+                    }
+                    let trees = self.trees.as_ref().filter(|_| !no_trees);
+                    // Plans cast shadows exactly while they draw.
+                    let plans = PlanSubmissions::new(
+                        self.orders.as_ref(),
+                        &self.graphics,
+                        &overlay,
+                        self.visibility.trade_routes || self.visibility.priorities == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir,
+                    );
+                    // Every caster is readied, so each knows whether it draws what it drew before.
+                    let mut repeated = true;
+                    let mut casters = Vec::with_capacity(meshes.len() + 1);
+                    for &(pass, frame) in &meshes {
+                        repeated &= pass.ready_casters(arena, frame, native_caster_inputs)?;
+                        casters.push(pass.caster_id());
+                    }
+                    casters.extend(trees.map(TreePass::caster_id));
+                    // Arrows animate in their shadows, so a map they cast into is drawn again.
+                    let arrows = plans.casts_shadows();
+                    repeated &= !arrows;
+                    let key = crate::map::shadow::CasterKey::new(
+                        shadow_prepared.view_projection,
+                        camera,
+                        size,
+                        &offsets,
+                        casters,
+                        arrows,
+                    );
+                    let draw = self.shadow.ready_depth_map(&mut encoder, Some((key, repeated)));
+                    if draw
+                        && let Some(mut pass) = self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
+                    {
+                        for (mesh, _) in &meshes {
+                            mesh.draw_casters(arena, &mut pass);
                         }
                     }
                     mark(&mut encoder, "shadow_mesh_casters");
-                    if let Some(mut pass) = self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
-                        && let Some(trees) = &self.trees
-                        && !no_trees
+                    if draw
+                        && let Some(trees) = trees
+                        && let Some(mut pass) = self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
                     {
                         trees.draw_casters(
                             arena,
@@ -3808,55 +3800,50 @@ impl Scene {
                         )?;
                     }
                     mark(&mut encoder, "shadow_tree_casters");
-                    // Plans cast shadows exactly while they draw.
-                    PlanSubmissions::new(
-                        self.orders.as_ref(),
-                        &self.graphics,
-                        &overlay,
-                        self.visibility.trade_routes || self.visibility.priorities == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir,
-                    )
-                    .cast_shadows(|plans| {
-                        let Some(mut pass) =
-                            self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
-                        else {
-                            return Ok(());
-                        };
-                        for (view, offset) in offsets.iter().enumerate() {
-                            let mut matrix = shadow_prepared.view_projection;
-                            for (value, axis) in
-                                matrix[3].iter_mut().zip(shadow_prepared.view_projection[0])
-                            {
-                                *value += axis * offset;
+                    if draw {
+                        plans.cast_shadows(|plans| {
+                            let Some(mut pass) =
+                                self.shadow.depth_pass(&mut encoder, wgpu::LoadOp::Load)
+                            else {
+                                return Ok(());
+                            };
+                            for (view, offset) in offsets.iter().enumerate() {
+                                let mut matrix = shadow_prepared.view_projection;
+                                for (value, axis) in
+                                    matrix[3].iter_mut().zip(shadow_prepared.view_projection[0])
+                                {
+                                    *value += axis * offset;
+                                }
+                                let scene = crate::map::arrow_shader::shadow_constants(
+                                    native_frame_bytes[view],
+                                    matrix,
+                                );
+                                plans.draw_shadow(
+                                    arena,
+                                    &mut pass,
+                                    crate::map::order_pass::NativeInputs {
+                                        retained: None,
+                                        scene: &scene,
+                                        grid: bytemuck::bytes_of(&globals.light_grid),
+                                        textures: [
+                                            self.shadow.lit_texture(),
+                                            &self.terrain_ids.view,
+                                            &self.heightmap.view,
+                                            &self.atlas_normal.view,
+                                            &self.height_normal.view,
+                                            &self.lean1.view,
+                                            &self.lean2.view,
+                                            &self.point_light_maps.data.view,
+                                            &self.point_light_maps.indices.view,
+                                        ],
+                                    },
+                                    view,
+                                    animation_time,
+                                )?;
                             }
-                            let scene = crate::map::arrow_shader::shadow_constants(
-                                native_frame_bytes[view],
-                                matrix,
-                            );
-                            plans.draw_shadow(
-                                arena,
-                                &mut pass,
-                                crate::map::order_pass::NativeInputs {
-                                    retained: None,
-                                    scene: &scene,
-                                    grid: bytemuck::bytes_of(&globals.light_grid),
-                                    textures: [
-                                        self.shadow.lit_texture(),
-                                        &self.terrain_ids.view,
-                                        &self.heightmap.view,
-                                        &self.atlas_normal.view,
-                                        &self.height_normal.view,
-                                        &self.lean1.view,
-                                        &self.lean2.view,
-                                        &self.point_light_maps.data.view,
-                                        &self.point_light_maps.indices.view,
-                                    ],
-                                },
-                                view,
-                                animation_time,
-                            )?;
-                        }
-                        Ok(())
-                    })?;
+                            Ok(())
+                        })?;
+                    }
                     mark(&mut encoder, "shadow_arrow_casters");
                 }
                 // The receivers clear the screen target themselves; without them it is

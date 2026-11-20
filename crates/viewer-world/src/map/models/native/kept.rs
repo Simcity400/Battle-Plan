@@ -709,6 +709,12 @@ pub(super) struct Kept {
     /// The bytes the list has staged, held only while the judge of them runs
     /// ([`Self::staged_difference`]).
     resident: Vec<u8>,
+    /// What its draws' programs read of each shared block, by block, sorted and merged.
+    shared_reads: Vec<Vec<Range<usize>>>,
+    /// Its draws were walked or spliced since the last frame kept it.
+    fresh: bool,
+    /// The last frame kept it with every byte its draws read as the frame before left them.
+    repeated: bool,
 }
 
 /// What one frame of a list wrote in place and staged for the GPU ([`Kept::take_wrote`]).
@@ -1065,6 +1071,10 @@ impl Kept {
     /// Keeps the list for this frame: every row and shared block whose bytes it changed goes to
     /// the arena's flush, and a frame that changed none of them stages nothing.
     pub(super) fn keep(&mut self, arena: &shader_pipeline::gpu::Arena, shared: &[&[u8]]) {
+        // The rows a kept frame changed are dirty already; the shared blocks are compared here.
+        self.repeated = !std::mem::take(&mut self.fresh)
+            && self.dirty.is_empty()
+            && self.shared_reads_hold(shared);
         self.write_shared(shared);
         let ranges = self.dirty_ranges();
         if let Some(buffer) = self.buffer.clone() {
@@ -1077,6 +1087,62 @@ impl Kept {
             Kind::Lit => super::super::Count::LitKept,
         };
         super::super::count(name, 1);
+    }
+
+    /// Whether the last frame kept the list with its draws reading what they read the frame
+    /// before: the same draws over the same bytes draw the same picture.
+    pub(super) fn repeated(&self) -> bool {
+        self.repeated
+    }
+
+    /// Whether `shared` holds, wherever the list's draws read it, the bytes the list holds.
+    fn shared_reads_hold(&self, shared: &[&[u8]]) -> bool {
+        self.shared.at.len() == shared.len()
+            && self.shared.at.iter().zip(shared).zip(&self.shared_reads).all(
+                |((&place, bytes), reads)| {
+                    reads.iter().all(|range| {
+                        let range = range.start.min(bytes.len())..range.end.min(bytes.len());
+                        self.bytes[place + range.start..place + range.end] == bytes[range]
+                    })
+                },
+            )
+    }
+
+    /// Notes what the list's draws read of each shared block, after a walk or splice made them.
+    fn note_reads<'p>(&mut self, parts: impl Fn(usize) -> Option<PartProgram<'p>>) {
+        let reads = self.shared.reads;
+        let mut held = vec![Vec::new(); self.shared.at.len()];
+        for group in self.groups.iter().flatten() {
+            let Some(part) = parts(group.key) else {
+                held.iter_mut().for_each(|ranges| ranges.push(0..usize::MAX));
+                continue;
+            };
+            for spec in part.program.constant_reads() {
+                let at = match plan_tail::selector(spec.binding) {
+                    Some(plan_tail::FRAME) => group.view,
+                    Some(plan_tail::GRID) if reads.grid => reads.grid_at(),
+                    Some(plan_tail::PIXEL) if reads.pixel && !reads.own_pixel => reads.pixel_at(),
+                    _ => continue,
+                };
+                if let Some(ranges) = held.get_mut(at) {
+                    ranges.extend(spec.reads.iter().map(|read| read.start as usize..read.end as usize));
+                }
+            }
+        }
+        for ranges in &mut held {
+            ranges.sort_unstable_by_key(|range| (range.start, range.end));
+            let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+            for range in ranges.drain(..) {
+                match merged.last_mut() {
+                    Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+                    _ => merged.push(range),
+                }
+            }
+            *ranges = merged;
+        }
+        self.shared_reads = held;
+        self.fresh = true;
+        self.repeated = false;
     }
 
     /// Drops the writes of a frame that walks after all.
@@ -1519,6 +1585,8 @@ impl Kept {
         parts: impl Fn(usize) -> Option<PartProgram<'p>>,
         made: Option<Made>,
     ) -> io::Result<()> {
+        self.fresh = true;
+        self.repeated = false;
         let device = arena.device();
         let alignment = alignment(device);
         let recorded = std::mem::take(&mut recording.bytes);
@@ -1720,6 +1788,7 @@ impl Kept {
             Kind::Lit => super::super::Count::LitWalks,
         };
         super::super::count(name, 1);
+        self.note_reads(parts);
         Ok(())
     }
 
@@ -1869,6 +1938,8 @@ impl Kept {
         alignment: usize,
         parts: impl Fn(usize) -> Option<PartProgram<'p>>,
     ) -> io::Result<bool> {
+        self.fresh = true;
+        self.repeated = false;
         let walked = recording.walked();
         let wanted = next.iter().filter(|figure| figure.is_none()).count();
         let routes = walked.iter().map(|walk| (walk.mark.view, walk.mark.position));
@@ -2060,6 +2131,7 @@ impl Kept {
         super::super::count(spliced, 1);
         super::super::count(walked, wanted as u64);
         super::super::count(gone, left as u64);
+        self.note_reads(parts);
         Ok(true)
     }
 

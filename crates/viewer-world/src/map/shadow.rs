@@ -1,13 +1,12 @@
 //! The cast-shadow depth map, screen-space receivers and two blur passes.
 //!
-//! Depth and screen targets are prepared every frame and cleared whenever this
-//! frame draws into them or they do not hold their clear values already. Casters
-//! and blurs require enabled shadows and a camera below the shadow cutoff.
-//! Receivers also run below the fog cutoff without casters.
+//! Casters and blurs require enabled shadows and a camera below the shadow
+//! cutoff. Receivers also run below the fog cutoff without casters.
 //!
 //! The orthographic depth target is 2_FLOAT with depth/stencil and a clear
 //! value of one. Each world-wrap view submits mesh casters, tree casters and
-//! admitted late arrows in that order. Terrain and the map frame are excluded.
+//! admitted late arrows in that order; terrain casts none. The map is kept from
+//! the frame before while its [`CasterKey`] holds and every caster repeats.
 //! The light matrix replaces the scene view-projection for these draws.
 //!
 //! Tree and terrain receivers draw their ordinary geometry into a BGRA8 UNORM
@@ -28,9 +27,10 @@
 //! unsupported FLOAT32_FILTERABLE capability is a named refusal. The casters are
 //! the figures the main camera's cull passed, as the game's are: none off screen.
 use shader_pipeline::gpu::stats::CountedPasses as _;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
 
 use eframe::wgpu;
@@ -363,8 +363,96 @@ struct Buffers {
     /// Whether `buffer` holds [`BUFFER_CLEAR`] in every texel, so clearing it again leaves the
     /// same bytes and the content it holds is the content it held.
     cleared: Cell<bool>,
-    /// Whether the depth map holds white and depth one in every texel.
-    depth_map_cleared: Cell<bool>,
+    depth_map_held: RefCell<Held>,
+}
+
+/// One caster pass, never shared with another: a pass made afresh is another caster, so a map
+/// another pass drew is never taken for its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CasterId(u64);
+
+impl CasterId {
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// What the casters drew the depth map from beyond what each caster says of itself: the light,
+/// the camera and viewport their admission, levels of detail and wrap copies follow, which
+/// casters drew, in order, and whether arrows did.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CasterKey {
+    light: [[u32; 4]; 4],
+    camera: Camera,
+    viewport: [u32; 2],
+    offsets: Vec<u32>,
+    casters: Vec<CasterId>,
+    arrows: bool,
+}
+
+impl CasterKey {
+    pub fn new(
+        light: [[f32; 4]; 4],
+        camera: Camera,
+        viewport: [u32; 2],
+        offsets: &[f32],
+        casters: Vec<CasterId>,
+        arrows: bool,
+    ) -> Self {
+        Self {
+            light: light.map(|row| row.map(f32::to_bits)),
+            camera,
+            viewport,
+            offsets: offsets.iter().map(|offset| offset.to_bits()).collect(),
+            casters,
+            arrows,
+        }
+    }
+}
+
+/// What the depth map holds.
+#[derive(Debug, Default, PartialEq)]
+enum Held {
+    /// Unknown: just made, or a frame's commands never reached the queue.
+    #[default]
+    Unknown,
+    /// White, and depth one, in every texel.
+    Clear,
+    /// What the casters drew for this key.
+    Drawn(CasterKey),
+}
+
+/// What a frame does to the depth map before its receivers sample it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ready {
+    /// Cleared, and the casters draw into it.
+    Draw,
+    /// It holds this frame's casters already: neither cleared nor drawn.
+    Keep,
+    /// No casters, and it is cleared.
+    Clear,
+    /// No casters, and it is clear already.
+    Nothing,
+}
+
+impl Held {
+    /// `casters` is the frame's key, and whether every caster draws what it drew the frame
+    /// before, byte for byte; none when no casters draw.
+    fn ready(&mut self, casters: Option<(CasterKey, bool)>) -> Ready {
+        match casters {
+            None if *self == Held::Clear => Ready::Nothing,
+            None => {
+                *self = Held::Clear;
+                Ready::Clear
+            }
+            Some((key, true)) if matches!(self, Held::Drawn(held) if *held == key) => Ready::Keep,
+            Some((key, _)) => {
+                *self = Held::Drawn(key);
+                Ready::Draw
+            }
+        }
+    }
 }
 
 impl Buffers {
@@ -416,7 +504,7 @@ impl Buffers {
             screen,
             content: Cell::new(Content::next()),
             cleared: Cell::new(false),
-            depth_map_cleared: Cell::new(false),
+            depth_map_held: RefCell::default(),
         }
     }
 
@@ -512,12 +600,23 @@ impl Buffers {
         }
     }
 
-    /// Clears the depth map when casters draw into it this frame, or when it is not clear
-    /// already: receivers below the fog cutoff sample it without casters.
-    fn clear_depth_map(&self, encoder: &mut wgpu::CommandEncoder, casters: bool) {
-        if !self.depth_map_cleared.replace(!casters) || casters {
+    /// Readies the depth map for this frame's casters ([`ShadowPass::ready_depth_map`]).
+    fn ready_depth_map(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        casters: Option<(CasterKey, bool)>,
+    ) -> bool {
+        let ready = self.depth_map_held.borrow_mut().ready(casters);
+        if matches!(ready, Ready::Draw | Ready::Clear) {
             drop(self.depth_pass(encoder, wgpu::LoadOp::Clear(1.0)));
         }
+        let record = |name| viewer_foundation::view_record::add("map scene", name, 1);
+        match ready {
+            Ready::Draw => record("shadow_casters_drawn"),
+            Ready::Keep => record("shadow_casters_kept"),
+            Ready::Clear | Ready::Nothing => {}
+        }
+        ready == Ready::Draw
     }
 }
 
@@ -613,7 +712,7 @@ impl ShadowPass {
     pub fn abandon(&self) {
         if let Some(buffers) = &self.buffers {
             buffers.changed();
-            buffers.depth_map_cleared.set(false);
+            *buffers.depth_map_held.borrow_mut() = Held::Unknown;
         }
     }
 
@@ -638,7 +737,7 @@ impl ShadowPass {
     }
 
     /// The depth pass the casters draw into, cleared this frame by
-    /// [`Self::clear_depth_map`] to the "nothing here" depth of 1.
+    /// [`Self::ready_depth_map`] to the "nothing here" depth of 1.
     pub fn depth_pass<'a>(
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
@@ -647,12 +746,18 @@ impl ShadowPass {
         Some(self.buffers.as_ref()?.depth_pass(encoder, load))
     }
 
-    /// Readies the depth map for this frame: cleared for the casters when they draw,
-    /// and otherwise left as it is while it holds its clear values.
-    pub fn clear_depth_map(&self, encoder: &mut wgpu::CommandEncoder, casters: bool) {
-        if let Some(buffers) = &self.buffers {
-            buffers.clear_depth_map(encoder, casters);
-        }
+    /// Readies the depth map for this frame; whether the casters draw into it. `casters` is the
+    /// frame's key and whether every caster draws what it drew the frame before, byte for byte;
+    /// none when no casters draw. A map that holds this key's casters already is left as it is,
+    /// and one that holds its clear values while none draw; otherwise it is cleared.
+    pub fn ready_depth_map(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        casters: Option<(CasterKey, bool)>,
+    ) -> bool {
+        self.buffers
+            .as_ref()
+            .is_some_and(|buffers| buffers.ready_depth_map(encoder, casters))
     }
 
     /// The screen-space pre-pass the `terrainunlit` and `treeunlit` draws fill.
@@ -1315,6 +1420,67 @@ mod tests {
         let constants = super::super::shadow_blur::constants(100, 0.0);
         let sum = constants[3] + 2.0 * (constants[4] + constants[5]);
         assert!((sum - 1.0).abs() < 1e-6, "{sum}");
+    }
+
+    /// The depth map is kept only for the key it was drawn for while every caster repeats its
+    /// draws; any change of light, camera, viewport, wrap copies, casters or arrows draws it
+    /// again, as does a caster that changed, a pass made afresh under the same name, a frame
+    /// without casters and a frame that was never submitted.
+    #[test]
+    fn the_depth_map_is_drawn_again_whenever_anything_it_was_drawn_from_changes() {
+        use crate::map::models::{ModelLibrary, ModelPass};
+        let (camera, frame) = reference();
+        let light = light_box(camera, VIEWPORT, light_direction(camera, &frame))
+            .unwrap()
+            .view_projection();
+        let library = ModelLibrary::default();
+        let (buildings, trees) = (CasterId::next(), CasterId::next());
+        let at = |light, camera, viewport, offsets: &[f32], casters, arrows| {
+            CasterKey::new(light, camera, viewport, offsets, casters, arrows)
+        };
+        let key = || at(light, camera, VIEWPORT, &[0.0], vec![buildings, trees], false);
+        let mut held = Held::default();
+        assert_eq!(held.ready(Some((key(), true))), Ready::Draw, "nothing known yet");
+        assert_eq!(held.ready(Some((key(), true))), Ready::Keep);
+        assert_eq!(held.ready(Some((key(), false))), Ready::Draw, "a caster drew otherwise");
+        assert_eq!(held.ready(Some((key(), true))), Ready::Keep);
+        let mut moved_light = light;
+        moved_light[3][0] += 1.0;
+        let mut moved_camera = camera;
+        moved_camera.center[0] += 0.5;
+        let mut zoomed = camera;
+        zoomed.height += 0.5;
+        let both = || vec![buildings, trees];
+        let changes = [
+            ("the light", at(moved_light, camera, VIEWPORT, &[0.0], both(), false)),
+            ("the camera", at(light, moved_camera, VIEWPORT, &[0.0], both(), false)),
+            ("the zoom", at(light, zoomed, VIEWPORT, &[0.0], both(), false)),
+            ("the viewport", at(light, camera, [VIEWPORT[0], 1080], &[0.0], both(), false)),
+            ("the wrap copies", at(light, camera, VIEWPORT, &[0.0, 5632.0], both(), false)),
+            ("a caster left", at(light, camera, VIEWPORT, &[0.0], vec![trees], false)),
+            ("another order", at(light, camera, VIEWPORT, &[0.0], vec![trees, buildings], false)),
+            ("arrows", at(light, camera, VIEWPORT, &[0.0], both(), true)),
+        ];
+        for (what, changed) in changes {
+            assert_eq!(held.ready(Some((changed, true))), Ready::Draw, "{what}");
+            assert_eq!(held.ready(Some((key(), true))), Ready::Draw, "{what}, and back");
+            assert_eq!(held.ready(Some((key(), true))), Ready::Keep, "{what}, then kept");
+        }
+        // A pass made afresh under the same name, as a reinstalled map or a new player makes,
+        // says an empty field repeats: it is another caster all the same.
+        let drew = ModelPass::new(&library, "player");
+        let player = |pass: &ModelPass| at(light, camera, VIEWPORT, &[0.0], vec![pass.caster_id()], false);
+        assert_eq!(held.ready(Some((player(&drew), true))), Ready::Draw);
+        assert_eq!(held.ready(Some((player(&drew), true))), Ready::Keep);
+        let fresh = ModelPass::new(&library, "player");
+        assert_eq!(held.ready(Some((player(&fresh), true))), Ready::Draw, "a fresh pass");
+        assert_eq!(held.ready(None), Ready::Clear, "no casters clear it");
+        assert_eq!(held.ready(None), Ready::Nothing, "and it stays clear");
+        assert_eq!(held.ready(Some((key(), true))), Ready::Draw, "the casters come back");
+        held = Held::Unknown;
+        assert_eq!(held.ready(None), Ready::Clear, "a lost frame's clear is done again");
+        held = Held::Unknown;
+        assert_eq!(held.ready(Some((key(), true))), Ready::Draw, "a lost frame's casters too");
     }
 
     #[test]

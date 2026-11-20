@@ -748,6 +748,7 @@ pub struct TreePass {
     /// Instances the last frame drew, for reporting.
     drawn: Cell<u32>,
     drawn_buckets: Cell<u32>,
+    caster: super::shadow::CasterId,
 }
 
 impl TreePass {
@@ -847,6 +848,7 @@ impl TreePass {
             admitted: RefCell::default(),
             drawn: Cell::new(0),
             drawn_buckets: Cell::new(0),
+            caster: super::shadow::CasterId::next(),
         })
     }
 
@@ -900,6 +902,10 @@ impl TreePass {
     /// Buckets the last frame drew: one `draw_indexed` each, per wrap copy.
     pub fn drawn_buckets(&self) -> u32 {
         self.drawn_buckets.get()
+    }
+
+    pub fn caster_id(&self) -> super::shadow::CasterId {
+        self.caster
     }
 
     /// Compiles the canopy pipeline frames at `high` draw with, so they compile nothing; a
