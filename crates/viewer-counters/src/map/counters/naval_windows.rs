@@ -278,6 +278,33 @@ struct BaseWritten {
     items: Result<Vec<gui_windows::Update>, Cow<'static, str>>,
     art: u64,
     countries: Option<Arc<Countries>>,
+    /// Written quiet with the inputs it was written with before ([`base_due`]).
+    settled: bool,
+    /// The port items its grid had no slot for.
+    overflow: usize,
+}
+
+/// A base's update this frame ([`base_due`]).
+#[derive(Debug, PartialEq)]
+enum BaseDue {
+    /// Its window and port items stand as they are, and so do the items its grid left out.
+    Stands { overflow: usize },
+    /// It is written, settled when it was written quiet with the same inputs as last time.
+    Write { settled: bool },
+}
+
+/// Whether a base stands this frame, from what it last wrote: `quiet` when nothing wrote its
+/// window or a port item its grid holds since their tick and none changes on its own, `same` when
+/// its update would be given what it last was and its roster is decided. It stands once written twice in a row with the
+/// same inputs, the second time quiet: one write can leave what the next identical write changes
+/// (a sprite replacement drops the frame written before it), the items take the grid's opacity
+/// before the tick that ends the window's fade, and an item's movement ends where its grid's
+/// finalization does not put it.
+fn base_due(written: Option<&BaseWritten>, quiet: bool, same: bool) -> BaseDue {
+    match written {
+        Some(written) if quiet && same && written.settled => BaseDue::Stands { overflow: written.overflow },
+        _ => BaseDue::Write { settled: quiet && same },
+    }
 }
 
 impl BaseWritten {
@@ -304,6 +331,34 @@ impl BaseWritten {
             && self.items.as_ref().map(Vec::as_slice) == items
             && self.art == art
             && countries
+    }
+}
+
+/// Each base written with flags the same as `now`'s holds `now`, so [`BaseWritten::same`] finds
+/// them the same by pointer: the flags of each other table it held are compared once a frame.
+fn adopt_countries<'a>(written: impl Iterator<Item = &'a mut BaseWritten>, now: Option<&Arc<Countries>>) {
+    let Some(now) = now else {
+        return;
+    };
+    let mut compared: Vec<(Arc<Countries>, bool)> = Vec::new();
+    for base in written {
+        let Some(held) = &base.countries else {
+            continue;
+        };
+        if Arc::ptr_eq(held, now) {
+            continue;
+        }
+        let same = match compared.iter().find(|(table, _)| Arc::ptr_eq(table, held)) {
+            Some(&(_, same)) => same,
+            None => {
+                let same = held.same_flags(now);
+                compared.push((Arc::clone(held), same));
+                same
+            }
+        };
+        if same {
+            base.countries = Some(Arc::clone(now));
+        }
     }
 }
 
@@ -395,6 +450,9 @@ pub struct Windows {
     /// An icon of the presented frame is kept off screen by its province's dirty bit alone
     /// ([`admission`]): the frame the bit clears erases it.
     kept_off_screen: bool,
+    /// The bases written this frame with a decided roster that do not stand yet ([`update_base`]):
+    /// the next frame writes each again, so the view asks for that frame.
+    owed: HashSet<SlotId>,
     /// The view's transition clock: the sum of every tick's step, on which the windows' fades and
     /// movements advance.
     clock: f32,
@@ -1302,7 +1360,7 @@ pub(super) fn tick(
     // The mission windows the frame's update left with an unknown fade and movement (a slot
     // allocated after a divergence), on the clock of the frame's owners, before this tick.
     for (window, why) in windows.missions.take_unsettled() {
-        transition_unknown(windows, Registered::Mission(window), &why);
+        transition_unknown(windows, Registered::Mission(window), &why, Marked::Once);
     }
     windows.clock += tick.dt;
     if !tick_due(windows, missions.is_some()) {
@@ -1513,14 +1571,24 @@ fn settle_after(
     }
     // A window whose tick failed may stand mid-transition where the game's does not.
     for (window, why) in failed {
-        transition_unknown(windows, window, &format!("its window does not tick: {why}"));
+        transition_unknown(windows, window, &format!("its window does not tick: {why}"), Marked::EveryFrame);
     }
     settle(windows, native);
-    windows.visible = !windows.settling.is_empty()
+    let asks = windows.settling.values().any(Settling::asks);
+    for entry in windows.settling.values_mut() {
+        entry.marked = None;
+    }
+    // The next frame is asked for only by what it can still change, each reason apart: a base owed
+    // its second write, an unknown transition whose wait can run ([`Settling::asks`]), and a
+    // window that runs and is drawn ([`runs_drawn`]).
+    let owed = !std::mem::take(&mut windows.owed).is_empty();
+    let held = |key: &ItemKey| runs_drawn(windows, key);
+    windows.visible = owed
+        || asks
         || windows.combats.as_ref().is_some_and(Pool::active)
         || windows.bases.as_ref().is_some_and(Pool::active)
         || windows.results.as_ref().is_some_and(Pool::active)
-        || windows.items.values().any(|item| item.instance.active())
+        || windows.grids.values().flatten().any(held)
         || windows
             .counters
             .values()
@@ -1528,6 +1596,14 @@ fn settle_after(
         || (missions && windows.missions.active());
     windows.active = std::mem::take(&mut windows.kept_off_screen) || windows.visible;
     windows.settled = !windows.active;
+}
+
+/// Whether the grid item `key` (one a grid holds) runs and is drawn: it changes on its own and no
+/// refusal withholds its draw. Only such an item asks for frames; it, or one recovering a
+/// transition, keeps its base written ([`update_base`]).
+fn runs_drawn(windows: &Windows, key: &ItemKey) -> bool {
+    windows.items_withheld.why(key).is_none()
+        && windows.items.get(key).is_some_and(|item| item.instance.active())
 }
 
 /// Whether a tick would change any window of the view: one that changes on its own, or one a call
@@ -1936,6 +2012,27 @@ struct Settling {
     why: Cow<'static, str>,
     /// Its refusal stands on the window's refusal state ([`settle`] puts it there).
     standing: bool,
+    /// What made the part unknown at this frame, when something did ([`transition_unknown`]).
+    marked: Option<Marked>,
+}
+
+/// What makes a window's [`TRANSITION`] unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Marked {
+    /// An event of this frame alone: a slot allocated after a divergence, an item built into a
+    /// grown pool. Its wait runs on the frames after it.
+    Once,
+    /// An update the view cannot decide or apply, made again every frame while that holds. Its
+    /// wait starts only once it stops.
+    EveryFrame,
+}
+
+impl Settling {
+    /// Whether its wait asks for the next frame: not when this frame marked it only by what
+    /// marks it every frame, which no frame advances.
+    fn asks(&self) -> bool {
+        self.marked != Some(Marked::EveryFrame)
+    }
 }
 
 /// The template of the view's window `registered`, and its instance, when it still exists.
@@ -1993,16 +2090,21 @@ fn registered_window<'w, 'n>(
 /// restarts the wait from the view's clock now. [`settle`] refuses the window at the frame's tick,
 /// before anything draws, and lifts it; a window whose registered windows have no transition is
 /// left alone there.
-fn transition_unknown(windows: &mut Windows, window: Registered, why: &str) {
+fn transition_unknown(windows: &mut Windows, window: Registered, why: &str, cause: Marked) {
     let clock = windows.clock;
     let why: Cow<'static, str> = format!("{why} ({TRANSITION} is unknown)").into();
     let entry = windows.settling.entry(window).or_insert(Settling {
         since: clock,
         why: why.clone(),
         standing: false,
+        marked: None,
     });
     entry.since = clock;
     entry.why = why;
+    entry.marked = match entry.marked {
+        Some(Marked::Once) => Some(Marked::Once),
+        _ => Some(cause),
+    };
 }
 
 /// At each tick, after its transitions: every window whose [`TRANSITION`] is unknown
@@ -2131,8 +2233,8 @@ fn allocate<K: Clone + Eq + std::hash::Hash>(
                 format!("icon omitted: {why}").into(),
             );
         }
-        transition_unknown(windows, Registered::Icon(icon(slot)), &why);
-        unknown_items(windows, icon(slot), &why);
+        transition_unknown(windows, Registered::Icon(icon(slot)), &why, Marked::Once);
+        unknown_items(windows, icon(slot), &why, Marked::Once);
     }
     Some(slot)
 }
@@ -2261,7 +2363,7 @@ fn update_combat(
         .iter()
         .find(|(part, _)| *part == gui_windows::GRIDS)
     {
-        unknown_items(windows, icon, why);
+        unknown_items(windows, icon, why, Marked::EveryFrame);
     }
     if let Some(fills) = rotation {
         let instance = pool.get(slot).ok_or("an updated icon has no window")?;
@@ -2273,7 +2375,7 @@ fn update_combat(
 /// An unavailable pooled-item update withholds its unknown parts until later
 /// writes repair them. Kept sprites, supply and other partial writes retain
 /// their own validity; pool growth can leave additional items unknown.
-fn unknown_items(windows: &mut Windows, icon: IconSlot, why: &str) {
+fn unknown_items(windows: &mut Windows, icon: IconSlot, why: &str, cause: Marked) {
     let grids_undecided = |name: &str| -> Cow<'static, str> {
         format!("{name} is not drawn: its icon's grids are not reproduced ({why})").into()
     };
@@ -2301,7 +2403,7 @@ fn unknown_items(windows: &mut Windows, icon: IconSlot, why: &str) {
     // What the game's update did to the item's window (its Show or Hide, and so its fade) is
     // unknown with it.
     for (key, why) in keys {
-        transition_unknown(windows, Registered::Item(key), &why);
+        transition_unknown(windows, Registered::Item(key), &why, cause);
     }
 }
 
@@ -2310,7 +2412,7 @@ fn unknown_items(windows: &mut Windows, icon: IconSlot, why: &str) {
 /// that does not apply, structural and the same every frame).
 fn unknown_pool(windows: &mut Windows, slots: Vec<IconSlot>, why: &str) {
     for icon in slots {
-        unknown_items(windows, icon, why);
+        unknown_items(windows, icon, why, Marked::EveryFrame);
     }
 }
 
@@ -2327,7 +2429,7 @@ fn skipped_counter(windows: &mut Windows, source: u64, why: &str) {
     let mut left = vec![Mark::Refuse(Unknown::Update, why.clone())];
     left.extend(unknown_kept(&mut counter.unknown, &why));
     mark(&mut counter.withheld, &(), left);
-    transition_unknown(windows, Registered::Counter(source), &why);
+    transition_unknown(windows, Registered::Counter(source), &why, Marked::EveryFrame);
 }
 
 /// Why a counter at sea whose source an incomplete TaskForces census lacks is kept unknown.
@@ -2462,7 +2564,7 @@ fn update_item(
     });
     mark(&mut windows.items_withheld, &key, left);
     if let (Some(why), true) = (grown, constructed) {
-        transition_unknown(windows, Registered::Item(key), &why);
+        transition_unknown(windows, Registered::Item(key), &why, Marked::Once);
     }
     Ok(())
 }
@@ -2723,16 +2825,17 @@ fn base_frame(
         if let Some(pass) = &plan.bases {
             provinces.extend(pass.bases.iter().map(|(province, _)| *province));
         }
+        let anchors: HashMap<u32, [f32; 3]> = plan
+            .bases
+            .as_ref()
+            .map(|pass| pass.bases.iter().copied().collect())
+            .unwrap_or_default();
         drop(maps_profile);
         for province in provinces {
             let Some(update) = schedule.update(province) else {
                 continue;
             };
-            let shown = update == Update::InView
-                && plan
-                    .bases
-                    .as_ref()
-                    .is_some_and(|pass| pass.bases.iter().any(|(base, _)| *base == province));
+            let shown = update == Update::InView && anchors.contains_key(&province);
             if !shown {
                 if let Some(slot) = pool.slot_of(&province) {
                     let held = pool.erase(window, &province)?;
@@ -2750,13 +2853,6 @@ fn base_frame(
                 windows.diverged_bases = Some(GROWTH_FRAME.into());
             }
         }
-        let maps_profile = viewer_foundation::profiling::span("dc_nu_base_maps");
-        let anchors: HashMap<u32, [f32; 3]> = plan
-            .bases
-            .as_ref()
-            .map(|pass| pass.bases.iter().copied().collect())
-            .unwrap_or_default();
-        drop(maps_profile);
         let size = plan.bases.as_ref().map_or([0; 2], |pass| pass.size);
         let mut kept_off_screen = false;
         let pass = pool.update(window, |province, _| {
@@ -2785,6 +2881,7 @@ fn base_frame(
         let flags = gui_windows::window_flags(inputs, plan.countries.as_deref());
         let resources = gui_windows::gui_assets(inputs, flags.as_ref());
         let maps_profile = viewer_foundation::profiling::span("dc_nu_base_maps");
+        adopt_countries(windows.base_written.values_mut(), plan.countries.as_ref());
         let glyphs: HashMap<_, _> = bases
             .glyphs
             .iter()
@@ -2821,53 +2918,14 @@ fn base_frame(
                 },
                 Err(why) => Err(why),
             };
-            // A window the pass left as it was, settled, whose update would write what it last
-            // wrote, is written nothing: its port items stand as they are.
-            let standing = pool
-                .instance(slot)
-                .is_some_and(|instance| !instance.written() && !instance.active())
-                && windows.base_written.get(&slot).is_some_and(|written| {
-                    written.same(province, glyph, scale.to_bits(), strategic, items, inputs.art, plan.countries.as_ref())
-                });
-            if standing {
-                viewer_foundation::map::redraws::note("naval.bases_kept", 1);
-                continue;
-            }
-            windows.base_written.remove(&slot);
-            let instance = pool.get(slot).ok_or("an updated icon has no window")?;
-            let update_profile = viewer_foundation::profiling::span("dc_nu_base_update");
-            match glyph {
-                Some(glyph) => {
-                    if let Err(why) = update_naval(instance, window, glyph, scale, strategic, &resources) {
-                        pool.refuse(slot, Unknown::Update, why.into());
-                        continue;
-                    }
-                }
-                None => {
-                    let c = base_controls(window)?;
-                    for control in [c.background, c.strategic, c.capacity] {
-                        instance.hide(window, control)?;
-                    }
-                    // BaseUnknowns already counts why this hour has no decided glyph.
-                }
-            }
-            drop(update_profile);
-            let items_profile = viewer_foundation::profiling::span("dc_nu_base_items");
-            base_items(windows, instance, window, slot, items, &resources, report)?;
-            drop(items_profile);
-            pool.rewrote(slot, Rewrote::Update);
-            viewer_foundation::map::redraws::note("naval.bases_written", 1);
-            windows.base_written.insert(
+            let _stood = update_or_withhold(
+                windows,
+                &mut pool,
+                window,
                 slot,
-                BaseWritten {
-                    province,
-                    glyph: glyph.copied(),
-                    scale: scale.to_bits(),
-                    strategic,
-                    items: items.map(<[gui_windows::Update]>::to_vec).map_err(Clone::clone),
-                    art: inputs.art,
-                    countries: plan.countries.clone(),
-                },
+                BaseInputs { province, glyph, scale, strategic, items, art: inputs.art, countries: plan.countries.as_ref() },
+                &resources,
+                report,
             );
         }
         Ok(())
@@ -2882,9 +2940,11 @@ fn base_frame(
         (Ok(()), Some(why)) => unknown_pool(windows, slots, why),
         (Ok(()), None) => {}
     }
-    // A frame that left the windows' parts unknown has every base written again by the next.
+    // A frame that left the windows' parts unknown has every base written again by the next, which
+    // no repaint brings any nearer to standing.
     if result.is_err() || plan.bases_undecided.is_some() {
         windows.base_written.clear();
+        windows.owed.clear();
     }
     if let Err(why) = result {
         *report
@@ -2893,6 +2953,136 @@ fn base_frame(
             .or_default() += 1;
     }
     Ok(())
+}
+
+/// What one admitted base's update is given this frame.
+struct BaseInputs<'a> {
+    province: u32,
+    glyph: Option<&'a bases::NavalBaseIcon>,
+    scale: f32,
+    strategic: bool,
+    items: Result<&'a [gui_windows::Update], &'a Cow<'static, str>>,
+    art: u64,
+    countries: Option<&'a Arc<Countries>>,
+}
+
+/// [`update_base`], and a base whose update fails withheld alone, under why: it is written whole
+/// again next frame, owing the view nothing, and the other bases keep what they wrote. Whether
+/// the base stood.
+fn update_or_withhold(
+    windows: &mut Windows,
+    pool: &mut Pool<u32>,
+    window: &native::Element,
+    slot: SlotId,
+    given: BaseInputs<'_>,
+    resources: &dyn native_gui::Resources,
+    report: &mut CounterReport,
+) -> bool {
+    match update_base(windows, pool, window, slot, given, resources, report) {
+        Ok(stood) => stood,
+        Err(why) => {
+            windows.base_written.remove(&slot);
+            unknown_items(windows, IconSlot::Base(slot), &format!("port items are not placed: {why}"), Marked::EveryFrame);
+            *report
+                .navy_counter_gaps
+                .entry(format!("port items are not placed: {why}").into())
+                .or_default() += 1;
+            false
+        }
+    }
+}
+
+/// One admitted base this frame: written whole (its glyph, its port items and their grid)
+/// unless it stands ([`base_due`]). A base written with a decided roster that does not stand yet
+/// owes the view the next frame ([`Windows::owed`]). Whether it stood.
+fn update_base(
+    windows: &mut Windows,
+    pool: &mut Pool<u32>,
+    window: &native::Element,
+    slot: SlotId,
+    given: BaseInputs<'_>,
+    resources: &dyn native_gui::Resources,
+    report: &mut CounterReport,
+) -> Result<bool, String> {
+    let BaseInputs { province, glyph, scale, strategic, items, art, countries } = given;
+    let still = |instance: &Instance| !instance.written() && !instance.active();
+    let held = windows.base_written.get(&slot);
+    // The items its last decided roster put in its grid, its first ones up to those it left out:
+    // it can stand only given that roster again. An item recovering its transition is drawn once its
+    // movement ends, where the grid's finalization does not put it: the base is written through it
+    // and once after.
+    let in_grid = held.map_or(0, |written| {
+        written.items.as_ref().map_or(0, Vec::len).saturating_sub(written.overflow)
+    });
+    let quiet = pool.instance(slot).is_some_and(still)
+        && (0..in_grid).all(|index| {
+            let key = ItemKey { icon: IconSlot::Base(slot), pool: ItemPool::Port, index };
+            !runs_drawn(windows, &key)
+                && windows
+                    .items
+                    .get(&key)
+                    .is_none_or(|item| {
+                        !item.instance.written()
+                            && !(item.instance.transitioning()
+                                && windows.settling.contains_key(&Registered::Item(key)))
+                    })
+        });
+    // An undecided roster is written every frame: its items' parts and transitions stay unknown.
+    let same = quiet
+        && items.is_ok()
+        && held.is_some_and(|written| written.same(province, glyph, scale.to_bits(), strategic, items, art, countries));
+    let settled = match base_due(held, quiet, same) {
+        BaseDue::Stands { overflow } => {
+            viewer_foundation::map::redraws::note("naval.bases_kept", 1);
+            if overflow > 0 {
+                *report.navy_counter_gaps.entry(naval::PORT_GRID_FULL.into()).or_default() += overflow;
+            }
+            return Ok(true);
+        }
+        BaseDue::Write { settled } => settled,
+    };
+    windows.base_written.remove(&slot);
+    let instance = pool.get(slot).ok_or("an updated icon has no window")?;
+    let update_profile = viewer_foundation::profiling::span("dc_nu_base_update");
+    match glyph {
+        Some(glyph) => {
+            if let Err(why) = update_naval(instance, window, glyph, scale, strategic, resources) {
+                pool.refuse(slot, Unknown::Update, why.into());
+                return Ok(false);
+            }
+        }
+        None => {
+            let c = base_controls(window)?;
+            for control in [c.background, c.strategic, c.capacity] {
+                instance.hide(window, control)?;
+            }
+            // BaseUnknowns already counts why this hour has no decided glyph.
+        }
+    }
+    drop(update_profile);
+    let items_profile = viewer_foundation::profiling::span("dc_nu_base_items");
+    let overflow = base_items(windows, instance, window, slot, items, resources, report)?;
+    drop(items_profile);
+    pool.rewrote(slot, Rewrote::Update);
+    viewer_foundation::map::redraws::note("naval.bases_written", 1);
+    if !settled && items.is_ok() {
+        windows.owed.insert(slot);
+    }
+    windows.base_written.insert(
+        slot,
+        BaseWritten {
+            province,
+            glyph: glyph.copied(),
+            scale: scale.to_bits(),
+            strategic,
+            items: items.map(<[gui_windows::Update]>::to_vec).map_err(Clone::clone),
+            art,
+            countries: countries.cloned(),
+            settled,
+            overflow,
+        },
+    );
+    Ok(false)
 }
 
 /// Present retained result icons through scheduled provinces. Disabled passes
@@ -3087,7 +3277,7 @@ fn undecided_results(
         windows.diverged_results = Some(why.clone());
         match pool.slot_of(province) {
             Some(slot) => {
-                transition_unknown(windows, Registered::Icon(IconSlot::Result(slot)), why)
+                transition_unknown(windows, Registered::Icon(IconSlot::Result(slot)), why, Marked::EveryFrame)
             }
             None => {
                 report.unavailable_naval_results += 1;
@@ -3253,20 +3443,20 @@ fn base_items(
     items: Result<&[gui_windows::Update], &Cow<'static, str>>,
     resources: &dyn native_gui::Resources,
     report: &mut CounterReport,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     match items {
         Ok(items) => fill_ports(windows, instance, window, slot, items, resources, report),
         Err(why) => {
             let held = instance.take_held();
             reach_items(windows, IconSlot::Base(slot), &held)?;
-            unknown_items(windows, IconSlot::Base(slot), why);
-            Ok(())
+            unknown_items(windows, IconSlot::Base(slot), why, Marked::EveryFrame);
+            Ok(0)
         }
     }
 }
 
 /// Apply one admitted naval-base update. Its show call reaches the retained
-/// ship-grid items before their own updates.
+/// ship-grid items before their own updates. How many items its grid had no slot for.
 fn fill_ports(
     windows: &mut Windows,
     instance: &mut Instance,
@@ -3275,7 +3465,7 @@ fn fill_ports(
     items: &[gui_windows::Update],
     resources: &dyn native_gui::Resources,
     report: &mut CounterReport,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let (native, viewport) = windows.built.clone().ok_or("the windows are not built")?;
     let grid = window
         .find(native::Kind::Grid, "box_ships")
@@ -3289,6 +3479,7 @@ fn fill_ports(
         .and_then(|laid| laid.holders.iter().find(|holder| holder.path == grid.path));
     windows.grids.remove(&(icon, grid.path.clone()));
     let navy = native.navy();
+    let mut overflow = 0;
     for (index, update) in items.iter().enumerate() {
         let key = ItemKey {
             icon,
@@ -3302,9 +3493,11 @@ fn fill_ports(
                 .navy_counter_gaps
                 .entry(naval::PORT_GRID_FULL.into())
                 .or_default() += 1;
+            overflow += 1;
         }
     }
-    finalize(windows, icon, window, laid.as_ref(), viewport)
+    finalize(windows, icon, window, laid.as_ref(), viewport)?;
+    Ok(overflow)
 }
 
 /// A drawn grid item: its place in its holder's content and its layout.

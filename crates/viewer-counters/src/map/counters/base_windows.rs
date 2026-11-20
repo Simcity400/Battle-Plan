@@ -219,6 +219,18 @@ impl PreparedBases {
         }
     }
 
+    /// Its offers alone, for a layout kept across frames: each frame places them for its own
+    /// camera ([`Self::for_camera`]).
+    pub(super) fn forget_placed(&mut self) {
+        self.placed = Default::default();
+    }
+
+    /// How many offers it holds placed.
+    #[cfg(test)]
+    pub(super) fn placements(&self) -> usize {
+        self.placed.iter().map(Vec::len).sum()
+    }
+
     /// The site icon `id` of a site family removed.
     pub(super) fn remove_site(&mut self, family: Family, id: u32) {
         if let Some(at) = family.site() {

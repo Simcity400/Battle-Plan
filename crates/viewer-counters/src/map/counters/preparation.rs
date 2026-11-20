@@ -83,6 +83,7 @@ fn count(hit: bool) {
     plan_probe::record(|counts| {
         counts.semantic_plans += 1;
         counts.semantic_plan_hits += u64::from(hit);
+        counts.base_plan_hits += u64::from(hit);
     });
 }
 
@@ -192,15 +193,8 @@ impl Preparation {
         tables: &HourTables,
         out: &mut CounterFrame,
     ) -> io::Result<()> {
-        // Per-anchor free-view rules remain on the original path until separately proved.
-        if inputs.camera.free().is_some() {
-            #[cfg(test)]
-            count(false);
-            if let Some(newest) = self.waiting.take() {
-                self.layered.bases = Some(newest);
-            }
-            return bases(inputs, frame, tables, self.layered.bases.as_deref(), out);
-        }
+        // A free eye shows every kind ([`CounterInputs::shows`]), and nothing laid out reads its
+        // camera: each icon fades by its own distance on its quads, projected below.
         let defines = &inputs.content.defines;
         let rules = [
             defines.air_base_cutoff,
@@ -276,6 +270,9 @@ pub(super) mod plan_probe {
         pub semantic_plan_hits: u64,
         pub ordered_groups: u64,
         pub ordered_group_members_equal: u64,
+        /// Base-icon layouts kept, and land column plans with units kept.
+        pub base_plan_hits: u64,
+        pub column_plan_hits: u64,
         /// Air-base, rocket-site and gun-emplacement icons laid out.
         pub site_icons: u64,
         /// Land plates drawn into their sprites (not kept from an earlier draw).

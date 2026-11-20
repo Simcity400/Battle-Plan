@@ -1756,6 +1756,7 @@ impl BaseLayout {
         let mut layout = Self { rules, values, offers: Default::default(), report: Default::default(), marks: Marks::default(), by_state: None };
         let sites = layout.values.as_deref().unwrap_or(&tables.bases.values);
         lay_out_bases(inputs, frame, tables, sites, &mut layout.offers, &mut layout.report, &mut layout.marks)?;
+        layout.offers.forget_placed();
         Ok(layout)
     }
 
@@ -1827,6 +1828,7 @@ impl BaseLayout {
                 self.marks.icons[kind].insert(province, laid);
             }
         }
+        self.offers.forget_placed();
         Ok(())
     }
 }

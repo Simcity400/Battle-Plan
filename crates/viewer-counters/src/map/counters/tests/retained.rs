@@ -105,13 +105,32 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
                 80.,
                 80.,
             ];
-            for (at, height) in heights.into_iter().enumerate() {
+            // Then a free eye flies and turns over provinces 1 and 2, and jumps to look at 3.
+            use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+            use viewer_foundation::map::camera::{Free, Lens, Pose};
+            let flown = [
+                ([-20., 2.], 30., FRAC_PI_2, -0.4),
+                ([-18., 2.], 30., FRAC_PI_2, -0.4),
+                ([-16., 2.5], 30., FRAC_PI_2 + 0.1, -0.4),
+                ([-16., 2.5], 30., FRAC_PI_2 + 0.3, -0.5),
+                ([80., 80.], 40., FRAC_PI_4, -0.5),
+                ([82., 81.], 40., FRAC_PI_4 + 0.05, -0.5),
+            ];
+            let frames = heights
+                .into_iter()
+                .enumerate()
+                .map(|(at, height)| {
+                    let center = if at == 4 || at == 8 { [100., 100.] } else { [2. + at as f32 * 0.125, 2.] };
+                    (center, height, None)
+                })
+                .chain(flown.map(|(center, height, yaw, pitch)| (center, height, Some(Free::new(yaw, pitch, Lens::MAP)))));
+            let (mut free_bases, mut free_columns) = (0, 0);
+            for (at, (center, height, free)) in frames.enumerate() {
                 inputs.camera.height = height;
-                inputs.camera.center = if at == 4 || at == 8 {
-                    [100., 100.]
-                } else {
-                    [2. + at as f32 * 0.125, 2.]
-                };
+                inputs.camera.center = center;
+                if let Some(free) = free {
+                    inputs.camera.pose = Pose::Free(free);
+                }
                 inputs.selected = if (5..10).contains(&at) {
                     &selected
                 } else {
@@ -122,6 +141,10 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
                 });
                 let mut fresh = prepare_cached(&inputs, &tables).unwrap();
                 hits += counts.semantic_plan_hits;
+                if free.is_some() {
+                    free_bases += counts.base_plan_hits;
+                    free_columns += counts.column_plan_hits;
+                }
                 equal_groups += counts.ordered_group_members_equal;
                 assert_eq!(
                     cached.fixed.report, fresh.fixed.report,
@@ -160,6 +183,8 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
                 hits > 0,
                 "differential fixture must actually reach semantic hits"
             );
+            assert!(free_bases > 0, "a flying free eye keeps its base icons' layout");
+            assert!(free_columns > 0, "and a land column's plan");
             assert!(
                 equal_groups > 0,
                 "must hit a nonempty ordered column, not just empty bases"

@@ -1267,6 +1267,19 @@ fn the_counter_options_select_the_nato_frame_and_the_country_colour() {
             &fixture,
         );
         assert_eq!(hull_of(&again), (no_intel.clone(), frame, [34.0, 15.0]));
+        // A third identical write changes nothing more: a port base stands after two.
+        let thrice = layout_of(
+            &instance(
+                window,
+                &mission_item_setup(window),
+                &[&calls, &calls, &calls],
+                true,
+                &fixture,
+            ),
+            window,
+            &fixture,
+        );
+        assert_eq!(hull_of(&thrice), hull_of(&again));
     }
     // Resolved navy hulls retain the pictorial frame.
     let (calls, _) = production(window, &at_sea_flotilla(false), nato, &fixture);

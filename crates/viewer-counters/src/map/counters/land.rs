@@ -2177,19 +2177,26 @@ pub(super) fn land_counters<'a>(
     let admission = Admission::new(inputs.camera, inputs.viewport);
     let armies = inputs.visibility.unit_kinds == UnitKinds::All;
     if armies {
+        // Each stack is admitted once, by its province; a province's stacks stand together.
+        let mut last: Option<(u32, bool)> = None;
+        let admitted: Vec<_> = divisions
+            .iter()
+            .filter(|(key, _)| match last {
+                Some((province, admits)) if province == key.0 => admits,
+                _ => {
+                    let admits = admission.admits_province(&inputs.content.bounds, key.0);
+                    last = Some((key.0, admits));
+                    admits
+                }
+            })
+            .collect();
         // Routes made by key are made here, for the divisions the layout admits, before any read.
         land.movement.prepare(
-            divisions
-                .iter()
-                .filter(|(key, _)| admission.admits_province(&inputs.content.bounds, key.0))
-                .flat_map(|(_, units)| units.iter().map(|unit| unit.id)),
+            admitted.iter().flat_map(|(_, units)| units.iter().map(|unit| unit.id)),
             inputs.content,
             inputs.movement,
         );
-        for (&key, units) in divisions {
-            if !admission.admits_province(&inputs.content.bounds, key.0) {
-                continue;
-            }
+        for (&key, units) in admitted {
             let source = sources.entry(key).or_default();
             source.units.extend(units.iter().map(|unit| {
                 let unit = unit.clone();
@@ -2346,15 +2353,16 @@ pub(super) fn land_counters<'a>(
             let members_equal = before
                 .as_ref()
                 .is_some_and(|(before, _)| before.sources == key.sources);
-            // Per-anchor free-view operand dependencies are kept on the original path.
-            let hit = inputs.camera.free().is_none()
-                && before.as_ref().is_some_and(|(before, _)| *before == key);
+            // The program reads the camera only through the key's rule outcomes, each taken at
+            // the group's own distance for a free eye.
+            let hit = before.as_ref().is_some_and(|(before, _)| *before == key);
             #[cfg(test)]
             super::preparation::plan_probe::record(|counts| {
                 counts.ordered_groups += 1;
                 counts.ordered_group_members_equal += u64::from(members_equal);
                 counts.semantic_plans += 1;
                 counts.semantic_plan_hits += u64::from(hit);
+                counts.column_plan_hits += u64::from(hit && !units.is_empty());
             });
             viewer_foundation::map::redraws::note(if hit { "plans.kept" } else { "plans.made" }, 1);
             let program = if hit {

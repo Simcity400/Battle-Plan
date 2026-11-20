@@ -738,11 +738,16 @@ fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_no
             let rules = [true; 3];
             let (layout, counts) = plan_probe::collect(|| BaseLayout::new(rules, &inputs, &frame, &tables, Some(Arc::clone(&old))).unwrap());
             assert_eq!(counts.site_icons, 2 * u64::from(STATES), "a first layout lays out every air base and radar icon");
+            // A kept layout holds offers alone; each frame places them for its camera.
+            assert_eq!(layout.offers.placements(), 0);
+            assert!(layout.offers.for_camera(&inputs).placements() > 0, "the camera sees the icons");
             let mut layout = layout;
             for (values, what) in [(&one_base, "one base's wings"), (&one_province, "one province's controller"), (&one_radar, "one state's radar")] {
                 let ((), counts) = plan_probe::collect(|| layout.update(&inputs, &frame, &tables, Some(values)).unwrap());
                 assert_eq!(counts.site_icons, 1, "{what} lays out that base's icon alone");
+                assert_eq!(layout.offers.placements(), 0, "{what}: no placement is kept");
                 let whole = BaseLayout::new(rules, &inputs, &frame, &tables, Some(Arc::clone(values))).unwrap();
+                assert_eq!(layout.offers.for_camera(&inputs).placements(), whole.offers.for_camera(&inputs).placements(), "{what}");
                 assert!(layout.offers.offers().eq(whole.offers.offers()), "{what}: the offers are a whole layout's");
                 assert_eq!(layout.report, whole.report, "{what}: and so is the report");
                 assert!(layout.laid_from(Some(values)));

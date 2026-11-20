@@ -1,5 +1,424 @@
 use super::super::gui_windows::{BG_FRAME, FRAME_BTN, GRIDS, PROGRESS};
 
+/// A base written through one hour's countries takes the next hour's table when its flags are the
+/// same, so the frames after find it the same by pointer; other flags leave it as written.
+#[test]
+fn a_written_base_takes_a_new_countries_table_only_with_the_same_flags() {
+    let written = |countries: &Arc<Countries>| BaseWritten {
+        province: 7,
+        glyph: None,
+        scale: 0,
+        strategic: false,
+        items: Ok(Vec::new()),
+        art: 0,
+        countries: Some(Arc::clone(countries)),
+        settled: true,
+        overflow: 0,
+    };
+    let tagged = |tag: &str| Countries { tags: [(1, tag.to_owned())].into(), ..Countries::default() };
+    let held = Arc::new(tagged("GER"));
+    let same = Arc::new(tagged("GER"));
+    let other = Arc::new(tagged("ITA"));
+    let mut bases = vec![written(&held), written(&held)];
+    adopt_countries(bases.iter_mut(), Some(&other));
+    assert!(bases.iter().all(|base| Arc::ptr_eq(base.countries.as_ref().unwrap(), &held)));
+    assert!(!bases[0].same(7, None, 0, false, Ok(&[]), 0, Some(&other)));
+    adopt_countries(bases.iter_mut(), Some(&same));
+    assert!(bases.iter().all(|base| Arc::ptr_eq(base.countries.as_ref().unwrap(), &same)));
+    assert!(bases[1].same(7, None, 0, false, Ok(&[]), 0, Some(&same)));
+}
+
+/// A base stands only once written twice in a row with the same inputs, the second time quiet,
+/// and a standing base still counts the port items its grid has no slot for. The first write of
+/// a no-intel port item drops the frame written before its sprite, which the second sets; the
+/// items of a fading base take its opacity before the tick that ends the fade, which only the
+/// next write gives them.
+#[test]
+fn a_base_stands_once_written_twice_alike_and_keeps_counting_what_its_grid_left_out() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let written = |settled, overflow| BaseWritten {
+        province: 7,
+        glyph: None,
+        scale: 0,
+        strategic: false,
+        items: Ok(Vec::new()),
+        art: 0,
+        countries: None,
+        settled,
+        overflow,
+    };
+    // Written once, then given the same on a quiet window: written again, and only then standing.
+    assert_eq!(base_due(None, false, false), BaseDue::Write { settled: false });
+    assert_eq!(base_due(Some(&written(false, 0)), true, true), BaseDue::Write { settled: true });
+    assert_eq!(base_due(Some(&written(true, 2)), true, true), BaseDue::Stands { overflow: 2 });
+    // A fading window is not quiet, and other inputs are written: neither settles.
+    assert_eq!(base_due(Some(&written(true, 0)), false, false), BaseDue::Write { settled: false });
+    assert_eq!(base_due(Some(&written(true, 0)), true, false), BaseDue::Write { settled: false });
+
+    // A port grid of four slots takes four items: the fifth is left out, every write.
+    let gui = GUI.replace(
+        "max_slots_horizontal = 1 } } }",
+        "max_slots_horizontal = 1 add_horizontal = no max_slots_vertical = 4 } } }",
+    );
+    let mut view = View::with_gui(&gui);
+    let base = view.base(1);
+    let hulls: Vec<_> = (0..5).map(|frame| view.hull(frame)).collect();
+    assert_eq!(view.ports(base, &hulls), 1);
+}
+
+/// The frames a paused map paints: each one the base's update and the view's tick, the next only
+/// while the view asks for it. A port item switched to a sprite that drops the frame written
+/// before it shows that frame once the view stops asking.
+#[test]
+fn a_paused_map_paints_a_replaced_item_sprite_s_frame_before_it_stops() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut view = View::new();
+    let base = view.base(1);
+    let plain = [view.hull(2).unwrap()];
+    assert!(view.paint_until_settled(base, &plain) > 1);
+    // The frame written first, then the sprite: a replacement takes its own drawable's frame.
+    let mut writes = gui_windows::Writes::new(view.native.navy());
+    writes.frame(native::Kind::Icon, "type", 3);
+    writes.control(native::Kind::Icon, "type", |bound| {
+        bound.sprite = Some(b"GFX_tiny".to_vec());
+        bound.setter = native_gui::SpriteSetter::Icon;
+    });
+    let replaced = [writes.update()];
+    let once = {
+        let mut once = View::new();
+        let base = once.base(1);
+        once.paint_until_settled(base, &plain);
+        once.paint(base, &replaced);
+        once.port_items(base).0
+    };
+    assert_eq!(once.iter().map(|(frame, _)| *frame).collect::<Vec<_>>(), [0], "one write leaves the new drawable's frame");
+    assert!(view.paint_until_settled(base, &replaced) >= 2, "the view asks for the frame that writes it again");
+    assert_eq!(view.port_items(base).0.iter().map(|(frame, _)| *frame).collect::<Vec<_>>(), [2]);
+}
+
+/// A base fading in is written while it fades; the view keeps asking until a write made after
+/// the fade has ended gives its port items the grid's whole opacity.
+#[test]
+fn a_paused_map_paints_port_items_opaque_once_their_base_has_faded_in() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut view = View::new();
+    let base = view.base(1);
+    let hulls = [view.hull(1).unwrap(), view.hull(2).unwrap()];
+    let painted = view.paint_until_settled(base, &hulls);
+    assert!(painted > 1, "the fade takes more than a frame: {painted}");
+    let window = view.windows.bases.as_ref().unwrap().instance(base).unwrap();
+    assert_eq!(window.opacity(), 1.0);
+    for index in 0..2 {
+        let key = ItemKey { icon: IconSlot::Base(base), pool: ItemPool::Port, index };
+        assert_eq!(view.windows.items[&key].instance.opacity(), 1.0, "item {index}");
+    }
+}
+
+/// A port item whose own show movement outlasts its base's fade stands where a grid finalized
+/// every frame puts it, frame by frame: its base is written while any item under it moves. One
+/// withheld while a roster was undecided is written through its movement too, and first drawn
+/// where that grid puts it. One withheld by a part no frame can learn, not by its transition, asks
+/// for no frame while it moves.
+#[test]
+fn a_port_item_moving_after_its_base_settles_stays_where_the_grid_puts_it() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let gui = GUI.replace(
+        r#"containerWindowType = { name = "unit_counter_navy" size = { width = 20 height = 10 }"#,
+        r#"containerWindowType = { name = "unit_counter_navy" size = { width = 20 height = 10 }
+        show_position = { x = 40 y = 0 } show_animation_type = linear show_animation_time = 1000"#,
+    );
+    assert_ne!(gui, GUI);
+    let (mut kept, mut every) = (View::with_gui(&gui), View::with_gui(&gui));
+    let (base, reference) = (kept.base(1), every.base(1));
+    let hulls = [kept.hull(1)];
+    let written = [hulls[0].clone().unwrap()];
+    let key = |slot| ItemKey { icon: IconSlot::Base(slot), pool: ItemPool::Port, index: 0 };
+    for frame in 0..120 {
+        kept.paint(base, &written);
+        every.ports(reference, &hulls);
+        every.tick(1.0 / 60.0);
+        assert_eq!(
+            kept.windows.items[&key(base)].instance.position(),
+            every.windows.items[&key(reference)].instance.position(),
+            "frame {frame}"
+        );
+    }
+
+    let (mut kept, mut every) = (View::with_gui(&gui), View::with_gui(&gui));
+    let (base, reference) = (kept.base(1), every.base(1));
+    let hulls = [kept.full_hull(1)];
+    let written = [hulls[0].clone().unwrap()];
+    let why: Cow<'static, str> = "the roster is not recorded".into();
+    let mut frame = 0;
+    loop {
+        let roster: Result<&[gui_windows::Update], _> = if (1..20).contains(&frame) { Err(&why) } else { Ok(&written) };
+        kept.paint_bases(&[(base, roster)]);
+        every.ports(reference, &hulls);
+        every.tick(1.0 / 60.0);
+        let ship = &kept.windows.items[&key(base)];
+        if frame >= 20 && ship.instance.drawn() && kept.windows.items_withheld.why(&key(base)).is_none() {
+            assert_eq!(
+                ship.instance.position(),
+                every.windows.items[&key(reference)].instance.position(),
+                "first drawn at frame {frame}"
+            );
+            break;
+        }
+        frame += 1;
+        assert!(frame < 600, "the ship is drawn again");
+    }
+
+    let mut view = View::with_gui(&gui);
+    let base = view.base(1);
+    let mut flagless = view.full_hull(1).unwrap();
+    flagless.unknown.push((gui_windows::FLAG, "the Ships census is incomplete".into()));
+    let roster = [flagless];
+    let mut painted = 0;
+    while view.paint(base, &roster) {
+        painted += 1;
+        assert!(painted < 600, "a static map stops asking for frames");
+    }
+    let ship = &view.windows.items[&key(base)];
+    assert!(view.windows.items_withheld.why(&key(base)).is_some(), "the flag stays unknown");
+    assert!(ship.instance.transitioning(), "frames stop while the ship still moves ({painted} painted)");
+}
+
+
+/// A base whose roster turns undecided keeps the port items it held, and stands no frame while
+/// its roster is undecided, here while one of those items still moves: its items' parts and
+/// transitions stay unknown until a decided roster writes them.
+#[test]
+fn an_undecided_roster_never_lets_its_base_stand() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let gui = GUI.replace(
+        r#"containerWindowType = { name = "unit_counter_navy" size = { width = 20 height = 10 }"#,
+        r#"containerWindowType = { name = "unit_counter_navy" size = { width = 20 height = 10 }
+        show_position = { x = 40 y = 0 } show_animation_type = linear show_animation_time = 1000"#,
+    );
+    let mut view = View::with_gui(&gui);
+    let base = view.base(1);
+    let hulls = [view.hull(1).unwrap()];
+    view.paint(base, &hulls);
+    let why: Cow<'static, str> = "the roster is not recorded".into();
+    for frame in 0..40 {
+        let (stood, ..) = view.paint_bases(&[(base, Err(&why))]);
+        assert_eq!(stood, [false], "frame {frame}");
+    }
+    let key = ItemKey { icon: IconSlot::Base(base), pool: ItemPool::Port, index: 0 };
+    assert!(view.windows.items[&key].instance.active(), "the retained item still moves");
+}
+
+/// A base whose update fails the same way every frame is withheld alone, under why, every
+/// frame, and owes the view no frame; the other base keeps what it wrote and stands, so a static
+/// map stops asking for frames.
+#[test]
+fn a_base_that_keeps_failing_lets_a_static_map_stop_painting() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut view = View::new();
+    let base = view.base(1);
+    let gone = view.base(2);
+    // The second base's window is let go of: its update finds none, every frame.
+    let window = view.native.naval_base().unwrap();
+    view.windows.bases.as_mut().unwrap().erase(window, &2).unwrap();
+    let hulls = [view.hull(1).unwrap()];
+    let mut painted = 0;
+    loop {
+        painted += 1;
+        let (_, asks, report) = view.paint_bases(&[(base, Ok(&hulls)), (gone, Ok(&hulls))]);
+        assert_eq!(
+            report.navy_counter_gaps.get("port items are not placed: an updated icon has no window"),
+            Some(&1),
+            "frame {painted}"
+        );
+        if !asks {
+            break;
+        }
+        assert!(painted < 60, "a static map stops asking for frames");
+    }
+    let (stood, ..) = view.paint_bases(&[(base, Ok(&hulls)), (gone, Ok(&hulls))]);
+    assert_eq!(stood, [true, false], "the working base stands");
+}
+
+/// A base that fails every frame after it made a port item with a second-long fade keeps that
+/// item withheld while the failure lasts, and a static map stops asking for frames: the item's
+/// wait starts only once its updates resume.
+#[test]
+fn a_base_failing_after_it_made_a_fading_item_lets_a_static_map_stop_painting() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let gui = GUI.replace(
+        r#"containerWindowType = { name = "unit_counter_navy" size = { width = 20 height = 10 }"#,
+        r#"containerWindowType = { name = "unit_counter_navy" size = { width = 20 height = 10 }
+        fade_type = linear fade_time = 1000"#,
+    );
+    assert_ne!(gui, GUI);
+    let mut view = View::with_gui(&gui);
+    let base = view.base(1);
+    let hulls = [view.hull(1).unwrap()];
+    for _ in 0..5 {
+        view.paint(base, &hulls);
+    }
+    // The base's window is let go of: its update finds none, every frame.
+    let window = view.native.naval_base().unwrap();
+    view.windows.bases.as_mut().unwrap().erase(window, &1).unwrap();
+    let item = ItemKey { icon: IconSlot::Base(base), pool: ItemPool::Port, index: 0 };
+    for painted in 1.. {
+        let (_, asks, report) = view.paint_bases(&[(base, Ok(&hulls))]);
+        assert_eq!(
+            report.navy_counter_gaps.get("port items are not placed: an updated icon has no window"),
+            Some(&1),
+            "frame {painted}: the failure is named every frame"
+        );
+        if !asks {
+            break;
+        }
+        assert!(painted < 200, "a static map stops asking for frames");
+    }
+    assert!(view.windows.items_withheld.why(&item).is_some(), "the item stays withheld");
+}
+
+/// A base whose decided roster empties keeps no check on the items it no longer writes: one left
+/// behind with a looping sprite neither keeps the base written nor keeps a static map painting.
+#[test]
+fn an_emptied_roster_with_a_looping_item_left_behind_lets_a_static_map_stop_painting() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut view = View::new();
+    view.fixture.animated.insert(b"GFX_hull".to_vec(), 0.125);
+    let base = view.base(1);
+    let hulls = [view.hull(1).unwrap()];
+    for _ in 0..10 {
+        view.paint(base, &hulls);
+    }
+    let item = ItemKey { icon: IconSlot::Base(base), pool: ItemPool::Port, index: 0 };
+    assert!(view.windows.items[&item].instance.active(), "the item's sprite loops");
+    let painted = view.paint_until_settled(base, &[]);
+    assert!(painted < 60, "a static map stops asking for frames: {painted}");
+    let (stood, ..) = view.paint_bases(&[(base, Ok(&[]))]);
+    assert_eq!(stood, [true], "the emptied base stands");
+}
+
+/// A slot an update the view cannot decide marked at one frame, and that an allocation marks at
+/// the next, waits out its transition on frames the view asks for: the allocation's mark is the
+/// frame's own event, which no later frame repeats. Its window's only transition is a hidden
+/// child's, so it is idle all the while.
+#[test]
+fn an_allocation_mark_after_an_undecided_mark_gets_its_recovery_frames() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let gui = GUI.replace(
+        r#"containerWindowType = { name = "naval_base_mapicon" size = { width = 32 height = 32 }
+        fade_type = linear fade_time = 100"#,
+        r#"containerWindowType = { name = "naval_base_mapicon" size = { width = 32 height = 32 }
+        containerWindowType = { name = "later" size = { width = 4 height = 4 } hide = yes
+            fade_type = linear fade_time = 250 }"#,
+    );
+    assert_ne!(gui, GUI);
+    let mut view = View::with_gui(&gui);
+    let base = view.base(1);
+    let hulls = [view.hull(1).unwrap()];
+    view.paint_until_settled(base, &hulls);
+    let pool = view.windows.bases.as_ref().unwrap();
+    let window = pool.instance(base).unwrap();
+    assert!(window.longest_transition(view.native.naval_base().unwrap()).unwrap() > 0.0);
+    assert!(!window.transitioning());
+    let icon = Registered::Icon(IconSlot::Base(base));
+    transition_unknown(&mut view.windows, icon, "an undecided update", Marked::EveryFrame);
+    view.paint(base, &hulls);
+    transition_unknown(&mut view.windows, icon, "a new owner in a reused slot", Marked::Once);
+    view.paint_until_settled(base, &hulls);
+    assert_eq!(view.windows.bases.as_ref().unwrap().withheld(base), None, "known again");
+}
+
+/// A full port grid leaves out an item whose update shows a looping sprite: the item draws
+/// nowhere, so neither its base nor a static map keeps asking for frames over it.
+#[test]
+fn a_looping_item_a_full_grid_left_out_lets_a_static_map_stop_painting() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let gui = GUI.replace(
+        "max_slots_horizontal = 1 } } }",
+        "max_slots_horizontal = 1 add_horizontal = no max_slots_vertical = 4 } } }",
+    );
+    let mut view = View::with_gui(&gui);
+    view.fixture.animated.insert(b"GFX_tiny".to_vec(), 0.125);
+    let base = view.base(1);
+    let mut items: Vec<_> = (0..4).map(|frame| view.hull(frame).unwrap()).collect();
+    let mut writes = gui_windows::Writes::new(view.native.navy());
+    writes.show(native::Kind::Icon, "type");
+    writes.control(native::Kind::Icon, "type", |bound| {
+        bound.sprite = Some(b"GFX_tiny".to_vec());
+        bound.setter = native_gui::SpriteSetter::Icon;
+    });
+    items.push(writes.update());
+    let painted = view.paint_until_settled(base, &items);
+    let left_out = ItemKey { icon: IconSlot::Base(base), pool: ItemPool::Port, index: 4 };
+    assert!(view.windows.items[&left_out].instance.active(), "the left-out item's sprite loops");
+    assert!(painted < 60, "a static map stops asking for frames: {painted}");
+    let (stood, _, report) = view.paint_bases(&[(base, Ok(&items))]);
+    assert_eq!(stood, [true]);
+    assert_eq!(report.navy_counter_gaps.get(naval::PORT_GRID_FULL), Some(&1), "the left-out item is still counted");
+}
+
+/// A base that stood over a roster its grid could not hold whole is written again when the roster
+/// empties or turns undecided: what its grid held is that roster's own, its first items up to
+/// those it left out.
+#[test]
+fn a_base_leaving_an_overflowing_roster_reads_what_that_roster_put_in_its_grid() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let gui = GUI.replace(
+        "max_slots_horizontal = 1 } } }",
+        "max_slots_horizontal = 1 add_horizontal = no max_slots_vertical = 4 } } }",
+    );
+    let why: Cow<'static, str> = "the roster is not recorded".into();
+    for undecided in [false, true] {
+        let mut view = View::with_gui(&gui);
+        let base = view.base(1);
+        let ships: Vec<_> = (0..5).map(|frame| view.hull(frame % 3).unwrap()).collect();
+        view.paint_until_settled(base, &ships);
+        let (stood, ..) = view.paint_bases(&[(base, Ok(&ships))]);
+        assert_eq!(stood, [true], "five ships over four slots stand");
+        let next: Result<&[gui_windows::Update], _> = if undecided { Err(&why) } else { Ok(&[]) };
+        let (stood, ..) = view.paint_bases(&[(base, next)]);
+        assert_eq!(stood, [false], "undecided {undecided}: written again");
+    }
+}
+
+/// A port roster turns undecided while a ship its grid holds shows a looping sprite: the ship's
+/// draw is withheld, so it neither keeps its base written nor keeps a static map painting.
+#[test]
+fn a_withheld_looping_ship_lets_a_static_map_stop_painting() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut view = View::new();
+    view.fixture.animated.insert(b"GFX_hull".to_vec(), 0.125);
+    let base = view.base(1);
+    let hulls = [view.hull(1).unwrap()];
+    for _ in 0..10 {
+        view.paint(base, &hulls);
+    }
+    let ship = ItemKey { icon: IconSlot::Base(base), pool: ItemPool::Port, index: 0 };
+    assert!(view.windows.items[&ship].instance.active(), "the ship's sprite loops");
+    let why: Cow<'static, str> = "the roster is not recorded".into();
+    let mut painted = 0;
+    loop {
+        painted += 1;
+        let (_, asks, _) = view.paint_bases(&[(base, Err(&why))]);
+        if !asks {
+            break;
+        }
+        assert!(painted < 60, "a static map stops asking for frames");
+    }
+    assert!(view.windows.items_withheld.why(&ship).is_some(), "the ship's draw is withheld");
+}
+
 /// The naval windows' own admissions (combats, bases, results), not the pools': an icon kept off
 /// screen asks for frames only while its province is dirty out of view; an icon admitted on screen
 /// never asks by admission.
@@ -380,8 +799,8 @@ impl View {
     }
 
     /// The base in `slot` updated with this hour's port `items`: a gap is an item whose
-    /// plate colour the hour lacks, every other write made.
-    fn ports(&mut self, slot: SlotId, items: &[Update]) {
+    /// plate colour the hour lacks, every other write made. How many its grid left out.
+    fn ports(&mut self, slot: SlotId, items: &[Update]) -> usize {
         let base = self.native.naval_base().unwrap();
         let items: Vec<gui_windows::Update> = items
             .iter()
@@ -396,7 +815,7 @@ impl View {
         let mut pool = self.windows.bases.take().unwrap();
         let instance = pool.get(slot).unwrap();
         let mut report = CounterReport::default();
-        fill_ports(
+        let left_out = fill_ports(
             &mut self.windows,
             instance,
             base,
@@ -407,6 +826,8 @@ impl View {
         )
         .unwrap();
         self.windows.bases = Some(pool);
+        assert_eq!(report.navy_counter_gaps.get(naval::PORT_GRID_FULL).copied().unwrap_or(0), left_out);
+        left_out
     }
 
     /// The combat icon in `slot` updated with `update`, and its grids refilled with `fills`
@@ -427,6 +848,51 @@ impl View {
         )
         .unwrap();
         self.windows.combats = Some(pool);
+    }
+
+    /// One painted frame: the base in `slot` updated with port `items` as a presented frame updates
+    /// an admitted base ([`update_base`]), then the view's tick. Whether the view asks for the
+    /// next frame.
+    fn paint(&mut self, slot: SlotId, items: &[gui_windows::Update]) -> bool {
+        self.paint_bases(&[(slot, Ok(items))]).1
+    }
+
+    /// One painted frame of `bases`, each with its port roster, updated as a presented frame
+    /// updates its admitted bases ([`update_or_withhold`]), then the view's tick: which stood,
+    /// whether the view asks for the next frame, and what the updates counted.
+    fn paint_bases(
+        &mut self,
+        bases: &[(SlotId, Result<&[gui_windows::Update], &Cow<'static, str>>)],
+    ) -> (Vec<bool>, bool, CounterReport) {
+        let mut pool = self.windows.bases.take().unwrap();
+        let mut report = CounterReport::default();
+        let stood = bases
+            .iter()
+            .map(|&(slot, items)| {
+                update_or_withhold(
+                    &mut self.windows,
+                    &mut pool,
+                    self.native.naval_base().unwrap(),
+                    slot,
+                    BaseInputs { province: 1, glyph: None, scale: 0.0, strategic: false, items, art: 0, countries: None },
+                    &self.fixture,
+                    &mut report,
+                )
+            })
+            .collect();
+        self.windows.bases = Some(pool);
+        self.tick(1.0 / 60.0);
+        (stood, self.windows.visible, report)
+    }
+
+    /// Frames painted while the view asks for them, at most 600: how many.
+    fn paint_until_settled(&mut self, slot: SlotId, items: &[gui_windows::Update]) -> usize {
+        for painted in 1..=600 {
+            if !self.paint(slot, items) {
+                return painted;
+            }
+        }
+        panic!("the view never stopped asking for frames");
     }
 
     fn tick(&mut self, dt: f32) {
@@ -1955,6 +2421,7 @@ fn a_window_whose_tick_fails_has_unknown_transitions() {
         &mut view.windows,
         registered,
         "its window does not tick: a test failure",
+        Marked::EveryFrame,
     );
     view.tick(0.0);
     let why = view.windows.combats.as_ref().unwrap().withheld(combat);
@@ -2367,7 +2834,7 @@ fn a_late_convoy_addition_inherits_the_unknown_transition() {
         1,
     ));
     let combat = view.combat((1, 9));
-    unknown_items(&mut view.windows, IconSlot::Combat(combat), "a test update");
+    unknown_items(&mut view.windows, IconSlot::Combat(combat), "a test update", Marked::EveryFrame);
     let fills = view.fills(Vec::new(), vec![view.convoy(1)]);
     view.update(combat, rotation(), Some(&fills));
     let key = *view

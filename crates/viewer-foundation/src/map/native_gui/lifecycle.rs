@@ -634,7 +634,7 @@ pub struct Instance {
     settle: bool,
     /// Ticked since it was made: a new instance is pending its first (`dt = 0`) tick.
     ticked: bool,
-    /// A call changed it since its last tick's draws.
+    /// A call other than a move changed it since its last tick's draws.
     written: bool,
     /// The frame being ticked found it idle at its clocks ([`Self::idle`]).
     idle_tick: bool,
@@ -1555,7 +1555,9 @@ impl Instance {
 
     /// Sets the window's top-left to `point` and stores the point in its position coordinates.
     /// Percentage axes round half away from zero after conversion against the parent extent.
-    /// Evaluation with bounds supplies the movement's starting point.
+    /// Evaluation with bounds supplies the movement's starting point. A move alone leaves the
+    /// window [`Self::idle`] and [`Self::active`] as it was: no clock, transition or draw record
+    /// of a tick reads where it stands.
     pub fn set_position(
         &mut self,
         root: &Element,
@@ -1563,12 +1565,8 @@ impl Instance {
         point: [i32; 2],
     ) -> Result<(), String> {
         let index = self.index(root, element)?;
-        let Some(window) = self.nodes[index].window else {
+        if self.nodes[index].window.is_none() {
             return Err(format!("{} is not a containerWindowType", element.path));
-        };
-        if window.position != point {
-            self.written = true;
-            self.active_known.set(None);
         }
         self.window_position(element, index, point);
         Ok(())
@@ -3440,15 +3438,15 @@ impl Instance {
         false
     }
 
-    /// Whether a call changed it since its last tick.
+    /// Whether a call other than a move ([`Self::set_position`]) changed it since its last tick.
     pub fn written(&self) -> bool {
         self.written
     }
 
     /// Whether a tick would change nothing of it but its clock's `Time`, which nothing it draws
-    /// reads while it is settled ([`super::Shading::changing`]): it was ticked, no call changed it
-    /// since, and it does not change on its own ([`Self::active`]). Its tick then only stamps
-    /// the frame's clock.
+    /// reads while it is settled ([`super::Shading::changing`]): it was ticked, no call but a move
+    /// changed it since, and it does not change on its own ([`Self::active`]). Its tick then only
+    /// stamps the frame's clock.
     pub fn idle(&self) -> bool {
         self.ticked && !self.written && !self.active()
     }
@@ -5390,12 +5388,12 @@ mod clock_pruning_tests {
             instance.gui_show(root, root).unwrap();
             instance.set_frame(root, icon, 2).unwrap();
         }
-        // (the window's position, idle before the frame's tick)
+        // (the window's position, idle before the frame's tick): a move alone keeps it idle.
         let frames = [
             ([10, 20], false),
             ([10, 20], true),
             ([10, 20], true),
-            ([30, 20], false),
+            ([30, 20], true),
             ([30, 20], true),
         ];
         for (frame, (position, expected)) in frames.into_iter().enumerate() {
