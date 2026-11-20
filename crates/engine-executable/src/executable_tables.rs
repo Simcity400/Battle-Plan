@@ -2,6 +2,7 @@
 
 pub mod auxiliary;
 pub mod commands;
+pub mod folding;
 pub mod keywords;
 pub mod numeric;
 pub mod pe;
@@ -134,6 +135,7 @@ pub struct ExecutableTables {
     pub variables: Verified<variables::VariableTables>,
     pub numeric: Verified<numeric::NumericTables>,
     pub commands: Verified<commands::CommandTables>,
+    pub folding: Verified<folding::FoldingTable>,
 }
 
 impl ExecutableTables {
@@ -160,6 +162,7 @@ impl ExecutableTables {
             self.variables.as_ref().err(),
             self.numeric.as_ref().err(),
             self.commands.as_ref().err(),
+            self.folding.as_ref().err(),
         ]
         .into_iter()
         .flatten()
@@ -171,7 +174,7 @@ impl ExecutableTables {
     }
 
     /// Each table's build-independent content digest, or why it is withheld.
-    pub fn content_digests(&self) -> [(&'static str, Verified<[u8; 32]>); 6] {
+    pub fn content_digests(&self) -> [(&'static str, Verified<[u8; 32]>); 7] {
         fn digest<T>(table: &Verified<T>, of: fn(&T) -> [u8; 32]) -> Verified<[u8; 32]> {
             table.as_ref().map(of).map_err(Clone::clone)
         }
@@ -182,6 +185,7 @@ impl ExecutableTables {
             (VARIABLES, digest(&self.variables, variables::VariableTables::content_digest)),
             (NUMERIC, digest(&self.numeric, numeric::NumericTables::content_digest)),
             (COMMANDS, digest(&self.commands, commands::CommandTables::content_digest)),
+            (FOLDING, digest(&self.folding, folding::FoldingTable::content_digest)),
         ]
     }
 
@@ -248,6 +252,7 @@ const AUXILIARY: &str = "equipment, strategy and rule tables";
 const VARIABLES: &str = "built-in variable names";
 const NUMERIC: &str = "numeric property table";
 const COMMANDS: &str = "player command table";
+const FOLDING: &str = "diacritic folding table";
 
 /// Decodes every table from one executable; tables without a shared input run in parallel.
 pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> ExecutableTables {
@@ -263,6 +268,7 @@ pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> 
             variables: table(VARIABLES, || variables::VariableTables::decode(game_dir)),
             numeric: Err(withheld.requires(NUMERIC)),
             commands: Err(withheld.requires(COMMANDS)),
+            folding: Err(withheld.requires(FOLDING)),
         };
     };
     std::thread::scope(|scope| {
@@ -270,6 +276,7 @@ pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> 
             scope.spawn(|| table(VARIABLES, || variables::VariableTables::decode(game_dir)));
         let commands = scope.spawn(|| table(COMMANDS, || commands::CommandTables::decode(image)));
         let numeric = scope.spawn(|| table(NUMERIC, || numeric::NumericTables::decode(image)));
+        let folding = scope.spawn(|| table(FOLDING, || folding::FoldingTable::decode(image)));
         let version = build::version_banner(&image.read_only_data().collect::<Vec<_>>());
         let keywords = table(KEYWORDS, || keywords::KeywordTables::decode(image));
         let (registries, auxiliary) = match &keywords {
@@ -311,6 +318,7 @@ pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> 
             variables: joined(VARIABLES, variables),
             numeric: joined(NUMERIC, numeric),
             commands: joined(COMMANDS, commands),
+            folding: joined(FOLDING, folding),
         }
     })
 }
@@ -366,6 +374,7 @@ fn unscoped() -> Tables {
             variables: Err(withheld(VARIABLES)),
             numeric: Err(withheld(NUMERIC)),
             commands: Err(withheld(COMMANDS)),
+            folding: Err(withheld(FOLDING)),
         }
     })
 }
@@ -469,6 +478,11 @@ pub fn numeric() -> io::Result<&'static numeric::NumericTables> {
 
 pub fn commands() -> io::Result<&'static commands::CommandTables> {
     get().commands.as_ref().map_err(io::Error::from)
+}
+
+/// The find box's code point to ASCII character folding, or why it is withheld.
+pub fn folding() -> io::Result<&'static folding::FoldingTable> {
+    get().folding.as_ref().map_err(io::Error::from)
 }
 
 /// Explicit installation opt-in for dependent crate tests, which need every table.

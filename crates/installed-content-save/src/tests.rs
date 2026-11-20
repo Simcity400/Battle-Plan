@@ -428,11 +428,19 @@ fn strategic_locations_read_from_states_and_provinces() {
         [b"defensive_chokepoint".to_vec(), b"natural_harbor".to_vec()]
     );
     assert!(saved.provinces[&2].strategic_locations.is_empty());
+    let saved = parse(text(r#"contested_owners={ "FIN" "SOV" }"#, "").as_bytes()).unwrap();
+    assert_eq!(
+        saved.states[&4].contested_owners,
+        [b"FIN".to_vec(), b"SOV".to_vec()]
+    );
+    assert!(saved.states[&5].contested_owners.is_empty());
     for (state, province) in [
         ("strategic_region_data={ { a 1 b } }", ""),
         ("strategic_region_data={ { a=1 } }", ""),
         ("strategic_region_data={ x={ a 1 } }", ""),
         ("", "strategic_province_location={ a=b }"),
+        ("contested_owners={ owner=FIN }", ""),
+        ("contested_owners=FIN", ""),
     ] {
         assert!(
             parse(text(state, province).as_bytes()).is_err(),
@@ -630,6 +638,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
             population: None,
             category: None,
             strategic_locations: Vec::new(),
+            contested_owners: Vec::new(),
         },
     );
     assert!(
@@ -756,8 +765,24 @@ fn unit_saved_target_and_full_path_preserve_order_and_omission() {
             "support_attack=1 support_attack=2",
             "full_path={x=9}",
             "full_path=no",
+            "commandlist={ {} }",
+            "commandlist=yes",
         ] {
             assert!(parse_unit(fields).is_err(), "{kind}: {fields}");
+        }
+        // One keyed entry per queued order; the writer omits an empty list.
+        for (fields, queued) in [
+            ("commandlist={ move_order={ province=7 } attack_order={} }", 2),
+            ("", 0),
+        ] {
+            let save = parse_unit(fields).unwrap();
+            let id = (1_u64 << 32) | 51;
+            let actual = if kind == "division" {
+                save.divisions[&id].presentation.queued_actions
+            } else {
+                save.railway_guns[&id].queued_actions
+            };
+            assert_eq!(actual, queued, "{kind}: {fields}");
         }
     }
 }
@@ -1323,11 +1348,18 @@ faction={id={id=3 type=88} icon="" pings={ }}"#,
         faction.theatres,
         [
             FactionTheatre {
+                name: Some(b"A".to_vec()),
+                tag: Some(b"SOV".to_vec()),
+                commander: Some((844 << 32) | 4713),
                 regions: vec![1, 5, u32::MAX],
                 countries: vec![b"SIK".to_vec(), b"AUS".to_vec()],
                 hidden: vec![b"GER".to_vec()],
             },
-            FactionTheatre::default(),
+            FactionTheatre {
+                name: Some(b"B".to_vec()),
+                tag: Some(b"SOV".to_vec()),
+                ..FactionTheatre::default()
+            },
         ]
     );
     let empty = &save.factions[&((3_u64 << 32) | 88)];
@@ -1337,6 +1369,8 @@ faction={id={id=3 type=88} icon="" pings={ }}"#,
         "faction={id={id=2 type=88} pings={ other={} }}",
         "faction={id={id=2 type=88} pings={ regions={ key={} } }}",
         "faction={id={id=2 type=88} pings={ regions={ { hidden={ a=b } } } }}",
+        "faction={id={id=2 type=88} pings={ regions={ { commander={ id=0 type=0 } } } }}",
+        "faction={id={id=2 type=88} pings={ regions={ { name=\"A\" name=\"B\" } } }}",
     ] {
         assert!(diplomacy_save("", bad).is_err(), "{bad}");
     }

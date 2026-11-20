@@ -52,6 +52,8 @@ pub struct RailwayGun {
     pub combats: Vec<u64>,
     /// Serialized per-viewer simulation intel triples, in stored order.
     pub country_intel: Vec<IntelEntry>,
+    /// The entries of `commandlist`, the unit writer's queued order list ([`queued_actions`]).
+    pub queued_actions: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,6 +123,8 @@ pub struct DivisionPresentation {
     /// The army's name-group member is written under `division_name`.
     pub division_name: Option<DivisionName>,
     pub acclimatization: Option<Acclimatization>,
+    /// The entries of `commandlist`, the unit writer's queued order list ([`queued_actions`]).
+    pub queued_actions: usize,
 }
 
 /// One saved `division_name` block. The writer emits `type`
@@ -568,6 +572,7 @@ pub(super) fn parse_railway_gun(roster_owner: &[u8], items: &[Item]) -> io::Resu
         strength: Decimal::parse(&required_bytes(items, b"strength")?)?,
         combats,
         country_intel: country_intel(items)?,
+        queued_actions: queued_actions(items)?,
     })
 }
 
@@ -667,6 +672,7 @@ pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<
                 .map(|value| division_name(block(value)?))
                 .transpose()?,
             acclimatization: acclimatization(items)?,
+            queued_actions: queued_actions(items)?,
         },
     })
 }
@@ -682,6 +688,19 @@ pub(super) fn division_name(items: &[Item]) -> io::Result<DivisionName> {
         custom: bytes(items, b"override")?,
         programmatic: flag(b"override_set_programmatically")?,
     })
+}
+
+/// The unit writer emits `commandlist` only for a nonzero count, one entry keyed by each queued
+/// order's type, so absence is zero.
+fn queued_actions(items: &[Item]) -> io::Result<usize> {
+    let Some(value) = field(items, b"commandlist")? else {
+        return Ok(0);
+    };
+    let entries = block(value)?;
+    if entries.iter().any(|entry| entry.key.is_none()) {
+        return Err(invalid("queued order entry lacks its type key"));
+    }
+    Ok(entries.len())
 }
 
 fn flag(items: &[Item], key: &[u8]) -> io::Result<bool> {

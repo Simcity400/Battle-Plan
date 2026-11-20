@@ -424,8 +424,8 @@ pub struct RailLocation {
     pub info: usize,
     /// The info's building status, authenticated as its province's (`cprovince::BUILDING_STATUS`).
     pub building_status: usize,
-    /// The info's vtable, definition and status.
-    pub identity: [u8; 24],
+    /// The info's vtable, definition, status and building pointer.
+    pub identity: [u8; INFO_BYTES],
     /// The province table this walk authenticates far endpoints against.
     pub provinces: Array,
     /// The cooldown, when it copied.
@@ -823,7 +823,7 @@ fn walk_inner(
         let mut slots = [0_u8; PROVINCE_BATCH * PROVINCE_INFO_STRIDE];
         let mut ids = [0_u32; PROVINCE_BATCH];
         let mut infos = [0_usize; PROVINCE_BATCH];
-        let mut identity = [0_u8; PROVINCE_BATCH * 24];
+        let mut identity = [0_u8; PROVINCE_BATCH * INFO_BYTES];
         let mut pairs_headers = [0_u8; PROVINCE_BATCH * 16];
         let mut pair_counts = [0_u8; PROVINCE_BATCH * 4];
         let mut cooldowns = [0_u8; PROVINCE_BATCH * 4];
@@ -906,7 +906,7 @@ fn walk_inner(
             let info_copied = memory.copy_records(
                 RecordSources::Pointers(&infos[..live]),
                 &INFO_LAYOUT,
-                &mut identity[..live * 24],
+                &mut identity[..live * INFO_BYTES],
             );
             // The signed pair count is consumed independently of pointer/capacity.
             // Read it once and reuse its raw bytes in the edge-array header.
@@ -933,7 +933,7 @@ fn walk_inner(
                 if info_copied <= entry {
                     return Err("rail info identity unreadable");
                 }
-                let header = &identity[entry * 24..entry * 24 + 24];
+                let header = &identity[entry * INFO_BYTES..(entry + 1) * INFO_BYTES];
                 if u64::from_le_bytes(header[..8].try_into().unwrap()) != info_vtable as u64 {
                     return Err("rail info vtable mismatch");
                 }
@@ -955,7 +955,7 @@ fn walk_inner(
                         .try_into()
                         .unwrap(),
                 ) != definition
-                    || u64::from_le_bytes(header[info::BUILDING_STATUS..24].try_into().unwrap())
+                    || u64::from_le_bytes(header[info::BUILDING_STATUS..info::BUILDING].try_into().unwrap())
                         != status as u64
                 {
                     return Err("rail info province backlink mismatch");
@@ -1054,6 +1054,7 @@ fn walk_inner(
                             cooldown_ticks: i32::from_le_bytes(
                                 cooldowns[entry * 4..entry * 4 + 4].try_into().unwrap(),
                             ),
+                            building_bound: info::building_bound(header),
                         };
                         province_progress.len += 1;
                     } else {
@@ -1242,14 +1243,16 @@ const PROVINCE_FIELDS: [RecordField; 3] = [
 ];
 /// A directed edge's far endpoint is only authenticated, never read further.
 const NEIGHBOR_FIELDS: [RecordField; 2] = [PROVINCE_FIELDS[0], PROVINCE_FIELDS[1]];
-/// The info identity and both backlinks. An unreadable identity is fatal to
-/// both tables, so this span must not share a gather with a field whose fault
-/// is scoped to one table: `copy_records` stops at the first faulting field,
-/// which would turn a later record's readable identity into a fatal one.
+/// The info identity, both backlinks and the building pointer, one span.
+pub const INFO_BYTES: usize = info::BUILDING + 8;
+/// An unreadable identity is fatal to both tables, so this span must not share a
+/// gather with a field whose fault is scoped to one table: `copy_records` stops
+/// at the first faulting field, which would turn a later record's readable
+/// identity into a fatal one.
 const INFO_FIELD: [RecordField; 1] = [RecordField {
     source_offset: 0,
     destination_offset: 0,
-    len: 24,
+    len: INFO_BYTES,
 }];
 /// The neighbor vector header. Its fault is scoped to the edge table only.
 const PAIRS_FIELD: [RecordField; 1] = [RecordField {
@@ -1281,7 +1284,7 @@ const PROVINCE_LAYOUT: RecordLayout<'static> =
 const NEIGHBOR_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&NEIGHBOR_FIELDS, PROVINCE_RECORD_BYTES).expect("valid record layout");
 const INFO_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&INFO_FIELD, 24).expect("valid record layout");
+    RecordLayout::new(&INFO_FIELD, INFO_BYTES).expect("valid record layout");
 const PAIRS_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PAIRS_FIELD, 16).expect("valid record layout");
 const PAIR_COUNT_LAYOUT: RecordLayout<'static> =

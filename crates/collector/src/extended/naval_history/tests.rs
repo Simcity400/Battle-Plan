@@ -56,14 +56,17 @@ fn railway_optional_projection_status_and_failed_growth_keep_their_domains() {
         cprovince_railway_info::Row {
             province: 7,
             cooldown_ticks: 9,
+            building_bound: true,
         },
         cprovince_railway_info::Row {
             province: 3,
             cooldown_ticks: 0,
+            building_bound: false,
         },
         cprovince_railway_info::Row {
             province: 1,
             cooldown_ticks: -1,
+            building_bound: true,
         },
     ];
     captured.cooldowns.outcome = Outcome::Rows { len: 3 };
@@ -101,6 +104,11 @@ fn railway_optional_projection_status_and_failed_growth_keep_their_domains() {
         rows::Recorded::Value(Some(rows::RailwayBuildingState { building: None }))
     );
     assert_eq!(cooldowns[2].building, rows::Recorded::Value(None));
+    // Every info row carries its building pointer state, outside the health demand too.
+    assert_eq!(
+        cooldowns.iter().map(|row| row.building_bound).collect::<Vec<_>>(),
+        [true, false, true].map(|bound| rows::Recorded::Value(Some(bound)))
+    );
     captured.fail_late_capture(0, false, "late worker failed");
     assert_eq!(captured.rail_buildings_required, 5);
     assert_eq!(captured.railway_building(3), None);
@@ -132,6 +140,7 @@ fn selected_railway_projection_counts_refusals_and_retains_arena_demand_through_
     captured.cooldowns.rows = vec![cprovince_railway_info::Row {
         province: 1,
         cooldown_ticks: 0,
+        building_bound: false,
     }];
     captured.cooldowns.outcome = Outcome::Rows { len: 1 };
     captured.rail_buildings.rows = vec![RailwayBuildingRow {

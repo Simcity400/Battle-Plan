@@ -140,6 +140,9 @@ pub struct Row {
     /// Standard template's [`creferenced_division_template::REVEAL_SKIP`]
     /// byte; zero for a null template.
     pub reveal_skip: u8,
+    /// The full handle of [`cunit::THEATRE`] ([`crate::ctheatre::UnitTheatres`]), zero for a null
+    /// pointer; None is a refused read, which leaves the row's other fields standing.
+    pub theatre: Option<u64>,
 }
 
 /// Hourly companion to a division's existing authenticated core row.
@@ -324,6 +327,7 @@ pub fn walk_with(
         let mut len = 0;
         let mut unread_rows = 0_u32;
         let mut found_country = false;
+        let mut theatres = crate::ctheatre::UnitTheatres::default();
         for slot in 1..reader.countries.count {
             let country = reader.country_pointer(slot)?;
             if country == 0 {
@@ -364,7 +368,7 @@ pub fn walk_with(
                         .checked_add(1)
                         .ok_or("division unread row count overflow")?;
                 } else {
-                    output[len] = reader.row(pointer, canonical)?;
+                    output[len] = reader.row(pointer, canonical, country, &mut theatres)?;
                     visit(pointer, &output[len]);
                     len += 1;
                 }
@@ -460,6 +464,10 @@ pub struct DivisionSeed {
     pub location_id: Option<Option<u32>>,
     /// The commander selection the census made for every consumer; `None` was not made.
     pub selected: Option<crate::carmy_leader::Selected>,
+    /// [`cunit::THEATRE`], beside the map entity on its line.
+    pub theatre: Option<usize>,
+    /// [`cunit::QUEUED_ACTION_COUNT`], on the naval-transfer membership's line.
+    pub queued_actions: Option<i32>,
 }
 
 impl DivisionSeed {
@@ -507,13 +515,15 @@ impl DivisionSeed {
     pub const OUT_OF_SUPPLY_DAYS: u64 = 1 << 41;
     pub const FUEL: u64 = 1 << 42;
     pub const AIR_SUPPLY: u64 = 1 << 43;
+    pub const THEATRE: u64 = 1 << 44;
+    pub const QUEUED_ACTIONS: u64 = 1 << 45;
 }
 
 /// The two arrow-style fields (beside `RETREAT`) share the retreat byte's line, so the census
 /// gathers them there instead of the movement pass reading each division twice more; the counter
 /// icon's alternate template and separate-counter byte share the standard template's and the supply
 /// grace scalars' lines.
-const DIVISION_SEED_SPANS: [(usize, usize); 44] = [
+const DIVISION_SEED_SPANS: [(usize, usize); 46] = [
     (0, 8),
     (SECONDARY_BASE, 8),
     (cunit::HANDLE, 8),
@@ -558,8 +568,10 @@ const DIVISION_SEED_SPANS: [(usize, usize); 44] = [
     (OUT_OF_SUPPLY_DAYS, 4),
     (FUEL_CANDIDATE, 8),
     (AIR_SUPPLY, 8),
+    (cunit::THEATRE, 8),
+    (cunit::QUEUED_ACTION_COUNT, 4),
 ];
-const DIVISION_SEED_FIELDS: [crate::memory::RecordField; 44] =
+const DIVISION_SEED_FIELDS: [crate::memory::RecordField; 46] =
     crate::memory::packed_fields(DIVISION_SEED_SPANS);
 const DIVISION_SEED_STRIDE: usize = crate::memory::packed_stride(DIVISION_SEED_SPANS);
 
@@ -696,6 +708,10 @@ pub fn capture_division_seeds(memory: &impl Memory, seeds: &mut [DivisionSeed]) 
                 .then(|| i64::from_le_bytes(record[355..363].try_into().unwrap()));
             seed.air_supply = (valid & DivisionSeed::AIR_SUPPLY != 0)
                 .then(|| i64::from_le_bytes(record[363..371].try_into().unwrap()));
+            seed.theatre = (valid & DivisionSeed::THEATRE != 0)
+                .then(|| u64::from_le_bytes(record[371..379].try_into().unwrap()) as usize);
+            seed.queued_actions = (valid & DivisionSeed::QUEUED_ACTIONS != 0)
+                .then(|| i32::from_le_bytes(record[379..383].try_into().unwrap()));
         }
     }
     total
@@ -824,6 +840,8 @@ pub struct MovementRow {
     pub fuel: Option<i64>,
     /// Regional transport speed acquired only for an embarked unit by the caller's companion.
     pub transport_speed: Option<i64>,
+    /// [`cunit::QUEUED_ACTION_COUNT`] already held by the census seed. None is a field refusal.
+    pub queued_actions: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3915,7 +3933,13 @@ impl<M: Memory> Reader<'_, M> {
         }
     }
 
-    fn row(&self, pointer: usize, canonical: u32) -> Result<Row, &'static str> {
+    fn row(
+        &self,
+        pointer: usize,
+        canonical: u32,
+        country: usize,
+        theatres: &mut crate::ctheatre::UnitTheatres,
+    ) -> Result<Row, &'static str> {
         let at = |offset| {
             pointer
                 .checked_add(offset)
@@ -3965,6 +3989,11 @@ impl<M: Memory> Reader<'_, M> {
             .and_then(|p| usize::try_from(p).ok())
             .ok_or("division orders group pointer unreadable")?;
         let orders_group = self.orders_group(group)?;
+        let theatre = read::<u64>(self.memory, at(cunit::THEATRE)?)
+            .and_then(|pointer| usize::try_from(pointer).ok())
+            .ok_or("division theatre pointer unreadable")
+            .and_then(|pointer| theatres.handle(self.memory, self.base, country, pointer))
+            .ok();
         Ok(Row {
             id,
             roster_owner,
@@ -3976,6 +4005,7 @@ impl<M: Memory> Reader<'_, M> {
             organisation,
             orders_group,
             reveal_skip,
+            theatre,
         })
     }
 

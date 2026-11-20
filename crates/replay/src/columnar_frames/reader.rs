@@ -39,7 +39,8 @@ pub enum DamageScope {
     Extent(Extent),
     /// One table's entries, parts or restore in a block.
     Table { run: u32, block: u32, table: u32 },
-    /// A table the recording's format holds in a layout or meaning this build reads otherwise.
+    /// A table the recording's format holds in a layout or meaning this build reads otherwise, or
+    /// predates.
     Withheld { table: u32 },
 }
 
@@ -164,30 +165,53 @@ fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// What `root`'s recording holds of each schema table: its columns, and the tables this build
-/// reads otherwise, each with why. Of this build's schema, every column and none; else of the
-/// row format its records name, when its identity names that format's schema as each table was
-/// framed then: the columns appended since hold no recorded cell, and the tables whose layout or
-/// meaning changed since are withheld by name.
-fn recorded_columns(root: &Root, format: impl FnOnce() -> io::Result<Option<u16>>) -> io::Result<(Vec<usize>, Vec<(usize, String)>)> {
+/// What a recording holds of this build's schema ([`recorded_columns`]).
+struct Framing {
+    /// Each table's columns, none of a table it does not hold.
+    columns: Vec<usize>,
+    /// The tables this build reads otherwise, each with why.
+    withheld: Vec<(usize, String)>,
+    /// How many tables its pages name.
+    tables: usize,
+    /// The row format its cells were written in.
+    format: u16,
+}
+
+/// What `root`'s recording holds of this build's schema, by the row format its records name,
+/// which is read and checked at every open: a format newer than this build's, or outside the
+/// proven history, is refused by name. Of this build's format, every column of every table and
+/// none withheld, its identity naming this build's schema; of an earlier one, when its identity
+/// names that format's schema, the tables introduced by then, this build's first, each framed as
+/// then. The columns appended since hold no recorded cell, and the tables added since and those
+/// whose layout or meaning changed are withheld by name. Records that name no format, or are
+/// damaged (which their readers report), leave only this build's schema to read it by.
+fn recorded_columns(root: &Root, format: impl FnOnce() -> io::Result<Option<u16>>) -> io::Result<Framing> {
     let schema = schema()?;
     let ours = envelope::schema_digest(&schema);
-    if root.identity.schema == ours {
-        return Ok((schema.iter().map(Vec::len).collect(), Vec::new()));
-    }
     let hex = |digest: &[u8; 32]| digest[..8].iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     let differs = |also: &str| invalid(format!("This recording was written with another schema (its digest {}, this build's {}){also}", hex(&root.identity.schema), hex(&ours)));
+    let current = crate::format::FormatVersion::CURRENT.version();
     let format = match format() {
-        Ok(Some(format)) => format,
+        Ok(Some(format)) => crate::format::FormatVersion::read(format)?.version(),
+        Ok(None) if root.identity.schema == ours => current,
         Ok(None) => return Err(differs("")),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData && root.identity.schema == ours => current,
         Err(error) if error.kind() == io::ErrorKind::InvalidData => return Err(differs(&format!("; its records cannot be read: {error}"))),
         Err(error) => return Err(error),
     };
-    let columns = columns_at(format)?;
-    if envelope::schema_digest_prefix(&schema, &columns) != Some(root.identity.schema) {
+    if format == current {
+        if root.identity.schema != ours {
+            return Err(differs(""));
+        }
+        return Ok(Framing { columns: schema.iter().map(Vec::len).collect(), withheld: Vec::new(), tables: TABLE_COUNT, format });
+    }
+    let mut columns = columns_at(format)?;
+    let tables = columns.len();
+    if envelope::schema_digest_prefix(&schema[..tables], &columns) != Some(root.identity.schema) {
         return Err(differs(""));
     }
-    Ok((columns, withheld_at(format)?))
+    columns.resize(TABLE_COUNT, 0);
+    Ok(Framing { columns, withheld: withheld_at(format)?, tables, format })
 }
 
 /// A recording of format 12 ([`replay_columnar::pages`]): its root and every run's directory,
@@ -203,7 +227,12 @@ pub struct Recording {
     directories: Box<[Extent]>,
     /// Each schema table's columns it holds: the first of this build's.
     columns: Box<[usize]>,
-    /// The tables its format holds as this build reads them otherwise, each with why.
+    /// The tables its pages name: this build's first, every one but those added since its format.
+    tables: usize,
+    /// The row format its cells were written in.
+    format: u16,
+    /// The tables its format holds as this build reads them otherwise, and those it predates,
+    /// each with why.
     withheld: Box<[(usize, String)]>,
     runs: Box<[Option<Arc<Run>>]>,
     /// The segments its readers take ([`Self::with_segments`]), and those it records: one a run.
@@ -261,6 +290,8 @@ impl Recording {
             facts: Box::default(),
             directories: Box::default(),
             columns: Box::default(),
+            tables: TABLE_COUNT,
+            format: crate::format::FormatVersion::CURRENT.version(),
             withheld: Box::default(),
             runs: Box::default(),
             segments: Box::default(),
@@ -273,7 +304,7 @@ impl Recording {
         recording.records = recording.section(SectionKey::RECORDS, sections_schema::RECORDS).map_err(unlocated)?.into();
         recording.facts = recording.section(SectionKey::FACTS, sections_schema::FACTS).map_err(unlocated)?.into();
         recording.directories = recording.section(SectionKey::WORLD_LOG, sections_schema::WORLD_LOG).map_err(unlocated)?.into();
-        let (columns, withheld) = recorded_columns(&recording.root, || {
+        let framing = recorded_columns(&recording.root, || {
             // Every revision's records name the row format: a campaign's in each extent, a
             // capture's in its record, the last.
             let Some(last) = recording.records.last() else { return Ok(None) };
@@ -283,8 +314,10 @@ impl Recording {
             }
             Ok(Some(crate::columnar_file::Capture::read(&raw)?.format))
         })?;
-        recording.columns = columns.into();
-        recording.withheld = withheld.into();
+        recording.columns = framing.columns.into();
+        recording.tables = framing.tables;
+        recording.format = framing.format;
+        recording.withheld = framing.withheld.into();
         let mut damage = Vec::new();
         let mut runs = Vec::with_capacity(recording.directories.len());
         let mut segments = Vec::new();
@@ -367,6 +400,8 @@ impl Recording {
             facts: self.facts.clone(),
             directories: self.directories.clone(),
             columns: self.columns.clone(),
+            tables: self.tables,
+            format: self.format,
             withheld: self.withheld.clone(),
             runs: self.runs.clone(),
             segments: self.segments.clone(),
@@ -416,7 +451,8 @@ impl Recording {
         }
     }
 
-    /// The tables it holds in a layout or meaning this build reads otherwise, each with why.
+    /// The tables whose cells this build reads none of, each with why: those it holds in a layout
+    /// or meaning this build reads otherwise, and those its format predates ([`Self::predates`]).
     pub fn withheld(&self) -> &[(usize, String)] {
         &self.withheld
     }
@@ -424,6 +460,13 @@ impl Recording {
     /// Why `table` is withheld, when it is.
     pub fn withheld_reason(&self, table: usize) -> Option<&str> {
         self.withheld.iter().find(|(held, _)| *held == table).map(|(_, reason)| reason.as_str())
+    }
+
+    /// Why the recording holds nothing of `table`, when its format predates it (naming the format
+    /// that introduced it): such a table is not recorded at any hour, as one its capture mode
+    /// leaves out.
+    pub fn predates(&self, table: usize) -> Option<&str> {
+        (table >= self.tables).then(|| self.withheld_reason(table)).flatten()
     }
 
     /// The campaign its identity names.
@@ -583,9 +626,26 @@ impl Recording {
         Arc::clone(&self.source)
     }
 
-    /// The number of schema tables its pages name.
+    /// The row format its cells were written in: an opaque cell decodes at it, and a table's
+    /// fields past those it framed read not recorded.
+    pub fn format(&self) -> u16 {
+        self.format
+    }
+
+    /// The number of schema tables its pages name: this build's first, fewer than all for a
+    /// recording of a format that predates the rest.
     pub fn tables(&self) -> usize {
-        TABLE_COUNT
+        self.tables
+    }
+
+    /// Refuses `table` when the recording's pages name none, as a reader of a withheld table is
+    /// refused: its format predates the table.
+    fn holds(&self, table: usize) -> io::Result<()> {
+        if table < self.tables {
+            return Ok(());
+        }
+        let reason = self.withheld_reason(table).map_or_else(|| format!("{} is not in this recording's schema", table_name(table as u32)), str::to_owned);
+        Err(Damage::wrap(DamageScope::Withheld { table: table as u32 }, invalid(reason)))
     }
 
     /// `out.len()` stored bytes of `extent` from `at` within it; its digest is the caller's to
@@ -632,20 +692,21 @@ impl Recording {
         let pages = *self.run(run)?.directory.spans.get(span as usize).ok_or_else(|| invalid(format!("Run {run} holds no span {span}")))?;
         let scope = DamageScope::Page { run, block: span * SPAN_BLOCKS };
         let read = || -> io::Result<SpanHeld> {
-            let directory = SpanDirectory::read(&self.raw(&pages.directory)?, &pages.directory, TABLE_COUNT)?;
+            let directory = SpanDirectory::read(&self.raw(&pages.directory)?, &pages.directory, self.tables)?;
             if directory.first_block != span * SPAN_BLOCKS || directory.blocks.len() != SPAN_BLOCKS as usize {
                 return Err(invalid("is not its run's span"));
             }
             if pages.index.stored != pages.index.raw {
                 return Err(invalid("A span index is stored compressed"));
             }
-            Ok(SpanHeld { directory, index: pages.index, rows: Mutex::new(vec![None; TABLE_COUNT]) })
+            Ok(SpanHeld { directory, index: pages.index, rows: Mutex::new(vec![None; self.tables]) })
         };
         let held = Arc::new(read().map_err(|error| Damage::wrap(scope, error))?);
         Ok(Arc::clone(locked(&self.pages.spans).entry((run, span)).or_insert(held)))
     }
 
     fn span_row(&self, run: u32, span: u32, held: &SpanHeld, table: usize) -> io::Result<Arc<SpanRow>> {
+        self.holds(table)?;
         if let Some(row) = locked(&held.rows).get(table).and_then(Option::as_ref) {
             return Ok(Arc::clone(row));
         }
@@ -670,7 +731,7 @@ impl Recording {
         }
         let directory = &self.run(run)?.directory;
         let page = directory.open.get((block - directory.spans.len() as u32 * SPAN_BLOCKS) as usize).ok_or_else(|| invalid(format!("Run {run} holds no block {block}")))?;
-        let read = Block::read(&self.raw(page)?, page, TABLE_COUNT).map_err(|error| Damage::wrap(DamageScope::Page { run, block }, error))?;
+        let read = Block::read(&self.raw(page)?, page, self.tables).map_err(|error| Damage::wrap(DamageScope::Page { run, block }, error))?;
         let held = Arc::new(read);
         Ok(Arc::clone(locked(&self.pages.open).entry((run, block)).or_insert(held)))
     }
@@ -695,8 +756,8 @@ impl Recording {
         let span = block / SPAN_BLOCKS;
         let held = self.span(run, span)?;
         let at = (block % SPAN_BLOCKS) as usize;
-        let mut tables = Vec::with_capacity(TABLE_COUNT);
-        for table in 0..TABLE_COUNT {
+        let mut tables = Vec::with_capacity(self.tables);
+        for table in 0..self.tables {
             tables.push(self.span_row(run, span, &held, table)?.blocks[at].clone());
         }
         Ok(Block { run, block, head: held.directory.blocks[at].clone(), tables })
@@ -714,6 +775,7 @@ impl Recording {
     /// Table `table`'s entry of block `block` of run `run`: what the unit's reader primitives
     /// read the table's parts, restore and statuses of that block through.
     pub fn table_entry(&self, run: u32, block: u32, table: usize) -> io::Result<Entry> {
+        self.holds(table)?;
         self.check_block(run, block)?;
         if !self.closed(run, block)? {
             return self.open_block(run, block)?.tables.get(table).cloned().ok_or_else(|| invalid(format!("A block names no table {table}")));
@@ -775,8 +837,9 @@ impl Recording {
         let held = self.run(run)?;
         let mut pages = Vec::with_capacity(to.saturating_sub(from) as usize);
         for block in from..to {
-            let mut tables = vec![TableEntry::default(); TABLE_COUNT];
-            tables[table] = self.table_entry(run, block, table)?.unit;
+            let entry = self.table_entry(run, block, table)?.unit;
+            let mut tables = vec![TableEntry::default(); self.tables];
+            tables[table] = entry;
             pages.push(BlockPage { block, hours: held.block(block as usize).1 as u16, tables });
         }
         Ok(pages)
@@ -797,7 +860,7 @@ impl Recording {
     pub fn pages_since_restores(&self, run: u32) -> io::Result<(u32, Vec<BlockPage>)> {
         let blocks = self.run(run)?.directory.blocks();
         let mut pages = Vec::new();
-        let mut found = vec![false; TABLE_COUNT];
+        let mut found = vec![false; self.tables];
         let mut first = blocks;
         while first > 0 && found.iter().any(|found| !found) {
             first -= 1;

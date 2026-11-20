@@ -1093,3 +1093,44 @@ fn worker_theatres_grow_for_every_country_and_later_nested_demand_without_reread
         );
     }
 }
+
+/// A unit's theatre resolves only through its roster country's authenticated theatre vector.
+#[test]
+fn unit_theatres_resolve_only_their_roster_country_theatres() {
+    let mut bytes = fixture();
+    let memory = SliceMemory {
+        base: MEMORY,
+        bytes: &bytes,
+    };
+    let mut theatres = UnitTheatres::default();
+    assert_eq!(theatres.handle(&memory, MODULE, COUNTRY_POINTER, 0), Ok(0));
+    assert_eq!(
+        theatres.handle(&memory, MODULE, COUNTRY_POINTER, LAND),
+        Ok(handle(REFERENCE_TYPE))
+    );
+    assert_eq!(
+        theatres.handle(&memory, MODULE, COUNTRY_POINTER, LAND_GROUP),
+        Err("unit theatre is not one of its roster country's theatres")
+    );
+    for theatre in [0, LAND, LAND_GROUP] {
+        assert_eq!(
+            unit_theatre(&memory, MODULE, COUNTRY_POINTER, theatre),
+            theatres.handle(&memory, MODULE, COUNTRY_POINTER, theatre)
+        );
+    }
+    put(&mut bytes, LAND, 0_u64.to_le_bytes());
+    let memory = SliceMemory {
+        base: MEMORY,
+        bytes: &bytes,
+    };
+    theatres.clear();
+    assert_eq!(
+        theatres.handle(&memory, MODULE, COUNTRY_POINTER, LAND),
+        Err("theatre object vtable mismatch")
+    );
+    assert_eq!(
+        unit_theatre(&memory, MODULE, COUNTRY_POINTER, LAND),
+        Err("theatre object vtable mismatch")
+    );
+    assert_eq!(theatres.handle(&memory, MODULE, COUNTRY_POINTER, 0), Ok(0));
+}

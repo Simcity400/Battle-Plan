@@ -1,4 +1,4 @@
-//! Slow job country tables: country factories, country tactic unlocks, faction theatres, logistics availability and modifier definitions. The host owns the Slow job's dispatch, loans and table assembly.
+//! Slow job country and state tables: country factories, country tactic unlocks, faction theatres, logistics availability, modifier definitions and state building inputs. The host owns the Slow job's dispatch, loans and table assembly.
 
 use collector_extended_support::outcomes::failed_capture;
 use collector_logistics::logistics_balance;
@@ -16,6 +16,7 @@ pub mod doctrines;
 pub mod faction_theatres;
 pub mod logistics;
 pub mod modifier_definitions;
+pub mod state_building_inputs;
 
 #[cfg(test)]
 #[global_allocator]

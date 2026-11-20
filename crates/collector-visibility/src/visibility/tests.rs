@@ -164,6 +164,16 @@ fn local_player_switch_observer_failure_and_recovery_round_trip() {
             reason: "fixture".into(),
         });
         tables[TableId::LocalPlayer.index()] = captured.tables()[6].clone();
+        // The fixture holds no viewer unit vector: the row is a refused read, never empty.
+        let TableView::Complete(order) = &captured.tables()[7] else {
+            panic!("LandUnitOrder unavailable");
+        };
+        assert_eq!(
+            <tables::LandUnitOrder as replay_data::rows::TableSchema>::borrow(order),
+            Some(&[replay_data::rows::LandUnitOrderRow {
+                units: replay_data::rows::Recorded::Value(None)
+            }][..])
+        );
         let frame = encoder
             .encode(
                 DecodedFrame {
@@ -193,6 +203,12 @@ fn local_player_switch_observer_failure_and_recovery_round_trip() {
     captured.fail_capture(9, false, "worker stopped");
     assert_eq!(
         captured.outcomes()[6],
+        Outcome::Unavailable {
+            reason: "worker stopped"
+        }
+    );
+    assert_eq!(
+        captured.outcomes()[7],
         Outcome::Unavailable {
             reason: "worker stopped"
         }
@@ -236,7 +252,7 @@ fn one_failed_input_leaves_the_others_and_the_hourly_features_fail_too() {
         links: crelation_status::LINK_ATTACHE,
         transport_subject: None,
     };
-    let [_, _, _, TableView::Complete(rows), _, _, _] = captured.tables() else {
+    let [_, _, _, TableView::Complete(rows), _, _, _, _] = captured.tables() else {
         panic!("links table stays complete");
     };
     assert_eq!(rows.len(), 1);

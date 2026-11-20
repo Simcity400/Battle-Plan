@@ -1018,7 +1018,7 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
         covered.insert(table.index());
     }
 
-    producer!(visibility; [SimulationFeatures,StateVisibility,CountryWars,LocalPlayer]);
+    producer!(visibility; [SimulationFeatures,StateVisibility,CountryWars,LocalPlayer,LandUnitOrder]);
     producer!(war_overview; []);
     for table in crate::faction_companions::TABLES
         .into_iter()

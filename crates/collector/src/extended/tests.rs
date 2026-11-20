@@ -3496,6 +3496,7 @@ pub(crate) fn mode_gated_walks() -> Vec<(&'static str, Vec<TableId>)> {
         ("peace bids", peace_bids::TABLES.to_vec()),
         ("logistics", logistics::TABLES.to_vec()),
         ("country factories", country_factories::TABLES.to_vec()),
+        ("state building inputs", state_building_inputs::TABLES.to_vec()),
         ("hired advisors", hired_advisors::TABLES.to_vec()),
         (
             "doctrines",

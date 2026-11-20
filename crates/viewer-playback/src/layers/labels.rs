@@ -387,7 +387,7 @@ impl Labels {
                 Cell::Unrecorded => Recorded::NotRecorded,
             };
             let original: Recorded<Option<Vec<u8>>> = match (&reference, appearance.list(columns.original_tag, row)) {
-                (Recorded::Value(Some(reference)), Cell::Value(bytes)) if *reference > 0 => NativeValue::from_field(Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION))).map_err(|error| error.to_string())?,
+                (Recorded::Value(Some(reference)), Cell::Value(bytes)) if *reference > 0 => NativeValue::from_field(Field::Opaque(Opaque::Encoded(bytes, appearance.format()))).map_err(|error| error.to_string())?,
                 _ => Recorded::NotRecorded,
             };
             let own = self.tag_bytes(mirrors, native).ok_or("the country's tag is not named at the head")?;

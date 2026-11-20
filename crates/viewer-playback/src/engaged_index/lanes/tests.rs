@@ -253,3 +253,66 @@ fn each_timeline_of_a_recording_loaded_back_in_time_folds_only_its_own_pieces() 
     assert!(Arc::ptr_eq(&forked, &again), "a second ask for timeline 2's index shares its fold");
     assert!(!Arc::ptr_eq(&forked, &parent), "timeline 1 has an index of its own");
 }
+
+/// A recording of format 97 holds each naval commander's inputs as that format wrote them, before
+/// their timed traits: the engaged index's lane reads NavalCombatDetails.sides at the recording's
+/// own format, the timed traits not recorded and every field after them as written.
+#[test]
+fn naval_combat_sides_of_an_earlier_format_decode_at_its_own_format() {
+    use crate::lane_rows::{Kept, Table};
+    use crate::layers::sounds::tests::record_runs_at;
+    use playhead::pages::Pages;
+    use replay_data::{
+        rows::{NavalCombatDetailsRow, NavalCombatSideDetails, NavalCommanderInputs, Recorded},
+        value::Value as _,
+    };
+    const FORMAT: u16 = 97;
+    let commander = NavalCommanderInputs { commander: 0x1234_5678_9abc_def0, name: vec![0xff, 0, 8], ..Default::default() };
+    let side = NavalCombatSideDetails { commander_inputs: Some(commander.clone()), engaged: 1, units: vec![4, u64::MAX, 2], ..Default::default() };
+    let row = NavalCombatDetailsRow { combat: 7, sides: [side.clone(), side], ..Default::default() };
+    // The commander's last four bytes are its empty timed traits, which format 97 did not write.
+    let mut needle = Vec::new();
+    commander.encode(&mut needle).unwrap();
+    let old_commander = &needle[..needle.len() - 4];
+    let sides_column = (0..64).find(|&column| TableId::NavalCombatDetails.field_name(column) == Some("sides")).unwrap();
+    let recording = record_runs_at(FORMAT, &[(0, 4)], &[], |hour, store| {
+        store.status(TableId::NavalCombatDetails.index(), Status::Complete, true, Some(hour), true).unwrap();
+        if hour != 0 {
+            return;
+        }
+        let mut changes = store.table(TableId::NavalCombatDetails.index()).unwrap();
+        changes.insert_at(0, row.key()).unwrap();
+        let mut current = Vec::new();
+        row.visit_wire(&mut |column, field| {
+            if column == sides_column
+                && let Field::Opaque(Opaque::Native(value)) = field
+            {
+                value.encode_value(&mut current)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let mut old = Vec::new();
+        let mut rest = &current[..];
+        while let Some(at) = rest.windows(needle.len()).position(|window| window == needle) {
+            old.extend_from_slice(&rest[..at]);
+            old.extend_from_slice(old_commander);
+            rest = &rest[at + needle.len()..];
+        }
+        old.extend_from_slice(rest);
+        assert_eq!(old.len(), current.len() - 8, "both sides' commanders lose their timed traits");
+        changes.write(0, sides_column, Cell::Opaque(&old)).unwrap();
+    });
+    assert_eq!(recording.format(), FORMAT);
+    let pages: Arc<dyn Pages> = recording;
+    let mut table = Table::<tables::NavalCombatDetails>::open(&pages, 0, Some(&["sides"]), "The test").unwrap();
+    table.seek(2).unwrap();
+    let rows = tables::NavalCombatDetails::borrow(table.rows()).unwrap();
+    assert_eq!(rows.len(), 1);
+    for side in &rows[0].sides {
+        let inputs = side.commander_inputs.as_ref().unwrap();
+        assert_eq!(inputs.timed_traits, Recorded::NotRecorded);
+        assert_eq!((inputs.commander, &inputs.name), (commander.commander, &commander.name));
+        assert_eq!((side.engaged, &side.units[..]), (1, &[4, u64::MAX, 2][..]));
+    }
+}

@@ -2660,6 +2660,7 @@ impl Captured {
                     fuel: Recorded::Value(r.fuel),
                     transport_speed: Recorded::Value(r.transport_speed),
                     own_base_speed: own_base_speed(r),
+                    queued_actions: Recorded::Value(r.queued_actions),
                 },
             ),
             status,

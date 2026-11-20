@@ -13,7 +13,7 @@ fn weather_keeps_zero_slot_repeated_entries_and_exact_snow_words() {
             "0"={temperature=2}
         } regions={
             "0"={region=0 temperature=0 next_weather_change=unread}
-            "4"={region=4 rain_light=yes rain_heavy=no snow=yes}
+            "4"={region=4 rain_light=yes rain_heavy=no snow=yes active_modifiers={ 1 0 -1 }}
         } seed=unread}"#,
     )
     .unwrap();
@@ -48,6 +48,8 @@ fn weather_keeps_zero_slot_repeated_entries_and_exact_snow_words() {
     assert_eq!(regions[1].rain_heavy, Some(false));
     assert_eq!(regions[1].snow, Some(true));
     assert_eq!(regions[1].blizzard, None);
+    assert_eq!(regions[0].active_modifiers, None);
+    assert_eq!(regions[1].active_modifiers, Some(vec![1, 0, -1]));
 }
 
 #[test]
@@ -81,6 +83,10 @@ fn weather_refuses_malformed_or_ambiguous_compared_fields_without_rounding() {
         "weather={provinces={0={mud=1}}}",
         "weather={provinces={0={mud=yes mud=no}}}",
         "weather={regions={0={rain_light=1}}}",
+        "weather={regions={0={active_modifiers={a=1}}}}",
+        "weather={regions={0={active_modifiers={yes}}}}",
+        "weather={regions={0={active_modifiers=1}}}",
+        "weather={regions={0={active_modifiers={} active_modifiers={}}}}",
         "weather={provinces={0={custom_modifiers={dry=yes}}}}",
         "weather={provinces={0={custom_modifiers={dry=1.5}}}}",
         "weather={provinces={0={custom_modifiers={7}}}}",

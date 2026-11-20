@@ -109,13 +109,13 @@ pub(super) fn u64s(bytes: &[u8]) -> Vec<u64> {
 /// An opaque cell's value; `None` when it holds none, is not recorded or does not decode.
 pub(super) fn opaque<T: NativeValue>(mirror: &Mirror, column: List, slot: u32) -> Option<T> {
     let Cell::Value(bytes) = mirror.list(column, slot) else { return None };
-    T::from_field(Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION))).ok()
+    T::from_field(Field::Opaque(Opaque::Encoded(bytes, mirror.format()))).ok()
 }
 
 /// An opaque cell as a `Recorded` value: not recorded when the cell is.
 pub(super) fn recorded<T: NativeValue>(mirror: &Mirror, column: List, slot: u32) -> Recorded<T> {
     match mirror.list(column, slot) {
-        Cell::Value(bytes) => <Recorded<T> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION))).unwrap_or(Recorded::NotRecorded),
+        Cell::Value(bytes) => <Recorded<T> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, mirror.format()))).unwrap_or(Recorded::NotRecorded),
         _ => Recorded::NotRecorded,
     }
 }

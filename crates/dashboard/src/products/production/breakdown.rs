@@ -910,7 +910,7 @@ impl Product for ProductionLineBreakdown {
             .find(|appearance| appearance.key == params.key)
             .ok_or_else(|| dashboard_core::refused("This production line is not the country's in this branch"))?;
         let recording = query.replay.recording();
-        let format = replay_data::format::FormatVersion::CURRENT.version();
+        let format = recording.format();
         let handle = u128::from(appearance.handle);
         let mut warnings = BTreeSet::new();
         // Each stretch of hours the inputs held still, with the run it was read from.

@@ -146,6 +146,9 @@ impl Tapped {
 pub struct TableReader {
     table: usize,
     kinds: Vec<Kind>,
+    /// The table's first columns, those the recording holds: its cells hold these alone, and its
+    /// restores and parts decode as they were written; every later column reads not recorded.
+    held: usize,
     columns: Vec<usize>,
     run: u32,
     first_hour: i32,
@@ -175,6 +178,8 @@ pub struct TableReader {
     restores: u32,
     /// A log table's cursor and each listed row's slot by ordinal.
     log: Option<Box<LogRead>>,
+    /// The recording's format predates the table: it reads not recorded at every hour.
+    absent: bool,
 }
 
 struct LogRead {
@@ -187,15 +192,18 @@ struct LogRead {
 
 impl TableReader {
     /// A reader of `table` of `recording`'s run `run`, of its columns `columns` (every column
-    /// the recording holds when none), not yet at any hour.
+    /// the recording holds when none), not yet at any hour. A table the recording's format
+    /// predates reads not recorded at every hour; one it holds as this build reads otherwise is
+    /// refused by name.
     pub fn new(recording: &Recording, run: u32, table: TableId, columns: Option<&[usize]>) -> io::Result<Self> {
         let held = recording.run(run)?;
         let index = table.index();
-        if let Some(reason) = recording.withheld_reason(index) {
+        let absent = recording.predates(index).is_some();
+        if let Some(reason) = recording.withheld_reason(index).filter(|_| !absent) {
             return Err(Damage::wrap(DamageScope::Withheld { table: index as u32 }, invalid(reason.to_owned())));
         }
         let kinds = crate::columnar_frames::schema()?.swap_remove(index);
-        let recorded = recording.columns()[index];
+        let recorded = recording.columns()[index].min(kinds.len());
         let columns: Vec<usize> = match columns {
             Some(columns) => {
                 let mut columns: Vec<usize> = columns.iter().copied().filter(|&column| column < recorded).collect();
@@ -205,14 +213,15 @@ impl TableReader {
             }
             None => recording.read_columns(index),
         };
-        let log = held.ordinals > 0 && unit::reader::class_of(&recording.table_pages(run, index, 0, 1)?, index)?;
+        let log = !absent && held.ordinals > 0 && unit::reader::class_of(&recording.table_pages(run, index, 0, 1)?, index)?;
         Ok(Self {
             table: index,
-            log: log.then(|| Box::new(LogRead { cursor: LogCursor::new(&kinds, &columns, 0), from: 0, slots: BTreeMap::new() })),
-            cursor: Cursor::new(&kinds, &columns, 0),
-            cells: TableState::new(&kinds),
+            log: log.then(|| Box::new(LogRead { cursor: LogCursor::new(&kinds[..recorded], &columns, 0), from: 0, slots: BTreeMap::new() })),
+            cursor: Cursor::new(&kinds[..recorded], &columns, 0),
+            cells: TableState::new(&kinds[..recorded]),
             changes: Changes { written: vec![Vec::new(); columns.len()], ..Changes::default() },
             kinds,
+            held: recorded,
             columns,
             run,
             first_hour: held.first_hour,
@@ -232,6 +241,7 @@ impl TableReader {
             tracking: false,
             pending: Tapped::default(),
             restores: 0,
+            absent,
         })
     }
 
@@ -366,6 +376,12 @@ impl TableReader {
         if ordinal >= self.ordinals {
             return Err(invalid(format!("Run {} holds no ordinal {ordinal}", self.run)));
         }
+        if self.absent {
+            self.stand_absent(ordinal);
+            self.changes.anew = true;
+            self.changes.status_changed = true;
+            return Ok(());
+        }
         if self.log.is_some() {
             return self.seek_log(recording, ordinal);
         }
@@ -373,7 +389,7 @@ impl TableReader {
         let (restored, entry, first) = self.restore_before(recording, block)?;
         let source = recording.extents();
         let restoring = label("reader: restored cells");
-        let (cells, meta) = unit::reader::restore(source, &entry, &self.kinds, &self.columns).map_err(|error| self.damaged(restored, error))?;
+        let (cells, meta) = unit::reader::restore(source, &entry, &self.kinds[..self.held], &self.columns).map_err(|error| self.damaged(restored, error))?;
         self.cells = cells;
         self.restores += 1;
         if self.keyed {
@@ -426,6 +442,10 @@ impl TableReader {
         }
         let next = ordinal + 1;
         let (block, hour) = (next / BLOCK, (next % BLOCK) as u16);
+        if self.absent {
+            self.stand_absent(next);
+            return Ok(true);
+        }
         self.changes.clear();
         if self.log.is_some() {
             if block != self.block {
@@ -474,7 +494,7 @@ impl TableReader {
                 Ok(())
             }
             Some(at) if at < ordinal && ordinal < self.ordinals && self.log.is_some() => self.advance_log_to(recording, ordinal),
-            Some(at) if at < ordinal && ordinal < self.ordinals && !self.restored_between(recording, at, ordinal / BLOCK)? => self.advance(recording, ordinal),
+            Some(at) if at < ordinal && ordinal < self.ordinals && !self.absent && !self.restored_between(recording, at, ordinal / BLOCK)? => self.advance(recording, ordinal),
             _ => self.seek(recording, ordinal),
         }
     }
@@ -533,6 +553,13 @@ impl TableReader {
             return Err(invalid(format!("A stretch to ordinal {to} after {ordinal} crosses a block or the run")));
         }
         let (block, from, last) = (next / BLOCK, (next % BLOCK) as u16, (to % BLOCK) as u16);
+        if self.absent {
+            self.stand_absent(to);
+            self.changes.anew = true;
+            self.changes.status_changed = true;
+            let statuses = vec![Status::NotRecorded; usize::from(last - from) + 1];
+            return Ok(Stretch { block, block_first: self.first_hour + (block * BLOCK) as i32, from, to: last, statuses, ..Stretch::default() });
+        }
         if from == 0 {
             if self.entry.packed {
                 self.cells.pack()?;
@@ -604,6 +631,13 @@ impl TableReader {
         Ok((0, first, true))
     }
 
+    /// A table the recording's format predates at ordinal `ordinal`: not recorded, as at every hour.
+    fn stand_absent(&mut self, ordinal: u32) {
+        self.changes.clear();
+        self.ordinal = Some(ordinal);
+        self.block = ordinal / BLOCK;
+    }
+
     fn block_hours(&self, block: u32) -> u16 {
         (self.ordinals - block * BLOCK).min(BLOCK) as u16
     }
@@ -613,9 +647,9 @@ impl TableReader {
         self.block = block;
         self.next_part = 0;
         self.pending.clear();
-        self.cursor = Cursor::new(&self.kinds, &self.columns, start);
+        self.cursor = Cursor::new(&self.kinds[..self.held], &self.columns, start);
         if let Some(log) = &mut self.log {
-            log.cursor = LogCursor::new(&self.kinds, &self.columns, start);
+            log.cursor = LogCursor::new(&self.kinds[..self.held], &self.columns, start);
             log.from = start;
         }
         Ok(())
@@ -696,10 +730,10 @@ impl TableReader {
         let (restored, entry, first) = self.restore_before(recording, block)?;
         let source = recording.extents();
         let restoring = label("reader: restored cells");
-        let (state, meta) = unit::reader::restore(source, &entry, &self.kinds, &[]).map_err(|error| self.damaged(restored, error))?;
+        let (state, meta) = unit::reader::restore(source, &entry, &self.kinds[..self.held], &[]).map_err(|error| self.damaged(restored, error))?;
         self.restores += 1;
         let listed: Vec<u64> = state.listed().ok_or_else(|| self.damaged(restored, invalid("A log's restore holds no live set")))?.ones().collect();
-        self.cells = TableState::new(&self.kinds);
+        self.cells = TableState::new(&self.kinds[..self.held]);
         if self.keyed {
             self.cells.index_keys();
         }
@@ -713,7 +747,7 @@ impl TableReader {
             log.slots.clear();
             let (cells, strings, columns, slots) = (&mut self.cells, &mut self.strings, &self.columns, &mut log.slots);
             let mut failed = None;
-            let read = unit::reader::log_rows_at(source, &pages, &self.kinds, self.table, columns, &listed, &mut |event| {
+            let read = unit::reader::log_rows_at(source, &pages, &self.kinds[..self.held], self.table, columns, &listed, &mut |event| {
                 let put = match event {
                     LogEvent::Named { id, text } => strings.pin(id, text),
                     LogEvent::Appended { ordinal, key, rows, at, .. } => cells.put_row_from(key, rows, at, columns).map(|slot| {

@@ -1356,6 +1356,7 @@ impl Captured {
                     building: rows::Recorded::Value(self.railway_building(r.province)),
                     selection: rows::Recorded::Value(self.railway_selection(r.province)),
                     selection_hour: rows::Recorded::Value(self.rail_hour),
+                    building_bound: rows::Recorded::Value(Some(r.building_bound)),
                 }
             }),
             table::<tables::RailEdges, _>(outcomes[3], &self.edges.rows, |r| rows::RailEdgeRow {

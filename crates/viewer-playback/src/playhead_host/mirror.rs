@@ -441,6 +441,8 @@ pub struct Mirror {
     reason: Option<(u32, Box<str>)>,
     /// The recording's capture mode, which says why a table is not recorded.
     capture: Option<CaptureMode>,
+    /// The row format its cells were written in: an opaque cell decodes at it.
+    format: u16,
     head: Option<Hour>,
     gap: bool,
     /// Change sets naming a column it does not hold.
@@ -504,6 +506,7 @@ impl Mirror {
             status: lane.status(),
             reason,
             capture: None,
+            format: lane.format(),
             head: lane.head(),
             gap: false,
             refused: 0,
@@ -939,6 +942,11 @@ impl Mirror {
     /// Why the table is unavailable, as the recording words it, while it is.
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_ref().map(|(_, text)| &**text)
+    }
+
+    /// The row format its cells were written in: an opaque cell decodes at it.
+    pub fn format(&self) -> u16 {
+        self.format
     }
 
     /// The recording's capture mode, when the opener knows it.

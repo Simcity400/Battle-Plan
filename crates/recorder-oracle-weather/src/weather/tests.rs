@@ -64,11 +64,13 @@ regions={0={region=0 temperature=-90071992547.40993
                 },
             )),
             modifiers: replay_data::rows::Recorded::Value(Some(Default::default())),
+            static_modifiers: static_list(&[("mud", -1), ("mud", 7)]),
         }]));
     *frame.tables[TableId::WeatherRegions.index()] =
         TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow {
             id: 0,
             light_rain: 255,
+            custom_sea: Some(Vec::new()).into(),
             ..Default::default()
         }]));
     let mut report = Report::default();
@@ -81,7 +83,11 @@ regions={0={region=0 temperature=-90071992547.40993
     )
     .unwrap();
     assert!(report.differences.is_empty());
-    assert_eq!(report.scalar_checks, 2);
+    assert_eq!(report.scalar_checks, 3);
+    assert_eq!(
+        report.compared_tables["WeatherProvinces static modifiers"],
+        1
+    );
     // Unread rebuild content leaves every recorded accumulator uncompared: one failed
     // comparison, so coverage is incomplete and the run fails.
     assert_eq!(
@@ -113,6 +119,55 @@ regions={0={region=0 temperature=-90071992547.40993
         rows[0].modifiers = replay_data::rows::Recorded::NotRecorded;
     }
 
+    // The static modifier list compares name and days in list order; a refused read is
+    // uncompared and an older recording's list is not recorded, never a match.
+    for (list, differences, failed, not_recorded) in [
+        (static_list(&[("mud", -1), ("mud", 6)]), 1, false, false),
+        (static_list(&[("mud", 7), ("mud", -1)]), 1, false, false),
+        (static_list(&[("mud", -1)]), 1, false, false),
+        (replay_data::rows::Recorded::Value(None), 0, true, false),
+        (replay_data::rows::Recorded::NotRecorded, 0, false, true),
+    ] {
+        let original = frame.tables[TableId::WeatherProvinces.index()].clone();
+        if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
+            &mut *frame.tables[TableId::WeatherProvinces.index()]
+        {
+            rows[0].static_modifiers = list.clone();
+        }
+        let mut report = Report::default();
+        compare(
+            &frame,
+            &saved,
+            Ok(&content),
+            Err("outside this fixture".into()),
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.differences.len(), differences, "{list:?}");
+        assert!(
+            report
+                .differences
+                .iter()
+                .all(|difference| difference.contains("province 0.static_modifiers")),
+            "{list:?}"
+        );
+        assert_eq!(
+            report
+                .failed_comparisons
+                .contains_key("weather province 0.static_modifiers"),
+            failed,
+            "{list:?}"
+        );
+        assert_eq!(
+            report
+                .limitations
+                .contains_key("WeatherProvinces.static_modifiers not recorded"),
+            not_recorded,
+            "{list:?}"
+        );
+        frame.tables[TableId::WeatherProvinces.index()] = original;
+    }
+
     // Missing fields withhold temperature/mud comparisons and identify
     // the missing stored clock without inventing a save counterpart.
     let original = frame.tables[TableId::WeatherProvinces.index()].clone();
@@ -134,7 +189,7 @@ regions={0={region=0 temperature=-90071992547.40993
     )
     .unwrap();
     assert!(old.differences.is_empty());
-    assert_eq!(old.scalar_checks, 1); // snow remains compared
+    assert_eq!(old.scalar_checks, 2); // snow and the static modifier list remain compared
     assert_eq!(
         old.limitations["WeatherProvinces.temperature not recorded"].len(),
         1
@@ -310,6 +365,30 @@ regions={0={region=0 temperature=-90071992547.40993
 }
 
 #[test]
+fn region_custom_sea_compares_with_saved_active_modifiers_and_never_matches_unrecorded() {
+    use replay_data::rows::Recorded;
+    let mut report = Report::default();
+    custom_sea(&mut report, "region 3", &Some(vec![1, 0, -1]).into(), Some(&[1, 0, -1]));
+    custom_sea(&mut report, "region 4", &Some(Vec::new()).into(), None);
+    assert!(report.differences.is_empty());
+    for (captured, saved) in [
+        (Recorded::Value(Some(vec![1, 1])), Some(&[1, 0][..])),
+        (Recorded::Value(Some(vec![1])), None),
+        (Recorded::Value(Some(Vec::new())), Some(&[0][..])),
+        (Recorded::Value(None), None),
+    ] {
+        let mut report = Report::default();
+        custom_sea(&mut report, "region 3", &captured, saved);
+        assert_eq!(report.differences.len(), 1, "{captured:?}");
+        assert!(report.differences[0].contains("region 3.active_modifiers"));
+    }
+    let mut old = Report::default();
+    custom_sea(&mut old, "region 3", &Recorded::NotRecorded, Some(&[1][..]));
+    assert!(old.differences.is_empty());
+    assert_eq!(old.limitations["WeatherRegions.custom_sea not recorded"].len(), 1);
+}
+
+#[test]
 fn weather_sparse_zero_and_nonzero_flags_follow_serializer_information() {
     let mut report = Report::default();
     sparse_scalar(&mut report, "province 0", "water", 0, None);
@@ -369,8 +448,9 @@ regions={0={region=0}}
                 temperature: replay_data::rows::ProvinceTemperature::anchored(state),
                 raw_mud: replay_data::rows::Recorded::Value(0),
                 temperature_pass: replay_data::rows::Recorded::Value(pass),
-                // The modifier test covers the accumulator.
+                // The modifier test covers the accumulator, the first test the list.
                 modifiers: replay_data::rows::Recorded::NotRecorded,
+                static_modifiers: replay_data::rows::Recorded::NotRecorded,
                 ..Default::default()
             }]));
         *frame.tables[TableId::WeatherRegions.index()] =
@@ -445,6 +525,20 @@ regions={0={region=0}}
         ["WeatherProvinces.temperature"]
     );
     assert!(report.outcome().is_err());
+}
+
+fn static_list(
+    values: &[(&str, i32)],
+) -> replay_data::rows::Recorded<Option<replay_data::rows::ProvinceStaticModifiers>> {
+    replay_data::rows::Recorded::Value(Some(replay_data::rows::ProvinceStaticModifiers {
+        entries: values
+            .iter()
+            .map(|&(name, days)| replay_data::rows::ProvinceStaticModifier {
+                name: name.as_bytes().to_vec(),
+                days,
+            })
+            .collect(),
+    }))
 }
 
 fn statics(values: &[(&str, i64)]) -> installed_content_core::modifiers::Modifiers {
@@ -544,6 +638,8 @@ regions={}
         raw_mud: replay_data::rows::Recorded::Value(mud),
         temperature: replay_data::rows::ProvinceTemperature::NOT_RECORDED,
         modifiers,
+        // The first test covers the static modifier list.
+        static_modifiers: replay_data::rows::Recorded::NotRecorded,
         ..Default::default()
     };
     let rows = vec![

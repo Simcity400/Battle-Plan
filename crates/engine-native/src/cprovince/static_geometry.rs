@@ -132,7 +132,7 @@ impl StaticGeometry {
 
     /// Prepare immutable province slots outside acquisition. Rekeying clears
     /// their values without discarding this prepared length.
-    pub fn reserve_provinces(&mut self, count: usize) -> std::io::Result<()> {
+    pub fn reserve_slots(&mut self, count: usize) -> std::io::Result<()> {
         if self.provinces.len() < count {
             crate::allocation::resize(&mut self.provinces, count, None)?;
         }

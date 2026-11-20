@@ -218,10 +218,12 @@ macro_rules! define_tables {
     (
         recorded { $($recorded:ident = $recorded_id:literal => $recorded_variant:ident($recorded_row:ident)),+ $(,)? }
         derived { $($derived:ident = $derived_id:literal => $derived_variant:ident($derived_row:ident)),+ $(,)? }
+        $(recorded { $($later:ident = $later_id:literal => $later_variant:ident($later_row:ident)),+ $(,)? })?
     ) => {
         define_tables! {
             $($recorded = $recorded_id => $recorded_variant($recorded_row)),+,
             $($derived = $derived_id => $derived_variant($derived_row)),+
+            $($(, $later = $later_id => $later_variant($later_row))+)?
         }
         impl TableId {
             /// Whether the recorder derives this table; the collector never acquires it.
@@ -1158,6 +1160,12 @@ ProducedValues = 511 => ProducedValue(ProducedValueRow),
 AirLossTotals = 512 => AirLossTotal(AirLossTotalRow),
 BombingTotals = 513 => BombingTotal(BombingTotalRow),
 GarrisonStrengths = 514 => GarrisonStrength(GarrisonStrengthRow),
+}
+// Recorded tables added after the derived ones, so every wire id stays its position.
+recorded {
+LandUnitOrder = 515 => LandUnitOrder(LandUnitOrderRow),
+StrategicRegionWeights = 516 => StrategicRegionWeight(StrategicRegionWeightRow),
+StateBuildingInputs = 517 => StateBuildingInput(StateBuildingInputRow),
 }
 }
 impl TableId {
@@ -2499,6 +2507,7 @@ mod tests {
             organisation: 100_000,
             orders_group: 0x0000_0039_0000_0035,
             reveal_skip: 0,
+            theatre: Recorded::Value(Some(0x0000_0011_0000_0043)),
         }
     }
     fn war_relation() -> WarRelationRow {
@@ -2625,6 +2634,7 @@ mod tests {
                 best_vp_index: Default::default(),
 
                 single_controller: Default::default(),
+                marked_owners: Recorded::Value(Some(vec![u32::MAX, 0, 7])),
             },
         );
         round_trip(
@@ -2640,6 +2650,14 @@ mod tests {
                 organisation: i64::MAX,
                 orders_group: u64::MAX,
                 reveal_skip: 0,
+                theatre: Recorded::Value(Some(u64::MAX)),
+            },
+        );
+        round_trip(
+            TableId::Divisions,
+            DivisionRow {
+                theatre: Recorded::Value(None),
+                ..division()
             },
         );
         round_trip(
@@ -3043,6 +3061,7 @@ mod tests {
 
                 best_vp_index: (if mask & 2048 != 0 { Some(-1) } else { None }).into(),
                 single_controller: (if mask & 4096 != 0 { Some(1) } else { None }).into(),
+                marked_owners: Recorded::Value((mask & 16384 != 0).then(|| vec![9, 3])),
             };
             let delta = new.delta(Some(&old)).unwrap().unwrap();
             assert_eq!(delta.mask, mask);

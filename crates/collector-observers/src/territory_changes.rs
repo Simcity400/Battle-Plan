@@ -452,6 +452,8 @@ impl Hooks {
                 state_name_effect as *const () as usize,
                 recount_single_controller as *const () as usize,
                 refresh_cached_victory_point as *const () as usize,
+                add_contested_owner as *const () as usize,
+                remove_contested_owner as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
                 if (index == 12 && !SCRIPTED_CONTROLLERS.load(Ordering::Relaxed))
@@ -631,6 +633,9 @@ callback!(state_name_effect, 11);
 // Cached controller grouping publication (state, optional change result).
 callback!(recount_single_controller, 12);
 callback!(refresh_cached_victory_point, 13);
+// Contested owner insertion and removal (state, tag).
+callback!(add_contested_owner, 14);
+callback!(remove_contested_owner, 15);
 
 #[cfg(test)]
 mod tests {

@@ -342,6 +342,7 @@ compared_tables!(
     NavalAccidentReports,
     AirSortieModifiers,
     LocalPlayer,
+    LandUnitOrder,
     RaidFacilities,
     RaidIntelInputs,
     FloatingHarborDeployments,

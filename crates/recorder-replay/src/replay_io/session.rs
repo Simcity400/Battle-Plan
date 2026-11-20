@@ -1144,7 +1144,7 @@ fn save_locked(
     if newest.saved() != Some(newest.revision()) {
         writer::revise(
             &path,
-            (newest.root(), newest.revision()),
+            &newest,
             &writer::Addition::default(),
             true,
             block_settings().level,
@@ -1555,7 +1555,7 @@ pub(super) fn attach_facts(session_dir: &Path, path: &Path) -> Result<bool> {
         ..writer::Addition::default()
     };
     let saved = newest.saved() == Some(newest.revision());
-    writer::revise(path, (newest.root(), newest.revision()), &addition, saved, block_settings().level)
+    writer::revise(path, &newest, &addition, saved, block_settings().level)
         .map_err(|error| failure(path, error))?;
     Ok(true)
 }

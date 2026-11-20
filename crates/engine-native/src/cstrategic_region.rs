@@ -15,6 +15,9 @@ pub const RUNTIME_SLOT: usize = 0x60;
 pub const PROVINCES: usize = 0x18;
 /// Province count, i32, read before weather aggregation.
 pub const PROVINCES_COUNT: usize = 0x24;
+/// Weight in a naval route's controlled-region cost reduction, i32: the sum over its
+/// provinces written when the map loads.
+pub const ROUTE_WEIGHT: usize = 0xe0;
 /// Naval-dominance container pointer, authenticated before use.
 pub const NAVAL_DOMINANCE: usize = 0xe8;
 /// Hourly air-update phase, signed i32, initialized to -1. Province admission

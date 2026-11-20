@@ -252,3 +252,82 @@ fn display_bytes_join_by_slot_and_a_foreign_count_refuses() {
     ];
     assert!(fill_display(&memory, unreadable, 3, &mut rows).is_err());
 }
+
+/// A static modifier list reads each entry's days and its definition's script name in list
+/// order, inline and heap names alike; a definition without the static modifier vtable, an
+/// unreadable entry or a malformed header refuses the list.
+#[test]
+fn static_modifier_lists_keep_order_days_and_names() {
+    const VTABLE: u64 = 0x7777;
+    const LIST: usize = 0x100;
+    const FIRST: usize = 0x200;
+    const HEAP: usize = 0x800;
+    let definition_bytes = crate::cstatic_modifier::NAME + crate::msvc_string::STRIDE;
+    let mut bytes = vec![0_u8; 0x900];
+    let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
+    let long = b"a_mod_static_modifier_name";
+    for (index, (name, days)) in [(&b"the_great_wall"[..], -1_i32), (&long[..], 30)]
+        .into_iter()
+        .enumerate()
+    {
+        let definition = FIRST + index * definition_bytes;
+        put(definition, &VTABLE.to_le_bytes());
+        let string = definition + crate::cstatic_modifier::NAME;
+        if name.len() <= 15 {
+            put(string, name);
+            put(string + crate::msvc_string::CAPACITY, &15_u64.to_le_bytes());
+        } else {
+            put(HEAP, name);
+            put(string, &((0x10_000 + HEAP) as u64).to_le_bytes());
+            put(string + crate::msvc_string::CAPACITY, &31_u64.to_le_bytes());
+        }
+        put(
+            string + crate::msvc_string::LENGTH,
+            &(name.len() as u64).to_le_bytes(),
+        );
+        let entry = LIST + index * STATIC_MODIFIER_STRIDE;
+        put(entry, &((0x10_000 + definition) as u64).to_le_bytes());
+        put(entry + STATIC_MODIFIER_DAYS, &days.to_le_bytes());
+    }
+    let memory = SliceMemory {
+        base: 0x10_000,
+        bytes: &bytes,
+    };
+    let mut header = [0_u8; 16];
+    header[..8].copy_from_slice(&((0x10_000 + LIST) as u64).to_le_bytes());
+    header[8..12].copy_from_slice(&4_u32.to_le_bytes());
+    header[12..].copy_from_slice(&2_u32.to_le_bytes());
+    let list = static_modifier_list(header).unwrap();
+    let mut out = Vec::new();
+    read_static_modifiers(&memory, list, VTABLE as usize, &mut out).unwrap();
+    let mut expected = Vec::new();
+    for (name, days) in [(&b"the_great_wall"[..], -1_i32), (&long[..], 30)] {
+        expected.extend_from_slice(&days.to_le_bytes());
+        expected.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        expected.extend_from_slice(name);
+    }
+    assert_eq!(out, expected);
+    let empty = Array { data: 0, count: 0 };
+    out.clear();
+    read_static_modifiers(&memory, empty, VTABLE as usize, &mut out).unwrap();
+    assert!(out.is_empty());
+    assert_eq!(
+        read_static_modifiers(&memory, list, VTABLE as usize + 8, &mut Vec::new()),
+        Err("static modifier definition vtable mismatch")
+    );
+    assert_eq!(
+        read_static_modifiers(
+            &memory,
+            Array {
+                data: 0x10_000 + 0x8f8,
+                count: 2
+            },
+            VTABLE as usize,
+            &mut Vec::new()
+        ),
+        Err("static modifier list unreadable")
+    );
+    // A count past the capacity is malformed.
+    header[8..12].copy_from_slice(&1_u32.to_le_bytes());
+    assert_eq!(static_modifier_list(header), None);
+}

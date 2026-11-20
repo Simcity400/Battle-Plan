@@ -21,9 +21,9 @@ fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// A cell in the wire form a row's field codec reads; a column not selected reads as its kind's
-/// empty value, which no fold reads.
-pub fn field<'a>(kind: Kind, value: Option<Value<'a>>, texts: &'a HashMap<u32, Box<[u8]>>) -> Field<'a> {
+/// A cell in the wire form a row's field codec reads, an opaque one at the row format `format` its
+/// pages were written in; a column not selected reads as its kind's empty value, which no fold reads.
+pub fn field<'a>(kind: Kind, value: Option<Value<'a>>, texts: &'a HashMap<u32, Box<[u8]>>, format: u16) -> Field<'a> {
     let Some(value) = value else {
         return match kind {
             Kind::U8 => Field::U8(0),
@@ -68,7 +68,7 @@ pub fn field<'a>(kind: Kind, value: Option<Value<'a>>, texts: &'a HashMap<u32, B
         (Kind::Bytes, Value::Text(id)) => texts.get(&id).map_or(Field::NotRecorded, |text| Field::Bytes(text)),
         (Kind::U32List, Value::List(bytes)) => Field::U32List(List::Encoded(bytes)),
         (Kind::U64List, Value::List(bytes)) => Field::U64List(List::Encoded(bytes)),
-        (Kind::Opaque, Value::List(bytes)) => Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION)),
+        (Kind::Opaque, Value::List(bytes)) => Field::Opaque(Opaque::Encoded(bytes, format)),
         _ => Field::NotRecorded,
     }
 }
@@ -216,8 +216,8 @@ where
     fn row(&self, slot: u32, held: Option<&T::Row>) -> io::Result<Option<T::Row>> {
         let cells = self.lane.cells();
         let Some(key) = cells.key(slot).filter(|_| cells.live().get(slot)) else { return Ok(None) };
-        let (kinds, selected, texts) = (&self.kinds, &self.selected, &self.texts);
-        let read = |index: usize| field(kinds[index], Some(cells.value(index, slot)), texts);
+        let (kinds, selected, texts, format) = (&self.kinds, &self.selected, &self.texts, self.lane.format());
+        let read = |index: usize| field(kinds[index], Some(cells.value(index, slot)), texts, format);
         if let Some(held) = held.filter(|held| held.key() == key) {
             let mut row = held.clone();
             if row.patch_from_wire(self.mask, &mut |index| Ok(read(index)))? {
@@ -228,8 +228,9 @@ where
         T::Row::from_wire(key, &mut |index| {
             Ok(match (selected[index], &empty[index]) {
                 (Some(_), _) => read(index),
+                // This build encoded the type's empty value.
                 (None, Some(bytes)) => Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION)),
-                (None, None) => field(kinds[index], None, texts),
+                (None, None) => field(kinds[index], None, texts, format),
             })
         })
         .map(Some)

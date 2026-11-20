@@ -402,6 +402,7 @@ fn purchase_parser_preserves_full_typed_id_and_rejects_duplicate_identity() {
     assert_eq!(client.id, (90649_u64 << 32) | 4713);
     assert_eq!(client.efficiency.raw, 100_000);
     assert_eq!(client.efficiency_due_to_lost_convoys.raw, 96_728);
+    assert_eq!(client.request, Some(1));
     assert_eq!(
         client.convoys,
         ConvoyCounts {
@@ -543,6 +544,7 @@ fn lend_lease_keeps_each_exchanges_delivered_and_sunk_pools_in_save_order() {
         }
     );
     assert_eq!(ger[1].efficiency.raw, 25_000);
+    assert_eq!([ger[0].request, ger[1].request], [Some(0), Some(0)]);
     assert_eq!(ger[1].convoys, ConvoyCounts::default());
     assert_eq!(ger[0].delivered.equipment[1].amount.raw, 50_000);
     assert!(ger[0].sunk.equipment.is_empty());
@@ -550,6 +552,7 @@ fn lend_lease_keeps_each_exchanges_delivered_and_sunk_pools_in_save_order() {
     assert_eq!(ger[1].sunk.equipment[0].amount.raw, 300_000);
     let country = &parsed.countries[b"GER".as_slice()];
     assert_eq!(country.exports.as_ref().unwrap()[0].delivered.raw, 200_000);
+    assert_eq!(country.exports.as_ref().unwrap()[0].request, None);
     assert_eq!(country.pools.as_ref().unwrap().produced[0].1.raw, -1);
     assert_eq!(
         parsed.countries[b"ENG".as_slice()].lend_lease,

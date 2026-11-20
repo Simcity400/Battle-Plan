@@ -409,6 +409,8 @@ impl Lane {
             }
         }
         let log = reader::class_of(&held_run.pages, table)?.then(Box::default);
+        // Its cells hold the columns the pages hold, decoded as written; any later reads not recorded.
+        let kinds = kinds[..pages.held(table).min(kinds.len())].to_vec();
         Ok(Self {
             pages,
             run,
@@ -457,6 +459,11 @@ impl Lane {
 
     pub fn keyed(&self) -> bool {
         self.keyed
+    }
+
+    /// The row format its pages' cells were written in: an opaque cell decodes at it.
+    pub fn format(&self) -> u16 {
+        self.pages.format()
     }
 
     /// Its change sets hold the rows born and gone inside a step ([`Changes::passing`]).

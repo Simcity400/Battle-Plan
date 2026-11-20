@@ -226,6 +226,11 @@ mod tests {
     }
 
     fn replay() -> Replay {
+        Replay::from_records(CAMPAIGN.to_vec(), &[records(frame)]).unwrap()
+    }
+
+    /// Branch 1's session, its start and its hours, each `frame` gives.
+    fn records(frame: impl Fn(Hour) -> Frame) -> Vec<Record> {
         let session = SessionStart {
             id: 1,
             process_id: 1,
@@ -250,7 +255,99 @@ mod tests {
         let branch = BranchStart { id: 1, session: 1, loaded_hour: Some(FIRST.start - 1), first_hour: FIRST.start, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
         let mut records = vec![Record::SessionStart(session), Record::BranchStart(branch)];
         records.extend(FIRST.chain(LATER..LATER + 30).map(|hour| Record::Frame(frame(hour))));
-        Replay::from_records(CAMPAIGN.to_vec(), &[records]).unwrap()
+        records
+    }
+
+    /// A campaign recording of format 141, written as that build wrote it (its identity naming
+    /// that format's schema, its pages naming the tables it held, its records recorded in that
+    /// format), opens: its sessions and branch decode, its hours read as written, and each table
+    /// added at format 142 is not recorded, as a table its capture mode leaves out, never empty or
+    /// unavailable; the format that introduced it is named among its compatibility gaps.
+    #[test]
+    fn a_campaign_recording_of_an_earlier_format_opens_and_plays() {
+        use replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT;
+        let format = CAPTURE_ADDITIONS_FORMAT - 1;
+        let added: Vec<TableId> = TableId::ALL.into_iter().filter(|table| !table.last_change().present(format) && table.last_change().retired.is_none()).collect();
+        assert_eq!(added, [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs]);
+        let bytes = crate::campaign::fixtures::encode_records_at(format, CAMPAIGN.to_vec(), &[records(|hour| frame_at(format, hour))]).unwrap();
+        let replay = Replay::open(bytes).unwrap();
+        assert_eq!((replay.sessions.len(), replay.branches.len()), (1, 1));
+        assert_eq!(replay.recording.tables(), TableId::ALL.len() - added.len());
+        assert_eq!(replay.format.version(), format);
+        let gaps = replay.compatibility_gaps();
+        for table in &added {
+            let gap = table.last_change().table_gap(*table, format).unwrap().to_string();
+            assert!(gaps.iter().any(|reason| reason.contains(&gap)), "{gap}: {gaps:?}");
+        }
+        let mut tables = TABLES.to_vec();
+        tables.extend(&added);
+        for hour in [FIRST.start, FIRST.start + BLOCK + 7, FIRST.end - 1, LATER + 29] {
+            let SeekResult::Frame(frame) = replay.seek_selected(1, hour, Some(&tables)).unwrap() else { panic!("hour {hour} is a gap") };
+            assert_eq!(*frame.tables[TableId::Clock.index()], TableView::Complete(TableRows::Clock(vec![ClockRow { hour, ..Default::default() }])), "hour {hour}");
+            for table in &added {
+                assert_eq!(*frame.tables[table.index()], TableView::NotRecorded { mode: replay.capture_mode }, "hour {hour}: {table:?}");
+                assert!(!frame.recorded(*table), "hour {hour}: {table:?}");
+            }
+        }
+    }
+
+    /// [`frame`] as a build of row format `format` wrote it: the tables added since not recorded.
+    fn frame_at(format: u16, hour: Hour) -> Frame {
+        let mut frame = frame(hour);
+        for table in TableId::ALL.into_iter().filter(|table| !table.last_change().present(format) && table.last_change().retired.is_none()) {
+            frame.tables[table.index()] = TableUpdate::NotRecorded { mode: CaptureMode::Full };
+        }
+        frame
+    }
+
+    /// Records recovery adds to a recording of format 141 are recorded in format 141, as a
+    /// recording never mixes formats: it reopens at 141 holding them. A control whose layout
+    /// changed after a recording's format cannot be written in it and is refused by name.
+    #[test]
+    fn records_added_to_a_recording_of_an_earlier_format_are_recorded_in_its_format() {
+        use crate::{
+            branches::Gap,
+            campaign::{
+                Records,
+                writer::{self, Addition},
+            },
+            columnar_frames::{Open, Recording},
+            spool::ControlRecord,
+        };
+        use replay_data::rows::compatibility::{CAPTURE_ADDITIONS_FORMAT, EVENT_LOSS_FORMAT};
+        let format = CAPTURE_ADDITIONS_FORMAT - 1;
+        let bytes = crate::campaign::fixtures::encode_records_at(format, CAMPAIGN.to_vec(), &[records(|hour| frame_at(format, hour))]).unwrap();
+        let path = std::env::temp_dir().join(format!("hoi4-revise-earlier-format-{}", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let opened = Recording::open_path_as(&path, Open::Newest).unwrap();
+        assert_eq!(opened.format(), format);
+        let gap = Gap { branch: 1, first_hour: LATER + 30, last_hour: LATER + 40, reason: "recovered".into() };
+        let partial = ControlRecord::Partial { session: 1, reason: "the capture failed".into(), failed_hour: Some(LATER + 41) };
+        let added = Records { gaps: vec![gap.clone()], controls: vec![partial.clone()], ..Records::default() };
+        writer::revise(&path, &opened, &Addition { records: Some(&added), ..Addition::default() }, false, 3).unwrap();
+        drop(opened);
+        let reopened = Replay::open_path_as(&path, Open::Newest).unwrap();
+        assert_eq!(reopened.format.version(), format);
+        assert_eq!(reopened.recording.format(), format);
+        assert!(reopened.gaps.contains(&gap), "{:?}", reopened.gaps);
+        assert!(reopened.controls.contains(&partial), "{:?}", reopened.controls);
+        drop(reopened);
+        std::fs::remove_file(&path).unwrap();
+        let loss = Records { controls: vec![ControlRecord::EventLoss { session: 1, branch: 1, after_hour: 1, hour: 2 }], ..Records::default() };
+        let error = loss.encode(crate::format::FormatVersion::read(EVENT_LOSS_FORMAT - 1).unwrap()).unwrap_err();
+        assert!(error.to_string().contains("EventLoss layout changed"), "{error}");
+    }
+
+    /// A recording whose records name a format newer than this build's, its change leaving this
+    /// build's schema digest alone, is refused by name however it is opened, never read under
+    /// this build's contract.
+    #[test]
+    fn a_recording_of_a_newer_format_is_refused_by_name_however_it_is_opened() {
+        let newer = crate::format::FormatVersion::CURRENT.version() + 1;
+        let bytes = crate::campaign::fixtures::encode_records_naming(newer, CAMPAIGN.to_vec(), &[records(frame)]).unwrap();
+        for error in [crate::columnar_frames::Recording::open(bytes.clone()).map(drop).unwrap_err(), Replay::open(bytes).map(drop).unwrap_err()] {
+            assert!(error.to_string().contains(&format!("recording format {newer} is newer")), "{error}");
+        }
     }
 
     /// Each table's restores so far.

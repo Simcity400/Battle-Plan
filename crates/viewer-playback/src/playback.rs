@@ -625,6 +625,7 @@ pub mod tests {
                         organisation: 6_000_000,
                         orders_group: (57_u64 << 32) | 53,
                         reveal_skip: 0,
+                        theatre: Some(0).into(),
                     }])),
                     TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
                         first_country: 1,

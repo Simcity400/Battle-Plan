@@ -204,6 +204,9 @@ pub const fn cadence(table: TableId) -> Cadence {
         // owner.
         TableId::TradeRoutes => Sliced,
         TableId::StateCores => Sliced,
+        // The state view's shared slot and factory energy operands (owner decision 2026-11-19:
+        // daily), every state in one walk.
+        TableId::StateBuildingInputs => Daily(14),
         TableId::StateResourceInputs
         | TableId::StateResources
         | TableId::StateDynamicModifiers
@@ -257,6 +260,8 @@ pub const fn cadence(table: TableId) -> Cadence {
         // collector also re-reads them whenever the table's data pointer or
         // count changes, as it does the lexer on a new maximum token.
         TableId::ModifierDefinitions => Static,
+        // Summed from each region's provinces only when the map loads.
+        TableId::StrategicRegionWeights => Static,
         // Relations feed the perspective, opinion predicates and the naval map's diplomatic
         // gradients. One walk of every owner would spike its hour at thousands of countries, so
         // each owner's relations are read in its slice, and each hour also reads every owner a

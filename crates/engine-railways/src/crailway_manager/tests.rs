@@ -436,7 +436,9 @@ fn run(bytes: &[u8], provinces: &mut Vec<info::Row>, edges: &mut Vec<edge::Row>)
 fn directed_edges_and_native_values_survive_without_vanilla_caps() {
     let mut provinces = vec![info::Row::default(); 4];
     let mut edges = vec![edge::Row::default(); 4];
-    let result = run(&fixture(), &mut provinces, &mut edges);
+    let mut bytes = fixture();
+    put(&mut bytes, 0x1080 + info::BUILDING, 0x7000_u64.to_le_bytes());
+    let result = run(&bytes, &mut provinces, &mut edges);
     assert_eq!(
         result,
         Outcomes {
@@ -448,14 +450,16 @@ fn directed_edges_and_native_values_survive_without_vanilla_caps() {
         provinces[0],
         info::Row {
             province: 1,
-            cooldown_ticks: 0
+            cooldown_ticks: 0,
+            building_bound: false
         }
     );
     assert_eq!(
         provinces[1],
         info::Row {
             province: 3,
-            cooldown_ticks: i32::MAX
+            cooldown_ticks: i32::MAX,
+            building_bound: true
         }
     );
     assert_eq!(
@@ -602,6 +606,16 @@ fn faults_are_scoped_to_the_table_that_reads_the_field() {
             Outcome::Rows { len: 2 },
             Outcome::Unavailable {
                 reason: "rail neighbor rows unreadable",
+            },
+        ),
+        // The building pointer shares the identity span: no row claims it unread.
+        (
+            0x2000 + info::BUILDING,
+            Outcome::Unavailable {
+                reason: "rail info identity unreadable",
+            },
+            Outcome::Unavailable {
+                reason: "rail info identity unreadable",
             },
         ),
     ] {

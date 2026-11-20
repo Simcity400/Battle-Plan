@@ -465,10 +465,18 @@ pub struct FactionTheatreRow {
     pub country_count: u32,
     /// Raw country links whose theatre pin is hidden, in stored order.
     pub hidden_for: Vec<u32>,
+    /// The theatre's name bytes as stored (save `name`), shown as is.
+    pub name: Recorded<Vec<u8>>,
+    /// Raw country link of the theatre's owner (save `tag`).
+    pub owner: Recorded<u32>,
+    /// Commander reference, low u32 type and high u32 id (save `commander`); None when null.
+    pub commander: Recorded<Option<u64>>,
+    /// Raw country links of the theatre's countries in stored order (save `countries`).
+    pub countries: Recorded<Vec<u32>>,
 }
 typed_codec!(FactionTheatreRow, 96, |row| (row.faction as u128) << 32 | row.ordinal as u128,
  |key| Self { faction: (key >> 32) as u64, ordinal: key as u32, ..Default::default() },
- { 0 => (icon): Bytes, 1 => (regions): U32List, 2 => (country_count): U32, 3 => (hidden_for): U32List }, |_row| Ok(()));
+ { 0 => (icon): Bytes, 1 => (regions): U32List, 2 => (country_count): U32, 3 => (hidden_for): U32List, 4 => (name): Bytes, 5 => (owner): U32, 6 => (commander): OptionalU64, 7 => (countries): U32List }, |_row| Ok(()));
 /// One terrain a retired [`DivisionEtaInputsRow`] route touched.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
@@ -648,6 +656,8 @@ pub struct DivisionMovementRow {
     /// The movement pass's base speed (inner None: its read refused), only where the hour's
     /// DivisionPanelStats does not give the same ([`Self::base_speed`]).
     pub own_base_speed: Option<Option<i64>>,
+    /// Length of the unit's queued order list, saved as its `commandlist`. None is a read refusal.
+    pub queued_actions: Recorded<Option<i32>>,
 }
 impl DivisionMovementRow {
     /// The raw signed fixed5 maximum speed of the division's stat block, which the movement speed
@@ -673,7 +683,7 @@ impl DivisionMovementRow {
 }
 typed_codec!(DivisionMovementRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
- { 0 => (source): U32, 1 => (target): U32, 2 => (numerator): I64, 3 => (retreat): U8, 4 => (strategic_redeployment): U8, 5 => (naval_transfer): U8, 6 => (combat_count): U32, 7 => (path_total): U32, 8 => (path): U32List, 9 => (alternate_total): U32, 10 => (alternate_path): U32List, 11 => (combat_role): U8, 12 => (combat_province): U32, 13 => (map_entity): U8, 14 => (strategic_action): Opaque, 15 => (withdrawal): Opaque, 16 => (movement_priority): OptionalI32, 17 => (order_transport): Opaque, 18 => (combat_references): Opaque, 19 => (fuel): OptionalI64, 20 => (transport_speed): OptionalI64, 21 => (own_base_speed): Opaque }, |row| {
+ { 0 => (source): U32, 1 => (target): U32, 2 => (numerator): I64, 3 => (retreat): U8, 4 => (strategic_redeployment): U8, 5 => (naval_transfer): U8, 6 => (combat_count): U32, 7 => (path_total): U32, 8 => (path): U32List, 9 => (alternate_total): U32, 10 => (alternate_path): U32List, 11 => (combat_role): U8, 12 => (combat_province): U32, 13 => (map_entity): U8, 14 => (strategic_action): Opaque, 15 => (withdrawal): Opaque, 16 => (movement_priority): OptionalI32, 17 => (order_transport): Opaque, 18 => (combat_references): Opaque, 19 => (fuel): OptionalI64, 20 => (transport_speed): OptionalI64, 21 => (own_base_speed): Opaque, 22 => (queued_actions): OptionalI32 }, |row| {
  check_unit_combat_references(&row.combat_references, row.combat_count)?;
  let reached = (row.path_total as i32) > 0 && row.target == 0
      && row.retreat == 0 && row.strategic_redeployment != 0;
@@ -2039,9 +2049,12 @@ pub struct RailCooldownRow {
     /// Kept outside the packet so unchanged native vectors remain unchanged
     /// when this hourly observation advances; carried packets refuse selection.
     pub selection_hour: Recorded<Option<i32>>,
+    /// The info's railway building pointer is set, for every info; a null one shows as
+    /// fully damaged. None is a read refusal.
+    pub building_bound: Recorded<Option<bool>>,
 }
 typed_codec!(RailCooldownRow, 32, |row| row.province as u128, |key| Self { province: key as u32, ..Default::default() },
- { 0 => (cooldown_ticks): I32, 1 => (building): Opaque, 2 => (selection): Opaque, 3 => (selection_hour): OptionalI32 }, |_row| Ok(()));
+ { 0 => (cooldown_ticks): I32, 1 => (building): Opaque, 2 => (selection): Opaque, 3 => (selection_hour): OptionalI32, 4 => (building_bound): Opaque }, |_row| Ok(()));
 
 /// RailEdges: key from:to (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

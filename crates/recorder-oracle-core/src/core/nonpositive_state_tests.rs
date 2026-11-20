@@ -15,6 +15,7 @@ fn fixture(
             manpower_available: -5,
             custom_name: b"kept name".to_vec(),
             category: Some(super::super::fixtures::FIXTURE_CATEGORY_TOKEN).into(),
+            marked_owners: Some(Vec::new()).into(),
             ..Default::default()
         }]));
     let saved = save.states.get_mut(&1).unwrap();
@@ -337,5 +338,40 @@ fn state_population_compares_with_the_saved_pool_total() {
             .limitations
             .keys()
             .any(|reason| reason.contains("certifies a nonpositive population"))
+    );
+}
+
+/// Marked owners compare with the saved `contested_owners` tags in stored order; a refused read
+/// is a difference and an older recording a named limitation.
+#[test]
+fn marked_owners_compare_with_saved_contested_owners_in_order() {
+    let set = |frame: &mut DecodedFrame, owners: replay_data::rows::Recorded<Option<Vec<u32>>>| {
+        let TableView::Complete(TableRows::States(states)) =
+            &mut *frame.tables[TableId::States.index()]
+        else {
+            unreachable!()
+        };
+        states[0].marked_owners = owners;
+    };
+    let (mut frame, mut save, membership) = fixture(0, 999);
+    save.states.get_mut(&1).unwrap().contested_owners = vec![b"GER".to_vec()];
+    let report = run(&frame, &save, &membership);
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(report.differences[0].contains("marked_owners"));
+    set(&mut frame, Some(vec![101]).into());
+    assert!(run(&frame, &save, &membership).differences.is_empty());
+    set(&mut frame, Some(vec![101, 101]).into());
+    assert_eq!(run(&frame, &save, &membership).differences.len(), 1);
+    set(&mut frame, None.into());
+    let report = run(&frame, &save, &membership);
+    assert!(report.differences[0].contains("refused read"));
+    set(&mut frame, replay_data::rows::Recorded::NotRecorded);
+    let report = run(&frame, &save, &membership);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .values()
+            .any(|subjects| subjects.iter().any(|subject| subject.contains("marked_owners")))
     );
 }

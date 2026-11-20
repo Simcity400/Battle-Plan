@@ -9,9 +9,31 @@ fn regional_weather_map_terms_delta_without_repeating_quiet_siblings() {
         naval_detection: Some(-33_333).into(),
         air_attack: Some(i64::MIN).into(),
         air_defence: Some(i64::MAX).into(),
+        custom_sea: Some(vec![1, 0, i16::MIN]).into(),
         ..Default::default()
     };
     for (next, mask) in [
+        (
+            WeatherRegionRow {
+                custom_sea: Some(vec![1, 1, i16::MIN]).into(),
+                ..previous.clone()
+            },
+            1 << 15,
+        ),
+        (
+            WeatherRegionRow {
+                custom_sea: Some(Vec::new()).into(),
+                ..previous.clone()
+            },
+            1 << 15,
+        ),
+        (
+            WeatherRegionRow {
+                custom_sea: None.into(),
+                ..previous.clone()
+            },
+            1 << 15,
+        ),
         (
             WeatherRegionRow {
                 naval_detection: Some(-33_334).into(),
@@ -570,6 +592,42 @@ fn a_province_accumulator_keeps_every_entry() {
     assert_eq!(modifiers.get(0x2b), Some(-40_000));
     assert_eq!(modifiers.get(0x4f), Some(0));
     assert_eq!(modifiers.get(0x50), None);
+}
+
+/// A province's static modifier list round-trips in the game's order with its days; an
+/// empty list and a refused read stay distinct.
+#[test]
+fn a_province_static_modifier_list_keeps_order_days_and_refusal() {
+    let list = ProvinceStaticModifiers {
+        entries: vec![
+            ProvinceStaticModifier {
+                name: b"the_great_wall".to_vec(),
+                days: -1,
+            },
+            ProvinceStaticModifier {
+                name: b"flooded".to_vec(),
+                days: 30,
+            },
+            ProvinceStaticModifier {
+                name: Vec::new(),
+                days: 0,
+            },
+        ],
+    };
+    for value in [Some(list), Some(ProvinceStaticModifiers::default()), None] {
+        let row = WeatherProvinceRow {
+            id: 7,
+            static_modifiers: Recorded::Value(value.clone()),
+            ..Default::default()
+        };
+        let mut fields = Vec::new();
+        row.encode_fields(&mut fields).unwrap();
+        let decoded =
+            WeatherProvinceRow::decode_fields(row.key(), &mut Decoder::new(&fields)).unwrap();
+        assert_eq!(decoded.static_modifiers, Recorded::Value(value.clone()));
+        let delta = row.delta(None).unwrap().unwrap();
+        assert_eq!(delta.apply::<WeatherProvinceRow>(None).unwrap(), decoded);
+    }
 }
 
 /// An accumulator holds each key once, positive and ascending: a duplicate key, whose

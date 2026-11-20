@@ -154,8 +154,13 @@ impl Records {
             && self.stops.is_empty()
     }
 
-    /// The extent bytes holding these records, recorded in `format`.
+    /// The extent bytes holding these records, recorded in `format`: this build's, or an earlier
+    /// one whose layout of every record written is this build's (as [`Self::decode_into`] reads
+    /// it); a record whose layout changed since `format` is refused by name.
     pub fn encode(&self, format: FormatVersion) -> io::Result<Vec<u8>> {
+        for control in &self.controls {
+            format.require(control.kind())?;
+        }
         let mut out = Vec::new();
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&format.version().to_le_bytes());
@@ -188,21 +193,15 @@ impl Records {
         Some(u16::from_le_bytes(rest.get(..2)?.try_into().ok()?))
     }
 
-    /// Adds the records an extent holds to these, refusing a format other than this build's
-    /// by name.
+    /// Adds the records an extent holds to these, each as its row format wrote it: this build's,
+    /// or an earlier one of the proven history whose record layouts are unchanged since. Any
+    /// other format is refused by name.
     pub fn decode_into(&mut self, bytes: &[u8]) -> io::Result<()> {
         let format = Self::format_of(bytes)
             .ok_or_else(|| invalid("A campaign records extent holds no campaign records"))?;
-        if format != FormatVersion::CURRENT.version() {
-            return Err(invalid(format!(
-                "A recording of row format {format}; this build reads row format {} only and \
-                 has no upgrader for it",
-                FormatVersion::CURRENT.version()
-            )));
-        }
+        let version = FormatVersion::read(format)?;
         let mut input = Decoder::new(&bytes[MAGIC.len() + 2..]);
         input.format = format;
-        let version = FormatVersion::CURRENT;
         read_list(&mut input, format, &mut self.sessions, SessionStart::decode)?;
         read_list(&mut input, format, &mut self.branches, BranchStart::decode)?;
         read_list(&mut input, format, &mut self.gaps, Gap::decode)?;

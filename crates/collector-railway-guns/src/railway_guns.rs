@@ -813,6 +813,8 @@ impl Captured {
                             orders_group: inputs.orders_group,
                         }),
                 ),
+                theatre: Recorded::Value(r.theatre),
+                queued_actions: Recorded::Value(r.queued_actions),
             }
         })
     }

@@ -1895,6 +1895,7 @@ fn division(id: u64, hit_points: i64, organisation: i64) -> DivisionRow {
         organisation,
         orders_group: 0x0000_0039_0000_0035,
         reveal_skip: 0,
+        theatre: Some(0).into(),
     }
 }
 

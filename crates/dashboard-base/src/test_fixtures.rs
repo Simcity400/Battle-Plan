@@ -109,7 +109,7 @@ pub fn write_with_facts(
     std::fs::write(path, replay.bytes()).unwrap();
     replay::campaign::writer::revise(
         path,
-        (replay.recording().root(), replay.revision()),
+        replay.recording(),
         &replay::campaign::writer::Addition {
             facts: Some(&pack),
             ..Default::default()

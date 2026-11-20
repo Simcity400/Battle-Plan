@@ -400,10 +400,27 @@ mod hours {
 
         /// [`Self::new`], its blocks restored and packed as `settings` say.
         pub fn with_unit(file: FileWriter<W>, level: i32, settings: unit::Settings) -> io::Result<Self> {
-            let kinds = crate::columnar_frames::schema()?;
+            Self::with_schema(file, level, settings, crate::columnar_frames::schema()?)
+        }
+
+        /// [`Self::with_unit`] as a build of an earlier format wrote: of the schema's first
+        /// `columns.len()` tables, each its first `columns[table]` columns, for tests of reading
+        /// one. `file` names as many tables.
+        #[cfg(any(test, feature = "test-support"))]
+        pub fn framed(file: FileWriter<W>, level: i32, settings: unit::Settings, columns: &[usize]) -> io::Result<Self> {
+            let mut kinds = crate::columnar_frames::schema()?;
+            kinds.truncate(columns.len());
+            for (kinds, &held) in kinds.iter_mut().zip(columns) {
+                kinds.truncate(held);
+            }
+            Self::with_schema(file, level, settings, kinds)
+        }
+
+        fn with_schema(file: FileWriter<W>, level: i32, settings: unit::Settings, kinds: Vec<Vec<replay_columnar::state::Kind>>) -> io::Result<Self> {
+            let tables = kinds.len();
             let columns = kinds.iter().map(Vec::len).collect();
-            let mut store = Store::new(kinds.clone(), crate::columnar_frames::keeps_last().to_vec());
-            store.declare_logs(&crate::rows::logs())?;
+            let mut store = Store::new(kinds.clone(), crate::columnar_frames::keeps_last()[..tables].to_vec());
+            store.declare_logs(&crate::rows::logs()[..tables])?;
             store.attach(Encoder::new(&kinds, settings)?);
             let appended = Appended::default();
             store.read_strings_from(Box::new(appended.clone()));

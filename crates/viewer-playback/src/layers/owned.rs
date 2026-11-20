@@ -80,7 +80,8 @@ fn cell(value: Value<'_>) -> Cell<Value<'_>> {
 
 /// A table's standing as its mirror keeps it, kept from the steps alone: its status and sample
 /// hour, its head, whether a gap step left it unrecorded, an unavailable status's reason in words,
-/// the recording's capture mode, and the table's strings where the mirror keeps them.
+/// the recording's capture mode and row format, and the table's strings where the mirror keeps
+/// them.
 #[derive(Default)]
 pub struct Standing {
     table: Option<TableId>,
@@ -89,6 +90,7 @@ pub struct Standing {
     gap: bool,
     reason: Option<(u32, Box<str>)>,
     capture: Option<CaptureMode>,
+    format: u16,
     strings: Option<HashMap<u32, Box<[u8]>>>,
 }
 
@@ -102,6 +104,7 @@ impl Standing {
             gap,
             reason: reason.map(|(id, text)| (id, text.into())),
             capture: mirror.capture(),
+            format: mirror.format(),
             strings: mirror.strings().map(|strings| strings.map(|(id, text)| (id, Box::from(text))).collect()),
         }
     }
@@ -188,6 +191,11 @@ fn text_of(mirror: &Mirror, column: usize, slot: u32) -> (Box<[u8]>, u8) {
 }
 
 impl Table {
+    /// The row format its cells were written in: an opaque cell decodes at it.
+    pub fn format(&self) -> u16 {
+        self.standing.format
+    }
+
     /// The kept columns of `mirror` whole.
     pub fn from_mirror(mirror: &Mirror, shape: &Shape) -> Self {
         let mut table = Self {
@@ -494,11 +502,17 @@ pub fn complete(tables: &Tables, table: TableId) -> Option<&Table> {
 /// Rows whose list cells read as the mirror's do: the mirror itself, or a worker's owned copy.
 pub trait ListCells {
     fn list_cell(&self, column: List, slot: u32) -> Cell<&[u8]>;
+    /// The row format its cells were written in: an opaque cell decodes at it.
+    fn format(&self) -> u16;
 }
 
 impl ListCells for Mirror {
     fn list_cell(&self, column: List, slot: u32) -> Cell<&[u8]> {
         self.list(column, slot)
+    }
+
+    fn format(&self) -> u16 {
+        Mirror::format(self)
     }
 }
 
@@ -506,12 +520,17 @@ impl ListCells for Table {
     fn list_cell(&self, column: List, slot: u32) -> Cell<&[u8]> {
         self.list(column, slot)
     }
+
+    fn format(&self) -> u16 {
+        Table::format(self)
+    }
 }
 
-/// An opaque cell decoded as the row field's own value type; a cell not recorded is `NotRecorded`.
+/// An opaque cell decoded as the row field's own value type at its rows' format; a cell not
+/// recorded is `NotRecorded`.
 pub fn opaque<T: NativeValue>(rows: &impl ListCells, column: List, slot: u32) -> Result<Recorded<T>, String> {
     let field = match rows.list_cell(column, slot) {
-        Cell::Value(bytes) => Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION)),
+        Cell::Value(bytes) => Field::Opaque(Opaque::Encoded(bytes, rows.format())),
         _ => Field::NotRecorded,
     };
     <Recorded<T> as NativeValue>::from_field(field).map_err(|error| error.to_string())

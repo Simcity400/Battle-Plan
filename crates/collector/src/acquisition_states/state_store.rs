@@ -5,7 +5,7 @@
 //! by reinforcement) and population in one record, and the shared infrastructure and continent operands
 //! ([`cstate::globals`]), and the StateFlags visitor still reads every
 //! state. A state's owner, controller, continent, movement infrastructure,
-//! names and railway fraction are carried, without reading its tags,
+//! names, marked owners and railway fraction are carried, without reading its tags,
 //! template, building status or strings, only when all of these hold: the
 //! take of the hour's marked states returned the epoch of the held complete
 //! capture, the state was not marked, and the header, every slot pointer and
@@ -61,12 +61,14 @@ impl Held {
         self.fractions.clear();
     }
 
-    fn names(&self, index: usize) -> ([&[u8]; 2], Option<bool>, Option<i32>) {
+    fn names(&self, index: usize) -> cstate::Carried<'_> {
         let row = &self.rows[index];
+        let bytes = |span: cstate::NameSpan| &self.names[span.start..][..span.len];
         (
-            [row.custom_name, row.owner_name].map(|span| &self.names[span.start..][..span.len]),
+            [row.custom_name, row.owner_name].map(bytes),
             row.single_controller,
             row.best_vp_index,
+            row.marked_owners.map(bytes),
         )
     }
 

@@ -261,7 +261,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::STANDALONE_UNITS_FORMAT
+            crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -271,6 +271,9 @@ mod tests {
             let format = FormatVersion::read(version).unwrap();
             // Retired tables are refused by name in every recording.
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version < crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT {
+                expected.push(TableId::StrategicRegionWeights);
+            }
             if version < crate::rows::compatibility::EXACT_NAVAL_CONDITION_FORMAT {
                 expected.push(TableId::NavalCombatShips);
             }
@@ -504,6 +507,12 @@ mod tests {
             }
             if version < crate::rows::compatibility::DIVISION_MODEL_INPUTS_FORMAT {
                 expected.push(TableId::DivisionModelInputs);
+            }
+            if version < crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT {
+                expected.push(TableId::LandUnitOrder);
+            }
+            if version < crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT {
+                expected.push(TableId::StateBuildingInputs);
             }
             if version < crate::rows::compatibility::RETREAT_BANS_FORMAT {
                 expected.push(TableId::DivisionRetreatBans);

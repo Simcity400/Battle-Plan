@@ -35,7 +35,7 @@ fn writers() -> Writers {
 }
 
 fn division(id: u64, roster: u32, expeditionary: u32, province: u32, reveal_skip: u8) -> DivisionRow {
-    DivisionRow { id, roster_owner: roster, logical_owner: roster, expeditionary_owner: expeditionary, province, template: TEMPLATE, hit_points: 90_000, organisation: 50_000, orders_group: 0, reveal_skip }
+    DivisionRow { id, roster_owner: roster, logical_owner: roster, expeditionary_owner: expeditionary, province, template: TEMPLATE, hit_points: 90_000, organisation: 50_000, orders_group: 0, reveal_skip, theatre: Some(0).into() }
 }
 
 fn status(id: u64, name: &[u8]) -> DivisionStatusRow {

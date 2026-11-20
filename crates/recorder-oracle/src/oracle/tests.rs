@@ -364,6 +364,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         movement_priority: Recorded::Value(Some(1)),
         own_base_speed: Some(Some(400_000)),
         fuel: Recorded::Value(Some(60_480_000)),
+        queued_actions: Recorded::Value(Some(0)),
         ..Default::default()
     };
     // A recording before `camouflage` compares its entries.
@@ -5560,6 +5561,7 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
         own_base_speed: Some(Some(400_000)),
         // A nonempty route records its fuel; the save's absent fuel is zero.
         fuel: Recorded::Value(Some(0)),
+        queued_actions: Recorded::Value(Some(0)),
         ..Default::default()
     };
     *frame.tables[TableId::DivisionMovement.index()] =

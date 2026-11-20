@@ -292,7 +292,7 @@ fn name_lost_hours(
             records: Some(&records),
             ..writer::Addition::default()
         };
-        writer::revise(path, (newest.recording().root(), newest.revision()), &addition, false, level)
+        writer::revise(path, newest.recording(), &addition, false, level)
             .map_err(|error| failure(path, error))?;
     }
     Ok(None)

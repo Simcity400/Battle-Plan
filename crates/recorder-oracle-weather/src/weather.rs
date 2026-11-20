@@ -12,8 +12,8 @@ use installed_content_weather::{
     weather::TEMPERATURE_MODIFIERS,
 };
 use replay_data::{
-    rows::ClockState, rows::ProvinceWeatherModifiers, rows::Recorded, rows::TemperatureRecord,
-    rows::tables,
+    rows::ClockState, rows::ProvinceStaticModifiers, rows::ProvinceWeatherModifiers,
+    rows::Recorded, rows::TemperatureRecord, rows::tables,
 };
 use replay_derive::modifier_registry::Registry;
 use replay_frame::frame::DecodedFrame;
@@ -189,6 +189,7 @@ fn compare_provinces(
 
     let mut compared_provinces = 0;
     let mut compared_modifiers = 0;
+    let mut compared_statics = 0;
     if let Some(expected) = &saved.weather.provinces {
         for (ordinal, expected) in expected.iter().enumerate() {
             // The weather manager writer emits every slot from zero to count, in array order.
@@ -296,6 +297,31 @@ fn compare_provinces(
                 }
                 None => {}
             }
+            let field = format!("{label}.static_modifiers");
+            match report.recorded(
+                &actual.static_modifiers,
+                "WeatherProvinces.static_modifiers",
+                &field,
+            ) {
+                Some(None) => {
+                    report.failed_comparisons.insert(
+                        field.clone(),
+                        format!("{field}: read refused, not compared"),
+                    );
+                }
+                Some(Some(recorded)) => {
+                    compared_statics += 1;
+                    report.scalar_checks += 1;
+                    if !statics_match(recorded, expected.custom_modifiers.as_deref()) {
+                        report.difference(
+                            field,
+                            static_list(recorded),
+                            expected.custom_modifiers.as_deref().unwrap_or_default(),
+                        );
+                    }
+                }
+                None => {}
+            }
         }
         for id in provinces.keys() {
             report.difference(format!("weather province {id}"), "present", "absent");
@@ -309,6 +335,7 @@ fn compare_provinces(
     }
     report.compared("WeatherProvinces", compared_provinces);
     report.compared("WeatherProvinces modifiers", compared_modifiers);
+    report.compared("WeatherProvinces static modifiers", compared_statics);
     if compared_modifiers != 0 {
         report.limitation(
             "the weather manager writer saves no province modifier accumulator; a load rebuilds it from the saved mud, temperature, snow and list, while the live one keeps the mud, thermal and ground snow modifiers of its last rebuild (the hourly window rebuilds only on a change against the record's previous hour, and temperatures and mud also change outside that test). The list's static modifiers and their arithmetic are compared exactly",
@@ -328,6 +355,34 @@ fn compare_provinces(
         "WeatherProvinces.display: runtime-only; no text-save equality claim",
     );
     Ok(())
+}
+
+/// Whether a recorded static modifier list is the saved one: the weather writer saves each
+/// entry's name and days in list order, and an empty list as none.
+fn statics_match(recorded: &ProvinceStaticModifiers, saved: Option<&[(String, i64)]>) -> bool {
+    let saved = saved.unwrap_or_default();
+    recorded.entries.len() == saved.len()
+        && recorded
+            .entries
+            .iter()
+            .zip(saved)
+            .all(|(entry, (name, days))| {
+                entry.name == name.as_bytes() && i64::from(entry.days) == *days
+            })
+}
+
+/// A recorded static modifier list as the save would name it.
+fn static_list(recorded: &ProvinceStaticModifiers) -> Vec<(String, i64)> {
+    recorded
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                String::from_utf8_lossy(&entry.name).into_owned(),
+                i64::from(entry.days),
+            )
+        })
+        .collect()
 }
 
 /// Definition keys and raw values, as a static modifier adds them.
@@ -632,6 +687,12 @@ fn compare_regions(frame: &DecodedFrame, saved: &Save, report: &mut Report) -> i
             ] {
                 truth(report, &format!("{label}.{name}"), captured, saved);
             }
+            custom_sea(
+                report,
+                &label,
+                &actual.custom_sea,
+                expected.active_modifiers.as_deref(),
+            );
         }
         for id in regions.keys() {
             report.difference(format!("weather region {id}"), "present", "absent");
@@ -668,6 +729,28 @@ fn sparse_scalar(
     report.scalar_checks += 1;
     if captured != expected {
         report.difference(format!("{label}.{field}"), captured, expected);
+    }
+}
+
+fn custom_sea(
+    report: &mut Report,
+    label: &str,
+    captured: &replay_data::rows::Recorded<Option<Vec<i16>>>,
+    saved: Option<&[i64]>,
+) {
+    // The weather region writer omits an empty array.
+    let expected = saved.unwrap_or_default();
+    let label = format!("{label}.active_modifiers");
+    match captured {
+        replay_data::rows::Recorded::Value(Some(values)) => {
+            if !values.iter().map(|&value| i64::from(value)).eq(expected.iter().copied()) {
+                report.difference(label, values, expected);
+            }
+        }
+        replay_data::rows::Recorded::Value(None) => report.difference(label, "refused", expected),
+        replay_data::rows::Recorded::NotRecorded => {
+            report.limitation("WeatherRegions.custom_sea not recorded", label)
+        }
     }
 }
 

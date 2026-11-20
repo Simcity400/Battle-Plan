@@ -49,6 +49,7 @@ pub struct Recording {
     bytes: Vec<u8>,
     runs: Vec<Run>,
     kinds: Vec<Vec<Kind>>,
+    format: u16,
 }
 
 impl Pages for Recording {
@@ -63,6 +64,10 @@ impl Pages for Recording {
     fn kinds(&self, table: usize) -> Option<&[Kind]> {
         self.kinds.get(table).map(Vec::as_slice)
     }
+
+    fn format(&self) -> u16 {
+        self.format
+    }
 }
 
 /// A recording of the real schema over `hours` hours from game hour 0, `hour` writing each hour's
@@ -73,7 +78,12 @@ pub fn record(hours: u32, mut hour: impl FnMut(u32, &mut Store)) -> Arc<Recordin
 
 /// A recording of runs (first game hour, hours), each run's hours written by `hour` with the game
 /// hour; a run's first hour names `names` (ids from 0), then each hour `n` names "name n".
-pub fn record_runs(runs: &[(i32, u32)], names: &[&[u8]], mut hour: impl FnMut(i32, &mut Store)) -> Arc<Recording> {
+pub fn record_runs(runs: &[(i32, u32)], names: &[&[u8]], hour: impl FnMut(i32, &mut Store)) -> Arc<Recording> {
+    record_runs_at(replay_data::FORMAT_VERSION, runs, names, hour)
+}
+
+/// [`record_runs`], its cells written in row format `format`.
+pub fn record_runs_at(format: u16, runs: &[(i32, u32)], names: &[&[u8]], mut hour: impl FnMut(i32, &mut Store)) -> Arc<Recording> {
     let kinds = replay::columnar_frames::schema().unwrap();
     let mut written = Vec::new();
     let mut bytes = Vec::new();
@@ -100,7 +110,7 @@ pub fn record_runs(runs: &[(i32, u32)], names: &[&[u8]], mut hour: impl FnMut(i3
         written.push(Run::new(first, memory.pages).unwrap());
         bytes = memory.bytes;
     }
-    Arc::new(Recording { bytes, runs: written, kinds })
+    Arc::new(Recording { bytes, runs: written, kinds, format })
 }
 
 pub fn units(recording: Arc<Recording>, name: &str) -> Units {

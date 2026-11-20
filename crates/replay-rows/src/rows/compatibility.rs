@@ -94,6 +94,9 @@ pub const STORED_ONCE_FORMAT: u16 = 140;
 /// apart (H4COLUMN version 8, which refuses earlier columnar recordings by name). Row tables and
 /// frames are unchanged.
 pub const STANDALONE_UNITS_FORMAT: u16 = 141;
+/// Map hover and selection operands appended to existing rows, and their new tables. Optional
+/// on read: an older recording holds none of them, and each reads as not recorded.
+pub const CAPTURE_ADDITIONS_FORMAT: u16 = 142;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;

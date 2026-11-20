@@ -134,6 +134,11 @@ pub struct Row {
     pub fresh_failures: [Option<&'static str>; 3],
     pub combat_references: Option<(usize, usize)>,
     pub combat_references_failure: Option<&'static str>,
+    /// Full handle of the gun's [`cunit::THEATRE`] ([`engine_native::ctheatre::unit_theatre`]),
+    /// zero for none; None is a field refusal.
+    pub theatre: Option<u64>,
+    /// [`cunit::QUEUED_ACTION_COUNT`]; None is a field refusal.
+    pub queued_actions: Option<i32>,
 }
 
 /// Prepared full-reference output from the existing gun motion visit. Spans
@@ -657,6 +662,13 @@ fn walk_impl(
                     at(gun, cunit::STRATEGIC_REDEPLOYMENT)?,
                     "railway gun strategic redeployment unreadable",
                 )?;
+                let theatre = pointer_at(memory, at(gun, cunit::THEATRE)?)
+                    .ok_or("railway gun theatre pointer unreadable")
+                    .and_then(|pointer| {
+                        engine_native::ctheatre::unit_theatre(memory, base, country.pointer, pointer)
+                    })
+                    .ok();
+                let queued_actions = read::<i32>(memory, at(gun, cunit::QUEUED_ACTION_COUNT)?);
                 let reference_entry_count =
                     read::<i32>(memory, at(gun, crailway_gun::REFERENCE_ENTRY_COUNT)?)
                         .ok_or("railway gun reference entry count unreadable")?;
@@ -738,6 +750,8 @@ fn walk_impl(
                     fresh: None,
                     fresh_failure: None,
                     fresh_failures: [None; 3],
+                    theatre,
+                    queued_actions,
                 };
                 if let Some(scratch) = &mut tooltip
                     && let Some(pointer) = scratch.guns.get_mut(len)

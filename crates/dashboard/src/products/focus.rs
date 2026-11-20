@@ -367,7 +367,7 @@ fn written_rows(recording: &replay::columnar_frames::Recording, run: u32, key: u
     if asks.is_empty() {
         return Ok(rows);
     }
-    let format = replay_data::format::FormatVersion::CURRENT.version();
+    let format = recording.format();
     cost::storage(|| {
         lanes::at_each(recording, run, TableId::Focus, None, &asks, &mut |hour, key, row| {
             if let Some((view, slot)) = row

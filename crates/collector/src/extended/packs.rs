@@ -7,8 +7,8 @@ use super::{
     modifier_definitions, naval_bases, naval_combat_sources, naval_counters, naval_details,
     naval_history, naval_mission_inputs, naval_result_details, peace_bids, production,
     production_modifiers, projects, raid_launch_inputs, raid_state_inputs, raid_target_statuses,
-    railway_guns, resource_map, saved_event_targets, scatter, session, unpublished, visibility,
-    war_overview,
+    railway_guns, resource_map, saved_event_targets, scatter, session, state_building_inputs,
+    unpublished, visibility, war_overview,
 };
 use crate::{division_census::UnitInputs, map_capture::Orders};
 use engine_native::{Memory, walk::Outcome};
@@ -935,6 +935,10 @@ impl Captured {
         std::mem::swap(&mut self.combat_log, &mut packs.combat_log);
         std::mem::swap(&mut self.country_factories, &mut packs.country_factories);
         std::mem::swap(
+            &mut self.state_building_inputs,
+            &mut packs.state_building_inputs,
+        );
+        std::mem::swap(
             &mut self.country_tactic_unlocks,
             &mut packs.country_tactic_unlocks,
         );
@@ -1814,6 +1818,7 @@ pub(crate) struct SlowPacks {
     pub(crate) logistics: logistics::Captured,
     pub(crate) combat_log: combat_log::Captured,
     pub(crate) country_factories: country_factories::Captured,
+    pub(crate) state_building_inputs: state_building_inputs::Captured,
     pub(crate) country_tactic_unlocks: country_tactic_unlocks::Captured,
     /// The session's capture mode: a sub-pack it records no table of is
     /// refused without its walk. Set with each loan.
@@ -2172,6 +2177,8 @@ impl SlowPacks {
         self.combat_log.fail_capture(hour, force_full, reason);
         self.country_factories
             .fail_capture(hour, force_full, reason);
+        self.state_building_inputs
+            .fail_capture(hour, force_full, reason);
         self.country_tactic_unlocks
             .fail_capture(hour, force_full, reason);
         self.ticks = [0; TABLE_COUNT];
@@ -2189,6 +2196,7 @@ impl SlowPacks {
             + self.logistics.allocated_bytes()
             + self.combat_log.allocated_bytes()
             + self.country_factories.allocated_bytes()
+            + self.state_building_inputs.allocated_bytes()
             + self.country_tactic_unlocks.allocated_bytes()
     }
 
@@ -2207,6 +2215,7 @@ impl SlowPacks {
             logistics: logistics::Captured::vacant(),
             combat_log: combat_log::Captured::vacant(),
             country_factories: country_factories::Captured::vacant(),
+            state_building_inputs: state_building_inputs::Captured::vacant(),
             country_tactic_unlocks: country_tactic_unlocks::Captured::vacant(),
             capture_mode: replay_data::scope::CaptureMode::Full,
             ticks: [0; TABLE_COUNT],
@@ -2260,7 +2269,7 @@ impl SlowPacks {
                 .capture(memory, base, game_state, hour, force_full),
             &mut ticks,
         );
-        staggered!(country_factories);
+        staggered!(country_factories, state_building_inputs);
         // Without the doctrine store the unlock walk reads no doctrine.
         scatter(
             &country_tactic_unlocks::TABLES,

@@ -566,7 +566,7 @@ impl Product for OperativesDeparted {
             .collect();
         let leaving = leavings(&mine, &steps, params.hour);
         crate::metadata::check_cancel(cancelled)?;
-        let format = replay_data::format::FormatVersion::CURRENT.version();
+        let format = recording.format();
         let asks: Vec<(i32, u128)> = leaving.iter().map(|leaving| (leaving.last, leaving.key)).collect();
         let mut rows: HashMap<u128, OperativeMembershipRow> = HashMap::new();
         dashboard_query::cost::storage(|| {

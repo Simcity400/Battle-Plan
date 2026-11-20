@@ -339,6 +339,7 @@ fn expected(id: u64, owner: u32) -> Row {
         organisation: i64::MAX,
         orders_group: handle(57, corders_group::REFERENCE_TYPE),
         reveal_skip: 0,
+        theatre: Some(0),
     }
 }
 
@@ -508,6 +509,7 @@ fn null_location_and_template_are_explicit_and_nonzero_half_handles_are_valid() 
             organisation: i64::MIN,
             orders_group: handle(57, corders_group::REFERENCE_TYPE),
             reveal_skip: 0,
+            theatre: Some(0),
         }
     );
 }
@@ -4251,7 +4253,7 @@ fn movement_rejects_a_null_next_province() {
 #[test]
 fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace() {
     use super::*;
-    assert_eq!(DIVISION_SEED_STRIDE, 371);
+    assert_eq!(DIVISION_SEED_STRIDE, 383);
     assert_eq!(
         DIVISION_SEED_FIELDS.map(|field| (
             field.source_offset,
@@ -4303,6 +4305,8 @@ fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace
             (OUT_OF_SUPPLY_DAYS, 351, 4),
             (FUEL_CANDIDATE, 355, 8),
             (AIR_SUPPLY, 363, 8),
+            (cunit::THEATRE, 371, 8),
+            (cunit::QUEUED_ACTION_COUNT, 379, 4),
         ]
     );
 }
@@ -4322,6 +4326,10 @@ fn division_seeds_gather_supply_days_bypass_and_fuel() {
         .copy_from_slice(&(-3_i32).to_le_bytes());
     bytes[POINTER + FUEL_CANDIDATE..POINTER + FUEL_CANDIDATE + 8]
         .copy_from_slice(&1_234_567_i64.to_le_bytes());
+    bytes[POINTER + cunit::THEATRE..POINTER + cunit::THEATRE + 8]
+        .copy_from_slice(&0x7000_1230_u64.to_le_bytes());
+    bytes[POINTER + cunit::QUEUED_ACTION_COUNT..POINTER + cunit::QUEUED_ACTION_COUNT + 4]
+        .copy_from_slice(&2_i32.to_le_bytes());
     let memory = crate::memory::SliceMemory {
         base: 0,
         bytes: &bytes,
@@ -4340,6 +4348,10 @@ fn division_seeds_gather_supply_days_bypass_and_fuel() {
             seeds[0].fuel
         ),
         (Some(1), Some(7_654_321), Some(-3), Some(1_234_567))
+    );
+    assert_eq!(
+        (seeds[0].theatre, seeds[0].queued_actions),
+        (Some(0x7000_1230), Some(2))
     );
     // A fuel word past the readable memory refuses only that field.
     let short = crate::memory::SliceMemory {

@@ -37,16 +37,23 @@ pub struct Synthetic {
 impl Synthetic {
     /// Hours of branch `branch` whose first hour is `hour`.
     pub fn new(branch: u64, hour: i32) -> io::Result<Self> {
+        Self::framed(branch, hour, schema()?.iter().map(Vec::len).collect())
+    }
+
+    /// [`Self::new`] as a build of an earlier format wrote them: of the schema's first
+    /// `columns.len()` tables, each its first `columns[table]` columns.
+    pub fn framed(branch: u64, hour: i32, columns: Vec<usize>) -> io::Result<Self> {
+        let tables = columns.len();
         Ok(Self {
-            columns: schema()?.iter().map(Vec::len).collect(),
+            columns,
             writers: HashMap::new(),
             strings: Strings::new(),
             cells: RowCells::default(),
             branch,
             hour,
             written: [false; TABLE_COUNT],
-            statuses: vec![Status::NotRecorded; TABLE_COUNT],
-            read: vec![0; TABLE_COUNT.div_ceil(64)],
+            statuses: vec![Status::NotRecorded; tables],
+            read: vec![0; tables.div_ceil(64)],
             samples: Vec::new(),
             sections: Vec::new(),
         })
@@ -60,7 +67,10 @@ impl Synthetic {
         }
         let writer = match self.writers.entry(table) {
             Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(TableWriter::new(&schema()?[table.index()])?),
+            Entry::Vacant(entry) => {
+                let held = *self.columns.get(index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{table:?} is past the schema written")))?;
+                entry.insert(TableWriter::new(&schema()?[index][..held])?)
+            }
         };
         let written = table_hour(writer, &mut self.strings, &mut self.cells, input)?;
         self.statuses[index] = written.evidence.status;
@@ -95,8 +105,8 @@ impl Synthetic {
             pool_bytes: 0,
             dropped_frames: 0,
             appends: appends.iter().map(|append| &append[..]).collect(),
-            statuses: std::mem::replace(&mut self.statuses, vec![Status::NotRecorded; TABLE_COUNT]),
-            read: std::mem::replace(&mut self.read, vec![0; TABLE_COUNT.div_ceil(64)]),
+            statuses: std::mem::replace(&mut self.statuses, vec![Status::NotRecorded; self.columns.len()]),
+            read: std::mem::replace(&mut self.read, vec![0; self.columns.len().div_ceil(64)]),
             samples: std::mem::take(&mut self.samples),
             sections: self.sections.iter().map(|(section, _)| section.clone()).collect(),
         };

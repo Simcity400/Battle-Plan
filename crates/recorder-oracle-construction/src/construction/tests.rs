@@ -735,6 +735,7 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
             .into_iter()
             .map(|(name, province)| (name.to_vec(), province))
             .collect(),
+        contested_owners: Vec::new(),
     };
     let province = |id, tokens: &[&[u8]]| installed_content_save::ProvinceOverride {
         id,
@@ -2986,7 +2987,7 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     };
     let saved = saved_pack(
         br#"countries={GER={resources={
-            origin={country="GER" efficiency=1 efficiency_due_to_lost_convoys=0.7 state=119 efficiency=0.7
+            origin={country="GER" efficiency=1 efficiency_due_to_lost_convoys=0.7 request=3 state=119 efficiency=0.7
                 delivery_route={type=2 from_state=119 to_state=64 from_port=3379 to_port=6384 naval_path={ 43 } dirty=no}
                 given_resource_rights={ { steel "AFG" } }}}}
             AFG={}}
@@ -3017,6 +3018,7 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         list: 0,
         efficiency: 70_000,
         bad: true,
+        convoys_base: 3.into(),
         ..Default::default()
     };
     let rights = [ResourceRightRow {
@@ -3047,6 +3049,9 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         owner: 9,
         other: 5,
         bad: false,
+        efficiency_a: 100_000.into(),
+        efficiency_b: 80_000.into(),
+        convoys_base: 0.into(),
         ..Default::default()
     };
     use installed_content_save::economy::{self, ConvoyCounts};
@@ -3066,6 +3071,7 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
                     receiver: b"AFG".to_vec(),
                     efficiency: decimal(b"0.5"),
                     efficiency_due_to_lost_convoys: decimal(b"1"),
+                    request: Some(4),
                     convoys: ConvoyCounts {
                         assigned: 2,
                         required: 3,
@@ -3085,6 +3091,7 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
                     resource: Some(b"steel".to_vec()),
                     efficiency: decimal(b"1"),
                     efficiency_due_to_lost_convoys: decimal(b"0.8"),
+                    request: Some(0),
                     delivered: decimal(b"0"),
                     required_cic: 0,
                     lended_cic: 0,
@@ -3105,6 +3112,9 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         bad: true,
         convoys_assigned: 2,
         convoys_required: 3,
+        efficiency_a: 50_000.into(),
+        efficiency_b: 100_000.into(),
+        convoys_base: 4.into(),
         ..Default::default()
     };
     let countries = BTreeMap::from([(
@@ -3171,6 +3181,142 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     assert_eq!(report.compared_tables["ResourceRights"], 1);
     assert_eq!(report.compared_tables["TradeRoutes"], 1);
     assert_eq!(report.compared_tables["ConvoyClients"], 2);
+    // The efficiency factors and the requirement before the dominance reduction compare
+    // with the client's saved efficiency, efficiency_due_to_lost_convoys and request.
+    let mut reduced = origin.clone();
+    reduced.convoys_base = 2.into();
+    let mut slower = import.clone();
+    slower.efficiency_b = 79_999.into();
+    let mut requested = lend.clone();
+    requested.convoys_base = 5.into();
+    requested.efficiency_a = 100_000.into();
+    let report = run_with(
+        &[reduced],
+        std::slice::from_ref(&route),
+        &[slower, requested],
+        &[RegionalConvoyEfficiencyRow {
+            country: 5,
+            region: 43,
+            efficiency: 100_000,
+        }],
+        10,
+    );
+    let mut operands: Vec<_> = report
+        .differences
+        .iter()
+        .filter_map(|difference| {
+            [
+                "ResourceOrigins.GER.own.119.convoys_base",
+                "ConvoyClients.51.efficiency_b",
+                "ConvoyClients.52.convoys_base",
+                "ConvoyClients.52.efficiency_a",
+            ]
+            .into_iter()
+            .find(|subject| difference.contains(subject))
+        })
+        .collect();
+    operands.sort_unstable();
+    assert_eq!(
+        operands,
+        [
+            "ConvoyClients.51.efficiency_b",
+            "ConvoyClients.52.convoys_base",
+            "ConvoyClients.52.efficiency_a",
+            "ResourceOrigins.GER.own.119.convoys_base",
+        ],
+        "{:?}",
+        report.differences
+    );
+    // An older recording holds none of them: each is a named limitation, never a match.
+    let mut older_origin = origin.clone();
+    older_origin.convoys_base = replay_data::rows::Recorded::NotRecorded;
+    let older_clients: Vec<_> = [import.clone(), lend.clone()]
+        .into_iter()
+        .map(|mut client| {
+            client.efficiency_a = replay_data::rows::Recorded::NotRecorded;
+            client.efficiency_b = replay_data::rows::Recorded::NotRecorded;
+            client.convoys_base = replay_data::rows::Recorded::NotRecorded;
+            client
+        })
+        .collect();
+    let report = run_with(
+        &[older_origin],
+        std::slice::from_ref(&route),
+        &older_clients,
+        &[RegionalConvoyEfficiencyRow {
+            country: 5,
+            region: 43,
+            efficiency: 100_000,
+        }],
+        10,
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    for subject in [
+        "ResourceOrigins.convoys_base: not recorded",
+        "ConvoyClients.efficiency_a, efficiency_b, convoys_base: not recorded",
+    ] {
+        assert!(
+            report
+                .limitations
+                .values()
+                .flatten()
+                .any(|limited| limited == subject),
+            "{subject}: {:?}",
+            report.limitations
+        );
+    }
+    // A save without `request` cannot certify the recorded requirement: its writer writes it for
+    // every client, so an omission is a named limitation, never a match or a difference.
+    let omitted = saved_pack(
+        br#"countries={GER={resources={
+            origin={country="GER" efficiency=1 efficiency_due_to_lost_convoys=0.7 state=119 efficiency=0.7
+                delivery_route={type=2 from_state=119 to_state=64 from_port=3379 to_port=6384 naval_path={ 43 } dirty=no}
+                given_resource_rights={ { steel "AFG" } }}}}
+            AFG={}}
+        states={} provinces={}"#,
+    );
+    let mut report = Report::default();
+    resource_map(
+        &ResourceMapRows {
+            origins: std::slice::from_ref(&origin),
+            rights: &rights,
+            clients: std::slice::from_ref(&lend),
+            routes: std::slice::from_ref(&route),
+            regional: &[RegionalConvoyEfficiencyRow {
+                country: 5,
+                region: 43,
+                efficiency: 100_000,
+            }],
+            reads: &reads,
+            resources: &resources,
+        },
+        &omitted,
+        &economy,
+        &countries,
+        &links,
+        &names,
+        80_000,
+        10,
+        &mut report,
+    )
+    .unwrap();
+    assert!(
+        !report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("convoys_base")),
+        "{:?}",
+        report.differences
+    );
+    assert!(
+        report
+            .limitations
+            .iter()
+            .any(|(reason, subjects)| reason.contains("absent from the save")
+                && subjects.iter().any(|subject| subject == "ResourceOrigins.GER.own.119.convoys_base")),
+        "{:?}",
+        report.limitations
+    );
     // An origin list that is neither own nor rights is refused, not indexed.
     let mut stray = origin.clone();
     stray.list = 2;

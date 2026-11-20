@@ -173,6 +173,7 @@ fn client(f: &mut Fixture, address: usize, vtable: usize, handle: u32, efficienc
     f.u32(address + CLIENT_HANDLE_ID, handle);
     f.u64(address + CLIENT_EFFICIENCY_A, efficiency[0] as u64);
     f.u64(address + CLIENT_EFFICIENCY_B, efficiency[1] as u64);
+    f.u32(address + CLIENT_CONVOYS_BASE, handle / 10 + 2);
 }
 
 fn route(f: &mut Fixture, address: usize, kind: u8, ends: [usize; 2], path: &[usize]) {
@@ -247,6 +248,7 @@ fn world() -> Fixture {
     f.u32(0xa000 + exchange::REFERENCE + 4, 0x33);
     f.u32(0xa000 + exchange::CONVOYS_ASSIGNED, 0);
     f.u32(0xa000 + exchange::CONVOYS_REQUIRED, 1);
+    f.u32(0xa000 + CLIENT_CONVOYS_BASE, 2);
     // Country 2's supply transfer: its embedded route draws nothing.
     f.u64(GAME_STATE + cgame_state::SUPPLY_SYSTEM, 0x50000);
     f.u64(0x50000 + SUPPLY_COUNTRY_SYSTEMS, 0x50800);
@@ -586,11 +588,14 @@ fn demanded_scalar_batches_preserve_serial_values_and_one_shot_fault_prefixes() 
         None,
         Some(CLIENT + CLIENT_EFFICIENCY_A),
         Some(CLIENT + CLIENT_CONVOYS),
+        Some(CLIENT + CLIENT_CONVOYS_BASE),
     ] {
         let serial = Copies::new(failed);
         let expected = (|| {
-            let bad = client_bad(&serial, CLIENT, THRESHOLD)?;
-            Ok((bad, client_convoys(&serial, CLIENT)?))
+            let efficiency = client_efficiency(&serial, CLIENT)?;
+            let convoys = client_convoys(&serial, CLIENT)?;
+            let base = client_convoys_base(&serial, CLIENT)?;
+            Ok(ClientStatus::new(efficiency, convoys, base, THRESHOLD))
         })();
         let batched = Copies::new(failed);
         assert_eq!(client_status(&batched, CLIENT, THRESHOLD), expected);
@@ -754,6 +759,7 @@ fn every_client_names_its_route_and_whether_its_line_is_bad() {
             local_resources_factor: 0,
             bad: true,
             convoys: [4, 5],
+            convoys_base: 6,
             route_address: 0x20000 + ORIGIN_ROUTE,
         }]
     );
@@ -785,6 +791,8 @@ fn every_client_names_its_route_and_whether_its_line_is_bad() {
                 route: delivery,
                 bad: false,
                 convoys: [0, 1],
+                efficiency: [100_000, 99_999],
+                convoys_base: 2,
                 route_address: 0x40000,
             },
             ClientRow {
@@ -802,6 +810,8 @@ fn every_client_names_its_route_and_whether_its_line_is_bad() {
                 },
                 bad: false,
                 convoys: [7, 8],
+                efficiency: [100_000, 100_000],
+                convoys_base: 9,
                 route_address: 0x52000 + SUPPLY_ROUTE,
             },
             ClientRow {
@@ -815,6 +825,8 @@ fn every_client_names_its_route_and_whether_its_line_is_bad() {
                 route: delivery,
                 bad: true,
                 convoys: [8, 9],
+                efficiency: [100_000, 50_000],
+                convoys_base: 10,
                 route_address: 0x40000,
             },
         ]
@@ -957,6 +969,59 @@ fn a_line_is_bad_only_below_the_threshold() {
         f.u64(0x52000 + CLIENT_EFFICIENCY_B, factors[1] as u64);
         assert_eq!(client_bad(&f, 0x52000, THRESHOLD), Ok(bad), "{factors:?}");
     }
+}
+
+#[test]
+fn region_weights_skip_empty_roster_slots_and_refuse_a_foreign_object() {
+    use engine_native::cstrategic_region as region;
+    let mut f = Fixture::new();
+    f.array(GAME_STATE + cgame_state::STRATEGIC_REGIONS, 0x80000, 3);
+    f.u64(0x80000, 0);
+    for (slot, (address, id, weight)) in [(0x81000, 501, 12), (0x82000, 7, -3)]
+        .into_iter()
+        .enumerate()
+    {
+        f.u64(0x80008 + slot * 8, address as u64);
+        f.u64(address, region::VTABLE_RVA.0 as u64);
+        f.u32(address + region::ID, id);
+        f.u32(address + region::ROUTE_WEIGHT, weight as u32);
+    }
+    let read = |f: &Fixture| {
+        let mut rows = Vec::new();
+        let outcome = walk_region_weights(f, 0, GAME_STATE, Buffer::Growing(&mut rows));
+        (outcome, rows)
+    };
+    assert_eq!(
+        read(&f),
+        (
+            Outcome::Rows { len: 2 },
+            vec![
+                RegionWeightRow {
+                    region: 501,
+                    weight: 12
+                },
+                RegionWeightRow {
+                    region: 7,
+                    weight: -3
+                },
+            ]
+        )
+    );
+    f.bytes.remove(&(0x82000 + region::ROUTE_WEIGHT));
+    assert_eq!(
+        read(&f).0,
+        Outcome::Unavailable {
+            reason: "strategic region route weight unreadable"
+        }
+    );
+    f.u32(0x82000 + region::ROUTE_WEIGHT, 1);
+    f.u64(0x82000, ROUTE_VTABLE_RVA.0 as u64);
+    assert_eq!(
+        read(&f).0,
+        Outcome::Unavailable {
+            reason: "strategic region vtable mismatch"
+        }
+    );
 }
 
 #[test]

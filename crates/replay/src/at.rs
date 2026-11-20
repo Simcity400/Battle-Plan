@@ -6,7 +6,6 @@
 use crate::{
     cells::TableReader,
     columnar_frames::Recording,
-    format::FormatVersion,
     frame::{DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, SharedView, TableView, Unsayable, cells_rows_of, cells_view, not_selected},
     lanes::{self, Snapshot},
     rows::{TABLE_COUNT, TableId},
@@ -54,7 +53,7 @@ pub fn frame(recording: &Recording, run: u32, hour: i32, reads: &[Read<'_>]) -> 
     let held = recording.run(run)?;
     let ordinal = held.ordinal(hour).ok_or_else(|| invalid("The run holds no such hour"))?;
     chosen_once(reads)?;
-    let (mode, format) = (CaptureMode::from_byte(recording.root_identity().capture_mode)?, FormatVersion::CURRENT.version());
+    let (mode, format) = (CaptureMode::from_byte(recording.root_identity().capture_mode)?, recording.format());
     let views = reads.par_iter().map(|read| view(recording, run, hour, read, mode, format)).collect::<io::Result<Vec<_>>>()?;
     assembled(recording, run, ordinal, held.branch, hour, reads, views)
 }
@@ -158,7 +157,7 @@ impl<'r, 'a> Cursor<'r, 'a> {
             readers: None,
             failed: false,
             mode: CaptureMode::from_byte(recording.root_identity().capture_mode)?,
-            format: FormatVersion::CURRENT.version(),
+            format: recording.format(),
         })
     }
 
@@ -222,7 +221,7 @@ pub struct Seeker<'r> {
 
 impl<'r> Seeker<'r> {
     pub fn new(recording: &'r Recording) -> io::Result<Self> {
-        Ok(Self { recording, run: None, readers: Vec::new(), mode: CaptureMode::from_byte(recording.root_identity().capture_mode)?, format: FormatVersion::CURRENT.version() })
+        Ok(Self { recording, run: None, readers: Vec::new(), mode: CaptureMode::from_byte(recording.root_identity().capture_mode)?, format: recording.format() })
     }
 
     /// The frame [`frame`] gives of `reads` at `hour` of run `run`.

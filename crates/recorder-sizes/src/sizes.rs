@@ -70,7 +70,7 @@ pub(crate) fn measure(replay: &Replay) -> std::io::Result<Sizes> {
         sizes.index += directory.spans.iter().map(|span| span.directory.stored + span.index.stored).sum::<u64>();
         sizes.index += stored(&directory.open);
         for span in 0..directory.spans.len() as u32 {
-            for table in 0..TABLE_COUNT {
+            for table in 0..recording.tables() {
                 for (_, extent) in recording.span_summaries(run, span, table)? {
                     sizes.summaries += extent.stored;
                 }

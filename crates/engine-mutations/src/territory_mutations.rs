@@ -12,8 +12,9 @@
 //! content. States records id, owner, controller and template (`cstate::ID`,
 //! `OWNER`, `CONTROLLER`, `TEMPLATE`) and its continent
 //! (`cstate_template::CONTINENT`), custom name (`cstate::PRIMARY_DISPLAY_NAME`),
-//! owner name (`cstate::SECONDARY_DISPLAY_NAME`), manpower, and movement and
-//! railway infrastructure from the building status (`cstate::BUILDING_STATUS`).
+//! owner name (`cstate::SECONDARY_DISPLAY_NAME`), contested owners
+//! (`cstate::CONTESTED_OWNERS`), manpower, and movement and railway
+//! infrastructure from the building status (`cstate::BUILDING_STATUS`).
 //!
 //! Writer coverage:
 //! - Province controller: only controller-change notification writes it. Its
@@ -39,6 +40,8 @@
 //! - Custom name: rename and reset effects share an interpreter entry,
 //!   selecting the state from the scope; state token loading reads the
 //!   string, and reset clears it.
+//! - Contested owners: only the insertion and removal setters, each the sole
+//!   callee of its effect, and state token loading.
 //! - Continent is written only by template database loading; only state
 //!   construction writes the template pointer. It is static per state object.
 //! - Infrastructure calculations read only the infrastructure building
@@ -89,7 +92,7 @@ const BOTH: StateRows = StateRows {
 /// Every site with its receiver. Each takes at most four integer or pointer
 /// arguments and returns RAX unchanged from its original, so a detour
 /// forwards RCX..R9 and returns the original's value.
-pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
+pub const MUTATIONS: [(MutationSite, Receiver); 16] = [
     // Province controller change (province, tag, bool, bool): the R9B
     // spill to its home slot occupies five relocated bytes.
     (
@@ -219,6 +222,28 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
         MutationSite {
             name: "refresh_cached_victory_point",
             rva: Rva(0x00a2_a1e0),
+        },
+        Receiver::State(StateRows {
+            state: true,
+            provinces: false,
+        }),
+    ),
+    // Contested owner insertion (state, tag): spill RBX to RCX's home slot.
+    (
+        MutationSite {
+            name: "add_contested_owner",
+            rva: Rva(0x00a1_c340),
+        },
+        Receiver::State(StateRows {
+            state: true,
+            provinces: false,
+        }),
+    ),
+    // Contested owner removal (state, tag): spill EDX to its home slot.
+    (
+        MutationSite {
+            name: "remove_contested_owner",
+            rva: Rva(0x00a2_8070),
         },
         Receiver::State(StateRows {
             state: true,

@@ -269,6 +269,9 @@ fn build_in(countries: u32, groups: usize, shape: Shape, mut bytes: Vec<u8>) -> 
         heap.array(manager + faction_theatres::THEATRES, entries, 3);
         for theatre in 0..3 {
             let entry = entries + theatre * faction_theatres::THEATRE_STRIDE;
+            heap.string(entry + faction_theatres::NAME, b"Western Front");
+            heap.u32(entry + faction_theatres::THEATRE_OWNER, 1);
+            heap.u64(entry + faction_theatres::COMMANDER, (844 << 32) | 4713);
             heap.words(entry + faction_theatres::COUNTRIES, &[1; 8]);
             heap.words(entry + faction_theatres::REGIONS, &[7, 8, 9, 10, 11, 12]);
             heap.words(entry + faction_theatres::HIDDEN_FOR, &[3, 4]);

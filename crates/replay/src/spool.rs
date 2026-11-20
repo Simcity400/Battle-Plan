@@ -121,6 +121,18 @@ impl ControlRecord {
         )
     }
 
+    /// The record kind whose layout it is written in.
+    pub const fn kind(&self) -> RecordKind {
+        match self {
+            Self::PlayerCommands { .. } => RecordKind::PlayerCommands,
+            Self::Detach { .. } => RecordKind::Detach,
+            Self::ClockWitness { .. } => RecordKind::ClockWitness,
+            Self::GapSummary { .. } => RecordKind::GapSummary,
+            Self::Partial { .. } => RecordKind::Partial,
+            Self::EventLoss { .. } => RecordKind::EventLoss,
+        }
+    }
+
     pub const fn session(&self) -> u64 {
         match self {
             Self::PlayerCommands { session, .. } => *session,

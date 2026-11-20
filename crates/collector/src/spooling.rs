@@ -3803,10 +3803,13 @@ fn state_table(
             .checked_add(span.len)
             .and_then(|end| names.get(span.start..end))
     };
-    if captured.states[..captured.states_result.len()]
-        .iter()
-        .any(|row| text(row.custom_name).is_none() || text(row.owner_name).is_none())
-    {
+    if captured.states[..captured.states_result.len()].iter().any(|row| {
+        text(row.custom_name).is_none()
+            || text(row.owner_name).is_none()
+            || row
+                .marked_owners
+                .is_some_and(|span| text(span).is_none_or(|words| words.len() % 4 != 0))
+    }) {
         return unavailable("state name lies outside the captured byte arena").into();
     }
     scalar_table::<tables::States, _>(
@@ -3838,6 +3841,15 @@ fn state_table(
             owner_name: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 text(state.owner_name).unwrap_or_default(),
             )),
+            marked_owners: replay_data::rows::Recorded::Value(
+                state.marked_owners.and_then(text).map(|words| {
+                    engine_allocation::owned_vec(engine_allocation::collect_vec(
+                        words
+                            .chunks_exact(4)
+                            .map(|word| u32::from_le_bytes(word.try_into().unwrap())),
+                    ))
+                }),
+            ),
         },
     )
 }
@@ -4184,6 +4196,7 @@ fn core_tables(
                 organisation: division.organisation,
                 orders_group: division.orders_group,
                 reveal_skip: division.reveal_skip,
+                theatre: replay_data::rows::Recorded::Value(division.theatre),
             },
         ),
         scalar_table::<tables::WarRelations, _>(
@@ -6101,6 +6114,7 @@ mod tests {
             organisation: 9_007_199_254_740_993,
             orders_group: (57_u64 << 32) | 53,
             reveal_skip: 0,
+            theatre: Some(0x0000_0011_0000_0043),
         };
         captured.divisions[1] = engine_native::carmy::Row {
             id: (u64::from(u32::MAX) << 32) | 51,
@@ -6147,6 +6161,10 @@ mod tests {
             assert_eq!(division.template, u64::MAX);
             assert_eq!(division.expeditionary_owner, 0);
             assert_eq!(division.orders_group, (57_u64 << 32) | 53);
+            assert_eq!(
+                division.theatre,
+                replay_data::rows::Recorded::Value(Some(0x0000_0011_0000_0043))
+            );
         }
         assert_eq!(
             frame.tables[3],

@@ -2,7 +2,7 @@ use super::*;
 use dashboard_follow::panel::{ProductReader, ProductStep};
 use replay::{cells::TableReader, columnar_frames::Recording};
 use replay_columnar::manifest::Status;
-use replay_data::{format::FormatVersion, rows::{RowChanges, TableRows}, scope::CaptureMode};
+use replay_data::{rows::{RowChanges, TableRows}, scope::CaptureMode};
 use replay_frame::frame::{SharedView, TableView, Unsayable, cells_rows_of, cells_view};
 use std::collections::hash_map::Entry;
 
@@ -133,7 +133,7 @@ impl Projection {
             reset |= before != reader.status() || matches!(reader.status(), Status::Truncated { .. });
         }
         self.selection = Some(read.keys.clone());
-        let format = FormatVersion::CURRENT.version();
+        let format = recording.format();
         let status = reader.status();
         let cells = reader.view();
         let sample_hour = (status == Status::Complete).then(|| reader.sampled_at()).flatten();

@@ -139,7 +139,7 @@ fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<Stri
         ..writer::Addition::default()
     };
     // A recorder writing the recording holds it against every other writer.
-    writer::revise(path, (replay.recording().root(), replay.revision()), &addition, true, level).map_err(|error| match error.raw_os_error() {
+    writer::revise(path, replay.recording(), &addition, true, level).map_err(|error| match error.raw_os_error() {
         Some(SHARING_VIOLATION) => io::Error::new(
             io::ErrorKind::WouldBlock,
             "a recorder is writing it; it is upgraded once the game has left it",
@@ -243,7 +243,7 @@ mod tests {
         let recorded = Replay::open_newest(&path).unwrap();
         let addition = writer::Addition { facts: Some(&older), ..writer::Addition::default() };
         let level = replay::compression::Compression::default().level();
-        writer::revise(&path, (recorded.recording().root(), recorded.revision()), &addition, true, level).unwrap();
+        writer::revise(&path, recorded.recording(), &addition, true, level).unwrap();
         drop(recorded);
         write("user/changed/common/ideas/mod.txt", "ideas = { second = {} }");
 

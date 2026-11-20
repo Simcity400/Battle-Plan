@@ -167,6 +167,99 @@ pub struct WingMembership {
     pub group: u64,
 }
 
+const NOT_ROSTER_THEATRE: &str = "unit theatre is not one of its roster country's theatres";
+
+/// [`UnitTheatres::handle`] for one unit, reading `country`'s vector without holding it.
+pub fn unit_theatre(
+    memory: &impl Memory,
+    base: usize,
+    country: usize,
+    theatre: usize,
+) -> Result<u64, &'static str> {
+    if theatre == 0 {
+        return Ok(0);
+    }
+    let reader = Reader { memory, base };
+    let theatres = reader.array(country, ccountry::THEATRES)?;
+    let mut found = None;
+    for ordinal in 0..theatres.count {
+        let pointer = reader.pointer(theatres, ordinal)?;
+        let handle = reader.identity(pointer, VTABLE_RVA, REFERENCE_TYPE)?;
+        if pointer == theatre {
+            found = Some(handle);
+        }
+    }
+    found.ok_or(NOT_ROSTER_THEATRE)
+}
+
+/// A unit's own land theatre ([`cunit::THEATRE`]) as the handle LandTheatres keys it by. The
+/// theatre's add asserts that the theatre belongs to the unit's country, so the pointer is
+/// looked up in that roster country's theatre vector ([`ccountry::THEATRES`]), read and
+/// authenticated as the land walk reads it, once per run of that country's units.
+#[derive(Debug, Default)]
+pub struct UnitTheatres {
+    country: usize,
+    read: Option<Result<(), &'static str>>,
+    theatres: Vec<(usize, u64)>,
+}
+
+impl UnitTheatres {
+    /// Forgets the held vector; each capture starts afresh.
+    pub fn clear(&mut self) {
+        self.country = 0;
+        self.read = None;
+        self.theatres.clear();
+    }
+
+    pub fn allocated_bytes(&self) -> u64 {
+        (self.theatres.capacity() * size_of::<(usize, u64)>()) as u64
+    }
+
+    /// The handle of the theatre at `theatre` for a unit on `country`'s roster, zero for a null
+    /// pointer. A pointer outside that country's theatres refuses, as does a vector or theatre
+    /// that does not read or authenticate.
+    pub fn handle(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        country: usize,
+        theatre: usize,
+    ) -> Result<u64, &'static str> {
+        if theatre == 0 {
+            return Ok(0);
+        }
+        if self.read.is_none() || self.country != country {
+            self.country = country;
+            self.read = Some(self.read_country(memory, base, country));
+        }
+        self.read.expect("country theatres just read")?;
+        self.theatres
+            .iter()
+            .find(|&&(pointer, _)| pointer == theatre)
+            .map(|&(_, handle)| handle)
+            .ok_or(NOT_ROSTER_THEATRE)
+    }
+
+    fn read_country(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        country: usize,
+    ) -> Result<(), &'static str> {
+        self.theatres.clear();
+        let reader = Reader { memory, base };
+        let theatres = reader.array(country, ccountry::THEATRES)?;
+        engine_allocation::reserve(&mut self.theatres, theatres.count as usize)
+            .map_err(|_| "unit theatre allocation failed")?;
+        for ordinal in 0..theatres.count {
+            let pointer = reader.pointer(theatres, ordinal)?;
+            let handle = reader.identity(pointer, VTABLE_RVA, REFERENCE_TYPE)?;
+            self.theatres.push((pointer, handle));
+        }
+        Ok(())
+    }
+}
+
 /// Extends an authenticated registry root without walking that registry again.
 /// A non-null orders-group parent is authenticated by type and vtable
 /// before its full reference replaces the pointer.

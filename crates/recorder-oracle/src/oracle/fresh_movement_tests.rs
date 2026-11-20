@@ -47,6 +47,7 @@ fn selected_railway_building_level_compares_without_demanding_eta_health() {
                 cooldown_ticks: 0,
                 building: None.into(),
                 selection_hour: Some(hour).into(),
+                building_bound: Default::default(),
                 selection: Some(RailwaySelectionInputs {
                     pair_count: Some(1),
                     levels: None,
@@ -216,6 +217,7 @@ fn selected_rail_building_compares_saved_scalars_without_inventing_cache_presenc
                 building: value,
                 selection: Default::default(),
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             }]),
         );
         let mut report = Report::default();
@@ -339,6 +341,7 @@ fn railway_building_absence_requires_a_proven_unreached_gate() {
                 building: Recorded::Value(None),
                 selection: Default::default(),
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             }]),
         );
         set(&mut frame, TableRows::RailEdges(edges));

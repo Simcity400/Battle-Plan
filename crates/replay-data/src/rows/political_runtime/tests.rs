@@ -25,6 +25,7 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
         display: Recorded::Value(None),
         temperature_pass: Recorded::Value(None),
         modifiers: Recorded::Value(None),
+        static_modifiers: Recorded::Value(None),
     };
     // Independently authored published six-field snapshot: fixed-width little
     // endian snow, permanent snow, two display bytes, temperature and raw mud.
@@ -45,6 +46,7 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
         temperature_pass: Recorded::NotRecorded,
         modifiers: Recorded::NotRecorded,
         daylight: Recorded::NotRecorded,
+        static_modifiers: Recorded::NotRecorded,
         ..row.clone()
     };
     for version in [93, EFFECT_INPUTS_FORMAT] {
@@ -56,7 +58,7 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
         let historical = WeatherProvinceRow::decode_fields(row.key(), &mut input).unwrap();
         input.finish().unwrap();
         assert_eq!(historical, expected);
-        assert_eq!(historical.not_recorded_fields(), 0x3ff << 6);
+        assert_eq!(historical.not_recorded_fields(), 0x7ff << 6);
         assert_eq!(
             historical.temperature.record(),
             Ok(TemperatureRecord::AtHour(-1))

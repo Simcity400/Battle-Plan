@@ -21,6 +21,8 @@ pub(super) trait Source {
     fn list(&self, column: List, slot: u32) -> Cell<&[u8]>;
     /// A text cell's string bytes; `Err` for a string the strings never named.
     fn text(&self, column: Text, slot: u32) -> Result<Cell<&[u8]>, ()>;
+    /// The row format its cells were written in: an opaque cell decodes at it.
+    fn format(&self) -> u16;
 }
 
 impl Source for Mirror {
@@ -47,6 +49,10 @@ impl Source for Mirror {
             Cell::Unrecorded => Ok(Cell::Unrecorded),
         }
     }
+
+    fn format(&self) -> u16 {
+        Mirror::format(self)
+    }
 }
 
 impl Source for Table {
@@ -69,6 +75,10 @@ impl Source for Table {
     fn text(&self, column: Text, slot: u32) -> Result<Cell<&[u8]>, ()> {
         self.named_text(column, slot).map_err(drop)
     }
+
+    fn format(&self) -> u16 {
+        Table::format(self)
+    }
 }
 use replay_columnar::manifest::Status;
 use replay_data::{Hour, rows::TableId};
@@ -84,12 +94,20 @@ fn bytes<S: Source>(rows: &S, column: Text, slot: u32) -> Option<Vec<u8>> {
     }
 }
 
-fn list<S: Source>(rows: &S, column: List, slot: u32) -> Cell<Vec<u8>> {
-    match rows.list(column, slot) {
+/// An opaque cell as copied, with the row format it was written in, which it decodes at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Encoded {
+    pub(super) cell: Cell<Vec<u8>>,
+    pub(super) format: u16,
+}
+
+fn opaque<S: Source>(rows: &S, column: List, slot: u32) -> Encoded {
+    let cell = match rows.list(column, slot) {
         Cell::Value(bytes) => Cell::Value(bytes.to_vec()),
         Cell::Missing => Cell::Missing,
         Cell::Unrecorded => Cell::Unrecorded,
-    }
+    };
+    Encoded { cell, format: rows.format() }
 }
 
 /// A SupplyNodes row: its census cells, and for the plan country's rows every cell the plan reads.
@@ -130,21 +148,21 @@ pub(super) struct Country {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Appearance {
     pub(super) reference: Cell<i32>,
-    pub(super) original: Cell<Vec<u8>>,
+    pub(super) original: Encoded,
     pub(super) culture: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Inventory {
     pub(super) node_count: u32,
-    pub(super) allocations: Cell<Vec<u8>>,
-    pub(super) access: Cell<Vec<u8>>,
+    pub(super) allocations: Encoded,
+    pub(super) access: Encoded,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Reserved {
     pub(super) tag: Option<Vec<u8>>,
-    pub(super) original: Cell<Vec<u8>>,
+    pub(super) original: Encoded,
     pub(super) reference: Cell<i32>,
 }
 
@@ -504,7 +522,7 @@ impl Batch {
         match table {
             TableId::Countries => put!(countries, Country { slot: mirror.number(columns.country_slot, slot).value(), tag: bytes(mirror, columns.tag, slot) }),
             TableId::CountryLinks => put!(links, mirror.number(columns.link_slot, slot).value()),
-            TableId::CountryAppearance => put!(appearance, Appearance { reference: mirror.number(columns.reference, slot), original: list(mirror, columns.original_tag, slot), culture: bytes(mirror, columns.culture, slot) }),
+            TableId::CountryAppearance => put!(appearance, Appearance { reference: mirror.number(columns.reference, slot), original: opaque(mirror, columns.original_tag, slot), culture: bytes(mirror, columns.culture, slot) }),
             TableId::LexicalTokens => put!(
                 tokens,
                 match mirror.text(columns.literal, slot) {
@@ -513,7 +531,7 @@ impl Batch {
                 }
             ),
             TableId::Provinces => put!(provinces, mirror.number(columns.controller, slot).value()),
-            TableId::ReservedCountryNaming => put!(reserved, Reserved { tag: bytes(mirror, columns.reserved_tag, slot), original: list(mirror, columns.reserved_original, slot), reference: mirror.number(columns.reserved_reference, slot) }),
+            TableId::ReservedCountryNaming => put!(reserved, Reserved { tag: bytes(mirror, columns.reserved_tag, slot), original: opaque(mirror, columns.reserved_original, slot), reference: mirror.number(columns.reserved_reference, slot) }),
             TableId::SupplyNodes => {
                 let ours = key.is_some_and(|key| Some((key >> 32) as u32) == whole);
                 let province = mirror.number(columns.node_province, slot).value().unwrap_or(0);
@@ -541,7 +559,7 @@ impl Batch {
                     }
                 )
             }
-            TableId::TrainInventory => put!(inventory, Inventory { node_count: mirror.number(columns.node_count, slot).value().unwrap_or(0), allocations: list(mirror, columns.allocations, slot), access: list(mirror, columns.access, slot) }),
+            TableId::TrainInventory => put!(inventory, Inventory { node_count: mirror.number(columns.node_count, slot).value().unwrap_or(0), allocations: opaque(mirror, columns.allocations, slot), access: opaque(mirror, columns.access, slot) }),
             TableId::VariantDefinitions => put!(variants, (mirror.number(columns.equipment_token, slot).value().unwrap_or(0), mirror.number(columns.creator_link, slot).value().unwrap_or(0))),
             TableId::RailEdges => put!(edges, ()),
             TableId::RailCooldowns => put!(cooldowns, mirror.number(columns.cooldown, slot).value().unwrap_or(0)),

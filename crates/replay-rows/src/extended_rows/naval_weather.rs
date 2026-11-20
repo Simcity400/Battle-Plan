@@ -336,9 +336,13 @@ pub struct WeatherRegionRow {
     pub air_attack: Recorded<Option<i64>>,
     pub air_defence: Recorded<Option<i64>>,
     pub air_efficiency: Recorded<Option<std::sync::Arc<Vec<ModifierBreakdownNode>>>>,
+    /// Each template custom entry's stored active value, in the record's own order and count,
+    /// as `NavalCombatDetailsRow::custom_sea` holds it. None is a read refusal.
+    pub custom_sea: Recorded<Option<Vec<i16>>>,
 }
+opaque_value!(Option<Vec<i16>>);
 typed_codec!(WeatherRegionRow, 32, |row| row.id as u128, |key| Self { id: key as u32, ..Default::default() },
-{ 0 => (max_snow): I64, 1 => (light_rain): U8, 2 => (heavy_rain): U8, 3 => (snow): U8, 4 => (blizzard): U8, 5 => (sandstorm): U8, 6 => (arctic_water): U8, 7 => (attack): Opaque, 8 => (combat): Opaque, 9 => (air_detection): Opaque, 10 => (map_modifiers_known): Bool, 11 => (naval_detection): OptionalI64, 12 => (air_attack): OptionalI64, 13 => (air_defence): OptionalI64, 14 => (air_efficiency): Opaque }, |row| {
+{ 0 => (max_snow): I64, 1 => (light_rain): U8, 2 => (heavy_rain): U8, 3 => (snow): U8, 4 => (blizzard): U8, 5 => (sandstorm): U8, 6 => (arctic_water): U8, 7 => (attack): Opaque, 8 => (combat): Opaque, 9 => (air_detection): Opaque, 10 => (map_modifiers_known): Bool, 11 => (naval_detection): OptionalI64, 12 => (air_attack): OptionalI64, 13 => (air_defence): OptionalI64, 14 => (air_efficiency): Opaque, 15 => (custom_sea): Opaque }, |row| {
    if let Recorded::Value(Some(nodes)) = &row.air_efficiency { check_tree(nodes)?; }
    Ok(())
 });
@@ -431,9 +435,12 @@ pub struct WeatherProvinceRow {
     /// Slot zero's seasonal forecast direction. Updated direction derives
     /// from the frame's hour; held direction retains suspension/startup state.
     pub daylight: Recorded<Option<WeatherDaylight>>,
+    /// The province weather record's static modifier list ([`ProvinceStaticModifiers`]).
+    /// None is this province's read refusal; older formats use NotRecorded.
+    pub static_modifiers: Recorded<Option<ProvinceStaticModifiers>>,
 }
 typed_codec!(WeatherProvinceRow, 32, |row| row.id as u128, |key| Self { id: key as u32, ..Default::default() },
-{ 0 => (snow): I64, 1 => (permanent_snow): I64, 2 => (display_snow): U8, 3 => (display_mud): U8, 4 => (temperature.temperature): I64, 5 => (raw_mud): U8, 6 => (clock.local_hour): I32, 7 => (clock.night_factor): I64, 8 => (display): Opaque, 9 => (clock.source): U8, 10 => (temperature.drift): I64, 11 => (temperature.staged): I64, 12 => (temperature.working): I64, 13 => (temperature_pass): Opaque, 14 => (modifiers): Opaque, 15 => (daylight): Opaque },
+{ 0 => (snow): I64, 1 => (permanent_snow): I64, 2 => (display_snow): U8, 3 => (display_mud): U8, 4 => (temperature.temperature): I64, 5 => (raw_mud): U8, 6 => (clock.local_hour): I32, 7 => (clock.night_factor): I64, 8 => (display): Opaque, 9 => (clock.source): U8, 10 => (temperature.drift): I64, 11 => (temperature.staged): I64, 12 => (temperature.working): I64, 13 => (temperature_pass): Opaque, 14 => (modifiers): Opaque, 15 => (daylight): Opaque, 16 => (static_modifiers): Opaque },
 |row| {
    row.clock.canonical().map_err(invalid)?;
    row.temperature.record().map(|_| ()).map_err(invalid)?;
@@ -496,6 +503,35 @@ impl ProvinceWeatherModifiers {
     }
 }
 opaque_value!(Option<ProvinceWeatherModifiers>);
+
+/// One static modifier of a province weather record's list: its definition's script name,
+/// which the recorded mod stack resolves (the state view shows the province icon named
+/// `<name>_icon` while it is present), and its remaining days.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct ProvinceStaticModifier {
+    pub name: Vec<u8>,
+    /// Zero or less never expires. Otherwise the daily update counts it down once per day
+    /// (more often in the rare province the game lists twice for expiry) and drops the
+    /// entry at zero.
+    pub days: i32,
+}
+value_struct!(ProvinceStaticModifier {
+    name: Vec<u8>,
+    days: i32
+});
+
+/// A province weather record's static modifier list, in the game's order, each definition
+/// once. Script and building damage add entries (a repeated addition sets the days),
+/// script and building repair remove them, and the daily update expires them. The
+/// record's modifier accumulator ([`ProvinceWeatherModifiers`]) sums their modifiers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct ProvinceStaticModifiers {
+    pub entries: Vec<ProvinceStaticModifier>,
+}
+value_struct!(ProvinceStaticModifiers { entries: Vec<ProvinceStaticModifier> });
+opaque_value!(Option<ProvinceStaticModifiers>);
 
 /// A province record's temperature words, the `province weather` record's committed temperature,
 /// committed drift, staged temperature and working drift.

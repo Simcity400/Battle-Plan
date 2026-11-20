@@ -680,6 +680,7 @@ mod tests {
             regions: regions.to_vec(),
             country_count: 1,
             hidden_for: hidden_for.to_vec(),
+            ..Default::default()
         }
     }
 

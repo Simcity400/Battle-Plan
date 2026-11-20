@@ -201,6 +201,9 @@ pub struct StateRow {
     /// colours each state by and whose `buildings_max_level` limits building
     /// levels. None is a counted read refusal.
     pub category: Recorded<Option<u32>>,
+    /// Raw country links of the state's contested owners in stored order, saved as
+    /// `contested_owners`: the state view's marked owner flags. None is a read refusal.
+    pub marked_owners: Recorded<Option<Vec<u32>>>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +239,9 @@ pub struct DivisionRow {
     pub orders_group: u64,
     /// The standard template's native fog reveal-skip byte (zero for none).
     pub reveal_skip: u8,
+    /// Full handle of the division's own land theatre, the LandTheatres key; Some(0) for
+    /// none. None refuses a pointer outside its roster country's theatres.
+    pub theatre: Recorded<Option<u64>>,
 }
 
 impl DivisionRow {
@@ -2177,9 +2183,52 @@ pub struct CountryExperienceUnsayableRow {
 }
 #[cfg(any(test, feature = "test-support"))]
 row_codec!(CountryExperienceUnsayableRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => army_raw: I64, 1 => army_daily_raw: I64, 2 => army_daily_training_raw: I64, 3 => navy_raw: I64, 4 => navy_daily_raw: I64, 5 => navy_daily_training_raw: I64, 6 => air_raw: I64, 7 => air_daily_raw: I64, 8 => armies_for_training_raw: I64}, |_row| Ok(()));
+/// For tests: Divisions as format 141 framed it, before `theatre`, so a test can write a
+/// recording of that format.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct DivisionRowAt141 {
+    pub id: u64,
+    pub roster_owner: u32,
+    pub logical_owner: u32,
+    pub expeditionary_owner: u32,
+    pub province: u32,
+    pub template: u64,
+    pub hit_points: i64,
+    pub organisation: i64,
+    pub orders_group: u64,
+    pub reveal_skip: u8,
+}
+#[cfg(any(test, feature = "test-support"))]
+row_codec!(DivisionRowAt141, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ DivisionRow::HIT_POINTS_STEP, 6 => organisation: I64 @ DivisionRow::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8}, |_row| Ok(()));
+/// For tests: States as format 141 framed it, before `marked_owners`, so a test can write a
+/// recording of that format.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct StateRowAt141 {
+    pub id: u32,
+    pub owner: u32,
+    pub controller: u32,
+    pub movement_infrastructure: i64,
+    pub custom_name: Vec<u8>,
+    pub owner_name: Vec<u8>,
+    pub manpower_available: i32,
+    pub continent: Recorded<Option<u32>>,
+    pub railway_infrastructure: Recorded<Option<i64>>,
+    pub population: Recorded<i32>,
+    pub category: Recorded<Option<u32>>,
+    pub manpower_locked: Recorded<i32>,
+    pub best_vp_index: Recorded<Option<i32>>,
+    pub single_controller: Recorded<Option<u32>>,
+    pub infrastructure: Recorded<Option<StateInfrastructure>>,
+}
+#[cfg(any(test, feature = "test-support"))]
+row_codec!(StateRowAt141, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32, 10 => manpower_locked: I32, 11 => best_vp_index: OptionalI32, 12 => single_controller: OptionalU32, 13 => infrastructure: Opaque}, |_row| Ok(()));
 row_codec!(ProvinceRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => state: U32, 1 => owner: U32, 2 => controller: U32, 3 => victory_points: I32, 4 => fort_positive: U8, 5 => move_gate: U8, 6 => port_sea: I32, 7 => attack: Opaque, 8 => selected_areas: Opaque, 9 => fort_bunker: OptionalI64, 10 => controller_area: OptionalU32, 11 => owner_area: OptionalU32, 12 => area_node: Opaque}, |_row| Ok(()));
-row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32, 10 => manpower_locked: I32, 11 => best_vp_index: OptionalI32, 12 => single_controller: OptionalU32, 13 => infrastructure: Opaque}, |_row| Ok(()));
-row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ Self::HIT_POINTS_STEP, 6 => organisation: I64 @ Self::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8}, |_row| Ok(()));
+row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32, 10 => manpower_locked: I32, 11 => best_vp_index: OptionalI32, 12 => single_controller: OptionalU32, 13 => infrastructure: Opaque, 14 => marked_owners: Opaque}, |_row| Ok(()));
+row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ Self::HIT_POINTS_STEP, 6 => organisation: I64 @ Self::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8, 9 => theatre: OptionalU64}, |_row| Ok(()));
 row_codec!(WarRelationRow, 64, |row| (row.first_country as u128) << 32 | row.second_country as u128, |key| { first_country: (key >> 32) as u32, second_country: key as u32 }, {0 => start_hour: I32, 1 => end_hour: I32, 2 => cancel: U8, 3 => first_casualties: I64, 4 => second_casualties: I64, 5 => first_unknown_casualties: I64, 6 => second_unknown_casualties: I64, 7 => first_was_instigator: U8}, |_row| Ok(()));
 row_codec!(FactionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => name: Bytes, 1 => template_token: OptionalU32, 2 => color_red: U32, 3 => color_green: U32, 4 => color_blue: U32, 5 => color_alpha: U32, 6 => color_overridden: U8}, |_row| Ok(()));
 row_codec!(FactionMemberRow, 32, |row| row.country as u128, |key| { country: key as u32 }, {0 => faction: U64, 1 => ordinal: U32}, |_row| Ok(()));

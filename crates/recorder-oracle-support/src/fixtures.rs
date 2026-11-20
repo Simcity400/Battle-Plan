@@ -113,6 +113,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     controller: 101,
                     railway_infrastructure: Recorded::Value(Some(0)),
                     category: Recorded::Value(Some(FIXTURE_CATEGORY_TOKEN)),
+                    marked_owners: Recorded::Value(Some(Vec::new())),
                     ..StateRow::default()
                 }])),
                 TableView::Complete(TableRows::Divisions(Vec::new())),
@@ -296,6 +297,7 @@ pub fn division_fixture() -> (
             organisation: 5_340_000,
             orders_group: 0,
             reveal_skip: 0,
+            theatre: Recorded::Value(Some(0)),
         }]));
     (frame, save, membership, equipment)
 }

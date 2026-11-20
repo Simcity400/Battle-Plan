@@ -506,7 +506,7 @@ impl GunCounters {
         let number = |column: Num<u32>| guns.number(column, slot).value();
         let byte = |column: Num<u8>| guns.number(column, slot).value();
         let wide = |column: Num<i64>| guns.number(column, slot).value();
-        let railway_building_level = <Option<i16> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(guns.list(columns.railway_building_level, slot).value()?, replay_data::FORMAT_VERSION))).ok()?;
+        let railway_building_level = <Option<i16> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(guns.list(columns.railway_building_level, slot).value()?, guns.format()))).ok()?;
         let eta = opaque::<Option<RailwayGunEtaOperands>>(guns, columns.eta, slot).ok().and_then(|eta| match eta {
             Recorded::Value(eta) => eta,
             Recorded::NotRecorded => None,

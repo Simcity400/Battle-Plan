@@ -389,6 +389,7 @@ pub fn compare_states(
             }
         }
         compare_state_fields(actual, &save.states[&id], &tokens, report);
+        compare_marked_owners(actual, &save.states[&id], links, report);
     }
     for id in states.keys() {
         report.difference(format!("state {id}"), "present", "absent");
@@ -441,6 +442,40 @@ fn compare_state_fields(
         }
     }
     compare_state_scalars(actual, saved, report);
+}
+
+/// The state writer saves each contested owner's tag in stored order as `contested_owners`, and
+/// omits an empty list.
+fn compare_marked_owners(
+    actual: &StateRow,
+    saved: &installed_content_save::State,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) {
+    let field = format!("state {}.marked_owners", actual.id);
+    let expected = saved
+        .contested_owners
+        .iter()
+        .map(|tag| String::from_utf8_lossy(tag).into_owned())
+        .collect::<Vec<_>>();
+    let Some(owners) = report.recorded(&actual.marked_owners, "States.marked_owners", &field)
+    else {
+        return;
+    };
+    let Some(owners) = owners else {
+        report.difference(field, "refused read", expected.join(" "));
+        return;
+    };
+    let recorded = owners
+        .iter()
+        .map(|&raw| match country_tag(raw, links) {
+            Ok(tag) => tag_text(tag),
+            Err(_) => format!("unresolved country link {raw}"),
+        })
+        .collect::<Vec<_>>();
+    if recorded != expected {
+        report.difference(field, recorded.join(" "), expected.join(" "));
+    }
 }
 
 fn compare_state_scalars(actual: &StateRow, saved: &installed_content_save::State, report: &mut Report) {

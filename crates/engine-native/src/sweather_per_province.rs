@@ -39,6 +39,16 @@ pub const DRIFT: usize = 0x128;
 /// Raw mud byte tested by the province tooltip. Display updating writes display mud from this OR
 /// the custom mud, so it is independent.
 pub const RAW_MUD: usize = 0x130;
+/// Static modifier list, a `CPdxArray` header (data, capacity, count) of
+/// [`STATIC_MODIFIER_STRIDE`] entries, each definition at most once, in insertion order.
+/// Province modifier addition inserts or overwrites the days, removal and the daily expiry
+/// drop an entry, and the daily expiry counts every positive days word down by one per
+/// visit of the province in the manager's expiring list.
+pub const STATIC_MODIFIERS: usize = 0x148;
+/// Static modifier list entry stride: the definition pointer, then [`STATIC_MODIFIER_DAYS`].
+pub const STATIC_MODIFIER_STRIDE: usize = 0x10;
+/// Remaining days, i32; zero or less never expires.
+pub const STATIC_MODIFIER_DAYS: usize = 0x08;
 /// Staged temperature, signed i64 fixed5: province weather calculation stores `TEMPERATURE` plus
 /// the clamped working drift and weather smoothing then smooths it; weather modifier tasks commit
 /// it into `TEMPERATURE` when the record's commit flag is set.
@@ -116,6 +126,66 @@ pub const FIELDS: [RecordField; 8] = [
     },
 ];
 pub const RECORD_BYTES: usize = 61;
+
+/// The static modifier list header alone, gathered apart from [`FIELDS`] only when the lists
+/// are read.
+pub const STATIC_MODIFIER_HEADER: [RecordField; 1] = [RecordField {
+    source_offset: STATIC_MODIFIERS,
+    destination_offset: 0,
+    len: 16,
+}];
+
+/// A copied static modifier list header; `None` when it is malformed.
+pub fn static_modifier_list(header: [u8; 16]) -> Option<Array> {
+    Array::from_header(header, STATIC_MODIFIER_STRIDE)
+}
+
+/// Appends every entry of a static modifier list to `out` as its days (i32), its
+/// definition's script name length (u32) and the name's bytes, all little endian, in list
+/// order. Each definition must carry the static modifier vtable `definition_vtable`. On an
+/// error `out` may hold a partial entry; the caller discards it.
+pub fn read_static_modifiers(
+    memory: &impl Memory,
+    list: Array,
+    definition_vtable: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), &'static str> {
+    const BATCH: usize = 16;
+    let mut entries = [0_u8; BATCH * STATIC_MODIFIER_STRIDE];
+    let mut first = 0;
+    while first < list.count {
+        let count = (list.count - first).min(BATCH as u32);
+        let bytes = &mut entries[..count as usize * STATIC_MODIFIER_STRIDE];
+        let source = list
+            .element(first, STATIC_MODIFIER_STRIDE)
+            .ok_or("static modifier list address overflow")?;
+        if !read_slice(memory, source, bytes) {
+            return Err("static modifier list unreadable");
+        }
+        for entry in bytes.chunks_exact(STATIC_MODIFIER_STRIDE) {
+            let definition = usize::try_from(u64::from_le_bytes(entry[..8].try_into().unwrap()))
+                .map_err(|_| "static modifier definition invalid")?;
+            let days = &entry[STATIC_MODIFIER_DAYS..STATIC_MODIFIER_DAYS + 4];
+            if crate::read::<u64>(memory, definition) != Some(definition_vtable as u64) {
+                return Err("static modifier definition vtable mismatch");
+            }
+            let header = out.len();
+            crate::allocation::reserve(out, 8).map_err(|_| "static modifier allocation failed")?;
+            out.extend_from_slice(days);
+            out.extend_from_slice(&[0; 4]);
+            let mut used = out.len();
+            let name = definition
+                .checked_add(crate::cstatic_modifier::NAME)
+                .ok_or("static modifier name address overflow")?;
+            let (_, len) = crate::msvc_string::append(memory, name, out, &mut used)?;
+            out.truncate(used);
+            let len = u32::try_from(len).map_err(|_| "static modifier name too long")?;
+            out[header + 4..header + 8].copy_from_slice(&len.to_le_bytes());
+        }
+        first += count;
+    }
+    Ok(())
+}
 
 /// Only the two stored clock words: no row identity or dense padding exists
 /// in this capture. The authenticated manager and equal live counts own the join.

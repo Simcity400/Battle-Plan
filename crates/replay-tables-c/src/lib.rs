@@ -16,6 +16,7 @@ replay_rows::row_ops! {
     AirSortieSpecialBases => AirSortieSpecialBaseRow,
     AirSortieModifierMetadata => AirSortieModifierMetadataRow,
     LocalPlayer => LocalPlayerRow,
+    LandUnitOrder => LandUnitOrderRow,
     AirNavalPatrolCombats => AirNavalPatrolCombatRow,
     AirNavalPatrolHistories => AirNavalPatrolHistoryRow,
     TaskForceMapMotion => TaskForceMapMotionRow,

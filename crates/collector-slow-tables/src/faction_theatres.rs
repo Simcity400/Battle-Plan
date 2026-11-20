@@ -25,6 +25,8 @@ pub const TABLES: [TableId; N] = [TableId::FactionTheatres, TableId::FactionAdvi
 pub struct Capacities {
     rows: usize,
     icons: usize,
+    names: usize,
+    countries: usize,
     regions: usize,
     hidden: usize,
     advisors: usize,
@@ -34,6 +36,8 @@ pub struct Capacities {
 collector_primitives::capacity_max!(Capacities {
     rows,
     icons,
+    names,
+    countries,
     regions,
     hidden,
     advisors,
@@ -58,6 +62,8 @@ impl Capacities {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows, rows(demand.required_rows, 1));
         raise(&mut self.icons, rows(demand.required_icons, 1));
+        raise(&mut self.names, rows(demand.required_names, 1));
+        raise(&mut self.countries, rows(demand.required_countries, 1));
         raise(&mut self.regions, rows(demand.required_regions, 1));
         raise(&mut self.hidden, rows(demand.required_hidden, 1));
     }
@@ -73,6 +79,8 @@ impl Capacities {
 pub struct Captured {
     rows: CaptureRows<native::Row>,
     icons: Arena<u8>,
+    names: Arena<u8>,
+    countries: Arena<u32>,
     regions: Arena<u32>,
     hidden: Arena<u32>,
     required_rows: usize,
@@ -89,19 +97,14 @@ impl Captured {
     }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
-        Self::with_capacities(&Capacities {
-            rows: 0,
-            icons: 0,
-            regions: 0,
-            hidden: 0,
-            advisors: 0,
-            advisor_bytes: 0,
-        })
+        Self::with_capacities(&Capacities::default())
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
             icons: Arena::new(capacity.icons),
+            names: Arena::new(capacity.names),
+            countries: Arena::new(capacity.countries),
             regions: Arena::new(capacity.regions),
             hidden: Arena::new(capacity.hidden),
             required_rows: 0,
@@ -112,6 +115,8 @@ impl Captured {
     pub fn reset(&mut self) {
         self.rows.reset();
         self.icons.reset();
+        self.names.reset();
+        self.countries.reset();
         self.regions.reset();
         self.hidden.reset();
         self.required_rows = 0;
@@ -121,6 +126,8 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
             + self.icons.allocated_bytes()
+            + self.names.allocated_bytes()
+            + self.countries.allocated_bytes()
             + self.regions.allocated_bytes()
             + self.hidden.allocated_bytes()
             + self.advisors.allocated_bytes()
@@ -130,6 +137,8 @@ impl Captured {
         grow_capacity(&mut capacity.rows, self.required_rows);
         self.rows.grow(&mut capacity.rows);
         self.icons.grow(&mut capacity.icons);
+        self.names.grow(&mut capacity.names);
+        self.countries.grow(&mut capacity.countries);
         self.regions.grow(&mut capacity.regions);
         self.hidden.grow(&mut capacity.hidden);
         self.advisors.grow(&mut capacity.advisors);
@@ -153,14 +162,22 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                &mut self.rows.rows,
-                &mut self.icons.first,
-                &mut self.regions.first,
-                &mut self.hidden.first,
+                native::Storage {
+                    rows: &mut self.rows.rows,
+                    icons: &mut self.icons.first,
+                    names: &mut self.names.first,
+                    countries: &mut self.countries.first,
+                    regions: &mut self.regions.first,
+                    hidden: &mut self.hidden.first,
+                },
             );
             self.rows.outcome = walk.outcome;
             self.icons.len = walk.icons_len;
             self.icons.required = walk.required_icons;
+            self.names.len = walk.names_len;
+            self.names.required = walk.required_names;
+            self.countries.len = walk.countries_len;
+            self.countries.required = walk.required_countries;
             self.regions.len = walk.regions_len;
             self.regions.required = walk.required_regions;
             self.hidden.len = walk.hidden_len;
@@ -221,8 +238,10 @@ impl Captured {
         })
     }
     fn theatre_table(&self) -> TableView {
-        let (Some(icons), Some(regions), Some(hidden)) = (
+        let (Some(icons), Some(names), Some(countries), Some(regions), Some(hidden)) = (
             self.icons.first.get(..self.icons.len),
+            self.names.first.get(..self.names.len),
+            self.countries.first.get(..self.countries.len),
             self.regions.first.get(..self.regions.len),
             self.hidden.first.get(..self.hidden.len),
         ) else {
@@ -237,6 +256,8 @@ impl Captured {
         let spans = |row: &native::Row| {
             Some((
                 span(icons, row.icon_start, row.icon_len)?,
+                span(names, row.name_start, row.name_len)?,
+                span(countries, row.countries_start, row.countries_len)?,
                 span(regions, row.regions_start, row.regions_len)?,
                 span(hidden, row.hidden_start, row.hidden_len)?,
             ))
@@ -245,7 +266,7 @@ impl Captured {
             return unavailable("faction theatre outside captured arena");
         }
         table::<tables::FactionTheatres, _>(self.rows.outcome, rows, |row| {
-            let (icon, regions, hidden) = spans(row).unwrap();
+            let (icon, name, countries, regions, hidden) = spans(row).unwrap();
             FactionTheatreRow {
                 faction: row.faction,
                 ordinal: row.ordinal,
@@ -253,6 +274,10 @@ impl Captured {
                 regions: owned_vec(copy_vec(regions)),
                 country_count: row.country_count,
                 hidden_for: owned_vec(copy_vec(hidden)),
+                name: owned_vec(copy_vec(name)).into(),
+                owner: row.owner.into(),
+                commander: (row.commander != 0).then_some(row.commander).into(),
+                countries: owned_vec(copy_vec(countries)).into(),
             }
         })
     }
@@ -268,6 +293,8 @@ mod tests {
         let mut capacity = Capacities {
             rows: 1,
             icons: 1,
+            names: 1,
+            countries: 1,
             regions: 1,
             hidden: 1,
             advisors: 1,
@@ -276,11 +303,15 @@ mod tests {
         let mut captured = Captured::with_capacities(&capacity);
         captured.required_rows = 13;
         captured.icons.required = 300;
+        captured.names.required = 200;
+        captured.countries.required = 40;
         captured.regions.required = 70;
         captured.hidden.required = 5;
         captured.grow(&mut capacity);
         assert!(capacity.rows >= 13 && captured.rows.rows.len() >= 13);
         assert!(capacity.icons >= 300 && captured.icons.first.len() >= 300);
+        assert!(capacity.names >= 200 && captured.names.first.len() >= 200);
+        assert!(capacity.countries >= 40 && captured.countries.first.len() >= 40);
         assert!(capacity.regions >= 70 && captured.regions.first.len() >= 70);
         assert!(capacity.hidden >= 5 && captured.hidden.first.len() >= 5);
         captured.advisors.outcome = Outcome::Truncated {
@@ -343,48 +374,89 @@ mod tests {
     #[test]
     fn rows_convert_their_spans_and_escapes_are_refused() {
         let mut captured = Captured::with_capacities(&Capacities {
-            rows: 1,
+            rows: 2,
             icons: 3,
+            names: 5,
+            countries: 2,
             regions: 2,
             hidden: 1,
-            advisors: 0,
-            advisor_bytes: 0,
+            ..Default::default()
         });
         captured.rows.rows[0] = native::Row {
             faction: (4 << 32) | 88,
             ordinal: 2,
             icon_len: 3,
+            name_len: 5,
+            owner: 11,
+            commander: (844 << 32) | 4713,
+            countries_len: 2,
             regions_len: 2,
-            country_count: 4,
+            country_count: 2,
             hidden_len: 1,
+            ..Default::default()
+        };
+        captured.rows.rows[1] = native::Row {
+            faction: (4 << 32) | 88,
+            ordinal: 3,
+            name_start: 5,
+            owner: 0x8000_0002,
+            countries_start: 2,
+            regions_start: 2,
+            hidden_start: 1,
             ..Default::default()
         };
         captured.icons.first.copy_from_slice(b"GFX");
         captured.icons.len = 3;
+        captured.names.first.copy_from_slice(b"North");
+        captured.names.len = 5;
+        captured.countries.first.copy_from_slice(&[11, 12]);
+        captured.countries.len = 2;
         captured.regions.first.copy_from_slice(&[7, u32::MAX]);
         captured.regions.len = 2;
         captured.hidden.first[0] = 9;
         captured.hidden.len = 1;
-        captured.rows.outcome = Outcome::Rows { len: 1 };
+        captured.rows.outcome = Outcome::Rows { len: 2 };
         let [TableView::Complete(TableRows::FactionTheatres(rows)), _] = captured.tables() else {
             panic!("expected complete faction theatre rows");
         };
         assert_eq!(
             rows,
-            vec![FactionTheatreRow {
-                faction: (4 << 32) | 88,
-                ordinal: 2,
-                icon: b"GFX".to_vec(),
-                regions: vec![7, u32::MAX],
-                country_count: 4,
-                hidden_for: vec![9],
-            }]
+            vec![
+                FactionTheatreRow {
+                    faction: (4 << 32) | 88,
+                    ordinal: 2,
+                    icon: b"GFX".to_vec(),
+                    regions: vec![7, u32::MAX],
+                    country_count: 2,
+                    hidden_for: vec![9],
+                    name: b"North".to_vec().into(),
+                    owner: replay_data::rows::Recorded::Value(11),
+                    commander: Some((844 << 32) | 4713).into(),
+                    countries: vec![11, 12].into(),
+                },
+                // A null commander reference is no commander, never a refusal.
+                FactionTheatreRow {
+                    faction: (4 << 32) | 88,
+                    ordinal: 3,
+                    owner: replay_data::rows::Recorded::Value(0x8000_0002),
+                    commander: None.into(),
+                    ..Default::default()
+                },
+            ]
         );
-        captured.rows.rows[0].regions_len = 3;
-        assert!(matches!(
-            captured.tables()[0],
-            TableView::Unavailable { .. }
-        ));
+        for escape in [
+            (|row: &mut native::Row| row.regions_len = 3) as fn(&mut native::Row),
+            |row| row.name_len = 6,
+            |row| row.countries_start = 1,
+        ] {
+            let saved = captured.rows.rows[0];
+            escape(&mut captured.rows.rows[0]);
+            assert!(matches!(
+                captured.tables()[0],
+                TableView::Unavailable { .. }
+            ));
+            captured.rows.rows[0] = saved;
+        }
     }
 }
 
@@ -409,6 +481,8 @@ mod l3b_bench {
             let mut captured = Captured::with_capacities(&Capacities {
                 rows,
                 icons: rows * 16,
+                names: rows * 16,
+                countries: rows * 8,
                 regions: rows * 8,
                 hidden: rows * 4,
                 ..Capacities::default()

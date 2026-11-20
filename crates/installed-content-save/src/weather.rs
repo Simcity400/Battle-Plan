@@ -37,6 +37,9 @@ pub struct Region {
     pub blizzard: Option<bool>,
     pub sandstorm: Option<bool>,
     pub arctic_water: Option<bool>,
+    /// The stored value of each template custom entry, in order; the writer omits an empty
+    /// array, which is `None`.
+    pub active_modifiers: Option<Vec<i64>>,
 }
 
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
@@ -87,6 +90,9 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                         blizzard: flag(items, b"blizzard")?,
                         sandstorm: flag(items, b"sandstorm")?,
                         arctic_water: flag(items, b"arctic_water")?,
+                        active_modifiers: field(items, b"active_modifiers")?
+                            .map(integers)
+                            .transpose()?,
                     })
                 })
                 .collect::<io::Result<Vec<_>>>()
@@ -110,6 +116,18 @@ fn custom_modifiers(value: &Value) -> io::Result<Vec<(String, i64)>> {
             let name = String::from_utf8(name.to_vec())
                 .map_err(|_| invalid("weather custom modifier name is not UTF-8"))?;
             Ok((name, integer(scalar(&item.value)?)?))
+        })
+        .collect()
+}
+
+fn integers(value: &Value) -> io::Result<Vec<i64>> {
+    block(value)?
+        .iter()
+        .map(|item| {
+            if item.key.is_some() {
+                return Err(invalid("weather active modifier list holds a keyed entry"));
+            }
+            integer(scalar(&item.value)?)
         })
         .collect()
 }

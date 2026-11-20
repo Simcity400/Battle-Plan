@@ -287,6 +287,7 @@ fn unavailable_tables_do_not_suppress_independent_naval_and_theatre_diagnostics(
             building: replay_data::rows::Recorded::Value(None),
             selection: replay_data::rows::Recorded::NotRecorded,
             selection_hour: Default::default(),
+            building_bound: Default::default(),
         }]));
     *frame.tables[TableId::LandTheatres.index()] = TableView::Unavailable {
         reason: "land theatre read failed".into(),
@@ -402,6 +403,7 @@ fn railway_cooldown_omission_does_not_invent_zero() {
                 building: replay_data::rows::Recorded::Value(None),
                 selection: replay_data::rows::Recorded::NotRecorded,
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             },
             RailCooldownRow {
                 province: 2,
@@ -409,6 +411,7 @@ fn railway_cooldown_omission_does_not_invent_zero() {
                 building: replay_data::rows::Recorded::Value(None),
                 selection: replay_data::rows::Recorded::NotRecorded,
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             },
         ]));
     *frame.tables[TableId::RailEdges.index()] =
@@ -436,6 +439,7 @@ fn railway_cooldown_omission_does_not_invent_zero() {
                 building: replay_data::rows::Recorded::Value(None),
                 selection: replay_data::rows::Recorded::NotRecorded,
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             },
             RailCooldownRow {
                 province: 2,
@@ -443,6 +447,7 @@ fn railway_cooldown_omission_does_not_invent_zero() {
                 building: replay_data::rows::Recorded::Value(None),
                 selection: replay_data::rows::Recorded::NotRecorded,
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             },
         ]));
     compare_railways(&frame, &saved, &mut report).unwrap();

@@ -1121,6 +1121,7 @@ fn unchanged_opaque_cells_of_a_dense_table_are_kept_with_the_complete_bytes() {
             }))
         },
         selection_hour: Recorded::Value(Some(hour)),
+        building_bound: Default::default(),
     };
     for hour in 1..=7 {
         let provinces = if hour == 7 { 1..=11 } else { 1..=10 };

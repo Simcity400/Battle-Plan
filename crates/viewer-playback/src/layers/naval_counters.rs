@@ -201,7 +201,7 @@ fn force_fields(forces: &Mirror, slot: u32, columns: &Columns) -> Option<ForceFi
 /// none, is not recorded or does not decode.
 fn model_counter(models: &Mirror, slot: u32, columns: &Columns) -> Option<ShipCounterInputs> {
     let Cell::Value(bytes) = models.list(columns.model_counter, slot) else { return None };
-    <Option<ShipCounterInputs> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION))).ok().flatten()
+    <Option<ShipCounterInputs> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, models.format()))).ok().flatten()
 }
 
 /// A task force's route from its `TaskForceMapMotion` row: the one place that table is read.

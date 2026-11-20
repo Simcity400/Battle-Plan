@@ -203,6 +203,9 @@ pub struct SavedOrigin {
     pub client_efficiency: [Option<Decimal>; 2],
     /// The convoy client's `convoys_subscriber`.
     pub convoys: super::economy::ConvoyCounts,
+    /// The convoy client's `request`: its convoy requirement before the naval-dominance
+    /// route cost reduction.
+    pub request: Option<i32>,
     /// The origin's stored efficiency product: its second `efficiency`.
     pub efficiency: Option<Decimal>,
     pub route: Option<SavedRoute>,
@@ -339,6 +342,15 @@ fn saved_origin(fields: &[Item]) -> io::Result<SavedOrigin> {
             }
             Some(b"efficiency_due_to_lost_convoys") => {
                 out.client_efficiency[1] = Some(Decimal::parse(scalar(&item.value)?)?);
+            }
+            Some(b"request") => {
+                if out
+                    .request
+                    .replace(integer(scalar(&item.value)?)?)
+                    .is_some()
+                {
+                    return Err(invalid("resource origin writes two requests"));
+                }
             }
             Some(b"delivery_route") => out.route = Some(saved_route(block(&item.value)?)?),
             Some(b"given_resource_rights") => {

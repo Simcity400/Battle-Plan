@@ -347,6 +347,11 @@ pub fn local_player(memory: &impl Memory, state: usize) -> Result<[u32; 2], &'st
         .map(|words| [words as u32, (words >> 32) as u32])
         .ok_or("local player references unreadable")
 }
+/// CGameState pointer vector of the viewing country's own units, in the order the
+/// model picker walks it. A roster-owner change removes a unit and appends it again
+/// only when the new owner is the viewing country; deletion removes it keeping the
+/// order; a playing-country change appends that country's units again.
+pub const VIEWER_UNITS: usize = 0x640;
 /// CGameState inline fired-event set.
 pub const FIRED_EVENTS: usize = 0x538;
 /// CGameState pending-event vector.

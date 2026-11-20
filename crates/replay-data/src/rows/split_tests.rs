@@ -724,6 +724,25 @@ mod extended_rows_fresh_eta_tests {
                 ..current.clone()
             },
         );
+        let bound = RailCooldownRow {
+            building_bound: Some(true).into(),
+            ..current.clone()
+        };
+        for building_bound in [Some(false), None] {
+            check_suffix(
+                TableId::RailCooldowns,
+                4,
+                &bound,
+                &RailCooldownRow {
+                    building_bound: building_bound.into(),
+                    ..bound.clone()
+                },
+            );
+        }
+        let old = historical_prefix(TableId::RailCooldowns, 4, &bound);
+        assert_eq!(old.building_bound, Recorded::NotRecorded);
+        assert_eq!(old.selection, bound.selection);
+        assert_eq!(old.selection_hour, bound.selection_hour);
         let old = historical_prefix(TableId::RailCooldowns, 1, &row);
         assert_eq!(old.selection, Recorded::NotRecorded);
         assert_eq!(old.selection_hour, Recorded::NotRecorded);
@@ -794,6 +813,7 @@ mod extended_rows_fresh_eta_tests {
             building: Some(RailwayBuildingState { building: None }).into(),
             selection: Default::default(),
             selection_hour: Default::default(),
+            building_bound: Default::default(),
         };
         let decoded = historical_prefix(TableId::RailCooldowns, 1, &row);
         assert_eq!(decoded.building, Recorded::NotRecorded);

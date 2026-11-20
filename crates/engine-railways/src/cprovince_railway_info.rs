@@ -41,4 +41,11 @@ pub struct Row {
     pub province: u32,
     /// Native signed tick count, including zero; no display-unit conversion.
     pub cooldown_ticks: i32,
+    /// [`BUILDING`] is non-null.
+    pub building_bound: bool,
+}
+
+/// Whether the info bytes from offset zero hold a non-null [`BUILDING`].
+pub fn building_bound(info: &[u8]) -> bool {
+    info[BUILDING..BUILDING + 8] != [0; 8]
 }

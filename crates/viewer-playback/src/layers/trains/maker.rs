@@ -7,7 +7,7 @@
 
 use super::{
     CORE, Columns, STRUCTURAL, WHOLE, Yard,
-    store::{Batch, Meta, Node, Reserved, Store},
+    store::{Batch, Encoded, Meta, Node, Reserved, Store},
 };
 use crate::playhead_host::mirror::{Cell, Mirrors};
 use replay_columnar::manifest::Status;
@@ -28,16 +28,16 @@ use viewer_world::map::{
     trains::{CreatorAppearance, CreatorRows, Curve, Fallback, NodeValues, PlanCache, TrainPlan, TrainRows, node_weight},
 };
 
-fn plain<T: NativeValue>(cell: &Cell<Vec<u8>>, what: &str) -> Result<T, String> {
-    match cell {
-        Cell::Value(bytes) => T::from_field(Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION))).map_err(|error| error.to_string()),
+fn plain<T: NativeValue>(encoded: &Encoded, what: &str) -> Result<T, String> {
+    match &encoded.cell {
+        Cell::Value(bytes) => T::from_field(Field::Opaque(Opaque::Encoded(bytes, encoded.format))).map_err(|error| error.to_string()),
         _ => Err(format!("{what} is not recorded at the head")),
     }
 }
 
-fn decoded<T: NativeValue>(cell: &Cell<Vec<u8>>) -> Result<Recorded<T>, String> {
-    match cell {
-        Cell::Value(bytes) => Recorded::<T>::from_field(Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION))).map_err(|error| error.to_string()),
+fn decoded<T: NativeValue>(encoded: &Encoded) -> Result<Recorded<T>, String> {
+    match &encoded.cell {
+        Cell::Value(bytes) => Recorded::<T>::from_field(Field::Opaque(Opaque::Encoded(bytes, encoded.format))).map_err(|error| error.to_string()),
         _ => Ok(Recorded::NotRecorded),
     }
 }

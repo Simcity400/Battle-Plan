@@ -631,10 +631,12 @@ fn format_136_columns_are_this_builds_but_the_appended() {
     assert_eq!(earlier[TableId::AirNavalPatrolHistories.index()], 3);
     assert_eq!(earlier[TableId::Cryptology.index()], 4);
     assert_eq!(earlier[TableId::RaidAirScores.index()], 6);
-    // The division tables framed wider then than now: a recording of either format is refused
-    // by name as of another schema, not read.
+    // Each format held this build's tables but those added at format 142, the division tables
+    // framed wider then than now: a recording of either format is refused by name as of another
+    // schema, not read.
     for held in [&earlier, &columns] {
-        assert_eq!(replay_columnar::envelope::schema_digest_prefix(&schema, held), None);
+        assert_eq!(held.len(), TABLE_COUNT - 3);
+        assert_eq!(replay_columnar::envelope::schema_digest_prefix(&schema[..held.len()], held), None);
     }
     let current = columns_at(replay_data::FORMAT_VERSION).unwrap();
     assert_eq!(
@@ -647,27 +649,163 @@ fn format_136_columns_are_this_builds_but_the_appended() {
     );
 }
 
+/// `bytes` with one more root, naming schema `theirs`.
+fn naming_schema(mut bytes: Vec<u8>, theirs: [u8; 32]) -> Vec<u8> {
+    let (extent, _) = envelope::last_root(&bytes).unwrap();
+    let raw = zstd::bulk::decompress(extent.stored_in(&bytes).unwrap(), 1 << 20).unwrap();
+    let mut root = Root::read(&raw).unwrap();
+    root.identity.schema = theirs;
+    let root = fixtures::append(&mut bytes, Kind::Root, (0, 0, 0, 0), &root.write().unwrap());
+    bytes.extend_from_slice(&envelope::footer(root.offset, root.stored, &root.digest));
+    bytes
+}
+
+/// Opening `bytes` is refused as of schema `theirs`, naming its digest and this build's.
+fn refused_naming_both(bytes: Vec<u8>, theirs: &[u8; 32]) {
+    let hex = |digest: &[u8; 32]| digest[..8].iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let error = Recording::open(bytes).unwrap_err().to_string();
+    let ours = hex(&envelope::schema_digest(&schema().unwrap()));
+    assert!(error.contains(&format!("This recording was written with another schema (its digest {}, this build's {ours})", hex(theirs))), "{error}");
+}
+
 /// A recording written with another schema is refused naming both digests, the words a person
 /// sees: the schema before the log tables (LogForgets a table of its own after
 /// DivisionModelInputs, the event tables state) among them.
 #[test]
 fn another_schema_is_refused_naming_both_digests() {
-    let hex = |digest: &[u8; 32]| digest[..8].iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     let mut before_logs = schema().unwrap();
     before_logs.insert(TableId::DivisionModelInputs.index() + 1, vec![Column::I32]);
     for theirs in [[0xab; 32], envelope::schema_digest(&before_logs)] {
         let runs = [(1, 0, 3)];
-        let (mut bytes, _) = recording(&runs, every(&runs), |_| {});
-        // The same file, its root naming another schema.
-        let (extent, _) = envelope::last_root(&bytes).unwrap();
-        let raw = zstd::bulk::decompress(extent.stored_in(&bytes).unwrap(), 1 << 20).unwrap();
-        let mut root = Root::read(&raw).unwrap();
-        root.identity.schema = theirs;
-        let root = fixtures::append(&mut bytes, Kind::Root, (0, 0, 0, 0), &root.write().unwrap());
-        bytes.extend_from_slice(&envelope::footer(root.offset, root.stored, &root.digest));
-        let error = Recording::open(bytes).unwrap_err().to_string();
-        let ours = hex(&envelope::schema_digest(&schema().unwrap()));
-        assert!(error.contains(&format!("This recording was written with another schema (its digest {}, this build's {ours})", hex(&theirs))), "{error}");
+        let (bytes, _) = recording(&runs, every(&runs), |_| {});
+        refused_naming_both(naming_schema(bytes, theirs), &theirs);
+    }
+}
+
+/// A recording of format 141, written as that build wrote it (its identity naming that format's
+/// schema; its journal, store, pages and restores holding the tables it held, each framed as
+/// then), opens and plays: its hours read, each table added at format 142 is not recorded at
+/// every hour, its reason named, and refused by every reader of its pages, each field appended at 142 reads as not
+/// recorded (an opaque one among them, which a cell decoded at this build's columns gave as an
+/// empty payload), and the rest reads as written, across a closed span and an open block. A
+/// table keeping its last complete read restores it at every block's end as that format framed
+/// it, so a seek past any restore reads what reading on reads. A format-141 capture whose
+/// identity names a schema that is no prefix of this build's framed at that format is still
+/// refused naming both digests.
+#[test]
+fn a_recording_of_an_earlier_format_opens_and_reads_what_it_held() {
+    use super::synthetic::{Input, Sample};
+    use crate::rows::{CountryRow, DivisionRow, DivisionRowAt141, Recorded, StateRow, StateRowAt141};
+    use replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT;
+    let format = CAPTURE_ADDITIONS_FORMAT - 1;
+    let added: Vec<TableId> = TableId::ALL.into_iter().filter(|table| table.last_change().introduced == CAPTURE_ADDITIONS_FORMAT).collect();
+    assert_eq!(added, [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs]);
+    assert!(LAST_COMPLETE.contains(&TableId::Divisions));
+    let states = [StateRowAt141 { id: 4, owner: 7, controller: 9, custom_name: b"Bohemia".to_vec(), continent: Some(2).into(), ..Default::default() }];
+    let countries = [CountryRow { id: 7, tag: b"GER".to_vec(), stability_raw: 5, ..Default::default() }];
+    let divisions = [
+        DivisionRowAt141 { id: (3_u64 << 32) | 1, roster_owner: 7, province: 11, hit_points: 500_000, organisation: 250_000, ..Default::default() },
+        DivisionRowAt141 { id: (4_u64 << 32) | 1, roster_owner: 7, province: 12, ..Default::default() },
+    ];
+    // The block's last hours read the divisions in part, so every block end restores Divisions
+    // with its last complete read kept apart.
+    let partial = |ordinal: u32| ordinal % envelope::UNIT_ORDINALS >= envelope::UNIT_ORDINALS - 10;
+    let runs = [(1, 100, envelope::SPAN_BLOCKS + 1)];
+    let (bytes, _) = fixtures::written_at(format, b"format 141", &runs, &[TableId::States, TableId::Countries], |synthetic, _, ordinal| {
+        synthetic.table(TableId::States, Input::Snapshot { rows: &states, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &countries, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        let input = match partial(ordinal) {
+            true => Input::Snapshot { rows: &divisions[..1], partial: Some(1), read: true, sample: Sample::FromReadBit },
+            false => Input::Snapshot { rows: &divisions, partial: None, read: true, sample: Sample::FromReadBit },
+        };
+        synthetic.table(TableId::Divisions, input).unwrap();
+    });
+    let recording = opened(bytes.clone());
+    assert_eq!(recording.tables(), TABLE_COUNT - added.len());
+    assert_eq!(recording.columns().len(), TABLE_COUNT);
+    let state_columns = TableId::States.last_change().fields(TableId::States, format);
+    assert_eq!(recording.columns()[TableId::States.index()], state_columns);
+    assert_eq!(TableId::States.field_name(state_columns), Some("marked_owners"));
+    assert_eq!(state_columns, TableId::States.field_count() - 1);
+    let mode = crate::scope::CaptureMode::from_byte(recording.root_identity().capture_mode).unwrap();
+    let block = envelope::UNIT_ORDINALS;
+    for table in &added {
+        assert_eq!(recording.columns()[table.index()], 0);
+        let gap = table.last_change().table_gap(*table, format).unwrap();
+        assert_eq!(recording.predates(table.index()), Some(gap.as_str()));
+        assert_eq!(recording.withheld_reason(table.index()), Some(gap.as_str()));
+        // Its pages name no such table: a reader of them is refused by name, never given rows.
+        for error in [recording.table_entry(0, 0, table.index()).map(|_| ()).unwrap_err(), recording.span_summaries(0, 0, table.index()).map(|_| ()).unwrap_err()] {
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains(&gap), "{error}");
+        }
+        // A table reader reads it not recorded at every hour, however it moves.
+        let mut reader = crate::cells::TableReader::new(&recording, 0, *table, Some(&[0])).unwrap();
+        reader.keep_tracks();
+        let not_recorded = |reader: &crate::cells::TableReader, at: &str| {
+            assert_eq!(reader.status(), Status::NotRecorded, "{table:?} {at}");
+            assert!(!reader.was_read() && reader.sampled_at().is_none() && reader.cells().rows().next().is_none(), "{table:?} {at}");
+        };
+        reader.seek(&recording, block + 3).unwrap();
+        not_recorded(&reader, "sought");
+        assert!(reader.step(&recording).unwrap());
+        not_recorded(&reader, "stepped");
+        assert!(reader.changes().quiet() && !reader.changes().status_changed, "{table:?}: a step changes nothing");
+        reader.go_to(&recording, 7 * block + 1).unwrap();
+        not_recorded(&reader, "advanced");
+        let stretch = reader.read_stretch(&recording, 7 * block + 9).unwrap();
+        assert_eq!(stretch.statuses, vec![Status::NotRecorded; 8], "{table:?}");
+        assert!(stretch.events.is_empty() && stretch.start.is_empty(), "{table:?}");
+        assert_eq!(reader.hour(), Some(runs[0].1 + 7 * block as i32 + 9));
+    }
+    assert_eq!(recording.columns()[TableId::Divisions.index()], TableId::Divisions.field_count() - 1);
+    let mut tables = vec![TableId::States, TableId::Countries, TableId::Divisions];
+    tables.extend(&added);
+    let read = read_on(&recording, &tables);
+    assert_eq!(read.len(), runs[0].2 as usize * envelope::UNIT_ORDINALS as usize);
+    let state = StateRow {
+        id: 4,
+        owner: 7,
+        controller: 9,
+        custom_name: b"Bohemia".to_vec(),
+        continent: Some(2).into(),
+        marked_owners: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    let division = |at: usize| {
+        let held = &divisions[at];
+        DivisionRow { id: held.id, roster_owner: held.roster_owner, province: held.province, hit_points: held.hit_points, organisation: held.organisation, theatre: Recorded::NotRecorded, ..Default::default() }
+    };
+    for (ordinal, (frame, _)) in (0..).zip(&read) {
+        assert_eq!(*frame.tables[TableId::States.index()], TableView::Complete(TableRows::States(vec![state.clone()])), "hour {ordinal}");
+        assert_eq!(*frame.tables[TableId::Countries.index()], TableView::Complete(TableRows::Countries(countries.to_vec())), "hour {ordinal}");
+        let expected = match partial(ordinal) {
+            true => TableView::Truncated { rows: TableRows::Divisions(vec![division(0)]), missing: 1 },
+            false => TableView::Complete(TableRows::Divisions(vec![division(0), division(1)])),
+        };
+        assert_eq!(*frame.tables[TableId::Divisions.index()], expected, "hour {ordinal}");
+        for table in &added {
+            assert_eq!(*frame.tables[table.index()], TableView::NotRecorded { mode }, "hour {ordinal}: {table:?}");
+        }
+    }
+    // A seek just past a block end restores every table there, Divisions with its last complete
+    // read as format 141 framed it.
+    for ordinal in [block, 6 * block + 3, 12 * block + 1, envelope::SPAN_BLOCKS * block + 2] {
+        let mut frames = Frames::new(&recording, &tables).unwrap();
+        frames.seek(0, ordinal).unwrap();
+        let sought = frames.frame(runs[0].0).unwrap();
+        assert_eq!(sought.tables, read[ordinal as usize].0.tables, "sought to {ordinal}");
+    }
+    // Its schema with a table's columns other than that format framed them, or with the tables
+    // added since framed as empty, is no format's: refused naming both digests.
+    let schema = schema().unwrap();
+    let mut columns = columns_at(format).unwrap();
+    let every_table: Vec<usize> = columns.iter().copied().chain(added.iter().map(|_| 0)).collect();
+    columns[TableId::Countries.index()] -= 1;
+    let narrower = envelope::schema_digest_prefix(&schema[..columns.len()], &columns).unwrap();
+    let padded = envelope::schema_digest_prefix(&schema, &every_table).unwrap();
+    for theirs in [narrower, padded] {
+        refused_naming_both(naming_schema(bytes.clone(), theirs), &theirs);
     }
 }
 

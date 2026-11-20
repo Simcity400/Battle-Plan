@@ -66,6 +66,9 @@ pub const CLIENT_CONVOYS: usize = 0x28;
 pub const CLIENT_EFFICIENCY_A: usize = 0x48;
 #[cfg(test)]
 pub const CLIENT_EFFICIENCY_B: usize = 0x50;
+/// Its convoy requirement before the naval-dominance route cost reduction, i32: the
+/// required count is this times one less the reduction, rounded up.
+pub const CLIENT_CONVOYS_BASE: usize = 0x78;
 
 /// Resource-origin client: the embedded route.
 pub const ORIGIN_VTABLE_RVA: Rva = Rva(0x29d_8dc0);
@@ -175,6 +178,7 @@ pub struct OriginRow {
     pub bad: bool,
     /// Assigned and required convoys.
     pub convoys: [i32; 2],
+    pub convoys_base: i32,
     /// Where its route lives this hour; never published.
     pub route_address: usize,
 }
@@ -219,6 +223,9 @@ pub struct ClientRow {
     pub bad: bool,
     /// Assigned and required convoys.
     pub convoys: [i32; 2],
+    /// The two efficiency factors, fixed5.
+    pub efficiency: [i64; 2],
+    pub convoys_base: i32,
     /// Where its route lives this hour; never published.
     pub route_address: usize,
 }
@@ -237,6 +244,13 @@ pub struct RouteRow {
     /// Range in the path arena.
     pub path_start: usize,
     pub path_len: usize,
+}
+
+/// A strategic region's weight in a naval route's controlled-region cost reduction.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RegionWeightRow {
+    pub region: u32,
+    pub weight: i32,
 }
 
 /// A country's delivery efficiency in one strategic sea region, fixed5: where a bad route
@@ -365,14 +379,40 @@ pub fn efficiency_product(a: i64, b: i64) -> i128 {
     i128::from(a) * i128::from(b) / ONE
 }
 
+/// A convoy client's line colour, convoy counts, efficiency factors and base requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClientStatus {
+    /// Its efficiency product below the bad-efficiency threshold.
+    bad: bool,
+    /// Assigned and required convoys.
+    convoys: [i32; 2],
+    efficiency: [i64; 2],
+    convoys_base: i32,
+}
+
+impl ClientStatus {
+    fn new(efficiency: [i64; 2], convoys: [i32; 2], convoys_base: i32, threshold: i64) -> Self {
+        Self {
+            bad: efficiency_product(efficiency[0], efficiency[1]) < i128::from(threshold),
+            convoys,
+            efficiency,
+            convoys_base,
+        }
+    }
+}
+
+/// The client's two efficiency factors.
+fn client_efficiency(memory: &impl Memory, client: usize) -> Result<[i64; 2], &'static str> {
+    pair_i64(memory, at(client, CLIENT_EFFICIENCY_A)?).ok_or("convoy client efficiency unreadable")
+}
+
 /// Whether the client's line is the bad colour: its efficiency product below `threshold`.
 pub fn client_bad(
     memory: &impl Memory,
     client: usize,
     threshold: i64,
 ) -> Result<bool, &'static str> {
-    let factors = pair_i64(memory, at(client, CLIENT_EFFICIENCY_A)?)
-        .ok_or("convoy client efficiency unreadable")?;
+    let factors = client_efficiency(memory, client)?;
     Ok(efficiency_product(factors[0], factors[1]) < i128::from(threshold))
 }
 
@@ -383,39 +423,58 @@ fn client_convoys(memory: &impl Memory, client: usize) -> Result<[i32; 2], &'sta
     Ok([assigned as i32, required as i32])
 }
 
+fn client_convoys_base(memory: &impl Memory, client: usize) -> Result<i32, &'static str> {
+    read::<i32>(memory, at(client, CLIENT_CONVOYS_BASE)?)
+        .ok_or("convoy client base convoys unreadable")
+}
+
 fn client_status(
     memory: &impl Memory,
     client: usize,
     threshold: i64,
-) -> Result<(bool, [i32; 2]), &'static str> {
-    let factors = client
-        .checked_add(CLIENT_EFFICIENCY_A)
-        .filter(|at| at.checked_add(16).is_some());
-    let convoys = client
-        .checked_add(CLIENT_CONVOYS)
-        .filter(|at| at.checked_add(8).is_some());
-    let (Some(factors), Some(convoys)) = (factors, convoys) else {
-        let bad = client_bad(memory, client, threshold)?;
-        return Ok((bad, client_convoys(memory, client)?));
+) -> Result<ClientStatus, &'static str> {
+    let spans = [
+        (CLIENT_EFFICIENCY_A, 16),
+        (CLIENT_CONVOYS, 8),
+        (CLIENT_CONVOYS_BASE, 4),
+    ]
+    .map(|(offset, len)| {
+        client
+            .checked_add(offset)
+            .filter(|at| at.checked_add(len).is_some())
+    });
+    let [Some(factors), Some(convoys), Some(base)] = spans else {
+        let efficiency = client_efficiency(memory, client)?;
+        let convoys = client_convoys(memory, client)?;
+        let base = client_convoys_base(memory, client)?;
+        return Ok(ClientStatus::new(efficiency, convoys, base, threshold));
     };
     let mut factor_bytes = [0; 16];
     let mut convoy_bytes = [0; 8];
+    let mut base_bytes = [0; 4];
     match memory.copy_scattered(
-        [factors, convoys],
-        &mut [factor_bytes.as_mut_slice(), convoy_bytes.as_mut_slice()],
+        [factors, convoys, base],
+        &mut [
+            factor_bytes.as_mut_slice(),
+            convoy_bytes.as_mut_slice(),
+            base_bytes.as_mut_slice(),
+        ],
     ) {
         0 => return Err("convoy client efficiency unreadable"),
         1 => return Err("convoy client convoys unreadable"),
+        2 => return Err("convoy client base convoys unreadable"),
         _ => {}
     }
     let a = i64::from_le_bytes(factor_bytes[..8].try_into().expect("eight bytes"));
     let b = i64::from_le_bytes(factor_bytes[8..].try_into().expect("eight bytes"));
-    Ok((
-        efficiency_product(a, b) < i128::from(threshold),
+    Ok(ClientStatus::new(
+        [a, b],
         [
             i32::from_le_bytes(convoy_bytes[..4].try_into().expect("four bytes")),
             i32::from_le_bytes(convoy_bytes[4..].try_into().expect("four bytes")),
         ],
+        i32::from_le_bytes(base_bytes),
+        threshold,
     ))
 }
 
@@ -548,7 +607,7 @@ impl<M: Memory> Walk<'_, M> {
             return Err("convoy client of an unexpected type");
         }
         let handle = client_handle(self.memory, client)?;
-        let (bad, convoys) = client_status(self.memory, client, self.threshold)?;
+        let status = client_status(self.memory, client, self.threshold)?;
         Ok(ClientRow {
             owner_ordinal: None,
             other_ordinal: None,
@@ -558,8 +617,10 @@ impl<M: Memory> Walk<'_, M> {
             owner,
             other,
             route: route.0,
-            bad,
-            convoys,
+            bad: status.bad,
+            convoys: status.convoys,
+            efficiency: status.efficiency,
+            convoys_base: status.convoys_base,
             route_address: route.1,
         })
     }
@@ -600,7 +661,7 @@ impl<M: Memory> Walk<'_, M> {
         // A rights-holder origin carries its own route to the holder, as an own origin does.
         let route_address = at(origin, ORIGIN_ROUTE)?;
         self.authenticate_route(route_address)?;
-        let (bad, convoys) = client_status(memory, origin, self.threshold)?;
+        let status = client_status(memory, origin, self.threshold)?;
         Ok((
             OriginRow {
                 state,
@@ -610,8 +671,9 @@ impl<M: Memory> Walk<'_, M> {
                 efficiency,
                 route_factor,
                 local_resources_factor,
-                bad,
-                convoys,
+                bad: status.bad,
+                convoys: status.convoys,
+                convoys_base: status.convoys_base,
                 route_address,
             },
             state_pointer,
@@ -1232,6 +1294,71 @@ pub fn walk_regional(
                 )?;
             }
             start = end;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => outcome(len, unread),
+        Err(reason) => Outcome::Unavailable { reason },
+    }
+}
+
+/// Every loaded strategic region's route weight, in roster order. The game writes it only
+/// while loading the map, so it is read on full hours. A null roster slot holds no region.
+pub fn walk_region_weights(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: Buffer<'_, RegionWeightRow>,
+) -> Outcome {
+    use engine_native::cstrategic_region as region;
+    let mut len = 0;
+    let mut unread = 0;
+    let result = (|| -> Result<(), &'static str> {
+        let expected = vtable(base, region::VTABLE_RVA)? as u64;
+        let roster = array(
+            memory,
+            at(game_state, cgame_state::STRATEGIC_REGIONS)?,
+            8,
+            "strategic region roster unreadable",
+        )?;
+        for slot in 0..roster.count {
+            let pointer = element(
+                memory,
+                roster,
+                slot,
+                8,
+                "strategic region roster slot unreadable",
+            )?;
+            if pointer == 0 {
+                continue;
+            }
+            let mut identity = [0; 8];
+            let mut id = [0; 4];
+            let mut weight = [0; 4];
+            if memory.copy_scattered(
+                [
+                    pointer,
+                    at(pointer, region::ID)?,
+                    at(pointer, region::ROUTE_WEIGHT)?,
+                ],
+                &mut [&mut identity, &mut id, &mut weight],
+            ) != 3
+            {
+                return Err("strategic region route weight unreadable");
+            }
+            if u64::from_le_bytes(identity) != expected {
+                return Err("strategic region vtable mismatch");
+            }
+            push(
+                &mut output,
+                &mut len,
+                &mut unread,
+                RegionWeightRow {
+                    region: u32::from_le_bytes(id),
+                    weight: i32::from_le_bytes(weight),
+                },
+            )?;
         }
         Ok(())
     })();

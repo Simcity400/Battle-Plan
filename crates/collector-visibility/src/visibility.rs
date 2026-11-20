@@ -22,7 +22,7 @@ use engine_native::{Memory, crelation_status, cstrategic_navy, cweather_manager,
 use engine_visibility::visibility_inputs as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::CountryVisibilityRow, rows::CountryWarRow,
-    rows::LocalPlayerRow, rows::NavalRegionAccessRow, rows::RelationLinkRow,
+    rows::LandUnitOrderRow, rows::LocalPlayerRow, rows::NavalRegionAccessRow, rows::RelationLinkRow,
     rows::SimulationFeatureRow, rows::StateVisibilityRow, rows::TableId, rows::tables,
 };
 use replay_frame::frame::TableView;
@@ -76,7 +76,7 @@ pub fn instant_decisions_data() -> impl serde::Serialize {
     })
 }
 
-pub const N: usize = 7;
+pub const N: usize = 8;
 pub const TABLES: [TableId; N] = [
     TableId::SimulationFeatures,
     TableId::CountryVisibility,
@@ -85,6 +85,7 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryWars,
     TableId::NavalRegionAccess,
     TableId::LocalPlayer,
+    TableId::LandUnitOrder,
 ];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -205,6 +206,9 @@ fn movement_defines(memory: &impl Memory, base: usize) -> replay_data::rows::Mov
 pub struct Captured {
     dlc_mask: CaptureRows<FeatureInputs>,
     local_player: CaptureRows<[u32; 2]>,
+    /// The LandUnitOrder row's list length in `land_units`; None is a refused read.
+    land_order: CaptureRows<Option<usize>>,
+    land_units: Vec<u64>,
     countries: CaptureRows<native::CountryRow>,
     states: CaptureRows<native::StateRow>,
     links: CaptureRows<crelation_status::LinkRow>,
@@ -238,6 +242,8 @@ impl Captured {
             .fail(super::failed_capture(TABLES[5], hour, force_full, reason));
         self.local_player
             .fail(super::failed_capture(TABLES[6], hour, force_full, reason));
+        self.land_order
+            .fail(super::failed_capture(TABLES[7], hour, force_full, reason));
     }
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -245,6 +251,8 @@ impl Captured {
         Self {
             dlc_mask: CaptureRows::new(0),
             local_player: CaptureRows::new(0),
+            land_order: CaptureRows::new(0),
+            land_units: Vec::new(),
             countries: CaptureRows::new(0),
             states: CaptureRows::new(0),
             links: CaptureRows::new(0),
@@ -261,6 +269,8 @@ impl Captured {
         Self {
             dlc_mask: CaptureRows::new(1),
             local_player: CaptureRows::new(1),
+            land_order: CaptureRows::new(1),
+            land_units: Vec::new(),
             countries: CaptureRows::new(capacity.countries),
             states: CaptureRows::new(capacity.states),
             links: CaptureRows::new(capacity.links),
@@ -276,6 +286,7 @@ impl Captured {
         self.weather_suspend_failure = None;
         self.dlc_mask.reset();
         self.local_player.reset();
+        self.land_order.reset();
         self.countries.reset();
         self.states.reset();
         self.links.reset();
@@ -289,6 +300,8 @@ impl Captured {
 
     pub fn allocated_bytes(&self) -> usize {
         self.local_player.allocated_bytes()
+            + self.land_order.allocated_bytes()
+            + self.land_units.capacity() * size_of::<u64>()
             + self.dlc_mask.allocated_bytes()
             + self.countries.allocated_bytes()
             + self.states.allocated_bytes()
@@ -403,7 +416,8 @@ impl Captured {
                     3 => self.links.outcome = skipped,
                     4 => self.wars.outcome = skipped,
                     5 => self.naval_access.outcome = skipped,
-                    _ => self.local_player.outcome = skipped,
+                    6 => self.local_player.outcome = skipped,
+                    _ => self.land_order.outcome = skipped,
                 }
                 continue;
             }
@@ -516,6 +530,19 @@ impl Captured {
                             Err(reason) => Outcome::Unavailable { reason },
                         };
                 }
+                7 => {
+                    let units = engine_native::cunit::viewer_land_units(
+                        memory,
+                        base,
+                        game_state,
+                        engine_native::walk::Buffer::Growing(&mut self.land_units),
+                    );
+                    self.land_order.rows[0] = match units {
+                        Outcome::Rows { len } => Some(len),
+                        _ => None,
+                    };
+                    self.land_order.outcome = Outcome::Rows { len: 1 };
+                }
                 _ => {
                     let walk = {
                         crelation_status::links_observed_transport(
@@ -561,6 +588,7 @@ impl Captured {
             self.wars.outcome,
             self.naval_access.outcome,
             self.local_player.outcome,
+            self.land_order.outcome,
         ]
     }
 
@@ -634,6 +662,14 @@ impl Captured {
                     observer_country,
                 },
             ),
+            table::<tables::LandUnitOrder, _>(self.land_order.outcome, &self.land_order.rows, |len| {
+                LandUnitOrderRow {
+                    units: replay_data::rows::Recorded::Value(
+                        len.and_then(|len| self.land_units.get(..len))
+                            .map(|units| owned_vec(copy_vec(units))),
+                    ),
+                }
+            }),
         ]
     }
 

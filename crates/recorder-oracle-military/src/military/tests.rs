@@ -48,6 +48,7 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
         division: id,
         withdrawal: Recorded::Value(Some(255)),
         movement_priority: Recorded::Value(Some(1)),
+        queued_actions: Recorded::Value(Some(0)),
         ..Default::default()
     };
     for (raw, expected) in [
@@ -169,6 +170,37 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
                 .differences
                 .iter()
                 .any(|difference| difference.contains("source"))
+        );
+    }
+    // The saved `commandlist` holds one entry per queued order and is omitted when empty.
+    for (value, saved_count, differences) in [
+        (Recorded::NotRecorded, 0, 0),
+        (Recorded::Value(None), 0, 1),
+        (Recorded::Value(Some(2)), 2, 0),
+        (Recorded::Value(Some(2)), 1, 1),
+        (Recorded::Value(Some(0)), 1, 1),
+    ] {
+        saved
+            .divisions
+            .get_mut(&id)
+            .unwrap()
+            .presentation
+            .queued_actions = saved_count;
+        set(
+            &mut frame,
+            TableId::DivisionMovement,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                queued_actions: value,
+                ..base.clone()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_division_movement(&frame, &saved, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
         );
     }
 }
@@ -895,6 +927,7 @@ fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
             strength: zero(),
             combats: Vec::new(),
             country_intel: Vec::new(),
+            queued_actions: 0,
         },
     );
     saved.task_forces.insert(

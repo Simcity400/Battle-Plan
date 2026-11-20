@@ -31,4 +31,4 @@ pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
 /// The recording version this build writes. Reader history lives beside TableId.
-pub const FORMAT_VERSION: u16 = rows::compatibility::STANDALONE_UNITS_FORMAT;
+pub const FORMAT_VERSION: u16 = rows::compatibility::CAPTURE_ADDITIONS_FORMAT;

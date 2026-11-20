@@ -5,7 +5,7 @@
 
 use engine_native::{
     Memory, carmy, carmy_leader, ccountry, cequipment_variant_pool::DivisionSource, cgame_state,
-    cpdx_array::Array, cprovince, creferenced_division_template, memory::RecordField,
+    cpdx_array::Array, cprovince, creferenced_division_template, ctheatre, memory::RecordField,
     memory::RecordLayout, memory::RecordSources, read, walk::Outcome,
 };
 
@@ -123,6 +123,7 @@ pub(crate) struct Census {
     slot_ends: Vec<(u32, u32)>,
     leaders: HeldLeaders,
     groups: HeldGroups,
+    theatres: ctheatre::UnitTheatres,
 }
 
 /// Leader identities this census read, by leader, under the unit leader writers' certificate.
@@ -274,6 +275,7 @@ impl Default for Census {
             slot_ends: Vec::new(),
             leaders: HeldLeaders::default(),
             groups: HeldGroups::default(),
+            theatres: ctheatre::UnitTheatres::default(),
         }
     }
 }
@@ -325,6 +327,7 @@ impl Census {
         self.core_roots = None;
         self.core_captured = false;
         self.slot_ends.clear();
+        self.theatres.clear();
     }
     pub fn allocated_bytes(&self) -> u64 {
         crate::raw_memory::vector_bytes(&self.counts)
@@ -336,6 +339,7 @@ impl Census {
             + crate::raw_memory::vector_bytes(&self.rows)
             + crate::raw_memory::vector_bytes(&self.sources)
             + crate::raw_memory::vector_bytes(&self.slot_ends)
+            + self.theatres.allocated_bytes()
     }
     pub(crate) fn country_count(&self) -> usize {
         self.required_counts
@@ -919,6 +923,8 @@ impl Census {
         }
         let inputs = self.unit_inputs.as_ref().unwrap();
         let mut identities = CoreIdentities::new(base, provinces);
+        self.theatres.clear();
+        let mut country = None;
         for (index, (entry, seed)) in self
             .entries
             .iter()
@@ -960,7 +966,17 @@ impl Census {
                     }
                 }
             }
-            let row = project(memory, &countries, *entry, seed, &mut identities)?;
+            let mut row = project(memory, &countries, *entry, seed, &mut identities)?;
+            row.theatre = theatre(
+                memory,
+                base,
+                &countries,
+                &mut self.theatres,
+                &mut country,
+                entry.canonical,
+                seed.theatre,
+            )
+            .ok();
             Self::count_division(
                 &mut self.counts,
                 self.required_counts,
@@ -1065,6 +1081,15 @@ struct Countries {
     links: Array,
 }
 impl Countries {
+    fn pointer(&self, memory: &impl Memory, slot: u32) -> Result<usize, &'static str> {
+        self.countries
+            .element(slot, 8)
+            .and_then(|p| read::<u64>(memory, p))
+            .and_then(|p| usize::try_from(p).ok())
+            .filter(|&p| p != 0)
+            .ok_or("country pointer unreadable")
+    }
+
     fn canonical(&self, memory: &impl Memory, raw: u32) -> Result<u32, &'static str> {
         if raw == 0 {
             return Err("country id is zero");
@@ -1320,6 +1345,32 @@ impl CoreIdentities {
     }
 }
 
+/// The division's own theatre handle ([`ctheatre::UnitTheatres`]) through the roster country
+/// `canonical`, whose pointer `country` holds for a run of its divisions.
+fn theatre(
+    memory: &impl Memory,
+    base: usize,
+    countries: &Countries,
+    theatres: &mut ctheatre::UnitTheatres,
+    country: &mut Option<(u32, usize)>,
+    canonical: u32,
+    pointer: Option<usize>,
+) -> Result<u64, &'static str> {
+    let pointer = pointer.ok_or("division theatre pointer unreadable")?;
+    if pointer == 0 {
+        return Ok(0);
+    }
+    let held = match *country {
+        Some((slot, held)) if slot == canonical => held,
+        _ => {
+            let held = countries.pointer(memory, canonical)?;
+            *country = Some((canonical, held));
+            held
+        }
+    };
+    theatres.handle(memory, base, held, pointer)
+}
+
 fn project(
     memory: &impl Memory,
     countries: &Countries,
@@ -1388,6 +1439,7 @@ fn project(
         organisation,
         orders_group,
         reveal_skip,
+        theatre: None,
     })
 }
 

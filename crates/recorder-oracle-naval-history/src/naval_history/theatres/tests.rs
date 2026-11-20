@@ -123,11 +123,13 @@ fn frame(alias: bool) -> DecodedFrame {
         DivisionRow {
             id: handle(111, 51),
             orders_group: handle(57, 53),
+            theatre: Some(0).into(),
             ..Default::default()
         },
         DivisionRow {
             id: handle(112, 51),
             orders_group: handle(58, 53),
+            theatre: Some(0).into(),
             ..Default::default()
         },
     ]));
@@ -748,4 +750,49 @@ fn projected_repeated_reserved_aliases_compare_theatres_and_order_of_battle() {
                 .contains("differ at")
         );
     }
+}
+
+/// A division records the theatre whose saved `unit` list holds it, or zero; a refused read is
+/// a difference, a theatre the game omits a limitation.
+#[test]
+fn unit_theatres_compare_with_saved_theatre_unit_lists() {
+    const STATIONED: &[u8] = br#"countries={PST={theatres={theatre={
+    id={id=2 type=67}
+    unit={id=111 type=51}
+    orders_group={id={id=57 type=53} name="positive"
+        field_marshal_group=no motorization_level=0
+        member={unit={id=111 type=51}}}
+}}}}"#;
+    let set = |frame: &mut DecodedFrame, theatres: [Recorded<Option<u64>>; 2]| {
+        let TableView::Complete(TableRows::Divisions(rows)) =
+            &mut *frame.tables[TableId::Divisions.index()]
+        else {
+            unreachable!()
+        };
+        for (row, theatre) in rows.iter_mut().zip(theatres) {
+            row.theatre = theatre;
+        }
+    };
+    let theatre_differences = |report: &Report| {
+        report
+            .differences
+            .iter()
+            .filter(|difference| difference.contains(".theatre"))
+            .count()
+    };
+    let mut frame = frame(false);
+    let report = run(&frame, STATIONED);
+    assert_eq!(theatre_differences(&report), 1, "{:?}", report.differences);
+    set(&mut frame, [Some(handle(2, 67)).into(), Some(0).into()]);
+    let report = run(&frame, STATIONED);
+    assert_eq!(theatre_differences(&report), 0, "{:?}", report.differences);
+    assert_eq!(report.compared_tables["Divisions.theatre"], 2);
+    set(&mut frame, [None.into(), Some(handle(3, 67)).into()]);
+    let report = run(&frame, STATIONED);
+    assert_eq!(theatre_differences(&report), 1, "{:?}", report.differences);
+    assert!(limits(&report).contains(UNSAVED_RESERVED_THEATRE));
+    set(&mut frame, [Recorded::NotRecorded, Recorded::NotRecorded]);
+    let report = run(&frame, STATIONED);
+    assert_eq!(theatre_differences(&report), 0, "{:?}", report.differences);
+    assert!(limits(&report).contains("Divisions.theatre"));
 }

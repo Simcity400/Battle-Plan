@@ -682,6 +682,7 @@ pub(crate) use collector_naval_movement::country_naval_movement_inputs;
 pub use collector_output::construction_tables as construction_ic;
 pub use collector_slow_tables::country_factories;
 pub use collector_slow_tables::country_tactic_unlocks;
+pub use collector_slow_tables::state_building_inputs;
 pub use collector_stability::country_stability;
 pub(crate) use country_naval_movement_inputs::Capacities as PhysicalNavyCapacities;
 pub mod division_counts;
@@ -820,6 +821,7 @@ packs!(
     combat_log,
     division_counts,
     country_factories,
+    state_building_inputs,
     war_overview,
     industrial_organisations @helper,
     production_modifiers @helper,
@@ -3102,7 +3104,8 @@ impl Captured {
                     country_tactic_unlocks,
                     logistics,
                     combat_log,
-                    country_factories
+                    country_factories,
+                    state_building_inputs
                 );
                 scatter(
                     &visibility::TABLES,

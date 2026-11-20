@@ -385,6 +385,8 @@ fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
                 ],
                 row.single_controller,
                 row.best_vp_index,
+                row.marked_owners
+                    .map(|span| &arena[span.start..][..span.len]),
             )
         })
         .collect::<Vec<_>>();
@@ -1252,4 +1254,60 @@ fn state_category_is_named_by_its_authenticated_definitions_token() {
         category_token(&memory, 0, 0x9000),
         Err("state category unreadable")
     );
+}
+
+/// The contested owner words copy beside the names from the header between them; an invalid
+/// header refuses only that state's list, and a carried list lands where a fresh read puts it.
+#[test]
+fn contested_owners_copy_with_the_names_and_carry_exactly() {
+    let mut memory = named_states(3, &|index| (vec![b'c'; index], b"Owner".to_vec()));
+    let second = 0x20_2000;
+    memory.put(second + CONTESTED_OWNERS, &((second + 0xb00) as u64).to_le_bytes());
+    memory.put(second + CONTESTED_OWNERS + cpdx_array::CAPACITY, &2_u32.to_le_bytes());
+    memory.put(second + CONTESTED_OWNERS + cpdx_array::COUNT, &2_u32.to_le_bytes());
+    memory.put(second + 0xb00, &7_u32.to_le_bytes());
+    memory.put(second + 0xb04, &0x8000_0001_u32.to_le_bytes());
+    let third = 0x20_3000;
+    memory.put(third + CONTESTED_OWNERS + cpdx_array::CAPACITY, &1_u32.to_le_bytes());
+    memory.put(third + CONTESTED_OWNERS + cpdx_array::COUNT, &2_u32.to_le_bytes());
+    let mut rows = census_rows(3);
+    let mut arena = Vec::new();
+    let walk = read_names(&memory, 0, Outcome::Rows { len: 3 }, &mut rows, &mut arena);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    let words = |span: NameSpan| -> Vec<u32> {
+        arena[span.start..][..span.len]
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .collect()
+    };
+    assert_eq!(rows[0].marked_owners.map(words), Some(Vec::new()));
+    assert_eq!(rows[1].marked_owners.map(words), Some(vec![7, 0x8000_0001]));
+    assert_eq!(rows[2].marked_owners, None);
+    let total = (1 + 5) + (2 + 5 + 8) + (3 + 5);
+    assert_eq!((walk.bytes_len, walk.required_bytes), (total, total));
+    let held = rows
+        .iter()
+        .map(|row| {
+            let bytes = |span: NameSpan| &arena[span.start..][..span.len];
+            (
+                [bytes(row.custom_name), bytes(row.owner_name)],
+                row.single_controller,
+                row.best_vp_index,
+                row.marked_owners.map(bytes),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut carried = census_rows(3);
+    let mut carried_arena = Vec::new();
+    let walk = read_names_carried(
+        &memory,
+        0,
+        Outcome::Rows { len: 3 },
+        &mut carried,
+        walk::Buffer::Growing(&mut carried_arena),
+        |index| (index == 1).then(|| held[index]),
+    );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(carried, rows);
+    assert_eq!(carried_arena[..total], arena[..total]);
 }

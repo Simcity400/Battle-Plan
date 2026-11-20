@@ -492,6 +492,7 @@ mod tests {
                             })),
                             selection: Default::default(),
                             selection_hour: Default::default(),
+                            building_bound: Default::default(),
                         })
                         .to_vec(),
                 ),
@@ -528,6 +529,7 @@ mod tests {
                 building: Recorded::NotRecorded,
                 selection: Default::default(),
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             }]),
         );
         let land = content(1);
@@ -566,6 +568,7 @@ mod tests {
                 building: Recorded::NotRecorded,
                 selection: Default::default(),
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             }]),
         );
         let content = content(1);
@@ -581,6 +584,7 @@ mod tests {
                 building: Recorded::NotRecorded,
                 selection: Default::default(),
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             }]));
         put(
             &mut frame,
@@ -623,6 +627,7 @@ mod tests {
                     building: Recorded::Value(building),
                     selection: Default::default(),
                     selection_hour: Default::default(),
+                    building_bound: Default::default(),
                 }]),
             );
             assert_eq!(
@@ -706,6 +711,7 @@ mod tests {
                 building: Recorded::NotRecorded,
                 selection: Default::default(),
                 selection_hour: Default::default(),
+                building_bound: Default::default(),
             }]),
         );
         put(

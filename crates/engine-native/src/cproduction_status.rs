@@ -88,6 +88,10 @@ pub const NAVAL_FACTORIES: usize = 0x328;
 /// Civilian factory group populated from general-production buildings for
 /// civilian consumers and construction.
 pub const CIVILIAN_FACTORIES: usize = 0x388;
+/// Stored factory energy factor, i64 fixed5: the energy one factory level uses, which the
+/// factory total recalculation stores (capped at its define) and a state's factory energy usage
+/// multiplies its weighted factory levels by.
+pub const FACTORY_ENERGY_FACTOR: usize = 0x558;
 /// Embedded consumer-goods object ([`civ_factory_consumer`]).
 pub const CONSUMER_GOODS: usize = 0x448;
 /// National projects consumer.

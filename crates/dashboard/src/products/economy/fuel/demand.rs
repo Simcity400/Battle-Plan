@@ -56,12 +56,12 @@ pub(crate) struct Reads {
 
 const PARTS_UNAVAILABLE: &str = "fuel demand parts are not recorded at this read";
 
-/// A row of `table` from the cells a batch read shows.
-fn typed<T: replay_data::rows::TableSchema>(view: &replay_columnar::store::TableView<'_>, key: u128, slot: u32) -> io::Result<Option<T::Row>>
+/// A row of `table` from the cells a batch read shows, recorded in row format `format`.
+fn typed<T: replay_data::rows::TableSchema>(view: &replay_columnar::store::TableView<'_>, key: u128, slot: u32, format: u16) -> io::Result<Option<T::Row>>
 where
     T::Row: Clone,
 {
-    let rows = replay_frame::frame::cells_rows(T::ID, view, &[(key, slot)], replay_data::format::FormatVersion::CURRENT.version())?;
+    let rows = replay_frame::frame::cells_rows(T::ID, view, &[(key, slot)], format)?;
     Ok(rows.rows::<T>().and_then(|rows| rows.first().cloned()))
 }
 
@@ -104,7 +104,7 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
         let mut rows: BTreeMap<i32, CountryFuelRow> = BTreeMap::new();
         replay::lanes::at_each(recording, run, TableId::CountryFuel, None, &asks, &mut |hour, key, row| {
             if let Some((view, slot)) = row
-                && let Some(row) = typed::<tables::CountryFuel>(&view, key, slot)?
+                && let Some(row) = typed::<tables::CountryFuel>(&view, key, slot, recording.format())?
             {
                 rows.insert(hour, row);
             }
@@ -130,7 +130,7 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
             replay::lanes::at_each(recording, run, TableId::FuelDemandParts, None, &asks, &mut |hour, key, row| {
                 match row {
                     Some((view, slot)) => {
-                        if let Some(part) = typed::<tables::FuelDemandParts>(&view, key, slot)? {
+                        if let Some(part) = typed::<tables::FuelDemandParts>(&view, key, slot, recording.format())? {
                             held.entry(hour).or_default().push(part);
                         }
                     }

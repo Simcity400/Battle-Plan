@@ -305,6 +305,9 @@ pub struct State {
     /// order, each `{ <location> <anchor province> }`, written only when the
     /// list is nonempty.
     pub strategic_locations: Vec<(Vec<u8>, u32)>,
+    /// `contested_owners`: the state's contested owner tags in stored order, written only when
+    /// the list is nonempty.
+    pub contested_owners: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -441,10 +444,16 @@ pub struct Faction {
     pub advisor_slots: Vec<Option<Vec<u8>>>,
 }
 
-/// One saved faction theatre. Name, tag, commander, execution type, template
-/// and the saved integer list are not drawn by the pin and not kept.
+/// One saved faction theatre. Execution type, template and the saved integer
+/// list are not kept.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FactionTheatre {
+    /// `name`, the stored name; the writer omits it only in checksum mode.
+    pub name: Option<Vec<u8>>,
+    /// `tag`, the owner's tag.
+    pub tag: Option<Vec<u8>>,
+    /// `commander`, the full reference; the writer omits a null one.
+    pub commander: Option<u64>,
     /// `ids`: strategic region ids as raw i32 bits, in native order.
     pub regions: Vec<u32>,
     /// `countries` tags, in native order.
@@ -575,6 +584,19 @@ fn bytes(items: &[Item], key: &[u8]) -> io::Result<Option<Vec<u8>>> {
     field(items, key)?
         .map(|value| scalar(value).map(<[u8]>::to_vec))
         .transpose()
+}
+
+fn contested_owners(state: &[Item]) -> io::Result<Vec<Vec<u8>>> {
+    let Some(value) = field(state, b"contested_owners")? else {
+        return Ok(Vec::new());
+    };
+    block(value)?
+        .iter()
+        .map(|item| match item.key {
+            None => scalar(&item.value).map(<[u8]>::to_vec),
+            Some(_) => Err(invalid("contested owner entry has a key")),
+        })
+        .collect()
 }
 
 fn required_bytes(items: &[Item], key: &[u8]) -> io::Result<Vec<u8>> {
@@ -1115,6 +1137,11 @@ fn parse_faction_theatres(items: &[Item]) -> io::Result<Vec<FactionTheatre>> {
             }
             let theatre = block(&item.value)?;
             Ok(FactionTheatre {
+                name: bytes(theatre, b"name")?,
+                tag: bytes(theatre, b"tag")?,
+                commander: field(theatre, b"commander")?
+                    .map(typed_handle)
+                    .transpose()?,
                 regions: integer_list(theatre, b"ids")?,
                 countries: tag_list(theatre, b"countries")?,
                 hidden: tag_list(theatre, b"hidden")?,
@@ -1535,6 +1562,7 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
                         })
                         .transpose()?,
                     strategic_locations: state_strategic_locations(state)?,
+                    contested_owners: contested_owners(state)?,
                 },
             )
             .is_some()

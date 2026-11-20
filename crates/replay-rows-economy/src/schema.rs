@@ -790,6 +790,55 @@ typed_codec!(StateResourceInputRow, 32, |row| row.state as u128,
  |key| Self { state: key as u32, ..Default::default() },
  { 0 => (gate): U8, 1 => (global_factor): I64, 2 => (origin): U8, 3 => (infrastructure_level): OptionalI32, 4 => (infrastructure_modifier): I64, 5 => (supply_route): U8, 6 => (local_manpower): OptionalI64, 7 => (local_noncore_manpower): OptionalI64, 8 => (recruitment_add): OptionalI64, 9 => (recruitment_factor): OptionalI64 }, |_row| Ok(()));
 
+/// StateBuildingInputs: key state (32 bits).
+///
+/// The operands of a state view's shared building slot count and factory energy usage, which
+/// the game computes on demand. Daily: every state is read in one slot hour and held until the
+/// next; `owner` and `controller` name the countries the operands were read for, so a state that
+/// changed hands since its read has none for its new owner or controller. Modifier values are
+/// effective fixed5 (an absent modifier is the game's zero); a `None` is a refused read.
+///
+/// Shared slots: `base = local_building_slots + global_building_slots`; when `base` is positive
+/// it becomes `(local_building_slots_factor + 100000 + global_building_slots_factor) * base /
+/// 100000`; then `base / 100000 + extra_shared_slots`, at least zero and at most the define
+/// `NBuildings.MAX_SHARED_SLOTS` (every division truncates toward zero).
+///
+/// Energy usage: `a = max(0, local_factories + 100000)` and `b = max(0,
+/// local_factory_energy_consumption + 100000 + factory_energy_consumption + infrastructure * 100000
+/// * local_factory_energy_consumption_per_infrastructure / 100000)`, where `infrastructure` is the
+/// healthy level of the state's infrastructure building (`StateBuildings.healthy_level`). Each
+/// active building (`StateBuildings.active`) adds `level * b * a / 100000` to each of its
+/// definition's military, naval and general production groups it counts in (the definition's
+/// `military_production`, `naval_production`, `general_production` above zero); the usage is
+/// `(military + naval + general) * factory_energy_factor / 100000`, shown rounded half away from
+/// zero to a whole number.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct StateBuildingInputRow {
+    pub state: u32,
+    pub owner: u32,
+    pub controller: u32,
+    /// The state's own extra shared slots (`add_extra_state_shared_building_slots`).
+    pub extra_shared_slots: i32,
+    /// The state's modifier for its owner.
+    pub local_building_slots: Option<i64>,
+    pub local_building_slots_factor: Option<i64>,
+    /// The owner country's modifier.
+    pub global_building_slots: Option<i64>,
+    pub global_building_slots_factor: Option<i64>,
+    /// The state's modifier for its controller.
+    pub local_factories: Option<i64>,
+    pub local_factory_energy_consumption: Option<i64>,
+    pub local_factory_energy_consumption_per_infrastructure: Option<i64>,
+    /// The controller country's modifier.
+    pub factory_energy_consumption: Option<i64>,
+    /// The controller's stored energy use of one factory level, fixed5.
+    pub factory_energy_factor: Option<i64>,
+}
+typed_codec!(StateBuildingInputRow, 32, |row| row.state as u128,
+ |key| Self { state: key as u32, ..Default::default() },
+ { 0 => (owner): U32, 1 => (controller): U32, 2 => (extra_shared_slots): I32, 3 => (local_building_slots): OptionalI64, 4 => (local_building_slots_factor): OptionalI64, 5 => (global_building_slots): OptionalI64, 6 => (global_building_slots_factor): OptionalI64, 7 => (local_factories): OptionalI64, 8 => (local_factory_energy_consumption): OptionalI64, 9 => (local_factory_energy_consumption_per_infrastructure): OptionalI64, 10 => (factory_energy_consumption): OptionalI64, 11 => (factory_energy_factor): OptionalI64 }, |_row| Ok(()));
+
 /// StateResources: key state:resource lexer token (64 bits).
 ///
 /// A resource's stored operands in one state; a resource whose four values
@@ -872,10 +921,12 @@ pub struct ResourceOriginRow {
     pub bad: bool,
     pub convoys_assigned: i32,
     pub convoys_required: i32,
+    /// The convoy requirement before the naval-dominance route cost reduction.
+    pub convoys_base: Recorded<i32>,
 }
 typed_codec!(ResourceOriginRow, 64, |row| (row.state as u128) << 32 | row.country as u128,
  |key| Self { state: (key >> 32) as u32, country: key as u32, ..Default::default() },
- { 0 => (list): U8, 1 => (efficiency): I64, 2 => (route_factor): I64, 3 => (local_resources_factor): I64, 4 => (bad): Bool, 5 => (convoys_assigned): I32, 6 => (convoys_required): I32, 7 => (ordinal): U32 },
+ { 0 => (list): U8, 1 => (efficiency): I64, 2 => (route_factor): I64, 3 => (local_resources_factor): I64, 4 => (bad): Bool, 5 => (convoys_assigned): I32, 6 => (convoys_required): I32, 7 => (ordinal): U32, 8 => (convoys_base): I32 },
  |row| if row.list > 1 { Err(invalid("resource origin list is neither own (0) nor rights (1)")) } else { Ok(()) });
 
 /// ResourceRights: key state:resource (64 bits).
@@ -953,10 +1004,15 @@ pub struct ConvoyClientRow {
     pub bad: bool,
     pub convoys_assigned: i32,
     pub convoys_required: i32,
+    /// The client's two delivery efficiency factors, fixed5.
+    pub efficiency_a: Recorded<i64>,
+    pub efficiency_b: Recorded<i64>,
+    /// The convoy requirement before the naval-dominance route cost reduction.
+    pub convoys_base: Recorded<i32>,
 }
 typed_codec!(ConvoyClientRow, 32, |row| row.handle as u128,
  |key| Self { handle: key as u32, ..Default::default() },
- { 0 => (category): U8, 1 => (owner): U32, 2 => (other): U32, 3 => (route_class): U8, 4 => (route_country): U32, 5 => (route_other): U32, 6 => (bad): Bool, 7 => (convoys_assigned): I32, 8 => (convoys_required): I32, 9 => (owner_ordinal): OptionalU32, 10 => (other_ordinal): OptionalU32 }, |_row| Ok(()));
+ { 0 => (category): U8, 1 => (owner): U32, 2 => (other): U32, 3 => (route_class): U8, 4 => (route_country): U32, 5 => (route_other): U32, 6 => (bad): Bool, 7 => (convoys_assigned): I32, 8 => (convoys_required): I32, 9 => (owner_ordinal): OptionalU32, 10 => (other_ordinal): OptionalU32, 11 => (efficiency_a): I64, 12 => (efficiency_b): I64, 13 => (convoys_base): I32 }, |_row| Ok(()));
 
 /// RegionalConvoyEfficiency: key country:region (64 bits).
 ///
@@ -975,6 +1031,21 @@ pub struct RegionalConvoyEfficiencyRow {
 typed_codec!(RegionalConvoyEfficiencyRow, 64, |row| (row.country as u128) << 32 | row.region as u128,
  |key| Self { country: (key >> 32) as u32, region: key as u32, ..Default::default() },
  { 0 => (efficiency): I64 }, |_row| Ok(()));
+
+/// StrategicRegionWeights: key strategic region id (32 bits).
+///
+/// A strategic region's weight in a naval route's convoy cost reduction: the share of a
+/// route's weight in regions under the client's naval control. The game sums it from the
+/// region's provinces when the map loads. Static.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct StrategicRegionWeightRow {
+    pub region: u32,
+    pub weight: i32,
+}
+typed_codec!(StrategicRegionWeightRow, 32, |row| row.region as u128,
+ |key| Self { region: key as u32, ..Default::default() },
+ { 0 => (weight): I32 }, |_row| Ok(()));
 
 /// TradeRoutes: key country:class:other (72 bits).
 ///

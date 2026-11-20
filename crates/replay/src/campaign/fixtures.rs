@@ -143,13 +143,67 @@ fn encoded(campaign_id: Vec<u8>, segments: &[Vec<Record>], derived: Option<&mut 
     let mode = crate::scope::CaptureMode::from_byte(identity.capture_mode)?;
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
     let mut file = write_runs(file, segments, false, derived.map(|derived| (derived, mode)))?;
-    add_records(&mut file, &records)?;
+    add_records(&mut file, &records, FormatVersion::CURRENT)?;
     Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
 }
 
-/// Names `records` in the revision `file` publishes next.
-fn add_records<W: Write + Seek + Read>(file: &mut FileWriter<W>, records: &Records) -> io::Result<()> {
-    let bytes = records.encode(FormatVersion::CURRENT)?;
+/// [`encode_records`] with its records naming row format `format` though written as this build's:
+/// what a build of a later format whose change leaves this build's schema digest alone writes.
+pub fn encode_records_naming(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+    let records = records_of(segments, None)?;
+    let identity = identity_of(campaign_id, &records)?;
+    let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
+    let mut file = write_runs(file, segments, false, None)?;
+    let mut bytes = records.encode(FormatVersion::CURRENT)?;
+    bytes[super::records::MAGIC.len()..super::records::MAGIC.len() + 2].copy_from_slice(&format.to_le_bytes());
+    let container = file.container();
+    let extent = container.put_zstd(Kind::Controls, Tags::default(), &bytes, LEVEL)?;
+    container.append(SectionKey::RECORDS, extent)?;
+    Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
+}
+
+/// [`encode_records`] as a build of row format `format` wrote it: its identity naming that
+/// format's schema, its journal, store and pages holding the tables it held, each framed as then,
+/// and its records recorded in that format. Each frame's Clock and Campaign rows are its hours.
+pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+    use crate::{
+        columnar_frames::synthetic::{Input, Sample, Synthetic},
+        rows::{TableId, tables},
+    };
+    let records = records_of(segments, None)?;
+    let columns = crate::columnar_frames::columns_at(format)?;
+    let schema = envelope::schema_digest_prefix(&schema()?[..columns.len()], &columns).ok_or_else(|| io::Error::other("the format frames no schema of this build"))?;
+    let identity = envelope::Identity { schema, ..identity_of(campaign_id, &records)? };
+    let file = FileWriter::create(Cursor::new(Vec::new()), identity, columns.len(), SETTINGS, None)?;
+    let mut file = HourWriter::framed(file, LEVEL, replay_columnar::unit::Settings::at(LEVEL), &columns)?;
+    let mut run: Option<(Synthetic, BranchId, Hour)> = None;
+    for segment in segments {
+        let mut decoder = FrameDecoder::new();
+        for record in segment {
+            let Record::Frame(frame) = record else { continue };
+            let decoded = decoder.advance(frame)?.clone();
+            if !run.as_ref().is_some_and(|(_, branch, next)| *branch == decoded.branch && *next == decoded.hour) {
+                let epoch = if run.is_some() { envelope::epoch::GAP } else { envelope::epoch::START };
+                file.start_run(decoded.branch, epoch, decoded.hour)?;
+                run = Some((Synthetic::framed(decoded.branch, decoded.hour, columns.clone())?, decoded.branch, decoded.hour));
+            }
+            let (synthetic, _, next) = run.as_mut().expect("a run under way");
+            let clock = decoded.complete::<tables::Clock>()?;
+            synthetic.table(TableId::Clock, Input::Snapshot { rows: clock, partial: None, read: true, sample: Sample::FromReadBit })?;
+            let campaign = decoded.complete::<tables::Campaign>()?;
+            synthetic.table(TableId::Campaign, Input::Snapshot { rows: campaign, partial: None, read: true, sample: Sample::FromReadBit })?;
+            synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections))??;
+            *next = decoded.hour + 1;
+        }
+    }
+    let mut file = file.finish()?;
+    add_records(&mut file, &records, FormatVersion::read(format)?)?;
+    Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
+}
+
+/// Names `records`, recorded in `format`, in the revision `file` publishes next.
+fn add_records<W: Write + Seek + Read>(file: &mut FileWriter<W>, records: &Records, format: FormatVersion) -> io::Result<()> {
+    let bytes = records.encode(format)?;
     let container = file.container();
     let extent = container.put_zstd(Kind::Controls, Tags::default(), &bytes, LEVEL)?;
     container.append(SectionKey::RECORDS, extent)
@@ -169,7 +223,7 @@ impl Replay {
         let held = Cursor::new(self.bytes()[..self.saved_length() as usize].to_vec());
         let file = FileWriter::resume(held, resumed, TABLE_COUNT, SETTINGS, None)?;
         let mut file = write_runs(file, segments, true, None)?;
-        add_records(&mut file, &records)?;
+        add_records(&mut file, &records, FormatVersion::CURRENT)?;
         Self::open(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
     }
 }

@@ -340,6 +340,25 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
                 ),
             }
         }
+        if let Some(value) = report.recorded(
+            &row.queued_actions,
+            "RailwayGunCounterInputs.queued_actions",
+            format!("{label}.queued_actions"),
+        ) {
+            match value {
+                Some(count) => check(
+                    report,
+                    &format!("{label}.queued_actions"),
+                    usize::try_from(*count).ok(),
+                    Some(saved.queued_actions),
+                ),
+                None => report.difference(
+                    format!("{label}.queued_actions: guarded read refusal"),
+                    "unavailable",
+                    saved.queued_actions,
+                ),
+            }
+        }
         report.scalar(
             &label,
             "current_strength",
@@ -393,6 +412,7 @@ mod tests {
             subunit_token: 1,
             name: replay_data::rows::Recorded::Value(Some(Vec::new())),
             withdrawal: replay_data::rows::Recorded::Value(Some(0)),
+            queued_actions: replay_data::rows::Recorded::Value(Some(0)),
             // Native route cells are raw; nothing here requires known provinces.
             alternate_path: vec![u32::MAX],
             ..Default::default()
@@ -445,6 +465,7 @@ mod tests {
             strength: Decimal::parse(b"0").unwrap(),
             combats: vec![],
             country_intel: Vec::new(),
+            queued_actions: 0,
         }
     }
 

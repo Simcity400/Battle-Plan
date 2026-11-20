@@ -371,6 +371,38 @@ pub fn written_captured(
     written_captured_with(campaign, capture, replay_columnar::unit::Settings::at(LEVEL), runs, streams, write)
 }
 
+/// [`written`] as a build of row format `format` wrote it: its identity naming that format's
+/// schema, its journal, store, pages and restores holding the tables it held, each framed as then,
+/// a restore at every block's end, and its capture naming the format. `write` writes each table
+/// with rows of that framing.
+pub fn written_at(
+    format: u16,
+    campaign: &[u8],
+    runs: &[(u64, i32, u32)],
+    streams: &[TableId],
+    write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
+) -> (Vec<u8>, Vec<Seen>) {
+    let columns = columns_at(format).unwrap();
+    let schema = schema().unwrap();
+    let identity = Identity { schema: envelope::schema_digest_prefix(&schema[..columns.len()], &columns).unwrap(), ..identity(campaign, 0) };
+    let capture = crate::columnar_file::Capture {
+        campaign_id: campaign.to_vec(),
+        content: Vec::new(),
+        capture_mode: 0,
+        sessions: Vec::new(),
+        run_sessions: Vec::new(),
+        stop: None,
+        format,
+        journaled: 0,
+        controls: Vec::new(),
+    };
+    // Every block's end restores every table.
+    let unit = replay_columnar::unit::Settings { restore_blocks: 1, ..replay_columnar::unit::Settings::at(LEVEL) };
+    let file = FileWriter::create(std::io::Cursor::new(Vec::new()), identity, columns.len(), Settings { level: unit.level }, None).unwrap();
+    let file = HourWriter::framed(file, unit.level, unit, &columns).unwrap();
+    written_into(file, Some(&capture), Some(&columns), runs, streams, write)
+}
+
 /// [`written_captured`], its blocks restored and packed as `unit` says.
 fn written_captured_with(
     campaign: &[u8],
@@ -378,13 +410,28 @@ fn written_captured_with(
     unit: replay_columnar::unit::Settings,
     runs: &[(u64, i32, u32)],
     streams: &[TableId],
+    write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
+) -> (Vec<u8>, Vec<Seen>) {
+    written_into(writer_with(identity(campaign, 0), unit, |_| {}), capture, None, runs, streams, write)
+}
+
+/// `streams` over `runs` written into `file` as [`written_captured`] writes them.
+fn written_into(
+    mut file: HourWriter<std::io::Cursor<Vec<u8>>>,
+    capture: Option<&crate::columnar_file::Capture>,
+    framed: Option<&[usize]>,
+    runs: &[(u64, i32, u32)],
+    streams: &[TableId],
     mut write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
 ) -> (Vec<u8>, Vec<Seen>) {
     use super::synthetic::Synthetic;
-    let mut file = writer_with(identity(campaign, 0), unit, |_| {});
     let mut seen = Vec::new();
     for (run, &(branch, first_hour, units)) in (0..).zip(runs) {
-        let mut synthetic = Synthetic::new(branch, first_hour).unwrap();
+        let mut synthetic = match framed {
+            Some(columns) => Synthetic::framed(branch, first_hour, columns.to_vec()),
+            None => Synthetic::new(branch, first_hour),
+        }
+        .unwrap();
         file.start_run(branch, envelope::epoch::START, first_hour).unwrap();
         for ordinal in 0..units * envelope::UNIT_ORDINALS {
             write(&mut synthetic, run, ordinal);

@@ -1134,9 +1134,27 @@ fn captures_the_roster_gun_motion_and_first_combat_without_map_entity_state() {
             fresh_failure: None,
             fresh_failures: [None; 3],
             withdrawal: None,
+            theatre: Some(0),
+            queued_actions: Some(0),
         }
     );
     assert_eq!(paths, [2, 1, 1]);
+}
+
+/// A theatre outside the roster country's theatres refuses only that field.
+#[test]
+fn theatre_and_queued_orders_are_field_local() {
+    let mut bytes = fixture();
+    bytes[GUN + cunit::THEATRE..GUN + cunit::THEATRE + 8].copy_from_slice(&0x7770_u64.to_le_bytes());
+    bytes[GUN + cunit::QUEUED_ACTION_COUNT..GUN + cunit::QUEUED_ACTION_COUNT + 4]
+        .copy_from_slice(&3_i32.to_le_bytes());
+    let mut rows = vec![Row::default(); 1];
+    let mut paths = vec![0; 3];
+    assert_eq!(
+        capture(bytes, None, &mut rows, &mut paths).outcome,
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!((rows[0].theatre, rows[0].queued_actions), (None, Some(3)));
 }
 
 /// Guarded read calls of the hourly walk, with `guns` copies of the fixture's gun in its

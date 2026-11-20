@@ -20,17 +20,17 @@ fn invalid(what: impl Into<String>) -> io::Error {
 
 /// `slot`'s cell in `column` of the recorder's store table `table` in the wire form a row's
 /// field codec reads: a text cell's string bytes, a list as its items' bytes, an opaque cell as
-/// its payload encoded at `format`.
+/// its payload encoded at `format`. A column past the table's, which a recording of an earlier
+/// format never held, is not recorded.
 pub fn field<'a>(
     table: &TableView<'a>,
     slot: u32,
     column: usize,
     format: u16,
 ) -> io::Result<Field<'a>> {
-    let kind = *table
-        .kinds()
-        .get(column)
-        .ok_or_else(|| invalid(format!("No column {column}")))?;
+    let Some(&kind) = table.kinds().get(column) else {
+        return Ok(Field::NotRecorded);
+    };
     let value = table.value(column, slot);
     let number = |value: Value<'_>| match value {
         Value::Number(bits) => Ok(Some(bits)),

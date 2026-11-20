@@ -10,8 +10,9 @@
 //! construction and the save loader); every other owner's routes carry. An hour whose
 //! take of the marks does not certify the previous hour's read reads every
 //! owner. A changed census marks its owner too: membership and route-storage
-//! changes legitimately change its rows. Read in the RaidState job, after the raid
-//! state inputs.
+//! changes legitimately change its rows. StrategicRegionWeights is static: the game
+//! writes it only while loading the map, so it is read on full hours. Read in the
+//! RaidState job, after the raid state inputs.
 use crate::{
     clock::qpc,
     slicing::{SliceFingerprints, SliceSelection},
@@ -22,7 +23,7 @@ use engine_resources::{cstrategic_resource, resource_map as native, resource_map
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 
-pub const N: usize = 7;
+pub const N: usize = 8;
 pub const TABLES: [TableId; N] = [
     TableId::ResourceOrigins,
     TableId::ResourceRights,
@@ -31,6 +32,7 @@ pub const TABLES: [TableId; N] = [
     TableId::ConvoyClients,
     TableId::TradeRoutes,
     TableId::RegionalConvoyEfficiency,
+    TableId::StrategicRegionWeights,
 ];
 
 /// Every buffer grows on the worker from what the walk finds.
@@ -54,6 +56,7 @@ pub struct Captured {
     clients: Vec<native::ClientRow>,
     temporary: Vec<native::TemporaryRow>,
     regional: Vec<native::RegionalRow>,
+    weights: Vec<native::RegionWeightRow>,
     pairs: Vec<(u32, u32)>,
     descriptors: Vec<cstrategic_resource::Row>,
     /// Every route a client referenced this hour, in row key order.
@@ -86,6 +89,7 @@ impl Captured {
             clients: Vec::new(),
             temporary: Vec::new(),
             regional: Vec::new(),
+            weights: Vec::new(),
             pairs: Vec::new(),
             descriptors: Vec::new(),
             census: Vec::new(),
@@ -112,6 +116,7 @@ impl Captured {
             + self.clients.capacity() * size_of::<native::ClientRow>()
             + self.temporary.capacity() * size_of::<native::TemporaryRow>()
             + self.regional.capacity() * size_of::<native::RegionalRow>()
+            + self.weights.capacity() * size_of::<native::RegionWeightRow>()
             + self.pairs.capacity() * size_of::<(u32, u32)>()
             + self.descriptors.capacity() * size_of::<cstrategic_resource::Row>()
             + self.census.capacity() * size_of::<(RouteKey, usize, bool)>()
@@ -236,6 +241,21 @@ impl Captured {
             };
         }
         ticks[6] = elapsed(begin);
+        let begin = qpc();
+        self.outcomes[7] = if replay_data::cadence::should_walk(TABLES[7], hour, force_full) {
+            let _reads = crate::read_accounting::table(TABLES[7]);
+            native::walk_region_weights(
+                memory,
+                base,
+                game_state,
+                Buffer::Growing(&mut self.weights),
+            )
+        } else {
+            Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            }
+        };
+        ticks[7] = elapsed(begin);
         self.pending_owned = true;
         ticks
     }
@@ -256,6 +276,7 @@ impl Captured {
         self.outcomes[6] = sorted(&mut self.regional, self.outcomes[6], |row| {
             (row.country, row.region)
         });
+        self.outcomes[7] = sorted(&mut self.weights, self.outcomes[7], |row| row.region);
         self.pending_owned = false;
     }
 
@@ -434,6 +455,7 @@ impl Captured {
                     bad: row.bad,
                     convoys_assigned: row.convoys[0],
                     convoys_required: row.convoys[1],
+                    convoys_base: row.convoys_base.into(),
                 }
             }),
             table::<tables::ResourceRights, _>(self.outcomes[1], &self.rights, |row| {
@@ -471,6 +493,9 @@ impl Captured {
                     bad: row.bad,
                     convoys_assigned: row.convoys[0],
                     convoys_required: row.convoys[1],
+                    efficiency_a: row.efficiency[0].into(),
+                    efficiency_b: row.efficiency[1].into(),
+                    convoys_base: row.convoys_base.into(),
                 }
             }),
             if routes.iter().all(|row| path(row).is_some()) {
@@ -497,6 +522,12 @@ impl Captured {
                     country: row.country,
                     region: row.region,
                     efficiency: row.efficiency,
+                }
+            }),
+            table::<tables::StrategicRegionWeights, _>(self.outcomes[7], &self.weights, |row| {
+                rows::StrategicRegionWeightRow {
+                    region: row.region,
+                    weight: row.weight,
                 }
             }),
         ]

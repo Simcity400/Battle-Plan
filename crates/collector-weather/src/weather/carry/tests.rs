@@ -16,6 +16,8 @@ struct World {
     regions: u32,
     accumulators: usize,
     province_data: usize,
+    /// Each region's custom sea values, two words apart.
+    custom: usize,
 }
 
 impl World {
@@ -34,7 +36,8 @@ impl World {
         let snow = province_data + provinces as usize * sweather_per_province::STRIDE;
         let mud = snow + provinces as usize;
         let clocks = (mud + provinces as usize + 0xff) & !0xff;
-        let end = clocks + provinces as usize * sweather_per_province::CLOCK_STRIDE;
+        let custom = (clocks + provinces as usize * sweather_per_province::CLOCK_STRIDE + 0xf) & !0xf;
+        let end = custom + regions as usize * 4;
         let bytes = vec![0; end];
         let mut world = Self {
             base: if live {
@@ -47,6 +50,7 @@ impl World {
             regions,
             accumulators,
             province_data,
+            custom,
         };
         world.put(
             STATE + engine_native::cgame_state::WEATHER_MANAGER,
@@ -100,6 +104,16 @@ impl World {
                 world.put(entry, &key.to_le_bytes());
                 world.put(entry + 8, &(i64::from(slot) * 1000).to_le_bytes());
             }
+            let count = world.custom_count(slot);
+            let header = record + sweather_per_region::CUSTOM_SEA;
+            world.put(
+                header,
+                &((world.base + world.custom_values(slot)) as u64).to_le_bytes(),
+            );
+            world.put(header + 8, &2_u32.to_le_bytes());
+            world.put(header + 12, &count.to_le_bytes());
+            let values = world.custom_values(slot);
+            world.put(values, &[1, 0, 0, 0]);
         }
         for slot in 0..provinces {
             let record = world.province(slot);
@@ -134,6 +148,15 @@ impl World {
 
     fn province(&self, slot: u32) -> usize {
         self.province_data + slot as usize * sweather_per_province::STRIDE
+    }
+
+    /// Region `slot`'s custom entry count: every third region has none.
+    fn custom_count(&self, slot: u32) -> u32 {
+        if slot % 3 == 2 { 0 } else { 2 }
+    }
+
+    fn custom_values(&self, slot: u32) -> usize {
+        self.custom + slot as usize * 4
     }
 
     fn combat_value(&self, slot: u32) -> usize {
@@ -179,6 +202,46 @@ impl World {
         entry + 8
     }
 
+    /// Gives province `slot` a static modifier list of `(name, days)`, each entry naming
+    /// its own definition, stored after the world's arrays; returns the list's address.
+    fn province_statics(&mut self, slot: u32, entries: &[(&str, i32)]) -> usize {
+        let name = engine_native::cstatic_modifier::NAME;
+        let definition_bytes = name + engine_native::msvc_string::STRIDE;
+        let list = (self.bytes.len() + 0xf) & !0xf;
+        let stride = sweather_per_province::STATIC_MODIFIER_STRIDE;
+        let first = list + entries.len() * stride;
+        self.bytes
+            .resize(first + entries.len() * definition_bytes, 0);
+        for (index, &(text, days)) in entries.iter().enumerate() {
+            assert!(text.len() < 16);
+            let definition = first + index * definition_bytes;
+            self.put(
+                definition,
+                &(engine_native::cstatic_modifier::VTABLE_RVA.0 as u64).to_le_bytes(),
+            );
+            self.put(definition + name, text.as_bytes());
+            self.put(
+                definition + name + engine_native::msvc_string::LENGTH,
+                &(text.len() as u64).to_le_bytes(),
+            );
+            self.put(
+                definition + name + engine_native::msvc_string::CAPACITY,
+                &engine_native::msvc_string::INLINE_CAPACITY.to_le_bytes(),
+            );
+            let entry = list + index * stride;
+            self.put(entry, &((self.base + definition) as u64).to_le_bytes());
+            self.put(
+                entry + sweather_per_province::STATIC_MODIFIER_DAYS,
+                &days.to_le_bytes(),
+            );
+        }
+        let header = self.province(slot) + sweather_per_province::STATIC_MODIFIERS;
+        self.put(header, &((self.base + list) as u64).to_le_bytes());
+        self.put(header + 8, &(entries.len() as u32).to_le_bytes());
+        self.put(header + 12, &(entries.len() as u32).to_le_bytes());
+        list
+    }
+
     /// A province write (as a console command or an unhooked writer would).
     fn write_province(&mut self, slot: u32, temperature: i64) {
         self.put(
@@ -217,6 +280,10 @@ impl World {
                     self.bytes[flag] ^= 1;
                     let value = self.combat_value(slot);
                     self.put(value, &(self.i64(value) + tick).to_le_bytes());
+                    if self.custom_count(slot) != 0 {
+                        let value = self.custom_values(slot) + 2;
+                        self.bytes[value] ^= 1;
+                    }
                 } else {
                     let temperature = self.province(slot) + sweather_per_province::TEMPERATURE;
                     self.put(temperature, &(self.i64(temperature) + tick).to_le_bytes());
@@ -252,11 +319,23 @@ impl<'a> Census<'a> {
     /// The slots of the `count` records of `stride` at `data` any read
     /// touched.
     fn slots(&self, data: usize, stride: usize, count: u32) -> Vec<u32> {
+        self.slots_where(data, stride, count, |_| true)
+    }
+
+    /// [`Census::slots`] of the reads that started at an offset in the record `keep` accepts.
+    fn slots_where(
+        &self,
+        data: usize,
+        stride: usize,
+        count: u32,
+        keep: impl Fn(usize) -> bool,
+    ) -> Vec<u32> {
         let mut slots: Vec<u32> = self
             .touched
             .borrow()
             .iter()
             .filter(|&&address| address >= data && address < data + count as usize * stride)
+            .filter(|&&address| keep((address - data) % stride))
             .map(|&address| ((address - data) / stride) as u32)
             .collect();
         slots.sort_unstable();
@@ -286,17 +365,20 @@ impl Memory for Census<'_> {
         layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
-        match sources {
+        let records: Vec<usize> = match sources {
             RecordSources::Strided {
                 base,
                 stride,
                 count,
-            } => self
-                .touched
-                .borrow_mut()
-                .extend((0..count).map(|index| base + index * stride)),
-            RecordSources::Pointers(pointers) => self.touched.borrow_mut().extend(pointers),
-        }
+            } => (0..count).map(|index| base + index * stride).collect(),
+            RecordSources::Pointers(pointers) => pointers.to_vec(),
+        };
+        self.touched.borrow_mut().extend(records.into_iter().flat_map(|record| {
+            layout
+                .fields()
+                .iter()
+                .map(move |field| record + field.source_offset)
+        }));
         self.inner.copy_records(sources, layout, destination)
     }
 }
@@ -312,6 +394,8 @@ struct Capture {
     provinces: Vec<u8>,
     combat: Vec<Option<RegionModifiers>>,
     province_modifiers: ProvinceModifiers,
+    province_statics: Option<ProvinceStatics>,
+    custom_sea: super::super::entries::CustomSea,
     log: Vec<u8>,
 }
 
@@ -340,6 +424,8 @@ fn run(
         provinces: job.provinces.bytes[..provinces].to_vec(),
         combat: job.combat.clone(),
         province_modifiers: job.province_modifiers.clone(),
+        province_statics: job.province_statics.as_deref().cloned(),
+        custom_sea: job.custom_sea.clone(),
         log: job.log.bytes.to_vec(),
     };
     (captured, job)
@@ -362,7 +448,8 @@ fn hour<'a>(
     (job.carry.take().unwrap(), census)
 }
 
-/// The slots one hour read of each array: (regions, provinces).
+/// The slots one hour read of each array, static modifier list headers aside: (regions,
+/// provinces).
 fn read(world: &World, census: &Census<'_>) -> (Vec<u32>, Vec<u32>) {
     (
         census.slots(
@@ -370,12 +457,36 @@ fn read(world: &World, census: &Census<'_>) -> (Vec<u32>, Vec<u32>) {
             sweather_per_region::STRIDE,
             world.regions,
         ),
-        census.slots(
+        census.slots_where(
             world.base + world.province_data,
             sweather_per_province::STRIDE,
             world.provinces,
+            |offset| offset != sweather_per_province::STATIC_MODIFIERS,
         ),
     )
+}
+
+/// The provinces whose static modifier list header one hour read.
+fn headers(world: &World, census: &Census<'_>) -> Vec<u32> {
+    census.slots_where(
+        world.base + world.province_data,
+        sweather_per_province::STRIDE,
+        world.provinces,
+        |offset| offset == sweather_per_province::STATIC_MODIFIERS,
+    )
+}
+
+/// The regions whose custom sea values one hour read.
+fn custom_read(world: &World, census: &Census<'_>) -> Vec<u32> {
+    census.slots(world.base + world.custom, 4, world.regions)
+}
+
+/// Of `slots`, the regions with custom sea values to read.
+fn with_custom(world: &World, slots: Vec<u32>) -> Vec<u32> {
+    slots
+        .into_iter()
+        .filter(|&slot| world.custom_count(slot) != 0)
+        .collect()
 }
 
 /// The window's slots.
@@ -467,6 +578,11 @@ fn window_hours_read_only_the_visited_slots() {
                     expected(region_window, regions),
                     expected(province_window, provinces)
                 ),
+                "{budgets:?} hour {at}"
+            );
+            assert_eq!(
+                custom_read(&world, &census),
+                with_custom(&world, expected(region_window, regions)),
                 "{budgets:?} hour {at}"
             );
         }
@@ -579,6 +695,116 @@ fn an_unfollowed_province_hour_reads_every_province_modifier_entry() {
     assert_eq!(read(&world, &census).1, every(provinces));
 }
 
+/// The hourly province gather copies no static modifier list header: the lists are read apart.
+#[test]
+fn the_dense_province_gather_leaves_the_static_modifier_header_out() {
+    let header = sweather_per_province::STATIC_MODIFIERS..sweather_per_province::STATIC_MODIFIERS + 16;
+    for field in sweather_per_province::FIELDS {
+        let copied = field.source_offset..field.source_offset + field.len;
+        assert!(copied.end <= header.start || copied.start >= header.end, "{copied:?}");
+    }
+}
+
+/// Every writer of a province's static modifier list is a counted weather writer except the
+/// daily expiry's countdown, which runs in the hourly update that starts a day. So an hour
+/// with neither reads no list and no list header and shares the held lists; an addition, a
+/// removal, a load or the daily update reads every list afresh; and every hour captures what a
+/// full read does.
+#[test]
+fn static_modifier_lists_are_read_only_after_a_counted_write_or_the_daily_update() {
+    let provinces = 80;
+    let mut world = World::new(provinces, 9, (5, 2));
+    let stride = sweather_per_province::STATIC_MODIFIER_STRIDE;
+    let days = sweather_per_province::STATIC_MODIFIER_DAYS;
+    // Each province's list address and length; every fourth province has no list.
+    let mut lists: Vec<Option<(usize, usize)>> = (0..provinces)
+        .map(|slot| {
+            (slot % 4 != 3).then(|| {
+                let entries = [("the_great_wall", -1), ("flooded", 3 + slot as i32)];
+                (world.province_statics(slot, &entries), entries.len())
+            })
+        })
+        .collect();
+    lists[0] = Some((world.province_statics(0, &[("the_great_wall", 0)]), 1));
+    let base = world.base;
+    let listed = |lists: &[Option<(usize, usize)>], census: &Census<'_>| {
+        lists
+            .iter()
+            .flatten()
+            .filter(|&&(list, _)| census.touched.borrow().contains(&(base + list)))
+            .count()
+    };
+    let with_lists = lists.iter().flatten().count();
+    let statics = |carry: &WeatherCarry, slot: usize| -> Vec<(Vec<u8>, i32)> {
+        super::super::entries::statics(
+            carry.province_statics.as_ref().unwrap().get(slot).unwrap(),
+        )
+        .map(|(name, days)| (name.to_vec(), days))
+        .collect()
+    };
+    // `hour` asserts each hour's capture equals a full read of the same memory.
+    let (carry, census) = hour(&world, carry(), 20, false, Some(0));
+    assert_eq!(headers(&world, &census), every(provinces));
+    assert_eq!(listed(&lists, &census), with_lists);
+    // No writer: the lists are carried, shared and unread.
+    world.pass(1);
+    let held = carry.province_statics.clone().unwrap();
+    let (carry, census) = hour(&world, carry, 21, false, Some(0));
+    assert_eq!(carry.followed, 3);
+    assert!(headers(&world, &census).is_empty());
+    assert_eq!(listed(&lists, &census), 0);
+    assert!(SharedBox::ptr_eq(&held, carry.province_statics.as_ref().unwrap()));
+    drop(held);
+    // An addition, counted on entry and return.
+    world.pass(2);
+    lists[3] = Some((world.province_statics(3, &[("dam_broken", 5)]), 1));
+    let (carry, census) = hour(&world, carry, 22, false, Some(2));
+    assert_eq!(headers(&world, &census), every(provinces));
+    assert_eq!(statics(&carry, 3), [(b"dam_broken".to_vec(), 5)]);
+    world.pass(3);
+    let (carry, census) = hour(&world, carry, 23, false, Some(2));
+    assert!(headers(&world, &census).is_empty());
+    // The update that starts the day runs the expiry: every positive day counts down, unhooked.
+    for &(list, entries) in lists.iter().flatten() {
+        for entry in 0..entries {
+            let at = list + entry * stride + days;
+            if world.word(at) > 0 {
+                world.put(at, &(world.word(at) - 1).to_le_bytes());
+            }
+        }
+    }
+    world.pass(4);
+    let (carry, census) = hour(&world, carry, 24, false, Some(2));
+    assert_eq!(carry.followed, 3);
+    assert_eq!(headers(&world, &census), every(provinces));
+    assert_eq!(
+        statics(&carry, 1),
+        [(b"the_great_wall".to_vec(), -1), (b"flooded".to_vec(), 3)]
+    );
+    assert_eq!(statics(&carry, 0), [(b"the_great_wall".to_vec(), 0)]);
+    assert_eq!(statics(&carry, 3), [(b"dam_broken".to_vec(), 4)]);
+    // A removal.
+    world.pass(5);
+    lists[1] = Some((world.province_statics(1, &[("the_great_wall", -1)]), 1));
+    let (carry, census) = hour(&world, carry, 25, false, Some(4));
+    assert_eq!(headers(&world, &census), every(provinces));
+    assert_eq!(statics(&carry, 1), [(b"the_great_wall".to_vec(), -1)]);
+    world.pass(6);
+    let (carry, census) = hour(&world, carry, 26, false, Some(4));
+    assert!(headers(&world, &census).is_empty());
+    // A load reads every list anew.
+    world.pass(7);
+    lists[2] = Some((world.province_statics(2, &[("flooded", 9)]), 1));
+    lists[7] = Some((world.province_statics(7, &[("flooded", 1)]), 1));
+    let (carry, census) = hour(&world, carry, 27, false, Some(6));
+    assert_eq!(headers(&world, &census), every(provinces));
+    assert_eq!(statics(&carry, 7), [(b"flooded".to_vec(), 1)]);
+    world.pass(8);
+    let (_, census) = hour(&world, carry, 28, false, Some(6));
+    assert!(headers(&world, &census).is_empty());
+    assert_eq!(listed(&lists, &census), 0);
+}
+
 /// Memory whose first read covering `fault` fails; later reads of it succeed.
 struct FailsOnce<'a> {
     inner: SliceMemory<'a>,
@@ -668,6 +894,49 @@ fn a_failed_window_combat_lookup_is_not_read_again() {
     world.pass(2);
     let (_, census) = hour(&world, carry, 3, false, Some(0));
     assert_eq!(read(&world, &census), (every(9), every(40)));
+}
+
+/// A window region whose custom sea values fail their first read is refused for the hour and
+/// counted, not read again; every other region keeps its values, the records stay held, and the
+/// next hour reads every region's values.
+#[test]
+fn a_failed_window_custom_sea_read_is_refused_and_read_in_full_next_hour() {
+    let (mut world, carry) = held(40, 9, (5, 2));
+    assert_eq!(carry.custom_sea.len(), 9);
+    let (region_window, _) = next_windows(&world);
+    world.pass(1);
+    let failed = (0..region_window.1)
+        .map(|visit| (region_window.0 + visit) % 9)
+        .find(|&slot| world.custom_count(slot) != 0)
+        .unwrap();
+    let memory = FailsOnce {
+        inner: world.memory(),
+        fault: world.base + world.custom_values(failed),
+        attempts: Cell::new(0),
+    };
+    let refusals = CUSTOM_SEA_REFUSALS.load(Relaxed);
+    let mut carry = carry;
+    carry.begin(2, false, Some(0));
+    let (captured, mut job) = run(&memory, world.base + STATE, Some(carry));
+    assert_eq!(memory.attempts.get(), 1);
+    assert!(CUSTOM_SEA_REFUSALS.load(Relaxed) > refusals);
+    let (full, _) = run(&world.memory(), world.base + STATE, None);
+    for slot in 0..9 {
+        let expected = if slot == failed as usize {
+            None
+        } else {
+            full.custom_sea.get(slot)
+        };
+        assert_eq!(captured.custom_sea.get(slot), expected, "region {slot}");
+    }
+    assert_eq!(full.custom_sea.get(2), Some(&[][..]));
+    assert_eq!(full.custom_sea.get(0).map(<[i16]>::len), Some(2));
+    let carry = job.carry.take().unwrap();
+    assert!(carry.held.is_some() && carry.custom_sea.is_empty());
+    world.pass(2);
+    let (carry, census) = hour(&world, carry, 3, false, Some(0));
+    assert_eq!(carry.followed, 3);
+    assert_eq!(custom_read(&world, &census), with_custom(&world, every(9)));
 }
 
 /// A weather hour's guarded read at the vanilla census (13,414 provinces,

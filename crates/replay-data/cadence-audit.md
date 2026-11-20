@@ -28,11 +28,11 @@ otherwise reads its independently demanded XP fresh before resume.
 | Class | Meaning | Tables |
 |---|---|---|
 | hourly tick | Native writer class | 163 |
-| any hour | Native writer class | 107 |
+| any hour | Native writer class | 108 |
 | hook log | Native writer class | 20 |
 | load | Native writer class | 2 |
 | recorder | Native writer class | 94 |
-| total | | 386 |
+| total | | 387 |
 
 The market family publishes exact Hourly rows through certified owner and exact agreement-key updates, not daily slices. Initial/load and lost-interval recovery use the existing authenticated economy resource/contract census. A fresh epoch publishes all three complete state baselines independently of event-interval refusal or the caller full flag; off the daily contract slot the resource census completes only a skipped owned-contract census once, never retrying a failed attempt. A spool-only loss requires no second census in the next intact interval. Quiet epochs add no native list read. Ordinary inventory, agreement transfer/once and contract/route callbacks publish constant-size identity marks; the worker reads only marked surviving holders and differences native cumulative totals. Rare amendment/removal callbacks copy final delivered/sunk pools before erasure into prepared storage; worker differencing retains the final increment and discards intermediate snapshots. Actual agreement amendments copy all three schedules; both local incoming/outgoing action drafts are excluded. Country reset and variable stores keep their existing patch owners, using nonzero encoded country receiver keys including country zero. Active contract removal retains final scalar totals before handle retirement; deferred destruction does not duplicate the lifetime. All 25 dedicated sites (23 detours plus 2 taps) and both forwarding owners gate carry; four nested per-item/pool sites are covered by the outer delivery/rebuild owners and are unpatched. There is no new hourly native task, roster scan or callback allocation. Missing closure/lost intervals refuse uncertified state; selected-read failures stay local to their table.
 
@@ -197,6 +197,7 @@ NavalRefitShips.line also carries its stored full reference without destination-
 | LandCombats | hourly tick | Combat manager updates from the hourly game-state update. |
 | LandEventCoverage | hook log | land_events coverage. |
 | LandTheatres | any hour | Theatre creation from unit-creation effects and army maintenance updates. |
+| LandUnitOrder | any hour | Viewing country's unit vector: unit creation, deployment and transfer (roster-owner setting), unit deletion, and playing-country changes. |
 | LeaderPortraitPaths | any hour | Leader owner setting; uses the LeaderPortraits sources. |
 | LeaderPortraits | hourly tick | Leader scope changes through the unit-deletion queue and group leader setting; portrait-path setting. |
 | LendLeaseAgreements | hourly tick; carried under market_changes | Nonzero fuel ADD stores retain register deltas; quiet stores do no guarded read. Last-delivered zero derives once/hour for previously nonzero keys. Delivery/loss and once-subtraction callbacks mark only the reached agreement and pool; worker reads those pools/dates and differences cumulative totals. Rare amendment and pre-destruction removal stream final delivered/sunk totals before erasure; amendments preserve three complete schedules. Local draft-action resets are unobserved because they change no agreement state. Bootstrap uses the existing giver census. Exact changed agreement keys share equipment baselines; no periodic exchange read. |

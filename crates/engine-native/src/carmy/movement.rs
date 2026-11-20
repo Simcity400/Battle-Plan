@@ -540,6 +540,7 @@ pub fn capture_movement_inputs_with_extra(
                 base_speed: None,
                 fuel: None,
                 transport_speed: None,
+                queued_actions: None,
             });
             paths_len += needed;
             len += 1;
@@ -582,6 +583,7 @@ pub fn capture_movement_inputs_with_extra(
         row.movement_priority = seed.movement_priority;
         // Already acquired on the status line; stationary fuel feeds the division panel too.
         row.fuel = seed.fuel;
+        row.queued_actions = seed.queued_actions;
         // Only a division with an ordinary route moves (path_total is the
         // route's signed count, as the movement gate tests it).
         if (row.path_total as i32) > 0 {
@@ -1003,6 +1005,7 @@ fn walk_movement_internal(
                 base_speed: None,
                 fuel: None,
                 transport_speed: None,
+                queued_actions: None,
             };
             paths_len += path_len + alternate_len;
             len += 1;
@@ -1036,6 +1039,10 @@ fn walk_movement_internal(
         row.fuel = source
             .pointer
             .checked_add(FUEL_CANDIDATE)
+            .and_then(|at| read(memory, at));
+        row.queued_actions = source
+            .pointer
+            .checked_add(cunit::QUEUED_ACTION_COUNT)
             .and_then(|at| read(memory, at));
         if (row.path_total as i32) > 0 {
             let seed = DivisionSeed {

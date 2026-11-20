@@ -54,6 +54,16 @@ pub trait Pages: Send + Sync {
     fn extents(&self, run: usize) -> &dyn Extents;
     fn runs(&self) -> &[Run];
     fn kinds(&self, table: usize) -> Option<&[Kind]>;
+    /// How many of `table`'s first columns its pages hold: fewer than its kinds for a recording of
+    /// an earlier format, whose later columns read not recorded.
+    fn held(&self, table: usize) -> usize {
+        self.kinds(table).map_or(0, <[Kind]>::len)
+    }
+    /// The row format its cells were written in: an opaque cell decodes at it. This build's for
+    /// pages this build wrote.
+    fn format(&self) -> u16 {
+        replay_data::FORMAT_VERSION
+    }
 }
 
 /// What of a recording is read.
@@ -211,5 +221,13 @@ impl Pages for WorldPages {
 
     fn kinds(&self, table: usize) -> Option<&[Kind]> {
         self.kinds.get(table).filter(|kinds| !kinds.is_empty()).map(Vec::as_slice)
+    }
+
+    fn held(&self, table: usize) -> usize {
+        self.recording.columns().get(table).copied().unwrap_or(0)
+    }
+
+    fn format(&self) -> u16 {
+        self.recording.format()
     }
 }

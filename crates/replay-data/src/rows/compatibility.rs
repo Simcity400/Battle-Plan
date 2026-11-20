@@ -850,8 +850,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     // MOVEMENT_TERMS_FORMAT grew `combat` by its army speed and attack speed entries.
     history[TableId::WeatherRegions.index()] = appended_at(
         TableId::WeatherRegions,
-        AIR_COMBAT_MENU_FORMAT,
-        "pending political runtime inputs, perf/attack-preview inputs, pol/finish-eta combat speed entries, air combat efficiency breakdown",
+        CAPTURE_ADDITIONS_FORMAT,
+        "pending political runtime inputs, perf/attack-preview inputs, pol/finish-eta combat speed entries, air combat efficiency breakdown, capture/weather-sea-rail-bound",
         &[
             AppendedField {
                 index: 7,
@@ -893,6 +893,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "air_efficiency",
                 introduced: AIR_COMBAT_MENU_FORMAT,
             },
+            AppendedField {
+                index: 15,
+                name: "custom_sea",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
+            },
         ],
     );
     history[TableId::WeatherProvinces.index()] = table(
@@ -921,8 +926,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::States.index()] = appended_at(
         TableId::States,
-        MAP_MODE_PARITY_FORMAT,
-        "pending political runtime inputs, pol/mapmode-capture population, pol/mapmode-infrastructure category, pol/mapmode-scripted cached choices, nonpolitical map mode operands",
+        CAPTURE_ADDITIONS_FORMAT,
+        "pending political runtime inputs, pol/mapmode-capture population, pol/mapmode-infrastructure category, pol/mapmode-scripted cached choices, nonpolitical map mode operands, capture additions",
         &[
             AppendedField {
                 index: 6,
@@ -964,6 +969,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "infrastructure",
                 introduced: MAP_MODE_PARITY_FORMAT,
             },
+            AppendedField {
+                index: 14,
+                name: "marked_owners",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
+            },
         ],
     );
     history[TableId::Capitulation.index()] = appended_at(
@@ -1000,8 +1010,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::RailCooldowns.index()] = appended_at(
         TableId::RailCooldowns,
-        POLITICAL_FORMAT,
-        "pending political runtime inputs",
+        CAPTURE_ADDITIONS_FORMAT,
+        "pending political runtime inputs, capture/weather-sea-rail-bound",
         &[
             AppendedField {
                 index: 1,
@@ -1017,6 +1027,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 index: 3,
                 name: "selection_hour",
                 introduced: POLITICAL_FORMAT,
+            },
+            AppendedField {
+                index: 4,
+                name: "building_bound",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
             },
         ],
     );
@@ -1226,9 +1241,14 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             name: "daylight",
             introduced: AIR_MAP_FORMAT,
         },
+        AppendedField {
+            index: 16,
+            name: "static_modifiers",
+            introduced: CAPTURE_ADDITIONS_FORMAT,
+        },
     ];
-    history[TableId::WeatherProvinces.index()].format = PROVINCE_WITNESS_FORMAT;
-    history[TableId::WeatherProvinces.index()].commit = "t3/weather-province-witness";
+    history[TableId::WeatherProvinces.index()].format = CAPTURE_ADDITIONS_FORMAT;
+    history[TableId::WeatherProvinces.index()].commit = "t3/province-modifiers-building-stats";
     history[TableId::StateFlags.index()].kind = ChangeKind::AppendedOnly;
     history[TableId::StateFlags.index()].appended = &[
         AppendedField {
@@ -2259,8 +2279,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::RailwayGunCounterInputs.index()] = appended_at(
         TableId::RailwayGunCounterInputs,
-        POLITICAL_FORMAT,
-        "pending political runtime inputs",
+        CAPTURE_ADDITIONS_FORMAT,
+        "pending political runtime inputs, capture additions",
         &[
             AppendedField {
                 index: 23,
@@ -2296,6 +2316,16 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 index: 29,
                 name: "transport",
                 introduced: POLITICAL_FORMAT,
+            },
+            AppendedField {
+                index: 30,
+                name: "theatre",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
+            },
+            AppendedField {
+                index: 31,
+                name: "queued_actions",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
             },
         ],
     );
@@ -2512,6 +2542,22 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "t3/map-model-witness",
         )
     };
+    history[TableId::LandUnitOrder.index()] = LastChange {
+        introduced: CAPTURE_ADDITIONS_FORMAT,
+        ..table(
+            TableId::LandUnitOrder,
+            CAPTURE_ADDITIONS_FORMAT,
+            "t3/measure-theatre-area-unit-order-cost",
+        )
+    };
+    history[TableId::StateBuildingInputs.index()] = LastChange {
+        introduced: CAPTURE_ADDITIONS_FORMAT,
+        ..table(
+            TableId::StateBuildingInputs,
+            CAPTURE_ADDITIONS_FORMAT,
+            "t3/province-modifiers-building-stats",
+        )
+    };
     let air_ledgers = [
         TableId::AirLossEvents,
         TableId::BuildingBombingDamage,
@@ -2712,10 +2758,15 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     };
     history[TableId::ResourceOrigins.index()] = LastChange {
         introduced: RESOURCES_MAP_FORMAT,
-        ..table(
+        ..appended_at(
             TableId::ResourceOrigins,
-            RESOURCES_MAP_FORMAT,
-            "pol/mapmode-resources-raids",
+            CAPTURE_ADDITIONS_FORMAT,
+            "capture/convoy-route-efficiency-cost",
+            &[AppendedField {
+                index: 8,
+                name: "convoys_base",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
+            }],
         )
     };
     history[TableId::ResourceRights.index()] = LastChange {
@@ -2744,10 +2795,35 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     };
     history[TableId::ConvoyClients.index()] = LastChange {
         introduced: RESOURCES_MAP_FORMAT,
-        ..table(
+        ..appended_at(
             TableId::ConvoyClients,
-            RESOURCES_MAP_FORMAT,
-            "pol/mapmode-resources-raids",
+            CAPTURE_ADDITIONS_FORMAT,
+            "capture/convoy-route-efficiency-cost",
+            &[
+                AppendedField {
+                    index: 11,
+                    name: "efficiency_a",
+                    introduced: CAPTURE_ADDITIONS_FORMAT,
+                },
+                AppendedField {
+                    index: 12,
+                    name: "efficiency_b",
+                    introduced: CAPTURE_ADDITIONS_FORMAT,
+                },
+                AppendedField {
+                    index: 13,
+                    name: "convoys_base",
+                    introduced: CAPTURE_ADDITIONS_FORMAT,
+                },
+            ],
+        )
+    };
+    history[TableId::StrategicRegionWeights.index()] = LastChange {
+        introduced: CAPTURE_ADDITIONS_FORMAT,
+        ..table(
+            TableId::StrategicRegionWeights,
+            CAPTURE_ADDITIONS_FORMAT,
+            "capture/convoy-route-efficiency-cost",
         )
     };
     history[TableId::TradeRoutes.index()] = LastChange {
@@ -3369,6 +3445,33 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         entry.commit = "capture/daily-progress";
         daily += 1;
     }
+    history[TableId::FactionTheatres.index()] = appended_at(
+        TableId::FactionTheatres,
+        CAPTURE_ADDITIONS_FORMAT,
+        "capture/faction-theatre-tooltip",
+        &[
+            AppendedField {
+                index: 4,
+                name: "name",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
+            },
+            AppendedField {
+                index: 5,
+                name: "owner",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
+            },
+            AppendedField {
+                index: 6,
+                name: "commander",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
+            },
+            AppendedField {
+                index: 7,
+                name: "countries",
+                introduced: CAPTURE_ADDITIONS_FORMAT,
+            },
+        ],
+    );
     history[TableId::IndustrialOrganisationPolicies.index()] = LastChange {
         introduced: INDUSTRIAL_ORGANISATION_DETAILS_FORMAT,
         ..appended_at(
@@ -3670,6 +3773,38 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             ..table(id, STORED_ONCE_FORMAT, "stored once")
         };
         copies += 1;
+    }
+    // Format 142 appended fields alone; each table's last layout change stays refused before it.
+    const CAPTURE: u16 = CAPTURE_ADDITIONS_FORMAT;
+    const CAPTURE_FIELDS: [(TableId, u16, &[AppendedField]); 2] = [
+        (
+            TableId::Divisions,
+            PRIVATE_COPY_ALIASES_FORMAT,
+            &[AppendedField {
+                index: 9,
+                name: "theatre",
+                introduced: CAPTURE,
+            }],
+        ),
+        (
+            TableId::DivisionMovement,
+            STORED_ONCE_FORMAT,
+            &[AppendedField {
+                index: 22,
+                name: "queued_actions",
+                introduced: CAPTURE,
+            }],
+        ),
+    ];
+    let mut capture = 0;
+    while capture < CAPTURE_FIELDS.len() {
+        let (id, layout_since, fields) = CAPTURE_FIELDS[capture];
+        history[id.index()] = LastChange {
+            introduced: history[id.index()].introduced,
+            layout_since,
+            ..appended_at(id, CAPTURE, "capture additions", fields)
+        };
+        capture += 1;
     }
     history
 };
@@ -4004,6 +4139,8 @@ mod tests {
     fn earlier_native_formats_frame_their_tables_as_written() {
         let fewer = |format: u16| -> Vec<(TableId, usize)> {
             let mut fewer = vec![
+                (TableId::Divisions, 9),
+                (TableId::RailwayGunCounterInputs, 30),
                 (TableId::DivisionMovement, 25),
                 (TableId::DivisionPanelStats, 23),
                 (TableId::DivisionStatus, 45),
@@ -4026,6 +4163,16 @@ mod tests {
             }
             if format < AIR_HISTORY_SLOTS_FORMAT {
                 fewer.push((TableId::AirNavalPatrolHistories, 3));
+            }
+            if format < CAPTURE_ADDITIONS_FORMAT {
+                fewer.extend([
+                    (TableId::WeatherRegions, 15),
+                    (TableId::RailCooldowns, 4),
+                    (TableId::ConvoyClients, 11),
+                    (TableId::ResourceOrigins, 8),
+                    (TableId::FactionTheatres, 4),
+                    (TableId::WeatherProvinces, 16),
+                ]);
             }
             if format < CONSTRUCTION_OUTPUT_OWNER_FORMAT {
                 fewer.push((TableId::ConstructionLineOutput, 15));
@@ -4059,8 +4206,11 @@ mod tests {
     /// Format 137 only appended fields: an older recording keeps every earlier column.
     #[test]
     fn map_mode_parity_fields_leave_earlier_columns_readable() {
+        let states = TableId::States.last_change();
+        assert!(states.gap(TableId::States, AIR_HISTORY_SLOTS_FORMAT).is_none());
+        assert_eq!(states.fields(TableId::States, AIR_HISTORY_SLOTS_FORMAT), 13);
+        assert_eq!(states.fields(TableId::States, MAP_MODE_PARITY_FORMAT), 14);
         for (table, fields) in [
-            (TableId::States, 13),
             (TableId::Players, 4),
             (TableId::OperativeMissions, 18),
             (TableId::AgencyOperationBuffers, 4),
@@ -4268,14 +4418,19 @@ mod tests {
     fn stored_once_relays_its_tables_and_refuses_older_recordings() {
         for table in STORED_ONCE_TABLES {
             let history = table.last_change();
-            assert_eq!(history.format, STORED_ONCE_FORMAT);
-            assert_eq!(history.kind, ChangeKind::Layout);
+            if table == TableId::DivisionMovement {
+                assert_eq!(history.format, CAPTURE_ADDITIONS_FORMAT);
+                assert_eq!(history.layout_since, STORED_ONCE_FORMAT);
+            } else {
+                assert_eq!(history.format, STORED_ONCE_FORMAT);
+                assert_eq!(history.kind, ChangeKind::Layout);
+            }
             assert!(history.table_gap(table, STORED_ONCE_FORMAT - 1).is_some());
             assert!(history.table_gap(table, STORED_ONCE_FORMAT).is_none());
             assert!(RETIRED_FIELDS.iter().all(|field| field.table != table));
         }
         assert_eq!(TableId::DivisionStatus.field_count(), 41);
-        assert_eq!(TableId::DivisionMovement.field_count(), 22);
+        assert_eq!(TableId::DivisionMovement.field_count(), 23);
         assert_eq!(TableId::DivisionPanelStats.field_count(), 25);
         assert_eq!(TableId::LandCombatDivisionModifiers.field_count(), 2);
         assert_eq!(TableId::LandCombatDivisions.field_count(), 15);
@@ -4533,7 +4688,7 @@ mod tests {
         for (table, latest, fields) in [
             (
                 TableId::States,
-                MAP_MODE_PARITY_FORMAT,
+                CAPTURE_ADDITIONS_FORMAT,
                 &[(11, "best_vp_index"), (12, "single_controller")][..],
             ),
             (
@@ -4590,7 +4745,7 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, STANDALONE_UNITS_FORMAT);
+        assert_eq!(FORMAT_VERSION, CAPTURE_ADDITIONS_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);
@@ -4641,15 +4796,45 @@ mod tests {
     #[test]
     fn copy_aliases_are_private_columns_not_native_fields() {
         for (table, fields) in [
-            (TableId::Divisions, 9),
+            (TableId::Divisions, 10),
             (TableId::ProductionLines, 13),
         ] {
             assert_eq!(table.field_count(), fields);
             let format = PRIVATE_COPY_ALIASES_FORMAT;
-            assert_eq!(table.last_change().format, format);
             assert!(table.last_change().table_gap(table, format).is_none());
             assert!(table.last_change().table_gap(table, format - 1).is_some());
             assert_eq!(table.field_name(fields), None);
+        }
+    }
+
+    /// Format 142 only appended these fields: an older recording reads every earlier column and
+    /// each appended field as not recorded, and each table's last layout change stays refused.
+    #[test]
+    fn capture_additions_leave_earlier_columns_readable() {
+        let before = CAPTURE_ADDITIONS_FORMAT - 1;
+        for (table, index, name, layout) in [
+            (TableId::Divisions, 9, "theatre", PRIVATE_COPY_ALIASES_FORMAT),
+            (TableId::DivisionMovement, 22, "queued_actions", STORED_ONCE_FORMAT),
+            (TableId::RailwayGunCounterInputs, 30, "theatre", POLITICAL_FORMAT),
+            (TableId::States, 14, "marked_owners", PROVEN_FROM),
+        ] {
+            let history = table.last_change();
+            assert_eq!(history.format, CAPTURE_ADDITIONS_FORMAT, "{table:?}");
+            assert_eq!(history.kind, ChangeKind::AppendedOnly, "{table:?}");
+            assert_eq!(table.field_name(index), Some(name), "{table:?}");
+            assert!(history.gap(table, before).is_none(), "{table:?}");
+            assert_eq!(history.fields(table, before), index, "{table:?}");
+            assert_eq!(history.fields(table, CAPTURE_ADDITIONS_FORMAT), table.field_count());
+            assert!(history.gap(table, layout).is_none(), "{table:?}");
+        }
+        let guns = TableId::RailwayGunCounterInputs;
+        assert_eq!(guns.field_name(31), Some("queued_actions"));
+        assert_eq!(guns.field_count(), 32);
+        for (table, layout) in [
+            (TableId::Divisions, PRIVATE_COPY_ALIASES_FORMAT),
+            (TableId::DivisionMovement, STORED_ONCE_FORMAT),
+        ] {
+            assert!(table.last_change().gap(table, layout - 1).is_some(), "{table:?}");
         }
     }
 

@@ -319,6 +319,26 @@ pub fn compare_division_movement(
                 ),
             }
         }
+        if let Some(value) = report.recorded(
+            &row.queued_actions,
+            "DivisionMovement.queued_actions",
+            format!("{label}.queued_actions"),
+        ) {
+            report.scalar_checks += 1;
+            match value {
+                Some(count) if usize::try_from(*count) == Ok(saved.queued_actions) => {}
+                Some(count) => report.difference(
+                    format!("{label}.queued_actions"),
+                    *count,
+                    saved.queued_actions,
+                ),
+                None => report.difference(
+                    format!("{label}.queued_actions: guarded read refusal"),
+                    "unavailable",
+                    saved.queued_actions,
+                ),
+            }
+        }
         if row.path.len() != row.path_total as usize
             || row.alternate_path.len() != row.alternate_total as usize
         {

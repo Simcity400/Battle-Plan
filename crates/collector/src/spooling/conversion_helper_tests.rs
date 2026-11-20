@@ -89,6 +89,7 @@ fn hour_frame(step: i32) -> Captured {
         organisation: 5_000_000,
         orders_group: 0,
         reveal_skip: 0,
+        theatre: Some(0),
     };
     source.divisions[1] = engine_native::carmy::Row {
         id: 51,

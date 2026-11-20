@@ -1,7 +1,8 @@
 //! SWeatherPerRegion weather flags at the completed hourly boundary.
 //!
 //! Province publication jobs finish before region jobs are dispatched and
-//! joined. Only flags displayed by the map and naval combat window are read.
+//! joined. Only flags and custom entry values displayed by the map and naval
+//! combat window are read.
 
 use crate::{
     Memory, cpdx_array::Array, cweather_manager::walk_dense_records, memory::RecordField,
@@ -15,6 +16,9 @@ pub const VTABLE_RVA: Rva = Rva(0x029f_40e8);
 pub const STRIDE: usize = 0x160;
 /// Region ID, i32, authenticated against its array slot.
 pub const ID: usize = 0x08;
+/// Stored active value of each strategic region template custom entry, a CPdxArray of i16 in
+/// template entry order, nonzero when active. The update writes it at weather period rollover.
+pub const CUSTOM_SEA: usize = 0x30;
 /// Embedded modifier collection.
 pub const MODIFIERS: usize = 0x58;
 /// Independent weather flag bytes, eight bytes apart: light rain, heavy rain, snow, blizzard,
@@ -42,13 +46,13 @@ pub struct Row {
     pub arctic_water: u8,
 }
 
-/// Identity and the six flag bytes, gathered per batch.
-pub const FIELDS: [RecordField; 7] = {
+/// Identity, the six flag bytes and the custom sea array header, gathered per batch.
+pub const FIELDS: [RecordField; 8] = {
     let mut fields = [RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 12,
-    }; 7];
+    }; 8];
     let mut flag = 0;
     while flag < 6 {
         fields[flag + 1] = RecordField {
@@ -58,9 +62,27 @@ pub const FIELDS: [RecordField; 7] = {
         };
         flag += 1;
     }
+    fields[7] = RecordField {
+        source_offset: CUSTOM_SEA,
+        destination_offset: CUSTOM_SEA_HEADER,
+        len: 16,
+    };
     fields
 };
-pub const RECORD_BYTES: usize = 18;
+/// The custom sea array header's place in a gathered record.
+const CUSTOM_SEA_HEADER: usize = 18;
+pub const RECORD_BYTES: usize = 34;
+
+/// A decoded record's custom sea array; `None` when its header is not a valid array.
+pub fn custom_sea(record: &[u8]) -> Option<Array> {
+    Array::from_header(
+        record
+            .get(CUSTOM_SEA_HEADER..CUSTOM_SEA_HEADER + 16)?
+            .try_into()
+            .ok()?,
+        2,
+    )
+}
 
 pub(crate) fn walk(memory: &impl Memory, base: usize, array: Array, output: &mut [Row]) -> Outcome {
     let Some(vtable) = engine_sites::at(base, VTABLE_RVA) else {
@@ -154,6 +176,46 @@ mod tests {
                 sandstorm: 2,
                 arctic_water: 3
             }
+        );
+    }
+
+    #[test]
+    fn the_custom_sea_header_rides_the_record_gather() {
+        let mut bytes = [0; STRIDE];
+        bytes[..8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
+        bytes[CUSTOM_SEA..CUSTOM_SEA + 8].copy_from_slice(&0x9000_u64.to_le_bytes());
+        bytes[CUSTOM_SEA + 8..CUSTOM_SEA + 12].copy_from_slice(&4_u32.to_le_bytes());
+        bytes[CUSTOM_SEA + 12..CUSTOM_SEA + 16].copy_from_slice(&3_u32.to_le_bytes());
+        let mut record = [0; RECORD_BYTES];
+        let layout = crate::memory::RecordLayout::new(&FIELDS, RECORD_BYTES).unwrap();
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let copied = memory.copy_records(
+            crate::memory::RecordSources::Strided {
+                base: 0x1000,
+                stride: STRIDE,
+                count: 1,
+            },
+            &layout,
+            &mut record,
+        );
+        assert_eq!(copied, FIELDS.len());
+        assert!(decode_record(0, &record, copied, VTABLE_RVA.0 as usize).is_ok());
+        assert_eq!(
+            custom_sea(&record),
+            Some(Array {
+                data: 0x9000,
+                count: 3
+            })
+        );
+        // A count past its capacity is no array.
+        record[CUSTOM_SEA_HEADER + 12..CUSTOM_SEA_HEADER + 16].copy_from_slice(&5_u32.to_le_bytes());
+        assert_eq!(custom_sea(&record), None);
+        assert_eq!(
+            decode_record(0, &record, FIELDS.len() - 1, VTABLE_RVA.0 as usize),
+            Err("weather region fields unreadable")
         );
     }
 

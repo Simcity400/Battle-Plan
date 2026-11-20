@@ -193,7 +193,7 @@ pub use replay_columnar::container::Revision;
 pub struct Replay {
     recording: Recording,
     path: Option<PathBuf>,
-    /// The row format its hours are recorded in: always this build's.
+    /// The row format its hours are recorded in: this build's or an earlier proven one.
     pub format: FormatVersion,
     pub campaign_id: Vec<u8>,
     pub identity: Identity,
@@ -363,10 +363,11 @@ impl Replay {
         let partial_control = controls
             .iter()
             .position(|control| matches!(control, ControlRecord::Partial { .. }));
+        let format = FormatVersion::read(recording.format())?;
         Ok(Self {
             recording,
             path,
-            format: FormatVersion::CURRENT,
+            format,
             campaign_id,
             identity,
             capture_mode,
@@ -531,10 +532,9 @@ impl Replay {
             })
     }
 
-    /// Why each table is withheld or loses fields in this recording's format: none, as every
-    /// recording is in this build's.
+    /// Why each table is withheld in this recording's format: added since, or read otherwise.
     pub fn compatibility_gaps(&self) -> Vec<String> {
-        Vec::new()
+        self.recording.withheld().iter().map(|(_, reason)| reason.clone()).collect()
     }
 
     /// Game facts pack `at` ([`Self::fact_packs`]), checked against its digest.

@@ -156,7 +156,7 @@ fn a_resource_origin_keeps_its_two_efficiencies_convoys_route_and_rights() {
     let saved = pack(
         r#"
         countries={GER={resources={
-            origin={id={id=1 type=4713} country="GER" efficiency=0.9 efficiency_due_to_lost_convoys=0.5 request=0 state=119
+            origin={id={id=1 type=4713} country="GER" efficiency=0.9 efficiency_due_to_lost_convoys=0.5 request=6 state=119
                 resources={steel=3} efficiency=0.45
                 delivery_route={type=2 from_state=119 to_state=64 from_port=3379 to_port=6384 sender="GER" receiver="GER" convoys_owner="GER" naval_path={ 43 44 } dirty=no}
                 given_resource_rights={ { steel "AFG" } { oil "GER" } }
@@ -186,6 +186,7 @@ fn a_resource_origin_keeps_its_two_efficiencies_convoys_route_and_rights() {
         origin.efficiency.as_ref().map(|value| value.raw),
         Some(45_000)
     );
+    assert_eq!(origin.request, Some(6));
     assert_eq!(
         origin.convoys,
         crate::economy::ConvoyCounts {
@@ -226,6 +227,7 @@ fn a_resource_origin_keeps_its_two_efficiencies_convoys_route_and_rights() {
         [Some(100_000), Some(100_000)]
     );
     assert_eq!(held.route.as_ref().unwrap().land_path, [267, 415, 64]);
+    assert_eq!(held.request, None);
     assert_eq!(germany.origin_states, [119]);
 }
 

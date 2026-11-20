@@ -141,6 +141,7 @@ impl Batch {
         self.cooldowns.push(info::Row {
             province: location.province,
             cooldown_ticks: outputs.cooldown,
+            building_bound: info::building_bound(&location.identity),
         });
         self.edge_ends.push(self.edges.len());
         self.buildings.push(rebased(outputs.building, first));

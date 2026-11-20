@@ -454,6 +454,31 @@ pub(super) fn compare_theatres(
             },
         )
     });
+    passed &= report.attempt("naval unit theatres", |report| {
+        let units = saved_theatre_units(theatre_countries(saved)?)?;
+        let divisions = complete::<tables::Divisions>(frame)?;
+        compare_unit_theatres(
+            "Divisions.theatre",
+            divisions.iter().map(|row| (row.id, &row.theatre)),
+            &units,
+            &omitted,
+            report,
+        );
+        match complete::<tables::RailwayGunCounterInputs>(frame) {
+            Ok(guns) => compare_unit_theatres(
+                "RailwayGunCounterInputs.theatre",
+                guns.iter().map(|row| (row.gun, &row.theatre)),
+                &units,
+                &omitted,
+                report,
+            ),
+            Err(error) => report.limitation(
+                &format!("railway gun rows are not complete: {error}"),
+                "RailwayGunCounterInputs.theatre",
+            ),
+        }
+        Ok(())
+    });
     passed &= report.attempt("naval AirTheatres", |report| {
         let countries = theatre_countries(saved)?;
         compare_theatre_table(
@@ -936,6 +961,51 @@ fn compare_division_parents(
         cross_checked,
     );
     Ok(())
+}
+
+/// Each saved land theatre's `unit` list, by unit: the theatre writer emits its whole member
+/// vector, and only the theatre's add and remove set or clear a unit's own theatre word.
+fn saved_theatre_units(
+    countries: &BTreeMap<Vec<u8>, saved::TheatreCountry>,
+) -> io::Result<BTreeMap<u64, u64>> {
+    let mut units = BTreeMap::new();
+    for theatre in countries.values().flat_map(|country| &country.land) {
+        for &unit in &theatre.units {
+            if units.insert(unit, theatre.id).is_some() {
+                return Err(invalid("a unit occurs in more than one saved land theatre"));
+            }
+        }
+    }
+    Ok(units)
+}
+
+/// A unit records the handle of the saved theatre listing it, or zero when none does.
+fn compare_unit_theatres<'a>(
+    table: &str,
+    rows: impl Iterator<Item = (u64, &'a Recorded<Option<u64>>)>,
+    units: &BTreeMap<u64, u64>,
+    omitted: &BTreeSet<u64>,
+    report: &mut Report,
+) {
+    let mut compared = 0;
+    for (unit, theatre) in rows {
+        let label = format!("unit type={} id={}.theatre", unit as u32, unit >> 32);
+        let Some(theatre) = report.recorded(theatre, table, &label) else {
+            continue;
+        };
+        let expected = units.get(&unit).copied().unwrap_or(0);
+        match *theatre {
+            None => report.difference(label, "refused read", expected),
+            Some(actual) if omitted.contains(&actual) => {
+                report.limitation(UNSAVED_RESERVED_THEATRE, label)
+            }
+            Some(actual) => {
+                equal(report, label, actual, expected);
+                compared += 1;
+            }
+        }
+    }
+    report.compared(table, compared);
 }
 
 fn theatre_countries(saved: &saved::Pack) -> io::Result<&BTreeMap<Vec<u8>, saved::TheatreCountry>> {

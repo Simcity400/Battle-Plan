@@ -124,6 +124,7 @@ fn reason(pages: &Arc<dyn Pages>, table: TableId, id: u32, (run, block): (usize,
 fn read(pages: &dyn Pages, run: usize, block: usize, table: usize, id: u32) -> io::Result<Option<Vec<u8>>> {
     let held = pages.runs().get(run).ok_or_else(|| io::Error::other(format!("no run {run}")))?;
     let kinds = pages.kinds(table).ok_or_else(|| io::Error::other(format!("table {table} is withheld")))?;
+    let kinds = &kinds[..pages.held(table).min(kinds.len())];
     let source = pages.extents(run);
     let block = block.min(held.pages.len().saturating_sub(1));
     let entry = |at: usize| held.pages.get(at).and_then(|page| page.tables.get(table));
@@ -211,10 +212,10 @@ fn columns_of<'m, const N: usize>(mirrors: &'m Mirrors, table: TableId, fields: 
     Some((rows, columns))
 }
 
-/// An opaque cell decoded as the frame of rows decodes it.
-fn decoded<T: NativeValue>(cell: Cell<&[u8]>) -> Option<T> {
+/// An opaque cell decoded as the frame of rows decodes it, at its rows' format.
+fn decoded<T: NativeValue>(cell: Cell<&[u8]>, format: u16) -> Option<T> {
     let field = match cell {
-        Cell::Value(bytes) => Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION)),
+        Cell::Value(bytes) => Field::Opaque(Opaque::Encoded(bytes, format)),
         _ => Field::NotRecorded,
     };
     T::from_field(field).ok()
@@ -228,12 +229,12 @@ fn facts(mirrors: &Mirrors) -> (RowFacts, Vec<String>) {
     let count = |(rows, [column]): (&Mirror, [usize; 1])| rows.rows().filter(|&slot| rows.raw_cell(column, slot).is_some_and(|value| value != 0)).count();
     let unreadable_naval_bases = columns_of(mirrors, TableId::NavalBases, ["countries_unreadable"], "Field Naval base access lists", &mut missing).map_or(0, count);
     let unreadable_templates = columns_of(mirrors, TableId::DivisionTemplateIcons, ["model_unreadable"], "Field Division template model inputs", &mut missing).map_or(0, count);
-    let ship_counters = columns_of(mirrors, TableId::ShipModels, ["counter"], "Field ShipModels formation", &mut missing).map(|(rows, [column])| rows.rows().all(|slot| decoded::<Option<ShipCounterInputs>>(rows.list_cell(column, slot)).flatten().is_some()));
+    let ship_counters = columns_of(mirrors, TableId::ShipModels, ["counter"], "Field ShipModels formation", &mut missing).map(|(rows, [column])| rows.rows().all(|slot| decoded::<Option<ShipCounterInputs>>(rows.list_cell(column, slot), rows.format()).flatten().is_some()));
     let weather = columns_of(mirrors, TableId::WeatherRegions, ["light_rain", "heavy_rain", "snow", "blizzard", "sandstorm"], "Field weather particle presentation", &mut missing)
         .is_some_and(|(rows, columns)| rows.rows().any(|slot| columns.iter().any(|&column| rows.raw_cell(column, slot).is_some_and(|value| value != 0))));
     let mut display_missing = Vec::new();
     let weather_display = columns_of(mirrors, TableId::WeatherProvinces, ["display"], "Field WeatherProvinces.display", &mut display_missing).map(|(rows, [column])| {
-        match rows.slot(0).map(|slot| decoded::<Recorded<Option<WeatherDisplay>>>(rows.list_cell(column, slot))) {
+        match rows.slot(0).map(|slot| decoded::<Recorded<Option<WeatherDisplay>>>(rows.list_cell(column, slot), rows.format())) {
             Some(Some(Recorded::Value(Some(_)))) => None,
             Some(Some(Recorded::NotRecorded)) => Some(DISPLAY_NOT_RECORDED),
             _ => Some(DISPLAY_UNAVAILABLE),

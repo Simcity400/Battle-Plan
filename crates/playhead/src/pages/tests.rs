@@ -79,3 +79,54 @@ fn a_span_of_hours_reads_back_to_its_restores_and_plays_only_the_span() {
     lane.seek(from + 20).unwrap();
     assert_eq!(held(&lane), countries(BLOCK + 320));
 }
+
+/// A recording of format 141, written as that build wrote it, opens for the playhead whole and as
+/// a span: its tables play as written; a column appended at format 142 holds no cell, even in a
+/// table restored with its last complete read as that format framed it; and each table added at
+/// format 142 has no kinds, is withheld by name as not recorded, and gets no lane.
+#[test]
+fn a_recording_of_an_earlier_format_plays_what_it_held_and_withholds_the_tables_added_since() {
+    use replay::columnar_frames::synthetic::{Input, Sample};
+    use replay_columnar::store::Value;
+    use replay_data::rows::{CountryRow, DivisionRowAt141, compatibility::CAPTURE_ADDITIONS_FORMAT};
+    let format = CAPTURE_ADDITIONS_FORMAT - 1;
+    let runs = [(1, 0, 2)];
+    let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, province: 11, ..Default::default() }, DivisionRowAt141 { id: (4_u64 << 32) | 1, province: 12, ..Default::default() }];
+    // The block's last hours read the divisions in part: its end keeps their last complete read.
+    let partial = |ordinal: u32| ordinal % BLOCK >= BLOCK - 10;
+    let (bytes, _) = fixtures::written_at(format, b"format 141", &runs, &[TableId::Countries], |synthetic, _, ordinal| {
+        let rows: Vec<CountryRow> = countries(ordinal).into_iter().map(|(id, stability)| CountryRow { id: id as u32, stability_raw: stability, ..Default::default() }).collect();
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+        let input = match partial(ordinal) {
+            true => Input::Snapshot { rows: &divisions[..1], partial: Some(1), read: true, sample: Sample::FromReadBit },
+            false => Input::Snapshot { rows: &divisions, partial: None, read: true, sample: Sample::FromReadBit },
+        };
+        synthetic.table(TableId::Divisions, input).unwrap();
+    });
+    for span in [Span::Whole, Span::Hours { from: BLOCK as i32 + 30, hours: 50 }] {
+        let opened = WorldPages::over(Recording::open(bytes.clone()).unwrap(), span).unwrap();
+        for table in [TableId::LandUnitOrder, TableId::StrategicRegionWeights, TableId::StateBuildingInputs] {
+            let gap = table.last_change().table_gap(table, format).unwrap();
+            assert_eq!(opened.withheld(table.index()), Some(gap.as_str()));
+            assert!(opened.schema()[table.index()].is_empty());
+            let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(Recording::open(bytes.clone()).unwrap(), span).unwrap());
+            assert!(Lane::new(pages, 0, table.index(), &[0], false).is_err());
+        }
+        let pages: Arc<dyn Pages> = Arc::new(opened);
+        let mut lane = lane(&pages, 0);
+        for ordinal in [BLOCK + 40, BLOCK + 79] {
+            lane.seek(ordinal as i32).unwrap();
+            assert_eq!(held(&lane), countries(ordinal), "{span:?}: a seek to ordinal {ordinal}");
+        }
+        let table = TableId::Divisions;
+        let every: Vec<usize> = (0..table.field_count()).collect();
+        let [province, theatre] = ["province", "theatre"].map(|name| (0..table.field_count()).find(|&column| table.field_name(column) == Some(name)).unwrap());
+        assert_eq!(pages.held(table.index()), table.field_count() - 1);
+        let mut lane = Lane::new(Arc::clone(&pages), 0, table.index(), &every, true).unwrap();
+        lane.seek(BLOCK as i32 + 40).unwrap();
+        let cells = lane.cells();
+        let mut rows: Vec<(u128, Value<'_>, Value<'_>)> = cells.rows().map(|slot| (cells.key(slot).unwrap(), cells.value(province, slot), cells.value(theatre, slot))).collect();
+        rows.sort_unstable_by_key(|row| row.0);
+        assert_eq!(rows, [(u128::from(divisions[0].id), Value::Number(11), Value::Unrecorded), (u128::from(divisions[1].id), Value::Number(12), Value::Unrecorded)], "{span:?}");
+    }
+}

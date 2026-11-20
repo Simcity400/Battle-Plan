@@ -1,11 +1,11 @@
 //! FactionTheatres against each saved faction's `icon` and `pings.regions`.
-//! the theatre writer walks the native theatre array in order, so the
+//! The theatre writer walks the native theatre array in order, so the
 //! saved list position is the recorded ordinal.
 
 use std::{collections::BTreeMap, io};
 
 use installed_content_save::Save;
-use replay_data::{rows::FactionTheatreRow, rows::tables};
+use replay_data::{rows::FactionTheatreRow, rows::Recorded, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
 use super::{CountryContext, Report, complete, invalid, required_country_tag};
@@ -69,22 +69,71 @@ pub fn compare(
                 &saved_count,
                 u32::to_string,
             );
-            let hidden = row
-                .hidden_for
-                .iter()
-                .map(|&link| required_country_tag(link, &countries.links).map(<[u8]>::to_vec))
-                .collect::<io::Result<Vec<_>>>()?;
+            let tags = |links: &[u32]| {
+                links
+                    .iter()
+                    .map(|&link| required_country_tag(link, &countries.links).map(<[u8]>::to_vec))
+                    .collect::<io::Result<Vec<_>>>()
+            };
+            let tag_text = |tags: &Vec<Vec<u8>>| {
+                let tags: Vec<_> = tags.iter().map(|t| String::from_utf8_lossy(t)).collect();
+                format!("{tags:?}")
+            };
             check(
                 report,
                 &field,
                 "hidden_for",
-                &hidden,
+                &tags(&row.hidden_for)?,
                 &expected.hidden,
-                |tags| {
-                    let tags: Vec<_> = tags.iter().map(|t| String::from_utf8_lossy(t)).collect();
-                    format!("{tags:?}")
-                },
+                tag_text,
             );
+            let Some(saved_name) = &expected.name else {
+                return Err(invalid(
+                    "saved faction theatre lacks the name its text writer always emits",
+                ));
+            };
+            match &row.name {
+                Recorded::Value(name) => check(report, &field, "name", name, saved_name, |bytes| {
+                    String::from_utf8_lossy(bytes).into_owned()
+                }),
+                Recorded::NotRecorded => not_recorded(report, &field, "name"),
+            }
+            match row.owner {
+                Recorded::Value(owner) => {
+                    let owner = Some(required_country_tag(owner, &countries.links)?.to_vec());
+                    check(report, &field, "owner", &owner, &expected.tag, |tag| {
+                        tag.as_deref()
+                            .map_or("absent".into(), |t| String::from_utf8_lossy(t).into_owned())
+                    });
+                }
+                Recorded::NotRecorded => not_recorded(report, &field, "owner"),
+            }
+            match row.commander {
+                Recorded::Value(commander) => check(
+                    report,
+                    &field,
+                    "commander",
+                    &commander,
+                    &expected.commander,
+                    |handle| {
+                        handle.map_or("none".into(), |handle| {
+                            format!("type={} id={}", handle as u32, handle >> 32)
+                        })
+                    },
+                ),
+                Recorded::NotRecorded => not_recorded(report, &field, "commander"),
+            }
+            match &row.countries {
+                Recorded::Value(links) => check(
+                    report,
+                    &field,
+                    "countries",
+                    &tags(links)?,
+                    &expected.countries,
+                    tag_text,
+                ),
+                Recorded::NotRecorded => not_recorded(report, &field, "countries"),
+            }
         }
         for ordinal in rows.keys() {
             report.difference(
@@ -108,11 +157,11 @@ pub fn compare(
         "the theatre hidden-pin set saves as token 0x2C8C, read as `hidden` (the spelling of that token for the event, idea-category and achievement readers); no inspected save had a nonempty set",
         "FactionTheatres.hidden_for",
     );
-    report.limitation(
-        "only the count of each theatre's country list is recorded, so the saved country tags are compared by count alone",
-        "FactionTheatres.country_count",
-    );
     Ok(())
+}
+
+fn not_recorded(report: &mut Report, theatre: &str, field: &str) {
+    report.limitation(&format!("FactionTheatres.{field} not recorded"), theatre);
 }
 
 fn check<T: PartialEq + ?Sized>(
@@ -137,9 +186,12 @@ mod tests {
 
     const AXIS: u64 = (1 << 32) | 88;
     const ALLIES: u64 = (2 << 32) | 88;
+    const ENG: u32 = 201;
+    const COMMANDER: u64 = (844 << 32) | 4713;
 
     fn fixture() -> (DecodedFrame, Save) {
-        let (frame, mut save, _, _) = super::super::fixtures::fixture();
+        let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
+        super::super::fixtures::add_country(&mut frame, &mut save, ENG, 8, b"ENG");
         let faction = |id, icon: &[u8], theatres| installed_content_save::Faction {
             goals: Default::default(),
             companions: Default::default(),
@@ -162,11 +214,17 @@ mod tests {
                 b"GFX_allies",
                 vec![
                     installed_content_save::FactionTheatre {
+                        name: Some(b"Western Front".to_vec()),
+                        tag: Some(b"ENG".to_vec()),
+                        commander: Some(COMMANDER),
                         regions: vec![29, 48],
                         countries: vec![b"GER".to_vec(), b"ENG".to_vec()],
                         hidden: Vec::new(),
                     },
                     installed_content_save::FactionTheatre {
+                        name: Some(Vec::new()),
+                        tag: Some(b"GER".to_vec()),
+                        commander: None,
                         regions: vec![80],
                         countries: Vec::new(),
                         hidden: vec![b"GER".to_vec()],
@@ -186,6 +244,11 @@ mod tests {
                 regions: vec![29, 48],
                 country_count: 2,
                 hidden_for: Vec::new(),
+                name: b"Western Front".to_vec().into(),
+                owner: Recorded::Value(ENG),
+                commander: Some(COMMANDER).into(),
+                // An alias link resolves to the same saved tag.
+                countries: vec![101, ENG].into(),
             },
             FactionTheatreRow {
                 faction: ALLIES,
@@ -193,8 +256,11 @@ mod tests {
                 icon: b"GFX_allies".to_vec(),
                 regions: vec![80],
                 country_count: 0,
-                // An alias link resolves to the same saved tag.
                 hidden_for: vec![102],
+                name: Vec::new().into(),
+                owner: Recorded::Value(101),
+                commander: None.into(),
+                countries: Vec::new().into(),
             },
         ]
     }
@@ -215,7 +281,7 @@ mod tests {
         let report = run(&frame, &save, rows());
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["FactionTheatres"], 2);
-        assert_eq!(report.scalar_checks, 8);
+        assert_eq!(report.scalar_checks, 16);
     }
 
     #[test]
@@ -230,6 +296,11 @@ mod tests {
             (|rows| rows[0].regions.reverse(), 1),
             (|rows| rows[1].country_count = 1, 1),
             (|rows| rows[1].hidden_for.clear(), 1),
+            (|rows| rows[0].name = b"Eastern Front".to_vec().into(), 1),
+            (|rows| rows[1].owner = Recorded::Value(ENG), 1),
+            (|rows| rows[0].commander = None.into(), 1),
+            (|rows| rows[1].commander = Some(COMMANDER).into(), 1),
+            (|rows| rows[0].countries = vec![ENG, 101].into(), 1),
             (|rows| drop(rows.pop()), 1),
             (
                 |rows| {
@@ -261,6 +332,22 @@ mod tests {
     }
 
     #[test]
+    fn unrecorded_fields_are_limitations_never_matches() {
+        let (frame, save) = fixture();
+        let mut rows = rows();
+        rows[0].name = Recorded::NotRecorded;
+        rows[0].owner = Recorded::NotRecorded;
+        rows[0].commander = Recorded::NotRecorded;
+        rows[0].countries = Recorded::NotRecorded;
+        let report = run(&frame, &save, rows);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        for field in ["name", "owner", "commander", "countries"] {
+            let reason = format!("FactionTheatres.{field} not recorded");
+            assert_eq!(report.limitations[&reason].len(), 1, "{reason}");
+        }
+    }
+
+    #[test]
     fn duplicate_ordinals_and_unresolved_hidden_links_fail_the_comparison() {
         let (frame, save) = fixture();
         let mut frame = frame;
@@ -268,7 +355,11 @@ mod tests {
         duplicate[1].ordinal = 0;
         let mut unknown = rows();
         unknown[1].hidden_for = vec![999];
-        for rows in [duplicate, unknown] {
+        let mut unknown_owner = rows();
+        unknown_owner[0].owner = Recorded::Value(999);
+        let mut unknown_country = rows();
+        unknown_country[0].countries = vec![999].into();
+        for rows in [duplicate, unknown, unknown_owner, unknown_country] {
             *frame.tables[TableId::FactionTheatres.index()] =
                 TableView::Complete(TableRows::FactionTheatres(rows));
             let context = super::super::country_context(&frame).unwrap();

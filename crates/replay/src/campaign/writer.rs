@@ -7,7 +7,7 @@
 use super::{Revision, records::Records};
 #[cfg(any(test, feature = "recording"))]
 use crate::{columnar_file::{FileWriter, Settings}, columnar_frames::schema as tables, identity::IdentityCodec};
-use crate::format::FormatVersion;
+use crate::{columnar_frames::Recording, format::FormatVersion};
 use replay_columnar::{
     container::{ContainerWriter, Root, SectionKey, Tags, schema},
     envelope::{self, Kind},
@@ -31,16 +31,17 @@ pub struct Addition<'a> {
     pub facts: Option<&'a [u8]>,
 }
 
-/// Adds one revision to the recording at `path`, whose newest revision is `before` with root
-/// `root`: `addition`, saved or not. The revision leaves the resume state of a capture under way
-/// as the root before it names it. A failure cuts the file back to `before`.
-pub fn revise(
-    path: &Path,
-    (root, before): (&Root, Revision),
-    addition: &Addition<'_>,
-    saved: bool,
-    level: i32,
-) -> io::Result<Revision> {
+/// Adds one revision to the recording at `path`, whose newest revision `recording` opened:
+/// `addition`, saved or not, its records recorded in the recording's own format, as a recording
+/// never mixes formats. Records this build cannot write in that format are refused by name and
+/// nothing is written. The revision leaves the resume state of a capture under way as the root
+/// before it names it. A failure cuts the file back to the revision opened.
+pub fn revise(path: &Path, recording: &Recording, addition: &Addition<'_>, saved: bool, level: i32) -> io::Result<Revision> {
+    let (root, before): (&Root, Revision) = (recording.root(), recording.revision());
+    let records = match addition.records.filter(|records| !records.is_empty()) {
+        Some(records) => Some(records.encode(FormatVersion::read(recording.format())?)?),
+        None => None,
+    };
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     check_revision(&mut file, before)?;
     if file.seek(SeekFrom::End(0))? != before.length {
@@ -57,9 +58,8 @@ pub fn revise(
             let extent = container.put(Kind::Facts, Tags::default(), pack.len() as u64, pack)?;
             container.append(SectionKey::FACTS, extent)?;
         }
-        if let Some(records) = addition.records.filter(|records| !records.is_empty()) {
-            let bytes = records.encode(FormatVersion::CURRENT)?;
-            let extent = container.put_zstd(Kind::Controls, Tags::default(), &bytes, level)?;
+        if let Some(bytes) = &records {
+            let extent = container.put_zstd(Kind::Controls, Tags::default(), bytes, level)?;
             container.append(SectionKey::RECORDS, extent)?;
         }
         let revision = container.commit_carrying(saved, |file| file.sync_data())?;

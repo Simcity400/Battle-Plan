@@ -1,20 +1,31 @@
-//! Every province record's weather modifier accumulator: each province's entries,
-//! keys ascending, packed in one buffer, which grows as provinces are read.
+//! Per-record lists, each packed in one buffer that grows as records are read: every province
+//! record's weather modifier accumulator (keys ascending) and static modifier list, and every
+//! region record's custom sea values.
 
 use engine_native::{Memory, modifier_accumulator, sweather_per_province};
 
 /// One accumulator entry: its modifier definition key and raw fixed5 value.
 pub type Entry = (u32, i64);
 
-/// The entries of every province record, slot order.
+/// Every province record's accumulator entries, slot order.
+pub type ProvinceModifiers = Spans<Entry>;
+
+/// Every province record's static modifier list, slot order, each as
+/// [`sweather_per_province::read_static_modifiers`] encodes it ([`statics`]).
+pub type ProvinceStatics = Spans<u8>;
+
+/// Every region record's custom sea values, region order.
+pub type CustomSea = Spans<i16>;
+
+/// The items of every record, slot order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ProvinceModifiers {
-    /// Each slot's `(start, len)` in `entries`; `None` refuses that province.
+pub struct Spans<T> {
+    /// Each slot's `(start, len)` in `entries`; `None` refuses that record.
     spans: Vec<Option<(u32, u32)>>,
-    entries: Vec<Entry>,
+    entries: Vec<T>,
 }
 
-impl ProvinceModifiers {
+impl<T: Copy> Spans<T> {
     pub fn clear(&mut self) {
         self.spans.clear();
         self.entries.clear();
@@ -31,11 +42,11 @@ impl ProvinceModifiers {
 
     pub fn allocated_bytes(&self) -> usize {
         self.spans.capacity() * size_of::<Option<(u32, u32)>>()
-            + self.entries.capacity() * size_of::<Entry>()
+            + self.entries.capacity() * size_of::<T>()
     }
 
     /// The entries of `slot`; `None` when it was refused or is not held.
-    pub fn get(&self, slot: usize) -> Option<&[Entry]> {
+    pub fn get(&self, slot: usize) -> Option<&[T]> {
         let (start, len) = (*self.spans.get(slot)?)?;
         Some(&self.entries[start as usize..(start + len) as usize])
     }
@@ -45,14 +56,14 @@ impl ProvinceModifiers {
         self.spans.iter().all(Option::is_some)
     }
 
-    /// Room for `provinces` more provinces.
-    pub fn reserve_provinces(&mut self, provinces: usize) {
-        let _ = engine_allocation::reserve_exact(&mut self.spans, provinces);
+    /// Room for `records` more records.
+    pub fn reserve_slots(&mut self, records: usize) {
+        let _ = engine_allocation::reserve_exact(&mut self.spans, records);
     }
 
     /// Appends one province: its entries, or its refusal. False when its storage could
     /// not be allocated, which appends a refusal when a slot is left.
-    pub fn push(&mut self, entries: Option<&[Entry]>) -> bool {
+    pub fn push(&mut self, entries: Option<&[T]>) -> bool {
         if engine_allocation::reserve(&mut self.spans, 1).is_err() {
             return false;
         }
@@ -121,6 +132,41 @@ pub fn read(
         out.push((key, value));
     });
     if read.is_err() || overflow {
+        out.clear();
+        return false;
+    }
+    true
+}
+
+/// A static modifier list as [`ProvinceStatics`] holds it: each entry's script name and
+/// remaining days, in list order.
+pub fn statics(mut list: &[u8]) -> impl Iterator<Item = (&[u8], i32)> {
+    std::iter::from_fn(move || {
+        let current = list;
+        let days = i32::from_le_bytes(current.get(..4)?.try_into().ok()?);
+        let len = u32::from_le_bytes(current.get(4..8)?.try_into().ok()?) as usize;
+        let name = current.get(8..8 + len)?;
+        list = &current[8 + len..];
+        Some((name, days))
+    })
+}
+
+/// Reads one province record's static modifier list into `out`, replacing its contents,
+/// from its copied list `header`; false refuses the province.
+pub fn read_statics(
+    memory: &impl Memory,
+    header: [u8; 16],
+    definition_vtable: Option<usize>,
+    out: &mut Vec<u8>,
+) -> bool {
+    out.clear();
+    let (Some(list), Some(vtable)) = (
+        sweather_per_province::static_modifier_list(header),
+        definition_vtable,
+    ) else {
+        return false;
+    };
+    if sweather_per_province::read_static_modifiers(memory, list, vtable, out).is_err() {
         out.clear();
         return false;
     }

@@ -47,6 +47,9 @@ pub struct LendLease {
     /// `efficiency_due_to_lost_convoys`.
     pub efficiency: Decimal,
     pub efficiency_due_to_lost_convoys: Decimal,
+    /// The convoy client's `request`: its convoy requirement before the naval-dominance
+    /// route cost reduction.
+    pub request: Option<i32>,
     pub convoys: ConvoyCounts,
     /// The exchange's `total_delivered` equipment pool.
     pub delivered: super::production::Pool,
@@ -161,6 +164,8 @@ pub struct ResourceExchange {
     pub resource: Option<Vec<u8>>,
     pub efficiency: Decimal,
     pub efficiency_due_to_lost_convoys: Decimal,
+    /// The convoy client's `request`.
+    pub request: Option<i32>,
     pub delivered: Decimal,
     pub required_cic: i32,
     pub lended_cic: i32,
@@ -197,6 +202,8 @@ pub struct ContractClient {
     /// `efficiency_due_to_lost_convoys`.
     pub efficiency: Decimal,
     pub efficiency_due_to_lost_convoys: Decimal,
+    /// The client's `request`.
+    pub request: Option<i32>,
     pub convoys: ConvoyCounts,
 }
 
@@ -417,6 +424,10 @@ fn required_decimal(items: &[Item], key: &[u8]) -> io::Result<Decimal> {
 
 fn required_integer<T: std::str::FromStr>(items: &[Item], key: &[u8]) -> io::Result<T> {
     integer(&required_bytes(items, key)?)
+}
+
+fn optional_integer<T: std::str::FromStr>(items: &[Item], key: &[u8]) -> io::Result<Option<T>> {
+    bytes(items, key)?.map(|value| integer(&value)).transpose()
 }
 
 fn fixed15(items: &[Item], key: &[u8]) -> io::Result<Option<i64>> {
@@ -814,6 +825,7 @@ fn parse_purchases(items: &[Item]) -> io::Result<Option<BTreeMap<u64, Purchase>>
                     client,
                     b"efficiency_due_to_lost_convoys",
                 )?,
+                request: optional_integer(client, b"request")?,
                 convoys: convoy_counts(client)?,
             },
             route_efficiency_sum: required_decimal(route, b"efficiency")?,
@@ -909,6 +921,7 @@ fn parse_exports(resources: Option<&[Item]>) -> io::Result<Option<Vec<ResourceEx
                 fields,
                 b"efficiency_due_to_lost_convoys",
             )?,
+            request: optional_integer(fields, b"request")?,
             delivered: required_decimal(fields, b"delivered")?,
             required_cic: required_integer(fields, b"required_cic")?,
             lended_cic: required_integer(fields, b"lended_cic")?,
@@ -940,6 +953,7 @@ fn parse_lend_lease(resources: Option<&[Item]>) -> io::Result<Option<Vec<LendLea
                 fields,
                 b"efficiency_due_to_lost_convoys",
             )?,
+            request: optional_integer(fields, b"request")?,
             convoys: convoy_counts(fields)?,
             delivered: pool(b"total_delivered")?,
             sunk: pool(b"equipment_sunk")?,

@@ -386,6 +386,11 @@ pub struct RailwayGunCounterInputRow {
     pub combat_references: Recorded<Option<UnitCombatReferences>>,
     /// Retired selected transport weight and transfer operands.
     pub transport: Recorded<Retired>,
+    /// Full handle of the gun's own land theatre, the LandTheatres key; Some(0) for none.
+    /// None refuses a pointer outside its roster country's theatres.
+    pub theatre: Recorded<Option<u64>>,
+    /// Length of the gun's queued order list, saved as its `commandlist`. None is a read refusal.
+    pub queued_actions: Recorded<Option<i32>>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -423,7 +428,7 @@ value_struct!(FreshRailwayCounterEta {
 });
 opaque_value!(Option<FreshRailwayCounterEta>);
 typed_codec!(RailwayGunCounterInputRow, 64, |r| r.gun as u128, |k| Self { gun: k as u64, ..Default::default() },
- { 0 => (roster_owner): U32, 1 => (expeditionary_owner): U32, 2 => (logical_owner): U32, 3 => (province): U32, 4 => (naval_transfer): U8, 5 => (transfer_action_status): U8, 6 => (exiled): U8, 7 => (retreat): U8, 8 => (strategic_redeployment): U8, 9 => (reference_entry_count): I32, 10 => (assignee_group): U64, 11 => (subunit_token): U32, 12 => (current_strength): I64, 13 => (maximum_strength): I64, 14 => (received_supply_ratio): I64, 15 => (railway_building_level): Opaque, 16 => (target): U32, 17 => (combat_role): U8, 18 => (combat_province): U32, 19 => (combat_count): U32, 20 => (attacking): U8, 21 => (ordinary_path): U32List, 22 => (alternate_path): U32List, 23 => (name): Opaque, 24 => (eta): Opaque, 25 => (supply): Opaque, 26 => (withdrawal): Opaque, 27 => (fresh): Opaque, 28 => (combat_references): Opaque, 29 => (transport): Opaque }, |row| check_unit_combat_references(&row.combat_references, row.combat_count));
+ { 0 => (roster_owner): U32, 1 => (expeditionary_owner): U32, 2 => (logical_owner): U32, 3 => (province): U32, 4 => (naval_transfer): U8, 5 => (transfer_action_status): U8, 6 => (exiled): U8, 7 => (retreat): U8, 8 => (strategic_redeployment): U8, 9 => (reference_entry_count): I32, 10 => (assignee_group): U64, 11 => (subunit_token): U32, 12 => (current_strength): I64, 13 => (maximum_strength): I64, 14 => (received_supply_ratio): I64, 15 => (railway_building_level): Opaque, 16 => (target): U32, 17 => (combat_role): U8, 18 => (combat_province): U32, 19 => (combat_count): U32, 20 => (attacking): U8, 21 => (ordinary_path): U32List, 22 => (alternate_path): U32List, 23 => (name): Opaque, 24 => (eta): Opaque, 25 => (supply): Opaque, 26 => (withdrawal): Opaque, 27 => (fresh): Opaque, 28 => (combat_references): Opaque, 29 => (transport): Opaque, 30 => (theatre): OptionalU64, 31 => (queued_actions): OptionalI32 }, |row| check_unit_combat_references(&row.combat_references, row.combat_count));
 
 
 /// Fleet counter operands keyed by fleet handle. RGBA are the stored colour's
@@ -1023,6 +1028,19 @@ impl LocalPlayerRow {
 }
 typed_codec!(LocalPlayerRow, 0, |_row| 0, |_key| Self::default(),
  { 0 => (country): U32, 1 => (observer_country): U32 }, |_row| Ok(()));
+
+/// LandUnitOrder: the order the game's model picker walks the viewing country's
+/// own land units. A singleton with key zero, read hourly.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
+pub struct LandUnitOrderRow {
+    /// Full handles of the viewing country's divisions and railway guns (the
+    /// Divisions and RailwayGunCounterInputs keys) in the game's order, task
+    /// forces left out. None is a refused read: an entry that is not a known unit.
+    pub units: Recorded<Option<Vec<u64>>>,
+}
+typed_codec!(LandUnitOrderRow, 0, |_row| 0, |_key| Self::default(),
+ { 0 => (units): Opaque }, |_row| Ok(()));
 
 /// SimulationFeatures: the simulation's DLC feature mask, set by the
 /// session's DLC command, the `human_ai` debug byte, and the weather

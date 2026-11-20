@@ -1661,9 +1661,11 @@ impl TableState {
         Ok(())
     }
 
-    /// Every live row's cell of `column` not recorded.
+    /// Every live row's cell of `column` not recorded. A column past the table's, which a recording
+    /// of an earlier format never held, already reads not recorded.
     pub(crate) fn unrecord_rows(&mut self, column: usize) -> io::Result<()> {
-        let held = self.columns.get_mut(column).ok_or_else(|| invalid(format!("No column {column}")))?.unrecorded_mut();
+        let Some(held) = self.columns.get_mut(column) else { return Ok(()) };
+        let held = held.unrecorded_mut();
         match held {
             None => *held = Some(self.live.clone()),
             Some(bits) => self.live.ones().for_each(|slot| bits.set(slot)),
@@ -1753,9 +1755,11 @@ impl TableState {
         self.columns.get_mut(column).ok_or_else(|| invalid(format!("No column {column}")))?.put(slot, value, slots, policy)
     }
 
-    /// A reader's cell at `slot` unrecorded.
+    /// A reader's cell at `slot` unrecorded; a column past the table's already reads so.
     pub(crate) fn unrecord_cell(&mut self, column: usize, slot: u32) -> io::Result<()> {
-        self.columns.get_mut(column).ok_or_else(|| invalid(format!("No column {column}")))?.unrecord(slot);
+        if let Some(held) = self.columns.get_mut(column) {
+            held.unrecord(slot);
+        }
         Ok(())
     }
 

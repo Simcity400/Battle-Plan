@@ -24,10 +24,7 @@ use dashboard_query::{
 use game_model::calendar::HOUR_EPOCH;
 use replay::{lanes, points};
 use replay_columnar::manifest::Status;
-use replay_data::{
-    format::FormatVersion,
-    rows::{OperationAssignmentRow, OperationCompletionRow, OperationRow, OperativeMembershipRow, TableId, TableSchema, tables},
-};
+use replay_data::rows::{OperationAssignmentRow, OperationCompletionRow, OperationRow, OperativeMembershipRow, TableId, TableSchema, tables};
 use replay_frame::frame::{DecodedFrame, cells_rows};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -224,12 +221,12 @@ fn literals(recording: &replay::columnar_frames::Recording, run: u32, hour: i32,
     Ok(snapshot.rows.iter().filter_map(|&(key, slot)| Some((key as u32, literal(read::text(&view, 0, slot)?)?))).collect())
 }
 
-/// The typed rows of table `T` a read holds.
-fn typed<T: TableSchema>(snapshot: &lanes::Snapshot) -> io::Result<Vec<T::Row>>
+/// The typed rows of table `T` a read of a recording of row format `format` holds.
+fn typed<T: TableSchema>(snapshot: &lanes::Snapshot, format: u16) -> io::Result<Vec<T::Row>>
 where
     T::Row: Clone,
 {
-    let rows = cells_rows(T::ID, &snapshot.view(), &snapshot.rows, FormatVersion::CURRENT.version())?;
+    let rows = cells_rows(T::ID, &snapshot.view(), &snapshot.rows, format)?;
     Ok(T::take(rows).unwrap_or_default())
 }
 
@@ -425,12 +422,12 @@ impl Product for EspionageOperation {
             ],
             hour,
         )?;
-        let row = typed::<tables::Operations>(&held[0])?
+        let row = typed::<tables::Operations>(&held[0], recording.format())?
             .into_iter()
             .next()
             .ok_or_else(|| dashboard_core::refused("The operation was not recorded at this read"))?;
         let mut warnings = Vec::new();
-        let slots = if available(&held[1]) { Some(typed::<tables::OperationAssignments>(&held[1])?) } else {
+        let slots = if available(&held[1]) { Some(typed::<tables::OperationAssignments>(&held[1], recording.format())?) } else {
             warnings.push("operation assignments was not recorded at this read".to_owned());
             None
         };
@@ -439,7 +436,7 @@ impl Product for EspionageOperation {
             Some(Vec::new())
         } else {
             let census = read::at(recording, stretch.run, &[Read { table: TableId::OperativeMemberships, columns: None, keys: Keys::Ranges(&ranges) }], hour)?;
-            available(&census[0]).then(|| typed::<tables::OperativeMemberships>(&census[0])).transpose()?
+            available(&census[0]).then(|| typed::<tables::OperativeMemberships>(&census[0], recording.format())).transpose()?
         };
         Ok(EspionageOperationReply {
             id: params.id.clone(),
@@ -636,7 +633,7 @@ fn completed(query: &Query<'_>, run: u32, from: i32, to: i32) -> io::Result<Hash
 
 /// Operations' rows at each (hour, key) asked, where the hour shows them.
 fn rows_at(recording: &replay::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<HashMap<(i32, u128), OperationRow>> {
-    let format = FormatVersion::CURRENT.version();
+    let format = recording.format();
     let mut rows = HashMap::new();
     if asks.is_empty() {
         return Ok(rows);

@@ -313,7 +313,7 @@ impl Sounds {
                     return None;
                 }
                 let bytes = templates.list(layered.grids, slot).value()?;
-                let Ok(Recorded::Value(grids)) = Recorded::<TemplateGrids>::from_field(Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION))) else { return None };
+                let Ok(Recorded::Value(grids)) = Recorded::<TemplateGrids>::from_field(Field::Opaque(Opaque::Encoded(bytes, templates.format()))) else { return None };
                 let tokens = rows(mirrors.get(TableId::LexicalTokens));
                 let name = |token: u32| -> Option<u32> {
                     let tokens = tokens?;

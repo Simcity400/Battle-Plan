@@ -1,8 +1,9 @@
 use super::*;
 use installed_content_save::economy::{self, ConvoyCounts};
 use replay_data::{
-    rows::ConvoyClientRow, rows::RegionalConvoyEfficiencyRow, rows::ResourceDefinitionRow,
-    rows::ResourceOriginRow, rows::ResourceRightRow, rows::SliceReadRow, rows::TradeRouteRow,
+    rows::ConvoyClientRow, rows::Recorded, rows::RegionalConvoyEfficiencyRow,
+    rows::ResourceDefinitionRow, rows::ResourceOriginRow, rows::ResourceRightRow,
+    rows::SliceReadRow, rows::TradeRouteRow,
 };
 
 /// The recorded resources map tables a comparison reads.
@@ -22,13 +23,40 @@ fn bad(a: i64, b: i64, threshold: i64) -> bool {
     i128::from(a) * i128::from(b) / 100_000 < i128::from(threshold)
 }
 
+/// A recorded operand against its saved value, or false when the recording predates it: the
+/// caller names that as a limitation, never a match. The client writer writes every operand
+/// unconditionally, so one absent from the save says nothing about the value: it is named as
+/// uncertified, never compared.
+fn operand<T: std::fmt::Debug + PartialEq>(
+    report: &mut Report,
+    subject: &str,
+    captured: Recorded<T>,
+    saved: Option<T>,
+) -> bool {
+    match (captured, saved) {
+        (Recorded::Value(captured), Some(saved)) => {
+            value(report, subject, Some(captured), Some(saved));
+            true
+        }
+        (Recorded::Value(_), None) => {
+            report.limitation(
+                "convoy operand absent from the save, which writes it for every client: not certified",
+                subject,
+            );
+            true
+        }
+        (Recorded::NotRecorded, _) => false,
+    }
+}
+
 /// The resources map tables against the save. Each country's saved `resources` block (the
 /// country resource save writer) gives its own and rights-holder origins: their stored
 /// efficiency product, line colour (the convoy factors' product below
-/// `TRADE_ROUTE_BAD_EFFICIENCY_THRESHOLD`), convoy counts, rights and routes, and the sea
-/// regions of the bad naval ones. The saved exports, lend-lease exchanges and market
-/// contracts give every other convoy client but supply transfers: its line colour and
-/// convoy counts.
+/// `TRADE_ROUTE_BAD_EFFICIENCY_THRESHOLD`), convoy counts and requirement before the
+/// naval-dominance reduction (`request`), rights and routes, and the sea regions of the bad
+/// naval ones. The saved exports, lend-lease exchanges and market contracts give every other
+/// convoy client but supply transfers: its line colour, efficiency factors, convoy counts
+/// and `request`.
 #[allow(clippy::too_many_arguments)]
 pub fn resource_map(
     rows: &ResourceMapRows<'_>,
@@ -67,6 +95,7 @@ pub fn resource_map(
         }
     }
     let mut compared = 0;
+    let mut unrecorded = false;
     for key in captured
         .keys()
         .chain(expected.keys())
@@ -118,6 +147,18 @@ pub fn resource_map(
             row.convoys_required,
             origin.convoys,
         );
+        unrecorded |= !operand(
+            report,
+            &format!("{subject}.convoys_base"),
+            row.convoys_base,
+            origin.request,
+        );
+    }
+    if unrecorded {
+        report.limitation(
+            "the recording predates the convoy requirement before the naval-dominance reduction",
+            "ResourceOrigins.convoys_base: not recorded",
+        );
     }
     report.compared("ResourceOrigins", compared);
     report.limitation(
@@ -136,6 +177,10 @@ pub fn resource_map(
     report.limitation(
         "the state save writer omits effective modifiers; the temporary resource keys are runtime reads",
         "StateTemporaryResources: runtime-only; no text-save equality claim",
+    );
+    report.limitation(
+        "the save writes no strategic region route weight; the game sums it while loading the map",
+        "StrategicRegionWeights: runtime-only; no text-save equality claim",
     );
     Ok(())
 }
@@ -606,6 +651,8 @@ struct SavedClient<'a> {
     /// An import's or lend-lease's saved owner and other; markets' are checked with routes.
     endpoints: Option<[Option<&'a [u8]>; 2]>,
     factors: [&'a installed_content_save::Decimal; 2],
+    /// The client's `request`, its convoy requirement before the naval-dominance reduction.
+    request: Option<i32>,
     convoys: ConvoyCounts,
 }
 
@@ -624,6 +671,7 @@ fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClien
                     &exchange.efficiency,
                     &exchange.efficiency_due_to_lost_convoys,
                 ],
+                exchange.request,
                 exchange.convoys,
                 None,
             )
@@ -643,6 +691,7 @@ fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClien
                             &exchange.efficiency,
                             &exchange.efficiency_due_to_lost_convoys,
                         ],
+                        exchange.request,
                         exchange.convoys,
                         Some(ordinal as u32),
                     )
@@ -656,18 +705,22 @@ fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClien
             MARKET,
             None,
             [&client.efficiency, &client.efficiency_due_to_lost_convoys],
+            client.request,
             client.convoys,
             None,
         )
     });
     let mut clients = BTreeMap::new();
-    for (id, category, endpoints, factors, convoys, owner_ordinal) in exchanges.chain(market) {
+    for (id, category, endpoints, factors, request, convoys, owner_ordinal) in
+        exchanges.chain(market)
+    {
         let handle = (id >> 32) as u32;
         let client = SavedClient {
             category,
             owner_ordinal,
             endpoints,
             factors,
+            request,
             convoys,
         };
         if clients.insert(handle, client).is_some() {
@@ -680,7 +733,8 @@ fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClien
 }
 
 /// Every recorded convoy client but supply transfers against the saved clients, by handle
-/// id: its category, an import's or lend-lease's countries, line colour and convoy counts.
+/// id: its category, an import's or lend-lease's countries, line colour, efficiency factors,
+/// convoy counts and convoy requirement before the naval-dominance reduction.
 fn clients(
     rows: &ResourceMapRows<'_>,
     economy: &economy::Pack,
@@ -696,6 +750,7 @@ fn clients(
         .map(|row| (row.handle, row))
         .collect();
     let mut compared = 0;
+    let mut unrecorded = false;
     for handle in captured
         .keys()
         .chain(expected.keys())
@@ -757,6 +812,24 @@ fn clients(
             row.convoys_assigned,
             row.convoys_required,
             client.convoys,
+        );
+        for (name, captured, saved) in [
+            ("efficiency_a", row.efficiency_a, Some(a.raw)),
+            ("efficiency_b", row.efficiency_b, Some(b.raw)),
+        ] {
+            unrecorded |= !operand(report, &format!("{subject}.{name}"), captured, saved);
+        }
+        unrecorded |= !operand(
+            report,
+            &format!("{subject}.convoys_base"),
+            row.convoys_base,
+            client.request,
+        );
+    }
+    if unrecorded {
+        report.limitation(
+            "the recording predates the convoy client efficiency factors and the convoy requirement before the naval-dominance reduction",
+            "ConvoyClients.efficiency_a, efficiency_b, convoys_base: not recorded",
         );
     }
     let mut positions = BTreeSet::new();
@@ -823,6 +896,7 @@ mod client_tests {
                         id: 9_u64 << 32,
                         efficiency: decimal(b"0.5"),
                         efficiency_due_to_lost_convoys: decimal(b"1"),
+                        request: Some(5),
                         convoys: ConvoyCounts {
                             assigned: 2,
                             required: 4,
@@ -846,6 +920,9 @@ mod client_tests {
             bad: true,
             convoys_assigned: 2,
             convoys_required: 4,
+            efficiency_a: 50_000.into(),
+            efficiency_b: 100_000.into(),
+            convoys_base: 5.into(),
             ..Default::default()
         };
         let run = |clients_rows: &[ConvoyClientRow]| {
@@ -876,11 +953,38 @@ mod client_tests {
                     .any(|d| d.contains(&format!("{side}_ordinal")))
             );
         }
-        let mut changed = row;
+        let mut changed = row.clone();
         changed.bad = false;
         changed.convoys_assigned = 1;
         changed.convoys_required = 3;
         assert_eq!(run(&[changed]).differences.len(), 3);
+        let mut operands = row.clone();
+        operands.efficiency_a = 50_001.into();
+        operands.efficiency_b = 99_999.into();
+        operands.convoys_base = 4.into();
+        let report = run(&[operands]);
+        assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+        for name in ["efficiency_a", "efficiency_b", "convoys_base"] {
+            assert!(
+                report
+                    .differences
+                    .iter()
+                    .any(|d| d.contains(&format!("ConvoyClients.9.{name}")))
+            );
+        }
+        let mut older = row.clone();
+        older.efficiency_a = Recorded::NotRecorded;
+        older.efficiency_b = Recorded::NotRecorded;
+        older.convoys_base = Recorded::NotRecorded;
+        let report = run(&[older]);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .values()
+                .flatten()
+                .any(|subject| subject.starts_with("ConvoyClients.efficiency_a"))
+        );
         assert!(
             run(&[])
                 .differences
@@ -905,6 +1009,7 @@ mod market_route_tests {
                 id: u64::from(handle) << 32,
                 efficiency: decimal(),
                 efficiency_due_to_lost_convoys: decimal(),
+                request: Some(0),
                 convoys: ConvoyCounts::default(),
             },
             route_efficiency_sum: decimal(),

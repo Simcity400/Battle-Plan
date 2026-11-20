@@ -45,7 +45,7 @@ Use these words for these things.
 
 The most common defect here is a change that works on the path you tested and is missing everywhere else. Before calling work done, walk this list and say which entries applied:
 
-- **Format ends.** A recording-format change touches the collector, the recorder, the replay reader and writer, the query layer, the viewer, the dashboard and the UI together, in one PR. No backwards compatibility: recordings keep playing across game updates, but a format change needs no upgrader; it refuses older recordings by name.
+- **Format ends.** A recording-format change touches the collector, the recorder, the replay reader and writer, the query layer, the viewer, the dashboard and the UI together, in one PR. No upgrader: proven older formats play, new data missing, changed tables and damage withheld; others are refused by name.
 - **Entry points.** A stat reachable from one dashboard widget is usually also wanted in the map viewer, other widgets, the tray app and the command-line recorder. Fixing one is not fixing the feature.
 - **Missing data.** Every new reading has a "not recorded" state, and every consumer shows it as missing, never as zero or blank.
 - **Mods and versions.** Check vanilla against a mod stack and different DLC sets. Every new read has a named refusal for the unsupported content it cannot handle.

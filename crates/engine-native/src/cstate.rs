@@ -2,7 +2,7 @@ use crate::{
     Memory, cgame_state,
     cpdx_array::Array,
     memory::{FieldBatch, RecordField, RecordLayout, RecordSources},
-    read,
+    read, read_slice,
     walk::{self, Outcome},
 };
 use engine_sites::Rva;
@@ -16,6 +16,9 @@ pub const ID: usize = 0x58;
 pub const OWNER: usize = 0xc8;
 /// Controlling country raw reference, u32, independent of owner and province controllers.
 pub const CONTROLLER: usize = 0xcc;
+/// Contested owner country-link vector (u32 entries), saved as `contested_owners`; the state view
+/// flags each before the owner. Only its add and remove setters and state loading write it.
+pub const CONTESTED_OWNERS: usize = 0xd0;
 
 /// A province's state as the land movement speed reads it: the state's id and
 /// raw controller. `state` is a nonnull state pointer a province holds.
@@ -82,6 +85,7 @@ pub const BORDER_CONFLICT_ACTIVE: usize = 0x865;
 /// Pointer-ordered border-combat set size.
 pub const BORDER_CONFLICT_SIZE: usize = 0x8a8;
 mod border_conflicts;
+pub mod building_inputs;
 pub mod infrastructure_map;
 /// Embedded state manpower object.
 pub const MANPOWER: usize = 0x838;
@@ -94,6 +98,10 @@ pub const MANPOWER_LOCKED: usize = MANPOWER + 0x14;
 /// manpower map mode colours each state by (over its define
 /// `MAP_MODE_MANPOWER_RANGE_MAX`). Available manpower is a different value.
 pub const POPULATION: usize = MANPOWER + 0x18;
+/// The state's own extra shared building slots, i32, which the
+/// `add_extra_state_shared_building_slots` effect writes; the shared slot count adds it after
+/// the slot modifiers.
+pub const EXTRA_SHARED_SLOTS: usize = 0x858;
 /// Cached best victory-point index; negative selects the first province.
 pub const BEST_VP_INDEX: usize = 0x85c;
 /// Bytes from [`MANPOWER_AVAILABLE`] through [`POPULATION`], read as one span.
@@ -628,6 +636,9 @@ pub struct Row {
     /// Retained state-template continent token, zero for the native null object; None is a failed
     /// independent capture, never a guessed content value.
     pub continent: Option<u32>,
+    /// [`CONTESTED_OWNERS`] as little-endian words in the name arena ([`read_names`]); None is a
+    /// refused read.
+    pub marked_owners: Option<NameSpan>,
 }
 
 /// A string's bytes in a caller-owned arena; an empty string is valid.
@@ -954,12 +965,15 @@ pub fn read_names_carried<'h>(
     census: Outcome,
     rows: &mut [Row],
     bytes: walk::Buffer<'_, u8>,
-    carried: impl FnMut(usize) -> Option<([&'h [u8]; 2], Option<bool>, Option<i32>)>,
+    carried: impl FnMut(usize) -> Option<Carried<'h>>,
 ) -> NameWalk {
     read_names_carried_scripted(memory, game_state, census, rows, bytes, carried, |_| {
         (false, false)
     })
 }
+
+/// A carried row's held names, cached choices and marked owner words ([`read_names_carried`]).
+pub type Carried<'h> = ([&'h [u8]; 2], Option<bool>, Option<i32>, Option<&'h [u8]>);
 
 pub fn read_names_carried_scripted<'h>(
     memory: &impl Memory,
@@ -967,7 +981,7 @@ pub fn read_names_carried_scripted<'h>(
     census: Outcome,
     rows: &mut [Row],
     mut bytes: walk::Buffer<'_, u8>,
-    mut carried: impl FnMut(usize) -> Option<([&'h [u8]; 2], Option<bool>, Option<i32>)>,
+    mut carried: impl FnMut(usize) -> Option<Carried<'h>>,
     scripted: impl Fn(u32) -> (bool, bool),
 ) -> NameWalk {
     use crate::msvc_string::{Descriptor, STRIDE};
@@ -990,12 +1004,15 @@ pub fn read_names_carried_scripted<'h>(
             .ok_or("state name root invalid")?;
         let mut kept = len;
         for (index, row) in rows.iter_mut().enumerate() {
-            if let Some(([custom, owner], single_controller, best_vp_index)) = carried(index) {
+            if let Some(([custom, owner], single_controller, best_vp_index, marked)) =
+                carried(index)
+            {
                 row.best_vp_index = best_vp_index;
                 row.single_controller = single_controller;
                 let wanted = custom
                     .len()
                     .checked_add(owner.len())
+                    .and_then(|len| len.checked_add(marked.map_or(0, <[u8]>::len)))
                     .ok_or("state name size overflow")?;
                 required_bytes = required_bytes
                     .checked_add(wanted)
@@ -1014,6 +1031,15 @@ pub fn read_names_carried_scripted<'h>(
                     };
                     bytes_len += source.len();
                 }
+                row.marked_owners = marked.map(|source| {
+                    bytes[bytes_len..bytes_len + source.len()].copy_from_slice(source);
+                    let span = NameSpan {
+                        start: bytes_len,
+                        len: source.len(),
+                    };
+                    bytes_len += source.len();
+                    span
+                });
                 continue;
             }
             let pointer = array
@@ -1035,9 +1061,18 @@ pub fn read_names_carried_scripted<'h>(
                 at + SECONDARY_DISPLAY_NAME - PRIMARY_DISPLAY_NAME,
                 header(SECONDARY_DISPLAY_NAME - PRIMARY_DISPLAY_NAME),
             )?;
+            // The contested owner header lies between the two name headers.
+            let marked = Array::from_header(
+                headers[CONTESTED_OWNERS - PRIMARY_DISPLAY_NAME..][..16]
+                    .try_into()
+                    .unwrap(),
+                4,
+            );
+            let marked_len = marked.map_or(0, |array| array.count as usize * 4);
             let wanted = custom
                 .len
                 .checked_add(owner.len)
+                .and_then(|len| len.checked_add(marked_len))
                 .ok_or("state name size overflow")?;
             required_bytes = required_bytes
                 .checked_add(wanted)
@@ -1059,6 +1094,17 @@ pub fn read_names_carried_scripted<'h>(
             };
             row.custom_name = span(&custom)?;
             row.owner_name = span(&owner)?;
+            row.marked_owners = marked.and_then(|array| {
+                let start = bytes_len;
+                let destination = &mut bytes[start..start + marked_len];
+                (marked_len == 0 || read_slice(memory, array.data, destination)).then(|| {
+                    bytes_len += marked_len;
+                    NameSpan {
+                        start,
+                        len: marked_len,
+                    }
+                })
+            });
             let (victory_point, controllers) = scripted(row.id);
             row.best_vp_index = if victory_point {
                 pointer

@@ -258,7 +258,7 @@ impl Engagements {
             .filter_map(|combat| {
                 let slot = details.slot(u128::from(combat))?;
                 let cell = details.list(sides, slot).value()?;
-                let sides = <[NavalCombatSideDetails; 2]>::from_field(Field::Opaque(Opaque::Encoded(cell, replay_data::FORMAT_VERSION))).ok()?;
+                let sides = <[NavalCombatSideDetails; 2]>::from_field(Field::Opaque(Opaque::Encoded(cell, details.format()))).ok()?;
                 Some((combat, sides.each_ref().map(|side| side.engaged)))
             })
             .collect();

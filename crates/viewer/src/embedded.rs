@@ -1703,6 +1703,14 @@ mod tests {
         fn kinds(&self, table: usize) -> Option<&[replay_columnar::state::Kind]> {
             self.inner.kinds(table)
         }
+
+        fn held(&self, table: usize) -> usize {
+            self.inner.held(table)
+        }
+
+        fn format(&self) -> u16 {
+            self.inner.format()
+        }
     }
 
     /// A follow panel whose playhead stops on a read error says so, at the hour of the last rows

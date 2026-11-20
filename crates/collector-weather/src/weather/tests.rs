@@ -269,6 +269,7 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
             })),
             // The typed fixture path reads no modifier: a refusal, never zero.
             modifiers: rows::Recorded::Value(None),
+            static_modifiers: rows::Recorded::Value(None),
             daylight: rows::Recorded::Value(Some(rows::WeatherDaylight {
                 updated: false,
                 held: Some([0, 0, 0]),
@@ -1014,6 +1015,45 @@ fn give_fixture_accumulators(typed: &mut Captured) {
         (key::ARMY_SPEED_FACTOR, -40_000),
         (key::HEAT_ATTRITION, 25_000),
     ])));
+    // The fixture region's custom sea array is empty.
+    typed.custom_sea.clear();
+    assert!(typed.custom_sea.push(Some(&[])));
+}
+
+/// A region row carries its custom sea values in the record's own order and count; a header
+/// that is no array, or values that do not copy, refuse them alone.
+#[test]
+fn weather_regions_record_custom_sea_values_and_refuse_them_alone() {
+    let mut source = AttackWeatherMemory::new(None);
+    let header = 0x3000 + sweather_per_region::CUSTOM_SEA;
+    put(&mut source.bytes, header, &0x4f80_u64.to_le_bytes());
+    put(&mut source.bytes, header + 8, &4_u32.to_le_bytes());
+    put(&mut source.bytes, header + 12, &3_u32.to_le_bytes());
+    put(&mut source.bytes, 0x4f80, &[1, 0, 0, 0, 0xff, 0xff]);
+    let region = |source: &AttackWeatherMemory| {
+        let mut job = WeatherJob::new();
+        let context = WeatherCopyContext {
+            base: 0,
+            game_state: 0x1000,
+        };
+        assert!(copy_weather_refresh(source, context, &mut job).raw_ok);
+        let mut captured = Captured::with_capacities(&Capacities {
+            rows: [2; N],
+            ..Default::default()
+        });
+        captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
+        projected_weather_regions(&captured).remove(0)
+    };
+    let read = region(&source);
+    assert_eq!(read.custom_sea, rows::Recorded::Value(Some(vec![1, 0, -1])));
+    source.fault_once.set(Some(0x4f82));
+    let faulted = region(&source);
+    assert_eq!(faulted.custom_sea, rows::Recorded::Value(None));
+    assert_eq!((faulted.snow, &faulted.combat), (read.snow, &read.combat));
+    put(&mut source.bytes, header + 12, &5_u32.to_le_bytes());
+    let invalid = region(&source);
+    assert_eq!(invalid.custom_sea, rows::Recorded::Value(None));
+    assert_eq!((invalid.snow, &invalid.combat), (read.snow, &read.combat));
 }
 
 #[test]

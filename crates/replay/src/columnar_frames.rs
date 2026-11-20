@@ -7,7 +7,6 @@
 
 use crate::{
     cells::TableReader,
-    format::FormatVersion,
     frame::{DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, RecordedFrame, RowChange, SharedView, Stamp, TableUpdate, TableView, Unsayable, cells_rows, cells_view, field, not_selected},
     rows::{DeltaRow, RowChanges, TABLE_COUNT, TableId, TableRows, full_mask},
     scope::CaptureMode,
@@ -62,16 +61,17 @@ pub fn schema() -> io::Result<Vec<Vec<Column>>> {
     Ok(schema)
 }
 
-/// Each schema table's columns a recording of row format `format` holds: the fields that
-/// format wrote, schema fields being columns one for one, a table whose layout changed since
-/// as its earlier layout framed it.
+/// The columns of each table a recording of row format `format` holds: the tables introduced by
+/// then, which are this build's first (a table added later is appended, a retired one keeps its
+/// place), each the fields that format wrote, a table whose layout changed since as its earlier
+/// layout framed it.
 pub fn columns_at(format: u16) -> io::Result<Vec<usize>> {
-    engine_allocation::collect_vec(TableId::ALL.into_iter().map(|table| table.last_change().framed_fields(table, format)))
+    engine_allocation::collect_vec(TableId::ALL.into_iter().take_while(|table| table.last_change().introduced <= format).map(|table| table.last_change().framed_fields(table, format)))
 }
 
 /// The tables of a recording of row format `format` this build reads otherwise, each with why
-/// by name: their layout or meaning changed since. Retired tables keep their framing and no
-/// reader reads them.
+/// by name: those added since, which it does not hold, and those whose layout or meaning changed
+/// since. Retired tables keep their framing and no reader reads them.
 pub fn withheld_at(format: u16) -> io::Result<Vec<(usize, String)>> {
     let mut withheld = Vec::new();
     for table in TableId::ALL {
@@ -265,7 +265,7 @@ impl<R: std::ops::Deref<Target = Recording>> Frames<R> {
             first_hour: 0,
             clock: None,
             mode: CaptureMode::from_byte(recording.root_identity().capture_mode)?,
-            format: FormatVersion::CURRENT.version(),
+            format: recording.format(),
             anew: true,
             facts: false,
             built: None,

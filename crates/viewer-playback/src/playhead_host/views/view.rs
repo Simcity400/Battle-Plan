@@ -4,10 +4,7 @@
 
 use crate::playhead_host::mirror::{Cell, Mirror, Resolved};
 use replay_columnar::{manifest::Status, state::Kind};
-use replay_data::{
-    FORMAT_VERSION,
-    rows::{Field, List, Opaque, RowChanges, TableId},
-};
+use replay_data::rows::{Field, List, Opaque, RowChanges, TableId};
 use replay_frame::frame::TableView;
 use std::io;
 
@@ -130,7 +127,7 @@ fn field<'m>(mirror: &'m Mirror, kind: Kind, resolved: Resolved<'m>, slot: u32, 
             Cell::Value(bytes) => match kind {
                 Kind::U32List => Field::U32List(List::Encoded(bytes)),
                 Kind::U64List => Field::U64List(List::Encoded(bytes)),
-                _ => Field::Opaque(Opaque::Encoded(bytes, FORMAT_VERSION)),
+                _ => Field::Opaque(Opaque::Encoded(bytes, mirror.format())),
             },
             Cell::Missing | Cell::Unrecorded => Field::NotRecorded,
         },

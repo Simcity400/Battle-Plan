@@ -107,6 +107,11 @@ pub struct Captured {
     air_efficiency: Vec<air_efficiency::Tree>,
     /// Each province record's weather modifier accumulator, in slot order.
     province_modifiers: ProvinceModifiers,
+    /// Each province record's static modifier list, in slot order, shared with the carry
+    /// ([`WeatherJob::province_statics`]).
+    province_statics: Option<engine_allocation::SharedBox<ProvinceStatics>>,
+    /// Each region record's custom sea values ([`WeatherJob::custom_sea`]), in region order.
+    custom_sea: entries::CustomSea,
     /// Raw-copy split gate for the hourly weather family (copy/decode split).
     /// Set by the game thread every hour with a valid raw payload; `capture`
     /// then skips the typed walks and the decode worker fills these rows
@@ -130,6 +135,8 @@ impl Captured {
             combat: Vec::new(),
             air_efficiency: Vec::new(),
             province_modifiers: ProvinceModifiers::default(),
+            province_statics: None,
+            custom_sea: Default::default(),
             raw_mode: false,
         }
     }
@@ -145,6 +152,8 @@ impl Captured {
         self.combat.clear();
         self.air_efficiency.clear();
         self.province_modifiers.clear();
+        self.province_statics = None;
+        self.custom_sea.clear();
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -155,6 +164,7 @@ impl Captured {
             + self.combat.capacity() * size_of::<Option<RegionModifiers>>()
             + air_efficiency::allocated_bytes(&self.air_efficiency)
             + self.province_modifiers.allocated_bytes()
+            + self.custom_sea.allocated_bytes()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
@@ -289,6 +299,16 @@ impl Captured {
                         }
                         None => record.word(-1),
                     }
+                    match self.province_statics(row.id) {
+                        Some(list) => {
+                            record.word(entries::statics(list).count() as i64);
+                            for (name, days) in entries::statics(list) {
+                                record.bytes(Some(name));
+                                record.word(i64::from(days));
+                            }
+                        }
+                        None => record.word(-1),
+                    }
                     Some((
                         [row.snow, row.permanent_snow],
                         [row.display_snow, row.display_mud, row.raw_mud],
@@ -364,6 +384,11 @@ impl Captured {
                         .and_then(Option::as_ref)
                         .map(std::sync::Arc::clone),
                 ),
+                custom_sea: rows::Recorded::Value(
+                    self.custom_sea
+                        .get(index)
+                        .map(|values| owned_vec(engine_allocation::copy_vec(values))),
+                ),
                 max_snow: r.max_snow,
                 light_rain: r.light_rain,
                 heavy_rain: r.heavy_rain,
@@ -385,9 +410,20 @@ impl Captured {
                     .collect(),
             }
         });
+        let static_modifiers =
+            self.province_statics(r.id)
+                .map(|list| rows::ProvinceStaticModifiers {
+                    entries: entries::statics(list)
+                        .map(|(name, days)| rows::ProvinceStaticModifier {
+                            name: name.to_vec(),
+                            days,
+                        })
+                        .collect(),
+                });
         rows::WeatherProvinceRow {
             daylight: rows::Recorded::Value(self.province_daylight(r)),
             modifiers: rows::Recorded::Value(modifiers),
+            static_modifiers: rows::Recorded::Value(static_modifiers),
             id: r.id,
             snow: r.snow,
             permanent_snow: r.permanent_snow,
@@ -407,6 +443,11 @@ impl Captured {
                 None
             }),
         }
+    }
+
+    /// Province `slot`'s static modifier list; `None` when it was refused or not read.
+    fn province_statics(&self, slot: u32) -> Option<&[u8]> {
+        self.province_statics.as_deref()?.get(slot as usize)
     }
 
     fn province_daylight(&self, row: &sweather_per_province::Row) -> Option<rows::WeatherDaylight> {
@@ -459,6 +500,7 @@ impl Captured {
             temperature_pass,
             modifiers,
             daylight,
+            static_modifiers,
         } = previous;
         row.id == *id
             && row.snow == *snow
@@ -483,6 +525,16 @@ impl Captured {
                             .all(|(&(key, value), previous)| {
                                 key == previous.key && value == previous.value
                             })
+                }
+                _ => false,
+            }
+            && match (self.province_statics(row.id), static_modifiers) {
+                (None, rows::Recorded::Value(None)) => true,
+                (Some(list), rows::Recorded::Value(Some(previous))) => {
+                    entries::statics(list).eq(previous
+                        .entries
+                        .iter()
+                        .map(|entry| (&entry.name[..], entry.days)))
                 }
                 _ => false,
             }
@@ -577,6 +629,22 @@ pub struct WeatherJob {
     province_modifiers: ProvinceModifiers,
     /// One province's accumulator, as it is read.
     province_scratch: Vec<entries::Entry>,
+    /// Each province record's static modifier list, slot order, shared with the carry and the
+    /// frames; `None` refuses every province.
+    province_statics: Option<engine_allocation::SharedBox<ProvinceStatics>>,
+    /// Every province's static modifier list header, as one read gathers them.
+    static_headers: Vec<u8>,
+    /// One province's static modifier list, as it is read.
+    static_scratch: Vec<u8>,
+    /// The static modifier definition vtable each list entry must carry; `None` refuses
+    /// every list.
+    static_vtable: Option<usize>,
+    /// Each region record's stored custom entry values, in the record's own order and count;
+    /// region order. A refused read refuses that region.
+    custom_sea: entries::CustomSea,
+    /// One region's custom sea array as it is copied, and its values.
+    custom_bytes: Vec<u8>,
+    custom_values: Vec<i16>,
     /// The carried province and region records, loaned for this hour's
     /// read ([`carry`]); `None` reads every record.
     pub carry: Option<Box<carry::WeatherCarry>>,
@@ -604,6 +672,13 @@ impl WeatherJob {
             air_efficiency: Vec::new(),
             province_modifiers: ProvinceModifiers::default(),
             province_scratch: Vec::new(),
+            province_statics: None,
+            static_headers: Vec::new(),
+            static_scratch: Vec::new(),
+            static_vtable: None,
+            custom_sea: Default::default(),
+            custom_bytes: Vec::new(),
+            custom_values: Vec::new(),
             carry: None,
         };
         job.update_capacity_charge();
@@ -624,6 +699,9 @@ impl WeatherJob {
         self.combat.clear();
         self.air_efficiency.clear();
         self.province_modifiers.clear();
+        self.province_statics = None;
+        self.static_vtable = None;
+        self.custom_sea.clear();
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -644,7 +722,11 @@ impl WeatherJob {
                 + crate::raw_memory::vector_bytes(&self.provinces.bytes)
                 + crate::raw_memory::vector_bytes(&self.clocks.bytes)
                 + self.display.allocated_bytes() as u64
-                + air_efficiency::allocated_bytes(&self.air_efficiency) as u64,
+                + air_efficiency::allocated_bytes(&self.air_efficiency) as u64
+                + self.custom_sea.allocated_bytes() as u64
+                + crate::raw_memory::vector_bytes(&self.static_headers)
+                + crate::raw_memory::vector_bytes(&self.custom_bytes)
+                + crate::raw_memory::vector_bytes(&self.custom_values),
             ..Default::default()
         });
     }
@@ -1020,7 +1102,7 @@ const COMBAT_KEYS: [u32; 8] = [
     engine_executable::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
 ];
 
-pub use entries::ProvinceModifiers;
+pub use entries::{ProvinceModifiers, ProvinceStatics};
 
 /// Acquire one refresh into its owned payload.
 pub fn copy_weather_refresh(
@@ -1062,12 +1144,16 @@ pub fn copy_weather_refresh(
         {
             let _reads = read_accounting::table(TableId::WeatherRegions);
             carry::capture_combat(memory, job);
+            carry::capture_custom_sea(memory, job);
             air_efficiency::capture(memory, ctx.base, job);
             job.update_capacity_charge();
         }
         {
             let _reads = read_accounting::table(TableId::WeatherProvinces);
+            job.static_vtable =
+                engine_sites::at(ctx.base, engine_native::cstatic_modifier::VTABLE_RVA);
             carry::capture_province_modifiers(memory, job);
+            carry::capture_province_statics(memory, job);
         }
         carry::finish(job);
         let _reads = read_accounting::table(TABLES[1]);
@@ -1147,6 +1233,7 @@ impl Captured {
         if !self.province_modifiers.copy_from(&job.province_modifiers) {
             self.province_modifiers.clear();
         }
+        self.province_statics = job.province_statics.clone();
         self.regions.outcome = match reader.max_snow() {
             Ok(max_snow) => {
                 let outcome = job.regions.decode(
@@ -1173,6 +1260,9 @@ impl Captured {
                 {
                     self.air_efficiency
                         .extend(job.air_efficiency.iter().cloned());
+                }
+                if !self.custom_sea.copy_from(&job.custom_sea) {
+                    self.custom_sea.clear();
                 }
                 outcome
             }

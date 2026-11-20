@@ -41,6 +41,7 @@ const fn map_records(table: TableId) -> bool {
             | Clock
             | Players
             | LocalPlayer
+            | LandUnitOrder
             | HumanControllers
             | SimulationFeatures
             | LexicalTokens
@@ -106,6 +107,8 @@ const fn map_records(table: TableId) -> bool {
             | VariantDefinitions
             | StateBuildings
             | ProvinceBuildings
+            // The state view's shared-slot and factory-energy operands, read daily.
+            | StateBuildingInputs
             | AirRegionalMissions
             | AirReferenceWitnesses
             | AirMissionInputs
@@ -141,6 +144,7 @@ const fn map_records(table: TableId) -> bool {
             | TradeRoutes
             | ConvoyClients
             | RegionalConvoyEfficiency
+            | StrategicRegionWeights
             | ResourceExchanges
             | ResourceOrigins
             | NavalSupremacy
@@ -219,6 +223,8 @@ mod tests {
             TableId::Clock,
             TableId::Countries,
             TableId::Divisions,
+            TableId::LandUnitOrder,
+            TableId::StateBuildingInputs,
             TableId::LandCombats,
             TableId::NavalCombatShips,
             TableId::WeatherRegions,

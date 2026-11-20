@@ -59,6 +59,107 @@ pub fn counter_identity_with(
     Ok((handle, class))
 }
 
+/// The handles of the divisions and railway guns in the game state's viewer unit
+/// vector ([`crate::cgame_state::VIEWER_UNITS`]), in its order; task forces are
+/// skipped. An entry whose exact vtable and class are not a division's, railway
+/// gun's or task force's, or whose handle has no id, refuses the read.
+pub fn viewer_land_units(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut output: crate::walk::Buffer<'_, u64>,
+) -> crate::walk::Outcome {
+    match viewer_land_units_into(memory, base, state, &mut output) {
+        Ok(len) => crate::walk::Outcome::Rows { len },
+        Err(reason) => crate::walk::Outcome::Unavailable { reason },
+    }
+}
+
+fn viewer_land_units_into(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut crate::walk::Buffer<'_, u64>,
+) -> Result<usize, &'static str> {
+    use crate::memory::{RecordField, RecordLayout, RecordSources};
+    const STRIDE: usize = 24;
+    const FIELDS: [RecordField; 3] = [
+        RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 8,
+        },
+        RecordField {
+            source_offset: CLASS,
+            destination_offset: 8,
+            len: 4,
+        },
+        RecordField {
+            source_offset: HANDLE,
+            destination_offset: 16,
+            len: 8,
+        },
+    ];
+    const LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&FIELDS, STRIDE).expect("valid record layout");
+    let units = state
+        .checked_add(crate::cgame_state::VIEWER_UNITS)
+        .and_then(|address| Array::read(memory, address, 8))
+        .ok_or("viewer unit vector unreadable or invalid")?;
+    if !output.ensure(units.count as usize)? {
+        return Err("viewer unit storage short");
+    }
+    let vtable = |key: Rva| {
+        engine_sites::at(base, key)
+            .map(|address| address as u64)
+            .ok_or("viewer unit module address overflow")
+    };
+    let army = vtable(carmy::VTABLE_RVA)?;
+    let gun = vtable(crate::crailway_gun::VTABLE_RVA)?;
+    let task_force = vtable(crate::ctask_force::VTABLE_RVA)?;
+    let mut records = [0_u8; crate::cpdx_array::POINTER_PAGE * STRIDE];
+    let mut len = 0;
+    crate::cpdx_array::pointer_pages(
+        memory,
+        units,
+        "viewer unit pointer unreadable",
+        |_, page| {
+            if page.contains(&0) {
+                return Err("viewer unit pointer null");
+            }
+            let records = &mut records[..page.len() * STRIDE];
+            if memory.copy_records(RecordSources::Pointers(page), &LAYOUT, records)
+                != page.len() * FIELDS.len()
+            {
+                return Err("viewer unit header unreadable");
+            }
+            for record in records.chunks_exact(STRIDE) {
+                let word = |at: usize| u64::from_le_bytes(record[at..at + 8].try_into().unwrap());
+                let class = u32::from_le_bytes(record[8..12].try_into().unwrap());
+                let (expected, kept) = match class {
+                    0 => (army, true),
+                    13 => (gun, true),
+                    1 => (task_force, false),
+                    _ => return Err("viewer unit class unknown"),
+                };
+                if word(0) != expected {
+                    return Err("viewer unit vtable mismatch");
+                }
+                let handle = word(16);
+                if handle >> 32 == 0 {
+                    return Err("viewer unit handle has no id");
+                }
+                if kept {
+                    output[len] = handle;
+                    len += 1;
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok(len)
+}
+
 /// CUnit class discriminator u32.
 pub const CLASS: usize = 0x08;
 /// CSelectable selected byte on the unit.
@@ -126,6 +227,11 @@ pub const VIEWER_DATA: usize = 0x278;
 pub const VIEWER_COUNT: usize = 0x284;
 /// CUnit owned map-entity pointer.
 pub const MAP_ENTITY: usize = 0x298;
+/// The unit's land theatre pointer, null for none: the theatre's add and remove keep it equal
+/// to that theatre's unit membership, and box selection admits only units of one theatre.
+pub const THEATRE: usize = 0x2a0;
+/// Queued order pointer vector count, signed i32; the unit writer saves the list as `commandlist`.
+pub const QUEUED_ACTION_COUNT: usize = 0x2cc;
 
 /// CUnit combat-modifier vector data.
 pub const COMBAT_MODIFIER_DATA: usize = 0x170;
@@ -915,6 +1021,85 @@ mod arrow_tests {
             }
         );
         assert_eq!(memory.calls.get(), 1);
+    }
+}
+
+#[cfg(test)]
+mod viewer_unit_tests {
+    use super::*;
+    use crate::walk::{Buffer, Outcome};
+
+    const BASE: usize = 0x1000;
+    const STATE: usize = 0x100;
+    const DATA: usize = 0x800;
+    const UNITS: usize = 0x1000;
+
+    fn handle(id: u32) -> u64 {
+        (u64::from(id) << 32) | 9
+    }
+
+    /// `units` as (vtable, class, handle), laid out 0x100 apart in vector order.
+    fn world(units: &[(Rva, u32, u64)]) -> Vec<u8> {
+        let mut bytes = vec![0; UNITS + units.len() * 0x100];
+        let header = STATE + crate::cgame_state::VIEWER_UNITS;
+        bytes[header..header + 8].copy_from_slice(&(DATA as u64).to_le_bytes());
+        bytes[header + 8..header + 12].copy_from_slice(&(units.len() as u32).to_le_bytes());
+        bytes[header + 12..header + 16].copy_from_slice(&(units.len() as u32).to_le_bytes());
+        for (index, &(vtable, class, handle)) in units.iter().enumerate() {
+            let unit = UNITS + index * 0x100;
+            bytes[DATA + index * 8..][..8].copy_from_slice(&(unit as u64).to_le_bytes());
+            let vtable = engine_sites::at(BASE, vtable).unwrap() as u64;
+            bytes[unit..unit + 8].copy_from_slice(&vtable.to_le_bytes());
+            bytes[unit + CLASS..][..4].copy_from_slice(&class.to_le_bytes());
+            bytes[unit + HANDLE..][..8].copy_from_slice(&handle.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn read(bytes: &[u8]) -> Result<Vec<u64>, &'static str> {
+        let memory = crate::memory::CountingMemory::new(bytes);
+        let mut output = Vec::new();
+        match viewer_land_units(&memory, BASE, STATE, Buffer::Growing(&mut output)) {
+            Outcome::Rows { len } => Ok(output[..len].to_vec()),
+            Outcome::Unavailable { reason } => Err(reason),
+            Outcome::Truncated { .. } => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn divisions_and_railway_guns_keep_vector_order_without_task_forces() {
+        let army = carmy::VTABLE_RVA;
+        let gun = crate::crailway_gun::VTABLE_RVA;
+        let fleet = crate::ctask_force::VTABLE_RVA;
+        let bytes = world(&[
+            (army, 0, handle(5)),
+            (fleet, 1, handle(70)),
+            (gun, 13, handle(3)),
+            (army, 0, handle(1)),
+        ]);
+        assert_eq!(read(&bytes), Ok(vec![handle(5), handle(3), handle(1)]));
+        assert_eq!(read(&world(&[])), Ok(vec![]));
+    }
+
+    #[test]
+    fn an_entry_that_is_not_a_known_unit_refuses_the_list() {
+        let army = carmy::VTABLE_RVA;
+        let fleet = crate::ctask_force::VTABLE_RVA;
+        assert_eq!(
+            read(&world(&[(army, 0, handle(5)), (fleet, 0, handle(6))])),
+            Err("viewer unit vtable mismatch")
+        );
+        assert_eq!(
+            read(&world(&[(army, 2, handle(5))])),
+            Err("viewer unit class unknown")
+        );
+        assert_eq!(
+            read(&world(&[(army, 0, 9)])),
+            Err("viewer unit handle has no id")
+        );
+        let mut null = world(&[(army, 0, handle(5))]);
+        null[DATA..DATA + 8].fill(0);
+        assert_eq!(read(&null), Err("viewer unit pointer null"));
     }
 }
 

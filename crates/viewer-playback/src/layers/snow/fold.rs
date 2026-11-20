@@ -333,7 +333,7 @@ impl Fold {
         let decoded = rows.and_then(|rows| {
             let slot = rows.slot(0)?;
             let field = match rows.list(columns.display, slot) {
-                Cell::Value(bytes) => Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION)),
+                Cell::Value(bytes) => Field::Opaque(Opaque::Encoded(bytes, rows.format())),
                 _ => Field::NotRecorded,
             };
             match <Recorded<Option<WeatherDisplay>> as NativeValue>::from_field(field) {

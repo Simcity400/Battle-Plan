@@ -238,7 +238,7 @@ fn not_whole(mirror: Option<&Mirror>, table: TableId, hour: Hour) -> Option<Stri
 
 fn records_of(mirror: &Mirror, column: List, slot: u32) -> Option<Arc<Vec<AirCombatRecord>>> {
     let bytes = mirror.list(column, slot).value()?;
-    <Arc<Vec<AirCombatRecord>> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION))).ok()
+    <Arc<Vec<AirCombatRecord>> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, mirror.format()))).ok()
 }
 
 impl AirMissionCounters {

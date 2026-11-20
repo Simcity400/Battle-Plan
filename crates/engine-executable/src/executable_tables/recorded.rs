@@ -7,11 +7,13 @@ use crate::availability::{Verified, Withheld};
 use crate::build::ExecutableIdentity;
 
 use super::{
-    ExecutableTables, auxiliary, commands, keywords, leak_string, numeric, registries, variables,
+    ExecutableTables, FOLDING, auxiliary, commands, folding, keywords, leak_string, numeric,
+    registries, variables,
 };
 
 const MAGIC: &[u8; 4] = b"H4XT";
-const VERSION: u16 = 1;
+/// Version 2 appends the folding table; a version 1 recording reads it as not recorded.
+const VERSION: u16 = 2;
 
 /// `tables` as a recording carries them.
 pub fn encode(tables: &ExecutableTables) -> Vec<u8> {
@@ -27,6 +29,13 @@ pub fn encode(tables: &ExecutableTables) -> Vec<u8> {
     out.verified(&tables.variables, variables_out);
     out.verified(&tables.numeric, numeric_out);
     out.verified(&tables.commands, commands_out);
+    out.verified(&tables.folding, |out, table| {
+        let letters: Vec<_> = table.letters.iter().collect();
+        out.list(&letters, |out, (point, letter)| {
+            out.u32(**point);
+            out.u8(**letter);
+        });
+    });
     out.0
 }
 
@@ -37,9 +46,9 @@ pub fn decode(bytes: &[u8]) -> io::Result<ExecutableTables> {
         return Err(invalid("not recorded executable tables"));
     }
     let version = u16::from_le_bytes(input.take(2)?.try_into().unwrap());
-    if version != VERSION {
+    if !(1..=VERSION).contains(&version) {
         return Err(invalid(format!(
-            "recorded executable tables version {version} is not one this build reads ({VERSION})"
+            "recorded executable tables version {version} is not one this build reads (1 to {VERSION})"
         )));
     }
     let identity = ExecutableIdentity {
@@ -55,6 +64,17 @@ pub fn decode(bytes: &[u8]) -> io::Result<ExecutableTables> {
         variables: input.verified(variables_in)?,
         numeric: input.verified(numeric_in)?,
         commands: input.verified(commands_in)?,
+        folding: if version < 2 {
+            Err(Withheld::new(FOLDING, "not recorded in this recording"))
+        } else {
+            input.verified(|input| {
+                folding::FoldingTable::from_pairs(
+                    input
+                        .list(|input| Ok((input.u32()?, u32::from(input.u8()?))))?
+                        .into_iter(),
+                )
+            })?
+        },
     };
     if !input.0.is_empty() {
         return Err(invalid("recorded executable tables have trailing bytes"));
@@ -598,5 +618,51 @@ impl<'a> In<'a> {
                 Err(Withheld::new(part, self.string()?))
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tables(folding: Verified<folding::FoldingTable>) -> ExecutableTables {
+        fn withheld<T>(part: &'static str) -> Verified<T> {
+            Err(Withheld::new(part, "synthetic"))
+        }
+        ExecutableTables {
+            identity: ExecutableIdentity {
+                size: 7,
+                sha256: [3; 32],
+            },
+            version: withheld("version"),
+            keywords: withheld("keywords"),
+            registries: withheld("registries"),
+            auxiliary: withheld("auxiliary"),
+            variables: withheld("variables"),
+            numeric: withheld("numeric"),
+            commands: withheld("commands"),
+            folding,
+        }
+    }
+
+    #[test]
+    fn the_folding_table_round_trips_and_an_earlier_recording_lacks_it_by_name() {
+        let table = folding::FoldingTable::from_pairs([(0x100, 0x61), (0x1e9e, 0x53)]).unwrap();
+        let encoded = encode(&tables(Ok(table.clone())));
+        assert_eq!(decode(&encoded).unwrap().folding, Ok(table));
+        let withheld = Withheld::new(FOLDING, "no run");
+        let decoded = decode(&encode(&tables(Err(withheld.clone())))).unwrap();
+        assert_eq!(decoded.folding, Err(withheld));
+        assert_eq!(decoded.identity().sha256, [3; 32]);
+
+        // Version 1 ended after the command table: the flag, the count and two pairs.
+        let mut earlier = encoded[..encoded.len() - (1 + 4 + 2 * 5)].to_vec();
+        earlier[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        let folding = decode(&earlier).unwrap().folding.unwrap_err();
+        assert_eq!(folding.part, FOLDING);
+        assert_eq!(folding.reason, "not recorded in this recording");
+        let mut later = encoded.clone();
+        later[4..6].copy_from_slice(&(VERSION + 1).to_le_bytes());
+        assert!(decode(&later).is_err());
     }
 }

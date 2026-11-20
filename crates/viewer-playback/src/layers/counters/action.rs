@@ -145,7 +145,7 @@ impl<'a> Facts<'a> {
         let details = self.mirrors.get(TableId::NavalCombatDetails)?;
         let slot = details.slot(u128::from(combat))?;
         let cell = details.list(self.columns.naval_sides, slot).value()?;
-        let sides = <[NavalCombatSideDetails; 2]>::from_field(Field::Opaque(Opaque::Encoded(cell, replay_data::FORMAT_VERSION))).ok()?;
+        let sides = <[NavalCombatSideDetails; 2]>::from_field(Field::Opaque(Opaque::Encoded(cell, details.format()))).ok()?;
         let [first, _] = sides;
         Some(first.summary.countries)
     }

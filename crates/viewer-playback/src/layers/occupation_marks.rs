@@ -186,7 +186,7 @@ pub fn drawn(side: &MapSide) -> Option<&OccupationMarks> {
 fn occupation_of(content: &icons::Content, mirror: &Mirror, columns: Columns, slot: u32) -> Result<Option<icons::Occupation>, String> {
     let number = |column: Num<i64>| mirror.number(column, slot).value().unwrap_or(0);
     let map = match mirror.list(columns.map, slot).value() {
-        Some(bytes) => <Recorded<Option<OccupationMap>> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, replay_data::FORMAT_VERSION))).map_err(|why| why.to_string())?,
+        Some(bytes) => <Recorded<Option<OccupationMap>> as NativeValue>::from_field(Field::Opaque(Opaque::Encoded(bytes, mirror.format()))).map_err(|why| why.to_string())?,
         None => Recorded::NotRecorded,
     };
     icons::occupation(content, mirror.number(columns.country, slot).value().unwrap_or(0), number(columns.level), number(columns.speed), number(columns.compliance), &map)
