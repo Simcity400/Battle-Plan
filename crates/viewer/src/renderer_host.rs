@@ -126,6 +126,15 @@ impl RendererSession {
     }
 }
 
+/// One painted frame: the seconds spent waiting for a swap chain image, and whether the frame
+/// reached the window (a hidden window, an outdated or lost swap chain and an unpresented
+/// profiling frame take their texture changes alone).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Painted {
+    pub acquire: f32,
+    pub presented: bool,
+}
+
 /// The map window's surface, configured for its size and present mode.
 pub(crate) struct WindowSurface {
     surface: wgpu::Surface<'static>,
@@ -159,8 +168,7 @@ impl WindowSurface {
     }
 
     /// Draws a frame's egui output into the window and presents it, or only takes its texture
-    /// changes when `size` is `None` (the window hidden): the seconds spent waiting for a swap
-    /// chain image.
+    /// changes when `size` is `None` (the window hidden).
     #[expect(clippy::too_many_arguments, reason = "one frame's paint inputs, as eframe's painter takes them")]
     pub(crate) fn paint(
         &mut self,
@@ -171,14 +179,15 @@ impl WindowSurface {
         clear_color: [f32; 4],
         clipped_primitives: &[egui::ClippedPrimitive],
         textures_delta: &mut egui::TexturesDelta,
-    ) -> Result<f32, String> {
+    ) -> Result<Painted, String> {
+        let unpresented = |acquire| Ok(Painted { acquire, presented: false });
         let Some(size) = size else {
             update_textures(state, textures_delta);
             free_textures(state, textures_delta);
-            return Ok(0.0);
+            return unpresented(0.0);
         };
         if skip_present() {
-            return Ok(paint_unpresented(state, size, pixels_per_point, clear_color, clipped_primitives, textures_delta));
+            return unpresented(paint_unpresented(state, size, pixels_per_point, clear_color, clipped_primitives, textures_delta));
         }
         if self.configured != Some((size, config)) {
             self.configure(state, size, config)?;
@@ -197,12 +206,12 @@ impl WindowSurface {
                 self.configured = None;
                 update_textures(state, textures_delta);
                 free_textures(state, textures_delta);
-                return Ok(0.0);
+                return unpresented(0.0);
             }
             _ => {
                 update_textures(state, textures_delta);
                 free_textures(state, textures_delta);
-                return Ok(0.0);
+                return unpresented(0.0);
             }
         };
         let acquire = waiting.elapsed().as_secs_f32();
@@ -211,7 +220,7 @@ impl WindowSurface {
         free_textures(state, textures_delta);
         state.queue.present(texture);
         crate::screen_count::readout::presented();
-        Ok(acquire)
+        Ok(Painted { acquire, presented: true })
     }
 }
 

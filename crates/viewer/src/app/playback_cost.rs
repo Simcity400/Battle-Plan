@@ -9,6 +9,7 @@ use std::{
 };
 
 mod extra_maps;
+mod lean;
 pub(crate) mod pictures;
 pub(crate) mod toggle;
 pub(crate) mod viewpoint;
@@ -52,6 +53,12 @@ pub(crate) struct Schedule {
     /// Paced: the consecutive display frames whose presented pixels are written to
     /// `<out>/frame-<index>.png` ([`Presented`]), as the run presented them.
     pub png_frames: Option<Presented>,
+    /// Windowed: whether the swap chain waits for vertical sync, as the app's vsync setting
+    /// chooses; the map's own present mode when not given.
+    pub vsync: Option<bool>,
+    /// Paced and windowed: the run keeps no record of its own and reports only its frame
+    /// intervals ([`lean`]).
+    pub lean: bool,
 }
 
 /// Which consecutive display frames of a paced run have their pixels saved: the frame the run
@@ -641,9 +648,11 @@ pub(crate) fn measure(
 ) -> io::Result<Value> {
     // This thread draws the harness's frames, as a map thread draws the window's own.
     viewer_foundation::worker_priority::frame_priority();
-    crate::layers::count_in_view(true);
-    // Before the device, so it is asked for the per-pass timestamps the record keeps.
-    viewer_foundation::view_record::enable();
+    if !schedule.lean {
+        crate::layers::count_in_view(true);
+        // Before the device, so it is asked for the per-pass timestamps the record keeps.
+        viewer_foundation::view_record::enable();
+    }
     let (window, inputs) = match window {
         crate::playback_cost::Window::Own(window, inputs) => (Some(window), Some(inputs)),
         crate::playback_cost::Window::None => (None, None),
@@ -652,7 +661,11 @@ pub(crate) fn measure(
     let _inputs = inputs;
     let (state, mut surface) = match &window {
         Some(window) => {
-            let (state, surface) = window_state(window)?;
+            let (mut state, surface) = window_state(window)?;
+            if let Some(vsync) = schedule.vsync {
+                state.surface_config.present_mode =
+                    if vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
+            }
             (state, Some(surface))
         }
         None => (render_state()?, None),
@@ -760,6 +773,19 @@ pub(crate) fn measure(
         }
     }
     viewer.warming = false;
+    if schedule.lean {
+        let (Some(surface), Some(window)) = (surface.as_mut(), window.as_ref()) else {
+            return Err(io::Error::other("A lean run presents through its window"));
+        };
+        let end = options.playback_cost_end.expect("the harness sets the run's end");
+        let last = document.playback.range(branch).map_or(end, |(_, last)| last);
+        let mut report = lean::run(lean::Run {
+            ctx: &ctx, viewer: &mut viewer, document: &mut document, state: &state, surface, window,
+            schedule: &schedule, pixels, branch, start, end, last, hours,
+        })?;
+        report["memory"] = json!(monitor.finish().map(|memory| memory.working_set_peak));
+        return Ok(report);
+    }
     // The counting mode's own device objects, made at its first counted frame from that frame's
     // targets: the map makes them when it first draws into a view of this size.
     let mut pictures = None::<pictures::Pictures>;
@@ -934,24 +960,7 @@ pub(crate) fn measure(
                 (Some(surface), Some(window)) => {
                     // A window's own swap chain is the product's presentation, not the harness's.
                     let _present = cpu::scope("frame.present", Some("other"));
-                    let clear = <Viewer as eframe::App>::clear_color(
-                        &viewer,
-                        &ctx.style_of(egui::Theme::Dark).visuals,
-                    );
-                    let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
-                    let mut textures = output.textures_delta;
-                    let shown = window.shown();
-                    let acquire = surface
-                        .paint(
-                            &state,
-                            state.surface_config,
-                            shown.then_some(pixels),
-                            output.pixels_per_point,
-                            clear,
-                            &primitives,
-                            &mut textures,
-                        )
-                        .map_err(io::Error::other)?;
+                    let acquire = lean::present(surface, window, &state, &viewer, &ctx, output, pixels)?.acquire;
                     Some(f64::from(acquire) * 1e6)
                 }
                 (surface, _) => {

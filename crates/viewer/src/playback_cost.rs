@@ -57,32 +57,39 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 /// Each harness job runs on a map thread of the host the desktop app runs its maps on.
 pub(crate) fn dispatch(args: &[OsString]) -> Option<io::Result<()>> {
-    let job: fn(&[OsString], Window) -> io::Result<()> = if args.iter().any(|arg| arg == "--playhead-proof") {
-        |args, _| proof::run(args)
-    } else if args.iter().any(|arg| arg == "--visual-toggle") {
-        |args, _| toggle::run(args)
-    } else if args.iter().any(|arg| arg == "--viewpoint-switch") {
-        |args, _| viewpoint::run(args)
-    } else if args.iter().any(|arg| arg == "--playback-cost") {
-        run
-    } else {
+    let given = |flag: &str| args.iter().any(|arg| arg == flag);
+    if !["--playhead-proof", "--visual-toggle", "--viewpoint-switch", "--playback-cost"].iter().any(|job| given(job)) {
         return None;
+    }
+    // The window's size first: a windowed run without one is refused for that, whatever else.
+    let size = match given("--windowed").then(|| window_size(args)).transpose() {
+        Ok(size) => size,
+        Err(error) => return Some(Err(error)),
+    };
+    let owned = args.to_vec();
+    let job: Box<dyn FnOnce(Window) -> io::Result<()> + Send> = if given("--playhead-proof") {
+        Box::new(move |_| proof::run(&owned))
+    } else if given("--visual-toggle") {
+        Box::new(move |_| toggle::run(&owned))
+    } else if given("--viewpoint-switch") {
+        Box::new(move |_| viewpoint::run(&owned))
+    } else {
+        // Every check a run makes of its request is made here, before its window or worker exists.
+        let var = |name: &str| std::env::var_os(name);
+        match parse(args, var).and_then(|request| admit(request, var)) {
+            Ok(request) => Box::new(move |window| run(request, window)),
+            Err(refused) => return Some(Err(refused)),
+        }
     };
     // A windowed run's frames go out through a real swap chain: this thread owns and pumps the
     // window the map thread draws into, as the desktop's host owns its maps' windows.
-    if args.iter().any(|arg| arg == "--windowed") {
-        let size = match window_size(args) {
-            Ok(size) => size,
-            Err(error) => return Some(Err(error)),
-        };
-        let args = args.to_vec();
+    if let Some(size) = size {
         return Some(crate::host::paced_window(size, move |window, inputs| {
-            job(&args, Window::Own(window.clone(), inputs))
+            job(Window::Own(window.clone(), inputs))
         }));
     }
-    let args = args.to_vec();
     Some(
-        crate::host::run("map (harness)", move |_| job(&args, Window::None).map_err(|error| error.to_string()))
+        crate::host::run("map (harness)", move |_| job(Window::None).map_err(|error| error.to_string()))
             .and_then(|ended| ended.map_err(crate::host::Ending::into_error)),
     )
 }
@@ -114,6 +121,59 @@ fn window_size(args: &[OsString]) -> io::Result<[u32; 2]> {
         return Err(invalid("--windowed needs --width and --height"));
     }
     Ok(size)
+}
+
+/// Why a `--lean` run of `schedule` cannot time the app's own frame: it is not a paced windowed run,
+/// it asks for harness work no lean frame does, or a setting adds work to every frame or opens a map
+/// or hover the lean loop never drives. A setting counts when it is set at all, empty or not, as the
+/// map reads `BATTLE_PLAN_VIEWER_GPU_PASSES`. None for a run that is not lean.
+fn lean_refusal(
+    schedule: &crate::app::playback_cost::Schedule,
+    gpu_pass_times: bool,
+    var: impl Fn(&str) -> Option<OsString>,
+) -> Option<String> {
+    if !schedule.lean {
+        return None;
+    }
+    if !schedule.windowed || schedule.paced.is_none() {
+        return Some("--lean times a paced run presented through its window: it needs --paced S and --windowed".into());
+    }
+    let asked = [
+        ("--seeks", schedule.seeks > 0),
+        ("--seek-back", schedule.seek_back.is_some()),
+        ("--count-pictures", schedule.count_pictures.is_some()),
+        ("--png-frames", schedule.png_frames.is_some()),
+        ("--pan", schedule.pan.is_some()),
+        ("--complete-models", schedule.complete_models),
+        ("--gpu-pass-times", gpu_pass_times),
+    ];
+    if let Some((flag, _)) = asked.iter().find(|(_, asked)| *asked) {
+        return Some(format!("--lean times the app's frame intervals alone: not with {flag}"));
+    }
+    const SETTINGS: [(&str, &str); 7] = [
+        ("BATTLE_PLAN_VIEWER_GPU_PASSES", "waits for each frame's GPU timestamps"),
+        ("BATTLE_PLAN_PERF_MAP_LOG", "writes each frame's perf log"),
+        ("BATTLE_PLAN_EXTRA_MAPS", "opens extra maps the lean loop never draws"),
+        ("BATTLE_PLAN_EXTRA_RECORDING", "opens a map the lean loop never draws"),
+        ("BATTLE_PLAN_MAP_CHURN", "churns extra maps the lean loop never draws"),
+        ("BATTLE_PLAN_HIDE", "covers maps the lean loop never covers"),
+        ("BATTLE_PLAN_HOVER_FAMILY", "hovers a target the lean loop never points at"),
+    ];
+    SETTINGS
+        .iter()
+        .find(|(name, _)| var(name).is_some())
+        .map(|(name, what)| format!("--lean times the app's frame: not with {name} set, which {what}"))
+}
+
+/// A playback-cost run as its arguments ask for it, every check made: what [`run`] does once its
+/// window or worker exists, with nothing left to refuse.
+struct Request {
+    schedule: crate::app::playback_cost::Schedule,
+    options: Options,
+    hours: u32,
+    frame_limit: Option<f64>,
+    gpu_pass_times: bool,
+    recording: PathBuf,
 }
 
 /// Names a finished run's `cache` folder to start this run's caches from.
@@ -202,8 +262,11 @@ fn labels(snapshot: &Value) -> BTreeMap<(String, String, String), u64> {
         .collect()
 }
 
-fn run(args: &[OsString], window: Window) -> io::Result<()> {
-    if viewer_foundation::profile_writer::profiling() {
+/// The run `args` ask for, checked in everything that reads no file, with `var` reading the
+/// environment; nothing is set or opened.
+fn parse(args: &[OsString], var: impl Fn(&str) -> Option<OsString>) -> io::Result<Request> {
+    // As `viewer_foundation::profile_writer::profiling` reads it.
+    if var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| var("HOI4_VIEWER_PROFILE")).is_some() {
         return Err(invalid("--playback-cost requires unprofiled playback"));
     }
     let mut translated = Vec::new();
@@ -226,12 +289,15 @@ fn run(args: &[OsString], window: Window) -> io::Result<()> {
         windowed: false,
         campaign_tab: false,
         count_pictures: None,
+        vsync: None,
+        lean: false,
     };
     let mut from = false;
     let mut speed = false;
     let mut step = false;
     // The app's frame rate limit for this run, which holds its frames below `--refresh-hz`.
     let mut frame_limit = None;
+    let mut gpu_pass_times = false;
     // `--walk`, `--walk-keys` and `--walk-flying` in any order, joined after the loop: the
     // placed walk is the harness's, so the window dump's own refusals never see them.
     let (mut walk, mut walk_keys, mut walk_flying) = (None, None, false);
@@ -333,6 +399,14 @@ fn run(args: &[OsString], window: Window) -> io::Result<()> {
             // Consumed here: the window was made before this job started.
             Some("--windowed") => schedule.windowed = true,
             Some("--campaign-tab") => schedule.campaign_tab = true,
+            Some("--lean") => schedule.lean = true,
+            Some("--vsync") => {
+                schedule.vsync = Some(match args.next().and_then(|v| v.to_str()) {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => return Err(invalid("--vsync needs on or off")),
+                });
+            }
             Some("--register") => {
                 schedule.layers = Some(
                     args.next()
@@ -357,8 +431,7 @@ fn run(args: &[OsString], window: Window) -> io::Result<()> {
                 );
             }
             Some("--complete-models") => schedule.complete_models = true,
-            // Before the device: the timestamps are a device feature.
-            Some("--gpu-pass-times") => viewer_foundation::map::gpu_passes::record(),
+            Some("--gpu-pass-times") => gpu_pass_times = true,
             Some("--refresh-hz") => {
                 schedule.refresh_hz = args
                     .next()
@@ -416,13 +489,6 @@ fn run(args: &[OsString], window: Window) -> io::Result<()> {
     if schedule.refresh_hz == 0.0 {
         return Err(invalid("--playback-cost requires --refresh-hz HZ"));
     }
-    // The run's own frame clock stands for the display's refresh: the frame is budgeted for it,
-    // and it caps the rate the simulation holds. `--frame-limit` is the app's setting, which holds
-    // the maps below that rate, so the rate the run paces, budgets and reports at is what the two
-    // together leave.
-    viewer_foundation::map::frame_limit::limit_to(frame_limit);
-    viewer_foundation::map::display_refresh::pace_at(schedule.refresh_hz);
-    schedule.refresh_hz = viewer_foundation::map::display_refresh::rate();
     if !schedule.pngs.is_empty() && !schedule.complete_models {
         return Err(invalid(
             "--png-frame requires --complete-models; pixel proof runs are not timing runs",
@@ -445,6 +511,12 @@ fn run(args: &[OsString], window: Window) -> io::Result<()> {
     }
     if schedule.windowed && schedule.paced.is_none() {
         return Err(invalid("--windowed presents a paced run through a real swap chain and needs --paced S"));
+    }
+    if schedule.vsync.is_some() && !schedule.windowed {
+        return Err(invalid("--vsync is the window's swap chain's present mode and needs --windowed"));
+    }
+    if let Some(refused) = lean_refusal(&schedule, gpu_pass_times, &var) {
+        return Err(invalid(refused));
     }
     if schedule.flight.is_some()
         && (schedule.paced.is_none() || schedule.pan.is_some() || schedule.zoom.is_some())
@@ -513,18 +585,50 @@ fn run(args: &[OsString], window: Window) -> io::Result<()> {
     if schedule.seek_back.is_some_and(|back| i64::from(back) >= end) {
         return Err(invalid("--seek-back takes an hour before the run's last"));
     }
-    let recording = fs::canonicalize(options.replay.as_ref().unwrap())?;
-    let output = options.out.as_ref().unwrap();
+    let recording = options.replay.clone().ok_or_else(|| invalid("--playback-cost needs a recording"))?;
+    Ok(Request { schedule, options, hours, frame_limit, gpu_pass_times, recording })
+}
+
+/// `request` once its recording and output are where a run may read and write them: the output a
+/// new directory under `BATTLE_PLAN_CAPTURES`, as `var` reads it. The run's own `create_dir` still guards
+/// against a run that makes it first.
+fn admit(mut request: Request, var: impl Fn(&str) -> Option<OsString>) -> io::Result<Request> {
+    request.recording = fs::canonicalize(&request.recording)?;
+    let output = request.options.out.as_ref().ok_or_else(|| invalid("--playback-cost needs --out"))?;
     let parent = fs::canonicalize(
         output
             .parent()
             .ok_or_else(|| invalid("Output needs a parent"))?,
     )?;
-    let captures = std::env::var_os(CAPTURES)
+    let captures = var(CAPTURES)
         .ok_or_else(|| invalid("Set BATTLE_PLAN_CAPTURES to the folder --out must be under"))?;
     if !parent.starts_with(fs::canonicalize(captures)?) {
         return Err(invalid("--out must be a new directory under BATTLE_PLAN_CAPTURES"));
     }
+    match fs::symlink_metadata(output) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("--out {} already exists; a run writes a new directory", output.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(request),
+        Err(error) => Err(error),
+    }
+}
+
+fn run(request: Request, window: Window) -> io::Result<()> {
+    let Request { mut schedule, options, hours, frame_limit, gpu_pass_times, recording } = request;
+    let output = options.out.as_ref().expect("an admitted run has --out");
+    // The run is accepted: its process-wide settings, before the device, whose timestamps are a
+    // device feature. The run's own frame clock stands for the display's refresh: the frame is
+    // budgeted for it, and it caps the rate the simulation holds. `--frame-limit` is the app's
+    // setting, which holds the maps below that rate, so the rate the run paces, budgets and reports
+    // at is what the two together leave.
+    if gpu_pass_times {
+        viewer_foundation::map::gpu_passes::record();
+    }
+    viewer_foundation::map::frame_limit::limit_to(frame_limit);
+    viewer_foundation::map::display_refresh::pace_at(schedule.refresh_hz);
+    schedule.refresh_hz = viewer_foundation::map::display_refresh::rate();
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;
     let _locks = lock(&output)?;
@@ -553,7 +657,11 @@ fn run(args: &[OsString], window: Window) -> io::Result<()> {
         std::env::set_var("LOCALAPPDATA", local);
         std::env::set_var("APPDATA", roaming);
     }
-    cpu::enable();
+    // A lean run keeps no accounting, so its frames pay for none.
+    let lean = schedule.lean;
+    if !lean {
+        cpu::enable();
+    }
     let monitor = crate::app::playback_cost::Monitor::start()?;
     let setup = Instant::now();
     crate::render::probe_dump_device()?;
@@ -635,6 +743,18 @@ fn run(args: &[OsString], window: Window) -> io::Result<()> {
     serde_json::to_writer_pretty(&mut file, &report)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
+    if lean {
+        let fps = |figure: &str| report[figure]["fps"].as_f64().unwrap_or(f64::NAN);
+        println!(
+            "lean: {} intervals; fps median {:.1}, p90 {:.1}, p99 {:.1}; report {}",
+            report["intervals_counted"],
+            fps("median"),
+            fps("p90"),
+            fps("p99"),
+            output.join("report.json").display()
+        );
+        return Ok(());
+    }
     println!(
         "{} hours; {:.3} game hours/s; report {}",
         hours,
@@ -753,5 +873,99 @@ mod reconciliation_tests {
         assert!(!super::reconciles(100_000_000_000, 106_000_000_000));
         assert!(super::reconciles(100_000_000_000, 104_000_000_000));
         assert!(!super::reconciles(0, 0));
+    }
+}
+
+#[cfg(test)]
+mod lean_tests {
+    use super::*;
+
+    fn args(extra: &[&str]) -> Vec<OsString> {
+        [
+            "--playback-cost", "x.battleplan", "--from-hour", "10", "--hours", "5", "--paced", "17",
+            "--refresh-hz", "1000", "--windowed", "--width", "8", "--height", "8", "--out", "o",
+            "--lean",
+        ]
+        .iter()
+        .chain(extra)
+        .map(OsString::from)
+        .collect()
+    }
+
+    fn refusal(extra: &[&str], var: impl Fn(&str) -> Option<OsString>) -> Option<String> {
+        parse(&args(extra), var).err().map(|error| error.to_string())
+    }
+
+    #[test]
+    fn a_lean_run_refuses_what_would_change_or_skip_the_frame_it_times() {
+        let none = |_: &str| None;
+        assert_eq!(refusal(&[], none), None);
+        assert_eq!(refusal(&["--seeks", "0"], none), None, "no seeks is no seek");
+        assert!(refusal(&["--seeks", "2"], none).is_some_and(|why| why.contains("--seeks")));
+        assert!(refusal(&["--gpu-pass-times"], none).is_some_and(|why| why.contains("--gpu-pass-times")));
+        assert!(refusal(&["--paced", "0"], none).is_some(), "a lean run is paced");
+        let timed: Vec<_> = args(&["--gpu-pass-times"]).into_iter().filter(|arg| arg != "--lean").collect();
+        assert!(parse(&timed, none).is_ok(), "a run that is not lean times its GPU passes");
+        let unwindowed: Vec<_> = args(&[]).into_iter().filter(|arg| arg != "--windowed").collect();
+        assert!(parse(&unwindowed, none).err().is_some_and(|why| why.to_string().contains("--windowed")));
+        for name in ["BATTLE_PLAN_VIEWER_GPU_PASSES", "BATTLE_PLAN_EXTRA_MAPS", "BATTLE_PLAN_HOVER_FAMILY", "BATTLE_PLAN_VIEWER_PROFILE"] {
+            let set = |given: &str| (given == name).then(|| OsString::from("1"));
+            assert!(refusal(&[], set).is_some(), "{name}");
+            // A setting the map reads by its presence counts empty too.
+            let empty = |given: &str| (given == name).then(OsString::new);
+            assert!(refusal(&[], empty).is_some(), "{name} empty");
+        }
+    }
+
+    /// A refused lean run is refused before its window or worker exists, so none of its settings
+    /// reach the process: the frame limit it asked for is never held.
+    #[test]
+    fn a_refused_lean_run_opens_nothing_and_sets_nothing() {
+        let refused = dispatch(&args(&["--frame-limit", "60", "--gpu-pass-times"]))
+            .expect("a playback-cost job")
+            .expect_err("a refused lean run");
+        assert!(refused.to_string().contains("--gpu-pass-times"), "{refused}");
+        assert_eq!(viewer_foundation::map::frame_limit::limit(), None);
+        // A windowed run without its size is refused for that, before its recording is looked for.
+        let sizeless: Vec<_> = args(&[])
+            .into_iter()
+            .filter(|arg| !["--width", "--height", "8"].iter().any(|dropped| arg == dropped))
+            .collect();
+        let refused = dispatch(&sizeless).expect("a playback-cost job").expect_err("no window size");
+        assert!(refused.to_string().contains("--width"), "{refused}");
+    }
+
+    /// A run whose output directory exists already is refused before its window or settings, as
+    /// a missing recording or an output outside the captures folder is.
+    #[test]
+    fn an_existing_output_is_refused_before_the_run_starts() {
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!("playback-cost-admit-{}", std::process::id())));
+        let captures = scratch.0.clone();
+        let recording = captures.join("x.battleplan");
+        let out = captures.join("o");
+        fs::create_dir_all(&out).unwrap();
+        fs::write(&recording, b"").unwrap();
+        let place = |extra: &[&str]| -> Vec<OsString> {
+            args(extra)
+                .into_iter()
+                .map(|arg| match arg.to_str() {
+                    Some("x.battleplan") => recording.clone().into_os_string(),
+                    Some("o") => out.clone().into_os_string(),
+                    _ => arg,
+                })
+                .collect()
+        };
+        let var = |name: &str| (name == CAPTURES).then(|| captures.clone().into_os_string());
+        let admitted = |args: &[OsString]| parse(args, |_| None).and_then(|request| admit(request, var));
+        let refused = admitted(&place(&[])).err().expect("an existing output");
+        assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
+        fs::remove_dir(&out).unwrap();
+        assert!(admitted(&place(&[])).is_ok(), "a new output under the captures folder");
     }
 }

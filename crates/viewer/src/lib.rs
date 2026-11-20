@@ -98,6 +98,8 @@ viewer --playback-cost <replay> --from-hour H --hours N --speed max --out <direc
          whatever it and --refresh-hz leave, as a limited map presents at
          --gpu-pass-times records each group of passes' GPU microseconds, for a run measuring the
          GPU; their timestamp commands cost the frame thread CPU, so a CPU timing run omits them
+         with --paced S --windowed, --vsync off presents without vsync, and --lean keeps no record
+         of its own and reports only the frame intervals: the app's own frame rate
 viewer --visual-toggle <replay> --hour H --out <directory> [--mod-a <mod>]... [--mod-b <mod>]...
          [--toggles N] [--refresh-hz HZ] [--settle-frames N] [--timeout S] [--no-fresh]
          toggles visual mods through the app's path; a mod by its listed name or its id

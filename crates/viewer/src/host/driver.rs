@@ -217,7 +217,7 @@ pub(crate) fn run(
         let clear = viewer.clear_color(&ctx.style_of(egui::Theme::Dark).visuals);
         let painting = std::time::Instant::now();
         let shown = window.shown() && size[0] > 0 && size[1] > 0;
-        let acquire = surface.paint(&state, config, shown.then_some(size), output.pixels_per_point, clear, &primitives, &mut textures)?;
+        let acquire = surface.paint(&state, config, shown.then_some(size), output.pixels_per_point, clear, &primitives, &mut textures)?.acquire;
         if shown {
             crate::perf_log::frame_painted(painting.elapsed(), acquire);
         }

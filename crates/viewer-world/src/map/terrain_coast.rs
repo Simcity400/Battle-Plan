@@ -195,6 +195,17 @@ fn on_rim(cells: [u32; 2], [x, z]: [u32; 2]) -> bool {
     x <= cells[0] && z <= cells[1] && (x == 0 || z == 0 || x == cells[0] || z == cells[1])
 }
 
+/// The vertices [`on_rim`] holds for a patch drawing `cells` across and up, in the order the
+/// patch's positions list them (row by row, west to east), without walking its inside.
+fn rim_vertices([wide, tall]: [u32; 2]) -> impl Iterator<Item = [u32; 2]> {
+    (0..=tall).flat_map(move |z| {
+        let whole = z == 0 || z == tall || wide == 0;
+        let row = whole.then(|| (0..=wide).map(move |x| [x, z]));
+        let ends = (!whole).then(|| [[0, z], [wide, z]]);
+        row.into_iter().flatten().chain(ends.into_iter().flatten())
+    })
+}
+
 /// The step of the block a cover draws over each 64-pixel cell, across the map copies it stands
 /// on.
 pub(super) struct Steps {
@@ -266,6 +277,17 @@ impl Steps {
             && !(row..row + tall).any(|z| other(column - 1, z) || other(column + wide, z))
     }
 
+    /// Whether `other` holds the same steps as this in every cell around the block starting at
+    /// world column `column` and row `row`, the cells [`Self::alone`] and [`Self::rim`] read
+    /// besides its own: the block drawn in both has the same rim in both.
+    pub(super) fn same_around(&self, other: &Self, column: i64, row: u32, step: u32) -> bool {
+        let [wide, tall] = self.span(column, row, step).map(i64::from);
+        let row = i64::from(row);
+        let same = |column: i64, row: i64| self.at(column, row) == other.at(column, row);
+        (column - 1..=column + wide).all(|x| same(x, row - 1) && same(x, row + tall))
+            && (row..row + tall).all(|z| same(column - 1, z) && same(column + wide, z))
+    }
+
     /// The cells vertex `at` of `patch` (`cells` of them across and up) on world map copy `copy`
     /// is capped by: [`Self::rule`] on its drawn rim, its own step within.
     fn at_vertex(&self, patch: Patch, cells: [u32; 2], copy: i64, at: [u32; 2]) -> Option<u32> {
@@ -279,27 +301,14 @@ impl Steps {
         )
     }
 
-    /// The rules of the drawn rim's vertices of `patch` on world map copy `copy`, in the
-    /// positions' order: 0 keeps the sampled height, else the power of two of the capping cells.
-    /// With the patch they decide what [`Coast::rim`] makes. Returns whether any differs from
-    /// the patch's own step.
-    pub(super) fn rim(
-        &self,
-        positions: &[[i16; 4]],
-        patch: Patch,
-        cells: [u32; 2],
-        copy: i64,
-        out: &mut Vec<u8>,
-    ) -> bool {
+    /// The rules of the drawn rim's vertices of `patch` on world map copy `copy`, in the order
+    /// of the patch's positions: 0 keeps the sampled height, else the power of two of the capping
+    /// cells. With the patch they decide what [`Coast::rim`] makes. Returns whether any differs
+    /// from the patch's own step.
+    pub(super) fn rim(&self, patch: Patch, cells: [u32; 2], copy: i64, out: &mut Vec<u8>) -> bool {
         let code = |rule: Option<u32>| rule.map_or(0, |step| step.trailing_zeros() as u8);
         out.clear();
-        out.extend(
-            positions
-                .iter()
-                .map(|&[x, z, ..]| [x as u32, z as u32])
-                .filter(|&at| on_rim(cells, at))
-                .map(|at| code(self.at_vertex(patch, cells, copy, at))),
-        );
+        out.extend(rim_vertices(cells).map(|at| code(self.at_vertex(patch, cells, copy, at))));
         out.iter().any(|&rule| rule != code(Some(patch.step)))
     }
 
@@ -458,6 +467,55 @@ mod tests {
         assert_eq!(capped[island][0], 940);
     }
 
+    #[test]
+    fn the_rim_walk_lists_the_positions_on_the_rim_in_their_order() {
+        let positions = super::super::terrain_shader::positions();
+        let sides = [0, 1, 2, 7, 31, SIDE - 1, SIDE];
+        for wide in sides {
+            for tall in sides {
+                let cells = [wide, tall];
+                let filtered: Vec<[u32; 2]> = positions
+                    .iter()
+                    .map(|&[x, z, ..]| [x as u32, z as u32])
+                    .filter(|&at| on_rim(cells, at))
+                    .collect();
+                assert_eq!(rim_vertices(cells).collect::<Vec<_>>(), filtered, "cells {cells:?}");
+            }
+        }
+    }
+
+    /// Two covers that differ only away from a block give it the same rim; one that changes a
+    /// cell beside it, its corner's included, is seen.
+    #[test]
+    fn a_block_with_the_same_steps_around_it_has_the_same_rim_in_another_cover() {
+        let map = [16, 8];
+        let first: [(i64, u32, u32); 7] =
+            [(0, 0, 4), (4, 0, 2), (6, 0, 2), (4, 2, 2), (6, 2, 1), (7, 2, 1), (8, 0, 8)];
+        // The step-8 block splits in two step-4 blocks, far from the blocks at the west.
+        let mut moved: Vec<_> = first[..6].to_vec();
+        moved.extend([(8, 0, 4), (12, 0, 4), (8, 4, 4), (12, 4, 4)]);
+        let (was, now) = (Steps::new(&first, map), Steps::new(&moved, map));
+        let rim = |steps: &Steps, &(column, row, step): &(i64, u32, u32)| {
+            let origin = [column as u32 * SIDE, row * SIDE];
+            let patch = Patch { origin, step };
+            let cells: [u32; 2] =
+                std::array::from_fn(|axis| ((map[axis] * SIDE - origin[axis]) / step).min(SIDE));
+            let mut rules = Vec::new();
+            let differs = steps.rim(patch, cells, 0, &mut rules);
+            (steps.alone(column, row, step), differs, rules)
+        };
+        let mut kept = 0;
+        for block in &first[..6] {
+            if now.same_around(&was, block.0, block.1, block.2) {
+                kept += 1;
+                assert_eq!(rim(&now, block), rim(&was, block), "{block:?}");
+            }
+        }
+        assert!(kept >= 3, "the blocks away from the split keep their rims");
+        assert!(!now.same_around(&was, 6, 0, 2), "a block beside the split sees it");
+        assert!(!now.same_around(&was, 7, 2, 1), "a corner cell beside the split is read too");
+    }
+
     /// Blocks of different steps give every rim sample they share one height, whatever step
     /// each draws, and blocks of the finest step keep their sampled heights.
     #[test]
@@ -511,7 +569,7 @@ mod tests {
             let sampled = heights.clone();
             coast.cap(&positions, origin, step, &mut heights);
             if !steps.alone(i64::from(origin[0] / SIDE), origin[1] / SIDE, step)
-                && steps.rim(&positions, patch, cells, 0, &mut rule)
+                && steps.rim(patch, cells, 0, &mut rule)
                 && let Some(rimmed) = coast.rim(&steps, &positions, &bytes, WIDE, patch, cells, 0)
             {
                 heights = rimmed;
@@ -577,7 +635,7 @@ mod tests {
             let mut drawn = sampled.clone();
             coast.cap(&positions, origin, step, &mut drawn);
             let mut rule = Vec::new();
-            if steps.rim(&positions, patch, cells, copy, &mut rule)
+            if steps.rim(patch, cells, copy, &mut rule)
                 && let Some(rimmed) = coast.rim(&steps, &positions, &bytes, WIDE, patch, cells, copy)
             {
                 drawn = rimmed;

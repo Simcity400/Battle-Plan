@@ -281,7 +281,7 @@ enum Heights {
     /// The patch's own coast heights, made at load.
     Coast,
     /// Its own coast heights with its rim matched to the blocks around it, made for the cover:
-    /// the cut's rim of this index.
+    /// the rim in this slot of the rim stream.
     Rim(usize),
 }
 
@@ -295,18 +295,28 @@ struct Drawn {
 
 /// One block's rim-matched heights: the rules of its rim's vertices, which with its patch decide
 /// them, and the heights.
+#[derive(Clone)]
 struct Rim {
     rules: Arc<[u8]>,
     heights: Arc<[u8]>,
 }
 
+/// What one block's rim drew in a cut: none where its rim takes its own step, else its rules and
+/// its rim-matched heights, `None` where they are its own.
+type BlockRim = Option<(Arc<[u8]>, Option<Arc<[u8]>>)>;
+
 /// One cover cut into its wrap views, with the rim-matched heights its blocks draw.
 struct Cut {
     cover: Cover,
+    /// Which cut of the terrain's this is: a draw bound for another cut reads rim slots that
+    /// may hold other rims now.
+    epoch: u64,
     /// Each wrap view's blocks, by the view's offset bits.
     views: Vec<(u32, Arc<[Drawn]>)>,
+    /// The rim stream's slots, each the rim it holds; the blocks draw some of them.
     rims: Vec<Rim>,
-    /// Every rim's heights in order, one patch's stream each, bound as one more slab.
+    /// The rim stream, one patch's heights a slot, bound as one more slab; none when no block
+    /// of the cut draws a rim.
     stream: Option<wgpu::Buffer>,
 }
 
@@ -541,6 +551,15 @@ pub struct Terrain {
     /// The last cut's rim-matched heights by patch and rim rules, `None` where they are the
     /// patch's own, so a moving camera makes only the rims it had not drawn.
     rim_cache: BTreeMap<(Patch, Arc<[u8]>), Option<Arc<[u8]>>>,
+    /// The last cut's steps and each of its blocks' rim by patch and map copy: a block whose
+    /// surrounding cells hold the same steps again draws the same rim.
+    last_rims: Option<(super::terrain_coast::Steps, BTreeMap<(Patch, i64), BlockRim>)>,
+    /// The rim stream kept across cuts, and the rim each of its slots holds: a cut writes only
+    /// the rims its slots do not hold yet, into the slots the cut before let go of.
+    rim_stream: Option<wgpu::Buffer>,
+    rim_slots: Vec<Rim>,
+    /// Cuts made, the last one's epoch.
+    cuts: u64,
     samples: u32,
     /// Each mode's retained draws, one entry per set of views a frame prepares it for.
     retained: Vec<Retained>,
@@ -567,6 +586,8 @@ struct Built {
     scene: usize,
     offsets: Vec<u32>,
     cover: Cover,
+    /// The cut the draws were bound for, whose rim slots they read.
+    cut: u64,
     textures: Vec<wgpu::TextureView>,
 }
 
@@ -769,6 +790,10 @@ impl Terrain {
             retained_heights: Vec::new(),
             cut: None,
             rim_cache: BTreeMap::new(),
+            last_rims: None,
+            rim_stream: None,
+            rim_slots: Vec::new(),
+            cuts: 0,
             samples,
             retained: Vec::new(),
             kept: BTreeMap::new(),
@@ -949,15 +974,18 @@ impl Terrain {
         }
         self.cut = None;
         self.rim_cache.clear();
+        self.last_rims = None;
+        self.rim_stream = None;
+        self.rim_slots.clear();
         self.retained_heights.clear();
     }
 
     /// The cover cut into its wrap views, made again only when the cover or the coast changes.
-    fn cut(&mut self, device: &wgpu::Device, cover: &Cover) -> io::Result<&Cut> {
+    fn cut(&mut self, device: &wgpu::Device, arena: Option<&gpu::Arena>, cover: &Cover) -> io::Result<&Cut> {
         self.follow_effect(device);
         if self.cut.as_ref().is_none_or(|cut| cut.cover != *cover) {
             self.cut = None;
-            let made = self.cut_cover(device, cover)?;
+            let made = self.cut_cover(device, arena, cover)?;
             self.cut = Some(made);
         }
         Ok(self.cut.as_ref().expect("the cover was cut above"))
@@ -965,7 +993,7 @@ impl Terrain {
 
     /// Cuts `cover` into its wrap views, each block drawing its coast heights, matched at its rim
     /// to the blocks of other steps around it ([`super::terrain_coast`]).
-    fn cut_cover(&mut self, device: &wgpu::Device, cover: &Cover) -> io::Result<Cut> {
+    fn cut_cover(&mut self, device: &wgpu::Device, arena: Option<&gpu::Arena>, cover: &Cover) -> io::Result<Cut> {
         let offsets = match cover {
             Cover::Blocks(blocks) => blocks.iter().fold(Vec::new(), |mut offsets, block| {
                 if !offsets.contains(&block.offset) {
@@ -1010,6 +1038,8 @@ impl Terrain {
         });
         let positions = positions();
         let mut cache = BTreeMap::new();
+        let last = self.last_rims.take();
+        let mut block_rims = BTreeMap::new();
         let (mut rims, mut rules) = (Vec::new(), Vec::new());
         let mut views = Vec::with_capacity(cut.len());
         for (offset, blocks) in cut {
@@ -1028,35 +1058,49 @@ impl Terrain {
                 if let (Some(steps), Ok(coast)) = (&steps, &self.coasts.coast) {
                     let cells = cells(self.map, patch);
                     let column = copy(offset) * columns + i64::from(patch.origin[0] / SIDE);
-                    if patch.step >= 2
-                        && !steps.alone(column, patch.origin[1] / SIDE, patch.step)
-                        && steps.rim(&positions, patch, cells, copy(offset), &mut rules)
-                    {
-                        let key = (patch, Arc::<[u8]>::from(rules.as_slice()));
-                        let held = self.rim_cache.remove(&key);
-                        let made = match held.or_else(|| cache.get(&key).cloned()) {
-                            Some(made) => made,
-                            None => coast
-                                .rim(
-                                    steps,
-                                    &positions,
-                                    &self.bytes,
-                                    self.map,
-                                    patch,
-                                    cells,
-                                    copy(offset),
-                                )
-                                .map(|rimmed| Arc::<[u8]>::from(bytemuck::cast_slice(&rimmed))),
-                        };
-                        if let Some(made) = &made {
+                    let row = patch.origin[1] / SIDE;
+                    let kept = last.as_ref().and_then(|(was, blocks)| {
+                        blocks
+                            .get(&(patch, copy(offset)))
+                            .filter(|_| steps.same_around(was, column, row, patch.step))
+                    });
+                    let rim = match kept {
+                        Some(rim) => rim.clone(),
+                        None if patch.step >= 2
+                            && !steps.alone(column, row, patch.step)
+                            && steps.rim(patch, cells, copy(offset), &mut rules) =>
+                        {
+                            let key = (patch, Arc::<[u8]>::from(rules.as_slice()));
+                            let held = self.rim_cache.remove(&key);
+                            let made = match held.or_else(|| cache.get(&key).cloned()) {
+                                Some(made) => made,
+                                None => coast
+                                    .rim(
+                                        steps,
+                                        &positions,
+                                        &self.bytes,
+                                        self.map,
+                                        patch,
+                                        cells,
+                                        copy(offset),
+                                    )
+                                    .map(|rimmed| Arc::<[u8]>::from(bytemuck::cast_slice(&rimmed))),
+                            };
+                            Some((key.1, made))
+                        }
+                        None => None,
+                    };
+                    if let Some((rules, made)) = &rim {
+                        if let Some(made) = made {
                             rims.push(Rim {
-                                rules: Arc::clone(&key.1),
+                                rules: Arc::clone(rules),
                                 heights: Arc::clone(made),
                             });
                             heights = Heights::Rim(rims.len() - 1);
                         }
-                        cache.insert(key, made);
+                        cache.insert((patch, Arc::clone(rules)), made.clone());
                     }
+                    block_rims.insert((patch, copy(offset)), rim);
                 }
                 drawn.push(Drawn {
                     patch,
@@ -1064,29 +1108,101 @@ impl Terrain {
                     heights,
                 });
             }
-            views.push((offset.to_bits(), Arc::from(drawn)));
+            views.push((offset.to_bits(), drawn));
         }
+        self.last_rims = steps.map(|steps| (steps, block_rims));
         self.rim_cache = cache;
-        let stream = (!rims.is_empty()).then(|| {
-            let mut contents = Vec::with_capacity(rims.len() * PATCH_BYTES);
-            for rim in &rims {
-                contents.extend_from_slice(&rim.heights);
-            }
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("native terrain rim heights"),
-                contents: &contents,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+        let slots = self.place_rims(device, arena, &rims);
+        let views = views
+            .into_iter()
+            .map(|(offset, mut drawn)| {
+                for block in &mut drawn {
+                    if let Heights::Rim(index) = &mut block.heights {
+                        *index = slots[*index];
+                    }
+                }
+                (offset, Arc::from(drawn))
             })
-        });
+            .collect();
+        self.cuts += 1;
         Ok(Cut {
             cover: cover.clone(),
+            epoch: self.cuts,
             views,
-            rims,
-            stream,
+            rims: self.rim_slots.clone(),
+            stream: self.rim_stream.clone().filter(|_| !rims.is_empty()),
         })
     }
-    fn views(&mut self, device: &wgpu::Device, inputs: &Inputs<'_>) -> io::Result<Views> {
-        let cut = self.cut(device, inputs.cover)?;
+
+    /// Puts each of `rims` in a slot of the rim stream, its slot by index: a rim a slot holds
+    /// already stays there, the others take the slots no rim of this cut holds, and only those
+    /// are written. The stream is made again, whole, when the rims outgrow it or no arena writes.
+    fn place_rims(&mut self, device: &wgpu::Device, arena: Option<&gpu::Arena>, rims: &[Rim]) -> Vec<usize> {
+        let key = |rim: &Rim| Arc::as_ptr(&rim.heights).cast::<u8>();
+        let mut held: std::collections::HashMap<*const u8, usize> =
+            self.rim_slots.iter().enumerate().map(|(slot, rim)| (key(rim), slot)).collect();
+        let mut used = vec![false; self.rim_slots.len()];
+        let mut slots = vec![usize::MAX; rims.len()];
+        for (at, rim) in rims.iter().enumerate() {
+            if let Some(&slot) = held.get(&key(rim)) {
+                used[slot] = true;
+                slots[at] = slot;
+            }
+        }
+        let (mut free, mut written) = (0, Vec::new());
+        for (at, rim) in rims.iter().enumerate() {
+            if slots[at] != usize::MAX {
+                continue;
+            }
+            // Two blocks drawing one rim share its slot.
+            if let Some(&slot) = held.get(&key(rim)).filter(|&&slot| used[slot]) {
+                slots[at] = slot;
+                continue;
+            }
+            while free < used.len() && used[free] {
+                free += 1;
+            }
+            let placed = Rim { rules: Arc::clone(&rim.rules), heights: Arc::clone(&rim.heights) };
+            let slot = if free < used.len() {
+                self.rim_slots[free] = placed;
+                used[free] = true;
+                free
+            } else {
+                self.rim_slots.push(placed);
+                used.push(true);
+                self.rim_slots.len() - 1
+            };
+            held.insert(key(rim), slot);
+            slots[at] = slot;
+            written.push(slot);
+        }
+        let capacity = self.rim_stream.as_ref().map_or(0, |stream| stream.size() as usize / PATCH_BYTES);
+        match (arena, &self.rim_stream) {
+            (Some(arena), Some(stream)) if self.rim_slots.len() <= capacity => {
+                for slot in written {
+                    arena.write(stream, (slot * PATCH_BYTES) as u64, &self.rim_slots[slot].heights);
+                }
+            }
+            _ if written.is_empty() && self.rim_slots.len() <= capacity => {}
+            _ => {
+                let capacity = self.rim_slots.len().max(capacity).next_power_of_two().max(16);
+                let mut contents = vec![0u8; capacity * PATCH_BYTES];
+                for (slot, rim) in self.rim_slots.iter().enumerate() {
+                    contents[slot * PATCH_BYTES..][..rim.heights.len()].copy_from_slice(&rim.heights);
+                }
+                self.rim_stream = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("native terrain rim heights"),
+                    contents: &contents,
+                    usage: wgpu::BufferUsages::VERTEX
+                        | wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_DST,
+                }));
+            }
+        }
+        slots
+    }
+    fn views(&mut self, arena: &gpu::Arena, inputs: &Inputs<'_>) -> io::Result<Views> {
+        let cut = self.cut(arena.device(), Some(arena), inputs.cover)?;
         let mut views = Vec::with_capacity(inputs.offsets.len());
         for offset in inputs.offsets {
             let blocks = cut
@@ -1111,7 +1227,7 @@ impl Terrain {
         cover: &Cover,
         offset: f32,
     ) -> io::Result<Vec<(wgpu::Buffer, Vec<Stand>)>> {
-        self.cut(device, cover)?;
+        self.cut(device, None, cover)?;
         let cut = self.cut.as_ref().expect("the cover was cut above");
         let rim_slab = self.slabs.len();
         let mut streams: Vec<(usize, Vec<Stand>)> = Vec::new();
@@ -1154,7 +1270,7 @@ impl Terrain {
         let pipeline = self.pipeline(arena.device(), mode)?;
         // An entry no frame of the last two prepared lets go of its buffer, bindings and bundle.
         self.retained.retain(|kept| kept.used + 2 > arena.frame());
-        let views = self.views(arena.device(), &inputs)?;
+        let views = self.views(arena, &inputs)?;
         self.prepare_views(arena, mode, inputs, &pipeline, views)
     }
 
@@ -1184,7 +1300,7 @@ impl Terrain {
             }
         }
         self.retained.retain(|kept| kept.used + 2 > frame);
-        let views = self.views(arena.device(), &inputs)?;
+        let views = self.views(arena, &inputs)?;
         let samples = attachments(mode, self.samples).2;
         let reads = pipeline.constant_reads();
         let sampled = pipeline.sampled_slots().map(|physical| {
@@ -1270,6 +1386,7 @@ impl Terrain {
             scene: inputs.frames.iter().map(|frame| frame.len()).max().unwrap_or(0),
             offsets: inputs.offsets.iter().map(|offset| offset.to_bits()).collect(),
             cover: inputs.cover.clone(),
+            cut: self.cut.as_ref().map_or(0, |cut| cut.epoch),
             textures: inputs.textures.iter().map(|view| (*view).clone()).collect(),
         };
         let at = match self
