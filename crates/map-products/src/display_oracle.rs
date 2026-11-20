@@ -127,7 +127,7 @@ fn grid_with(
         cells[cell as usize * 2..cell as usize * 2 + 2].copy_from_slice(
             &display.map_or([0; 2], |d| [d.edges[edge], d.edges[edge_cells + edge]]),
         );
-        unknown[cell as usize] = u8::from(display.is_none());
+        unknown[cell as usize] = 0;
     }
     let texels: Vec<u8> = cells
         .chunks_exact(2)

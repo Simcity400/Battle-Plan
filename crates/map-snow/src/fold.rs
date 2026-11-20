@@ -346,11 +346,6 @@ impl Fold {
             cell as u32 % width + 1 == width || cell as u32 / width + 1 == height
         };
         let known = |province: u32| complete || provinces[province as usize].is_some();
-        let edges_known = if edge_changed {
-            display.is_some()
-        } else {
-            previous.summary.missing_edges == 0
-        };
         let unknown = if complete_changed {
             let count = cells.perm.len();
             let mut values = Vec::new();
@@ -359,7 +354,7 @@ impl Fold {
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
             values.extend((0..count).map(|cell| {
                 if boundary(cell) {
-                    u8::from(!edges_known)
+                    0
                 } else {
                     cells.cell_unknown(cell, known)
                 }
@@ -370,13 +365,7 @@ impl Fold {
                 .iter()
                 .filter(|&cell| !boundary(cell))
                 .map(|cell| (cell, cells.cell_unknown(cell, known)));
-            let edges = edge_changed.then_some(()).into_iter().flat_map(|()| {
-                (0..height - 1)
-                    .map(|z| z * width + width - 1)
-                    .chain((0..width).map(|x| (height - 1) * width + x))
-                    .map(|cell| (cell as usize, u8::from(!edges_known)))
-            });
-            previous.unknown.try_edited(interior.chain(edges))?
+            previous.unknown.try_edited(interior)?
         };
         drop(dirty_known);
         let raw_changed = !raw_edits.is_empty();
@@ -521,7 +510,8 @@ mod tests {
                 TableView::Unavailable {
                     reason: "synthetic read failure".into(),
                 },
-                (0..9).collect(),
+                // The boundary draws bare and unhatched even then.
+                vec![0, 1, 3, 4],
             ),
             // A later partial hour observes what it holds, and nothing else.
             (partial(), vec![3, 4]),

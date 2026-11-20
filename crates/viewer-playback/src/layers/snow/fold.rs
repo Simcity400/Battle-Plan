@@ -344,10 +344,10 @@ impl Fold {
         let edge_cells = content.boundary.len();
         self.boundary_error = decoded.as_ref().is_some_and(|display| [display.width, display.height] != [width, height] || display.edges.len() != edge_cells * 2);
         self.display = decoded.filter(|_| !self.boundary_error).map(|display| (Refresh { interval: display.refresh_interval, identity: display.refresh_identity }, display.edges));
-        let known = u8::from(self.display.is_none());
         let edges: Vec<[u8; 2]> = (0..content.boundary.len()).map(|edge| self.display.as_ref().map_or([0; 2], |(_, edges)| [edges[edge], edges[edge_cells + edge]])).collect();
         for (&cell, [snow, mud]) in content.boundary.iter().zip(edges) {
-            self.set_cell(cell as usize, [mud, snow, snow, mud], known);
+            // An unrecorded boundary draws bare and unhatched, as `map_snow::grid_from_cells`.
+            self.set_cell(cell as usize, [mud, snow, snow, mud], 0);
         }
         self.changed_rest = true;
     }

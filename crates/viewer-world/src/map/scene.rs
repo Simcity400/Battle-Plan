@@ -4884,6 +4884,12 @@ impl Scene {
         warnings.extend(self.compiled_terrain.not_kept().map(|(technique, reason)| {
             format!("Map shader {technique}: drawn every frame: {reason}")
         }));
+        if let Some(reason) = self.compiled_terrain.coast_refusal() {
+            warnings.push(format!(
+                "Map coasts: 1 refused coarse-terrain shore cap, so zoomed-out coasts can show the \
+                 sea floor: {reason}"
+            ));
+        }
         if let Some((_, assets, _)) = &self.aircraft {
             warnings.extend(
                 assets

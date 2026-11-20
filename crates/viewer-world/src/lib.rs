@@ -95,6 +95,7 @@ pub mod map {
     pub mod strait_shader;
     pub mod strike_effects;
     pub mod terrain;
+    mod terrain_coast;
     pub mod terrain_shader;
     pub mod trade_routes;
     pub mod trains;

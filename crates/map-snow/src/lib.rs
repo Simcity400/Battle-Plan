@@ -167,12 +167,13 @@ fn grid_with(
         summary.missing_edges = edge_cells;
         None
     };
-    // Unrecorded boundary history must not be reconstructed from province simulation.
+    // Unrecorded boundary history must not be reconstructed from province simulation. An
+    // unrecorded boundary draws bare and unhatched by the owner's sign-off; `missing_edges` names it.
     for (edge, cell) in boundary(width, height).enumerate() {
         cells[cell as usize * 2..cell as usize * 2 + 2].copy_from_slice(
             &display.map_or([0; 2], |d| [d.edges[edge], d.edges[edge_cells + edge]]),
         );
-        unknown[cell as usize] = u8::from(display.is_none());
+        unknown[cell as usize] = 0;
     }
     let mut texels = Vec::new();
     texels
@@ -766,10 +767,11 @@ mod tests {
             },
         ] {
             let absent = both(&map, &perm, view);
-            assert_eq!(unknown_cells(&absent).len(), 9);
+            assert_eq!(unknown_cells(&absent), [(0, 0), (1, 0), (0, 1), (1, 1)]);
             assert!(absent.texels.iter().all(|&byte| byte == 0));
         }
-        // Without the retained boundary, only the boundary cells are unknown.
+        // Without the retained boundary, the boundary cells draw bare and unhatched; the summary
+        // still counts them missing.
         let unbounded = both(
             &map,
             &perm,
@@ -777,10 +779,9 @@ mod tests {
                 [10, 20, 21, 30].map(|id| row(id, 0, 0, 0)).into(),
             )),
         );
-        assert_eq!(
-            unknown_cells(&unbounded),
-            [(2, 0), (2, 1), (0, 2), (1, 2), (2, 2)]
-        );
+        assert!(unknown_cells(&unbounded).is_empty());
+        assert_eq!(unbounded.summary.missing_edges, 5);
+        assert!(boundary(3, 3).all(|cell| texel(&unbounded, cell % 3, cell / 3) == [0; 4]));
     }
 
     #[test]

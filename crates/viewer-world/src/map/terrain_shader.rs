@@ -76,7 +76,7 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
 }
 
 /// Position stream has signed shorts, including the edge and snap direction.
-fn positions() -> Vec<[i16; 4]> {
+pub(super) fn positions() -> Vec<[i16; 4]> {
     (0..=SIDE)
         .flat_map(|z| {
             (0..=SIDE).map(move |x| {
@@ -116,16 +116,16 @@ pub(crate) fn indices(cells: [u32; 2]) -> Vec<u16> {
         .collect()
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Patch {
-    origin: [u32; 2],
-    step: u32,
+pub(super) struct Patch {
+    pub(super) origin: [u32; 2],
+    pub(super) step: u32,
 }
 fn heights(bytes: &[u8], map: [u32; 2], patch: Patch) -> Vec<[i16; 2]> {
     let mut out = Vec::new();
     heights_into(&positions(), bytes, map, patch, &mut out);
     out
 }
-fn heights_into(
+pub(super) fn heights_into(
     positions: &[[i16; 4]],
     bytes: &[u8],
     map: [u32; 2],
@@ -256,19 +256,69 @@ struct Geometry {
     /// The slab holding this patch's heights, and where in it.
     slab: usize,
     offset: u64,
+    /// The slab and offset of the capped heights a coastal block draws instead, for a coarse
+    /// patch along a coast ([`super::terrain_coast`]).
+    coast: Option<(usize, u64)>,
     indices: wgpu::Buffer,
     count: u32,
+}
+
+/// Which heights a block draws ([`super::terrain_coast`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Heights {
+    /// The heightmap's, as sampled.
+    Sampled,
+    /// The patch's own coast heights, made at load.
+    Coast,
+    /// Its own coast heights with its rim matched to the blocks around it, made for the cover:
+    /// the cut's rim of this index.
+    Rim(usize),
+}
+
+/// One block a view draws: its patch, its snapped edges, and its heights.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Drawn {
+    patch: Patch,
+    snap: [bool; 4],
+    heights: Heights,
+}
+
+/// One block's rim-matched heights: the rules of its rim's vertices, which with its patch decide
+/// them, and the heights.
+struct Rim {
+    rules: Arc<[u8]>,
+    heights: Arc<[u8]>,
+}
+
+/// One cover cut into its wrap views, with the rim-matched heights its blocks draw.
+struct Cut {
+    cover: Cover,
+    /// Each wrap view's blocks, by the view's offset bits.
+    views: Vec<(u32, Arc<[Drawn]>)>,
+    rims: Vec<Rim>,
+    /// Every rim's heights in order, one patch's stream each, bound as one more slab.
+    stream: Option<wgpu::Buffer>,
+}
+
+/// The cells a patch draws across and up: 64, or fewer where the map's edge cuts it.
+fn cells(map: [u32; 2], patch: Patch) -> [u32; 2] {
+    std::array::from_fn(|axis| ((map[axis] - patch.origin[axis]) / patch.step).min(SIDE))
+}
+
+/// The slab and offset of the heights `drawn` draws; a rim's are in the slab after the load's.
+fn stream(geometry: &BTreeMap<Patch, Geometry>, rim_slab: usize, drawn: &Drawn) -> (usize, u64) {
+    let made = &geometry[&drawn.patch];
+    match drawn.heights {
+        Heights::Coast => made.coast.unwrap_or((made.slab, made.offset)),
+        Heights::Rim(index) => (rim_slab, (index * PATCH_BYTES) as u64),
+        Heights::Sampled => (made.slab, made.offset),
+    }
 }
 
 /// Every patch a uniform grid or a free eye's blocks can draw: each power-of-two step up to the
 /// coarsest either reaches, at every origin on that step's lattice within the map.
 fn every_patch(map: [u32; 2]) -> impl Iterator<Item = Patch> {
-    // The uniform grid stops at 256; a free eye's root block spans the map.
-    let widest = map[0]
-        .max(map[1])
-        .div_ceil(SIDE)
-        .next_power_of_two()
-        .max(256);
+    let widest = widest_step(map);
     std::iter::successors(Some(1u32), move |step| (*step < widest).then_some(step * 2)).flat_map(
         move |step| {
             let pitch = (SIDE * step) as usize;
@@ -280,6 +330,10 @@ fn every_patch(map: [u32; 2]) -> impl Iterator<Item = Patch> {
             })
         },
     )
+}
+/// The coarsest step any patch has: at least 256, and a root block spanning the map.
+fn widest_step(map: [u32; 2]) -> u32 {
+    map[0].max(map[1]).div_ceil(SIDE).next_power_of_two().max(256)
 }
 /// Patches per fill task: enough to amortise a turn, few enough to share among the builders.
 const FILL_GROUP: usize = 64;
@@ -323,6 +377,126 @@ fn fill_slabs(
     });
     Ok(())
 }
+/// The coarse coasts' caps for the effect whose water they lie under ([`super::terrain_coast`]).
+struct Coasts {
+    /// The effect whose water height they follow: the one drawn.
+    from: Arc<Effect>,
+    coast: Result<super::terrain_coast::Coast, String>,
+    /// The capped heights of every coarse patch the coast changes.
+    heights: Vec<(Patch, Vec<[i16; 2]>)>,
+}
+
+impl Coasts {
+    fn new(
+        effect: &Arc<Effect>,
+        patches: &[Patch],
+        bytes: &[u8],
+        map: [u32; 2],
+        workers: &Workers,
+    ) -> Self {
+        let coast = water_height(effect).map(|water| {
+            super::terrain_coast::Coast::new(
+                bytes,
+                map,
+                water,
+                viewer_foundation::map::province_map::HEIGHT_SCALE,
+                widest_step(map),
+            )
+        });
+        let heights = coast.as_ref().map_or_else(
+            |_| Vec::new(),
+            |coast| {
+                coastal_heights(coast, patches, bytes, map, workers)
+                    .into_iter()
+                    .map(|(index, heights)| (patches[index], heights))
+                    .collect()
+            },
+        );
+        Self {
+            from: Arc::clone(effect),
+            coast,
+            heights,
+        }
+    }
+
+    /// Whether these caps lie under `effect`'s water.
+    fn follows(&self, effect: &Arc<Effect>) -> bool {
+        Arc::ptr_eq(&self.from, effect)
+    }
+}
+
+/// The capped heights of every coarse patch the coast changes, by index into `patches`, on the
+/// calling thread and the builders `workers` lends.
+fn coastal_heights(
+    coast: &super::terrain_coast::Coast,
+    patches: &[Patch],
+    bytes: &[u8],
+    map: [u32; 2],
+    workers: &Workers,
+) -> Vec<(usize, Vec<[i16; 2]>)> {
+    let positions = positions();
+    let found: Vec<Mutex<Vec<(usize, Vec<[i16; 2]>)>>> = (0..patches.len().div_ceil(FILL_GROUP))
+        .map(|_| Mutex::new(Vec::new()))
+        .collect();
+    workers.run(found.len(), &|group| {
+        let mut out = Vec::new();
+        for index in group * FILL_GROUP..((group + 1) * FILL_GROUP).min(patches.len()) {
+            let patch = patches[index];
+            if patch.step < 2 {
+                continue;
+            }
+            let mut heights = Vec::with_capacity(positions.len());
+            heights_into(&positions, bytes, map, patch, &mut heights);
+            if coast.cap(&positions, patch.origin, patch.step, &mut heights) {
+                out.push((index, heights));
+            }
+        }
+        *found[group].lock().unwrap_or_else(|e| e.into_inner()) = out;
+    });
+    found
+        .into_iter()
+        .flat_map(|group| group.into_inner().unwrap_or_else(|e| e.into_inner()))
+        .collect()
+}
+
+/// Packs `coasts`' heights into slabs of `per_slab` patches pushed onto `slabs`; returns where
+/// each capped patch's heights stand.
+fn coast_slabs(
+    device: &wgpu::Device,
+    coasts: &Coasts,
+    per_slab: usize,
+    slabs: &mut Vec<wgpu::Buffer>,
+) -> BTreeMap<Patch, (usize, u64)> {
+    let mut at = BTreeMap::new();
+    for chunk in coasts.heights.chunks(per_slab) {
+        let slab = slabs.len();
+        let mut contents = Vec::with_capacity(chunk.len() * PATCH_BYTES);
+        for (place, (patch, heights)) in chunk.iter().enumerate() {
+            at.insert(*patch, (slab, (place * PATCH_BYTES) as u64));
+            contents.extend_from_slice(bytemuck::cast_slice(heights));
+        }
+        slabs.push(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("native terrain coast heights"),
+            contents: &contents,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+        }));
+    }
+    at
+}
+
+/// The water plane's height the terrain effect declares, or why it cannot be read.
+fn water_height(effect: &Effect) -> Result<f32, String> {
+    effect
+        .source
+        .static_float("WATER_HEIGHT", &effect.defines)
+        .and_then(|height| {
+            height
+                .is_finite()
+                .then_some(height)
+                .ok_or_else(|| format!("WATER_HEIGHT is {height}"))
+        })
+}
+
 pub struct Terrain {
     pub effect: Arc<Effect>,
     pipelines: BTreeMap<Mode, Result<Arc<gpu::Pipeline>, String>>,
@@ -330,18 +504,27 @@ pub struct Terrain {
     positions: wgpu::Buffer,
     bytes: Vec<u8>,
     map: [u32; 2],
-    /// Every patch's heights, packed into as few buffers as the device allows.
+    /// Every patch's heights, packed into as few buffers as the device allows, then the coarse
+    /// coastal patches' capped heights packed the same way.
     slabs: Vec<wgpu::Buffer>,
+    /// How many of `slabs` hold the sampled heights, and the patches one slab holds.
+    sampled_slabs: usize,
+    per_slab: usize,
+    /// What caps the coarse coasts for the drawn effect, or why every block keeps its sampled
+    /// heights.
+    coasts: Coasts,
+    workers: Workers,
     /// Made at load for [`every_patch`], so no frame builds one.
     geometry: BTreeMap<Patch, Geometry>,
     /// Each wrap view's last patch and its height stream, which that view's next draws inherit,
-    /// by the view's offset bits.
-    retained_heights: Vec<(u32, Patch, Arc<[u8]>)>,
-    /// Each wrap view's blocks, by the view's offset bits, for the cover they were cut from.
-    /// The cover is the camera's, so a frame that neither moves the camera nor resizes the view
-    /// cuts no blocks at all, and the three stages of one frame cut each view's once.
-    blocks: Vec<(u32, Arc<[(Patch, [bool; 4])]>)>,
-    cut_from: Option<Cover>,
+    /// by the view's offset bits, and whether they are its coast heights.
+    retained_heights: Vec<(u32, Patch, bool, Arc<[u8]>)>,
+    /// The camera's cover cut into its views, so a frame that neither moves the camera nor
+    /// resizes the view cuts no blocks at all, and the three stages of one frame cut it once.
+    cut: Option<Cut>,
+    /// The last cut's rim-matched heights by patch and rim rules, `None` where they are the
+    /// patch's own, so a moving camera makes only the rims it had not drawn.
+    rim_cache: BTreeMap<(Patch, Arc<[u8]>), Option<Arc<[u8]>>>,
     samples: u32,
     /// Each mode's retained draws, one entry per set of views a frame prepares it for.
     retained: Vec<Retained>,
@@ -351,7 +534,7 @@ pub struct Terrain {
 }
 
 /// Each view's blocks and the matrix every block of that view carries.
-type Views = Vec<(Arc<[(Patch, [bool; 4])]>, [[f32; 4]; 4])>;
+type Views = Vec<(Arc<[Drawn]>, [[f32; 4]; 4])>;
 
 /// Frames a mode's draw list must stand unchanged before it is recorded into a render bundle: a
 /// camera that moves cuts new blocks nearly every frame, and recording again would cost more
@@ -507,7 +690,7 @@ impl Terrain {
                 "the device's largest buffer cannot hold one {PATCH_BYTES}-byte terrain patch"
             )));
         }
-        let slabs: Vec<wgpu::Buffer> = patches
+        let mut slabs: Vec<wgpu::Buffer> = patches
             .chunks(per_slab)
             .map(|chunk| {
                 device.create_buffer(&wgpu::BufferDescriptor {
@@ -522,13 +705,14 @@ impl Terrain {
         for slab in &slabs {
             slab.unmap();
         }
+        let sampled_slabs = slabs.len();
+        let coasts = Coasts::new(effect, &patches, bytes, map, workers);
+        let coast_at = coast_slabs(device, &coasts, per_slab, &mut slabs);
         // One index buffer per shape: interior patches share one, the map's edges a few more.
         let mut shapes = BTreeMap::<[u32; 2], (wgpu::Buffer, u32)>::new();
         let mut geometry = BTreeMap::new();
         for (index, &patch) in patches.iter().enumerate() {
-            let cells: [u32; 2] = std::array::from_fn(|axis| {
-                ((map[axis] - patch.origin[axis]) / patch.step).min(SIDE)
-            });
+            let cells = cells(map, patch);
             let (indices, count) = shapes
                 .entry(cells)
                 .or_insert_with(|| {
@@ -546,6 +730,7 @@ impl Terrain {
                 Geometry {
                     slab: index / per_slab,
                     offset: ((index % per_slab) * PATCH_BYTES) as u64,
+                    coast: coast_at.get(&patch).copied(),
                     indices,
                     count,
                 },
@@ -559,10 +744,14 @@ impl Terrain {
             bytes: bytes.to_vec(),
             map,
             slabs,
+            sampled_slabs,
+            per_slab,
+            coasts,
+            workers: workers.clone(),
             geometry,
             retained_heights: Vec::new(),
-            blocks: Vec::new(),
-            cut_from: None,
+            cut: None,
+            rim_cache: BTreeMap::new(),
             samples,
             retained: Vec::new(),
             kept: BTreeMap::new(),
@@ -706,46 +895,171 @@ impl Terrain {
         self.map
     }
 
-    /// The cover's blocks for one wrap view: the uniform grid's for that offset, or the free
-    /// eye's blocks standing on that copy.
-    fn view_blocks(
-        &mut self,
-        cover: &Cover,
-        offset: f32,
-    ) -> io::Result<Arc<[(Patch, [bool; 4])]>> {
-        if self.cut_from.as_ref() != Some(cover) {
-            self.cut_from = Some(cover.clone());
-            self.blocks.clear();
+    /// Why the coarse coasts keep their sampled heights, when they do.
+    pub fn coast_refusal(&self) -> Option<&str> {
+        self.coasts.coast.as_ref().err().map(String::as_str)
+    }
+
+    /// Makes the coast caps again when the drawn effect is no longer the one they follow, as
+    /// after a visual mod's replacement fell back to the recorded effect.
+    fn follow_effect(&mut self, device: &wgpu::Device) {
+        if self.coasts.follows(&self.effect) {
+            return;
         }
-        let key = offset.to_bits();
-        if let Some((_, kept)) = self.blocks.iter().find(|(view, _)| *view == key) {
-            return Ok(Arc::clone(kept));
+        let patches: Vec<Patch> = self.geometry.keys().copied().collect();
+        self.coasts = Coasts::new(&self.effect, &patches, &self.bytes, self.map, &self.workers);
+        self.slabs.truncate(self.sampled_slabs);
+        let at = coast_slabs(device, &self.coasts, self.per_slab, &mut self.slabs);
+        for (patch, made) in &mut self.geometry {
+            made.coast = at.get(patch).copied();
         }
-        let made: Arc<[_]> = drawn_blocks(cover, self.map, offset)?
-            .into_iter()
-            .map(|block| {
+        self.cut = None;
+        self.rim_cache.clear();
+        self.retained_heights.clear();
+    }
+
+    /// The cover cut into its wrap views, made again only when the cover or the coast changes.
+    fn cut(&mut self, device: &wgpu::Device, cover: &Cover) -> io::Result<&Cut> {
+        self.follow_effect(device);
+        if self.cut.as_ref().is_none_or(|cut| cut.cover != *cover) {
+            self.cut = None;
+            let made = self.cut_cover(device, cover)?;
+            self.cut = Some(made);
+        }
+        Ok(self.cut.as_ref().expect("the cover was cut above"))
+    }
+
+    /// Cuts `cover` into its wrap views, each block drawing its coast heights, matched at its rim
+    /// to the blocks of other steps around it ([`super::terrain_coast`]).
+    fn cut_cover(&mut self, device: &wgpu::Device, cover: &Cover) -> io::Result<Cut> {
+        let offsets = match cover {
+            Cover::Blocks(blocks) => blocks.iter().fold(Vec::new(), |mut offsets, block| {
+                if !offsets.contains(&block.offset) {
+                    offsets.push(block.offset);
+                }
+                offsets
+            }),
+            Cover::Refused(reason) => return Err(refuse(*reason)),
+        };
+        let mut cut = Vec::with_capacity(offsets.len());
+        for offset in offsets {
+            let blocks = drawn_blocks(cover, self.map, offset)?;
+            if let Some(block) = blocks.iter().find(|block| {
+                !self.geometry.contains_key(&Patch {
+                    origin: block.origin,
+                    step: block.step,
+                })
+            }) {
+                return Err(refuse(format!(
+                    "terrain patch at {:?}, step {}, lies outside the patches made at load",
+                    block.origin, block.step
+                )));
+            }
+            cut.push((offset, blocks));
+        }
+        let columns = i64::from(self.map[0] / SIDE);
+        let copy = |offset: f32| (offset / self.map[0] as f32).round() as i64;
+        let steps = self.coasts.coast.is_ok().then(|| {
+            let held: Vec<_> = cut
+                .iter()
+                .flat_map(|(offset, blocks)| {
+                    blocks.iter().map(move |block| {
+                        (
+                            copy(*offset) * columns + i64::from(block.origin[0] / SIDE),
+                            block.origin[1] / SIDE,
+                            block.step,
+                        )
+                    })
+                })
+                .collect();
+            super::terrain_coast::Steps::new(&held, self.map.map(|side| side / SIDE))
+        });
+        let positions = positions();
+        let mut cache = BTreeMap::new();
+        let (mut rims, mut rules) = (Vec::new(), Vec::new());
+        let mut views = Vec::with_capacity(cut.len());
+        for (offset, blocks) in cut {
+            let mut drawn = Vec::with_capacity(blocks.len());
+            for block in blocks {
                 let patch = Patch {
                     origin: block.origin,
                     step: block.step,
                 };
-                (patch, block.snap)
+                let own = if self.geometry[&patch].coast.is_some() {
+                    Heights::Coast
+                } else {
+                    Heights::Sampled
+                };
+                let mut heights = own;
+                if let (Some(steps), Ok(coast)) = (&steps, &self.coasts.coast) {
+                    let cells = cells(self.map, patch);
+                    let column = copy(offset) * columns + i64::from(patch.origin[0] / SIDE);
+                    if patch.step >= 2
+                        && !steps.alone(column, patch.origin[1] / SIDE, patch.step)
+                        && steps.rim(&positions, patch, cells, copy(offset), &mut rules)
+                    {
+                        let key = (patch, Arc::<[u8]>::from(rules.as_slice()));
+                        let held = self.rim_cache.remove(&key);
+                        let made = match held.or_else(|| cache.get(&key).cloned()) {
+                            Some(made) => made,
+                            None => coast
+                                .rim(
+                                    steps,
+                                    &positions,
+                                    &self.bytes,
+                                    self.map,
+                                    patch,
+                                    cells,
+                                    copy(offset),
+                                )
+                                .map(|rimmed| Arc::<[u8]>::from(bytemuck::cast_slice(&rimmed))),
+                        };
+                        if let Some(made) = &made {
+                            rims.push(Rim {
+                                rules: Arc::clone(&key.1),
+                                heights: Arc::clone(made),
+                            });
+                            heights = Heights::Rim(rims.len() - 1);
+                        }
+                        cache.insert(key, made);
+                    }
+                }
+                drawn.push(Drawn {
+                    patch,
+                    snap: block.snap,
+                    heights,
+                });
+            }
+            views.push((offset.to_bits(), Arc::from(drawn)));
+        }
+        self.rim_cache = cache;
+        let stream = (!rims.is_empty()).then(|| {
+            let mut contents = Vec::with_capacity(rims.len() * PATCH_BYTES);
+            for rim in &rims {
+                contents.extend_from_slice(&rim.heights);
+            }
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("native terrain rim heights"),
+                contents: &contents,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
             })
-            .collect();
-        self.blocks.push((key, Arc::clone(&made)));
-        Ok(made)
+        });
+        Ok(Cut {
+            cover: cover.clone(),
+            views,
+            rims,
+            stream,
+        })
     }
-    fn views(&mut self, inputs: &Inputs<'_>) -> io::Result<Views> {
+    fn views(&mut self, device: &wgpu::Device, inputs: &Inputs<'_>) -> io::Result<Views> {
+        let cut = self.cut(device, inputs.cover)?;
         let mut views = Vec::with_capacity(inputs.offsets.len());
         for offset in inputs.offsets {
-            let blocks = self.view_blocks(inputs.cover, *offset)?;
-            for &(patch, _) in blocks.iter() {
-                if !self.geometry.contains_key(&patch) {
-                    return Err(refuse(format!(
-                        "terrain patch at {:?}, step {}, lies outside the patches made at load",
-                        patch.origin, patch.step
-                    )));
-                }
-            }
+            let blocks = cut
+                .views
+                .iter()
+                .find(|(view, _)| *view == offset.to_bits())
+                .map_or_else(|| Arc::from([]), |(_, blocks)| Arc::clone(blocks));
             let mut matrix = inputs.matrix;
             for (value, axis) in matrix[3].iter_mut().zip(inputs.matrix[0]) {
                 *value += axis * offset;
@@ -764,7 +1078,7 @@ impl Terrain {
         let pipeline = self.pipeline(arena.device(), mode)?;
         // An entry no frame of the last two prepared lets go of its buffer, bindings and bundle.
         self.retained.retain(|kept| kept.used + 2 > arena.frame());
-        let views = self.views(&inputs)?;
+        let views = self.views(arena.device(), &inputs)?;
         self.prepare_views(arena, mode, inputs, &pipeline, views)
     }
 
@@ -794,7 +1108,7 @@ impl Terrain {
             }
         }
         self.retained.retain(|kept| kept.used + 2 > frame);
-        let views = self.views(&inputs)?;
+        let views = self.views(arena.device(), &inputs)?;
         let samples = attachments(mode, self.samples).2;
         let reads = pipeline.constant_reads();
         let sampled = pipeline.sampled_slots().map(|physical| {
@@ -817,6 +1131,7 @@ impl Terrain {
                 inputs.frames,
                 &inputs.light_grid,
                 &views,
+                self.cut.as_ref().map_or(&[][..], |cut| cut.rims.as_slice()),
             );
             let draws = keyed.draws(key);
             let record = |name| viewer_foundation::view_record::add("map scene", name, 1);
@@ -888,6 +1203,10 @@ impl Terrain {
         {
             Some(at) => at,
             None => {
+                let rim_slab = self.slabs.len();
+                let mut slabs = self.slabs.clone();
+                slabs.extend(self.cut.as_ref().and_then(|cut| cut.stream.clone()));
+                let geometry = &self.geometry;
                 let made = bind_retained(
                     arena,
                     pipeline,
@@ -895,8 +1214,9 @@ impl Terrain {
                     &views,
                     &inputs,
                     &textures,
-                    &self.slabs,
-                    &self.geometry,
+                    &slabs,
+                    geometry,
+                    &|drawn| stream(geometry, rim_slab, drawn),
                 )?;
                 self.retained.push(made);
                 self.retained.len() - 1
@@ -915,7 +1235,12 @@ impl Terrain {
             for ((scene, offset), (blocks, matrix)) in
                 inputs.frames.iter().zip(inputs.offsets).zip(&views)
             {
-                let Some(&(patch, snap)) = blocks.last() else {
+                let Some(&Drawn {
+                    patch,
+                    snap,
+                    heights: drawn,
+                }) = blocks.last()
+                else {
                     continue;
                 };
                 for stage in [Stage::Vertex, Stage::Pixel] {
@@ -925,16 +1250,26 @@ impl Terrain {
                 let mut tracked = retained.borrow_mut();
                 self.programs[&mode].bind(&mut tracked, &buffers, &textures);
                 let view = offset.to_bits();
-                let kept = self.retained_heights.iter().find_map(|(v, kept, heights)| {
-                    (*v == view && *kept == patch).then(|| heights.clone())
+                let coast = drawn == Heights::Coast;
+                let rim = match (drawn, &self.cut) {
+                    (Heights::Rim(index), Some(cut)) => Some(Arc::clone(&cut.rims[index].heights)),
+                    _ => None,
+                };
+                let kept = rim.or_else(|| {
+                    self.retained_heights.iter().find_map(|(v, kept, capped, heights)| {
+                        (*v == view && *kept == patch && *capped == coast).then(|| heights.clone())
+                    })
                 });
                 let heights = match kept {
                     Some(heights) => heights,
                     None => {
-                        let made: Arc<[u8]> =
-                            bytemuck::cast_slice(&heights(&self.bytes, self.map, patch)).into();
+                        let mut sampled = heights(&self.bytes, self.map, patch);
+                        if let (true, Ok(capper)) = (coast, &self.coasts.coast) {
+                            capper.cap(&positions(), patch.origin, patch.step, &mut sampled);
+                        }
+                        let made: Arc<[u8]> = bytemuck::cast_slice(&sampled).into();
                         self.retained_heights.retain(|(v, ..)| *v != view);
-                        self.retained_heights.push((view, patch, made.clone()));
+                        self.retained_heights.push((view, patch, coast, made.clone()));
                         made
                     }
                 };
@@ -1002,13 +1337,10 @@ impl Terrain {
         }
         Ok(Prepared { at })
     }
-    /// Forgets the retained heights and cut blocks of wrap views not among `offsets`, this
-    /// frame's.
+    /// Forgets the retained heights of wrap views not among `offsets`, this frame's.
     pub fn keep_views(&mut self, offsets: &[f32]) {
         self.retained_heights
             .retain(|(view, ..)| offsets.iter().any(|offset| offset.to_bits() == *view));
-        self.blocks
-            .retain(|(view, _)| offsets.iter().any(|offset| offset.to_bits() == *view));
     }
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, prepared: &Prepared) {
         let kept = &self.retained[prepared.at];
@@ -1083,6 +1415,7 @@ fn read_key(
     frames: &[&[u8]],
     light_grid: &[f32; 4],
     views: &Views,
+    rims: &[Rim],
 ) {
     key.part("sea_bed_target")
         .text(mode.technique())
@@ -1126,12 +1459,34 @@ fn read_key(
     let mut block = [0u8; BLOCK_BYTES];
     for (blocks, matrix) in views {
         key.number(blocks.len() as u64);
-        for &(patch, snap) in blocks.iter() {
-            // The patch alone chooses the block's vertices and its index buffer, which no
-            // constant carries.
+        for &Drawn {
+            patch,
+            snap,
+            heights,
+        } in blocks.iter()
+        {
+            // The patch and its heights alone choose the block's vertices and its index buffer,
+            // which no constant carries; a rim's heights follow from its rules.
             key.number(u64::from(patch.origin[0]))
                 .number(u64::from(patch.origin[1]))
                 .number(u64::from(patch.step));
+            match heights {
+                Heights::Sampled => {
+                    key.number(0);
+                }
+                Heights::Coast => {
+                    key.number(1);
+                }
+                Heights::Rim(index) => {
+                    let rules = &rims[index].rules;
+                    key.number(2).number(rules.len() as u64);
+                    for chunk in rules.chunks(8) {
+                        let mut packed = [0u8; 8];
+                        packed[..chunk.len()].copy_from_slice(chunk);
+                        key.number(u64::from_le_bytes(packed));
+                    }
+                }
+            }
             constants_into(&mut block, patch, *matrix, snap);
             for spec in &own {
                 key.read(spec, &block);
@@ -1147,11 +1502,12 @@ fn bind_retained(
     arena: &gpu::Arena,
     pipeline: &Arc<gpu::Pipeline>,
     built: Built,
-    views: &[(Arc<[(Patch, [bool; 4])]>, [[f32; 4]; 4])],
+    views: &[(Arc<[Drawn]>, [[f32; 4]; 4])],
     inputs: &Inputs<'_>,
     textures: &BTreeMap<u32, wgpu::TextureView>,
     slabs: &[wgpu::Buffer],
     geometry: &BTreeMap<Patch, Geometry>,
+    stream: &dyn Fn(&Drawn) -> (usize, u64),
 ) -> io::Result<Retained> {
     let device = arena.device();
     let mode = built.mode;
@@ -1186,30 +1542,25 @@ fn bind_retained(
         return Ok(empty(built, spare()));
     }
     // The patches of one view that share an index buffer and a slab of heights draw as one.
-    let mut groups: Vec<(usize, usize, wgpu::Buffer, u32, Vec<(Patch, [bool; 4])>)> = Vec::new();
+    let mut groups: Vec<(usize, usize, wgpu::Buffer, u32, Vec<Drawn>)> = Vec::new();
     let mut bases: Vec<u32> = Vec::new();
     for (view, (blocks, _)) in views.iter().enumerate() {
-        for &(patch, snap) in blocks.iter() {
-            let made = &geometry[&patch];
-            match groups.iter_mut().find(|(at, slab, indices, ..)| {
-                *at == view && *slab == made.slab && *indices == made.indices
+        for &drawn in blocks.iter() {
+            let made = &geometry[&drawn.patch];
+            let (slab, _) = stream(&drawn);
+            match groups.iter_mut().find(|(at, held, indices, ..)| {
+                *at == view && *held == slab && *indices == made.indices
             }) {
-                Some((.., patches)) => patches.push((patch, snap)),
-                None => groups.push((
-                    view,
-                    made.slab,
-                    made.indices.clone(),
-                    made.count,
-                    vec![(patch, snap)],
-                )),
+                Some((.., patches)) => patches.push(drawn),
+                None => groups.push((view, slab, made.indices.clone(), made.count, vec![drawn])),
             }
         }
     }
     let mut group_bases = Vec::with_capacity(groups.len());
     for (_, _, _, _, patches) in &groups {
         group_bases.push(bases.len() as u32);
-        for (patch, _) in patches {
-            let offset = geometry[patch].offset;
+        for drawn in patches {
+            let (_, offset) = stream(drawn);
             bases.push(
                 u32::try_from(offset / size_of::<[i16; 2]>() as u64)
                     .map_err(|_| refuse("a terrain slab stands past a stream of u32 vertices"))?,
@@ -1304,7 +1655,7 @@ fn bind_retained(
             let start = align(top, *stride);
             top = start + patches.len() * stride;
             arrays.push(start);
-            for (index, &(patch, snap)) in patches.iter().enumerate() {
+            for (index, &Drawn { patch, snap, .. }) in patches.iter().enumerate() {
                 places.push(Placed {
                     view: *view,
                     patch,
@@ -1560,13 +1911,17 @@ mod tests {
         scene: Vec<u8>,
         light_grid: [f32; 4],
         views: Views,
+        rims: Vec<Rim>,
     }
 
     impl Pass {
         fn new() -> Self {
-            let patch = |origin| Patch { origin, step: 1 };
-            let blocks: Arc<[(Patch, [bool; 4])]> =
-                vec![(patch([0, 0]), [false; 4]), (patch([64, 0]), [false; 4])].into();
+            let drawn = |origin| Drawn {
+                patch: Patch { origin, step: 1 },
+                snap: [false; 4],
+                heights: Heights::Sampled,
+            };
+            let blocks: Arc<[Drawn]> = vec![drawn([0, 0]), drawn([64, 0])].into();
             Self {
                 keyed: Keyed::default(),
                 reads: vec![
@@ -1589,6 +1944,7 @@ mod tests {
                 scene: vec![7; 352],
                 light_grid: [0.0, 0.0, 0.125, 0.125],
                 views: vec![(blocks, [[0.0; 4]; 4])],
+                rims: Vec::new(),
             }
         }
 
@@ -1606,6 +1962,7 @@ mod tests {
                 &[&self.scene],
                 &self.light_grid,
                 &self.views,
+                &self.rims,
             );
             let draws = self.keyed.draws(key);
             if draws {
@@ -1635,7 +1992,7 @@ mod tests {
         // what this program reads.
         let matrix = pass.views[0].1;
         let mut moved: Vec<_> = pass.views[0].0.to_vec();
-        moved[1].1 = [true, false, false, false];
+        moved[1].snap = [true, false, false, false];
         pass.views = vec![(moved.into(), matrix)];
         assert!(!pass.draws(), "a snap switch no program reads");
     }
@@ -1648,22 +2005,43 @@ mod tests {
         assert!(pass.draws());
         let matrix = pass.views[0].1;
         let mut more: Vec<_> = pass.views[0].0.to_vec();
-        more.push((
-            Patch {
+        more.push(Drawn {
+            patch: Patch {
                 origin: [128, 0],
                 step: 1,
             },
-            [false; 4],
-        ));
+            snap: [false; 4],
+            heights: Heights::Sampled,
+        });
         pass.views = vec![(more.clone().into(), matrix)];
         assert!(pass.draws(), "a block more");
         more.pop();
         pass.views = vec![(more.into(), matrix)];
         assert!(pass.draws(), "a block fewer");
         let mut coarser: Vec<_> = pass.views[0].0.to_vec();
-        coarser[0].0.step = 2;
-        pass.views = vec![(coarser.into(), matrix)];
+        coarser[0].patch.step = 2;
+        pass.views = vec![(coarser.clone().into(), matrix)];
         assert!(pass.draws(), "a block at another step draws other vertices");
+        assert!(!pass.draws());
+        coarser[0].heights = Heights::Coast;
+        pass.views = vec![(coarser.clone().into(), matrix)];
+        assert!(pass.draws(), "a block's coast heights are other vertices");
+        assert!(!pass.draws());
+        let rim = |rules: &[u8]| Rim {
+            rules: rules.into(),
+            heights: Arc::from([0u8; 4]),
+        };
+        pass.rims = vec![rim(&[1, 1, 2, 1])];
+        coarser[0].heights = Heights::Rim(0);
+        pass.views = vec![(coarser.clone().into(), matrix)];
+        assert!(pass.draws(), "a rim matched to its neighbours is other vertices");
+        assert!(!pass.draws());
+        pass.rims = vec![rim(&[1, 2, 2, 1])];
+        assert!(pass.draws(), "a rim matched to other neighbours is other vertices again");
+        assert!(!pass.draws());
+        coarser[0].heights = Heights::Sampled;
+        pass.views = vec![(coarser.into(), matrix)];
+        assert!(pass.draws(), "and its sampled heights again");
     }
 
     /// A texture the pass samples, written by the hour or by the frame before it, redraws it;
@@ -1704,5 +2082,54 @@ mod tests {
         assert!(validate_block(block([256, 0], 1), map).is_err());
         assert!(validate_block(block([0, 0], 3), map).is_err());
         assert!(validate_block(block([0, 0], 256), map).is_err());
+    }
+
+    /// The coast caps follow the effect drawn: a visual mod's water height while it draws, the
+    /// recorded effect's once the replacement falls back.
+    #[test]
+    fn coast_caps_lie_under_the_water_of_the_effect_drawn() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let program = |water: &str| {
+            let text = format!("Code [[ static const float WATER_HEIGHT = {water}; ]]");
+            Arc::new(
+                installed_content_core::pdxshader::program::read_with(b"terrain.shader", &|path| {
+                    Some(if path == b"terrain.shader" {
+                        text.clone().into_bytes()
+                    } else {
+                        Vec::new()
+                    })
+                })
+                .unwrap(),
+            )
+        };
+        let recorded = Effect::from_compiled(program("9.5f"), Vec::new(), Vec::new());
+        let modded = Effect::replacing(program("2.0f"), Vec::new(), recorded);
+        // A sea of byte 10 with a coast of byte 200 crossing a step-2 patch.
+        let map = [128, 64];
+        let mut bytes = vec![10u8; 128 * 64];
+        for row in bytes.chunks_mut(128) {
+            row[40..].fill(200);
+        }
+        let patches: Vec<Patch> = every_patch(map).collect();
+        let workers = Workers::default();
+        let lowest = |coasts: &Coasts| {
+            assert!(coasts.coast.is_ok(), "{:?}", coasts.coast.as_ref().err());
+            let capped: Vec<i16> = coasts
+                .heights
+                .iter()
+                .flat_map(|(_, heights)| heights.iter().flatten().copied())
+                .filter(|&height| height != 100 && height != 2000)
+                .collect();
+            assert!(!capped.is_empty());
+            capped
+        };
+        let coasts = Coasts::new(&modded, &patches, &bytes, map, &workers);
+        assert!(lowest(&coasts).iter().all(|&height| height == 190), "under the mod's 2.0");
+        let drawn = modded.fall_back("its terrain cannot be drawn here").unwrap();
+        assert!(coasts.follows(&modded) && !coasts.follows(&drawn));
+        let coasts = Coasts::new(&drawn, &patches, &bytes, map, &workers);
+        assert!(coasts.follows(&drawn));
+        assert!(lowest(&coasts).iter().all(|&height| height == 940), "under the recorded 9.5");
     }
 }

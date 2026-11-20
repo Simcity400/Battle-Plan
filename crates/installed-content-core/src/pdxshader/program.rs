@@ -372,6 +372,52 @@ impl Program {
         }
     }
 
+    /// The literal value of a `static const float` the effect's code declares once outside every
+    /// preprocessor conditional, or why it cannot be read: absent, declared more than once or
+    /// inside a conditional, named by a macro or by one of `defines` or a technique's, or not a
+    /// plain literal. No value that might not be the compiled one is returned.
+    pub fn static_float(&self, name: &str, defines: &[String]) -> Result<f32, String> {
+        let effect = &self.effect;
+        let defined = |define: &String| {
+            let mut words = define
+                .trim_start()
+                .split(|c: char| matches!(c, '=' | '(') || c.is_whitespace());
+            words.next() == Some(name)
+        };
+        if defines
+            .iter()
+            .chain(self.techniques.iter().flat_map(|technique| &technique.defines))
+            .any(defined)
+        {
+            return Err(format!("{effect}: {name} is defined for the compiler"));
+        }
+        // Each stage compiles the header, the common code, then its own code, in that order.
+        let mut found = Vec::new();
+        let mut depth = 0;
+        for source in std::iter::once(&self.header).chain(&self.common.code) {
+            scan_static_floats(&source.text, name, &mut depth, &mut found);
+        }
+        for stage in [&self.vertex, &self.pixel] {
+            let mut depth = depth;
+            for source in &stage.code {
+                scan_static_floats(&source.text, name, &mut depth, &mut found);
+            }
+        }
+        match found.as_slice() {
+            [] => Err(format!("{effect} declares no static const float {name}")),
+            [Found::Declared(value)] => value
+                .clone()
+                .map_err(|text| format!("{effect}: {name} is `{text}`, not a literal")),
+            found if found.contains(&Found::Macro) => {
+                Err(format!("{effect}: {name} is a preprocessor macro"))
+            }
+            found if found.contains(&Found::Conditional) => Err(format!(
+                "{effect}: {name} is declared inside a preprocessor conditional"
+            )),
+            _ => Err(format!("{effect} declares {name} more than once")),
+        }
+    }
+
     /// Last common then pixel declaration owns each physical sampler.
     pub fn sampler(&self, index: u32) -> Option<&Sampler> {
         self.common
@@ -620,9 +666,170 @@ fn parse(path: &str, bytes: impl Into<crate::content::Bytes>) -> Result<File, St
     })
 }
 
+/// What [`scan_static_floats`] finds of a name.
+#[derive(Clone, Debug, PartialEq)]
+enum Found {
+    /// A `static const float` outside every conditional: its value, or its text when it is not a
+    /// plain literal.
+    Declared(Result<f32, String>),
+    /// A `static const float` inside a conditional, whose value may not be the compiled one.
+    Conditional,
+    /// A `#define` or `#undef` of the name.
+    Macro,
+}
+
+/// Adds what uncommented `code` holds of `name` to `found`: each `static const float name =
+/// value;` and each macro of the name. `depth` is the conditional nesting `code` starts in and
+/// is left at the nesting it ends in.
+fn scan_static_floats(code: &str, name: &str, depth: &mut u32, found: &mut Vec<Found>) {
+    let plain = uncommented(code);
+    let (mut statement, mut conditional) = (String::new(), false);
+    let mut lines = plain.lines();
+    while let Some(line) = lines.next() {
+        if let Some(directive) = line.trim_start().strip_prefix('#') {
+            let mut directive = directive.to_owned();
+            while let Some(joined) = directive.trim_end().strip_suffix('\\') {
+                directive = format!("{joined} {}", lines.next().unwrap_or_default());
+            }
+            let mut words = directive
+                .split(|c: char| c.is_whitespace() || c == '(')
+                .filter(|word| !word.is_empty());
+            let word = words.next();
+            match word {
+                Some("if" | "ifdef" | "ifndef") => *depth += 1,
+                Some("endif") => *depth = depth.saturating_sub(1),
+                Some("define" | "undef") if words.next() == Some(name) => found.push(Found::Macro),
+                _ => {}
+            }
+            // A statement a conditional cuts through is conditional.
+            let branch = matches!(
+                word,
+                Some("if" | "ifdef" | "ifndef" | "else" | "elif" | "endif")
+            );
+            conditional |= branch && !statement.trim().is_empty();
+            continue;
+        }
+        let mut pieces = line.split(';').peekable();
+        while let Some(piece) = pieces.next() {
+            statement.push_str(piece);
+            statement.push(' ');
+            conditional |= *depth > 0 && !piece.trim().is_empty();
+            if pieces.peek().is_some() {
+                found.extend(static_float_in(&statement, name, conditional));
+                statement.clear();
+                conditional = false;
+            }
+        }
+    }
+}
+
+/// `statement` as a declaration `static const float name = value`, when it is one.
+fn static_float_in(statement: &str, name: &str, conditional: bool) -> Option<Found> {
+    let spaced = statement.replace('=', " = ");
+    let tokens: Vec<&str> = spaced.split_whitespace().collect();
+    let at = tokens
+        .windows(5)
+        .position(|window| window == ["static", "const", "float", name, "="])?;
+    if conditional {
+        return Some(Found::Conditional);
+    }
+    let text = tokens[at + 5..].join(" ");
+    let literal = text.strip_suffix(['f', 'F']).unwrap_or(&text);
+    Some(Found::Declared(literal.parse::<f32>().map_err(|_| text.clone())))
+}
+
+/// `code` without its comments, its lines kept.
+fn uncommented(code: &str) -> String {
+    let mut plain = String::with_capacity(code.len());
+    let mut rest = code;
+    while !rest.is_empty() {
+        let line = rest.find("//");
+        let block = rest.find("/*");
+        match (line, block) {
+            (Some(at), block) if block.is_none_or(|block| at < block) => {
+                plain.push_str(&rest[..at]);
+                rest = rest[at..].find('\n').map_or("", |end| &rest[at + end..]);
+            }
+            (_, Some(at)) => {
+                plain.push_str(&rest[..at]);
+                let end = rest[at + 2..].find("*/").map_or(rest.len(), |end| at + 2 + end + 2);
+                plain.push(' ');
+                plain.extend(rest[at..end].chars().filter(|&c| c == '\n'));
+                rest = &rest[end..];
+            }
+            _ => {
+                plain.push_str(rest);
+                rest = "";
+            }
+        }
+    }
+    plain
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_static_float_reads_its_one_literal_declaration_and_refuses_anything_else() {
+        let program = |texts: &[&str]| Program {
+            effect: "gfx/FX/test.shader".into(),
+            identity: [0; 32],
+            dependencies: Vec::new(),
+            warnings: Vec::new(),
+            common: Declarations {
+                code: texts
+                    .iter()
+                    .map(|text| Source {
+                        path: "gfx/FX/constants.fxh".into(),
+                        text: (*text).into(),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            vertex: Declarations::default(),
+            pixel: Declarations::default(),
+            techniques: Vec::new(),
+            blends: Vec::new(),
+            depth_stencils: Vec::new(),
+            rasterizers: Vec::new(),
+            header: Source::default(),
+        };
+        let constants = "// static const float  WATER_HEIGHT = 1.0f;\n\
+            static const float  WATER_HEIGHT = 9.5f;\n\
+            static const float  WATER_HEIGHT_RECP = 1.0f / WATER_HEIGHT;\n\
+            /* static const float WATER_HEIGHT = 2; */";
+        let read = |texts: &[&str]| program(texts).static_float("WATER_HEIGHT", &[]);
+        let refusal = |texts: &[&str], reason: &str| {
+            let error = read(texts).unwrap_err();
+            assert!(error.contains(reason), "{texts:?}: {error}");
+        };
+        assert_eq!(read(&[constants]), Ok(9.5));
+        assert_eq!(program(&["static const float X=-3;"]).static_float("X", &[]), Ok(-3.0));
+        assert!(program(&[constants]).static_float("WATER", &[]).is_err());
+        refusal(&[constants, constants], "more than once");
+        refusal(&["static const float WATER_HEIGHT = 19.0f / 2.0f;"], "not a literal");
+        // A value a conditional or a macro may replace is never read, whichever branch compiles.
+        let modded = "#ifdef MOD_WATER\nstatic const float WATER_HEIGHT = 12;\n#else\n\
+            #define WATER_HEIGHT 9.5\n#endif\n";
+        refusal(&[modded], "macro");
+        refusal(&["#if 0\nstatic const float WATER_HEIGHT = 2.0f;\n#endif\n"], "conditional");
+        let split = ["#ifdef A\n", "static const float WATER_HEIGHT = 2.0f;\n", "#endif\n"];
+        refusal(&split, "conditional");
+        let cut = "static const float WATER_HEIGHT =\n#if A\n2;\n#else\n9.5;\n#endif\n";
+        refusal(&[cut], "conditional");
+        refusal(&[constants, "#undef WATER_HEIGHT\n#define WATER_HEIGHT 2.0f\n"], "macro");
+        let commented = "/* #ifdef A\n*/ static const float WATER_HEIGHT = 9.5f;\n// #endif\n";
+        assert_eq!(read(&[commented]), Ok(9.5));
+        let closed = "#ifdef A\nstatic const float OTHER = 1;\n#endif\n";
+        assert_eq!(read(&[closed, constants]), Ok(9.5));
+        for define in ["WATER_HEIGHT=2", " WATER_HEIGHT 2.0", "WATER_HEIGHT(x) 2.0"] {
+            let defined = program(&[constants]).static_float("WATER_HEIGHT", &[define.into()]);
+            assert!(defined.unwrap_err().contains("defined for the compiler"), "{define}");
+        }
+        let other = ["WATER_HEIGHT_RECP 2".into()];
+        assert_eq!(program(&[constants]).static_float("WATER_HEIGHT", &other), Ok(9.5));
+    }
 
     #[test]
     fn source_order_and_first_entry_follow_declaration_order() {
