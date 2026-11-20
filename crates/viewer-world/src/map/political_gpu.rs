@@ -273,18 +273,6 @@ impl Static {
         let gpu = self
             .strategic
             .layer_with(device, &layer, Some(Arc::clone(&self.scratch)))?;
-        let navy = |_| self.field.navy_neutral;
-        let mut naval_layer = Layer::new(
-            gradient::LayerKind::Fixed(self.field.strategic_thickness),
-            &self.strategic_keys,
-            &navy,
-            &self.field,
-        );
-        naval_layer.region_opacity = 0;
-        naval_layer.no_region_color = self.field.navy_neutral;
-        let naval =
-            self.strategic
-                .layer_with(device, &naval_layer, Some(Arc::clone(&self.scratch)))?;
         let mode = self
             .strategic
             .layer_with(device, &layer, Some(Arc::clone(&self.scratch)))?;
@@ -310,6 +298,14 @@ impl Static {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("strategic gradient copy"),
         });
+        // The naval layer starts as the strategic field copied below, so its first update redraws
+        // only the sea regions whose attributes or styles differ from the warm layer's.
+        let naval = self.strategic.resumed(
+            device,
+            queue,
+            &mut encoder,
+            Arc::clone(&self.scratch),
+        )?;
         let params = &self.strategic.params;
         self.strategic.copy(
             &mut encoder,
@@ -683,10 +679,19 @@ impl View {
                 .as_ref()
                 .map_or(POLITICAL, |draw| draw.channels);
             if fill.channels != channels {
-                // A layer moving between halves copies its whole field again.
-                fill.gpu.refill();
-                fill.naval.refill();
-                fill.mode.refill();
+                // A layer moving between halves, or into or out of them, copies its whole field
+                // again; one standing in the same half keeps what that half holds.
+                let (was, now) = (holders(fill.channels), holders(channels));
+                let moved = |layer: Held| was.map(|held| held == layer) != now.map(|held| held == layer);
+                if moved(Held::Country) {
+                    fill.gpu.refill();
+                }
+                if moved(Held::Naval) {
+                    fill.naval.refill();
+                }
+                if moved(Held::Mode) {
+                    fill.mode.refill();
+                }
                 fill.channels = channels;
             }
             let held = holders(channels);
@@ -1045,6 +1050,106 @@ impl PoliticalGpu {
         )
     }
 
+    /// A layer standing where this submitted one stands: its tables, and buffers and boundary
+    /// masks copied in `encoder`, dispatching through `scratch`. What its textures must already
+    /// hold is this layer's field, so a first update redraws only what differs from it.
+    fn resumed(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        scratch: Arc<Scratch>,
+    ) -> io::Result<Self> {
+        let rw = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+        let uniform = buffer(
+            device,
+            "political params",
+            bytemuck::bytes_of(&self.params),
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        )?;
+        let mapping_buffer = buffer(
+            device,
+            "political region of province",
+            bytemuck::cast_slice(&self.mapping),
+            rw,
+        )?;
+        let region_buffer = zero_buffer(device, "political regions", self.region_buffer.size(), rw)?;
+        shader_pipeline::gpu::stats::write_buffer(queue, &region_buffer, 0, bytemuck::cast_slice(&self.regions));
+        let alpha_buffer = zero_buffer(device, "political exact alpha", self.alpha_buffer.size(), rw)?;
+        if !self.alpha.is_empty() {
+            shader_pipeline::gpu::stats::write_buffer(queue, &alpha_buffer, 0, &self.alpha);
+        }
+        let cells = zero_buffer(
+            device,
+            "political boundary masks",
+            self.cells.size(),
+            rw | wgpu::BufferUsages::COPY_SRC,
+        )?;
+        encoder.copy_buffer_to_buffer(&self.cells, 0, &cells, 0, self.cells.size());
+        let dirty_buffer = zero_buffer(device, "political dirty cells", self.dirty_buffer.size(), rw)?;
+        let indirect = buffer(
+            device,
+            "political dispatch",
+            &[0; 12],
+            wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+        )?;
+        let group = bind(
+            device,
+            &self.kernel.layout,
+            [
+                &uniform,
+                &self.ids,
+                &mapping_buffer,
+                &region_buffer,
+                &alpha_buffer,
+                &cells,
+                &scratch.distances,
+                &scratch.output,
+                &dirty_buffer,
+            ],
+        );
+        Ok(Self {
+            params: self.params,
+            uniform,
+            ids: self.ids.clone(),
+            provinces: Arc::clone(&self.provinces),
+            mapping: self.mapping.clone(),
+            members: self.members.clone(),
+            member_at: self.member_at.clone(),
+            source_keys: self.source_keys.clone(),
+            mapping_buffer,
+            keys: self.keys.clone(),
+            free: self.free.clone(),
+            areas: self.areas.clone(),
+            thickness: self.thickness.clone(),
+            regions: self.regions.clone(),
+            region_buffer,
+            alpha: self.alpha.clone(),
+            alpha_buffer,
+            alpha_stride: self.alpha_stride,
+            capacity: self.capacity,
+            alpha_keys: self.alpha_keys.clone(),
+            alpha_users: self.alpha_users.clone(),
+            alpha_free: self.alpha_free.clone(),
+            alpha_slots: self.alpha_slots,
+            cells,
+            scratch,
+            dirty_buffer,
+            indirect,
+            dirty: vec![false; self.dirty.len()],
+            marked: Vec::new(),
+            copies: Vec::new(),
+            group,
+            kernel: Arc::clone(&self.kernel),
+            field: self.field,
+            kind: self.kind,
+            initialized: true,
+            pending: false,
+            recorded: false,
+            dispatched_cells: 0,
+        })
+    }
+
     fn new_shared(
         device: &wgpu::Device,
         map: ProvinceMap<'_>,
@@ -1185,7 +1290,7 @@ impl PoliticalGpu {
             device,
             "political boundary masks",
             cell_count as u64 * 36,
-            rw,
+            rw | wgpu::BufferUsages::COPY_SRC,
         )?;
         let scratch = match scratch {
             Some(scratch) => scratch,

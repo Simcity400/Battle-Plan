@@ -967,13 +967,18 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
     let (width, height) = (272, 128);
     let harness = fallback.harness(width, height);
     let field = FieldDefines::TEST;
-    let (base, ids, _strategic) = grid_fixture(&harness, width, height, &field);
+    let (base, ids, strategic) = grid_fixture(&harness, width, height, &field);
     let columns = width / GRID_CELL;
     let map = ProvinceMap {
         width,
         height,
         ids: &ids,
     };
+    let navy = |_| field.navy_neutral;
+    let mut naval_layer = Layer::new(LayerKind::Fixed(field.strategic_thickness), &strategic, &navy, &field);
+    naval_layer.region_opacity = 0;
+    naval_layer.no_region_color = field.navy_neutral;
+    let naval = gradient::build_layer(&map, &naval_layer).unwrap();
     let tables = country_tables;
     let halves = (0..=columns * (height / GRID_CELL))
         .map(|id| if id % columns < columns / 2 { 1 } else { 2 })
@@ -1004,23 +1009,41 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
         harness.queue.submit([encoder.finish()]);
         first.into_iter().chain(second).for_each(Encoded::submitted);
     };
-    for (first, second) in [
+    for (round, (first, second)) in [
         (tables(halves), tables(other)),
         (tables(changed), tables(moved)),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         a.show(&harness.device, &harness.queue, &first).unwrap();
         b.show(&harness.device, &harness.queue, &second).unwrap();
+        // A new state's sea field is the warm strategic one: with no naval attributes, its
+        // first fill redraws none of it.
+        if round == 0 {
+            for view in [&a, &b] {
+                assert_eq!(view.shown.as_ref().unwrap().lock().naval.dispatched_cells, 0);
+            }
+        }
         both(&a, &b);
         for (view, regions, label) in [(&a, &first, "a"), (&b, &second, "b")] {
-            let (dispatched, actual, _) = harness.view(view);
+            let (dispatched, actual, sea) = harness.view(view);
             assert!(!dispatched);
             compare(
                 &expect(regions),
                 &actual,
                 &format!("shared scratch, view {label}"),
             );
+            compare(&naval, &sea, &format!("shared scratch, view {label}'s sea"));
         }
     }
+    // A new state first shown in a mode whose channels keep the sea in its half (strategic air:
+    // the sea, then nothing) starts from the warm field too: its first fill redraws none of it.
+    let air = Draw { channels: [Source::Strategic, Source::Empty], strategic: None, country: None, layer: None, second: None, political: [0.0; 2] };
+    let in_air = Arc::new(Regions { mode: Some(Arc::new(air)), ..(*tables(vec![3; (columns * (height / GRID_CELL) + 1) as usize])).clone() });
+    let mut c = new_view();
+    c.show(&harness.device, &harness.queue, &in_air).unwrap();
+    assert_eq!(c.shown.as_ref().unwrap().lock().naval.dispatched_cells, 0, "the sea stood in its half: nothing to redraw");
     let fill = a.shown.as_ref().unwrap().lock();
     assert!(fill.gpu.dispatched_cells < fill.gpu.dirty.len());
     let rows = fill
