@@ -93,7 +93,7 @@ pub(super) fn link(hour: &Hour<'_>, raw: u32) -> Option<u32> {
     links.slot(u128::from(raw)).and_then(|slot| links.number(LINK_SLOT[0], slot)).map(|slot| slot as u32)
 }
 
-/// The land event drain of this hour read whole: the hours after `from` through the hour.
+/// The land event drain of this hour read whole: since the read at `from`, through the hour.
 pub(super) fn drain(hour: &Hour<'_>) -> Option<(i32, i32)> {
     if !hour.complete(TableId::LandEventCoverage) {
         return None;

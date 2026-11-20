@@ -112,7 +112,7 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
             FactionDoctrine,
         ],
         Family::Market => &[MarketEvents],
-        Family::Hourly | Family::WorldLifetime => &[],
+        Family::Hourly | Family::CommandBatch | Family::WorldLifetime => &[],
     }
 }
 
@@ -150,6 +150,7 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
             .map(|site| site.rva)
             .collect(),
         Family::Hourly => vec![cgame_state::HOURLY_UPDATE_RVA],
+        Family::CommandBatch => vec![cgame_state::COMMAND_BATCH_RVA],
         Family::EquipmentDestruction => sites!(equipment_destruction::SITES, s => s.rva),
         Family::Land => [
             land_events::FINALIZE_RVA,

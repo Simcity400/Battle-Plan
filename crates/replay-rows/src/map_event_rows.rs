@@ -530,7 +530,8 @@ value_struct!(MapEvent {
 
 /// The interval since the previous row. `epoch` changes when observation
 /// starts again (attach, world reset, load). The interval covers the game
-/// hours after `from_hour` through `to_hour` and the sequences from
+/// from the read of `from_hour` to the read of `to_hour`, so its events are
+/// stamped `from_hour` through `to_hour`, and the sequences from
 /// `first_sequence` up to `next_sequence`. A row whose `first_sequence` is
 /// the previous row's `next_sequence` in the same epoch continues it; any
 /// other row starts with unknown coverage. Events are in sequence order;

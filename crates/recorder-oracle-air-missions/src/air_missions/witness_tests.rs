@@ -8,8 +8,8 @@ fn set(frame: &mut DecodedFrame, rows: TableRows) {
 }
 
 #[test]
-fn idle_pool_witnesses_match_capture_with_retained_regions_and_registration() {
-    for region in [None, Some(7)] {
+fn every_pool_witness_matches_capture_with_any_mission_region_and_registration() {
+    for (region, mission_mask) in [(None, 0), (Some(7), 0), (Some(7), 1)] {
         for registered in [false, true] {
             let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
             let wing = (1_u64 << 32) | 54;
@@ -20,7 +20,7 @@ fn idle_pool_witnesses_match_capture_with_retained_regions_and_registration() {
                     id: wing,
                     air_base: base,
                     mission_region: region,
-                    mission_mask: 0,
+                    mission_mask,
                     ..Default::default()
                 }]),
             );
@@ -66,7 +66,7 @@ fn idle_pool_witnesses_match_capture_with_retained_regions_and_registration() {
             assert_eq!(
                 report.differences.len(),
                 1,
-                "a saved idle base needs its witness"
+                "a saved pool base needs its witness"
             );
             set(
                 &mut frame,

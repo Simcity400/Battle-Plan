@@ -409,7 +409,7 @@ fn unit_scale_capture() {
 
 /// The division inputs walked by one job against the same census walked in
 /// [`crate::division_census::parts_for`] parts on as many threads and
-/// joined in slot order, as the hourly callback splits it. Prints the median
+/// joined in slot order, as the capture splits it. Prints the median
 /// wall time of each (the parted one includes spawning its threads, which
 /// the pool's running workers do not pay) and checks the joined census
 /// equals the serial one.

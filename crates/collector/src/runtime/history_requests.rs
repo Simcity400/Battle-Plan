@@ -195,11 +195,11 @@ pub(super) struct HistoryWorker {
     thread_id: u32,
 }
 impl HistoryWorker {
-    /// With `refresh`, this thread also accepts `recorder refresh` requests.
+    /// With `refresh`, this thread also accepts `recorder refresh` requests, calling it for each.
     pub(super) fn start(
         session: PathBuf,
         replay_directory: PathBuf,
-        refresh: Option<engine_allocation::SharedBox<crate::sampling::Shared>>,
+        refresh: Option<fn()>,
     ) -> io::Result<(Self, SpoolHistory)> {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -237,10 +237,10 @@ impl HistoryWorker {
                     ) {
                         crate::allocation::observe(&error);
                     }
-                    if let Some(shared) = &refresh {
+                    if let Some(accept) = refresh {
                         // Refresh polling belonged to the spool's status phase.
                         let _status = crate::allocation::enter(crate::allocation::Phase::Status);
-                        if let Err(error) = refresh_requests.poll(&session, &shared.refresh_next) {
+                        if let Err(error) = refresh_requests.poll(&session, accept) {
                             crate::allocation::observe(&error);
                             remote.mailbox.lock().unwrap().refresh_failed = true;
                         }
@@ -1099,15 +1099,19 @@ mod tests {
         let requests = root.join(REFRESH_REQUESTS);
         // Requests the worker cannot read reach the spool's status warning.
         fs::write(&requests, "not a folder").unwrap();
-        let shared = engine_allocation::shared(crate::sampling::Shared::new(0, 0, 1)).unwrap();
-        let (mut worker, handoff) =
-            HistoryWorker::start(root.clone(), root.clone(), Some(shared.clone())).unwrap();
+        static ACCEPTED: AtomicU32 = AtomicU32::new(0);
+        let (mut worker, handoff) = HistoryWorker::start(
+            root.clone(),
+            root.clone(),
+            Some(|| _ = ACCEPTED.fetch_add(1, Ordering::SeqCst)),
+        )
+        .unwrap();
         let started = Instant::now();
         while !handoff.take_refresh_failure() {
             assert!(started.elapsed() < crate::TEST_HANG_GUARD);
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(!shared.refresh_next.load(Ordering::Acquire));
+        assert_eq!(ACCEPTED.load(Ordering::SeqCst), 0);
         fs::remove_file(&requests).unwrap();
         fs::create_dir(&requests).unwrap();
         let request = requests.join("token-9.request");
@@ -1119,7 +1123,7 @@ mod tests {
             assert!(started.elapsed() < crate::TEST_HANG_GUARD);
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
+        assert_eq!(ACCEPTED.load(Ordering::SeqCst), 1);
         assert_eq!(
             fs::read_to_string(requests.join("token-9.ack")).unwrap(),
             "token-9"

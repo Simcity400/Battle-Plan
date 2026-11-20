@@ -274,7 +274,7 @@ fn gather_fuel(
 /// The AirBaseRegistrations cadence audit puts FUEL_DEMAND_RAW in the hourly
 /// strategic-air worker stage; air_base_mutations documents its task-group join.
 /// engine_fuel::fuel_awards places FUEL_ALLOCATED_RAW in the serial pre-boundary
-/// country pass. Both phases are quiescent while the hourly callback is parked;
+/// country pass. Both phases are quiescent while a capture reads;
 /// these sources do not establish an exhaustive demand-updater caller set.
 /// A failed value never withholds its readable sibling.
 fn update_fuel(memory: &impl Memory, pointer: usize) -> ContainerFuel {

@@ -20187,6 +20187,7 @@ pub(crate) static KEYS: &[Key] = &[
     Key { rva: 0x1f6b6e0, name: "politics_sites::PoliticsDaily", kind: Kind::Code(2316) },
     Key { rva: 0x22b8b30, name: "cgui::CONSTRUCTOR_RVA", kind: Kind::Code(2331) },
     Key { rva: 0x22c4847, name: "command_inputs", kind: Kind::Code(2332) },
+    Key { rva: 0x22c6480, name: "cgame_state::COMMAND_BATCH_RVA", kind: Kind::Code(2333) },
     Key { rva: 0x22c64a4, name: "command_inputs", kind: Kind::Code(2333) },
     Key { rva: 0x22c6d07, name: "command_inputs", kind: Kind::Code(2333) },
     Key { rva: 0x253ded0, name: "cpdx_lexer::ADD_DYNAMIC_TOKEN_RVA", kind: Kind::Code(2340) },

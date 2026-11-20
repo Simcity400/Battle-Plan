@@ -11,6 +11,8 @@ pub trait Value: Default + Clone + std::fmt::Debug + PartialEq + Eq {
         Ok(self.clone())
     }
     fn read(memory: &impl Memory, address: usize, prefetched: bool) -> Result<Self, &'static str>;
+    /// A value holding exactly `bytes`, copied out of memory earlier.
+    fn from_image(bytes: &[u8]) -> Result<Self, &'static str>;
     fn read_prepared(&mut self, memory: &impl Memory, address: usize) -> Result<(), &'static str> {
         *self = Self::read(memory, address, false)?;
         Ok(())
@@ -42,6 +44,16 @@ impl<const N: usize> Value for msvc_string::Text<N> {
             msvc_string::read_text(memory, address)
         }
         .ok_or("string invalid or outside fixed buffer")
+    }
+    fn from_image(bytes: &[u8]) -> Result<Self, &'static str> {
+        let mut value = Self::default();
+        value
+            .bytes
+            .get_mut(..bytes.len())
+            .ok_or("string invalid or outside fixed buffer")?
+            .copy_from_slice(bytes);
+        value.len = bytes.len();
+        Ok(value)
     }
     fn from_layout(
         memory: &impl Memory,
@@ -195,6 +207,12 @@ impl Value for Owned {
     }
     fn read(memory: &impl Memory, address: usize, prefetched: bool) -> Result<Self, &'static str> {
         Self::read_with_policy::<true>(memory, address, prefetched)
+    }
+    fn from_image(bytes: &[u8]) -> Result<Self, &'static str> {
+        Ok(Self {
+            bytes: crate::allocation::copy_vec(bytes).map_err(|_| "string allocation failed")?,
+            len: bytes.len(),
+        })
     }
     fn read_prepared(&mut self, memory: &impl Memory, address: usize) -> Result<(), &'static str> {
         let descriptor = msvc_string::Descriptor::read(memory, address)?;

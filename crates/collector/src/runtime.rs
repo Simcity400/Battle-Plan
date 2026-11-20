@@ -815,6 +815,9 @@ fn run(
                 installation_message(format!("hourly hook construction failed: {cause}"))
             },
         )?;
+    let mut batch_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::command_batch::Hooks::new(&memory, base)
+    })?;
     let mut portrait_hooks = FamilyHooks::construct(base, || unsafe {
         crate::portrait_changes::Hooks::new(&memory, base)
     })?;
@@ -1271,6 +1274,7 @@ fn run(
         relay,
         trampoline,
     ];
+    ranges.extend(batch_hooks.executable_ranges());
     ranges.extend(portrait_hooks.executable_ranges());
     ranges.extend(advisor_hooks.executable_ranges());
     ranges.extend(relation_hooks.executable_ranges());
@@ -1379,7 +1383,7 @@ fn run(
     let (mut history_worker, history_handoff) = HistoryWorker::start(
         config.output_dir.clone(),
         config.replay_dir.clone(),
-        Some(shared.clone()),
+        Some(crate::capture_point::settle_next),
     )
     .map_err(|e| error_reason(e, "history worker could not start"))?;
     owned_workers.push(history_worker.thread_id());
@@ -1454,6 +1458,9 @@ fn run(
         std::thread::yield_now();
     }
     owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
+    // Without its thread every capture holds the game.
+    let mut capture_thread = crate::capture_point::Thread::start(BACKGROUND_STACK_BYTES).ok();
+    owned_workers.extend(capture_thread.as_ref().map(|thread| thread.id()));
     crate::hook_failures::workers_started();
     progress.step("workers_started", None);
     // The sampler starts paused: hook publication below suspends the process,
@@ -1627,6 +1634,7 @@ fn run(
                     ("nuclear_strikes", &mut || nuclear_hooks.set_enabled(true)),
                     ("market_changes", &mut || market_hooks.set_enabled(true)),
                     ("map_events", &mut || map_event_hooks.set_enabled(true)),
+                    ("command_batch", &mut || batch_hooks.set_enabled(true)),
                     // Last: no hour is admitted before every family has reported.
                     ("hourly", &mut || {
                         hook.set_enabled(true).map_err(installation_message)
@@ -1692,7 +1700,11 @@ fn run(
         installation_error = Some(error);
     }
     if installation_error.is_none() && !crate::allocation::failed() {
+        // Admitted first: a capture a batch starts beside the game is never refused for want of it.
         HOURLY_ADMISSION.open();
+        crate::capture_point::set_beside(
+            capture_thread.is_some() && crate::command_batch::enabled(),
+        );
         progress.step("ready", None);
         ready.set();
     } else {
@@ -1757,7 +1769,7 @@ fn run(
                     let _ = fs::write(dll_path.with_file_name("collector.error.txt"), error);
                 }
                 std::mem::forget((
-                    $workers, hook, portrait_hooks, advisor_hooks, relation_hooks,
+                    $workers, capture_thread, hook, batch_hooks, portrait_hooks, advisor_hooks, relation_hooks,
                     history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, orders_group_hooks, membership_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, province_combat_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
                     air_loss_hooks, bombing_hooks, nuclear_hooks, market_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
                     construction_hooks, experience_hooks, command_hooks, event_feed_hooks, world_hooks,
@@ -1789,6 +1801,10 @@ fn run(
     if !restored[RestoreFamily::Hourly as usize] {
         shared.recording.store(false, Ordering::Release);
     }
+    // No hour ends any more: the one still unread is read at the next command batch's return,
+    // which a paused game still runs every frame.
+    let drained = crate::capture_point::drain(Instant::now() + FINAL_HOUR_WAIT);
+    progress.step("final_hour_read", Some(u64::from(drained)));
     // Closing admission, rather than waiting for native originals or mutation
     // observers, proves that no callback can submit another acquisition job.
     HOURLY_ADMISSION.close();
@@ -1799,6 +1815,20 @@ fn run(
             installation_error.or(Some(reason)),
             (spool, status_writer)
         );
+    }
+    // No capture runs or can start: the capture thread ends, and no writer waits for it.
+    if let Some(thread) = capture_thread.as_mut() {
+        thread.stop();
+        // As for the sampler: Windows may reuse an exited thread's id.
+        let id = thread.id();
+        owned_workers.retain(|worker| *worker != id);
+    }
+    // Hours that ended and were never read are recorded as lost, never dropped unseen.
+    let unread = crate::capture_point::take_unread();
+    if unread != 0 {
+        // SAFETY: no capture runs or can start.
+        unsafe { sampling::record_lost(&shared, unread) };
+        progress.step("unread_hours_lost", Some(u64::from(unread)));
     }
     progress.step("acquisitions_quiet", None);
     // Keep mutation observation intact until the last acquisition has finished.
@@ -1819,6 +1849,7 @@ fn run(
             RestoreFamily::Land => land_hooks
                 .set_enabled(false)
                 .map_err(|_| "land event hook restoration failed"),
+            RestoreFamily::CommandBatch => batch_hooks.set_enabled(false),
             RestoreFamily::Portrait => portrait_hooks.set_enabled(false),
             RestoreFamily::Opinion => opinion_hooks.set_enabled(false),
             RestoreFamily::Construction => construction_hooks.set_enabled(false),
@@ -2151,6 +2182,7 @@ fn run(
     hooks.release(
         (
             hook,
+            batch_hooks,
             portrait_hooks,
             advisor_hooks,
             relation_hooks,
@@ -2297,6 +2329,10 @@ impl RestoreFamily {
             Self::Land => (
                 crate::land_events::active() != 0,
                 "land event callbacks did not quiesce; collector retained",
+            ),
+            Self::CommandBatch => (
+                crate::command_batch::ACTIVE.load(Ordering::SeqCst) != 0,
+                "command batch callbacks did not quiesce; collector retained",
             ),
             Self::Portrait => (
                 crate::portrait_changes::ACTIVE.load(Ordering::SeqCst) != 0,
@@ -2549,6 +2585,7 @@ impl RestoreFamily {
         matches!(
             self,
             Self::Portrait
+                | Self::CommandBatch
                 | Self::Opinion
                 | Self::Advisor
                 | Self::Relation
@@ -2661,6 +2698,7 @@ pub(crate) fn hook_patch_families() -> impl Iterator<Item = &'static str> {
         RestoreFamily::FactionGoals => "faction_goals",
         RestoreFamily::FactionCompanions => "faction_companions",
         RestoreFamily::Market => "market_changes",
+        RestoreFamily::CommandBatch => "command_batch",
         RestoreFamily::WorldLifetime => "world_lifetime",
     })
 }
@@ -2997,6 +3035,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     let base = status!({
         "worker_panic": crate::worker_panic::first(),
         "hook_timing": crate::hook_timing::status(),
+        "capture": crate::capture_point::status(),
         "equipment_destruction": crate::equipment_destruction::status(),
         "sample_boundary": sampling::SAMPLE_BOUNDARY.name(),
         "order_membership_signals": crate::order_membership_changes::status(),
@@ -3140,6 +3179,8 @@ pub(crate) fn observers_active() -> bool {
 }
 
 const DETACH_BUDGET: Duration = Duration::from_secs(5);
+/// Detach waits this long for the last ended hour to be read; it is recorded as lost after.
+const FINAL_HOUR_WAIT: Duration = Duration::from_secs(1);
 
 fn observer_detach_refusal(
     elapsed: Duration,
@@ -5902,15 +5943,16 @@ const SPOOL_IDLE_WAIT: Duration = Duration::from_millis(10);
 /// Between the passes the spool requests after each hour: the registry's growth cadence.
 const SIZING_IDLE_WAIT: Duration = RegistryWatch::INTERVAL;
 
-/// `recorder refresh` asks for one full-refresh hour: every scheduled table,
-/// including daily, static and sliced ones, is read at the next hourly sample.
-/// Each request is a `<token>.request` file of its own in the session's
-/// [`REFRESH_REQUESTS`] folder, answered by `<token>.ack`, so requests made at
-/// once never replace or remove one another. The history worker turns it into
-/// `refresh_next` and acknowledges it, so a stalled file system never holds the
-/// spool thread that returns capture buffers. Observation remains continuous;
-/// `force_next` is reserved for capture recovery. Nothing is sent to the game.
-/// Oracles use this to compare every table at a chosen hour.
+/// `recorder refresh` asks for one full-refresh hour: the first hour whose update
+/// returns after the request is accepted is read, every scheduled table including
+/// daily, static and sliced ones, when the following hourly update is entered
+/// ([`crate::capture_point::settle_next`]). Each request is a `<token>.request`
+/// file of its own in the session's [`REFRESH_REQUESTS`] folder, answered by
+/// `<token>.ack` once accepted, so requests made at once never replace or remove
+/// one another. The history worker accepts and acknowledges it, so a stalled file
+/// system never holds the spool thread that returns capture buffers. Observation
+/// remains continuous; `force_next` is reserved for capture recovery. Nothing is
+/// sent to the game. Oracles use this to compare every table at a chosen hour.
 #[derive(Default)]
 struct RefreshRequests {
     /// Accepted requests still on disk, and whether each was acknowledged. One whose
@@ -5921,7 +5963,8 @@ struct RefreshRequests {
 pub(crate) const REFRESH_REQUESTS: &str = "refresh-requests";
 
 impl RefreshRequests {
-    fn poll(&mut self, session: &Path, refresh_next: &AtomicBool) -> io::Result<()> {
+    /// `accept` runs once for each new request, before it is acknowledged.
+    fn poll(&mut self, session: &Path, mut accept: impl FnMut()) -> io::Result<()> {
         let directory = session.join(REFRESH_REQUESTS);
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
@@ -5947,7 +5990,7 @@ impl RefreshRequests {
             let at = match self.accepted.iter().position(|(known, _)| *known == token) {
                 Some(at) => at,
                 None => {
-                    refresh_next.store(true, Ordering::Release);
+                    accept();
                     REFRESH_ACCEPTED.fetch_add(1, Ordering::Relaxed);
                     self.accepted.push((token.clone(), false));
                     self.accepted.len() - 1
@@ -8153,21 +8196,21 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         let request = |token: &str| folder.join(format!("{token}.request"));
         let ack = |token: &str| fs::read_to_string(folder.join(format!("{token}.ack"))).unwrap();
-        let shared = sampling::Shared::new(0, 0, 1);
+        let accepted = std::cell::Cell::new(0);
+        let accept = || accepted.set(accepted.get() + 1);
+        let taken = || accepted.replace(0);
         let mut requests = RefreshRequests::default();
-        // No request: nothing forced.
-        requests.poll(&session, &shared.refresh_next).unwrap();
-        assert!(!shared.force_next.load(Ordering::Acquire));
-        assert!(!shared.refresh_next.load(Ordering::Acquire));
+        // No request: nothing asked for.
+        requests.poll(&session, accept).unwrap();
+        assert_eq!(taken(), 0);
         fs::write(request("token-7"), "token-7").unwrap();
-        requests.poll(&session, &shared.refresh_next).unwrap();
-        assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
-        assert!(!shared.force_next.load(Ordering::Acquire));
+        requests.poll(&session, accept).unwrap();
+        assert_eq!(taken(), 1);
         assert_eq!(ack("token-7"), "token-7");
         assert!(!request("token-7").exists());
         // Consumed: a later poll forces nothing more.
-        requests.poll(&session, &shared.refresh_next).unwrap();
-        assert!(!shared.refresh_next.load(Ordering::Acquire));
+        requests.poll(&session, accept).unwrap();
+        assert_eq!(taken(), 0);
         // A request that could not be removed is accepted once, not every hour.
         fs::write(request("token-8"), "token-8").unwrap();
         let held = OpenOptions::new()
@@ -8175,24 +8218,22 @@ mod tests {
             .share_mode(FILE_SHARE_READ)
             .open(request("token-8"))
             .unwrap();
-        assert!(requests.poll(&session, &shared.refresh_next).is_err());
-        assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
+        assert!(requests.poll(&session, accept).is_err());
+        assert_eq!(taken(), 1);
         assert_eq!(ack("token-8"), "token-8");
-        requests.poll(&session, &shared.refresh_next).unwrap();
-        assert!(!shared.refresh_next.load(Ordering::Acquire));
+        requests.poll(&session, accept).unwrap();
+        assert_eq!(taken(), 0);
         drop(held);
         // Its requester withdraws it once answered.
         fs::remove_file(request("token-8")).unwrap();
-        requests.poll(&session, &shared.refresh_next).unwrap();
+        requests.poll(&session, accept).unwrap();
         assert!(requests.accepted.is_empty());
         // Requests made at once are each acknowledged; none replaces or removes another.
         fs::write(request("token-9"), "token-9").unwrap();
         fs::write(request("token-10"), "token-10").unwrap();
         fs::write(folder.join("token-11.tmp"), "token-11").unwrap();
-        requests.poll(&session, &shared.refresh_next).unwrap();
-        shared.force_next.store(true, Ordering::Release);
-        assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
-        assert!(shared.force_next.swap(false, Ordering::AcqRel));
+        requests.poll(&session, accept).unwrap();
+        assert_eq!(taken(), 2);
         for token in ["token-9", "token-10"] {
             assert_eq!(ack(token), token);
             assert!(!request(token).exists());
@@ -8208,19 +8249,21 @@ mod tests {
         let _ = fs::remove_dir_all(&session);
         let folder = session.join(REFRESH_REQUESTS);
         fs::create_dir_all(&folder).unwrap();
-        let shared = sampling::Shared::new(0, 0, 1);
+        let accepted = std::cell::Cell::new(0);
+        let accept = || accepted.set(accepted.get() + 1);
+        let taken = || accepted.replace(0);
         let mut requests = RefreshRequests::default();
         // A folder in the acknowledgement's place: writing it fails.
         fs::create_dir(folder.join("token-9.ack")).unwrap();
         fs::write(folder.join("token-9.request"), "token-9").unwrap();
-        assert!(requests.poll(&session, &shared.refresh_next).is_err());
-        assert!(shared.refresh_next.swap(false, Ordering::AcqRel));
-        assert!(requests.poll(&session, &shared.refresh_next).is_err());
-        assert!(!shared.refresh_next.load(Ordering::Acquire));
+        assert!(requests.poll(&session, accept).is_err());
+        assert_eq!(taken(), 1);
+        assert!(requests.poll(&session, accept).is_err());
+        assert_eq!(taken(), 0);
         // Once the obstacle clears, the same request is acknowledged and not armed again.
         fs::remove_dir(folder.join("token-9.ack")).unwrap();
-        requests.poll(&session, &shared.refresh_next).unwrap();
-        assert!(!shared.refresh_next.load(Ordering::Acquire));
+        requests.poll(&session, accept).unwrap();
+        assert_eq!(taken(), 0);
         assert_eq!(
             fs::read_to_string(folder.join("token-9.ack")).unwrap(),
             "token-9"
@@ -9100,7 +9143,12 @@ mod tests {
         add_decode_status(&mut status);
         assert_eq!(status["state"], "recording");
         assert_eq!(status["hours"], 3);
-        assert_eq!(status["sample_boundary"], "end_of_hour");
+        assert_eq!(status["sample_boundary"], "after_hourly_update");
         assert!(status["hook_timing"]["families"]["hourly"].is_object());
+        assert!(
+            status["capture"]["placement"]
+                .as_str()
+                .is_some_and(|placement| placement.starts_with("holding the game"))
+        );
     }
 }

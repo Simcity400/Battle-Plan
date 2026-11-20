@@ -86,6 +86,10 @@ pub struct Hook {
     tap: Option<TapSafety>,
     name: &'static str,
     publication_busy: AtomicBool,
+    /// A function no thread may be inside when this hook is enabled.
+    guard: Option<Range<usize>>,
+    /// The last publication was held because a thread may have been inside it.
+    guard_held: bool,
 }
 
 impl Hook {
@@ -187,6 +191,8 @@ impl Hook {
                     tap: None,
                     name: "native hook",
                     publication_busy: AtomicBool::new(false),
+                    guard: None,
+                    guard_held: false,
                 })
             })();
             if result.is_err() {
@@ -288,6 +294,30 @@ impl Hook {
 
     pub fn is_enabled(&self) -> bool {
         self.enabled || self.needs_flush
+    }
+
+    /// Enable this hook only while no suspended thread may be inside `function`: none runs in it
+    /// and none holds a return into it on its live stack. `None` publishes without that check.
+    pub fn guard(&mut self, function: Option<Range<usize>>) {
+        self.guard = function;
+    }
+
+    pub fn guarded(&self) -> bool {
+        self.guard.is_some()
+    }
+
+    /// Whether the last publication was held because a thread may have been inside the guarded
+    /// function.
+    pub fn guard_held(&self) -> bool {
+        self.guard_held
+    }
+
+    fn guard_busy(&mut self, enabled: bool, threads: &mut Threads) -> Result<bool, u32> {
+        let Some(function) = self.guard.clone().filter(|_| enabled && !self.enabled) else {
+            return Ok(false);
+        };
+        self.guard_held = threads.may_run(&function)?;
+        Ok(self.guard_held)
     }
 
     /// A static family/site label retained for publication diagnostics.
@@ -460,6 +490,12 @@ impl Hook {
                 }
                 return Ok(false);
             }
+            if hook
+                .guard_busy(enabled, threads)
+                .inspect_err(|_| hook.diagnostic_failure = true)?
+            {
+                return Ok(false);
+            }
             if !hook.bytes_match(hook.enabled) {
                 hook.diagnostic_failure = true;
                 *snapshot_refusal = unowned;
@@ -613,6 +649,7 @@ impl Hook {
         }
         for hook in hooks.iter_mut() {
             hook.diagnostic_failure = false;
+            hook.guard_held = false;
         }
         if TRACK_BUSY {
             for hook in hooks.iter() {
@@ -1091,11 +1128,76 @@ fn thread_exited(handle: HANDLE) -> bool {
     (unsafe { WaitForSingleObject(handle, 0) }) == 0
 }
 
+/// Whether a thread at `ip` with these live stack words may be inside `function`: it runs there,
+/// or a word lies there. The entry is never a return address, only a stored pointer.
+fn may_be_inside(ip: usize, words: &[usize], function: &Range<usize>) -> bool {
+    function.contains(&ip)
+        || words
+            .iter()
+            .any(|&word| word != function.start && function.contains(&word))
+}
+
+/// Whether `holds` accepts some words of the live stack from a suspended thread's `sp` to the end
+/// of the committed allocation holding it; `None` when part of that cannot be read. A system
+/// query and plain reads only: nothing a suspended thread can hold a lock in.
+fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Option<bool> {
+    const WORD: usize = size_of::<usize>();
+    const READABLE: u32 = PAGE_READONLY
+        | PAGE_READWRITE
+        | PAGE_WRITECOPY
+        | PAGE_EXECUTE_READ
+        | PAGE_EXECUTE_READWRITE
+        | PAGE_EXECUTE_WRITECOPY;
+    let mut at = sp.checked_next_multiple_of(WORD)?;
+    let mut allocation = None;
+    let mut buffer = [0_usize; 512];
+    loop {
+        let mut region: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe {
+            VirtualQuery(
+                at as *const c_void,
+                &mut region,
+                size_of::<MEMORY_BASIC_INFORMATION>(),
+            )
+        } == 0
+        {
+            return allocation.map(|_| false);
+        }
+        if *allocation.get_or_insert(region.AllocationBase) != region.AllocationBase {
+            return Some(false);
+        }
+        if region.State != MEM_COMMIT
+            || region.Protect & READABLE == 0
+            || region.Protect & (PAGE_GUARD | PAGE_NOACCESS) != 0
+        {
+            return None;
+        }
+        let end = (region.BaseAddress as usize).checked_add(region.RegionSize)?;
+        while at < end {
+            let count = ((end - at) / WORD).min(buffer.len());
+            if count == 0 {
+                return None;
+            }
+            for (index, word) in buffer[..count].iter_mut().enumerate() {
+                // SAFETY: committed, readable memory of a suspended thread's stack; nothing frees
+                // it while that thread is held.
+                *word = unsafe { ptr::read_volatile((at as *const usize).add(index)) };
+            }
+            if holds(&buffer[..count]) {
+                return Some(true);
+            }
+            at += count * WORD;
+        }
+    }
+}
+
 struct Thread {
     id: u32,
     handle: HANDLE,
     suspended: bool,
     ip: Option<usize>,
+    /// The stack pointer read with `ip`.
+    sp: usize,
     exited: bool,
     /// The priority to restore before it resumes, once raised for synchronization.
     priority: Option<i32>,
@@ -1154,6 +1256,7 @@ impl Threads {
                     handle,
                     suspended: false,
                     ip: None,
+                    sp: 0,
                     exited: false,
                     priority: None,
                 });
@@ -1352,6 +1455,7 @@ impl Threads {
                         handle,
                         suspended: false,
                         ip: None,
+                        sp: 0,
                         exited: false,
                         priority: None,
                     });
@@ -1426,6 +1530,7 @@ impl Threads {
                     return Err(error);
                 }
                 thread.ip = Some(self.context.0.Rip as usize);
+                thread.sp = self.context.0.Rsp as usize;
             }
             Ok(())
         })();
@@ -1463,6 +1568,32 @@ impl Threads {
             |ip| ranges.iter().position(|range| range.contains(&ip)),
             thread_exited,
         )
+    }
+
+    /// Whether a suspended thread may be inside `function`: it runs there, or a word of its live
+    /// stack lies there. A stack that cannot be read counts as inside.
+    fn may_run(&mut self, function: &Range<usize>) -> Result<bool, u32> {
+        if !self.snapshot_valid && self.threads.iter().any(|thread| thread.suspended) {
+            return Err(ERROR_RETRY);
+        }
+        for thread in self.threads.iter_mut().filter(|thread| thread.suspended) {
+            let Some(ip) = thread.ip else {
+                continue;
+            };
+            let inside = live_stack_holds(thread.sp, |words| may_be_inside(ip, words, function))
+                .unwrap_or(true);
+            if !inside {
+                continue;
+            }
+            if thread_exited(thread.handle) {
+                thread.ip = None;
+                thread.exited = true;
+                self.diagnostics.resolved();
+                continue;
+            }
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn find_collision<T>(
@@ -1767,6 +1898,38 @@ mod safety_tests {
     }
 
     #[test]
+    fn a_thread_running_in_or_returning_into_the_guarded_function_holds_publication() {
+        let function = 0x1000..0x2000;
+        assert!(!may_be_inside(0x3000, &[0x0fff, 0x2000, 0x3000], &function));
+        assert!(may_be_inside(0x1000, &[], &function));
+        assert!(may_be_inside(0x1fff, &[], &function));
+        assert!(may_be_inside(0x3000, &[0x0fff, 0x1234], &function));
+        // A stored pointer to the entry is no return into the function.
+        assert!(!may_be_inside(0x3000, &[0x1000], &function));
+    }
+
+    #[test]
+    fn the_live_stack_is_read_from_the_stack_pointer_to_its_end() {
+        const FUNCTION: Range<usize> = 0xffff_8000_0000_0000..0xffff_8000_0001_0000;
+        #[inline(never)]
+        fn deeper() -> Option<bool> {
+            let sp = std::hint::black_box(0_usize);
+            live_stack_holds(&sp as *const usize as usize, |words| {
+                may_be_inside(0, words, &FUNCTION)
+            })
+        }
+        assert_eq!(std::thread::spawn(deeper).join().unwrap(), Some(false));
+        let above = std::thread::spawn(|| {
+            let marker = [FUNCTION.start + 0x10; 4];
+            std::hint::black_box(&marker);
+            let found = deeper();
+            std::hint::black_box(&marker);
+            found
+        });
+        assert_eq!(above.join().unwrap(), Some(true));
+    }
+
+    #[test]
     fn suspension_refuses_repeated_newcomer_churn_within_prepared_capacity() {
         let mut threads = snapshot_tests::fixture(1, &[Ok(1)]);
         let limit = threads.threads.capacity() + 1;
@@ -1783,6 +1946,7 @@ mod safety_tests {
                     handle: (rounds + 1) as HANDLE,
                     suspended: false,
                     ip: None,
+                    sp: 0,
                     exited: false,
                     priority: None,
                 };
@@ -1907,6 +2071,7 @@ mod safety_tests {
                     handle: handle as HANDLE,
                     suspended: handle != 2,
                     ip: None,
+                    sp: 0,
                     exited: false,
                     priority: None,
                 })
@@ -1959,6 +2124,7 @@ mod thread_resume_policy_tests {
                     handle: label as HANDLE,
                     suspended: true,
                     ip: None,
+                    sp: 0,
                     exited: false,
                     priority: None,
                 })

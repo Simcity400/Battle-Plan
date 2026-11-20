@@ -1645,10 +1645,10 @@ fn lost_ranges_preserve_reload_origins_and_never_bridge_discontinuities() {
 }
 
 #[test]
-fn end_of_hour_losses_record_the_entry_hour_as_the_lost_and_loaded_hour() {
+fn losses_after_the_update_record_the_hour_it_ended_as_the_lost_and_loaded_hour() {
     assert_eq!(
         SAMPLE_BOUNDARY,
-        replay_data::identity::SampleBoundary::EndOfHour
+        replay_data::identity::SampleBoundary::AfterHourlyUpdate
     );
     let mut batch = LossBatch::default();
     batch.push(Some(clock(20, 3).borrowed()));
@@ -2632,6 +2632,7 @@ fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
                 entry_ticks: 0,
                 dispatched: 0,
                 phases: HourPhases::default(),
+                full: false,
             },
         );
     }
@@ -2664,16 +2665,21 @@ fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
     sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
     sources::boundary(Some(clock(41, 7).with_campaign_id(0)));
     let shared = Shared::new(0, 0, 1);
-    let mut forwarded = false;
+    let acquired = std::cell::Cell::new(false);
+    let mut update_returned_first = false;
     assert!(!unsafe {
         synthetic_callback(
             &shared,
             Some(clock(41, 7).borrowed()),
-            || panic!("synthetic acquisition failure"),
-            || forwarded = true,
+            || {
+                acquired.set(true);
+                panic!("synthetic acquisition failure")
+            },
+            || update_returned_first = !acquired.get(),
         )
     });
-    assert!(forwarded);
+    assert!(update_returned_first);
+    assert!(acquired.get());
     assert_eq!(shared.acquisition_panics.load(Ordering::Acquire), 1);
     assert_eq!(
         sources::drain(&mut vec![Entry::default(); 1]).unwrap_err(),

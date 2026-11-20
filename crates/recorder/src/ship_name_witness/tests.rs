@@ -595,11 +595,11 @@ fn ship_name_witness_heap_faults_and_first_nul_suffix_differences_remain_failure
 }
 
 #[test]
-fn ship_name_witness_refuses_unavailable_replay_census_unverified_content_and_other_boundary() {
+fn ship_name_witness_refuses_unavailable_replay_census_and_unverified_content() {
     let rows = vec![row(1, b"observed")];
     let replay = recording(rows.clone(), true);
     let report = report(&rows, &replay);
-    for variant in 0..3 {
+    for variant in 0..2 {
         let mut records = crate::test_support::allocation_records();
         for record in &mut records {
             match record {
@@ -612,9 +612,6 @@ fn ship_name_witness_refuses_unavailable_replay_census_unverified_content_and_ot
                             memory: Roster::default(),
                         }
                     };
-                    if variant == 2 {
-                        session.sample_boundary = SampleBoundary::AfterHourlyUpdate;
-                    }
                 }
                 Record::Frame(frame) => {
                     frame.metrics.table_ns[TableId::Ships.index()] = 1;

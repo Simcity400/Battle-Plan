@@ -38,9 +38,12 @@ fn a_battle_is_chosen_by_a_country_on_either_side_at_its_read_and_never_left_out
 
 #[test]
 fn a_battle_id_names_its_branch_combat_and_start_and_a_roster_counts_each_unit_once() {
-    assert_eq!(parse_id("1:156968169766974:60864620", 1), Some((156_968_169_766_974, 60_864_620)));
+    assert_eq!(parse_id("1:156968169766974:60864620", 1), Some((156_968_169_766_974, 60_864_620, None)));
+    assert_eq!(parse_id("1:5:7:8", 1), Some((5, 7, Some(8))), "a result-only row names the hour it was written");
     assert_eq!(parse_id("2:5:7", 1), None);
     assert_eq!(parse_id("1:5", 1), None);
+    assert_eq!(parse_id("1:5:7:x", 1), None);
+    assert_eq!(parse_id("1:5:7:8:9", 1), None);
     let roster: Vec<u8> = [7u64, 9, 7].iter().flat_map(|handle| handle.to_le_bytes()).collect();
     assert_eq!(distinct(&roster), Some(2));
     assert_eq!(distinct(&roster[..5]), None);
@@ -64,4 +67,49 @@ fn a_window_cuts_runs_to_itself_and_carries_the_loss_read_standing_at_its_first_
     assert_eq!(carried(&hours, 130, 131), 3..5);
     assert_eq!(carried(&hours, 10, 50), 0..0);
     assert_eq!(carried(&[], 10, 50), 0..0);
+}
+
+/// Two result-only rows of one combat and end hour, written in consecutive hours under one table
+/// key, are two ends; neither is the battle of that combat starting at that hour.
+#[test]
+fn every_written_end_row_is_an_end_of_its_own() {
+    let row = |id: i64| Some(vec![Cell::Number(i64::from(LandBattleEndRow::RESULT_ONLY)), Cell::Number(10), Cell::Number(id)].into_boxed_slice());
+    let battle = 7_u128 << 33 | 10;
+    let alone = battle | 1 << 32;
+    let step = |hour, cells| lanes::Step { hour, cells };
+    let ended = lanes::History {
+        columns: vec![0, 1, 18],
+        to: 13,
+        texts: Vec::new(),
+        keys: vec![(battle, vec![step(12, row(59))]), (alone, vec![step(10, row(60)), step(11, row(61)), step(12, None)])],
+    };
+    let found: Vec<(Key, i32, Option<i64>)> = written_ends(&ended).map(|(key, _, hour, cells)| (key, hour, match cells[2] { Cell::Number(id) => Some(id), _ => None })).collect();
+    assert_eq!(found, [((7, 10, None), 12, Some(59)), ((7, 10, Some(10)), 10, Some(60)), ((7, 10, Some(11)), 11, Some(61))]);
+}
+
+/// A result without runs is listed from the hour its row was written, by the window holding that
+/// hour, never by the window before, whichever hour its own result names.
+#[test]
+fn a_result_without_runs_is_listed_from_the_hour_it_was_written() {
+    let history = |runs: Vec<LandBattleRun>, settled: Option<i32>| LandBattleHistory {
+        id: "1:7:10:11".into(),
+        province_id: 3,
+        start: BattleMoment { hour: 10, bound: BattleBound::Exact },
+        end: None,
+        end_unknown_hour: None,
+        counter_base: 0,
+        prior_peak: None,
+        prior_side_peaks: [None, None],
+        runs,
+        losses: Vec::new(),
+        result: Some(LandBattleResultRead { hour: 10, duration: 2, winner: BattleWinner::Side { side: 0 }, countries: [Vec::new(), Vec::new()], countries_unknown: [true, true] }),
+        settled_hour: settled,
+    };
+    let shown = |history: Option<LandBattleHistory>| history.map(|history| history.runs.iter().map(|run| (run.first_hour, run.last_hour, run.roster_unknown)).collect::<Vec<_>>());
+    assert_eq!(shown(listed(history(Vec::new(), Some(11)), 5)), Some(vec![(11, 11, true)]), "a window holding both hours lists it at the hour written");
+    assert_eq!(shown(listed(history(Vec::new(), Some(11)), 11)), Some(vec![(11, 11, true)]), "the window beginning at the hour written lists it");
+    assert_eq!(shown(listed(history(Vec::new(), Some(11)), 12)), None, "a later window does not");
+    assert_eq!(shown(listed(history(Vec::new(), None), 5)), None, "nothing settled is nothing listed");
+    let run = LandBattleRun { first_hour: 8, last_hour: 9, counts: [1, 1], roster_unknown: false, countries: [Vec::new(), Vec::new()], countries_unknown: [true, true], duration: 3 };
+    assert_eq!(shown(listed(history(vec![run], Some(11)), 5)), Some(vec![(8, 9, false)]), "a battle with runs keeps them");
 }

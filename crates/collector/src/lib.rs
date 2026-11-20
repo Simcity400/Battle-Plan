@@ -43,6 +43,8 @@ mod faction_goal_changes;
 mod faction_goals;
 mod faction_pools;
 mod tick_gate;
+mod capture_point;
+mod command_batch;
 pub(crate) use collector_observers::advisor_pool_changes;
 pub(crate) use collector_observers::air_base_carry_changes;
 mod air_base_changes;

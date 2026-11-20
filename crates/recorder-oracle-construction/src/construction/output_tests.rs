@@ -572,6 +572,25 @@ fn railway_overlap_in_either_read_excludes_a_shared_progress_gain() {
         );
     }
 }
+/// Idle lines can reach full progress from segment progress no queued line paid for.
+#[test]
+fn railway_progress_without_a_spend_advance_is_not_this_lines_output() {
+    let mut frames = [frame(100, 0, 0, 1, true), frame(124, 0, 1_000_000, 1, true)];
+    let report = checked(&frames);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["ConstructionLineOutput railways"], 0);
+    assert_eq!(
+        report
+            .limitations
+            .keys()
+            .filter(|r| r.contains("no spend advance"))
+            .count(),
+        1
+    );
+    // A spend advance that recorded nothing is still a defect.
+    output(&mut frames[1]).ticks = 1;
+    assert_eq!(checked(&frames).differences.len(), 1);
+}
 #[test]
 fn railway_with_only_a_shared_province_or_repeated_own_segment_is_compared() {
     let mut frames = [frame(100, 0, 0, 1, true), frame(124, 200, 200, 1, true)];

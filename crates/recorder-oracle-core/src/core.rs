@@ -4,9 +4,7 @@ use std::{
 };
 
 use installed_content_save::Save;
-use replay_data::{
-    identity::SampleBoundary, rows::CountryRow, rows::StateRow, rows::TableId, rows::tables,
-};
+use replay_data::{rows::CountryRow, rows::StateRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
 use super::{
@@ -720,10 +718,13 @@ pub fn compare_players(
 /// Prints the tracked engine counters on both sides. A changed counter witnesses
 /// intervening work; equality does not prove the absence of same-hour writes or
 /// untracked allocations. The witness never waives a field difference.
+///
+/// The frame compared with a save is taken to be one a refresh settled: read as the
+/// update after the save's hour is entered, it follows the save in either sample
+/// boundary. The recording does not mark such frames, so the report says so.
 pub fn compare_boundary_counters(
     frame: &DecodedFrame,
     save: &Save,
-    boundary: SampleBoundary,
     report: &mut Report,
 ) -> io::Result<()> {
     let [clock] = frame.complete::<tables::Clock>()? else {
@@ -826,49 +827,28 @@ pub fn compare_boundary_counters(
     let verdict = if unreadable == recorded.len() {
         "no counter was recorded at the sampled tick, so the boundary is not measured; this comparison establishes nothing about when the save was written".to_string()
     } else if advanced.is_empty() && regressed.is_empty() {
-        match boundary {
-            SampleBoundary::AfterHourlyUpdate => format!(
-                "all {} recorded counters equal the save header; this does not prove that the save matches the sampled instant: same-hour writes and untracked allocations remain possible",
-                recorded.len() - unreadable
-            ),
-            SampleBoundary::EndOfHour => format!(
-                "all {} recorded counters equal the save header; this does not prove that the save matches the end-of-hour sample: writes after the save and untracked allocations remain possible",
-                recorded.len() - unreadable
-            ),
-        }
+        format!(
+            "all {} recorded counters equal the save header; this does not prove that the save matches the compared frame: writes after the save and untracked allocations remain possible",
+            recorded.len() - unreadable
+        )
     } else {
-        // After the update the save follows the sample, so a counter rises in
-        // the save; at the end of the hour the sample follows the save, so a
-        // counter rises in the recording. The other direction needs a reload
-        // or a 32-bit wrap. Neither is ever turned into a difference.
-        let (later, earlier, later_text, earlier_text) = match boundary {
-            SampleBoundary::AfterHourlyUpdate => (
-                &advanced,
-                &regressed,
-                "the save was written after further engine work",
-                "are lower in the save",
-            ),
-            SampleBoundary::EndOfHour => (
-                &regressed,
-                &advanced,
-                "engine work ran after the save and before the end-of-hour sample",
-                "are higher in the save than at the end-of-hour sample",
-            ),
-        };
-        let mut verdict = if later.is_empty() {
-            String::from("no counter moved in the direction this boundary allows")
+        // The settled frame follows the save, so a counter rises in the recording.
+        // The other direction needs a reload, a 32-bit wrap or a frame read
+        // before the save. Neither is ever turned into a difference.
+        let mut verdict = if regressed.is_empty() {
+            String::from("no counter moved in the direction a frame read after the save allows")
         } else {
             format!(
-                "{later_text}: {} counter(s) moved ({})",
-                later.len(),
-                later.join(", ")
+                "engine work ran after the save and before the compared frame was read: {} counter(s) moved ({})",
+                regressed.len(),
+                regressed.join(", ")
             )
         };
-        if !earlier.is_empty() {
+        if !advanced.is_empty() {
             verdict.push_str(&format!(
-                "; {} counter(s) {earlier_text} ({}), which a monotonic counter cannot do without a reload or a 32-bit wrap, so neither direction is treated as a difference",
-                earlier.len(),
-                earlier.join(", ")
+                "; {} counter(s) are higher in the save than in the compared frame ({}), which a monotonic counter cannot do without a reload, a 32-bit wrap or a frame read before the save (one no refresh settled), so neither direction is treated as a difference",
+                advanced.len(),
+                advanced.join(", ")
             ));
         }
         verdict
@@ -880,6 +860,10 @@ pub fn compare_boundary_counters(
         );
     }
     report.boundary_verdict = Some(verdict);
+    report.limitation(
+        "the recording does not mark which frames a refresh settled; the compared frame is taken to be one, read after the save as the next hourly update is entered, as the smoke arranges. A frame read straight after its hour's update precedes the commands run before the save, so its counters may be lower than the save's",
+        "boundary counters",
+    );
     report.limitation(
         "the boundary witness compares tracked engine counters between the sampled tick and the save; it never waives a difference, and equality does not exclude same-hour writes or untracked allocations",
         "boundary counters",

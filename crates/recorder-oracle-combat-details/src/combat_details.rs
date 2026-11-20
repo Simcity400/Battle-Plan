@@ -894,7 +894,7 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         }
     }
     r.compared("LandCombatDivisions", rows.len());
-    r.limitation("Only participant order/full handles, province, template, committed/reserve role, the reserve speed share's presence on exactly the saved reserves and the naming operands are compared; the share's value (composed from live movement-speed operands and SLOWEST_SPEED) and the stat block's initiative have no save counterpart; hit points, organisation and entrenchment are the Divisions and DivisionStatus oracle's. The naming type, order word, ordered and programmatic flags and a player's custom name are compared against the saved division_name block, and the selected group key against the saved division_names_group of the member's template (its witnessed reference, a deleted one holding none, else the template a load rebinds); a programmatic override is compared where the game shows it (a type-zero member whose group is null) and is otherwise generated text the game does not show, never recorded. Direction latch words, exile operands and the stat block's equipment category mask (`categories`) are live combat inputs with no text-save counterpart (the per-unit stat block is rebuilt, not saved) and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
+    r.limitation("Only participant order/full handles, province, template, committed/reserve role, the reserve speed share's presence on exactly the saved reserves and the naming operands are compared; the share's value (composed from live movement-speed operands and SLOWEST_SPEED) and the stat block's initiative have no save counterpart; hit points, organisation and entrenchment are the Divisions and DivisionStatus oracle's. The naming type, order word, ordered and programmatic flags and a player's custom name are compared against the saved division_name block, and the selected group key against the saved division_names_group of the member's template (its witnessed reference, a deleted one holding none, else the template a load rebinds, or another of its country's or none under a named limitation); a programmatic override is compared where the game shows it (a type-zero member whose group is null) and is otherwise generated text the game does not show, never recorded. Direction latch words, exile operands and the stat block's equipment category mask (`categories`) are live combat inputs with no text-save counterpart (the per-unit stat block is rebuilt, not saved) and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
     Ok(())
 }
 
@@ -972,6 +972,8 @@ impl<'a> NameTemplates<'a> {
     }
 }
 
+const UNWITNESSED_MEMBER_TEMPLATE: &str = "deployment copies its line's name member into the new division, template reference included, so a live member can name an older template of its country, or one deleted since (no group); the save does not store that reference and a load rebinds it to the division's template. Without the name_template_witness, a recorded group that differs from that template's is only checked to be no group or the group of a saved template of the same country";
+
 /// The group a type-zero member's generator resolves, as the save writes a
 /// template's `division_names_group` (only for a set group): `Some(None)`
 /// for no group, `None` when a difference or limitation was reported instead.
@@ -979,6 +981,7 @@ fn member_group<'t>(
     r: &mut Report,
     label: &str,
     witnessed: Option<u64>,
+    recorded: &[u8],
     unit: &save::Division,
     templates: &NameTemplates<'t>,
 ) -> Option<Option<&'t [u8]>> {
@@ -989,15 +992,35 @@ fn member_group<'t>(
         let Some(template) = rebound else {
             return Some(None);
         };
-        let saved = templates.saved.get(&template);
-        if saved.is_none() {
+        let Some(saved) = templates.saved.get(&template) else {
             r.difference(
                 format!("{label} name template {template}"),
                 "saved division_templates entry",
                 "absent",
             );
+            return None;
+        };
+        let group = saved.names_group.as_deref();
+        if group.unwrap_or_default() == recorded {
+            return Some(group);
         }
-        return saved.map(|saved| saved.names_group.as_deref());
+        let held = if recorded.is_empty() {
+            Some(None)
+        } else {
+            templates
+                .saved
+                .values()
+                .filter(|other| other.country == saved.country)
+                .find_map(|other| other.names_group.as_deref().filter(|&key| key == recorded))
+                .map(Some)
+        };
+        return match held {
+            Some(held) => {
+                r.limitation(UNWITNESSED_MEMBER_TEMPLATE, label);
+                Some(held)
+            }
+            None => Some(group),
+        };
     };
     if reference == 0 {
         return Some(None);
@@ -1094,7 +1117,7 @@ pub fn naming<'a>(
     // Only a type-zero member's generator resolves its template's group: to
     // decide whether a programmatic override shows, and for its group key.
     let group = if row.kind == 0 && (row.programmatic != 0 || row.custom.is_empty()) {
-        match member_group(r, label, row.template, unit, templates) {
+        match member_group(r, label, row.template, row.group, unit, templates) {
             Some(group) => group,
             None => return,
         }

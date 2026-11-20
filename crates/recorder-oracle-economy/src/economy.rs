@@ -1,6 +1,9 @@
 //! Exact native economy comparisons with explicit save coverage limits.
 
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 mod market;
 
 use installed_content_save::{Save, economy};
@@ -56,14 +59,15 @@ pub fn compare(
     all_complete &= report.attempt("economy LogisticsEquipment", |report| {
         compare_logistics(frame, &saved.economy, links, tokens, report)
     });
+    let owners = state_owners(saved);
     all_complete &= report.attempt("economy HubMotorization", |report| {
-        compare_motorization(frame, &saved.economy, links, report)
+        compare_motorization(frame, &saved.economy, &owners, links, report)
     });
     all_complete &= report.attempt("economy DisruptedSupply", |report| {
-        compare_disrupted(frame, &saved.economy, links, report)
+        compare_disrupted(frame, &saved.economy, &owners, links, report)
     });
     all_complete &= report.attempt("economy ForeignHomebases", |report| {
-        compare_foreign(frame, &saved.economy, links, report)
+        compare_foreign(frame, &saved.economy, &owners, links, report)
     });
     // These tables still require complete shared decoding, even where the
     // text save has no proven direct representation of their raw operands.
@@ -568,9 +572,30 @@ fn compare_exchanges(
     Ok(())
 }
 
+const STATELESS_SUPPLY: &str = "the supply writer saves a country's supply block only while the country owns a state, so the live supply rows of a country that owns none have no save counterpart";
+
+/// The tags that own a state in the save.
+fn state_owners(saved: &Save) -> BTreeSet<&[u8]> {
+    saved
+        .states
+        .values()
+        .filter_map(|state| state.owner.as_deref())
+        .collect()
+}
+
+/// Whether the save left out `tag`'s supply block because it owns no state.
+fn unsaved_supply(
+    systems: &BTreeMap<Vec<u8>, economy::Supply>,
+    owners: &BTreeSet<&[u8]>,
+    tag: &[u8],
+) -> bool {
+    !systems.contains_key(tag) && !owners.contains(tag)
+}
+
 fn compare_motorization(
     frame: &DecodedFrame,
     saved: &economy::Pack,
+    owners: &BTreeSet<&[u8]>,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -639,14 +664,15 @@ fn compare_motorization(
         }
     }
     for ((tag, node, entry), actual) in &actual_settings {
-        report.difference(
-            format!(
-                "{}.motorization[{node}/{entry}]",
-                String::from_utf8_lossy(tag)
-            ),
-            *actual,
-            "absent",
+        let label = format!(
+            "{}.motorization[{node}/{entry}]",
+            String::from_utf8_lossy(tag)
         );
+        if unsaved_supply(systems, owners, tag) {
+            report.limitation(STATELESS_SUPPLY, label);
+            continue;
+        }
+        report.difference(label, *actual, "absent");
     }
     report.compared("HubMotorization", setting_count);
     report.limitation("hub rows capture explicit actor settings, not derived effective motorization or disabled-for-allies; save country tags cannot certify equivalent raw actor alias bits", "HubMotorization");
@@ -656,6 +682,7 @@ fn compare_motorization(
 fn compare_disrupted(
     frame: &DecodedFrame,
     saved: &economy::Pack,
+    owners: &BTreeSet<&[u8]>,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -710,14 +737,15 @@ fn compare_disrupted(
         }
     }
     for (tag, province, node_type) in actual_disrupted.keys() {
-        report.difference(
-            format!(
-                "{}.disrupted_supply[{province}/{node_type}]",
-                String::from_utf8_lossy(tag)
-            ),
-            "present",
-            "absent",
+        let label = format!(
+            "{}.disrupted_supply[{province}/{node_type}]",
+            String::from_utf8_lossy(tag)
         );
+        if unsaved_supply(systems, owners, tag) {
+            report.limitation(STATELESS_SUPPLY, label);
+            continue;
+        }
+        report.difference(label, "present", "absent");
     }
     report.compared("DisruptedSupply", disrupted_count);
     Ok(())
@@ -726,6 +754,7 @@ fn compare_disrupted(
 fn compare_foreign(
     frame: &DecodedFrame,
     saved: &economy::Pack,
+    owners: &BTreeSet<&[u8]>,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -789,14 +818,15 @@ fn compare_foreign(
         }
     }
     for (tag, ordinal) in actual_foreign.keys() {
-        report.difference(
-            format!(
-                "{}.foreign_homebase[{ordinal}]",
-                String::from_utf8_lossy(tag)
-            ),
-            "present",
-            "absent",
+        let label = format!(
+            "{}.foreign_homebase[{ordinal}]",
+            String::from_utf8_lossy(tag)
         );
+        if unsaved_supply(systems, owners, tag) {
+            report.limitation(STATELESS_SUPPLY, label);
+            continue;
+        }
+        report.difference(label, "present", "absent");
     }
     report.compared("ForeignHomebases", foreign_count);
     report.limitation("foreign homebase serializer omits added_penalty; source is serialized under add and compares through its first NUL; the other captured fields compare literally, including native array order and duplicate provinces", "ForeignHomebases");
@@ -1375,7 +1405,14 @@ mod tests {
                 level: 0,
             }]));
         let mut report = Report::default();
-        compare_motorization(&frame, &saved, &links, &mut report).unwrap();
+        compare_motorization(
+            &frame,
+            &saved,
+            &BTreeSet::from([b"SIK".as_slice()]),
+            &links,
+            &mut report,
+        )
+        .unwrap();
         assert_eq!(report.differences.len(), 1);
         let difference = &report.differences[0];
         assert!(difference.contains("SIK.motorization[1/0]"));
@@ -1383,6 +1420,74 @@ mod tests {
         assert!(difference.contains("actor: 11"));
         assert!(difference.contains("level: 0"));
         assert_eq!(report.compared_tables["HubMotorization"], 0);
+    }
+
+    /// The supply writer leaves out the block of a country that owns no state, so its live rows
+    /// are not differences; a state owner's missing block still is.
+    #[test]
+    fn supply_rows_of_a_country_without_states_have_no_save_counterpart() {
+        let saved = economy::parse(
+            &parser::parse(b"countries={} supply_system_2={countries={GER={settings={}}}}")
+                .unwrap()
+                .items,
+        )
+        .unwrap();
+        let countries = [(11, "SND"), (12, "GER"), (13, "ITA")].map(|(id, tag)| CountryRow {
+            id,
+            tag: tag.as_bytes().to_vec(),
+            ..Default::default()
+        });
+        let links = countries
+            .iter()
+            .map(|row| (row.id, row))
+            .collect::<BTreeMap<_, _>>();
+        let owners = BTreeSet::from([b"GER".as_slice(), b"ITA".as_slice()]);
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 2,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index]))
+            })
+            .map(Into::into),
+        };
+        let row = |owner| HubMotorizationRow {
+            owner,
+            actor: 12,
+            node_index: 0,
+            map_entry_index: 0,
+            province: 1069,
+            node_type: 2,
+            level: 2,
+        };
+        *frame.tables[TableId::HubMotorization.index()] =
+            TableView::Complete(TableRows::HubMotorization(vec![row(11), row(13)]));
+        *frame.tables[TableId::DisruptedSupply.index()] =
+            TableView::Complete(TableRows::DisruptedSupply(vec![
+                replay_data::rows::DisruptedSupplyRow {
+                    country: 11,
+                    province: 1069,
+                    node_type: 2,
+                    value: 1,
+                },
+            ]));
+        let mut report = Report::default();
+        compare_motorization(&frame, &saved, &owners, &links, &mut report).unwrap();
+        compare_disrupted(&frame, &saved, &owners, &links, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("ITA.motorization[0/0]"));
+        let unsaved = &report.limitations[STATELESS_SUPPLY];
+        assert_eq!(unsaved.len(), 2);
+        assert!(
+            unsaved
+                .iter()
+                .any(|subject| subject == "SND.motorization[0/0]")
+        );
+        assert!(
+            unsaved
+                .iter()
+                .any(|subject| subject == "SND.disrupted_supply[1069/2]")
+        );
     }
 
     #[test]

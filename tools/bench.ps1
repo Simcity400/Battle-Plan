@@ -483,7 +483,8 @@ function Read-Status([string]$path) {
     return $null
 }
 # Collector cost per game hour between two status snapshots. Game hours are the
-# hourly hook's exact calls; hook rows are each family's estimated collector time.
+# hourly hook's exact calls; hook rows are each family's estimated collector time
+# and its calls that waited at the capture gate.
 function Get-HookCost($before, $after) {
     if (-not $before.hook_timing -or -not $after.hook_timing) { return $null }
     $hours = [double]$after.hook_timing.families.hourly.calls - [double]$before.hook_timing.families.hourly.calls
@@ -504,8 +505,21 @@ function Get-HookCost($before, $after) {
             detour_ms_per_hour = $(if ($null -ne $detour) { [math]::Round($detour / $hours / 1e6, 3) } else { $null })
             approximate_net_detour_ms_per_hour = $(if ($null -ne $net) { [math]::Round($net / $hours / 1e6, 3) } else { $null })
             original_ms_per_hour = $(if ($null -ne $original) { [math]::Round($original / $hours / 1e6, 3) } else { $null })
+            capture_waits_per_hour = $(if ($null -ne $a.capture_waits -and $null -ne $b.capture_waits) { [math]::Round((& $delta $a.capture_waits $b.capture_waits) / $hours, 2) } else { $null })
         }
     }
+    # A game thread's wait at the capture gate, while a capture reads beside the game, lies
+    # outside every family's detour; a capture held on the game thread lies inside the hourly one.
+    $capture = $(if ($before.capture -and $after.capture) { $after.capture } else { $null })
+    $perHour = { param($a, $b, $scale) $d = & $delta $a $b; if ($null -ne $d) { [math]::Round($d / $hours / $scale, 3) } else { $null } }
+    $gateWait = $(if ($capture) { & $perHour $capture.writer_wait_ns $before.capture.writer_wait_ns 1e6 } else { $null })
+    $captures = $(if ($capture) { [ordered]@{
+        placement = $capture.placement
+        held_per_hour = & $perHour $capture.held $before.capture.held 1
+        beside_per_hour = & $perHour $capture.beside $before.capture.beside 1
+        beside_wall_ms_per_hour = & $perHour $capture.beside_ns $before.capture.beside_ns 1e6
+        gate_wait_ms_per_hour = $gateWait
+    } } else { $null })
     $threads = [ordered]@{}
     $cpuBefore = $before.collector_thread_cpu; $cpuAfter = $after.collector_thread_cpu
     if ($cpuBefore -and $cpuAfter) {
@@ -517,10 +531,14 @@ function Get-HookCost($before, $after) {
         }
     }
     $total = $(if ($cpuBefore -and $cpuAfter) { & $delta $cpuAfter.collector_total.cycle_ns $cpuBefore.collector_total.cycle_ns } else { $null })
+    # collector_total sums every registered thread, the capture thread among them once it has a role.
+    $captureThread = @(@($cpuAfter.threads) | Where-Object { $_.role -eq 'capture' }).Count -gt 0
     $process = $(if ($cpuBefore.process -and $cpuAfter.process) { & $delta $cpuAfter.process.cycle_ns $cpuBefore.process.cycle_ns } else { $null })
     # In-run direct cost: the game thread's time in the recorder (the hourly
-    # pause and every in-tick hook) against the game's own hourly update, both
-    # timed in this run, so contention that slows both leaves the ratio steady.
+    # pause, every in-tick hook and each wait at the capture gate) against the
+    # game's own hourly update, both timed in this run, so contention that slows
+    # both leaves the ratio steady. The gate waits of hooks the update reaches
+    # are also inside its original time, as their detours are.
     # It leaves out indirect costs (the game's own code running slower beside
     # the recorder), which only a paired no-recorder screen measures.
     $native = $(if ($families.Contains('hourly')) { $families['hourly'].original_ms_per_hour } else { $null })
@@ -529,6 +547,7 @@ function Get-HookCost($before, $after) {
         if ($null -ne $entry.Value.detour_ms_per_hour) { $direct += [double]$entry.Value.detour_ms_per_hour }
         if ($null -ne $entry.Value.approximate_net_detour_ms_per_hour) { $directNet = [double]$directNet + [double]$entry.Value.approximate_net_detour_ms_per_hour }
     }
+    if ($null -ne $gateWait) { $direct += [double]$gateWait; if ($null -ne $directNet) { $directNet += [double]$gateWait } }
     return [ordered]@{
         game_hours = $hours
         direct_ms_per_hour = [math]::Round($direct, 3)
@@ -538,8 +557,11 @@ function Get-HookCost($before, $after) {
         native_ms_per_hour = $native
         direct_fraction_of_native = $(if ($native) { [math]::Round($direct / [double]$native, 4) } else { $null })
         hook_ms_per_hour = $families
+        captures = $captures
         thread_cpu_ms_per_hour = $threads
         collector_cpu_ms_per_hour = $(if ($null -ne $total) { [math]::Round($total / $hours / 1e6, 3) } else { $null })
+        # False for a collector whose capture thread has no CPU role: its beside captures are then not in collector_cpu_ms_per_hour.
+        collector_cpu_includes_capture_thread = $(if ($null -ne $total) { $captureThread } else { $null })
         process_cpu_ms_per_hour = $(if ($null -ne $process) { [math]::Round($process / $hours / 1e6, 3) } else { $null })
     }
 }
@@ -1233,17 +1255,18 @@ $table = foreach ($r in $rows) {
     # Live rows hold ordered dictionaries and summarized rows objects; dot access reads both.
     $cost = if ($r.PSObject.Properties['status_delta'] -and $r.status_delta) { $r.status_delta.collector_cost } else { $null }
     $directText = if ($cost -and $null -ne $cost.direct_fraction_of_native) { '{0:n2} ({1:p1})' -f $cost.direct_ms_per_hour, [double]$cost.direct_fraction_of_native } else { '' }
-    $cpuText = if ($cost -and $null -ne $cost.collector_cpu_ms_per_hour) { '{0:n1}' -f $cost.collector_cpu_ms_per_hour } else { '' }
+    $cpuText = if ($cost -and $null -ne $cost.collector_cpu_ms_per_hour) { '{0:n1}{1}' -f $cost.collector_cpu_ms_per_hour, $(if ($cost.collector_cpu_includes_capture_thread -eq $false) { ' (without capture thread)' } else { '' }) } else { '' }
+    $captureText = if ($cost -and $cost.captures) { '{0}/{1}' -f $cost.captures.held_per_hour, $cost.captures.beside_per_hour } else { '' }
     $err = if ($r.PSObject.Properties['error']) { $r.error } else { '' }
-    "| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} | {14} |" -f $r.name, $r.repeat, $(if ($r.PSObject.Properties['hours_per_s']) { $r.hours_per_s } else { '' }), $sameRun, $extraMs, $(if ($r.PSObject.Properties['historical_baseline_fraction'] -and $null -ne $r.historical_baseline_fraction) { ('{0:p1}' -f $r.historical_baseline_fraction) } else { '' }), $deltaCallback, $deltaTick, $directText, $cpuText, $exactText, $(if ($r.PSObject.Properties['elapsed_s']) { $r.elapsed_s } else { '' }), $(if ($r.PSObject.Properties['stop_reason']) { $r.stop_reason } else { '' }), $(if ($r.PSObject.Properties['contaminated_by'] -and $r.contaminated_by.Count) { (@($r.contaminated_by) -join '; ') -replace '\|', '/' } else { '' }), $err
+    "| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} | {14} | {15} |" -f $r.name, $r.repeat, $(if ($r.PSObject.Properties['hours_per_s']) { $r.hours_per_s } else { '' }), $sameRun, $extraMs, $(if ($r.PSObject.Properties['historical_baseline_fraction'] -and $null -ne $r.historical_baseline_fraction) { ('{0:p1}' -f $r.historical_baseline_fraction) } else { '' }), $deltaCallback, $deltaTick, $directText, $cpuText, $captureText, $exactText, $(if ($r.PSObject.Properties['elapsed_s']) { $r.elapsed_s } else { '' }), $(if ($r.PSObject.Properties['stop_reason']) { $r.stop_reason } else { '' }), $(if ($r.PSObject.Properties['contaminated_by'] -and $r.contaminated_by.Count) { (@($r.contaminated_by) -join '; ') -replace '\|', '/' } else { '' }), $err
 }
 $baselineText = if ($sameRunBaseline) { ('same-run no-recorder baseline {0:n3} h/s (mean of {1})' -f $sameRunBaseline, $sameRunRates.Count) } else { 'no same-run baseline' }
 $historicalText = if ($historicalBaselineRate) { "Optional historical reference $historicalBaselineRate h/s; it is not the matched baseline." } else { 'No historical reference supplied.' }
 $md = @("# Benchmark $(Split-Path -Leaf $Out)", '', "Save $($spec.save) (SHA256 $saveSha), screens capped at ${seconds}s or $maxHours game hours at native speed $speed; $baselineText. $historicalText", '',
     'Elapsed time and stop reason are reported per screen. max_hours runs are shorter diagnostic screens, including when requested_seconds is 120. This report does not establish correctness or performance acceptance.', '',
-    'Direct ms/game-hour is the game thread''s time in the recorder (the hourly pause plus in-tick hooks), with its share of the game''s own hourly update timed in the same run: steady under contention, but blind to the game''s own code running slower beside the recorder. Recorder CPU is the collector threads'' cycle time per game hour.', '',
-    '| candidate | rep | h/s | % same-run baseline | extra ms/game-hour | % historical reference | callback own/mean ms | native tick mean ms | direct ms/game-hour (of native) | recorder CPU ms/game-hour | exact callback mean/p50/p95 ms | elapsed s | stop reason | contaminated | error |',
-    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|') + $table
+    'Direct ms/game-hour is the game thread''s time in the recorder (the hourly pause, in-tick hooks, and waits at the capture gate while a capture reads beside the game), with its share of the game''s own hourly update timed in the same run: steady under contention, but blind to the game''s own code running slower beside the recorder. Recorder CPU is the collector threads'' cycle time per game hour, the capture thread''s included where the collector gives it a role. Captures per game hour are counted as held on the game thread and read beside it.', '',
+    '| candidate | rep | h/s | % same-run baseline | extra ms/game-hour | % historical reference | callback own/mean ms | native tick mean ms | direct ms/game-hour (of native) | recorder CPU ms/game-hour | captures held/beside per game-hour | exact callback mean/p50/p95 ms | elapsed s | stop reason | contaminated | error |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|') + $table
 
 # ---- per-candidate summary ---------------------------------------------------
 function Get-Interval($values) {

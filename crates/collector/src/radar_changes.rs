@@ -94,7 +94,7 @@ impl Cache {
 }
 
 /// Runs inside the existing radar worker. Sizing and registry housekeeping
-/// remain here too; the hourly callback gains no scan, allocation or native read.
+/// remain here too; the capture gains no scan, allocation or native read.
 pub(crate) fn with_symbols<R>(
     memory: &impl Memory,
     capacity: usize,

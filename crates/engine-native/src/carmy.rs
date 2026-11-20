@@ -2524,7 +2524,7 @@ impl StatusPacket {
 
     /// AI control from the first observation of each raw owner in this Status
     /// pass. The existing country reader and AiControl headers/counts remain
-    /// valid while the hourly callback parks the game; human-control changes
+    /// valid while the capture holds the game's writers; human-control changes
     /// and loads cannot run before its jobs join. Acquire only at the exercise
     /// gate, never ahead of a prior unit's work. The first error aborts Status,
     /// so no failed observation is retried.

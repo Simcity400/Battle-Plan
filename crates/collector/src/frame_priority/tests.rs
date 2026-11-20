@@ -376,3 +376,21 @@ fn availability_counts_every_published_frame_and_each_claim() {
     assert_eq!(pipeline.free_count(), crate::frame_pool::STEADY * 3);
     assert_eq!(pipeline.pressure(), 0);
 }
+
+#[test]
+fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
+    // (logical processor, core, CPU-set id): two cores with two hyper-threads each.
+    let cores = Cores::from_sets(&[(0, 0, 256), (1, 0, 257), (2, 1, 258), (3, 1, 259)]).unwrap();
+    assert_eq!(away_sets(Some(&cores), Some(0)), Some(&[258, 259][..]));
+    // The game on the second hyper-thread still keeps readers off its sibling.
+    assert_eq!(away_sets(Some(&cores), Some(1)), Some(&[258, 259][..]));
+    assert_eq!(away_sets(Some(&cores), Some(3)), Some(&[256, 257][..]));
+    // An unplaced processor, several groups or an unread topology leave the thread unconfined.
+    assert_eq!(away_sets(Some(&cores), Some(4)), None);
+    assert_eq!(away_sets(Some(&cores), None), None);
+    assert_eq!(away_sets(None, Some(0)), None);
+    // One physical core leaves nowhere else to run.
+    let single = Cores::from_sets(&[(0, 0, 256), (1, 0, 257)]).unwrap();
+    assert_eq!(away_sets(Some(&single), Some(1)), None);
+    assert!(Cores::from_sets(&[]).is_none());
+}

@@ -50,6 +50,10 @@ Before saving, pause for a visual review of dynamic informational notifications.
 The guarded driving actions can dismiss them. A ui-review-approved.json file in Out
 must then contain the exact hour and unobscured=true. Timeout is ten minutes.
 This is a graphical pre-save checkpoint, not a waiver of any correctness check.
+.PARAMETER AllowHeldCaptures
+Accept captures held on the game thread. Without it the smoke fails when the capture status
+shows captures held instead of beside the game, for example because the command-batch hook
+is missing or its publication unproven: the smoke certifies the shipped path.
 .PARAMETER InputShimDir
 Directory holding inputshim.dll and inputshim-inject.exe; supply an existing shim build.
 In background mode Launch attaches the shim, and Click
@@ -60,8 +64,9 @@ Missing binaries are not an error; the driver falls back to the brief foreground
 ShimStatus prints the per-hook call counters and their one-second deltas. ShimMask -Mask <n>
 sets hook_mask (bit per hook, 0x7f enables all) to bisect what the click path depends on.
 .PARAMETER RecordHours
-Live advance in game hours. The smoke requests a full refresh (recorder refresh) for the last
-hour's sample before comparing it with the save.
+Live advance in game hours at top speed. The smoke then requests a full refresh (recorder
+refresh) and steps one hour at speed 1 to the saved hour, whose full sample is taken as the
+next hourly update is entered, and compares that sample with the save.
 .PARAMETER BuildReceipt
 JSON with the current source_commit and exactly three binaries entries
 (name, sha256, bytes) for recorder.exe, collector.dll and viewer.exe. A checkpoint
@@ -129,6 +134,7 @@ param(
     [string]$BinaryDirectory,
     [switch]$Checkpoint,
     [switch]$WaitForUiReview,
+    [switch]$AllowHeldCaptures,
     [string]$Perspective = 'recorded',
     [ValidateRange(120, 10000)][int]$RecordHours = 120,
     [ValidateRange(300, 14400)][int]$TimeoutSeconds = 3600,
@@ -466,6 +472,24 @@ function Invoke-FullSmoke {
             $text | ConvertFrom-Json
         } catch { return $null }
     }
+    # The first status written after $since, read whole: status.json is replaced periodically, so
+    # one read can predate the moment asked for. Throws without one or without its capture counters.
+    function Fresh-Status([DateTime]$since,[string]$what,[int]$seconds=30) {
+        $limit=[DateTime]::UtcNow.AddSeconds($seconds)
+        do {
+            if (-not $script:smokeStatusPath) { $null=Status }
+            $item=if ($script:smokeStatusPath) { Get-Item -LiteralPath $script:smokeStatusPath -ErrorAction SilentlyContinue } else { $null }
+            if ($item -and $item.LastWriteTimeUtc -gt $since) {
+                $status=Status
+                if ($status) {
+                    if ($null -eq $status.capture -or $null -eq $status.capture.held -or $null -eq $status.capture.beside -or $null -eq $status.last_hour -or $null -eq $status.hours) { throw "Status after $what lacks the capture counters." }
+                    return $status
+                }
+            }
+            if ([DateTime]::UtcNow -gt $limit) { throw "No readable status was written after $what." }
+            Start-Sleep -Milliseconds 100
+        } while ($true)
+    }
     function Changed-Pixels([string]$first,[string]$second,[int[]]$box) {
         # Pixels in box (x0,y0,x1,y1) whose channels differ by more than 8.
         Add-Type -AssemblyName System.Drawing
@@ -612,14 +636,14 @@ function Invoke-FullSmoke {
             $clock=Clock
             if ($clock.play_session_started_at -ne $load -or $clock.seed -ne $seed -or $clock.hour -lt $first) { throw 'Unexpected load or campaign change.' }
             if ($live.Elapsed.TotalSeconds -gt $TimeoutSeconds) { throw 'Live recording timed out.' }
-            # Top speed past the minimum hour; the refresh below makes any saved hour a full read.
+            # Top speed past the minimum hour; the step below refreshes and saves the hour after it.
             if ($clock.hour -ge $target) {
                 Pause-Game $true; $target=[int](Clock).hour
                 break
             }
             $status=Status
             if ($status) {
-                if ($status.sample_boundary -ne 'end_of_hour') { throw 'Unexpected sample boundary.' }
+                if ($status.sample_boundary -ne 'after_hourly_update') { throw 'Unexpected sample boundary.' }
                 if ($status.hours -gt 0 -and $status.last_hour-$status.hours+1 -ne $first) { throw 'Unexpected first recorded hour or discontinuity.' }
                 if ($status.dropped_frames -ne 0 -or $status.write_errors -ne 0) { throw 'Recording reported drops or write errors.' }
                 if ($live.Elapsed.TotalSeconds -ge $progressAt) {
@@ -630,7 +654,25 @@ function Invoke-FullSmoke {
             }
             Start-Sleep -Milliseconds 20
         }
-        $live.Stop(); $report.advance_seconds=$live.Elapsed.TotalSeconds; $report.save_hour=$target
+        $live.Stop(); $report.advance_seconds=$live.Elapsed.TotalSeconds; $advanced=$target-$first
+        Stage 'step-to-saved-hour'
+        # Frames sample an hour as its update left it. A refresh makes the next hour's sample wait
+        # for the following update, so that hour is saved here, paused, and sampled by the step
+        # after the save. The paused hour's own sample must be in first, or it would take the wait;
+        # from then the capture counters stand still until that step, or the saved hour was read early.
+        $paused=$target; $since=[DateTime]::UtcNow; $limit=$since.AddSeconds(30)
+        do { $status=Fresh-Status $since 'the pause'; if ($status.last_hour -ge $paused) { break }; if ([DateTime]::UtcNow -gt $limit) { throw 'The paused hour was not posted by the collector.' }; Start-Sleep -Milliseconds 100 } while ($true)
+        $heldBefore=[long]$status.capture.held; $besideBefore=[long]$status.capture.beside
+        if (-not $AllowHeldCaptures -and ($status.capture.placement -ne 'beside the game' -or -not ([string]$status.capture.batch_publication).StartsWith('proven'))) { throw ("Captures are held instead of beside the game: placement '{0}', batch_publication '{1}'. Pass -AllowHeldCaptures if that is expected." -f $status.capture.placement, $status.capture.batch_publication) }
+        Speed-Game 1
+        $null=Run-Tool $recorder @('refresh','--out',$recordRoot) 'refresh' 60
+        Pause-Game $false
+        $limit=[DateTime]::UtcNow.AddSeconds(30)
+        while ((Clock).hour -le $paused) { if ([DateTime]::UtcNow -gt $limit) { throw 'The step to the saved hour did not advance.' }; Start-Sleep -Milliseconds 5 }
+        Pause-Game $true
+        $target=[int](Clock).hour
+        if ($target -ne $paused+1) { throw 'The step to the saved hour overshot one hour.' }
+        $report.save_hour=$target
         $status=Status
         [IO.File]::WriteAllText((Join-Path $output 'before-save-status.json'),($status | ConvertTo-Json -Depth 30),$utf8)
         if ($WaitForUiReview) {
@@ -693,17 +735,20 @@ function Invoke-FullSmoke {
         $statusBeforeStep=Status
         $report.paused_observation=@{hour_before=$before.hour;hour_after=(Clock).hour;samples_before=$status.hours;samples_after=$statusBeforeStep.hours;scope='Observed save/camera interval only; not a universal paused-command proof.'}
         Stage 'end-of-hour-boundary'
-        # Keyframes no longer re-read daily and static tables; ask the collector
-        # to read every scheduled table at this hour's sample so the oracle can
-        # compare them all. This touches only the recorder, never the game.
-        $null=Run-Tool $recorder @('refresh','--out',$recordRoot) 'refresh' 60
+        $status=Fresh-Status ([DateTime]::UtcNow) 'the reference captures'
+        if ([long]$status.capture.held -ne $heldBefore -or [long]$status.capture.beside -ne $besideBefore -or $status.last_hour -ge $target) { throw 'A capture ran while paused: the saved hour may have been sampled before the save.' }
         Pause-Game $false
         $limit=[DateTime]::UtcNow.AddSeconds(30)
         while ((Clock).hour -lt $target+1) { if ([DateTime]::UtcNow -gt $limit) { throw 'The H+1 sampling step did not advance.' }; Start-Sleep -Milliseconds 5 }
         Pause-Game $true
-        $report.after_sampling_clock=Clock
-        $limit=[DateTime]::UtcNow.AddSeconds(30)
-        do { $status=Status; if ($status -and $status.last_hour -ge $target) { break }; if ([DateTime]::UtcNow -gt $limit) { throw 'Saved hour was not posted by the collector.' }; Start-Sleep -Milliseconds 100 } while ($true)
+        $report.after_sampling_clock=Clock; $reached=[int]$report.after_sampling_clock.hour
+        $since=[DateTime]::UtcNow; $limit=$since.AddSeconds(30)
+        do { $status=Fresh-Status $since 'the sampling step'; if ($status.last_hour -ge $reached) { break }; if ([DateTime]::UtcNow -gt $limit) { throw 'Saved hour was not posted by the collector.' }; Start-Sleep -Milliseconds 100 } while ($true)
+        # The saved hour is read holding the game as the next update is entered, each later hour once
+        # the batch that ran its update has returned (straight after its update without a proven batch hook).
+        $heldGrowth=[long]$status.capture.held-$heldBefore; $besideGrowth=[long]$status.capture.beside-$besideBefore
+        $report.saved_hour_capture=@{held=$heldGrowth;beside=$besideGrowth;reached=$reached;placement=$status.capture.placement}
+        if ($heldGrowth -lt 1 -or $heldGrowth+$besideGrowth -ne 1+$reached-$target -or ($status.capture.placement -eq 'beside the game' -and $heldGrowth -ne 1)) { throw 'The saved hour was not read once, holding the game, after the save.' }
         [IO.File]::WriteAllText((Join-Path $output 'boundary-status.json'),($status | ConvertTo-Json -Depth 30),$utf8)
         Stage 'detach-drain-finalize'
         $finalize=[Diagnostics.Stopwatch]::StartNew()
@@ -762,7 +807,7 @@ function Invoke-FullSmoke {
         $finalStatus=Status
         [IO.File]::WriteAllText((Join-Path $output 'final-status.json'),($finalStatus | ConvertTo-Json -Depth 30),$utf8)
         if ($finalStatus.hours -lt $RecordHours -or $finalStatus.dropped_frames -ne 0 -or $finalStatus.write_errors -ne 0) { throw 'Final transport counters failed.' }
-        $report.performance=@{recorded_hours=$finalStatus.hours;advancing_game_hours=$target-$first;advance_seconds=$live.Elapsed.TotalSeconds;advancing_hours_per_second=($target-$first)/$live.Elapsed.TotalSeconds;callback_p50_ms=$finalStatus.callback_work.p50_ns/1e6;callback_p95_ms=$finalStatus.callback_work.p95_ns/1e6;callback_max_ms=$finalStatus.callback_work.max_ns/1e6;pool_bytes=$finalStatus.pool_bytes;spool_bytes=$finalStatus.spool_bytes;scope='One live smoke at top speed. Not a paired baseline or performance acceptance.'}
+        $report.performance=@{recorded_hours=$finalStatus.hours;advancing_game_hours=$advanced;advance_seconds=$live.Elapsed.TotalSeconds;advancing_hours_per_second=$advanced/$live.Elapsed.TotalSeconds;callback_p50_ms=$finalStatus.callback_work.p50_ns/1e6;callback_p95_ms=$finalStatus.callback_work.p95_ns/1e6;callback_max_ms=$finalStatus.callback_work.max_ns/1e6;pool_bytes=$finalStatus.pool_bytes;spool_bytes=$finalStatus.spool_bytes;scope='One live smoke at top speed. Not a paired baseline or performance acceptance.'}
         if ((Get-FileHash $sourceSave -Algorithm SHA256).Hash -cne $report.source_save_sha256) { throw 'Original input save changed.' }
         $report.source_save_unchanged=$true
         $report.passed=$true; Stage 'validations-passed'

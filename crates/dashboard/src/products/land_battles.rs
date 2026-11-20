@@ -133,6 +133,10 @@ pub struct LandBattleHistory {
     pub runs: Vec<LandBattleRun>,
     pub losses: Vec<LandBattleLossRead>,
     pub result: Option<LandBattleResultRead>,
+    /// The hour its end row was written: its end and result are known from then, dated by their own hours.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub settled_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -380,11 +384,29 @@ fn tags_of(names: &Names, slots: &[u32], hour: i32) -> (Vec<String>, bool) {
     (tags, unknown)
 }
 
+/// A battle's key in a reply: its combat and start, and for a result-only row, which has no battle
+/// and is keyed by its end hour, the hour that row was written.
+type Key = (u64, i32, Option<i32>);
+
+/// The reply key of the end row `key` written at `hour`.
+fn end_key(key: u128, hour: i32) -> Key {
+    ((key >> 33) as u64, key as u32 as i32, ((key >> 32) & 1 == 1).then_some(hour))
+}
+
+/// Each end row `ended` holds: its reply key, its table key, the hour it was written and its cells.
+/// An end row lives the hour it was written, so each step with cells is a row of its own; two
+/// result-only rows of one combat and end hour are written in consecutive hours under one table key.
+fn written_ends(ended: &lanes::History) -> impl Iterator<Item = (Key, u128, i32, &[Cell])> + '_ {
+    ended.keys.iter().flat_map(|(key, steps)| steps.iter().filter_map(move |step| step.cells.as_deref().map(|cells| (end_key(*key, step.hour), *key, step.hour, cells))))
+}
+
 /// A battle's identity in the hours read: its combat, start, and what its rows say.
 #[derive(Clone, Debug, Default)]
 struct Battle {
     combat: u64,
     start: i32,
+    /// A result-only row's hour written, its key's third part.
+    result_only: Option<i32>,
     exact: bool,
     counter_base: i32,
     province: Option<u32>,
@@ -399,6 +421,9 @@ struct Battle {
 struct Ended {
     kind: u8,
     end_hour: i32,
+    /// The hour its row was written, from which it is known: `end_hour`, the hour after for a
+    /// result of a command run after a read, or later for an end not known when its census returns.
+    written: i32,
     province: u32,
     last_read: Option<i32>,
     last_duration: Option<i32>,
@@ -418,7 +443,7 @@ struct Ended {
 
 /// Every battle of run `run` live within `from..=to`, by (combat, start); `combat` keeps one
 /// combat's.
-fn live_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<(u64, i32), Battle>) -> io::Result<()> {
+fn live_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<Key, Battle>) -> io::Result<()> {
     let one: Vec<u128> = combat.map(u128::from).into_iter().collect();
     let keys = if one.is_empty() { Keys::All } else { Keys::These(&one) };
     let live = dashboard_query::cost::storage(|| lanes::history(query.replay.recording(), run, TableId::LandBattles, &sorted(&columns.battles), keys, from, to))?;
@@ -428,7 +453,7 @@ fn live_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i
             let Some(cells) = &step.cells else { continue };
             let Some(start) = number(&live, cells, columns.battles[0]).map(|start| start as i32) else { continue };
             let last = steps.get(at + 1).map_or(live.to, |next| next.hour - 1);
-            let battle = out.entry((combat, start)).or_insert_with(|| Battle {
+            let battle = out.entry((combat, start, None)).or_insert_with(|| Battle {
                 combat,
                 start,
                 exact: number(&live, cells, columns.battles[1]) == Some(1),
@@ -442,21 +467,23 @@ fn live_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i
     Ok(())
 }
 
-/// Every battle of run `run` whose end row was written within `from..=to`, by (combat, start).
-fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<(u64, i32), Battle>) -> io::Result<()> {
+/// Every battle of run `run` whose end row was written within `from..=to`, by its key.
+fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<Key, Battle>) -> io::Result<()> {
     let recording = query.replay.recording();
     let range = combat.map(|combat| (u128::from(combat) << 33, u128::from(combat) << 33 | 0x1_FFFF_FFFF));
     let ended = dashboard_query::cost::storage(|| {
         lanes::history(recording, run, TableId::LandBattleEnds, &columns.ends, range.map_or(Keys::All, |(low, high)| Keys::Range(low, high)), from, to)
     })?;
-    for (key, steps) in &ended.keys {
-        let Some((settled, cells)) = steps.iter().find_map(|step| step.cells.as_ref().map(|cells| (step.hour, cells))) else { continue };
+    for (key, _, settled, cells) in written_ends(&ended) {
+        if out.get(&key).is_some_and(|battle| battle.end.is_some()) {
+            continue;
+        }
         let n = |column: usize| number(&ended, cells, column);
-        let combat = (key >> 33) as u64;
-        let start = *key as u32 as i32;
+        let (combat, start, result_only) = key;
         let end = Ended {
             kind: n(0).unwrap_or(0) as u8,
             end_hour: n(1).unwrap_or(i64::from(settled)) as i32,
+            written: settled,
             province: n(4).unwrap_or(0) as u32,
             last_read: n(5).map(|hour| hour as i32),
             last_duration: n(6).map(|value| value as i32),
@@ -470,9 +497,10 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
             result_unknown: n(26).unwrap_or(3) as u8,
             ..Ended::default()
         };
-        let battle = out.entry((combat, start)).or_insert_with(|| Battle {
+        let battle = out.entry(key).or_insert_with(|| Battle {
             combat,
             start,
+            result_only,
             exact: n(2) == Some(1),
             counter_base: n(3).unwrap_or(0) as i32,
             ..Battle::default()
@@ -481,16 +509,14 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
         battle.end = Some(end);
     }
     // The end rows' country lists are read at the hour each was written.
-    let asks: Vec<(i32, u128)> = ended.keys.iter().filter_map(|(key, steps)| steps.iter().find(|step| step.cells.is_some()).map(|step| (step.hour, *key))).collect();
+    let asks: Vec<(i32, u128)> = written_ends(&ended).map(|(_, key, hour, _)| (hour, key)).collect();
     if !asks.is_empty() {
         let lists = [15, 16, 24, 25];
         dashboard_query::cost::storage(|| {
-            lanes::at_each(recording, run, TableId::LandBattleEnds, Some(&lists), &asks, &mut |_, key, row| {
+            lanes::at_each(recording, run, TableId::LandBattleEnds, Some(&lists), &asks, &mut |hour, key, row| {
                 let Some((view, slot)) = row else { return Ok(()) };
                 let read = |column: usize| view.list(column, slot).and_then(u32s).unwrap_or_default();
-                if let Some(battle) = out.get_mut(&((key >> 33) as u64, key as u32 as i32))
-                    && let Some(end) = &mut battle.end
-                {
+                if let Some(end) = end_written(out, key, hour) {
                     end.sides = [read(15), read(16)];
                     end.result_sides = [read(24), read(25)];
                 }
@@ -500,12 +526,10 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
         // Each side's final equipment by design: a recording written before the end row held it reads none.
         let pools = [27, 28];
         let read = dashboard_query::cost::storage(|| {
-            lanes::at_each(recording, run, TableId::LandBattleEnds, Some(&pools), &asks, &mut |_, key, row| {
+            lanes::at_each(recording, run, TableId::LandBattleEnds, Some(&pools), &asks, &mut |hour, key, row| {
                 let Some((view, slot)) = row else { return Ok(()) };
                 let pool = |column: usize| view.list(column, slot).and_then(|bytes| Vec::<LandEquipmentLoss>::decode(&mut Decoder::new(bytes)).ok());
-                if let Some(battle) = out.get_mut(&((key >> 33) as u64, key as u32 as i32))
-                    && let Some(end) = &mut battle.end
-                {
+                if let Some(end) = end_written(out, key, hour) {
                     end.terminal_equipment = [pool(27), pool(28)];
                 }
                 Ok(())
@@ -522,8 +546,13 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
     Ok(())
 }
 
+/// The end of the battle keyed by the end row `key` written at `hour`, when that row is its end.
+fn end_written(out: &mut BTreeMap<Key, Battle>, key: u128, hour: i32) -> Option<&mut Ended> {
+    out.get_mut(&end_key(key, hour))?.end.as_mut().filter(|end| end.written == hour)
+}
+
 /// Every battle of run `run` live or ended within `from..=to`.
-fn battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>) -> io::Result<BTreeMap<(u64, i32), Battle>> {
+fn battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>) -> io::Result<BTreeMap<Key, Battle>> {
     let mut out = BTreeMap::new();
     live_battles(query, columns, run, from, to, combat, &mut out)?;
     ended_battles(query, columns, run, from, to, combat, &mut out)?;
@@ -853,13 +882,14 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &super::country_
     {
         first.0 = since;
     }
-    let result = end.filter(|end| end.result.is_some() && end.end_hour <= to);
+    // An end and its result are known from the hour their row was written; the final flush is read then.
+    let result = end.filter(|end| end.result.is_some() && end.written <= to);
     if let Some(end) = result
         && (end.terminal[0].is_some() || end.terminal[1].is_some())
     {
-        course.push((end.end_hour.max(course.last().map_or(i32::MIN, |read| read.0)), true, Some(Losses { manpower: end.terminal, equipment: end.terminal_equipment.clone() })));
+        course.push((end.written.max(course.last().map_or(i32::MIN, |read| read.0)), true, Some(Losses { manpower: end.terminal, equipment: end.terminal_equipment.clone() })));
     }
-    let ends_within = end.is_some_and(|end| end.kind != LandBattleEndRow::RESULT_ONLY && (from..=to).contains(&end.end_hour));
+    let ends_within = end.is_some_and(|end| end.kind != LandBattleEndRow::RESULT_ONLY && (from..=to).contains(&end.written));
     let runs = window_runs(&runs, from, to, ends_within);
     let hours: Vec<i32> = course.iter().map(|(hour, ..)| *hour).collect();
     let losses = course[carried(&hours, runs.first().map_or(from, |run| run.first_hour), to)]
@@ -888,7 +918,10 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &super::country_
     });
     let peaks = if battle.live.is_some() { battle.peaks } else { end.map_or([None; 3], |end| end.peaks) }.map(|peak| peak.filter(|peak| peak.hour <= peaks_through));
     let history = LandBattleHistory {
-        id: format!("{branch}:{combat}:{}", battle.start),
+        id: match battle.result_only {
+            Some(written) => format!("{branch}:{combat}:{}:{written}", battle.start),
+            None => format!("{branch}:{combat}:{}", battle.start),
+        },
         province_id: province.or(end.map(|end| end.province)).unwrap_or(0),
         start: BattleMoment { hour: battle.start, bound: if battle.exact { BattleBound::Exact } else { BattleBound::By } },
         end: end_moment,
@@ -899,6 +932,7 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &super::country_
         runs,
         losses,
         result,
+        settled_hour: end.map(|end| end.written),
     };
     Shaped { history, course }
 }
@@ -927,26 +961,25 @@ fn window_rows(source: &Source, query: &Query<'_>, run: u32, first: i32, from: i
     let read_from = (from - 1).max(first);
     let found = battles(query, &columns, run, read_from, to, None)?;
     crate::metadata::check_cancel(cancelled)?;
-    let combats_read: Vec<u64> = found.keys().map(|(combat, _)| *combat).collect::<HashSet<_>>().into_iter().collect();
+    let combats_read: Vec<u64> = found.keys().map(|(combat, ..)| *combat).collect::<HashSet<_>>().into_iter().collect();
     let mut data = combats(query, &columns, run, read_from, to, &combats_read)?;
     let floors: HashMap<u64, i32> = found.values().filter(|battle| battle.live.is_some_and(|(live, _)| live == read_from)).map(|battle| (battle.combat, battle.start.max(first))).collect();
     settle(query, &columns, run, &mut data, &floors)?;
     let names = Names::new(&query.holders);
     let links = crate::answer::links(source, run)?;
-    let mut rows: Vec<LandBattleHistory> = found
-        .values()
-        .map(|battle| shape(battle, &data, &names, &links, query.timeline.id, from, to, from - 1).history)
-        .filter(|history| !history.runs.is_empty() || history.result.as_ref().is_some_and(|result| result.hour >= from))
-        .map(|mut history| {
-            if history.runs.is_empty() {
-                let hour = history.result.as_ref().map_or(history.start.hour, |result| result.hour);
-                history.runs.push(LandBattleRun { first_hour: hour, last_hour: hour, counts: [0, 0], roster_unknown: true, countries: [Vec::new(), Vec::new()], countries_unknown: [true, true], duration: 0 });
-            }
-            history
-        })
-        .collect();
+    let mut rows: Vec<LandBattleHistory> = found.values().filter_map(|battle| listed(shape(battle, &data, &names, &links, query.timeline.id, from, to, from - 1).history, from)).collect();
     rows.sort_by(|a, b| a.start.hour.cmp(&b.start.hour).then_with(|| a.id.cmp(&b.id)));
     Ok(rows)
+}
+
+/// A window's row of `history`: a battle with runs in it, or a result without runs settled in it,
+/// shown from that hour with its roster not read, so the window before never lists it early.
+fn listed(mut history: LandBattleHistory, from: i32) -> Option<LandBattleHistory> {
+    if history.runs.is_empty() {
+        let settled = history.settled_hour.filter(|&hour| hour >= from && history.result.is_some())?;
+        history.runs.push(LandBattleRun { first_hour: settled, last_hour: settled, counts: [0, 0], roster_unknown: true, countries: [Vec::new(), Vec::new()], countries_unknown: [true, true], duration: 0 });
+    }
+    Some(history)
 }
 
 /// The hours of `from..=to` outside `read`, as warnings of `reason`.
@@ -1245,12 +1278,14 @@ impl Product for LandBattlesRanking {
     }
 }
 
-/// A battle id's combat and start: `<branch>:<combat>:<start>`.
-pub fn parse_id(id: &str, branch: u64) -> Option<(u64, i32)> {
+/// A battle id's key: `<branch>:<combat>:<start>`, and for a result-only row, keyed by its end
+/// hour, `:<hour written>` after it.
+pub fn parse_id(id: &str, branch: u64) -> Option<Key> {
     let mut parts = id.split(':');
     let (held, combat, start) = (parts.next()?, parts.next()?, parts.next()?);
+    let written = parts.next().map(str::parse).transpose().ok()?;
     (parts.next().is_none() && held.parse::<u64>().ok()? == branch).then_some(())?;
-    Some((combat.parse().ok()?, start.parse().ok()?))
+    Some((combat.parse().ok()?, start.parse().ok()?, written))
 }
 
 /// A side's pools as course reads: every design the first time and when its designs change, else
@@ -1290,7 +1325,7 @@ impl Product for LandBattleCourses {
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.branch_id.parse::<u64>().map_err(|_| "Invalid battle branch")?;
-        if params.id.split(':').count() != 3 {
+        if !(3..=4).contains(&params.id.split(':').count()) {
             return Err("Invalid battle id");
         }
         Ok(())
@@ -1300,12 +1335,12 @@ impl Product for LandBattleCourses {
         crate::metadata::check_cancel(cancelled)?;
         let branch = branch(&params.branch_id)?;
         let query = crate::answer::query(source, branch)?;
-        let (combat, start) = parse_id(&params.id, branch).ok_or_else(|| invalid("Invalid battle id"))?;
+        let key @ (combat, start, _) = parse_id(&params.id, branch).ok_or_else(|| invalid("Invalid battle id"))?;
         let stretch = query.timeline.at(start).ok_or_else(|| dashboard_core::refused("This battle is not in the recording"))?;
         let columns = Columns::new()?;
         let found = battles(&query, &columns, stretch.run, start, stretch.last, Some(combat))?;
-        let battle = found.get(&(combat, start)).ok_or_else(|| dashboard_core::refused("This battle is not in the recording"))?;
-        let last = battle.end.as_ref().map_or_else(|| battle.live.map_or(start, |(_, last)| last), |end| end.end_hour).min(stretch.last);
+        let battle = found.get(&key).ok_or_else(|| dashboard_core::refused("This battle is not in the recording"))?;
+        let last = battle.end.as_ref().map_or_else(|| battle.live.map_or(start, |(_, last)| last), |end| end.written).min(stretch.last);
         let data = combats(&query, &columns, stretch.run, start, last, &[combat])?;
         let names = Names::new(&query.holders);
         let links = crate::answer::links(source, stretch.run)?;

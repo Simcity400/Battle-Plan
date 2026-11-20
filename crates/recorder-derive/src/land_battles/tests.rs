@@ -168,7 +168,8 @@ fn ending(combat: u64, start: i32, kind: u8, end_hour: i32, last_read: Option<i6
     }
 }
 
-/// The scripted hours, 0 through 8.
+/// The scripted hours, 0 through 8. Finalizers 51 and 52 carry the hour of the read before their
+/// drain, as a command run after that read stamps them.
 fn script(hour: i32) -> Input {
     let drained = Some(true);
     match hour {
@@ -183,8 +184,8 @@ fn script(hour: i32) -> Input {
             eight.sides = Some([vec![3], vec![2]]);
             Input { combats: vec![fought(7, 101, 7, &[1], &[3]), eight], drain: drained, ..Input::default() }
         }
-        3 => Input { combats: vec![fought(7, 101, 8, &[1], &[3])], finalizers: vec![finalizer(50, 8, 200, 3), finalizer(51, 99, 300, 3)], drain: drained, unread: false },
-        4 => Input { combats: vec![fought(7, 101, 9, &[1], &[3])], finalizers: vec![finalizer(52, 7, 101, 4)], drain: drained, unread: false },
+        3 => Input { combats: vec![fought(7, 101, 8, &[1], &[3])], finalizers: vec![finalizer(50, 8, 200, 3), finalizer(51, 99, 300, 2)], drain: drained, unread: false },
+        4 => Input { combats: vec![fought(7, 101, 9, &[1], &[3])], finalizers: vec![finalizer(52, 7, 101, 3)], drain: drained, unread: false },
         5 => Input { combats: vec![fought(7, 101, 10, &[1], &[3]), fought(10, 400, 0, &[8], &[9])], drain: Some(false), ..Input::default() },
         6 => Input { unread: true, drain: drained, ..Input::default() },
         7 => Input { combats: vec![fought(7, 101, 12, &[1], &[3]), fought(10, 400, 2, &[8], &[9])], drain: drained, ..Input::default() },
@@ -206,11 +207,11 @@ fn battles_begin_peak_and_end_by_absence_reuse_finalizer_and_unread_census() {
     assert_eq!(seen[2].1, vec![ending(7, 0, End::REUSED, 2, Some(1), None, true)], "a handle at another province is a battle of its own");
     let mut absent = ending(8, 1, End::ABSENT, 3, Some(2), Some(50), true);
     (absent.attackers, absent.unknown) = (Some(vec![]), End::ATTACKERS_UNKNOWN);
-    let mut own = ending(99, 3, End::RESULT_ONLY, 3, None, Some(51), true);
+    let mut own = ending(99, 2, End::RESULT_ONLY, 2, None, Some(51), true);
     (own.attackers, own.defenders, own.unknown) = (None, None, End::ATTACKERS_UNKNOWN | End::DEFENDERS_UNKNOWN);
-    assert_eq!(seen[3].1, vec![absent, own], "a finalizer ends the battle gone at its hour, at its own end hour; one that ends none is a result of its own");
-    assert_eq!(seen[4].0, vec![], "a finalizer ends a battle whose row is still read");
-    assert_eq!(seen[4].1, vec![ending(7, 2, End::FINALIZED, 4, Some(4), Some(52), true)]);
+    assert_eq!(seen[3].1, vec![absent, own], "a finalizer ends the battle gone at its hour, at its own end hour; one that ends none, even stamped with the read before, is a result of its own");
+    assert_eq!(seen[4].0, vec![], "a finalizer stamped with the read before ends a battle whose row is still read");
+    assert_eq!(seen[4].1, vec![ending(7, 2, End::FINALIZED, 3, Some(4), Some(52), true)]);
     assert_eq!(seen[5].0, vec![(7, 5, true, 0, Some((2, 5))), (10, 5, true, 0, Some((2, 5)))], "the finalized combat read again is a new battle");
     assert_eq!(seen[5].1, vec![], "end rows live one hour");
     assert_eq!(seen[6], seen[5], "an hour whose census is not read writes nothing");
@@ -221,6 +222,48 @@ fn battles_begin_peak_and_end_by_absence_reuse_finalizer_and_unread_census() {
         "every battle of the hour before ends at the first hour not read, its ending not recorded"
     );
     assert_eq!(seen[8].1, vec![ending(10, 7, End::ABSENT, 8, Some(7), None, false)], "an end under a drain not read whole has its result not recorded");
+}
+
+/// A drain holds results stamped with the read before it, from commands run after that read. Such a
+/// result ends a battle still read at the drain's hour (20); a battle the census just closed as
+/// reused before its replacement (30), whose later reads stay that replacement's; a battle gone at
+/// the drain's hour (40, 50); and a battle first read at the drain's hour, begun after the read
+/// before (60).
+#[test]
+fn a_result_of_the_read_before_ends_the_battle_it_belongs_to_never_the_one_that_replaced_it() {
+    let (mut store, mut writers) = (testing::store(), writers());
+    let drain = Some(true);
+    let one = |id, province, duration| fought(id, province, duration, &[1], &[2]);
+    let hours = [
+        Input { combats: vec![one(20, 500, 5), one(30, 600, 3)], drain, ..Input::default() },
+        Input { combats: vec![one(20, 500, 6), one(30, 600, 4), one(40, 700, 0), one(50, 800, 0)], drain, ..Input::default() },
+        Input { combats: vec![one(20, 500, 7), one(30, 600, 5), one(40, 700, 1), one(50, 800, 1)], finalizers: vec![finalizer(70, 20, 500, 1)], drain, ..Input::default() },
+        Input {
+            combats: vec![one(30, 600, 0), one(50, 800, 2), one(60, 900, 0)],
+            finalizers: vec![finalizer(71, 30, 600, 2), finalizer(72, 40, 700, 2), finalizer(73, 60, 900, 2)],
+            drain,
+            ..Input::default()
+        },
+        Input { combats: vec![one(30, 600, 1)], finalizers: vec![finalizer(74, 50, 800, 4)], drain, ..Input::default() },
+    ];
+    let mut seen = Vec::new();
+    for (hour, input) in hours.iter().enumerate() {
+        run(&mut store, &mut writers, hour as i32, hour == 0, input);
+        seen.push((battles(&store), ends(&store)));
+    }
+    assert_eq!(seen[2].1, vec![ending(20, 0, End::FINALIZED, 1, Some(2), Some(70), true)], "a battle still read when its result of the read before arrives");
+    assert_eq!(
+        seen[3].1,
+        vec![
+            ending(30, 0, End::REUSED, 2, Some(2), Some(71), true),
+            ending(40, 1, End::ABSENT, 2, Some(2), Some(72), true),
+            ending(60, 3, End::FINALIZED, 2, Some(3), Some(73), true),
+        ],
+        "the reused battle takes its result, not its replacement; a battle gone, and one begun and ended after the read before, take theirs"
+    );
+    assert_eq!(seen[3].0, vec![(30, 3, true, 0, Some((2, 3))), (50, 1, true, 0, Some((2, 1)))], "the replacement goes on");
+    assert_eq!(seen[4].0, vec![(30, 3, true, 0, Some((2, 3)))], "its next read is the same battle, not a third");
+    assert_eq!(seen[4].1, vec![ending(50, 1, End::ABSENT, 4, Some(3), Some(74), true)], "a result of the hour after its last read");
 }
 
 /// Two results of one combat ending at one hour in one drain, neither ending a battle, share its
@@ -253,6 +296,10 @@ fn two_results_of_one_combat_ending_at_one_hour_are_one_row_of_what_they_agree_o
     let mut own = ending(99, 1, End::RESULT_ONLY, 1, None, None, true);
     (own.attackers, own.defenders, own.unknown, own.result_attackers) = (None, None, End::ATTACKERS_UNKNOWN | End::DEFENDERS_UNKNOWN, Some(vec![10]));
     assert_eq!(ends(&store), vec![own]);
+    run(&mut store, &mut writers, 2, false, &Input { finalizers: vec![finalizer(62, 99, 300, 1)], drain: Some(true), ..Input::default() });
+    let mut late = ending(99, 1, End::RESULT_ONLY, 1, None, Some(62), true);
+    (late.attackers, late.defenders, late.unknown) = (None, None, End::ATTACKERS_UNKNOWN | End::DEFENDERS_UNKNOWN);
+    assert_eq!(ends(&store), vec![late], "a result of the same combat and hour in the next drain is a row of its own, written that hour under the same key");
 }
 
 #[test]

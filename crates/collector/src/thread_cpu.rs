@@ -25,6 +25,7 @@ pub(crate) enum Role {
     SpoolSizing,
     FrameBuilder,
     FramePriority,
+    Capture,
     #[cfg(feature = "worker_sampler")]
     Sampler,
 }
@@ -143,6 +144,7 @@ pub(crate) fn registered_creation(role: &str, id: u32) -> Option<u64> {
         "spool_sizing" => Role::SpoolSizing,
         "frame_builder" => Role::FrameBuilder,
         "frame_priority" => Role::FramePriority,
+        "capture" => Role::Capture,
         "sampler" => Role::Sampler,
         _ => return None,
     } as usize;
@@ -154,7 +156,7 @@ pub(crate) fn registered_creation(role: &str, id: u32) -> Option<u64> {
     (created != 0 && registered.load(Ordering::Acquire) == id).then_some(created)
 }
 
-const BASE_NAMED: usize = 7;
+const BASE_NAMED: usize = 8;
 #[cfg(not(feature = "worker_sampler"))]
 const NAMED: usize = BASE_NAMED;
 #[cfg(feature = "worker_sampler")]
@@ -296,9 +298,9 @@ fn sample_status(sample: Sample, hz: Option<u64>) -> impl serde::Serialize {
 }
 
 #[cfg(not(feature = "worker_sampler"))]
-const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's conversion helpers and its sizing thread, the frame-priority reconciler, and acquisition workers) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
+const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's conversion helpers and its sizing thread, the frame-priority reconciler, the capture thread that reads hours beside the game, and acquisition workers) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
 #[cfg(feature = "worker_sampler")]
-const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's conversion helpers and its sizing thread, the frame-priority reconciler, acquisition workers, and sampler) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
+const SCOPE: &str = "cumulative CPU of each collector thread (runtime, decode, spool, status, the spool's conversion helpers and its sizing thread, the frame-priority reconciler, the capture thread that reads hours beside the game, acquisition workers, and sampler) since it started, read when this status was built: cycles from QueryThreadCycleTime (cycle_ns converts them with hook_timing's tsc_hz), user/kernel from GetThreadTimes at scheduler-tick resolution. collector_total sums the available threads; process is the whole game process. Hooked game-thread time inside collector callbacks is in hook_timing, not here. A thread that exited or whose id now names another thread is unavailable";
 
 fn status_from(
     samples: [Option<Sample>; THREADS],
@@ -347,6 +349,10 @@ macro_rules! named_threads {
                 "frame_priority",
                 REGISTERED[Role::FramePriority as usize].load(Ordering::Acquire),
             ),
+            (
+                "capture",
+                REGISTERED[Role::Capture as usize].load(Ordering::Acquire),
+            ),
             #[cfg(feature = "worker_sampler")]
             (
                 "sampler",
@@ -356,14 +362,14 @@ macro_rules! named_threads {
     };
 }
 
-/// Snapshot sampling targets without allocation, excluding sampler, priority control and the
-/// frame builder, which the sampler has no role for.
+/// Snapshot sampling targets without allocation, excluding sampler, priority control, the
+/// frame builder and the capture thread, which the sampler has no role for.
 #[cfg(feature = "worker_sampler")]
 pub(crate) fn registered() -> impl Iterator<Item = (&'static str, u32)> {
     named_threads!()
         .into_iter()
         .take(BASE_NAMED)
-        .filter(|(role, _)| !matches!(*role, "frame_priority" | "frame_builder"))
+        .filter(|(role, _)| !matches!(*role, "frame_priority" | "frame_builder" | "capture"))
 }
 
 /// status.json `collector_thread_cpu`. `acquisition` lists the worker ids.
@@ -485,6 +491,7 @@ mod tests {
     fn registered_threads_appear_in_live_status() {
         register(Role::Runtime);
         let me = unsafe { GetCurrentThreadId() };
+        register_id(Role::Capture, me);
         let status: Value = serde_json::to_value(status(&[me])).unwrap();
         let threads = status["threads"].as_array().unwrap();
         let worker = threads
@@ -496,5 +503,10 @@ mod tests {
         assert_eq!(worker["available"], true);
         assert!(worker["cycles"].as_u64().unwrap() > 0);
         assert!(threads.iter().any(|thread| thread["role"] == "runtime"));
+        let capture = threads
+            .iter()
+            .find(|thread| thread["role"] == "capture")
+            .unwrap();
+        assert_eq!(capture["thread_id"], me);
     }
 }

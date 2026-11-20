@@ -1,4 +1,5 @@
-//! The sole game-thread callback. Buffers are allocated before publication to its free queue.
+//! The hour's capture, one at a time on the game thread or the capture thread. Buffers are
+//! allocated before publication to its free queue.
 
 use std::sync::Arc;
 mod divisions;
@@ -65,15 +66,25 @@ pub fn raise_for_countries(core: &mut [usize; 12], slots: usize) {
         crate::country_scale::raise(&mut core[index], rows);
     }
 }
-/// Where the collector samples: at the entry of the hooked hourly tick, before
-/// the trampoline runs, so a frame labelled with the entry hour is the state
-/// at the end of that hour. Recorded in every session so readers know its instant.
+/// Where the collector samples: after the hooked hourly tick returns, and after any command
+/// its batch ran behind it, so a frame labelled with an hour is the state that hour's update
+/// left. Recorded in every session so readers know its instant. Without a command-batch hook
+/// proven to observe every batch no batch return is known: a frame is then read straight after
+/// its update, before commands the same batch runs behind it, and the capture status says so.
 pub const SAMPLE_BOUNDARY: replay_data::identity::SampleBoundary =
-    replay_data::identity::SampleBoundary::EndOfHour;
+    replay_data::identity::SampleBoundary::AfterHourlyUpdate;
+
+/// Whether a capture holds the game thread or reads beside the running game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Placement {
+    Held,
+    /// Beside the game thread, last seen on this group-0 processor ([`main_processor`]).
+    Beside(Option<u32>),
+}
 const LOSS_RUNS: usize = 64;
 pub static SHARED: AtomicPtr<Shared> = AtomicPtr::new(ptr::null_mut());
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-// Staggered cadence branch/keyframe state. Game thread only.
+// Staggered cadence branch/keyframe state. Captures only.
 #[derive(Debug, Default)]
 struct CadenceState {
     initialized: bool,
@@ -214,10 +225,10 @@ impl LossBatch {
     }
 }
 
-/// One hour's game-thread block by phase, carried to the spool, which keeps an hour over budget.
+/// One hour's capture by phase, carried to the spool, which keeps an hour over budget.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct HourPhases {
-    /// Hook entry to dispatch: admission, any clock preparation and the clock read.
+    /// Capture start to dispatch: admission, any clock preparation and the clock read.
     pub entry_ns: u64,
     /// The wall of allocating this hour's frame when none was free; zero when one was.
     pub frame_grow_ns: u64,
@@ -230,14 +241,14 @@ pub(crate) struct HourPhases {
     pub residual_ns: u64,
     /// The parallel phase split at the marks of `SEGMENTS_SCOPE`.
     pub segments_ns: [u64; SEGMENTS],
-    /// The longest single join the game thread waited on: role and wall.
+    /// The longest single join the capturing thread waited on: role and wall.
     pub slowest_join: Option<(usize, u64)>,
     /// The longest wait for a dependency step to become ready, and the step it ended in.
     pub slowest_ready: Option<(EarlyStep, u64)>,
-    /// The longest game-thread handling of one dependency step.
+    /// The capturing thread's longest handling of one dependency step.
     pub slowest_step: Option<(EarlyStep, u64)>,
     /// The hold path's calls into the private heap's lock during this hour's block, and their wall:
-    /// the game thread's and the acquisition workers', never another collector thread's.
+    /// the capturing thread's and the acquisition workers', never another collector thread's.
     pub heap_calls: u64,
     pub heap_ns: u64,
     /// The hold path's page reservations, commits and decommits during this hour's block, and their wall.
@@ -250,7 +261,7 @@ pub(crate) struct HourPhases {
     pub retry_cause: u16,
     /// What held every frame when this hour found none free and took a new one.
     pub holders: Option<Holders>,
-    /// The game thread's cycles over the block; far under its wall means it was descheduled.
+    /// The capturing thread's cycles over the block; far under its wall means it was descheduled.
     pub cycles: Option<u64>,
     /// This hour's Variants drain: its wall and profile.
     pub variant_drain_ns: u64,
@@ -314,7 +325,7 @@ pub struct Captured {
     pub country_cache_status: SeedStatus,
     pub country_cache_entries: usize,
     pub country_cache_ns: u64,
-    /// The sole clock observation, taken at hook entry before acquisition.
+    /// The sole clock observation, taken as the capture starts, before acquisition.
     pub clock: Option<Clock>,
     clock_spare: Owned,
     pub counters: Option<AllocationCounters>,
@@ -369,7 +380,7 @@ pub struct Captured {
 impl Captured {
     /// Clear every verdict and cost of the previous hour, as the callback did
     /// before reading. The spool runs it when it returns the frame, after
-    /// growth, so the hour's game thread only takes the frame.
+    /// growth, so the hour's capture only takes the frame.
     pub(crate) fn reset_verdicts(&mut self) {
         let unavailable = Outcome::Unavailable {
             reason: "clock unavailable",
@@ -674,7 +685,7 @@ impl Captured {
     }
 }
 
-/// The callback profile's cumulative game-thread walls since attach.
+/// The callback profile's cumulative capture walls since attach.
 #[cfg(feature = "callback_profile")]
 pub struct ProfilePhases {
     pub frame_grow_ns: AtomicU64,
@@ -787,15 +798,15 @@ pub struct Shared {
     /// unparks it ([`Shared::wake_spool`]), or its next periodic deadline.
     pub spool_waker: OnceLock<std::thread::Thread>,
     pub(crate) decode_waker: OnceLock<std::thread::Thread>,
-    /// The game thread owns this until ready is published; the spool thread
+    /// The capture owns this until ready is published; the spool thread
     /// then takes it once, independent of any particular FIFO buffer.
     pub roster: UnsafeCell<Option<Box<Roster>>>,
     pub roster_ready: AtomicBool,
     roster_sampling: AtomicBool,
-    /// Only the game thread writes this, inside the hook. The spool worker takes
-    /// it after the hook is quiescent.
+    /// Only the running capture writes this. The spool worker takes it after the hook is
+    /// quiescent.
     pub pending: UnsafeCell<LossBatch>,
-    /// The game thread's clock destination and identity. Game thread only, and the loader before
+    /// The capture's clock destination and identity. Captures only, and the loader before
     /// the hook is published: nothing else grows or reads it, so the hour never waits for it.
     clock_capture: UnsafeCell<ClockCapture>,
     clock_required: AtomicUsize,
@@ -803,30 +814,30 @@ pub struct Shared {
     clock_frames: AtomicUsize,
     cadence: UnsafeCell<CadenceState>,
     /// One store per sliced family (`slicing::FAMILIES`), loaned to that
-    /// family's job each hour. Only the game thread takes and returns them.
+    /// family's job each hour. Only the capture takes and returns them.
     slice_fingerprints: [UnsafeCell<Option<Box<crate::slicing::SliceFingerprints>>>;
         crate::slicing::FAMILIES.len()],
-    /// Fresh country authentication for this quiescent callback. Game thread only.
+    /// Fresh country authentication for this quiescent capture. Captures only.
     country_cache: UnsafeCell<engine_allocation::SharedBox<Cache>>,
     /// The carried province weather records, loaned to the Weather job each
-    /// hour ([`extended::weather::carry`]). Only the game thread takes and
+    /// hour ([`extended::weather::carry`]). Only the capture takes and
     /// returns it.
     weather_carry: UnsafeCell<Option<Box<extended::weather::carry::WeatherCarry>>>,
     /// The held RaidAirScores table, loaned to the Late job each hour. Only
-    /// the game thread takes and returns it.
+    /// the capture takes and returns it.
     raid_air_scores: UnsafeCell<Option<Box<engine_raid_inputs::raid_air_scores::Held>>>,
     raid_air_score_bytes: AtomicU64,
     /// Held CharacterRoleTraits role rows, loaned to the Gated job each hour
-    /// with the roster job's role census. Only the game thread takes and
+    /// with the roster job's role census. Only the capture takes and
     /// returns it.
     character_role_store: UnsafeCell<Option<Box<extended::character_inputs::RoleStore>>>,
     character_role_store_bytes: AtomicU64,
     /// Held ScriptFlags rows, loaned to the IntelResidual job each hour. Only
-    /// the game thread takes and returns it.
+    /// the capture takes and returns it.
     script_flag_store: UnsafeCell<Option<Box<extended::intel::FlagStore>>>,
     script_flag_store_bytes: AtomicU64,
     /// Held ScriptVariables rows, loaned to the IntelResidual job each hour.
-    /// Only the game thread takes and returns it.
+    /// Only the capture takes and returns it.
     script_variable_store: UnsafeCell<Option<Box<extended::intel::VariableStore>>>,
     script_variable_store_bytes: AtomicU64,
     faction_goal_store: UnsafeCell<Option<Box<crate::faction_goals::Store>>>,
@@ -834,19 +845,19 @@ pub struct Shared {
     faction_companion_store: UnsafeCell<Option<Box<crate::faction_companions::Store>>>,
     faction_companion_store_bytes: AtomicU64,
     /// Held StateBuildings and ProvinceBuildings rows, loaned to the
-    /// Governance job each hour. Only the game thread takes and returns it.
+    /// Governance job each hour. Only the capture takes and returns it.
     building_store: UnsafeCell<Option<Box<extended::construction::BuildingStore>>>,
     building_store_bytes: AtomicU64,
     /// Held PartyLeaders rows, loaned to the Governance job each hour. Only
-    /// the game thread takes and returns it.
+    /// the capture takes and returns it.
     leader_store: UnsafeCell<Option<Box<extended::governance::LeaderStore>>>,
     leader_store_bytes: AtomicU64,
     /// Held PoliticalParties and ActiveIdeas rows, loaned to the Governance
-    /// job each hour. Only the game thread takes and returns it.
+    /// job each hour. Only the capture takes and returns it.
     party_store: UnsafeCell<Option<Box<extended::governance::PartyStore>>>,
     party_store_bytes: AtomicU64,
     /// Held WingEquipment rows, lent to the AirWing job's payload each hour.
-    /// Only the game thread takes and returns it.
+    /// Only the capture takes and returns it.
     wing_store: UnsafeCell<Option<Box<extended::air::WingStore>>>,
     wing_store_bytes: AtomicU64,
     /// The AirWing census parts after the first, each with its own held
@@ -859,15 +870,15 @@ pub struct Shared {
     production_part_starts:
         UnsafeCell<([u32; extended::production_modifiers::MAX_PARTS - 1], usize)>,
     /// Held AirBaseRegistrations subtrees, lent to the AirBases job each
-    /// hour. Only the game thread takes and returns it.
+    /// hour. Only the capture takes and returns it.
     air_base_store: UnsafeCell<Option<Box<extended::air::RegistrationStore>>>,
     air_base_store_bytes: AtomicU64,
     /// Held AirRegionalMissions registrations, lent to the AirMissions job
-    /// each hour. Only the game thread takes and returns it.
+    /// each hour. Only the capture takes and returns it.
     mission_store: UnsafeCell<Option<Box<extended::air::MissionStore>>>,
     mission_store_bytes: AtomicU64,
     /// Held RailCooldowns inputs and RailEdges rows, lent to the Late job
-    /// each hour. Only the game thread takes and returns it.
+    /// each hour. Only the capture takes and returns it.
     rail_store: UnsafeCell<Option<Box<extended::naval_history::RailStore>>>,
     rail_store_bytes: AtomicU64,
     /// Held States rows, lent to the States job each hour. Only the game
@@ -895,7 +906,7 @@ pub struct Shared {
     >,
     division_part_starts: UnsafeCell<([u32; crate::division_census::MAX_PARTS - 1], usize)>,
     /// The order census split the last stitched hour planned for the next
-    /// ([`crate::orders_parts::Split`]). Only the game thread reads and
+    /// ([`crate::orders_parts::Split`]). Only the capture reads and
     /// writes it.
     order_split: UnsafeCell<crate::orders_parts::Split>,
     /// The joined census's storage the next hour's inputs job reserves, so
@@ -903,39 +914,40 @@ pub struct Shared {
     /// ([`crate::division_census::Census::join_capacity`]).
     division_join_capacity: UnsafeCell<crate::division_census::JoinCapacity>,
     /// The held ProvinceUnitOrder walk, lent to its job each hour. Only the
-    /// game thread takes and returns it.
+    /// capture takes and returns it.
     province_unit_store: UnsafeCell<Option<Box<extended::province_unit_order::ProvinceUnitStore>>>,
     province_unit_store_bytes: AtomicU64,
     /// Held controller and owner areas, lent to the Provinces job each hour
-    /// ([`collector_observers::area_changes`]). Only the game thread takes and returns it.
+    /// ([`collector_observers::area_changes`]). Only the capture takes and returns it.
     area_store: UnsafeCell<Option<Box<engine_native::controller_areas::Store>>>,
     area_store_bytes: AtomicU64,
     /// Held Provinces rows, lent to the Provinces job each hour
-    /// ([`crate::province_changes`]). Only the game thread takes and returns it.
+    /// ([`crate::province_changes`]). Only the capture takes and returns it.
     province_store: UnsafeCell<Option<Box<engine_native::cprovince::carry::RowStore>>>,
     province_store_bytes: AtomicU64,
     /// Held AvailableAdvisors and AdvisorTokens rows, loaned to the Slow job
-    /// each hour. Only the game thread takes and returns it.
+    /// each hour. Only the capture takes and returns it.
     advisor_store: UnsafeCell<Option<Box<extended::hired_advisors::AdvisorStore>>>,
     advisor_store_bytes: AtomicU64,
     /// Held CountryLocalSubunits rows, loaned to the Slow job each hour.
-    /// Only the game thread takes and returns it.
+    /// Only the capture takes and returns it.
     local_subunit_store: UnsafeCell<Option<Box<extended::model_inputs::LocalStore>>>,
     local_subunit_store_bytes: AtomicU64,
     doctrine_store: UnsafeCell<Option<Box<Mutex<collector_slow_tables::doctrines::Store>>>>,
     doctrine_store_bytes: AtomicU64,
     /// Held CountryCounterInputs rows, loaned to the Ordinary counter part
-    /// each hour. Only the game thread takes and returns it.
+    /// each hour. Only the capture takes and returns it.
     counter_store: UnsafeCell<Option<Box<extended::country_counters::CounterStore>>>,
     counter_store_bytes: AtomicU64,
     /// Held CountryAppearance rows, loaned to the Countries job each hour.
-    /// Only the game thread takes and returns it.
+    /// Only the capture takes and returns it.
     appearance_store: UnsafeCell<Option<Box<extended::country_appearance::AppearanceStore>>>,
     appearance_store_bytes: AtomicU64,
     /// Capture recovery after lost frame continuity; the next hour also
     /// restarts native interval observation.
     pub force_next: AtomicBool,
-    /// Requested acquisition refresh; it does not revoke observer continuity.
+    /// A published table shortage asks the next capture for a full read; it does not revoke
+    /// observer continuity. The recorder's refresh request goes through the capture point.
     pub refresh_next: AtomicBool,
     /// Sliced families (bit per [`crate::slicing::FAMILIES`] index) whose
     /// walked read the spool could not publish; the next hour forgets their
@@ -946,7 +958,7 @@ pub struct Shared {
     pub lexical_max: AtomicI32,
     /// The attachment's first consistent fixed-layout check.
     pub fixed_layout: OnceLock<engine_fixed_layout::fixed_layout::Report>,
-    /// Prepared before hook publication and borrowed only by the hourly callback.
+    /// Prepared before hook publication and borrowed only by the capture.
     pub fixed_layout_buffer: UnsafeCell<Vec<u8>>,
     /// The modifier definition table's data pointer and row count at the last
     /// hour; a change means a loader registered keys, and the static
@@ -956,12 +968,12 @@ pub struct Shared {
     /// The unit and reference id counters when the last daily
     /// `DivisionEquipment` walk ran, packed; see `new_divisions::next_mark`.
     pub division_mark: AtomicU64,
-    /// A larger country authentication cache prepared off the game thread.
-    /// The hook swaps it in with a non-blocking `try_lock` and parks the old
+    /// A larger country authentication cache prepared off the capturing thread.
+    /// The capture swaps it in with a non-blocking `try_lock` and parks the old
     /// one in `retired` for the spool thread to free: no allocation or
-    /// deallocation happens on the game thread.
+    /// deallocation happens in the capture.
     pub country_cache_swap: Mutex<CountryCacheSwap>,
-    /// Cells of the installed country cache, published by the game thread.
+    /// Cells of the installed country cache, published by the capture.
     pub country_cache_cells: AtomicUsize,
     /// The one CountryIntel buffer every frame borrows; counted once in
     /// `pool_bytes`.
@@ -996,7 +1008,7 @@ pub struct CountryCacheSwap {
 }
 
 /// How a frame goes back: as the newest free one, freed when surplus; as the newest and kept,
-/// for the game thread's own returns; or as old as it was when taken.
+/// for the capture's own returns; or as old as it was when taken.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Return {
     Newest,
@@ -1004,9 +1016,8 @@ enum Return {
     Idle,
 }
 
-// Each frame index has exactly one owner: a queue, the game thread inside the
-// hook, or the spool thread. The game thread runs the whole acquisition body
-// before the trampoline, so its single-writer fields stay single-writer.
+// Each frame index has exactly one owner: a queue, the running capture, or the spool thread.
+// One capture runs at a time, so its single-writer fields stay single-writer.
 unsafe impl Sync for Shared {}
 
 impl Shared {
@@ -1388,7 +1399,7 @@ impl Shared {
         }
     }
 
-    /// Game thread, before preparing the hour's country snapshot: install an
+    /// The capture, before preparing the hour's country snapshot: install an
     /// offered cache without blocking, allocating or freeing.
     pub(crate) fn install_offered_country_cache(&self) {
         let Ok(mut swap) = self.country_cache_swap.try_lock() else {
@@ -1660,7 +1671,7 @@ impl Shared {
         }
     }
 
-    /// [`Self::recycle_frame`] on the game thread, which never frees a frame.
+    /// [`Self::recycle_frame`] in a capture, which never frees a frame.
     fn recycle_frame_kept(&self, index: usize) {
         self.return_frame(index, Return::Kept);
     }
@@ -1677,7 +1688,7 @@ impl Shared {
     }
 
     /// Returns a frame as the newest free one, or frees it once the pool holds more than it
-    /// keeps. Not on the game thread: freeing a frame is the spool's work.
+    /// keeps. Not in a capture: freeing a frame is the spool's work.
     pub fn recycle_frame(&self, index: usize) {
         self.free_surplus(self.recycle_frame_unfreed(index));
     }
@@ -1744,7 +1755,7 @@ impl Shared {
         ((ticks.max(0) as u128 * 1_000_000_000) / self.frequency as u128) as u64
     }
 
-    /// Loader only, before the hook is published: the game thread's clock buffers and every
+    /// Loader only, before the hook is published: the capture's clock buffers and every
     /// frame grown for the campaign id the game holds now. Optional: a refusal is not terminal,
     /// and the hour that needs the length grows what is still short.
     pub(crate) fn prepare_clock_capture(&mut self, memory: &impl engine_native::Memory) {
@@ -1796,12 +1807,12 @@ impl Shared {
         }
     }
 
-    /// The game thread's own clock buffers grown to hold a `required`-byte campaign id. Each
+    /// The capture's own clock buffers grown to hold a `required`-byte campaign id. Each
     /// buffer is checked rather than a remembered length: the loss witnesses trade places with
     /// the frames' as hours pass.
     ///
     /// # Safety
-    /// The caller is the game thread inside the hook, or holds `&mut self`.
+    /// The caller is the running capture, or holds `&mut self`.
     unsafe fn grow_own_clock(
         &self,
         capture: &mut ClockCapture,
@@ -1830,16 +1841,16 @@ impl Shared {
         Ok(())
     }
 
-    /// The game thread's clock destination, its own buffers grown first when the game holds a
+    /// The capture's clock destination, its own buffers grown first when the game holds a
     /// longer campaign id than they do. It takes no lock and waits for nothing: these buffers
-    /// are the game thread's alone, and the frame it takes is grown by [`Self::take_frame`]. A
+    /// are the running capture's alone, and the frame it takes is grown by [`Self::take_frame`]. A
     /// refused growth is the collector's allocation failure; the hour's clock read then fails.
     ///
     /// # Safety
-    /// The game thread, inside the hook; the borrow ends with the hour.
+    /// The running capture; the borrow ends with the hour.
     #[allow(
         clippy::mut_from_ref,
-        reason = "the game thread owns the clock buffers alone"
+        reason = "the running capture owns the clock buffers alone"
     )]
     unsafe fn prepared_clock_capture(
         &self,
@@ -1873,7 +1884,7 @@ impl Shared {
         );
     }
 
-    /// Called only by the game thread inside the hook. A failed clock postpones
+    /// Called only by the running capture. A failed clock postpones
     /// this once-only read until the next readable hour, free buffer or not.
     unsafe fn sample_roster(
         &self,
@@ -1918,7 +1929,7 @@ fn forget_unpublished_families(shared: &Shared) {
     }
     for (family, store) in shared.slice_fingerprints.iter().enumerate() {
         if families & (1 << family) != 0 {
-            // SAFETY: game thread only, between callbacks' loans.
+            // SAFETY: one capture at a time, between captures' loans.
             if let Some(store) = unsafe { &mut *store.get() }.as_mut() {
                 store.forget();
             }
@@ -1929,7 +1940,7 @@ fn forget_unpublished_families(shared: &Shared) {
 /// Take a sliced family's fingerprint store for this hour's job.
 ///
 /// # Safety
-/// Game thread only, and the previous callback returned the store.
+/// Captures only, and the previous capture returned the store.
 unsafe fn take_slice_store(
     shared: &Shared,
     family: usize,
@@ -1942,7 +1953,7 @@ unsafe fn take_slice_store(
 /// Return a store [`take_slice_store`] lent.
 ///
 /// # Safety
-/// Game thread only, in the callback that took it.
+/// Captures only, in the capture that took it.
 unsafe fn return_slice_store(
     shared: &Shared,
     family: usize,
@@ -1990,7 +2001,7 @@ fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
         .enumerate()
         .filter(|_| read)
     {
-        // SAFETY: game thread only; every store was returned by this callback.
+        // SAFETY: one capture at a time; every store was returned by this capture.
         if let Some(fingerprints) = unsafe { &mut *fingerprints.get() }.as_mut() {
             frame
                 .extended
@@ -2006,7 +2017,7 @@ fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
     shared.recycle_frame_kept(index);
 }
 
-/// The hour's read, built at the tick's entry. `index` is None when no frame
+/// The hour's clock read, taken as its capture starts. `index` is None when no frame
 /// could be obtained before shutdown cancellation: retain an explicit loss witness.
 #[derive(Default)]
 struct ClockCapture {
@@ -2049,6 +2060,8 @@ struct Dispatch<'a> {
     dispatched: i64,
     /// Entry, buffer wait and free frames; the body adds the rest.
     phases: HourPhases,
+    /// The recorder asked for this hour in full ([`crate::capture_point::settle_next`]).
+    full: bool,
 }
 
 #[cfg(feature = "callback_profile")]
@@ -2073,7 +2086,7 @@ fn callback_profile_counters(shared: &Shared) -> crate::callback_profile::Sample
 /// restores the hook; they must not consume more buffers or wait for the lost one.
 ///
 /// # Safety
-/// Only the sole game-thread callback may mutate the pending loss batch.
+/// Only the running capture may mutate the pending loss batch.
 unsafe fn guarded_acquisition(
     shared: &Shared,
     entry: Option<Clock<&[u8]>>,
@@ -2113,6 +2126,8 @@ pub(crate) unsafe fn synthetic_callback(
     acquire: impl FnOnce(),
     original: impl FnOnce(),
 ) -> bool {
+    // As the hourly detour: the update runs, then the hour it ended is captured.
+    original();
     let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
     crate::allocation::set_context(crate::allocation::Context {
         campaign_id: entry.and_then(|clock| clock.campaign_id.try_into().ok()),
@@ -2121,141 +2136,202 @@ pub(crate) unsafe fn synthetic_callback(
         failed_hour: entry.map(|clock| clock.hour),
     });
     let complete = unsafe { guarded_acquisition(shared, entry, acquire) };
-    original();
     crate::allocation::attempted_hour(None);
     complete
 }
 
-/// The hooked hourly update boundary. Its entry is the
-/// settled end-of-hour state (every command drained, tick_busy 0, before the
-/// clock increment). The game thread runs the acquisition body here on its
-/// own hot core, driving the reader pool and helping drain it; the trampoline
-/// runs only after every live read has finished, so the recorded frame is that
-/// settled end-of-hour state.
+/// Reads one hour, every scheduled table when `full`. The caller guarantees that nothing writes
+/// the simulation until it returns: the game thread is held, or every writer waits at the
+/// capture gate. False when hourly captures are not admitted, so nothing was read; an admitted
+/// hour that is not recorded (recording stopped, or the collector's allocation failed) is
+/// consumed.
+///
+/// # Safety
+/// One capture at a time, on the game thread or the capture thread.
+pub(crate) unsafe fn capture(placement: Placement, full: bool) -> bool {
+    let hook_entry = qpc();
+    let shared = SHARED.load(Ordering::Acquire);
+    if shared.is_null() {
+        return false;
+    }
+    // SAFETY: published before any hook is installed and withdrawn after the last capture.
+    let shared = unsafe { &*shared };
+    let Some(admission) = crate::runtime::admit_hourly_capture() else {
+        return false;
+    };
+    // Inside the admission, so detach's final account finds every capture's account complete.
+    // SAFETY: the running capture.
+    unsafe { record_lost(shared, crate::capture_point::account()) };
+    let recording = shared.recording.load(Ordering::Acquire) && !crate::allocation::failed();
+    if recording {
+        if let Some(pool) = shared.acquisition.get() {
+            match placement {
+                Placement::Held => pool.hold_pace(),
+                Placement::Beside(game) => {
+                    pool.beside_pace(crate::capture_point::BESIDE_READERS, game);
+                    // A writer that began waiting before this pace keeps its call-up.
+                    if crate::capture_point::hurried() {
+                        pool.hold_pace();
+                    }
+                }
+            }
+        }
+        // SAFETY: as this function's.
+        unsafe { capture_body(shared, hook_entry, placement, full) };
+    }
+    drop(admission);
+    true
+}
+
+/// A game thread waits for the capture reading beside it: call up every reader, those inside a
+/// job included.
+pub(crate) fn hurry() {
+    let shared = SHARED.load(Ordering::Acquire);
+    if !shared.is_null()
+        // SAFETY: as in `capture`.
+        && let Some(pool) = unsafe { &*shared }.acquisition.get()
+    {
+        pool.hold_pace();
+    }
+}
+
+/// Hours that ended and were never read, recorded as lost before whatever frame comes next.
+///
+/// # Safety
+/// The running capture, or no capture can run.
+pub(crate) unsafe fn record_lost(shared: &Shared, hours: u32) {
+    // SAFETY: forwarded from the caller; the pending losses are the capture's.
+    let pending = unsafe { &mut *shared.pending.get() };
+    for _ in 0..hours {
+        pending.push(None);
+        shared.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, full: bool) {
+    let history_capture = shared.history_frames.capture();
+    let _frame_priority = shared.frame_priority.callback();
+    let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
+    let _reads = crate::read_accounting::Capture::new();
+    let memory = unsafe { LiveMemory::new() };
+    #[cfg(any(test, feature = "acquisition_profile"))]
+    let memory = engine_native::memory::CountedMemory::new(memory);
+    let world_generation = crate::world_lifetime::generation();
+    // The clock the hourly update left: the frame's identity.
+    let clock_start = qpc();
+    let clock_capture = unsafe { shared.prepared_clock_capture(&memory) };
+    let (entry, campaign_epoch) = match clock_capture.read(&memory, shared.base) {
+        Ok(value) => (Some(value.0), value.1),
+        Err(_) => (None, 0),
+    };
+    let entry = entry.filter(|_| {
+        world_generation != u64::MAX && world_generation == crate::world_lifetime::generation()
+    });
+    crate::world_lifetime::boundary(world_generation, entry.is_some());
+    crate::allocation::set_context(crate::allocation::Context {
+        campaign_id: entry.and_then(|clock| clock.campaign_id.try_into().ok()),
+        branch: None,
+        load_signal: entry.map(|clock| clock.play_session_started_at),
+        failed_hour: entry.map(|clock| clock.hour),
+    });
+    crate::equipment_destruction::boundary(
+        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
+    );
+    crate::naval_result_sources::boundary(
+        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
+    );
+    crate::experience_gains::boundary(
+        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
+    );
+    crate::air_losses::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
+    crate::fuel_awards::boundary();
+    crate::building_bombing::boundary(
+        entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
+    );
+    crate::nuclear_strikes::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
+    let entry_ticks = qpc() - clock_start;
+    #[cfg(feature = "callback_profile")]
+    let profile_before = callback_profile_counters(shared);
+    #[cfg(feature = "callback_profile")]
+    crate::callback_profile::reset_join();
+    #[cfg(feature = "callback_profile")]
+    let profile_stamp = crate::callback_profile::Stamp::start();
+    let dispatched = qpc();
+    crate::hour_stages::begin(dispatched);
+    let mut phases = HourPhases {
+        entry_ns: shared.ns(dispatched - hook_entry),
+        ..HourPhases::default()
+    };
+    phases.free_frames = u32::try_from(shared.frames.len()).unwrap_or(u32::MAX);
+    if phases.free_frames == 0 {
+        phases.holders = Some(holders(shared));
+    }
+    let index = shared.take_frame(&mut phases.frame_grow_ns);
+    if let Some(index) = index {
+        let slot = shared.frames.slot(index);
+        history_capture.frame(&slot.fence);
+        slot.completed.store(0, Ordering::Relaxed);
+        slot.callback_tail.store(0, Ordering::Relaxed);
+    }
+    // The body reads on this hot core; pool workers read in parallel and
+    // this thread helps drain them. A Rust panic must never unwind across
+    // the extern boundary into the game: contain it and drop the hour.
+    let job = Dispatch {
+        world_generation,
+        campaign_epoch,
+        index,
+        entry,
+        entry_ticks,
+        dispatched,
+        phases,
+        full,
+    };
+    // Beside the running game the capture must not outrank it.
+    let priority = (placement == Placement::Held).then(CallbackPriority::raise);
+    if unsafe { guarded_acquisition(shared, entry, || acquire(shared, job)) }
+        && let Some(index) = index
+    {
+        shared.frames.slot(index).callback_tail.store(1, Ordering::Release);
+    }
+    drop(priority);
+    crate::allocation::attempted_hour(None);
+    #[cfg(feature = "callback_profile")]
+    {
+        let mut sample = profile_stamp.finish(shared.frequency);
+        let after = callback_profile_counters(shared);
+        sample.hour = entry.map(|clock| clock.hour);
+        sample.frame_grow_ns = after
+            .frame_grow_ns
+            .saturating_sub(profile_before.frame_grow_ns);
+        sample.setup_ns = after.setup_ns.saturating_sub(profile_before.setup_ns);
+        sample.parallel_ns = after.parallel_ns.saturating_sub(profile_before.parallel_ns);
+        sample.residual_ns = after.residual_ns.saturating_sub(profile_before.residual_ns);
+        sample.dispatch_ns = after.dispatch_ns.saturating_sub(profile_before.dispatch_ns);
+        sample.phase_calls = after.phase_calls.saturating_sub(profile_before.phase_calls);
+        sample.segments_ns = std::array::from_fn(|i| {
+            after.segments_ns[i].saturating_sub(profile_before.segments_ns[i])
+        });
+        sample.join_wait_ns = std::array::from_fn(|i| {
+            after.join_wait_ns[i].saturating_sub(profile_before.join_wait_ns[i])
+        });
+        sample.join = crate::callback_profile::take_join();
+        crate::callback_profile::record(sample);
+    }
+}
+
+/// The hooked hourly update. Its return ends an hour: the capture of that hour reads the state
+/// the update left, on this thread when the capture holds the game and beside the frame when
+/// the command batch is hooked ([`crate::capture_point`]).
 pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     #[cfg(feature = "worker_sampler")]
     let sampler_callback = crate::worker_sampler::callback();
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::Hourly);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
-    let hook_entry = qpc();
     let shared = unsafe { &*SHARED.load(Ordering::Acquire) };
-    let admission = crate::runtime::admit_hourly_capture();
-    let recording = admission.is_some()
-        && shared.recording.load(Ordering::Acquire)
-        && !crate::allocation::failed();
-    if recording {
-        let history_capture = shared.history_frames.capture();
-        let _frame_priority = shared.frame_priority.callback();
-        let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
-        let _reads = crate::read_accounting::Capture::new();
-        let memory = unsafe { LiveMemory::new() };
-        #[cfg(any(test, feature = "acquisition_profile"))]
-        let memory = engine_native::memory::CountedMemory::new(memory);
-        let world_generation = crate::world_lifetime::generation();
-        // Read the clock at entry: it is still the hour just ended, the trampoline
-        // has not run. The frame's identity and the settled state the body reads.
-        let clock_start = qpc();
-        let clock_capture = unsafe { shared.prepared_clock_capture(&memory) };
-        let (entry, campaign_epoch) = match clock_capture.read(&memory, shared.base) {
-            Ok(value) => (Some(value.0), value.1),
-            Err(_) => (None, 0),
-        };
-        let entry = entry.filter(|_| {
-            world_generation != u64::MAX && world_generation == crate::world_lifetime::generation()
-        });
-        crate::world_lifetime::boundary(world_generation, entry.is_some());
-        crate::allocation::set_context(crate::allocation::Context {
-            campaign_id: entry.and_then(|clock| clock.campaign_id.try_into().ok()),
-            branch: None,
-            load_signal: entry.map(|clock| clock.play_session_started_at),
-            failed_hour: entry.map(|clock| clock.hour),
-        });
-        crate::equipment_destruction::boundary(
-            entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
-        );
-        crate::naval_result_sources::boundary(
-            entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
-        );
-        crate::experience_gains::boundary(
-            entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
-        );
-        crate::air_losses::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
-        crate::fuel_awards::boundary();
-        crate::building_bombing::boundary(
-            entry.map(|clock| clock.with_campaign_id(campaign_epoch)),
-        );
-        crate::nuclear_strikes::boundary(entry.map(|clock| clock.with_campaign_id(campaign_epoch)));
-        let entry_ticks = qpc() - clock_start;
-        #[cfg(feature = "callback_profile")]
-        let profile_before = callback_profile_counters(shared);
-        #[cfg(feature = "callback_profile")]
-        crate::callback_profile::reset_join();
-        #[cfg(feature = "callback_profile")]
-        let profile_stamp = crate::callback_profile::Stamp::start();
-        let dispatched = qpc();
-        crate::hour_stages::begin(dispatched);
-        let mut phases = HourPhases {
-            entry_ns: shared.ns(dispatched - hook_entry),
-            ..HourPhases::default()
-        };
-        phases.free_frames = u32::try_from(shared.frames.len()).unwrap_or(u32::MAX);
-        if phases.free_frames == 0 {
-            phases.holders = Some(holders(shared));
-        }
-        let index = shared.take_frame(&mut phases.frame_grow_ns);
-        if let Some(index) = index {
-            let slot = shared.frames.slot(index);
-            history_capture.frame(&slot.fence);
-            slot.completed.store(0, Ordering::Relaxed);
-            slot.callback_tail.store(0, Ordering::Relaxed);
-        }
-        // The body reads on this hot core; pool workers read in parallel and
-        // this thread helps drain them. A Rust panic must never unwind across
-        // the extern boundary into the game: contain it and drop the hour.
-        let job = Dispatch {
-            world_generation,
-            campaign_epoch,
-            index,
-            entry,
-            entry_ticks,
-            dispatched,
-            phases,
-        };
-        let priority = CallbackPriority::raise();
-        if unsafe { guarded_acquisition(shared, entry, || acquire(shared, job)) }
-            && let Some(index) = index
-        {
-            shared.frames.slot(index).callback_tail.store(1, Ordering::Release);
-        }
-        drop(priority);
-        crate::allocation::attempted_hour(None);
-        #[cfg(feature = "callback_profile")]
-        {
-            let mut sample = profile_stamp.finish(shared.frequency);
-            let after = callback_profile_counters(shared);
-            sample.hour = entry.map(|clock| clock.hour);
-            sample.frame_grow_ns = after
-                .frame_grow_ns
-                .saturating_sub(profile_before.frame_grow_ns);
-            sample.setup_ns = after.setup_ns.saturating_sub(profile_before.setup_ns);
-            sample.parallel_ns = after.parallel_ns.saturating_sub(profile_before.parallel_ns);
-            sample.residual_ns = after.residual_ns.saturating_sub(profile_before.residual_ns);
-            sample.dispatch_ns = after.dispatch_ns.saturating_sub(profile_before.dispatch_ns);
-            sample.phase_calls = after.phase_calls.saturating_sub(profile_before.phase_calls);
-            sample.segments_ns = std::array::from_fn(|i| {
-                after.segments_ns[i].saturating_sub(profile_before.segments_ns[i])
-            });
-            sample.join_wait_ns = std::array::from_fn(|i| {
-                after.join_wait_ns[i].saturating_sub(profile_before.join_wait_ns[i])
-            });
-            sample.join = crate::callback_profile::take_join();
-            crate::callback_profile::record(sample);
-        }
-    }
-    drop(admission);
+    let recording = shared.recording.load(Ordering::Acquire) && !crate::allocation::failed();
+    let update = crate::capture_point::update_entered();
     #[cfg(feature = "worker_sampler")]
     drop(sampler_callback);
-    // Run the trampoline (this hour's tick) only after every live read finished.
     let original_begin = qpc();
     let original: unsafe extern "system" fn(usize, usize) =
         unsafe { std::mem::transmute(shared.trampoline) };
@@ -2273,13 +2349,14 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             .fetch_add(shared.ns(original_end - original_begin), Ordering::Relaxed);
         shared.native_tick_calls.fetch_add(1, Ordering::Relaxed);
     }
+    crate::capture_point::hour_ended(update);
     drop(timing);
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
 /// The processor the game thread runs on; `None` with several processor groups, whose
 /// group-relative numbers the core table cannot place.
-fn main_processor() -> Option<u32> {
+pub(crate) fn main_processor() -> Option<u32> {
     use windows_sys::Win32::System::Threading::{
         GetActiveProcessorGroupCount, GetCurrentProcessorNumber,
     };
@@ -2376,9 +2453,7 @@ impl Drop for CallbackPriority {
     }
 }
 
-/// Every live read of the hour that just ended, on the game thread inside the
-/// hook. The trampoline has not run, so the state is the settled end-of-hour
-/// boundary, read exactly as the original collector did.
+/// Every live read of the state the hour's update left, while nothing writes the simulation.
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
     let memory = unsafe { LiveMemory::new() };
     #[cfg(test)]
@@ -2395,6 +2470,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
         entry_ticks,
         dispatched,
         mut phases,
+        full: requested,
     } = dispatch;
     let allocator_begin = crate::ALLOCATOR.hold();
     let cycles_begin = crate::spool_phases::thread_cycles();
@@ -2533,7 +2609,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
         let mut capitulation_report = extended::intel::CapitulationCopyReport::default();
         let mut decode_hour = 0;
         let mut decode_force_full = false;
-        // Disjoint block phases (game-thread wall); default to dispatched so a
+        // Disjoint block phases (capture wall); default to dispatched so a
         // clockless frame lands entirely in residual.
         let mut ts_setup = dispatched;
         let mut ts_parallel = dispatched;
@@ -2553,7 +2629,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             let cadence = unsafe { &mut *shared.cadence.get() };
             let continuous = cadence.continuous(&clock);
             let recovery = shared.force_next.swap(false, Ordering::AcqRel);
-            let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
+            let refresh = shared.refresh_next.swap(false, Ordering::AcqRel) | requested;
             forget_unpublished_families(shared);
             phases.full_reasons = cadence.full_reasons(&clock)
                 | u8::from(recovery) * FULL_RECOVERY
@@ -2848,7 +2924,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             // Both consumers borrow the same original registry census. Its
             // worker prepares their full storage before either job is queued.
             let naval = decode::acquire_naval_job();
-            // SAFETY: the hourly callback is the split's only reader and writer.
+            // SAFETY: the capture is the split's only reader and writer.
             unsafe { begin_order_parts(shared, &mut frame.map.orders) };
             let root_pending = queue!(acquisition::Job::OrderRoots(
                 acquisition::OrderRootsRequest {
@@ -4072,7 +4148,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         });
                         // The Naval copy's raw phase reads no wing value: the wing census
                         // is installed when it returns. Behind the wing
-                        // join it was the next join the game thread waited for (0.18 ms
+                        // join it was the next join the capturing thread waited for (0.18 ms
                         // per hour at 1943, int_761c274).
                         let naval_ctx = extended::naval_history::NavalCopyContext {
                             base: shared.base,
@@ -4161,7 +4237,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                         };
                         weather_pending = Some({
                             let mut payload = decode::acquire_weather_job();
-                            // SAFETY: game thread; the previous callback returned it.
+                            // SAFETY: the capture; the previous capture returned it.
                             payload.carry = unsafe { &mut *shared.weather_carry.get() }.take();
                             if let Some(carry) = payload.carry.as_mut() {
                                 carry.begin(
@@ -5210,7 +5286,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     if failure.is_some() || request.payload.staging_failed() {
                         carry.forget();
                     }
-                    // SAFETY: game thread; the Weather job has joined.
+                    // SAFETY: the capture; the Weather job has joined.
                     unsafe { *shared.weather_carry.get() = Some(carry) };
                 }
                 weather_report = report;
@@ -7035,7 +7111,7 @@ fn stitch_can_advance(
 
 /// Whether the Orders job and every part have completed (a refused one is
 /// complete: it never runs), so that joining them neither waits nor runs one
-/// on the game thread.
+/// on the capturing thread.
 fn orders_complete(
     batch: &acquisition::Batch<'_>,
     orders: &PendingAcquisition,
@@ -7159,7 +7235,7 @@ fn settle_stitch(
 /// ([`charge_order_parts`]).
 ///
 /// # Safety
-/// Only the hourly callback reads and writes `shared`'s order split.
+/// Only the capture reads and writes `shared`'s order split.
 unsafe fn begin_order_parts(shared: &Shared, orders: &mut crate::map_capture::Orders) {
     // SAFETY: forwarded from the caller.
     let split = unsafe { *shared.order_split.get() };
@@ -7474,7 +7550,7 @@ fn elapsed(begin: i64) -> u64 {
 pub(crate) mod wars_test_kit;
 
 /// Whether the modifier definition table header differs from the previous
-/// hour's; one guarded 16-byte read on the game thread. Records the new value.
+/// hour's; one guarded 16-byte read in the capture. Records the new value.
 fn modifier_table_moved(shared: &Shared, memory: &impl engine_native::Memory) -> bool {
     let observed = engine_native::modifier_definition::table(memory, shared.base)
         .map_or([0, u64::MAX], |table| {
@@ -7513,7 +7589,7 @@ fn new_division_mark(
     )
 }
 
-/// The game-thread ticks a frame records for an extended table: a skipped
+/// The capture ticks a frame records for an extended table: a skipped
 /// table keeps zero cost, except CountryIntel, whose walk moves to a later
 /// hour when its shared buffer was held (`daily_intel::Loan::borrow`). That
 /// retried walk is a real read, so it keeps its ticks: the oracle tells a

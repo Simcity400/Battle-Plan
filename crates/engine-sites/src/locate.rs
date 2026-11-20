@@ -576,9 +576,11 @@ impl Located {
             return Err(Withheld::new(k.name, "not a code site"));
         };
         let (original, verified) = index(key).map_or(([0; ORIGINAL], 0), |i| self.originals[i]);
+        let function = self.base + self.functions[f as usize].unwrap_or(0) as usize;
         Ok(Code {
             address,
-            function: self.base + self.functions[f as usize].unwrap_or(0) as usize,
+            function,
+            end: function + FUNCTIONS[f as usize].len as usize,
             original,
             verified: usize::from(verified),
         })

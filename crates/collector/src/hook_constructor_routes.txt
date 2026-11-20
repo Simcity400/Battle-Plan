@@ -82,10 +82,22 @@ call:crate::building_bombing::buildings
 call:crate::building_bombing::capacity
 call:crate::building_bombing::prepare
 call:crate::building_bombing::restore_sequence
+# The capture thread starts with the other workers and is in the owned-worker list by its id;
+# once every family is installed, captures leave the game thread only if it started and the
+# command batch's hook is live. Detach stops and joins it after capture admission has closed.
+# None constructs hooks or reads the game.
+call:crate::capture_point::Thread::start
+call:crate::capture_point::set_beside
+# Detach waits a bounded time for the last ended hour to be read at a batch's return, then
+# records every hour still unread as lost once no capture can run. None constructs hooks.
+call:crate::capture_point::drain
+call:crate::capture_point::take_unread
+call:sampling::record_lost
 # The performance counter times a detach restore batch for its progress step; it reads
 # no game memory and constructs no hook.
 call:crate::clock::qpc
 call:crate::combat_log_prune::release_storage
+call:crate::command_batch::enabled
 call:crate::country_input_changes::presize_countries
 call:crate::country_scale::Sizing::for_slots
 call:crate::country_scale::note_air_wing_name_bytes
@@ -263,7 +275,7 @@ call:world_restore_ready
 call:write_status
 call:write_status_bytes
 macro-definition:refuse_detach:2869dd9f05ed5db5
-macro-definition:retain_detach:f3d13ab062cd09ea
+macro-definition:retain_detach:7d305d740da3d022
 macro:crate::status::status
 macro:format
 macro:format_args
@@ -312,6 +324,7 @@ method:get
 method:get_or_insert
 method:get_or_insert_with
 method:handle
+method:id
 method:into
 method:into_iter
 method:is_empty

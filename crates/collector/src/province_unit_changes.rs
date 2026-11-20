@@ -117,7 +117,7 @@ pub fn active() -> usize {
     DOMAIN.provinces.active()
 }
 
-/// Game thread, in the hourly callback before any capture. `invalidate`
+/// In each capture, before its readers. `invalidate`
 /// after a load, gap or recovery: nothing observed before it certifies
 /// anything.
 pub fn boundary(invalidate: bool) {

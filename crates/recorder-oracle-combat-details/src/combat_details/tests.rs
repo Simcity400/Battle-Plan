@@ -979,9 +979,18 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         names_group: group.map(<[u8]>::to_vec),
         ..Default::default()
     };
+    let (older, foreign) = (3_u64 << 32 | 52, 4_u64 << 32 | 52);
     let saved_templates = BTreeMap::from([
         (standard, template(Some(b"SOV_INF_01"))),
         (fake, template(None)),
+        (older, template(Some(b"SOV_INF_02"))),
+        (
+            foreign,
+            save::DivisionTemplate {
+                country: b"GER".to_vec(),
+                ..template(Some(b"GER_INF_01"))
+            },
+        ),
     ]);
     let templates = NameTemplates {
         saved: &saved_templates,
@@ -1110,7 +1119,14 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         // Not recorded where the game shows it.
         ("unrecorded", &programmatic, Some(fake)),
         // Recorded where the game shows the group's entry.
-        ("recorded", &shown, None),
+        (
+            "recorded",
+            &replay_data::rows::NameOperands {
+                group: b"SOV_INF_01".to_vec(),
+                ..shown.clone()
+            },
+            None,
+        ),
     ] {
         let mut report = Report::default();
         naming(
@@ -1290,17 +1306,49 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     // A witnessed zero reference holds no group either.
     let report = run(Naming::from(&shown).with_template(Some(0)), &templates);
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // Without the witness the template a load rebinds stands in, so the
-    // member of a deleted template is a difference, not waived.
-    let report = run(Naming::from(&shown), &templates);
-    assert!(
-        report
-            .differences
-            .iter()
-            .any(|difference| difference.contains("override")),
-        "{:?}",
-        report.differences
-    );
+    // Without the witness, a load rebinds the member to the division's
+    // template, but deployment can leave the live member on an older template
+    // of its country or a deleted one. Only those groups are admitted, under
+    // a named limitation; the override then follows the recorded group.
+    for (operands, admitted) in [
+        (Naming::from(&shown), true),
+        (
+            Naming {
+                group: b"SOV_INF_02",
+                ..Naming::from(&programmatic)
+            },
+            true,
+        ),
+        (
+            Naming {
+                group: b"GER_INF_01",
+                ..Naming::from(&programmatic)
+            },
+            false,
+        ),
+        (
+            Naming {
+                custom: b"2. Strelkovaya",
+                ..Naming::from(&shown)
+            },
+            false,
+        ),
+    ] {
+        let deleted_group = operands.group.is_empty();
+        let report = run(operands, &templates);
+        assert_eq!(
+            report.differences.is_empty(),
+            admitted,
+            "{:?}",
+            report.differences
+        );
+        assert!(
+            report.limitations.contains_key(UNWITNESSED_MEMBER_TEMPLATE)
+                == (admitted || deleted_group),
+            "{:?}",
+            report.limitations
+        );
+    }
     // A witnessed reference to a saved template is compared against it.
     let report = run(
         Naming::from(&programmatic).with_template(Some(fake)),

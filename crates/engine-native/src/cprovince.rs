@@ -2273,7 +2273,7 @@ impl GeometryPacket {
         self.held_counts
     }
 
-    /// Allocation is permitted off the hourly callback.
+    /// Allocation is permitted off the capturing thread.
     pub fn grow(&mut self, requested: GeometryCapacities) -> std::io::Result<()> {
         let capacities = GeometryCapacities {
             provinces: self.capacities.provinces.max(requested.provinces),

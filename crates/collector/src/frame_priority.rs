@@ -3,14 +3,14 @@ use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
         OnceLock,
-        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+use windows_sys::Win32::Foundation::{HANDLE, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW, GetCurrentThread,
     GetCurrentThreadId, OpenThread, SetEvent, SetThreadPriority, SetThreadSelectedCpuSets,
     SetWaitableTimer, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_IDLE,
     THREAD_PRIORITY_NORMAL, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_INFORMATION,
@@ -181,16 +181,12 @@ impl Cores {
         {
             return None;
         }
-        let mut cores = Self {
-            sets: [(0, 0, 0); GROUP_PROCESSORS],
-            len: 0,
-            others: [[0; GROUP_PROCESSORS]; GROUP_PROCESSORS],
-            others_len: [0; GROUP_PROCESSORS],
-        };
+        let mut entries = [(0, 0, 0); GROUP_PROCESSORS];
+        let mut len = 0;
         let entry_size = size_of::<SYSTEM_CPU_SET_INFORMATION>();
         let bytes = buffer.as_ptr().cast::<u8>();
         let mut offset = 0usize;
-        while offset + entry_size <= length as usize && cores.len < GROUP_PROCESSORS {
+        while offset + entry_size <= length as usize && len < GROUP_PROCESSORS {
             // SAFETY: entries are packed back to back, each starting with its own size.
             let entry = unsafe { &*bytes.add(offset).cast::<SYSTEM_CPU_SET_INFORMATION>() };
             if (entry.Size as usize) < entry_size {
@@ -199,12 +195,30 @@ impl Cores {
             if entry.Type == CpuSetInformation {
                 // SAFETY: the CpuSet arm is the active one for CpuSetInformation entries.
                 let set = unsafe { entry.Anonymous.CpuSet };
-                if set.Group == 0 && usize::from(set.CoreIndex) < GROUP_PROCESSORS {
-                    cores.sets[cores.len] = (set.LogicalProcessorIndex, set.CoreIndex, set.Id);
-                    cores.len += 1;
+                if set.Group == 0 {
+                    entries[len] = (set.LogicalProcessorIndex, set.CoreIndex, set.Id);
+                    len += 1;
                 }
             }
             offset += entry.Size as usize;
+        }
+        Self::from_sets(&entries[..len])
+    }
+
+    /// The table for group-0 `(logical processor, core, id)` entries; none when there are none.
+    fn from_sets(entries: &[(u8, u8, u32)]) -> Option<Self> {
+        let mut cores = Self {
+            sets: [(0, 0, 0); GROUP_PROCESSORS],
+            len: 0,
+            others: [[0; GROUP_PROCESSORS]; GROUP_PROCESSORS],
+            others_len: [0; GROUP_PROCESSORS],
+        };
+        let placed = entries
+            .iter()
+            .filter(|&&(_, core, _)| usize::from(core) < GROUP_PROCESSORS);
+        for &entry in placed.take(GROUP_PROCESSORS) {
+            cores.sets[cores.len] = entry;
+            cores.len += 1;
         }
         for core in 0..GROUP_PROCESSORS {
             for &(_, other, id) in &cores.sets[..cores.len] {
@@ -227,6 +241,82 @@ impl Cores {
     }
 }
 
+/// The machine's core table, read once by the first collector thread that needs it.
+static CORES: OnceLock<Option<Cores>> = OnceLock::new();
+/// Refused selections or clearings by threads keeping off the game thread's core.
+static AWAY_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// The CPU sets keeping a thread off the physical core running the game thread's `processor`:
+/// none with several processor groups (`None`), an unknown topology, or no other core.
+fn away_sets(cores: Option<&Cores>, processor: Option<u32>) -> Option<&[u32]> {
+    cores?.away_from(processor?)
+}
+
+fn cores() -> Option<&'static Cores> {
+    CORES.get_or_init(Cores::read).as_ref()
+}
+
+/// [`away_sets`] for this machine. Never call it on a game thread: the first call with a
+/// processor reads the table.
+pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
+    let processor = processor?;
+    away_sets(cores(), Some(processor))
+}
+
+/// Selects `sets` for `thread`, or clears its selection with `None`.
+fn select(thread: HANDLE, sets: Option<&[u32]>) -> bool {
+    let (list, count) = sets.map_or((std::ptr::null(), 0), |sets| {
+        (sets.as_ptr(), sets.len() as u32)
+    });
+    // SAFETY: callers name a live collector-owned thread; a null, empty list clears.
+    unsafe { SetThreadSelectedCpuSets(thread, list, count) != 0 }
+}
+
+/// [`select`] for a thread keeping off the game thread's core; a refusal is counted.
+pub(crate) fn select_away(thread: HANDLE, sets: Option<&[u32]>) -> bool {
+    let selected = select(thread, sets);
+    if !selected {
+        AWAY_FAILURES.fetch_add(1, Ordering::Relaxed);
+    }
+    selected
+}
+
+pub(crate) fn away_failures() -> u64 {
+    AWAY_FAILURES.load(Ordering::Relaxed)
+}
+
+/// The calling thread's own selection off the game thread's core, changed only when the
+/// wanted one differs from what it last applied.
+#[derive(Default)]
+pub(crate) struct AwayFromGame {
+    /// The game processor the last change was for.
+    wanted: Option<u32>,
+    /// The selection installed; one per core, so compared by address.
+    applied: Option<&'static [u32]>,
+}
+impl AwayFromGame {
+    /// Keeps the calling thread off `processor`'s physical core, or anywhere with `None`. One
+    /// attempt per change: a refusal is counted and not retried until the wanted core changes.
+    pub(crate) fn follow(&mut self, processor: Option<u32>) {
+        if processor == self.wanted {
+            return;
+        }
+        self.wanted = processor;
+        let sets = away_from_game(processor);
+        if sets.map(<[u32]>::as_ptr) == self.applied.map(<[u32]>::as_ptr) {
+            return;
+        }
+        // SAFETY: the pseudo-handle names only the calling thread.
+        if select_away(unsafe { GetCurrentThread() }, sets) {
+            self.applied = sets;
+        }
+    }
+
+    pub(crate) fn confined(&self) -> bool {
+        self.applied.is_some()
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Boundary {
@@ -246,7 +336,6 @@ pub(crate) struct Pipeline {
     ticking: AtomicU32,
     /// The ticking word this reconciliation pass applies CPU sets for.
     applying: AtomicU32,
-    cores: OnceLock<Option<Cores>>,
     targets: [OnceLock<Target>; SLOTS],
     event: OnceLock<OwnedHandle>,
     stopping: AtomicBool,
@@ -264,7 +353,6 @@ impl Pipeline {
             callbacks: AtomicUsize::new(0),
             ticking: AtomicU32::new(0),
             applying: AtomicU32::new(0),
-            cores: OnceLock::new(),
             targets: [const { OnceLock::new() }; SLOTS],
             event: OnceLock::new(),
             stopping: AtomicBool::new(false),
@@ -335,7 +423,7 @@ impl Pipeline {
         if word == 0 || word == NO_PROCESSOR {
             return None;
         }
-        self.cores.get()?.as_ref()?.away_from(word - 1)
+        away_from_game(Some(word - 1))
     }
     pub(crate) fn callback(&self) -> Callback<'_> {
         self.callbacks.fetch_add(1, Ordering::SeqCst);
@@ -497,10 +585,8 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
     } else {
         None
     };
-    if let Some(sets) = sets {
-        // SAFETY: as above; the id slice lives in the pipeline through the call.
-        let selected =
-            unsafe { SetThreadSelectedCpuSets(handle, sets.as_ptr(), sets.len() as u32) != 0 };
+    if sets.is_some() {
+        let selected = select(handle, sets);
         // A failed reselection may leave the previous one installed: keep it to clear.
         if selected {
             target.confined.store(true, Ordering::SeqCst);
@@ -510,8 +596,7 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
         }
         applied &= selected;
     } else if target.confined.load(Ordering::SeqCst) {
-        // SAFETY: as above; a null, empty list clears the selection.
-        let cleared = unsafe { SetThreadSelectedCpuSets(handle, std::ptr::null(), 0) != 0 };
+        let cleared = select(handle, None);
         if cleared {
             target.confined.store(false, Ordering::SeqCst);
         }
@@ -618,7 +703,7 @@ impl Reconciler {
                 let started = Instant::now();
                 let now = || started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
                 let mut budget = Budget::default();
-                let _ = worker.cores.set(Cores::read());
+                let _ = cores();
                 loop {
                     let stopping = worker.stopping.load(Ordering::SeqCst);
                     worker.reconcile(&mut budget, now, |_, target, value| {

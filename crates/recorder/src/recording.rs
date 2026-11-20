@@ -2266,7 +2266,7 @@ pub(crate) fn capture(
                 process_id: pid,
                 process_start_time: process.start_time,
                 qpc_frequency: frequency as u64,
-                sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+                sample_boundary: replay_data::identity::SampleBoundary::AfterHourlyUpdate,
                 capture_mode,
                 identity,
             };
@@ -3674,7 +3674,7 @@ fn request_refresh(output: &Path) -> Result<(), String> {
         }
         if fs::read_to_string(&ack).is_ok_and(|text| text.trim() == token) {
             withdraw();
-            println!("Full refresh requested: the next hourly sample reads every scheduled table.");
+            println!("Full refresh requested: the next hour's sample reads every scheduled table, taken as the following hourly update is entered.");
             return Ok(());
         }
         if Instant::now() >= deadline {

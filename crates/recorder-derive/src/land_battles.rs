@@ -4,9 +4,11 @@
 //! fell is a new battle, the old one ending there. A battle ends when its row is gone at the read
 //! after its last, when a finalizer ends it, or, when its census is not read, at an hour not known.
 //!
-//! A finalizer of the hour's land event drain, read whole, ends the newest battle of its combat
-//! when the province is equal and its end hour falls at the battle's last read or the hour after,
-//! inside the drain; one that ends none is a result of its own. The collector drains land events
+//! A finalizer of the hour's land event drain, read whole, ends a battle of its combat when the
+//! province is equal and its end hour falls from the hour before the battle's last read to the
+//! hour after, inside the drain, and not before the read that preceded its first: the battle the
+//! hour's census closed is tried before the one that replaced it. One that ends none is a result
+//! of its own. The collector drains land events
 //! at every hourly boundary and a drain after a lost one is itself incomplete, so a finalizer
 //! arrives in the hour its battle ends or not at all: no battle is held once its end is written.
 //!
@@ -247,13 +249,14 @@ struct Ended {
     outcome: Option<Outcome>,
 }
 
-/// Whether `finalizer`, of a drain of the hours after `from`, ends `battle`, last read at `read`.
+/// Whether `finalizer`, of the drain since the read at `from`, ends `battle`, last read at `read`.
+/// A read at an hour holds what the game did from the read before, still stamped with its hour.
 fn ends(battle: &Battle, read: Option<i32>, finalizer: &Finalizer, from: i32) -> bool {
     let Some(read) = read else { return false };
     battle.province == Some(finalizer.province)
-        && battle.start <= finalizer.end_hour
+        && battle.start.saturating_sub(1) <= finalizer.end_hour
         && read >= from
-        && read <= finalizer.end_hour
+        && read.saturating_sub(1) <= finalizer.end_hour
         && read.checked_add(1).is_some_and(|next| finalizer.end_hour <= next)
 }
 
@@ -389,29 +392,26 @@ impl LandBattles {
         Ok(())
     }
 
-    /// The finalizers of the hour's drain of the hours after `from`: each ends the newest battle
-    /// of its combat, or is a result of its own. Returns those of their own.
+    /// The finalizers of the hour's drain since the read at `from`, stamped from `from` on: each
+    /// ends a battle of its combat the hour closed without a result, else its live battle, or is a
+    /// result of its own. Returns those of their own.
     fn finalize(&mut self, hour: &Hour<'_>, from: i32, ended: &mut Vec<Ended>) -> io::Result<Vec<Outcome>> {
         let at = hour.hour;
         let mut own = Vec::new();
         for finalizer in finalizers(hour)? {
-            if finalizer.end_hour <= from || finalizer.end_hour > at {
+            if finalizer.end_hour < from || finalizer.end_hour > at {
                 continue;
             }
             let combat = finalizer.combat;
-            if let Some(battle) = self.live.get(&combat) {
-                if ends(battle, Some(at), &finalizer, from) {
-                    let battle = self.live.remove(&combat).expect("a live battle");
-                    self.finalized.push(combat);
-                    let outcome = Some(Outcome::of(hour, &finalizer));
-                    ended.push(Ended { combat, battle, kind: End::FINALIZED, found: at, last_read: Some(at), outcome });
-                    continue;
-                }
-            } else if let Some(end) = ended.iter_mut().rev().find(|end| end.combat == combat)
-                && end.outcome.is_none()
-                && ends(&end.battle, end.last_read, &finalizer, from)
-            {
+            if let Some(end) = ended.iter_mut().rev().find(|end| end.combat == combat && end.outcome.is_none() && ends(&end.battle, end.last_read, &finalizer, from)) {
                 end.outcome = Some(Outcome::of(hour, &finalizer));
+                continue;
+            }
+            if self.live.get(&combat).is_some_and(|battle| ends(battle, Some(at), &finalizer, from)) {
+                let battle = self.live.remove(&combat).expect("a live battle");
+                self.finalized.push(combat);
+                let outcome = Some(Outcome::of(hour, &finalizer));
+                ended.push(Ended { combat, battle, kind: End::FINALIZED, found: at, last_read: Some(at), outcome });
                 continue;
             }
             own.push(Outcome::of(hour, &finalizer));
@@ -486,7 +486,7 @@ impl Writer for LandBattles {
     }
 
     fn version(&self) -> u32 {
-        2
+        3
     }
 
     fn tables(&self) -> &'static [Output] {

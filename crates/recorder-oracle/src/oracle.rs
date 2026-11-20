@@ -481,7 +481,7 @@ fn validate_identity(frame: &DecodedFrame, save: &Save) -> io::Result<()> {
 fn boundary_description(boundary: SampleBoundary) -> &'static str {
     match boundary {
         SampleBoundary::AfterHourlyUpdate => {
-            "frames sample the state just after hour H's hourly update returned"
+            "frames sample the state after hour H's hourly update and, where the command batch is observed, the commands its batch ran behind it"
         }
         SampleBoundary::EndOfHour => {
             "frames sample the state at the end of hour H, at the entry of the next hourly update before its clock increment"
@@ -492,7 +492,7 @@ fn boundary_description(boundary: SampleBoundary) -> &'static str {
 fn boundary_limitation(boundary: SampleBoundary) -> &'static str {
     match boundary {
         SampleBoundary::AfterHourlyUpdate => {
-            "commands after the hourly callback can change state before saving without advancing the hour; matching hours do not prove the same command boundary. The boundary witness below measures that gap from the engine's own allocation counters; differences still fail either way"
+            "frames are read after their hour's update and, where the command batch is observed, the commands its batch ran behind it, but the frame compared with a save is taken to be one a refresh settled, read as the next hourly update is entered: it follows every command of hour H, including any executed after the save while paused or after unpausing and before the next tick; matching hours do not prove that no command ran after the save. The boundary witness below measures that gap from the engine's own allocation counters; differences still fail either way"
         }
         SampleBoundary::EndOfHour => {
             "the end-of-hour sample follows every command of hour H, including any executed after the save while paused (the session drain does not check pause) or after unpausing and before the next tick; matching hours do not prove that no command ran after the save. The boundary witness below measures that gap from the engine's own allocation counters; differences still fail either way"
@@ -527,7 +527,7 @@ fn compare_core(
     report.sample_boundary = Some(boundary);
     report.limitation(boundary_limitation(boundary), "all captured tables");
     report.attempt("boundary counters", |report| {
-        compare_boundary_counters(frame, save, boundary, report)
+        compare_boundary_counters(frame, save, report)
     });
     report.limitation(
         "save session time includes elapsed wall time; it is not the captured persisted play_time",

@@ -388,6 +388,8 @@ pub const NAVAL_RESULTS_MAP_MASK: usize = 0x608;
 /// date. Command drain uses server polymorphic dispatch; this fixed entry
 /// fires once per game hour.
 pub const HOURLY_UPDATE_RVA: Rva = Rva(0x001f_34d0);
+/// Per-frame command batch: runs every queued command, the hourly update among them.
+pub const COMMAND_BATCH_RVA: Rva = Rva(0x022c_6480);
 /// Exact hourly-update entry bytes.
 pub const HOURLY_UPDATE_SENTINEL: [u8; 16] = [
     0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0xac,

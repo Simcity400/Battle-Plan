@@ -160,6 +160,7 @@ pub(crate) fn capture(
                     entry_ticks: 0,
                     dispatched: qpc(),
                     phases: HourPhases::default(),
+                    full: false,
                 },
                 CountedMemory::new(Traced {
                     world: &world,

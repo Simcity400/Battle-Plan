@@ -290,26 +290,63 @@ pub fn capture_presentation(
             row.character_state = 2;
             row.character_country = r.field(character, ccharacter::COUNTRY)?;
             row.character_gender = r.field(character, 0x70)?;
-            let portraits = r.array(character, ccharacter::PORTRAIT_DATA, 0x38)?;
-            crate::allocation::resize_default(&mut row.portraits, portraits.count as usize)
-                .map_err(|_| "commander portrait allocation failed")?;
-            row.portraits_len = portraits.count as usize;
-            for index in 0..portraits.count {
-                let entry = portraits
-                    .element(index, 0x38)
-                    .ok_or("commander portrait address overflow")?;
-                let start = row.portrait_text_len;
-                let len = r.text(entry, 0x10, &mut row.portrait_text)?;
-                row.portraits[index as usize] = PortraitEntry {
-                    role: r.field(entry, 0)?,
-                    size: r.field(entry, 4)?,
-                    is_set: r.field(entry, 8)?,
-                    kind: r.field(entry, 0xc)?,
-                    text_start: start,
-                    text_len: len,
-                };
-                row.portrait_text_len += len;
-            }
+            let live = (|| {
+                let portraits = r.array(character, ccharacter::PORTRAIT_DATA, 0x38)?;
+                crate::allocation::resize_default(&mut row.portraits, portraits.count as usize)
+                    .map_err(|_| "commander portrait allocation failed")?;
+                row.portraits_len = portraits.count as usize;
+                for index in 0..portraits.count {
+                    let entry = portraits
+                        .element(index, 0x38)
+                        .ok_or("commander portrait address overflow")?;
+                    let start = row.portrait_text_len;
+                    let len = r.text(entry, 0x10, &mut row.portrait_text)?;
+                    row.portraits[index as usize] = PortraitEntry {
+                        role: r.field(entry, 0)?,
+                        size: r.field(entry, 4)?,
+                        is_set: r.field(entry, 8)?,
+                        kind: r.field(entry, 0xc)?,
+                        text_start: start,
+                        text_len: len,
+                    };
+                    row.portrait_text_len += len;
+                }
+                Ok(())
+            })();
+            let array = character.wrapping_add(ccharacter::PORTRAIT_DATA);
+            crate::portrait_cache::settled(array, live, |image| {
+                // A writer changed this holder during the capture: its entries as they were.
+                let count = crate::cpdx_array::Array::from_header(image.header, 0x38)
+                    .ok_or("commander array invalid")?
+                    .count as usize;
+                if count != image.entries.len() {
+                    return Err("character portrait pre-image incomplete");
+                }
+                crate::allocation::resize_default(&mut row.portraits, count)
+                    .map_err(|_| "commander portrait allocation failed")?;
+                row.portraits_len = count;
+                row.portrait_text.clear();
+                row.portrait_text_len = 0;
+                for (index, entry) in image.entries.iter().enumerate() {
+                    let text = image.identity(entry)?;
+                    let start = row.portrait_text_len;
+                    crate::allocation::resize(&mut row.portrait_text, start + text.len(), 0)
+                        .map_err(|_| "commander text allocation failed")?;
+                    row.portrait_text[start..].copy_from_slice(text);
+                    let field =
+                        |at: usize| u32::from_le_bytes(entry.head[at..at + 4].try_into().unwrap());
+                    row.portraits[index] = PortraitEntry {
+                        role: field(0),
+                        size: field(4),
+                        is_set: entry.head[8],
+                        kind: field(0xc),
+                        text_start: start,
+                        text_len: text.len(),
+                    };
+                    row.portrait_text_len += text.len();
+                }
+                Ok(())
+            })?;
             let direct = r.pointer(character, ccharacter::UNIT_LEADER)?;
             row.character_fallback_leader = r.field(character, 0xc8)?;
             let role = if direct != 0 {
@@ -1214,5 +1251,42 @@ mod tests {
                 b"portrait"
             );
         }
+        // A writer is changing the holder during the capture, so the live array is torn: the
+        // capture takes the entries the writer logged as they were when the capture began.
+        use crate::portrait_cache::{EntryImage, HolderImage, test_images};
+        f.u32(CHARACTER + ccharacter::PORTRAIT_DATA + 12, COUNT as u32 + 1);
+        assert!(capture(&f, 0, HANDLE).is_err());
+        let entries: &'static [EntryImage] = Box::leak(Box::new([
+            EntryImage {
+                head: [7, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0],
+                text: [0, 6],
+            },
+            EntryImage {
+                head: [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                text: [6, 0],
+            },
+        ]));
+        let mut header = [0; 16];
+        header[..8].copy_from_slice(&0x10000_u64.to_le_bytes());
+        header[8..12].copy_from_slice(&2_u32.to_le_bytes());
+        header[12..].copy_from_slice(&2_u32.to_le_bytes());
+        let image = HolderImage {
+            header,
+            entries,
+            text: b"before",
+        };
+        test_images::set(CHARACTER + ccharacter::PORTRAIT_DATA, Some(image));
+        let row = capture(&f, 0, HANDLE);
+        test_images::set(0, None);
+        let presentation = row.unwrap().presentation;
+        assert_eq!(presentation.portraits_len, 2);
+        let [first, second] = [presentation.portraits[0], presentation.portraits[1]];
+        assert_eq!((first.role, first.size, first.is_set, first.kind), (7, 1, 1, 2));
+        assert_eq!((second.role, second.text_start, second.text_len), (8, 6, 0));
+        assert_eq!(
+            &presentation.portrait_text[..presentation.portrait_text_len],
+            b"before"
+        );
+        assert_eq!(presentation.role_traits_len, COUNT);
     }
 }

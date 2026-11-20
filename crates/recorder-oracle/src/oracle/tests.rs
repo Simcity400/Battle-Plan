@@ -5390,7 +5390,9 @@ fn country_intel_reads_absent_in_range_records_as_zero_and_keeps_the_count() {
     assert!(lines[0].contains("GER.intel[5000..5010]"));
 }
 
-/// The oracle names the session's sample boundary and its instant limits.
+/// The oracle names the session's sample boundary and its instant limits. The frame compared with
+/// a save is one a refresh settled, read after the save in either boundary, and the report says
+/// it takes it to be one.
 #[test]
 fn the_oracle_selects_the_session_sample_boundary() {
     let (mut frame, save, membership, equipment) = relation_fixture();
@@ -5401,16 +5403,17 @@ fn the_oracle_selects_the_session_sample_boundary() {
     };
     rows[0].debug_current_ref_id = Some(counters.debug_current_ref_id + 2);
     rows[0].unit = Some(counters.unit);
+    let after_save = "engine work ran after the save and before the compared frame was read: 1 counter(s) moved (debug_current_ref_id -2)";
     for (boundary, limitation, verdict) in [
         (
             SampleBoundary::EndOfHour,
             "the end-of-hour sample follows every command of hour H",
-            "engine work ran after the save and before the end-of-hour sample: 1 counter(s) moved (debug_current_ref_id -2)",
+            after_save,
         ),
         (
             SampleBoundary::AfterHourlyUpdate,
-            "commands after the hourly callback can change state before saving",
-            "1 counter(s) are lower in the save (debug_current_ref_id -2)",
+            "frames are read after their hour's update and, where the command batch is observed, the commands its batch ran behind it, but the frame compared with a save is taken to be one a refresh settled",
+            after_save,
         ),
     ] {
         let report = compare_at(&frame, &save, &membership, &equipment, boundary).unwrap();
@@ -5424,6 +5427,13 @@ fn the_oracle_selects_the_session_sample_boundary() {
         );
         let found = report.boundary_verdict.clone().unwrap();
         assert!(found.contains(verdict), "{found}");
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.starts_with("the recording does not mark which frames a refresh settled")),
+            "{boundary}"
+        );
         assert!(differences(&report).is_empty());
     }
     assert!(boundary_description(SampleBoundary::EndOfHour).contains("end of hour H"));
@@ -5459,7 +5469,7 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
     );
     assert!(verdict.contains("does not prove"), "{verdict}");
     assert!(
-        verdict.contains("same-hour writes and untracked allocations"),
+        verdict.contains("writes after the save and untracked allocations"),
         "{verdict}"
     );
     assert_eq!(report.boundary_witness.len(), 13);
@@ -5469,8 +5479,9 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
         13
     );
 
-    // Three objects allocated after the sample; the witness names them and
-    // the comparison still passes, because it never waives a difference.
+    // Three objects allocated in the save beyond the compared frame: a frame read after the
+    // save cannot show that, in either boundary; the witness names them and the comparison
+    // still passes, because it never waives a difference.
     let mut frame = frame.clone();
     let TableView::Complete(TableRows::Clock(rows)) = &mut *frame.tables[TableId::Clock.index()]
     else {
@@ -5481,15 +5492,11 @@ fn the_boundary_witness_reports_changes_without_certifying_an_equal_instant() {
     rows[0].multiplayer_random_count = None;
     let report = compare_at(&frame, &save, &membership, &equipment, after).unwrap();
     let verdict = report.boundary_verdict.clone().unwrap();
-    assert!(verdict.contains("after further engine work"), "{verdict}");
+    assert!(verdict.contains("higher in the save than in the compared frame"), "{verdict}");
+    assert!(verdict.contains("a frame read before the save"), "{verdict}");
     assert!(verdict.contains("debug_current_ref_id "), "{verdict}");
-    // The same gap at the end-of-hour boundary cannot follow the sample.
     let end = compare(&frame, &save, &membership, &equipment).unwrap();
-    let end_verdict = end.boundary_verdict.clone().unwrap();
-    assert!(
-        end_verdict.contains("higher in the save than at the end-of-hour sample"),
-        "{end_verdict}"
-    );
+    assert_eq!(end.boundary_verdict, report.boundary_verdict, "the same ordering at the end-of-hour boundary");
     assert!(differences(&end).is_empty());
     assert!(verdict.contains("navy_id "), "{verdict}");
     assert_eq!(

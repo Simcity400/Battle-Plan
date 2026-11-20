@@ -130,6 +130,9 @@ pub fn at(base: usize, key: Rva) -> Option<usize> {
 pub struct Code {
     pub address: usize,
     pub function: usize,
+    /// The end of the function's fingerprinted bytes; for a function located by its unwind
+    /// entry, that entry's end.
+    pub end: usize,
     original: [u8; ORIGINAL],
     verified: usize,
 }

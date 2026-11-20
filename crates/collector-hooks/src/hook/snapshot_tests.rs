@@ -38,6 +38,7 @@ fn thread(id: u32, handle: usize) -> Thread {
         handle: handle as HANDLE,
         suspended: false,
         ip: None,
+        sp: 0,
         exited: false,
         priority: None,
     }

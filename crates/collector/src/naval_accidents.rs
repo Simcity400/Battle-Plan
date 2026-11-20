@@ -42,7 +42,7 @@ struct Cache {
     charge: crate::raw_memory::Charge,
 }
 impl Cache {
-    /// Called on the existing navy worker, never on the hourly callback.
+    /// Called on the existing navy worker, never in the capture itself.
     /// A world-occurrence change revokes all held identities before reuse.
     pub(crate) fn prepare(
         &mut self,

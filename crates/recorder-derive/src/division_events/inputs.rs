@@ -185,7 +185,8 @@ pub(super) fn deaths(hour: &Hour<'_>) -> io::Result<Vec<(u64, DestroyedDivisions
     Ok(deaths)
 }
 
-/// Every LandEventCoverage span certified complete, (from, to], when the table is complete.
+/// Every LandEventCoverage span certified complete, (from, to], when the table is complete. Its
+/// deaths are stamped from `from` through `to`.
 pub(super) fn covered(hour: &Hour<'_>) -> io::Result<Vec<(i32, i32)>> {
     let mut spans = Vec::new();
     if !hour.complete(TableId::LandEventCoverage) {

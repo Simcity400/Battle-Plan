@@ -1,9 +1,9 @@
-//! Country authentication reused only within one measured hourly callback.
+//! Country authentication reused only within one measured capture.
 //!
 //! A direct `CCountry` roster census seeds exact reads of headers, pointer slots,
 //! links, vtables and identity words. The seed path cannot read country scalars.
 //! Each preparation discards all previous observations. Every consumer remains
-//! inside the quiescent hourly callback, before the trampoline resumes the game.
+//! inside one capture, while nothing writes the simulation.
 //! This cache is not a synchronization mechanism or a cross-hour address cache.
 
 use engine_allocation::SharedBox;

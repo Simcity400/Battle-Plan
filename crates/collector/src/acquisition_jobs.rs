@@ -904,7 +904,7 @@ pub(crate) struct DivisionPartRequest {
 }
 
 // Jobs move preallocated payloads into fixed executor slots. Boxing here would
-// allocate on the hourly callback merely to reduce the enum's stack footprint.
+// allocate in the capture merely to reduce the enum's stack footprint.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Job {
     Characters(CharactersRequest),
@@ -2897,6 +2897,14 @@ impl Pool {
     }
     pub(crate) fn thread_ids(&self) -> Vec<u32> {
         self.executor.thread_ids()
+    }
+    /// See [`acquisition::Pool::hold_pace`].
+    pub(crate) fn hold_pace(&self) {
+        self.executor.hold_pace();
+    }
+    /// See [`acquisition::Pool::beside_pace`].
+    pub(crate) fn beside_pace(&self, regulars: usize, game: Option<u32>) {
+        self.executor.beside_pace(regulars, game);
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.executor

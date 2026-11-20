@@ -2737,7 +2737,11 @@ priorPeak: LandBattlePeak | null,
 /**
  * Each side's, attacker then defender.
  */
-priorSidePeaks: [LandBattlePeak | null, LandBattlePeak | null], runs: Array<LandBattleRun>, losses: Array<LandBattleLossRead>, result: LandBattleResultRead | null, };
+priorSidePeaks: [LandBattlePeak | null, LandBattlePeak | null], runs: Array<LandBattleRun>, losses: Array<LandBattleLossRead>, result: LandBattleResultRead | null,
+/**
+ * The hour its end row was written: its end and result are known from then, dated by their own hours.
+ */
+settledHour?: number, };
 export type LandBattlesReply = { window: number, interval: BattleWindow,
 /**
  * Hours the combat census was read.

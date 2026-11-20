@@ -14,7 +14,7 @@ pub(crate) struct Capture<'a> {
 }
 
 impl Frames {
-    // The single hourly callback publishes its frame before ending this capture.
+    // The single running capture publishes its frame before it ends.
     pub(crate) fn capture(&self) -> Capture<'_> {
         Capture {
             frames: self,

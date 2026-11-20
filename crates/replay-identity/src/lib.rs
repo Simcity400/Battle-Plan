@@ -91,8 +91,9 @@ pub struct Identity {
 /// Which instant of the engine hour a session's frames sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SampleBoundary {
-    /// After the hooked full tick returns, so commands drained later in the
-    /// same hour are absent from hour H.
+    /// After the hooked full tick returns and the commands its batch runs behind it
+    /// (straight after the tick where that batch is not observed), so commands of later
+    /// batches in the same hour are absent from hour H.
     AfterHourlyUpdate,
     /// At the next full tick's entry, before the date increment, so hour H
     /// includes every command of hour H.

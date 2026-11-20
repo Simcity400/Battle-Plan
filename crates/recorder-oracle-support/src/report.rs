@@ -874,7 +874,7 @@ impl Report {
         }
         match self.sample_boundary {
             Some(boundary) => {
-                println!("Boundary witness (engine allocation counters at the {boundary} sample):")
+                println!("Boundary witness (engine allocation counters, {boundary} session, at the compared frame taken as settled by a refresh):")
             }
             None => println!("Boundary witness (engine allocation counters at the sampled tick):"),
         }

@@ -78,8 +78,6 @@ fn run_logging(store: &mut Store, writers: &mut Writers, hour: i32, logged: i32)
             let display_name = TemplateDisplayName { sample_hour: PacketHour::Host, value: TemplateNameValue::Changed { literal: b"Infantry Division".to_vec(), fallback_key: None } };
             let icon = DivisionTemplateIconRow { template: TEMPLATE, priority_unit: 7, priority_unit_name: b"infantry".to_vec(), custom_icon: 3, country: 2, display_name: Recorded::Value(Some(display_name)), ..Default::default() };
             testing::put(store, TableId::DivisionTemplateIcons, &icon, TEXTS).unwrap();
-            let span = LandEventCoverageRow { id: 1, epoch: 1, from_hour: 0, to_hour: 10, complete: true, lost_events: 0 };
-            testing::put(store, TableId::LandEventCoverage, &span, TEXTS).unwrap();
         }
         1 => {
             testing::put(store, TableId::Divisions, &division(D4, 2, 1, 300, 0), TEXTS).unwrap();
@@ -105,8 +103,11 @@ fn run_logging(store: &mut Store, writers: &mut Writers, hour: i32, logged: i32)
             testing::put(store, TableId::Divisions, &division(D5, 2, 0, 400, 0), TEXTS).unwrap();
         }
     }
+    // Each hour's drain since the read before, as the collector writes it.
+    let span = LandEventCoverageRow { id: 1, epoch: 1, from_hour: hour - 1, to_hour: hour, complete: true, lost_events: 0 };
+    testing::put(store, TableId::LandEventCoverage, &span, TEXTS).unwrap();
     if hour == logged {
-        let death = DestroyedDivisionsRow { id: 1, division: D1, owner: 1, killer_country: 2, killer_division: Some(KILLER), province: 555, hour, ..Default::default() };
+        let death =DestroyedDivisionsRow { id: 1, division: D1, owner: 1, killer_country: 2, killer_division: Some(KILLER), province: 555, hour, ..Default::default() };
         testing::put(store, TableId::DestroyedDivisions, &death, TEXTS).unwrap();
     }
     store.settle();
@@ -250,7 +251,8 @@ fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
 }
 
 /// DestroyedDivisions is a log: a death logged the hour before its division's removal is kept from
-/// that hour, through a resume, and dates the removal.
+/// that hour, through a resume, and dates the removal: the removal's drain holds deaths stamped
+/// with the hour of the read before it.
 #[test]
 fn a_death_logged_the_hour_before_its_removal_dates_it_through_a_resume() {
     let lost = key(DivisionEventRow::LOST, 2, D1);

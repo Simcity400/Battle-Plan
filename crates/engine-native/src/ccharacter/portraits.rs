@@ -124,103 +124,156 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                     hinted += 1;
                 }
             }
-            let (pointer, character, header) = if let Some(identities) = identities {
+            let (pointer, character) = if let Some(identities) = identities {
                 let identity = identities[index as usize];
-                let address = identity
-                    .pointer
-                    .checked_add(PORTRAIT_DATA)
-                    .ok_or("character portrait address overflow")?;
-                let header = read(memory, address).ok_or("character portrait header unreadable")?;
-                (identity.pointer, identity.character, header)
+                (identity.pointer, identity.character)
             } else {
                 let (pointer, _, _) = roster.unwrap().pointer(memory, index)?;
-                let character = identity_header(memory, base, pointer)?;
-                (pointer, character, portrait_header(memory, pointer)?)
+                (pointer, identity_header(memory, base, pointer)?)
             };
-            let a = crate::cpdx_array::Array::from_header(
-                header,
-                crate::character_portrait_entry::STRIDE,
-            )
-            .ok_or("character portrait array invalid")?;
-            required = required
-                .checked_add(a.count as usize)
-                .ok_or("character portrait entry count overflow")?;
-            entries.ensure(required)?;
-            if len == output.len() || a.count as usize > entries.len().saturating_sub(used) {
+            // Only for lookups: each read below refuses an overflowing address in its own order.
+            let array = pointer.wrapping_add(PORTRAIT_DATA);
+            let start = used;
+            let required_before = required;
+            let slot = (index - first) as usize;
+            // Entries placed and their count, or None when they do not fit the buffers.
+            let live = (|| {
+                let header = if identities.is_some() {
+                    let address = pointer
+                        .checked_add(PORTRAIT_DATA)
+                        .ok_or("character portrait address overflow")?;
+                    read(memory, address).ok_or("character portrait header unreadable")?
+                } else {
+                    portrait_header(memory, pointer)?
+                };
+                let a = crate::cpdx_array::Array::from_header(
+                    header,
+                    crate::character_portrait_entry::STRIDE,
+                )
+                .ok_or("character portrait array invalid")?;
+                required = required
+                    .checked_add(a.count as usize)
+                    .ok_or("character portrait entry count overflow")?;
+                entries.ensure(required)?;
+                if len == output.len() || a.count as usize > entries.len().saturating_sub(used) {
+                    return Ok(None);
+                }
+                let revision = observation
+                    .as_ref()
+                    .and_then(|(_, changes)| changes.revision(array));
+                let key = crate::portrait_cache::Key {
+                    pointer,
+                    character,
+                    header,
+                    start,
+                    revision,
+                };
+                let hit = observation
+                    .as_ref()
+                    .is_some_and(|(cache, _)| cache.matches(slot, key));
+                if let Some((cache, _)) = observation.as_mut() {
+                    if hit {
+                        cache.counts.reused_characters += 1;
+                        cache.counts.reused_entries += u64::from(a.count);
+                    } else {
+                        cache.counts.read_characters += 1;
+                    }
+                }
+                let mut hinted = 0;
+                for n in 0..a.count {
+                    if hit {
+                        used += 1;
+                        continue;
+                    }
+                    // Only admitted entries enter this rolling four-entry window.
+                    // Hints acquire no values; keep the descriptor and scalar
+                    // string protocol in their original order.
+                    while hinted < a.count.min(n + 4) {
+                        if let Some(entry) =
+                            a.element(hinted, crate::character_portrait_entry::STRIDE)
+                        {
+                            // These three fields cover the same cache lines as
+                            // their 48-byte envelope; hint each envelope only once.
+                            const HINT_BYTES: usize =
+                                crate::character_portrait_entry::IDENTITY + msvc_string::STRIDE;
+                            if crate::memory::is_canonical_range(entry, HINT_BYTES) {
+                                crate::prefetch::span(entry, HINT_BYTES);
+                            }
+                        }
+                        hinted += 1;
+                    }
+                    let mut current = crate::character_portrait_entry::Row::default();
+                    crate::character_portrait_entry::read_buffer(
+                        memory,
+                        a.element(n, crate::character_portrait_entry::STRIDE)
+                            .ok_or("character portrait entry overflow")?,
+                        &mut current,
+                    )?;
+                    entries[used] = current;
+                    used += 1;
+                }
+                if let Some((cache, changes)) = observation.as_mut() {
+                    let after = changes.revision(array);
+                    // Never certify entries observed across an overlapping writer.
+                    cache.remember(
+                        slot,
+                        crate::portrait_cache::Key {
+                            revision: revision.filter(|r| Some(*r) == after),
+                            ..key
+                        },
+                    );
+                    if hit && after != revision {
+                        return Err("character portrait mutated during acquisition");
+                    }
+                }
+                Ok(Some(a.count as usize))
+            })();
+            let placed = crate::portrait_cache::settled(array, live, |image| {
+                // A writer changed this holder during the capture: its entries as they were.
+                used = start;
+                required = required_before;
+                let count = crate::cpdx_array::Array::from_header(
+                    image.header,
+                    crate::character_portrait_entry::STRIDE,
+                )
+                .ok_or("character portrait array invalid")?
+                .count as usize;
+                if count != image.entries.len() {
+                    return Err("character portrait pre-image incomplete");
+                }
+                required = required
+                    .checked_add(count)
+                    .ok_or("character portrait entry count overflow")?;
+                entries.ensure(required)?;
+                if len == output.len() || count > entries.len().saturating_sub(used) {
+                    return Ok(None);
+                }
+                for entry in image.entries {
+                    entries[used] = crate::character_portrait_entry::from_image(&image, entry)?;
+                    used += 1;
+                }
+                if let Some((cache, _)) = observation.as_mut() {
+                    // Never reused: the holder changed after this was read.
+                    cache.remember(
+                        slot,
+                        crate::portrait_cache::Key {
+                            pointer,
+                            character,
+                            header: image.header,
+                            start,
+                            revision: None,
+                        },
+                    );
+                }
+                Ok(Some(count))
+            })?;
+            let Some(count) = placed else {
                 missing += 1;
                 continue;
-            }
-            let start = used;
-            let revision = observation
-                .as_ref()
-                .and_then(|(_, changes)| changes.revision(pointer + PORTRAIT_DATA));
-            let key = crate::portrait_cache::Key {
-                pointer,
-                character,
-                header,
-                start,
-                revision,
             };
-            let hit = observation
-                .as_ref()
-                .is_some_and(|(cache, _)| cache.matches((index - first) as usize, key));
-            if let Some((cache, _)) = observation.as_mut() {
-                if hit {
-                    cache.counts.reused_characters += 1;
-                    cache.counts.reused_entries += u64::from(a.count);
-                } else {
-                    cache.counts.read_characters += 1;
-                }
-            }
-            let mut hinted = 0;
-            for n in 0..a.count {
-                if hit {
-                    used += 1;
-                    continue;
-                }
-                // Only admitted entries enter this rolling four-entry window.
-                // Hints acquire no values; keep the descriptor and scalar
-                // string protocol in their original order.
-                while hinted < a.count.min(n + 4) {
-                    if let Some(entry) = a.element(hinted, crate::character_portrait_entry::STRIDE)
-                    {
-                        // These three fields cover the same cache lines as
-                        // their 48-byte envelope; hint each envelope only once.
-                        const HINT_BYTES: usize =
-                            crate::character_portrait_entry::IDENTITY + msvc_string::STRIDE;
-                        if crate::memory::is_canonical_range(entry, HINT_BYTES) {
-                            crate::prefetch::span(entry, HINT_BYTES);
-                        }
-                    }
-                    hinted += 1;
-                }
-                let mut current = crate::character_portrait_entry::Row::default();
-                crate::character_portrait_entry::read_buffer(
-                    memory,
-                    a.element(n, crate::character_portrait_entry::STRIDE)
-                        .ok_or("character portrait entry overflow")?,
-                    &mut current,
-                )?;
-                entries[used] = current;
-                used += 1;
-            }
-            if let Some((cache, changes)) = observation.as_mut() {
-                let after = changes.revision(pointer + PORTRAIT_DATA);
-                // Never certify entries observed across an overlapping writer.
-                cache.remember(
-                    (index - first) as usize,
-                    crate::portrait_cache::Key {
-                        revision: revision.filter(|r| Some(*r) == after),
-                        ..key
-                    },
-                );
-                if hit && after != revision {
-                    return Err("character portrait mutated during acquisition");
-                }
-            }
             output[len] = PortraitRow {
                 character,
-                portraits: [start, a.count as usize],
+                portraits: [start, count],
             };
             len += 1;
         }

@@ -3,6 +3,7 @@
 use collector_primitives::clock;
 use collector_status::status;
 
+pub mod capture_gate;
 pub mod hook_timing;
 
 #[cfg(test)]

@@ -23,8 +23,8 @@
 //! after its carrier combat ends. This is a stable empty ordinary vector, not evidence of a missed
 //! registration.
 //!
-//! Appending a pointer also temporarily zeroes a vector's count while reallocating. Capture at the
-//! hourly update entry joins every native read before the trampoline; it does not retry or wait out
+//! Appending a pointer also temporarily zeroes a vector's count while reallocating. A capture joins
+//! every native read before any writer runs again; it does not retry or wait out
 //! a writer. Invalid headers, unreadable entries and count mismatches still refuse the census;
 //! dependents must not treat that failure as absence. The strategic-air hourly pass calls the
 //! carrier refresh. The tag command changes the local player, not these registries: region

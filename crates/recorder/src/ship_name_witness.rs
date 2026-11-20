@@ -14,7 +14,7 @@ use installed_content_core::content::{GatherOptions, gather};
 use recorder_platform::games::{Discovery, choose_game};
 use replay::campaign::{Replay, SeekResult};
 use replay_data::{
-    identity::{COVERAGE_POLICY_VERSION, Dlc, Identity, Mod, SampleBoundary, Verification},
+    identity::{COVERAGE_POLICY_VERSION, Dlc, Identity, Mod, Verification},
     rows::{Recorded, TableId, TableRows},
 };
 use replay_frame::frame::TableView;
@@ -641,11 +641,10 @@ fn compare(report: &Report, replay: &Replay, hour: i32, branch: u64) -> Result<C
     if !session.is_some_and(|session| {
         session.process_id == report.process_id
             && session.process_start_time == report.process_start_time
-            && session.sample_boundary == SampleBoundary::EndOfHour
     }) {
         result
             .refusals
-            .push("recording process session or end-of-hour boundary differs from witness".into());
+            .push("recording process session differs from witness".into());
     }
     // A recorder restarted while the game ran loses nothing: its note is no damage.
     let damage_notes = replay.recovery_notes.iter().filter(|note| !recorder_replay::replay_io::is_restart(note)).count();

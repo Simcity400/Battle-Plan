@@ -83,11 +83,28 @@ pub(crate) fn read_buffer<T: crate::capture_text::Value>(
             "portrait identity invalid or exceeds256 bytes"
         }
     })?;
+    head(header, output);
+    Ok(())
+}
+
+fn head<T>(header: [u8; 16], output: &mut Row<T>) {
     output.category = u32::from_le_bytes(header[..4].try_into().unwrap());
     output.size = u32::from_le_bytes(header[4..8].try_into().unwrap());
     output.is_set = header[8];
     output.kind = u32::from_le_bytes(header[12..16].try_into().unwrap());
-    Ok(())
+}
+
+/// The descriptor a writer logged before it changed the holder.
+pub(crate) fn from_image<T: crate::capture_text::Value>(
+    holder: &crate::portrait_cache::HolderImage<'_>,
+    entry: &crate::portrait_cache::EntryImage,
+) -> Result<Row<T>, &'static str> {
+    let mut row = Row {
+        identity: T::from_image(holder.identity(entry)?)?,
+        ..Row::default()
+    };
+    head(entry.head, &mut row);
+    Ok(row)
 }
 
 #[cfg(test)]

@@ -3951,7 +3951,7 @@ fn decoded_with_costs(
     let failure = captured
         .clock
         .is_none()
-        .then_some("clock unreadable at hook entry");
+        .then_some("clock unreadable as its capture began");
     let span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::ConvertCore);
     let tables = if let Some(reason) = failure {
         unavailable_tables(reason)
@@ -4568,7 +4568,7 @@ mod tests {
         );
         assert_eq!(
             input.tables,
-            unavailable_tables("clock unreadable at hook entry")
+            unavailable_tables("clock unreadable as its capture began")
         );
     }
 
@@ -5942,7 +5942,7 @@ mod tests {
             &crate::extended::Capacities::default(),
         )
         .unwrap();
-        // End-of-hour sampling reads the clock once before the original tick.
+        // A capture reads the clock once, as it starts.
         captured.clock = Some(clock(hour));
         captured.qpc = 1000 + i64::from(hour);
         captured.countries_result = Outcome::Rows { len: 0 };
@@ -6242,7 +6242,7 @@ mod tests {
         captured.clock = None;
         // Every table a Full recording holds names the clock; the others decode as a recording does.
         let mut expected =
-            unavailable_tables("clock unreadable at hook entry").map(|input| match input {
+            unavailable_tables("clock unreadable as its capture began").map(|input| match input {
                 TableInput::Sampled(view) => view,
                 _ => unreachable!("fixture expected ordinary sampled rows"),
             });
@@ -6779,10 +6779,9 @@ mod tests {
         ));
     }
 
-    /// End-of-hour boundary: the first hook call after a load reads the loaded
-    /// hour L at the entry of tick L+1, so the new branch starts at L and its
-    /// parent is the branch that recorded L. Detach writes no frame for the
-    /// hour still open when it happens; the last hour needs one more tick.
+    /// A load is read as the first hourly update after it is entered, so the new
+    /// branch starts at the loaded hour L and its parent is the branch that
+    /// recorded L. Detach writes no frame for an hour whose update has not returned.
     #[test]
     fn end_of_hour_reload_starts_at_the_loaded_hour_and_detach_invents_no_sample() {
         let (mut campaign, store) = campaign();
@@ -6808,7 +6807,7 @@ mod tests {
         let first = write(&mut campaign, 10, 1);
         assert_eq!(write(&mut campaign, 11, 1), first);
         assert_eq!(write(&mut campaign, 12, 1), first);
-        // Load the hour-11 save: the first tick after the load samples hour 11.
+        // Load the hour-11 save: the first update after the load reads hour 11 first.
         let reloaded = write(&mut campaign, 11, 2);
         assert_ne!(reloaded, first);
         let start = campaign.tracker.branch_start(reloaded).unwrap();
@@ -8756,7 +8755,7 @@ mod tests {
         );
         assert_eq!(
             invalid.tables,
-            unavailable_tables("clock unreadable at hook entry")
+            unavailable_tables("clock unreadable as its capture began")
         );
         assert!(packs.converted_by().all(|pack| pack.is_none()));
         assert_eq!(campaign.lexical_conversion, before);
@@ -8936,7 +8935,7 @@ mod tests {
         );
         assert_eq!(
             current.tables,
-            unavailable_tables("clock unreadable at hook entry")
+            unavailable_tables("clock unreadable as its capture began")
         );
         let after = campaign.intel_shadow.statistics();
         assert_eq!(

@@ -78,6 +78,7 @@ pub struct Part {
     /// A quiet hour's scope, portrait revision and roster token.
     witness: Option<[u64; 6]>,
 }
+
 impl Part {
     fn new(c: &Capacities) -> Self {
         Self {
@@ -157,7 +158,9 @@ impl Part {
         )
     }
 
-    /// [`Self::capture`], certified by the writers `observer` sees.
+    /// [`Self::capture`], certified by the writers `observer` sees. A holder a writer changes
+    /// during the capture is read as it was when the capture began
+    /// ([`engine_native::portrait_cache::settled`]).
     pub(crate) fn capture_observed(
         &mut self,
         memory: &impl Memory,
@@ -234,15 +237,14 @@ impl Part {
                         token.1,
                     ]);
                 }
-            } else {
-                self.rows.outcome = Outcome::Unavailable {
-                    reason: "character portrait mutated during acquisition",
-                };
-                self.invalidate();
+                let ticks = qpc().saturating_sub(begin).max(0) as u64;
+                crate::portrait_changes::record_work(true, ticks);
+                return ticks;
             }
-            let ticks = qpc().saturating_sub(begin).max(0) as u64;
-            crate::portrait_changes::record_work(true, ticks);
-            return ticks;
+            // A writer changed a holder since this share was certified: it is walked, each
+            // changed holder taken as it was when the capture began.
+            self.invalidate();
+            self.plan.begin(memory, false);
         }
         let observation = cfg!(feature = "portrait_changes").then_some((&mut self.cache, observer));
         let acquired = ccharacter::walk_portraits(

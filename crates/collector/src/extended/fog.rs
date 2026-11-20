@@ -239,7 +239,7 @@ impl Captured {
         self.grow_resolver(self.required_links);
     }
 
-    /// Size the dense resolver to a live link count. Off the game thread only.
+    /// Size the dense resolver to a live link count. Off the capture only.
     fn grow_resolver(&mut self, links: usize) {
         if links > self.resolved.len() {
             let _ = resize(&mut self.resolved, links, None).map_err(crate::allocation::io);

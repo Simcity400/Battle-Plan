@@ -694,7 +694,7 @@ pub fn read_country_tags(memory: &impl Memory, pointer: usize) -> Result<[u32; 2
 }
 
 /// The visitor runs only for complete authenticated rows, inside this census.
-/// Its sources may be consumed only before this hourly callback returns.
+/// Its sources may be consumed only before this capture ends.
 pub fn walk_with(
     memory: &impl Memory,
     base: usize,

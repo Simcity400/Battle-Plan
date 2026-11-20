@@ -1140,6 +1140,30 @@ fn hourly_portrait_holder_preserves_entry_order_and_requires_whole_character_cap
         walk_all(&memory(&bytes), &mut rows, &mut entries).outcome,
         Outcome::Unavailable { .. }
     ));
+    // A writer is changing the first holder during the capture: the walk takes its entries as
+    // they were when the capture began, not the torn live array.
+    use crate::portrait_cache::{EntryImage, HolderImage, test_images};
+    let logged: &'static [EntryImage] = Box::leak(Box::new([EntryImage {
+        head: [3, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+        text: [0, 5],
+    }]));
+    let mut header = [0; 16];
+    header[..8].copy_from_slice(&0x1800_u64.to_le_bytes());
+    header[8..12].copy_from_slice(&1_u32.to_le_bytes());
+    header[12..].copy_from_slice(&1_u32.to_le_bytes());
+    let image = HolderImage {
+        header,
+        entries: logged,
+        text: b"c.dds",
+    };
+    test_images::set(FIRST + PORTRAIT_DATA, Some(image));
+    let result = walk_all(&memory(&bytes), &mut rows, &mut entries);
+    test_images::set(0, None);
+    assert_eq!(result.outcome, Outcome::Rows { len: 2 });
+    let changed = rows.iter().find(|row| row.portraits[1] == 1).unwrap();
+    let entry = &entries[changed.portraits[0]];
+    assert_eq!((entry.category, entry.size, entry.is_set), (3, 1, 1));
+    assert_eq!(entry.identity.as_bytes(), b"c.dds");
 }
 
 #[test]

@@ -218,7 +218,7 @@ impl Writer for DivisionLog {
     }
 
     fn version(&self) -> u32 {
-        2
+        3
     }
 
     fn tables(&self) -> &'static [Output] {
@@ -281,7 +281,7 @@ impl Writer for DivisionLog {
                 let dating = if killed(witness) {
                     let matched: Vec<_> = deaths
                         .iter()
-                        .filter(|death| death.of == division && death.hour <= at && self.census.is_some_and(|last| death.hour >= last) && spans.iter().any(|&(from, to)| from < death.hour && to >= death.hour))
+                        .filter(|death| death.of == division && death.hour <= at && self.census.is_some_and(|last| death.hour >= last) && spans.iter().any(|&(from, to)| from <= death.hour && to >= death.hour))
                         .collect();
                     let death = match matched[..] {
                         [death] => Some(*death),

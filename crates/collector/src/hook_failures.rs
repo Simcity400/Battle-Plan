@@ -93,6 +93,7 @@ runtime_families! {
     FactionGoals => ("faction_goals", crate::faction_goal_changes::Hooks),
     FactionCompanions => ("faction_companions", crate::faction_companion_changes::Hooks),
     Market => ("market_changes", crate::market_changes::Hooks),
+    CommandBatch => ("command_batch", crate::command_batch::Hooks),
     // World invalidation stays published until every other family restores.
     WorldLifetime => ("world_lifetime", crate::world_lifetime::Hooks),
 }
@@ -391,7 +392,8 @@ impl Family {
                 LendLeaseAgreements,
                 MarketEvents,
             ],
-            Self::Hourly | Self::WorldLifetime => &[],
+            // Without the command batch every capture holds the game; no table is lost.
+            Self::Hourly | Self::CommandBatch | Self::WorldLifetime => &[],
         }
     }
     fn depends_on(self, source: Self) -> bool {
@@ -994,6 +996,7 @@ family_hooks!(
     faction_goal_changes,
     faction_companion_changes,
     market_changes,
+    command_batch,
     equipment_destruction,
     land_events,
     portrait_changes,
@@ -1101,7 +1104,10 @@ mod tests {
                 assert!(refuse(family, "publication", "synthetic publication failure").is_err());
                 continue;
             }
-            if matches!(family, Family::PlayerCommands | Family::OrderMembership) {
+            if matches!(
+                family,
+                Family::PlayerCommands | Family::OrderMembership | Family::CommandBatch
+            ) {
                 assert!(family.tables().is_empty());
             } else {
                 assert!(

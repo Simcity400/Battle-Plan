@@ -1,5 +1,14 @@
 //! Reuse of owned portrait entries certified by an observed native mutation revision.
 //! The caller still authenticates every roster occurrence and current array header.
+//!
+//! Portrait holder writers may run during a capture, held or beside the game. The first to change
+//! a holder during one logs the holder's array as it was ([`PreImages`]), and every reader of a
+//! holder's array reads it live and then takes that image instead ([`settled`]), so a frame holds
+//! every portrait as it was when its capture began.
+use std::sync::{
+    OnceLock,
+    atomic::{Ordering, fence},
+};
 
 /// A revision is usable only while all relevant native writers are observed and quiet.
 pub trait Changes {
@@ -14,6 +23,92 @@ pub trait Changes {
     /// it across the walk; by default the quiet revision.
     fn any_revision(&self) -> Option<(u64, u64)> {
         self.quiet_revision()
+    }
+}
+
+/// One portrait entry as a writer found it: its first 16 bytes (role, size, set flag, kind)
+/// and where its identity bytes lie in the image's text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntryImage {
+    pub head: [u8; 16],
+    pub text: [usize; 2],
+}
+
+/// A holder's entry array as it was when the running capture began.
+#[derive(Clone, Copy, Debug)]
+pub struct HolderImage<'a> {
+    /// The array's data pointer, capacity and count.
+    pub header: [u8; 16],
+    pub entries: &'a [EntryImage],
+    pub text: &'a [u8],
+}
+
+impl HolderImage<'_> {
+    pub fn identity(&self, entry: &EntryImage) -> Result<&[u8], &'static str> {
+        let [start, len] = entry.text;
+        start
+            .checked_add(len)
+            .and_then(|end| self.text.get(start..end))
+            .ok_or("character portrait pre-image outside its text")
+    }
+}
+
+/// The holders changed during the running capture.
+pub trait PreImages: Sync {
+    /// The array at `array` as it was when the running capture began, when a writer has
+    /// changed it since; `Err` when that state could not be read or may have been changed
+    /// unlogged.
+    fn image(&self, array: usize) -> Option<Result<HolderImage<'_>, &'static str>>;
+}
+
+static PRE_IMAGES: OnceLock<&'static dyn PreImages> = OnceLock::new();
+
+/// The collector's store; the first installed stays.
+pub fn install(pre_images: &'static dyn PreImages) {
+    let _ = PRE_IMAGES.set(pre_images);
+}
+
+/// Every reader of a portrait holder's entry array goes through here. `live` is what it read of
+/// the array at `array` before this call; when a writer has changed that array since the
+/// running capture began, `image` builds the reader's result from the array as it was then; the
+/// store's refusal is the result when it cannot know that.
+pub fn settled<T>(
+    array: usize,
+    live: Result<T, &'static str>,
+    image: impl FnOnce(HolderImage<'_>) -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+    // The live reads come first: a writer whose log this misses had not begun to write.
+    fence(Ordering::SeqCst);
+    match PRE_IMAGES.get().and_then(|images| images.image(array)) {
+        None => live,
+        Some(Ok(holder)) => image(holder),
+        Some(Err(reason)) => Err(reason),
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_images {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        static IMAGE: Cell<Option<(usize, HolderImage<'static>)>> = const { Cell::new(None) };
+    }
+
+    struct ThreadImages;
+    impl PreImages for ThreadImages {
+        fn image(&self, array: usize) -> Option<Result<HolderImage<'_>, &'static str>> {
+            IMAGE
+                .get()
+                .filter(|(at, _)| *at == array)
+                .map(|(_, image)| Ok(image))
+        }
+    }
+
+    /// Readers on this thread take `image` for the array at `array` until it is cleared.
+    pub(crate) fn set(array: usize, image: Option<HolderImage<'static>>) {
+        install(&ThreadImages);
+        IMAGE.set(image.map(|image| (array, image)));
     }
 }
 

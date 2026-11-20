@@ -674,6 +674,7 @@ impl<'a> Group<'a> {
     fn from_hooks(mut hooks: Hooks<'a>, enabled: bool) -> Self {
         for hook in hooks.iter_mut() {
             hook.diagnostic_failure = false;
+            hook.guard_held = false;
         }
         Self {
             hooks,
@@ -797,6 +798,12 @@ impl<'a> Group<'a> {
                 if TRACK_BUSY {
                     hook.publication_busy.store(true, Ordering::Relaxed);
                 }
+                return Ok(false);
+            }
+            if hook
+                .guard_busy(enabled, threads)
+                .inspect_err(|_| hook.diagnostic_failure = true)?
+            {
                 return Ok(false);
             }
             if !hook.bytes_match(hook.enabled) {

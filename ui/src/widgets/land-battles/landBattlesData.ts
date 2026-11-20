@@ -108,7 +108,7 @@ function battles(v: unknown, labels: unknown): LandBattle[] | null {
 }
 const histories = (v: unknown) => Array.isArray(v) && v.every(r => object(r) && typeof r.id === 'string' && uint(r.provinceId) && moment(r.start)
   && (r.end === null || moment(r.end) || object(r.end) && typeof r.end.unknown === 'string')
-  && (r.endUnknownHour === null || hour(r.endUnknownHour)) && int(r.counterBase)
+  && (r.endUnknownHour === null || hour(r.endUnknownHour)) && (r.settledHour === undefined || hour(r.settledHour)) && int(r.counterBase)
   && (r.priorPeak === null || peak(r.priorPeak)) && Array.isArray(r.runs) && r.runs.length > 0
   && (r.result === null || object(r.result) && hour(r.result.hour)
     && int(r.result.duration) && r.result.duration >= -2147483648 && r.result.duration <= 2147483647
@@ -180,6 +180,7 @@ export function landBattleChanges(windows: Windows): BattleChanges {
       if (history.result) hours.push(history.result.hour);
       if (history.end && 'hour' in history.end) hours.push(history.end.hour);
       if (history.endUnknownHour != null) hours.push(history.endUnknownHour);
+      if (history.settledHour !== undefined) hours.push(history.settledHour);
       history.losses.forEach((loss, at) => { if (!at || !sameKnownLosses(history.losses[at - 1], loss)) hours.push(loss.hour); });
       battles.push([history.id, hours]);
     }
@@ -253,6 +254,7 @@ export function landBattleRows(windows: Windows, at: number, matches: CountryMat
           if (history.result) yield history.result.hour;
           if (history.end && 'hour' in history.end) yield history.end.hour;
           if (history.endUnknownHour != null) yield history.endUnknownHour;
+          if (history.settledHour !== undefined) yield history.settledHour;
           for (const loss of history.losses) yield loss.hour;
         }
       }
@@ -287,16 +289,18 @@ function landRowAt(h: LandBattle, index: number, at: number, matches: CountryMat
   const run = runs.at(-1);
   if (!run) return null;
   const read = Math.min(at, run.lastHour);
-  const result = h.result && h.result.hour <= at ? h.result : null;
+  // An end and its result show from the hour the recording settled them, dated by their own hours.
+  const known = (hour: number) => (h.settledHour ?? hour) <= at;
+  const result = h.result && known(h.result.hour) ? h.result : null;
   const participants = [0, 1].map(index => result && resultSide(result, run, index)
     ? { tags: result.countries[index], hour: result.hour, unknown: result.countriesUnknown[index] }
     : { tags: run.countries[index], hour: read, unknown: run.countriesUnknown[index] });
   const countries = participants.map(side => side.tags.map(tag => ({ tag, hour: side.hour })));
   const countriesUnknown = participants.map(side => side.unknown);
   if (!all && !countriesUnknown.some(Boolean) && !countries.some(side => side.some(country => matches(country.tag, country.hour)))) return null;
-  let end: BattleRow['end'] = h.end && ('hour' in h.end ? h.end.hour <= at : h.endUnknownHour !== null && h.endUnknownHour <= at) ? h.end : null;
   const endedAt = h.end && 'hour' in h.end ? h.end.hour : h.endUnknownHour;
-  if (from !== null && read < from && !(endedAt !== null && endedAt >= from && endedAt <= at)) return null;
+  let end: BattleRow['end'] = h.end && endedAt !== null && known(endedAt) ? h.end : null;
+  if (from !== null && read < from && !(endedAt !== null && endedAt >= from && known(endedAt))) return null;
   if (end === null && read < at) end = { unknown: 'Ending not recorded' };
   let peak = h.priorPeak ?? { value: 0, hour: h.start.hour };
   let peakUnknown = h.priorPeak === null;

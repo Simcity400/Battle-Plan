@@ -17,8 +17,8 @@
 //! rejection completion accesses them. Rejection initializes its completion
 //! directly in the existing heap cell and never admits or runs the job.
 //!
-//! Jobs own outputs and source leases. The sole hourly callback must collect
-//! every accepted ticket before the trampoline, including on unwind. A join
+//! Jobs own outputs and source leases. The running capture must collect
+//! every accepted ticket before it returns, including on unwind. A join
 //! may run its exact awaited queued job when caller execution is allowed;
 //! optional join help is bounded by learned body times. Worker-only jobs
 //! always retain their completion barrier. Registered publication continuations
@@ -26,7 +26,7 @@
 //! their draining ledgers and closes admission before its unwind drain.
 
 use std::sync::Arc;
-use std::thread::JoinHandle;
+use std::{os::windows::io::AsRawHandle, thread::JoinHandle};
 use std::{
     cell::UnsafeCell,
     collections::VecDeque,
@@ -34,13 +34,15 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Condvar, Mutex, MutexGuard, OnceLock,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
 use serde::Serialize;
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThreadId, WaitOnAddress, WakeByAddressAll, WakeByAddressSingle,
+    GetCurrentThread, GetCurrentThreadId, SetThreadPriority, SetThreadPriorityBoost,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, WaitOnAddress, WakeByAddressAll,
+    WakeByAddressSingle,
 };
 
 pub(crate) const MAX_WORKERS: usize = 15;
@@ -453,6 +455,18 @@ struct Shared<J, R> {
     state: Mutex<State>,
     started_ready: Condvar,
     work_ready: Condvar,
+    /// Where reserves sleep through a capture read beside the game.
+    reserve_ready: Condvar,
+    /// Workers below this index always work; the rest are reserves until called up.
+    regulars: AtomicUsize,
+    called_up: AtomicBool,
+    /// The thread priority every working worker takes.
+    priority: AtomicI32,
+    /// One plus the processor whose physical core working workers keep off; zero for anywhere.
+    away: AtomicU32,
+    /// Moved, under the queue lock, each time [`Pool::hurry`] sets every worker's priority and
+    /// core itself: a worker then forgets what it last applied.
+    hurried: AtomicU64,
     /// Remaining held-burst notifications, relayed one per worker claim.
     burst_peers: AtomicUsize,
     run: Box<Runner<J, R>>,
@@ -512,6 +526,16 @@ impl<J, R> Shared<J, R> {
     fn stop(&self) {
         self.lock().stop(self);
         self.work_ready.notify_all();
+        self.reserve_ready.notify_all();
+    }
+    /// Workers that take work now: every worker, or the regulars while the reserves rest.
+    fn working(&self) -> usize {
+        let all = self.thread_ids.len();
+        if self.called_up.load(Ordering::Acquire) {
+            all
+        } else {
+            self.regulars.load(Ordering::Acquire).min(all)
+        }
     }
 
     fn publish(&self, index: usize, generation: u64) {
@@ -965,6 +989,12 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             state: Mutex::new(state),
             started_ready: Condvar::new(),
             work_ready: Condvar::new(),
+            reserve_ready: Condvar::new(),
+            regulars: AtomicUsize::new(usize::MAX),
+            called_up: AtomicBool::new(false),
+            priority: AtomicI32::new(THREAD_PRIORITY_ABOVE_NORMAL),
+            away: AtomicU32::new(0),
+            hurried: AtomicU64::new(0),
             burst_peers: AtomicUsize::new(0),
             run: Box::new(run),
             callback_help: OnceLock::new(),
@@ -1184,7 +1214,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         if jobs == 0 {
             return;
         }
-        let limit = self.shared.thread_ids.len().saturating_sub(1);
+        let limit = self.shared.working().saturating_sub(1);
         let peers = jobs.saturating_sub(1).min(limit);
         if peers != 0 {
             let _ =
@@ -1201,6 +1231,56 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         // The collector notifies one worker, not every peer in a held burst.
         // Claims relay the rest before their bodies, one notification each.
         self.shared.work_ready.notify_one();
+    }
+    /// The game thread waits for the capture, about to run or running: every worker, above normal
+    /// priority and on any core, so other processes cannot lengthen the pause. A worker inside a
+    /// job takes the pool's pace only when it returns, so each is raised and freed here too.
+    pub(crate) fn hold_pace(&self) {
+        let state = self.shared.lock();
+        // Under the queue lock no worker is between reading the pace and applying it. The join
+        // that closes a handle holds `threads`, so it is only tried: a pool shutting down is idle.
+        if let Ok(threads) = self.threads.try_lock() {
+            for thread in threads.iter() {
+                let handle = thread.as_raw_handle();
+                // SAFETY: a live worker handle owned by `threads`, held through these calls.
+                if unsafe { SetThreadPriority(handle as _, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
+                    PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
+                }
+                crate::frame_priority::select_away(handle as _, None);
+            }
+            self.shared.hurried.fetch_add(1, Ordering::Release);
+        }
+        self.pace(state, usize::MAX, THREAD_PRIORITY_ABOVE_NORMAL, true, None);
+    }
+    /// The capture about to run reads beside the running game: `regulars` workers below its
+    /// priority and off the physical core of the game thread's `game` processor, the rest in
+    /// reserve.
+    pub(crate) fn beside_pace(&self, regulars: usize, game: Option<u32>) {
+        let state = self.shared.lock();
+        self.pace(state, regulars.max(1), THREAD_PRIORITY_BELOW_NORMAL, false, game);
+    }
+    fn pace(
+        &self,
+        state: MutexGuard<'_, State>,
+        regulars: usize,
+        priority: i32,
+        called_up: bool,
+        away: Option<u32>,
+    ) {
+        self.shared.regulars.store(regulars, Ordering::Release);
+        self.shared.priority.store(priority, Ordering::Release);
+        self.shared.away.store(
+            away.map_or(0, |processor| processor.saturating_add(1)),
+            Ordering::Release,
+        );
+        let rested = !self.shared.called_up.swap(called_up, Ordering::AcqRel);
+        drop(state);
+        if called_up && rested {
+            self.shared.reserve_ready.notify_all();
+        } else if !called_up {
+            // A called-up reserve asleep among the regulars goes back to its own rest.
+            self.shared.work_ready.notify_all();
+        }
     }
     /// Park never admits, queues or counts a request. Prefer its partition,
     /// then any VACANT cell; exhaustion/fullness retains it with the caller.
@@ -1760,31 +1840,29 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Drop for Pool<J, R> {
     }
 }
 
-// Above-normal priority and the existing dynamic-wake-boost policy; no affinity
-// change. Workers run only while the hourly callback holds the game's
-// simulation, so other processes' normal-priority threads cannot lengthen that
-// pause; between hours they wait for work and take no CPU.
+// The pool's priority and the existing dynamic-wake-boost policy; no affinity change. While a
+// capture holds the game the workers run above normal priority, so other processes'
+// normal-priority threads cannot lengthen that pause; while it reads beside the running game
+// they run below it, off the game thread's physical core. Between hours they wait for work and
+// take no CPU.
 fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     shared: Arc<Shared<J, R>>,
     index: usize,
     wake_boost: bool,
 ) {
+    collector_timing::capture_gate::reader();
     #[cfg(feature = "worker_sampler")]
     let _sampler_registration = crate::worker_sampler::register_worker();
     {
-        use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, SetThreadPriorityBoost,
-            THREAD_PRIORITY_ABOVE_NORMAL,
-        };
         // SAFETY: this worker's pseudo-handle needs no close.
         if !wake_boost && unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
             BOOST_REFUSALS.fetch_add(1, Ordering::Relaxed);
         }
-        // SAFETY: as above.
-        if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
-            PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
-        }
     }
+    // Unset: the first pass below takes the pool's priority.
+    let mut priority = i32::MIN;
+    let mut away = crate::frame_priority::AwayFromGame::default();
+    let mut hurried = 0;
     shared.thread_ids[index].store(unsafe { GetCurrentThreadId() }, Ordering::Release);
     crate::hour_stages::enter_worker(index);
     let mut state = shared.lock();
@@ -1794,6 +1872,29 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
         if state.stop {
             return;
         }
+        if index >= shared.working() {
+            state = shared
+                .reserve_ready
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+            continue;
+        }
+        // `Pool::hold_pace` set this thread above normal and on any core itself.
+        let hurry = shared.hurried.load(Ordering::Acquire);
+        if hurry != hurried {
+            hurried = hurry;
+            priority = THREAD_PRIORITY_ABOVE_NORMAL;
+            away = crate::frame_priority::AwayFromGame::default();
+        }
+        let wanted = shared.priority.load(Ordering::Acquire);
+        if wanted != priority {
+            priority = wanted;
+            // SAFETY: this worker's pseudo-handle needs no close.
+            if unsafe { SetThreadPriority(GetCurrentThread(), wanted) } == 0 {
+                PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        away.follow(shared.away.load(Ordering::Acquire).checked_sub(1));
         if let Some(claim) = state.take_ready(&shared, None) {
             let relay = if state.ready.is_empty() {
                 // Under the queue mutex: no unclaimed job needs another wake.
@@ -1958,6 +2059,65 @@ mod tests {
             assert_eq!(completion.profile.finish_lock_wait_ticks, 0);
         });
         assert!(!pool.is_complete(ticket));
+    }
+
+    #[test]
+    fn reserves_take_no_work_until_the_pool_holds_the_game_and_its_call_reaches_a_running_job() {
+        use windows_sys::Win32::System::Threading::GetThreadPriority;
+        let release = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let pool = {
+            let release = Arc::clone(&release);
+            Pool::start(2, 2, move |gated: &mut bool| {
+                // SAFETY: no preconditions.
+                let worker = unsafe { GetCurrentThreadId() };
+                if *gated {
+                    entered_tx.send(worker).unwrap();
+                    wait_until(|| release.load(Ordering::Acquire));
+                }
+                // SAFETY: the pseudo-handle names only this thread.
+                (worker, unsafe { GetThreadPriority(GetCurrentThread()) })
+            })
+            .unwrap()
+        };
+        let release = Gate(release);
+        let ids = pool.thread_ids();
+        let (regular, reserve) = (ids[0], ids[1]);
+        // A collector that only collects published work never runs a job itself.
+        let run = |pool: &Pool<bool, (u32, i32)>| {
+            let ticket = submit(pool, &mut Some(false));
+            wait_until(|| pool.is_complete(ticket));
+            pool.finish(ticket).unwrap().report.unwrap()
+        };
+        for _ in 0..2 {
+            pool.beside_pace(1, None);
+            for _ in 0..64 {
+                assert_eq!(
+                    run(&pool),
+                    (regular, THREAD_PRIORITY_BELOW_NORMAL),
+                    "a resting reserve took work"
+                );
+            }
+            // The regular is busy: only a called-up reserve can run the next job.
+            let held = submit(&pool, &mut Some(true));
+            assert_eq!(
+                entered_rx.recv_timeout(crate::TEST_HANG_GUARD),
+                Ok(regular)
+            );
+            let queued = submit(&pool, &mut Some(false));
+            assert!(!pool.is_complete(queued));
+            pool.hold_pace();
+            wait_until(|| pool.is_complete(queued));
+            assert_eq!(pool.finish(queued).unwrap().report.unwrap().0, reserve);
+            release.open();
+            wait_until(|| pool.is_complete(held));
+            // The regular was raised inside its job, not only once it returned.
+            assert_eq!(
+                pool.finish(held).unwrap().report.unwrap(),
+                (regular, THREAD_PRIORITY_ABOVE_NORMAL)
+            );
+            release.0.store(false, Ordering::Release);
+        }
     }
 
     #[test]

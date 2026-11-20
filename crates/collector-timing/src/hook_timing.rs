@@ -10,7 +10,10 @@
 //! also holds its thread's allocation phase at `Hook` and restores the outer
 //! phase when it drops, so a refusal inside a hook names the hook. Nothing here
 //! reads native memory, allocates, locks or changes native execution; status
-//! converts ticks to nanoseconds with a frequency calibrated against QPC.
+//! converts ticks to nanoseconds with a frequency calibrated against QPC. The
+//! one wait is the capture gate's ([`crate::capture_gate`]): every call passes
+//! it before its span begins, and stops there only while a capture reads beside
+//! the game and its family is not exempt.
 //!
 //! A sampled call's span also contains the timer's own reads (the entry and
 //! exit reads and the two around each timed original), which unsampled calls
@@ -182,9 +185,13 @@ pub enum Family {
     MarketChanges,
     /// Bilateral war contribution writers, first-credit capture and delivery histories.
     WarParticipation,
+    /// The per-frame command batch, around every command it runs.
+    CommandBatch,
     PlayerCommands,
 }
 pub const FAMILY_COUNT: usize = Family::PlayerCommands as usize + 1;
+// Each family has a capture gate slot of its own.
+const _: () = assert!(FAMILY_COUNT <= crate::capture_gate::SLOTS);
 
 /// How collector code surrounds the native original.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,6 +288,7 @@ impl Family {
         Self::FactionRefreshPhases,
         Self::MarketChanges,
         Self::WarParticipation,
+        Self::CommandBatch,
         Self::PlayerCommands,
     ];
     /// The status key; families with their own status reuse that key.
@@ -353,6 +361,7 @@ impl Family {
             Self::WorldLifetime => "world_lifetime",
             Self::MarketChanges => "market_changes",
             Self::WarParticipation => "war_participation",
+            Self::CommandBatch => "command_batch",
         }
     }
     pub fn kind(self) -> Kind {
@@ -404,6 +413,7 @@ impl Family {
             | Self::NavalResultSources
             | Self::NuclearStrikes
             | Self::WarParticipation
+            | Self::CommandBatch
             | Self::EventFeedProvenance
             | Self::FactionRefreshPhases
             | Self::FactionResourceRebuild => Kind::Detour,
@@ -494,6 +504,9 @@ impl Table {
     }
     #[inline(always)]
     fn enter(&'static self, slot: usize, family: Family, returning: bool) -> Span {
+        if !returning {
+            crate::capture_gate::pass(family as usize);
+        }
         let phase = label();
         let counters = &self.slots[slot].0[family as usize];
         let shared = slot == SHARED_SLOT;
@@ -907,15 +920,21 @@ pub fn ticks_to_ns(ticks: u64, hz: Option<u64>) -> Option<u64> {
     nanoseconds(u128::from(ticks), hz)
 }
 
-const SCOPE: &str = "cumulative since attach: calls are exact entries into collector callbacks per family (split families count their entry half; returns count the return half). Every period-th call per hooked thread and family is timed with the TSC, starting with that thread's first call. sampled_detour_ns is collector time inside the sampled callbacks, excluding the timed original; estimated_detour_ns scales each thread's sampled time by its calls per sampled call. sampled_original_ns and estimated_original_ns time the originals the collector invokes from Rust (detour and mixed families; null where native code or a stub runs the original). Tap bridges, entry stubs and the retour relay lie outside the timed span. A sampled span also contains the timer's own reads, which unsampled calls never make: approximate_timer_overhead_ticks estimates that cost (an empty span's, and each timed original's) at attach from the fastest of 512 empty spans through the same span path; approximate_timer_overhead_ns is its share of estimated_detour_ns and approximate_net_detour_ns the estimate without it. They are diagnostic approximations, not bounds: subtracting them may also remove some collector work, so estimated_detour_ns stays the conservative cost. Nested families inside an original are timed by their own entries; the hourly original contains every between-tick hook it reaches. Ticks convert with tsc_hz, calibrated against QPC since attach";
+const SCOPE: &str = "cumulative since attach: calls are exact entries into collector callbacks per family (split families count their entry half; returns count the return half). Every period-th call per hooked thread and family is timed with the TSC, starting with that thread's first call. sampled_detour_ns is collector time inside the sampled callbacks, excluding the timed original; estimated_detour_ns scales each thread's sampled time by its calls per sampled call. sampled_original_ns and estimated_original_ns time the originals the collector invokes from Rust (detour and mixed families; null where native code or a stub runs the original). Tap bridges, entry stubs and the retour relay lie outside the timed span. A sampled span also contains the timer's own reads, which unsampled calls never make: approximate_timer_overhead_ticks estimates that cost (an empty span's, and each timed original's) at attach from the fastest of 512 empty spans through the same span path; approximate_timer_overhead_ns is its share of estimated_detour_ns and approximate_net_detour_ns the estimate without it. They are diagnostic approximations, not bounds: subtracting them may also remove some collector work, so estimated_detour_ns stays the conservative cost. Nested families inside an original are timed by their own entries; the hourly original contains every between-tick hook it reaches. Ticks convert with tsc_hz, calibrated against QPC since attach. capture_waits counts a family's calls that waited for a capture reading beside the game to end. A wait at a call's entry comes before its span, so it is in no family's detour or original time; only a portrait writer the capture's pre-image store could not hold waits inside its span. Their total is capture.writer_wait_ns";
 
-fn family_status(family: Family, totals: Totals, hz: Option<u64>) -> impl serde::Serialize {
+fn family_status(
+    family: Family,
+    totals: Totals,
+    capture_waits: u64,
+    hz: Option<u64>,
+) -> impl serde::Serialize {
     let timed = family.kind().times_original();
     let split = family.kind() == Kind::Split;
     status!({
         "kind": family.kind().name(),
         "sample_period": family.period(),
         "calls": totals.calls,
+        "capture_waits": capture_waits,
         "sampled_calls": totals.sampled,
         "returns": split.then_some(totals.returns),
         "sampled_returns": split.then_some(totals.returns_sampled),
@@ -933,6 +952,7 @@ fn family_status(family: Family, totals: Totals, hz: Option<u64>) -> impl serde:
 
 fn status_from(
     totals: [Totals; FAMILY_COUNT],
+    capture_waits: [u64; FAMILY_COUNT],
     hz: Option<u64>,
     claimed: usize,
 ) -> impl serde::Serialize {
@@ -942,9 +962,11 @@ fn status_from(
         "approximate_timer_overhead_ticks": overhead_pair(),
         "owned_thread_slots": claimed.min(OWNED_SLOTS),
         "shared_slot_threads": claimed.saturating_sub(OWNED_SLOTS),
-        "families": map(Family::ALL.into_iter().zip(totals).map(move |(family, totals)| {
-            (family.name(), family_status(family, totals, hz))
-        })),
+        "families": map(Family::ALL.into_iter().zip(totals).zip(capture_waits).map(
+            move |((family, totals), capture_waits)| {
+                (family.name(), family_status(family, totals, capture_waits, hz))
+            },
+        )),
         "scope": SCOPE,
     })
 }
@@ -954,6 +976,7 @@ pub fn status() -> impl serde::Serialize {
     start();
     status_from(
         TABLE.totals(),
+        std::array::from_fn(crate::capture_gate::waits),
         tsc_hz(),
         TABLE.claimed.load(Ordering::Relaxed),
     )
@@ -1187,6 +1210,7 @@ mod tests {
         assert_eq!(totals.sampled, 625);
         let status = serde_json::to_value(status_from(
             table.totals(),
+            [0; FAMILY_COUNT],
             Some(1_000_000_000),
             table.claimed.load(Ordering::Relaxed),
         ))
@@ -1282,8 +1306,11 @@ mod tests {
             estimated_detour: 30,
             ..Totals::default()
         };
+        let mut capture_waits = [0; FAMILY_COUNT];
+        capture_waits[Family::ExperienceGains as usize] = 5;
         let status: Value =
-            serde_json::to_value(status_from(totals, Some(3_000_000_000), 3)).unwrap();
+            serde_json::to_value(status_from(totals, capture_waits, Some(3_000_000_000), 3))
+                .unwrap();
         assert_eq!(status["sample_period"], 64);
         assert_eq!(status["tsc_hz"], 3_000_000_000_u64);
         assert_eq!(status["owned_thread_slots"], 3);
@@ -1293,7 +1320,8 @@ mod tests {
         assert_eq!(
             status["families"]["experience_gains"],
             json!({
-                "kind": "tap", "sample_period": 64, "calls": 6400, "sampled_calls": 100,
+                "kind": "tap", "sample_period": 64, "calls": 6400, "capture_waits": 5,
+                "sampled_calls": 100,
                 "returns": null, "sampled_returns": null,
                 "sampled_detour_ns": 1_000_000, "estimated_detour_ns": 64_000_000,
                 "approximate_timer_overhead_ns": 6_400_000, "approximate_net_detour_ns": 57_600_000,
@@ -1303,7 +1331,8 @@ mod tests {
         assert_eq!(
             status["families"]["portrait_changes"],
             json!({
-                "kind": "detour", "sample_period": 64, "calls": 2, "sampled_calls": 1,
+                "kind": "detour", "sample_period": 64, "calls": 2, "capture_waits": 0,
+                "sampled_calls": 1,
                 "returns": null, "sampled_returns": null,
                 "sampled_detour_ns": 100, "estimated_detour_ns": 200,
                 "approximate_timer_overhead_ns": 0, "approximate_net_detour_ns": 200,
@@ -1316,7 +1345,8 @@ mod tests {
         assert_eq!(status["families"]["hourly"]["sample_period"], 1);
         assert_eq!(status["families"]["land_events"]["kind"], "mixed");
         assert_eq!(status["families"]["land_events"]["sampled_original_ns"], 0);
-        let uncalibrated: Value = serde_json::to_value(status_from(totals, None, 0)).unwrap();
+        let uncalibrated: Value =
+            serde_json::to_value(status_from(totals, capture_waits, None, 0)).unwrap();
         assert_eq!(uncalibrated["tsc_hz"], Value::Null);
         assert_eq!(
             uncalibrated["families"]["portrait_changes"]["estimated_detour_ns"],

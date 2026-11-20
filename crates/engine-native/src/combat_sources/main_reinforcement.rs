@@ -644,7 +644,7 @@ fn transport_context(
 /// naval-transfer branch owns the separate regional weather/enemy/intel graph.
 /// Its enemy terms are written to `transport_terms[transport_start..]`, growing
 /// the caller-owned vector as needed, so call it only where the caller may
-/// allocate (the acquisition worker, never the hourly callback). Entries past
+/// allocate (the acquisition worker, never the capturing thread). Entries past
 /// the returned count are unspecified scratch.
 #[allow(clippy::too_many_arguments)]
 pub fn capture_context(

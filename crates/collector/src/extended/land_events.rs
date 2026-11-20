@@ -118,12 +118,14 @@ impl Captured {
         };
         let result = if d.complete {
             decode(&self.words[..d.words], d.first).and_then(|(results, destroyed)| {
+                // A command the batch runs ahead of the hourly update still carries the
+                // previous sample's hour.
                 if results
                     .iter()
-                    .any(|r| r.end_hour <= d.from_hour || r.end_hour > d.to_hour)
+                    .any(|r| r.end_hour < d.from_hour || r.end_hour > d.to_hour)
                     || destroyed
                         .iter()
-                        .any(|r| r.hour <= d.from_hour || r.hour > d.to_hour)
+                        .any(|r| r.hour < d.from_hour || r.hour > d.to_hour)
                 {
                     Err("land event timestamp outside observed interval")
                 } else {
@@ -1004,6 +1006,33 @@ mod tests {
                 assert!(decode(&record[..len], 0).is_err());
             }
         }
+    }
+    #[test]
+    fn a_death_stamped_with_the_previous_read_lies_in_its_interval_and_an_older_one_refuses() {
+        let words = vec![12, 7, 80, 17, 4999, 1500, 9, 10, 41, 2, 42, 42];
+        let tables = |from_hour| {
+            Captured {
+                words: words.clone(),
+                drained: Some(Drain {
+                    epoch: 1,
+                    first: 0,
+                    words: words.len(),
+                    required: words.len(),
+                    from_hour,
+                    to_hour: from_hour + 1,
+                    complete: true,
+                    lost: 0,
+                    reason: "",
+                }),
+            }
+            .tables()
+        };
+        assert!(
+            matches!(&tables(80)[1], TableView::Complete(TableRows::DestroyedDivisions(rows)) if rows.len() == 1)
+        );
+        let older = tables(81);
+        assert!(!complete_coverage(&older).complete);
+        assert!(matches!(older[1], TableView::Unavailable { .. }));
     }
     #[test]
     fn unknown_interval_is_never_an_empty_event_table() {

@@ -147,6 +147,8 @@ pub(super) struct OutputCheck {
     /// Lines published as ended.
     ended: BTreeSet<u64>,
     shared_railways: usize,
+    /// Railway gains in windows where the line made no spend advance.
+    unpaid_railways: usize,
     seen: BTreeSet<u64>,
     output_handles: BTreeSet<u64>,
     completions: usize,
@@ -527,6 +529,10 @@ impl OutputCheck {
                     external_growth = growth.is_some_and(|growth| growth > finished);
                 }
                 let carry = i128::from(b.carry_raw) - i128::from(a.carry_raw);
+                if b.railway && b.ticks == a.ticks && spent == 0 && carry == 0 && expected > 0 {
+                    self.unpaid_railways += 1;
+                    continue;
+                }
                 // The game forwards the overdraw to another segment. Its
                 // destination can consume some or all of it; args alone do not
                 // tell the discarded tail. Bound that tail, never call the
@@ -621,6 +627,10 @@ impl OutputCheck {
             (
                 self.shared_railways,
                 "shares a segment with another railway line",
+            ),
+            (
+                self.unpaid_railways,
+                "a railway line that made no spend advance still gained progress: the game recomputes it from its route's segment progress, raised by something other than this line's spending, so the gain is not its output",
             ),
             (
                 self.excluded,

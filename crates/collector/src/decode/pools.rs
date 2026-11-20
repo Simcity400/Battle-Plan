@@ -842,8 +842,8 @@ pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
 
 /// Sizing thread: presize pooled raw-copy jobs whose country census follows the
 /// registry, after a larger registry was observed (for example a save loaded
-/// after attaching at the main menu). The game thread only `try_lock`s these
-/// pools, so a concurrent callback takes a fresh job instead of waiting.
+/// after attaching at the main menu). A capture only `try_lock`s these
+/// pools, so a concurrent capture takes a fresh job instead of waiting.
 pub fn presize_country_pools() {
     presize_pool(
         &AIR_WING_JOB_POOL,

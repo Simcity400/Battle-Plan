@@ -1388,38 +1388,19 @@ fn contiguous<'a>(groups: impl Iterator<Item = &'a BTreeSet<u32>>, label: &str) 
 }
 
 /// A resolved base must be a saved base with the recorded fields; a probed
-/// handle with no witness must be unsaved. Match capture_references: registered
-/// active pools, idle pools even with a retained region,
-/// unregistered training pools without a region, and every transfer base.
+/// handle with no witness must be unsaved. Match capture_references: every
+/// wing's pool base, whatever its mission, and every transfer base.
 fn witnesses(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let saved: BTreeMap<_, _> = save.air.bases.iter().map(|base| (base.id, base)).collect();
     let manager: BTreeMap<_, _> = complete::<tables::AirBases>(frame)?
         .iter()
         .map(|base| (base.id, base))
         .collect();
-    let wings = complete::<tables::AirWings>(frame)?;
-    let by_wing: BTreeMap<_, _> = wings.iter().map(|wing| (wing.id, wing)).collect();
-    let mut probed: BTreeSet<u64> = wings
+    let mut probed: BTreeSet<u64> = complete::<tables::AirWings>(frame)?
         .iter()
-        .map(|wing| wing.base_override)
-        .chain(
-            wings
-                .iter()
-                .filter(|wing| {
-                    wing.mission_mask == 0
-                        || (wing.mission_region.is_none()
-                            && wing.mission_mask & replay_data::rows::AIR_MISSION_TRAINING != 0)
-                })
-                .map(|wing| wing.air_base),
-        )
+        .flat_map(|wing| [wing.air_base, wing.base_override])
         .filter(|&handle| handle != 0)
         .collect();
-    for registration in complete::<tables::AirRegionalMissions>(frame)? {
-        let wing = by_wing
-            .get(&registration.wing)
-            .ok_or_else(|| invalid("registered air mission lacks its AirWings row"))?;
-        probed.insert(wing.air_base);
-    }
     let mut compared = 0;
     for row in complete::<tables::AirReferenceWitnesses>(frame)? {
         let label = format!("air reference witness {}", row.handle);

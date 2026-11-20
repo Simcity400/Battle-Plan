@@ -83,6 +83,12 @@ pub(crate) fn patches() -> Vec<Patch> {
         cgame_state::HOURLY_UPDATE_RVA,
         FIVE,
     );
+    add(
+        "command_batch",
+        "CommandBatch",
+        cgame_state::COMMAND_BATCH_RVA,
+        FIVE,
+    );
     for site in engine_mutations::unit_leader_mutations::MUTATIONS {
         add("unit_leader_changes", site.name, site.rva, FIVE);
     }

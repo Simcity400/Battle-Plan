@@ -423,18 +423,27 @@ fn compare_certified_history(
     if spans.iter().any(|&(from, to)| from >= to) || spans.windows(2).any(|w| w[0].1 > w[1].0) {
         return Err(invalid("land event coverage overlaps or is invalid"));
     }
+    // A drain (from,to] holds results stamped from..=to: a command after the read at
+    // `from` still carries its hour.
     if captured.iter().any(|e| {
         !spans
             .iter()
-            .any(|&(from, to)| e.hour > from && e.hour <= to)
+            .any(|&(from, to)| e.hour >= from && e.hour <= to)
     }) {
         return Err(invalid("land event outside certified history span"));
     }
+    // An hour is whole only with the drains on both sides of its read; the save's hour is
+    // compared at its read.
+    let steps = |a: i32, b: i32| spans.iter().any(|&(from, to)| from <= a && b <= to);
+    let certified = |hour: i32| {
+        steps(hour.saturating_sub(1), hour)
+            && (hour == manager_hour || steps(hour, hour.saturating_add(1)))
+    };
     // History pruning, called at the beginning of manager update,
     // drops head entries dated < now - 168 (equality survives),
     // and future head entries. The hourly update advances the clock before that call:
     // for a settled fresh save at H, last manager update H_u = H, NOT H - 1.
-    // The inclusive lower bound is H - 168; event coverage remains (from,to].
+    // The inclusive lower bound is H - 168.
     let oldest =
         i64::from(manager_hour) - i64::from(engine_land_inputs::ccombat_history::RETENTION_HOURS);
     let retained = |e: &History| i64::from(e.hour) >= oldest;
@@ -451,24 +460,48 @@ fn compare_certified_history(
     let saved = multiset(
         saved
             .iter()
-            .filter(|e| {
-                e.kind == 1
-                    && retained(e)
-                    && e.hour <= manager_hour
-                    && spans
-                        .iter()
-                        .any(|&(from, to)| e.hour > from && e.hour <= to)
-            })
+            .filter(|e| e.kind == 1 && retained(e) && e.hour <= manager_hour)
             .cloned(),
     );
     let recorded = multiset(captured.into_iter().filter(retained));
     let count = recorded.values().sum();
+    let whole = |map: &BTreeMap<History, usize>| {
+        map.iter()
+            .filter(|(e, _)| certified(e.hour))
+            .map(|(e, n)| (e.clone(), *n))
+            .collect::<BTreeMap<_, _>>()
+    };
     equal(
         report,
         "LandCombatResults saved history multiset",
-        &recorded,
-        &saved,
+        whole(&recorded),
+        whole(&saved),
     );
+    // Missing coverage explains saved results the recording never saw, never a recorded one
+    // the save lacks.
+    for (e, &n) in recorded.iter().filter(|(e, _)| !certified(e.hour)) {
+        let held = saved.get(e).copied().unwrap_or(0);
+        if held < n {
+            report.difference(
+                format!(
+                    "LandCombatResults recorded result missing from the saved history at hour {}",
+                    e.hour
+                ),
+                n,
+                held,
+            );
+        }
+    }
+    let mut unseen = 0;
+    for (e, &n) in saved.iter().filter(|(e, _)| !certified(e.hour)) {
+        unseen += n.saturating_sub(recorded.get(e).copied().unwrap_or(0));
+    }
+    if unseen != 0 {
+        report.limitation(
+            "a land result stamped with an hour whose drains are not complete on both sides of its read is only partly observed: every recorded one must be in the save, but a saved one there may never have been observed",
+            format!("{unseen} saved results"),
+        );
+    }
     Ok(count)
 }
 pub fn compare_events(
@@ -513,7 +546,7 @@ pub fn compare_events(
             }
             spans.push((c.from_hour, c.to_hour));
             for result in decoded.complete::<tables::LandCombatResults>()? {
-                if result.end_hour <= c.from_hour || result.end_hour > c.to_hour {
+                if result.end_hour < c.from_hour || result.end_hour > c.to_hour {
                     return Err(invalid("land event outside its observed interval"));
                 }
                 captured.push(History {
@@ -808,8 +841,71 @@ mod tests {
             assert_eq!(report.differences.len(), 1);
         }
         assert!(
-            compare_certified_history(vec![event], &[], &saved, 100, &mut Report::default())
+            compare_certified_history(vec![event.clone()], &[], &saved, 100, &mut Report::default())
                 .is_err()
+        );
+        // A command after the read at 99 ends a combat stamped 99 into the drain (99,100].
+        let mut before = event.clone();
+        before.hour = 99;
+        let mut report = Report::default();
+        assert_eq!(
+            compare_certified_history(vec![before.clone()], &[(99, 100)], &[], 100, &mut report)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            report.differences.len(),
+            1,
+            "hour 99 before its read is unobserved, yet a result recorded there must be in the save"
+        );
+        let mut report = Report::default();
+        compare_certified_history(
+            vec![before.clone()],
+            &[(99, 100)],
+            &[before.clone(), before.clone()],
+            100,
+            &mut report,
+        )
+        .unwrap();
+        assert!(
+            report.differences.is_empty() && !report.limitations.is_empty(),
+            "the recorded one is found; the other saved one may never have been observed"
+        );
+        let mut report = Report::default();
+        assert_eq!(
+            compare_certified_history(
+                vec![before.clone(), event.clone()],
+                &[(98, 99), (99, 100)],
+                &[before, event.clone()],
+                100,
+                &mut report
+            )
+            .unwrap(),
+            2,
+            "drains on both sides of its read make hour 99 whole"
+        );
+        assert!(report.differences.is_empty());
+        let mut report = Report::default();
+        let gap_end = History {
+            hour: 98,
+            ..event.clone()
+        };
+        compare_certified_history(vec![], &[(97, 98), (99, 100)], &[gap_end], 100, &mut report)
+            .unwrap();
+        assert!(
+            report.differences.is_empty(),
+            "without the drain after its read, hour 98's later commands are unobserved"
+        );
+        assert!(
+            compare_certified_history(
+                vec![History { hour: 98, ..event }],
+                &[(99, 100)],
+                &[],
+                100,
+                &mut Report::default()
+            )
+            .is_err(),
+            "a result older than its drain's first hour"
         );
         assert!(
             compare_certified_history(

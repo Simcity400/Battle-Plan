@@ -62,6 +62,25 @@ test('recorded final winners wait for their supplying hour and terminal-only ros
   assert.equal(validateLandBattlesReply(wire([transient])).rows.length, 1);
 });
 
+test('an end and result written the hour after their own show from that hour, dated by their own, wherever the window boundary falls', () => {
+  const live: LandBattle = { ...history(), end: null, runs: [{ ...history().runs[0], lastHour: 21 }] };
+  const settled: LandBattle = { ...history(), end: { hour: 21, bound: 'exact' }, settledHour: 22,
+    result: { hour: 21, duration: 12, winner: { side: 0 }, countries: [['mod/tag'], ['other']], countriesUnknown: [false, false] },
+    runs: [{ ...live.runs[0], firstHour: 21, duration: 12 }] };
+  const split = new Map([[0, reply([live])], [1, { ...reply([settled], 1), interval: { firstHour: 22, lastHour: 30 } }]]);
+  const whole = new Map([[0, { ...reply([{ ...settled, runs: live.runs }]), interval: { firstHour: 10, lastHour: 30 } }]]);
+  for (const [name, windows] of [['split', split], ['whole', whole]] as const) {
+    const before = landBattleRows(windows, 21, () => true, true)[0];
+    assert.equal(before.end, null, name);
+    assert.deepEqual(before.winner, { unknown: 'Result not recorded' }, name);
+    const after = landBattleRows(windows, 22, () => true, true)[0];
+    assert.deepEqual(after.end, { hour: 21, bound: 'exact' }, name);
+    assert.deepEqual(after.winner, { side: 0 }, name);
+  }
+  assert.equal(validateLandBattlesReply(wire([settled])).rows[0].settledHour, 22);
+  assert.throws(() => validateLandBattlesReply(wire([{ ...settled, settledHour: 1.5 }])), /malformed/);
+});
+
 test('a result side without countries keeps the last hourly read\'s participants at that read\'s date', () => {
   const h = history();
   h.result = { hour: 21, duration: 25, winner: { side: 0 }, countries: [['late attacker'], []], countriesUnknown: [false, true] };
