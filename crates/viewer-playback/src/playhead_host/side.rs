@@ -54,15 +54,18 @@ struct Ask {
     /// What only the frame knows of the overlay: its camera, size, interface scale, counter
     /// options, selection and hover, and the raid arrows the scripts lane made.
     overlay: Option<overlay::Ask>,
+    /// What the open combat window reads; none while no window is open.
+    combat: Option<viewer_combat::Asking>,
 }
 
-/// What a stepped frame's picture was made whole for: its hour, and the view, overlay placement and
-/// counter view it was asked at. Another ask at the same hour is another picture.
+/// What a stepped frame's picture was made whole for: its hour, and the view, overlay placement,
+/// counter view and combat window it was asked at. Another ask at the same hour is another picture.
 #[derive(Debug)]
 struct Ready {
     hour: Hour,
     view: View,
     placed: Option<Placed>,
+    combat: Option<viewer_combat::ReadKey>,
 }
 
 /// What of the overlay's ask its layout stands for: the camera, zoom target, size, interface scale
@@ -71,7 +74,7 @@ type Placed = (viewer_foundation::map::camera::Camera, Option<f32>, [u32; 2], f3
 
 impl Ready {
     fn of(hour: Hour, ask: &Ask) -> Self {
-        Self { hour, view: ask.view.clone(), placed: ask.overlay.as_ref().map(Self::placed) }
+        Self { hour, view: ask.view.clone(), placed: ask.overlay.as_ref().map(Self::placed), combat: ask.combat.as_ref().map(viewer_combat::Asking::key) }
     }
 
     fn placed(overlay: &overlay::Ask) -> Placed {
@@ -81,6 +84,7 @@ impl Ready {
     fn answers(&self, hour: Hour, ask: &Ask) -> bool {
         self.hour == hour
             && self.view == ask.view
+            && self.combat == ask.combat.as_ref().map(viewer_combat::Asking::key)
             && match (&self.placed, &ask.overlay) {
                 (Some((camera, target, pixels, scale, view)), Some(overlay)) => {
                     (*camera, *target, *pixels, *scale) == (overlay.camera, overlay.target, overlay.pixels, overlay.ui_scale) && *view == overlay.view
@@ -184,10 +188,10 @@ impl SideThread {
         Ok(Self { shared, entry, sight, views, products, installs, install_failure: None, doing, composed, thread: Some(thread) })
     }
 
-    /// The view and head of the frame being drawn, with what only the frame knows of the overlay,
-    /// for the step prepared next. Never waits.
-    pub fn ask(&self, view: View, at: Head, overlay: Option<overlay::Ask>) {
-        *lock(&self.shared.ask) = Some(Ask { view, at, overlay });
+    /// The view and head of the frame being drawn, with what only the frame knows of the overlay
+    /// and what its open combat window reads, for the step prepared next. Never waits.
+    pub fn ask(&self, view: View, at: Head, overlay: Option<overlay::Ask>, combat: Option<viewer_combat::Asking>) {
+        *lock(&self.shared.ask) = Some(Ask { view, at, overlay, combat });
         self.shared.signal.notify_all();
     }
 
@@ -337,6 +341,7 @@ impl SideThread {
         let made = drive(window.side_mut());
         window.take(Wants { warnings: true, highlight: false });
         drop(window.take_overlay());
+        drop(window.take_combat());
         made
     }
 
@@ -508,6 +513,12 @@ impl Window<'_> {
         self.products.overlay.take()
     }
 
+    /// The combat window's read the publication made, of its hour, taken from the side while it is
+    /// held: one the frame never took is replaced on the side's thread, not the frame's.
+    pub fn take_combat(&mut self) -> Option<viewer_combat::Product> {
+        self.turn.side.take_combat()
+    }
+
     /// Whether the frame lets go of the overlay it holds: made for another viewing country, with
     /// none of the view's coming ([`MapSide::take_overlay_withdrawal`]). Taken once.
     pub fn take_overlay_withdrawal(&mut self) -> bool {
@@ -663,6 +674,7 @@ fn toward(side: &mut MapSide, ask: &Ask, head: Hour, made: Made) -> io::Result<(
     if let Some(overlay) = &ask.overlay {
         side.ask_overlay(overlay.clone());
     }
+    side.ask_combat(ask.combat.clone());
     match made {
         // The overlay is a maker of the step: asked at its apply and joined inside it, so the
         // picture handed to the frame carries the overlay of the newest hour its maker reached.
@@ -819,6 +831,11 @@ pub struct Products {
     pub overlay_missed: Vec<replay_data::rows::TableId>,
     /// The vision the map's layers show, as the step copied it out; why there is none, by name.
     pub vision: Result<Arc<viewer_foundation::map::perspective::Vision>, String>,
+    /// What the combat window is waiting for, by name.
+    pub combat_loading: Vec<String>,
+    /// Whether the stepped picture's combat read was handed, or why not; none while no window was
+    /// asked for ([`crate::playhead_host::MapSide::combat_whole_state`]).
+    pub combat_whole: Option<Result<(), String>>,
 }
 
 impl Default for Products {
@@ -865,6 +882,8 @@ impl Default for Products {
             overlay_loading: Vec::new(),
             overlay_missed: Vec::new(),
             vision: Err("the playhead's map is not open".to_owned()),
+            combat_loading: Vec::new(),
+            combat_whole: None,
         }
     }
 }
@@ -917,6 +936,12 @@ impl Products {
         }
         if let Some(made) = side.take_overlay() {
             self.overlay = Some(made);
+        }
+        if self.combat_loading != side.combat_loading() {
+            self.combat_loading = side.combat_loading().to_vec();
+        }
+        if self.combat_whole.as_ref() != side.combat_whole_state() {
+            self.combat_whole = side.combat_whole_state().cloned();
         }
         self.vision = side.vision();
         if let Some(overlay) = side.overlay() {

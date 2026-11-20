@@ -2,9 +2,10 @@
 //! naval, retained naval result and air region), the selector, the land and naval marker
 //! tooltips, the division panel, the terrain and infrastructure hovers and the raid tooltip, each
 //! over its own rows at the head, learning its tables by reading, against the same leaf over
-//! today's frame of the hour. Timed (`--timing`), each reads at four a second as the window does:
-//! the window open on the hour's largest land battle, every hover on it, and the frame thread's
-//! time for the asks and the reads they make.
+//! today's frame of the hour. Timed (`--timing`), each reads at four a second as a hover does: the
+//! window open on the hour's largest land battle, every hover on it, and the frame thread's time
+//! for the asks and the reads they make. The window's read is the map side's in the app, so it is
+//! timed apart, over rows of its own.
 
 use super::super::views::{AtHead, Need, Pace, Reader as ViewReader, Views};
 use crate::{app::combat_rows::CombatRows, document::Document, playhead_host::Entry};
@@ -78,7 +79,7 @@ fn outputs(name: &str, document: &Document, frame: &Arc<DecodedFrame>, targets: 
                 .map(|selection| {
                     let mut window = Window::default();
                     window.open(selection);
-                    format!("{selection:?}: {:?}", window.prepare(content, frame.branch, frame.hour, Ok(Arc::clone(frame)), &Choice::default(), None, false))
+                    format!("{selection:?}: {:?}", window.prepare(content, &document.playback.roster_sampler(), frame.branch, frame.hour, Ok(Arc::clone(frame)), &Choice::default(), None, false))
                 })
                 .collect()
         }
@@ -103,6 +104,9 @@ struct Reader {
 struct Timing {
     rows: CombatRows,
     window: Window,
+    /// The window's rows, and each read's nanoseconds: the map side's work in the app, not the frame's.
+    window_rows: AtHead,
+    window_reads: Vec<u64>,
     /// The tables the battle is chosen from: in the app a click chooses it, so it is not timed.
     battle: AtHead,
     /// The battle's combat, province and first division, and the frame's first naval combat.
@@ -204,10 +208,10 @@ impl Line {
         for name in TIMED {
             combat.learned(name, known.get(name).map_or(&[][..], Vec::as_slice));
         }
-        let mut window = Window::default();
-        window.time_reads();
+        let mut window_rows = AtHead::learning("combat window");
+        window_rows.learn(known.get("window").map_or(&[][..], Vec::as_slice));
         let battle = AtHead::new("proof battle", &[TableId::LandCombats, TableId::LandCombatDivisions, TableId::NavalCombats], Pace::PerSecond(4));
-        let timing = Timing { rows: combat, window, battle, targets: None, base: Arc::new(Tooltip::default()), frames: Vec::new(), each: Default::default(), hz, behind: Vec::new(), loading: 0 };
+        let timing = Timing { rows: combat, window: Window::default(), window_rows, window_reads: Vec::new(), battle, targets: None, base: Arc::new(Tooltip::default()), frames: Vec::new(), each: Default::default(), hz, behind: Vec::new(), loading: 0 };
         Ok(Self { views, readers, timing, timed: timed.to_vec(), battles: Vec::new(), totals: BTreeMap::new() })
     }
 
@@ -292,7 +296,7 @@ impl Line {
     }
 
     /// One timed frame at `head` (the hour the map shows), as the app makes it: the window open on
-    /// the largest land battle, asked of its worker and what came in taken; the land marker hover
+    /// the largest land battle, read over its rows as the map side reads it; the land marker hover
     /// on that battle and the naval one on the first naval combat, each asked of its worker; the
     /// division panel of the battle's first division, the terrain and infrastructure hovers of its
     /// province, on the frame thread over their rows.
@@ -315,9 +319,24 @@ impl Line {
             }
         }
         timing.battle.end_frame();
+        // The window's read, as the map side makes it in the app: not the frame thread's.
+        if timing.targets.is_some()
+            && self.timed.contains(&TIMED[0])
+            && let Some(frame) = timing.window_rows.frame(at)
+        {
+            let began = Instant::now();
+            let (prepared, missed) = discovering(|| timing.window.prepare(&document.combat, &document.playback.roster_sampler(), frame.branch, frame.hour, Ok(Arc::clone(&frame)), &Choice::default(), None, false));
+            if matches!(prepared, Ok(viewer_combat::Prepared::Read(_))) {
+                timing.window_reads.push(began.elapsed().as_nanos() as u64);
+            }
+            match prepared {
+                Ok(prepared) if missed.is_empty() => drop(timing.window.take_in(&document.combat, prepared)),
+                _ => timing.window_rows.learn(&missed),
+            }
+        }
         let (started, cycles) = (Instant::now(), replay_frame::cpu::thread_cycles());
         if let Some((combat, province, division, naval)) = timing.targets {
-            let (rows, document_combat) = (&mut timing.rows, &document.combat);
+            let rows = &mut timing.rows;
             let asked = &self.timed;
             let mut each = |at: usize, work: &mut dyn FnMut()| {
                 if !asked.contains(&TIMED[at]) {
@@ -327,15 +346,6 @@ impl Line {
                 work();
                 timing.each[at].push((began.elapsed().as_nanos() as u64, replay_frame::cpu::thread_cycles().saturating_sub(cycles)));
             };
-            let window = &mut timing.window;
-            each(0, &mut || {
-                if let Some(frame) = rows.window_rows(at)
-                    && let Ok(prepared) = window.ask(document_combat, frame.branch, frame.hour, Ok(Arc::clone(&frame)), &Choice::default(), None, false, || {})
-                {
-                    window.take_in(document_combat, prepared);
-                }
-                rows.window_missed(&window.take_missed());
-            });
             each(1, &mut || {
                 rows.land_marker(at, document, ours, combat, None, false, || {});
             });
@@ -358,12 +368,14 @@ impl Line {
             });
         }
         timing.rows.end_frame();
+        timing.window_rows.end_frame();
         timing.frames.push((started.elapsed().as_nanos() as u64, replay_frame::cpu::thread_cycles().saturating_sub(cycles)));
         match timing.window.model() {
             Some((hour, _)) => timing.behind.push(f64::from(head - hour)),
             None if timing.window.selection.is_some() => timing.loading += 1,
             None => {}
         }
+        drop(timing.window.take_retired());
     }
 
     /// What was compared; per reader the tables it learned and what holding them costs; timed,
@@ -376,7 +388,7 @@ impl Line {
         let hz = self.timing.hz;
         let both = |values: &[(u64, u64)]| json!({"wall": distribution(values.iter().map(|&(ns, _)| ns as f64 / 1e6).collect()), "cpu": distribution(values.iter().map(|&(_, cycles)| cycles as f64 / hz * 1e3).collect())});
         let mut workers = serde_json::Map::new();
-        workers.insert("window".into(), ms(&self.timing.window.read_times()));
+        workers.insert("window".into(), ms(&self.timing.window_reads));
         for (name, times) in self.timing.rows.times() {
             workers.insert(name.into(), ms(&times));
         }

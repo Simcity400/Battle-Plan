@@ -141,6 +141,7 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
             false,
             Tick { time: 0., dt: 0. },
             false,
+            false,
             None,
         )
         .unwrap();
@@ -244,6 +245,7 @@ fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
                 extent,
                 false,
                 Tick { time: 0., dt: 0. },
+                false,
                 false,
                 None,
             )

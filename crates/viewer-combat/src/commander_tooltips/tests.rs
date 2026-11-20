@@ -146,6 +146,7 @@ fn naval_trait_hovers_refuse_each_shown_entry_by_name_and_clear_authored_seeds()
             held: None,
             generation: 1,
             gui_assets: None,
+            of: None,
         }),
         ..Default::default()
     };

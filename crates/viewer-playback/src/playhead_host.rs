@@ -5,6 +5,7 @@
 //! ([`crate::layers`]). Every frame-side call returns without waiting: a reset's composing runs on
 //! the host's worker and is swapped in whole when done.
 
+pub mod combat;
 pub mod details;
 pub mod limitations;
 pub mod mirror;
@@ -957,6 +958,10 @@ pub struct MapSide {
     /// The vision its layers show, copied out of the vision layer in the step that settled it,
     /// which the overlay's tables and the counter layers are then made over.
     vision: overlay::ShownVision,
+    /// The open combat window's read, made within the step for its hour ([`combat`]).
+    combat: combat::Combat<viewer_combat::Asking>,
+    /// Whether the last stepped picture's combat read was handed ([`Self::combat_whole`]).
+    combat_whole: Option<Result<(), String>>,
     /// Per layer: what its last compose took on the worker.
     compose_ns: Vec<u64>,
     /// The epoch of the newest step taken: a seek since supersedes a compose of its steps.
@@ -1112,6 +1117,8 @@ impl MapSide {
             sight: None,
             overlay: None,
             vision: overlay::ShownVision::default(),
+            combat: combat::Combat::default(),
+            combat_whole: None,
             compose_ns: Vec::new(),
             epoch: 0,
             cancel: Arc::default(),
@@ -1204,6 +1211,27 @@ impl MapSide {
         made
     }
 
+    /// The frame's newest asking of the open combat window, read from the next step on; none while
+    /// no window is open.
+    pub fn ask_combat(&mut self, asking: Option<viewer_combat::Asking>) {
+        self.combat.ask(asking);
+    }
+
+    /// The combat window's read the last step made, of its hour; the frame holds it from then on.
+    pub fn take_combat(&mut self) -> Option<viewer_combat::Product> {
+        self.combat.take()
+    }
+
+    /// What the combat window is waiting for, by name.
+    pub fn combat_loading(&self) -> &[String] {
+        self.combat.loading()
+    }
+
+    /// The engaged index the engagements layer reads, which the combat markers and window read.
+    fn engaged(&self) -> Option<Arc<viewer_foundation::engagement_history::History>> {
+        self.layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::engagements::Engagements>()).and_then(crate::layers::engagements::Engagements::history).map(Arc::clone)
+    }
+
     /// The step asks the overlay's maker for the overlay of its hour, at its apply: its rows, its
     /// tables and its layout are then made while the layers of this step settle. `whole`: the rows
     /// of exactly this hour, waited for however long they take. `lay`: the overlay laid out over
@@ -1219,12 +1247,7 @@ impl MapSide {
         let draws = crate::layers::counter_kinds::draws(self);
         let left = crate::document::LeftToLayers::of(Some(self));
         let draws_labels = self.draws("labels");
-        let engaged = self
-            .layers
-            .iter()
-            .find_map(|layer| layer.any().downcast_ref::<crate::layers::engagements::Engagements>())
-            .and_then(crate::layers::engagements::Engagements::history)
-            .map(Arc::clone);
+        let engaged = self.engaged();
         // A saved frame's own hour: the vision layer's as it stands, waited for. A paced step's is
         // the one last copied out, which the settle of its own vision layer asks for.
         let vision = if whole { self.copy_vision(true) } else { self.vision.kept_for(&self.view.perspective) };
@@ -1656,6 +1679,14 @@ impl MapSide {
             // maker is given its frame the moment its own sets are made. Composing, nothing is
             // made and no maker is asked, as nothing is settled.
             if !composing && let Some(hour) = self.applied {
+                // The combat window's read of this hour, made while the layers settle and joined
+                // at the step's end, so it reaches the frame with the publication it is of. Asked
+                // before the post, which makes the rows of a reader the ask opens. A caught-up
+                // step is shown by no frame.
+                if lay {
+                    let engaged = self.engaged();
+                    self.combat.ask_step(&self.views, Some(hour), self.branch, self.epoch, engaged);
+                }
                 let _views = replay_frame::cpu::scope("side.views", Some("other"));
                 let (store, held) = (&mut self.views, self.mirrors.as_ref().expect("the mirrors are home"));
                 store.post(held, hour, self.branch.unwrap_or_default(), self.epoch, false);
@@ -1898,6 +1929,7 @@ impl MapSide {
         if let Some(overlay) = self.overlay.as_deref_mut() {
             overlay.stepped();
         }
+        self.combat.join(settling, viewer_foundation::map::simulation_rate::interval());
         timeline::close(frame.composing);
         self.last = frame.clone();
         Ok(frame)
@@ -2059,6 +2091,7 @@ impl MapSide {
     /// or a test), never by a frame: a frame waits for the picture and advances nothing.
     pub fn catch_up(&mut self, head: Hour) -> io::Result<()> {
         self.stepped = true;
+        self.combat_whole = None;
         let started = Instant::now();
         loop {
             let newest = self.entry.playhead.newest().unwrap_or(head);
@@ -2069,6 +2102,7 @@ impl MapSide {
                 // hour in the settle above; the step after this one makes them, and the settle
                 // after that makes its product. The picture is not whole until it has.
                 if self.head_products_reached(head) && self.overlay_whole(head)? {
+                    self.combat_whole = self.combat_whole();
                     // The settles of the overlay's two passes moved what the layers show: the
                     // picture handed to the frame is the one those settles left.
                     self.update_shown();
@@ -2168,6 +2202,32 @@ impl MapSide {
             self.settle_all()?;
         }
         Ok(self.overlay.as_deref().expect("held above").stands_at(head))
+    }
+
+    /// The combat window's read of a stepped frame's hour, waited for; read again while each read
+    /// finds tables its rows did not hold, which are finite. This settle advances no step, so it
+    /// posts the makers' rows itself, after the ask, which is what opens the window's reader. None
+    /// while no window is asked for; else whether the read of the hour was handed, or why not.
+    fn combat_whole(&mut self) -> Option<Result<(), String>> {
+        loop {
+            let (engaged, learned) = (self.engaged(), self.combat.learned());
+            if !self.combat.ask_step(&self.views, self.applied, self.branch, self.epoch, engaged) {
+                return self.combat.open().then_some(Ok(()));
+            }
+            self.post_makers();
+            let joined = self.combat.join(Settling::Whole, std::time::Duration::ZERO);
+            if joined.made {
+                return Some(Ok(()));
+            }
+            if joined.answered || self.combat.learned() == learned {
+                return Some(Err(self.combat.loading().join("; ")));
+            }
+        }
+    }
+
+    /// What the stepped picture's [`Self::combat_whole`] found: none while no window was asked for.
+    pub fn combat_whole_state(&self) -> Option<&Result<(), String>> {
+        self.combat_whole.as_ref()
     }
 
     /// Whether every drawn layer that makes its product from rows at the head has made it for
@@ -2497,6 +2557,7 @@ impl MapSide {
             if let Some(overlay) = self.overlay.as_deref_mut() {
                 overlay.reset();
             }
+            self.combat.reset();
         }
     }
 

@@ -441,6 +441,12 @@ impl std::ops::Deref for Hour<'_> {
 }
 
 impl Content {
+    /// The naval dominance sources of `frame` for the country in slot `ours`, made as its overlay's
+    /// tables make them ([`counters::naval_dominance_sources`]).
+    pub fn naval_dominance_sources(&self, frame: &DecodedFrame, ours: u32, region: u32) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
+        counters::naval_dominance_sources(frame, &self.map, &self.counters, ours, region, self.icons.raids.movement_reads(), self.icons.raids.mission_topology())
+    }
+
     /// The heightmap as the map passes sample it.
     pub fn heights(&self) -> HeightField<'_> {
         HeightField {

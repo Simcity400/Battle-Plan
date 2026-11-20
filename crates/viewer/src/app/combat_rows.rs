@@ -1,11 +1,12 @@
-//! The combat window (land, naval and air region), the land and naval marker tooltips, the
-//! division panel, the terrain and infrastructure hovers and the raid tooltip read rows at the
-//! playback head while the playhead's map is open. Each learns its tables by reading, asks at most
-//! four times a second while playing, and is closed by a frame that did not ask it. While its rows
-//! do not hold a table it reads, it shows what it showed and says it is loading, by name. The
-//! window's read and the hovers are made on workers (a read takes up to hundreds of milliseconds
-//! late in the war); the frame thread only asks and takes results in, and shows what it holds
-//! until a newer one is there.
+//! The combat window (land, naval and air region) is read by the map's side for each publication's
+//! own hour and shown with it ([`crate::playhead_host::combat`]): the frame only posts what it reads
+//! and shows the read of the hour on screen, or says it is loading. The land and naval marker
+//! tooltips, the division panel, the terrain and infrastructure hovers and the raid tooltip read
+//! rows at the playback head while the playhead's map is open. Each learns its tables by reading,
+//! asks at most four times a second while playing, and is closed by a frame that did not ask it.
+//! While its rows do not hold a table it reads, it shows what it showed and says it is loading, by
+//! name. The hovers are made on workers; the frame thread only asks and takes results in, and shows
+//! what it holds until a newer one is there.
 
 #[cfg(test)]
 mod tests;
@@ -28,7 +29,7 @@ use std::{
 use viewer_combat::{Prepared, Selector, division_panel, land_marker_tooltips, naval_marker_tooltips, reads::Reads, terrain_mode};
 use viewer_foundation::{
     engagement_history::History,
-    map::perspective::{Choice, Vision},
+    map::perspective::Vision,
     tooltip_text::Tooltip,
 };
 use viewer_raids::map::raids::tooltips::{Key, lane::Lane};
@@ -128,11 +129,15 @@ impl<T: Clone + Send + 'static> Hover<T> {
 
 /// Each reader's rows at the head with what it made from them.
 pub(crate) struct CombatRows {
-    window: AtHead,
-    window_loading: Loading,
+    /// What the combat window waits for, by name, while it shows nothing.
+    window_loading: Option<String>,
     window_asked: bool,
     /// The combat named at load (`--combat`), opened on the first frame that resolves it.
     pub pending: Option<Selector>,
+    /// Why the combat named at load opened nothing, which refuses a saved frame.
+    pub(crate) selector_refused: Option<String>,
+    /// Saved frames drawn while the combat named at load waited for its rows.
+    pub(crate) selector_waits: u32,
     selector: AtHead,
     land_marker: Hover<Arc<Tooltip>>,
     naval_marker: Hover<Arc<Tooltip>>,
@@ -156,11 +161,14 @@ pub(crate) struct CombatRows {
 impl Default for CombatRows {
     fn default() -> Self {
         Self {
-            window: AtHead::learning("combat window"),
-            window_loading: Loading::default(),
+            window_loading: None,
             window_asked: false,
             pending: None,
-            selector: AtHead::learning("combat selector"),
+            selector_refused: None,
+            selector_waits: 0,
+            // The tables the selector reads, declared, on a reader that waits: a combat named at
+            // load resolves on a saved frame too, whose side posts no rows for a table learned late.
+            selector: AtHead::new("combat selector", &[TableId::LandCombats, TableId::NavalCombats, TableId::NavalResults], crate::playhead_host::views::Pace::Step),
             land_marker: Hover::new("land marker hover"),
             naval_marker: Hover::new("naval marker hover"),
             division_panel: Hover::new("division panel"),
@@ -180,11 +188,11 @@ impl Default for CombatRows {
 impl CombatRows {
     /// Closes every reader a frame did not ask.
     pub(crate) fn end_frame(&mut self) {
-        for at in [&mut self.window, &mut self.selector, &mut self.raid] {
+        for at in [&mut self.selector, &mut self.raid] {
             at.end_frame();
         }
         if !std::mem::take(&mut self.window_asked) {
-            self.window_loading = Loading::default();
+            self.window_loading = None;
         }
         for hover in [&mut self.land_marker, &mut self.naval_marker, &mut self.division_panel, &mut self.terrain] {
             hover.end_frame();
@@ -203,25 +211,13 @@ impl CombatRows {
     /// Every open reader's loading state, named for the window's refusals.
     pub(crate) fn loading(&self) -> Vec<(String, usize)> {
         let hovers = [&self.land_marker, &self.naval_marker, &self.division_panel, &self.terrain].into_iter().filter_map(|hover| hover.loading.reason(&format!("the {}", hover.name)));
-        let more = [self.window_loading.reason("the combat window"), self.infrastructure.loading.reason("the infrastructure hover"), self.raid_loading.reason("the raid tooltip")];
+        let more = [self.window_loading.as_ref().map(|state| format!("the combat window: loading: {state}")), self.infrastructure.loading.reason("the infrastructure hover"), self.raid_loading.reason("the raid tooltip")];
         hovers.chain(more.into_iter().flatten()).map(|reason| (reason, 1)).collect()
-    }
-
-    /// The window's rows at the head; none, loading by name, while they do not hold what it reads.
-    pub(crate) fn window_rows(&mut self, views: Head<'_>) -> Option<Arc<DecodedFrame>> {
-        self.window_asked = true;
-        let rows = self.window.frame(views);
-        match rows {
-            Some(_) => self.window_loading.joined(),
-            None => self.window_loading.no_rows(),
-        }
-        rows
     }
 
     /// Gives reader `name` the tables a run learned before, so it opens with them (the proof tool).
     pub(crate) fn learned(&mut self, name: &str, tables: &[TableId]) {
         let at = match name {
-            "window" => &mut self.window,
             "land_marker" => &mut self.land_marker.at,
             "naval_marker" => &mut self.naval_marker.at,
             "division_panel" => &mut self.division_panel.at,
@@ -249,15 +245,6 @@ impl CombatRows {
             ("terrain", self.terrain.times()),
             ("infrastructure", self.infrastructure.times()),
         ]
-    }
-
-    /// Declares the tables the window's worker read undeclared; the window is loading until they
-    /// join.
-    pub(crate) fn window_missed(&mut self, missed: &[TableId]) {
-        if !missed.is_empty() {
-            self.window.learn(missed);
-            self.window_loading.learned(missed);
-        }
     }
 
     #[allow(clippy::too_many_arguments, reason = "the tooltip's inputs, each from another owner")]
@@ -365,53 +352,61 @@ fn extend(base: &Tooltip, panel: &Tooltip) -> Tooltip {
     text
 }
 
-#[cfg(test)]
-impl CombatRows {
-    pub(crate) fn window(&mut self) -> &mut AtHead {
-        &mut self.window
-    }
-
-    /// What the window is loading, none when it is not.
-    pub(crate) fn window_loading(&self) -> Option<&str> {
-        self.window_loading.state()
-    }
-
-    /// The readers open now, and the marker workers running.
-    pub(crate) fn open(&self) -> (usize, usize) {
-        let readers = [&self.window, &self.selector, &self.land_marker.at, &self.naval_marker.at, &self.division_panel.at, &self.terrain.at, &self.infrastructure.at, &self.raid].into_iter().filter(|at| at.is_open()).count();
-        let workers = [&self.land_marker, &self.naval_marker, &self.division_panel, &self.terrain].into_iter().filter(|hover| hover.reads.is_some()).count() + usize::from(self.infrastructure.reads.is_some());
-        (readers, workers)
-    }
-}
-
 impl Viewer {
-    /// The combat window's read for this frame, asked of its worker over rows at the head of the
-    /// open map; the combat named at load is opened first, once its rows resolve it. Nothing is
-    /// asked while no window is open; while the window's rows load it keeps what it shows.
-    pub(super) fn combat_prepared(&mut self, document: &Document, perspective: &Choice, engaged: Option<Arc<History>>, ctx: &egui::Context) -> io::Result<Prepared> {
-        let Some(views) = self.rows_head() else { return Ok(Prepared::Kept) };
+    /// Where the map stands for the combat window: the hour this frame's window readers are bounded
+    /// by ([`crate::playhead_host::views::Views::show_through`]), which its head and the timed
+    /// layers' installs set, or for a saved frame the side's own hour; and the seek the side last
+    /// posted its rows at.
+    pub(super) fn combat_on_screen(&self) -> Option<viewer_combat::OnScreen> {
+        let side = super::live_of(&self.playhead_map)?;
+        let views = side.views();
+        let hour = views.shown_through().or(side.applied())?;
+        Some(viewer_combat::OnScreen { branch: side.branch()?, hour, seek: views.seek() })
+    }
+
+    /// What the combat window shows this frame: the side's read of the hour the map shows, once it
+    /// is there, and what the window holds while that is of the hour on screen; else nothing,
+    /// loading by name. The combat named at load is opened first, once its rows resolve it. What
+    /// the window let go of is freed off the frame.
+    pub(super) fn combat_prepared(&mut self) -> io::Result<Prepared> {
         if let Some(selector) = self.combat_rows.pending.take() {
-            let at = &mut self.combat_rows.selector;
-            let resolved = at.frame(&views).and_then(|rows| at.discover(|| selector.resolve(&rows)));
+            // An air region, a state or a naval region is the window itself: it reads no rows.
+            let resolved = match selector.direct() {
+                Some(selection) => Some(Ok(selection)),
+                None => self.rows_head().and_then(|views| {
+                    let at = &mut self.combat_rows.selector;
+                    at.frame(&views).and_then(|rows| at.discover(|| selector.resolve(&rows)))
+                }),
+            };
             match resolved {
                 None => self.combat_rows.pending = Some(selector),
                 Some(Ok(selection)) => {
                     self.combat.open(selection);
                     self.combat.configure_air(self.options.air_details, self.options.air_range, self.options.air_channels);
                 }
-                Some(Err(error)) => self.error = Some(error.to_string()),
+                Some(Err(error)) => {
+                    self.combat_rows.selector_refused = Some(error.to_string());
+                    self.error = Some(error.to_string());
+                }
             }
         }
-        if self.combat.selection.is_none() {
-            return Ok(Prepared::Closed);
+        let on_screen = self.combat_on_screen();
+        let prepared = self.combat.shown(on_screen);
+        if let Some(retired) = self.combat.take_retired() {
+            self.retire(retired);
         }
-        let Some(rows) = self.combat_rows.window_rows(&views) else { return Ok(Prepared::Kept) };
-        let (branch, hour) = (rows.branch, rows.hour);
-        let wake = ctx.clone();
-        let prepared = self.combat.ask(&document.combat, branch, hour, Ok(rows), perspective, engaged, self.counter_view.settings.nato, move || wake.request_repaint());
-        let missed = self.combat.take_missed();
-        self.combat_rows.window_missed(&missed);
-        prepared
+        let prepared = prepared?;
+        if matches!(prepared, Prepared::Closed) {
+            return Ok(prepared);
+        }
+        self.combat_rows.window_asked = true;
+        let waiting = match super::live_of(&self.playhead_map).map(|side| side.products()) {
+            None => "the map's side".to_owned(),
+            Some(products) if !products.combat_loading.is_empty() => products.combat_loading.join("; "),
+            Some(_) => format!("its read of hour {}", on_screen.map_or_else(|| "none yet".to_owned(), |at| at.hour.to_string())),
+        };
+        self.combat_rows.window_loading = matches!(prepared, Prepared::Loading).then_some(waiting);
+        Ok(prepared)
     }
 
     /// The engaged index the open map's engagements layer reads, the one held while its layers
@@ -422,7 +417,7 @@ impl Viewer {
     }
 
     /// [`Self::layer_history`], kept for the frames its layers compose: the index the marker
-    /// hovers and the combat window read.
+    /// hovers read.
     pub(super) fn layer_engaged(&mut self) -> Option<Arc<History>> {
         let history = self.layer_history();
         self.combat_rows.engaged.clone_from(&history);

@@ -1,5 +1,6 @@
 //! One coalescing worker for a window part's reads of a frame of rows (the combat window's model,
-//! a marker's tooltip), so the frame thread only asks and takes results. The newest job asked
+//! made by the map's side, and a marker's tooltip), so the thread that asks only asks and takes
+//! results, or waits a bounded time for one ([`Reads::wait`]). The newest job asked
 //! runs next, replacing one queued; a job asked again under the same key is not queued twice. A
 //! read that touched a table its rows at the head did not declare keeps no result and names the
 //! table ([`Reads::take_missed`]). The worker ends when its owner drops it, and holds no job or
@@ -10,6 +11,7 @@ use replay_data::rows::TableId;
 use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 type Job<T> = Box<dyn FnOnce() -> T + Send>;
@@ -67,7 +69,7 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
             state.trash.push(Box::new(replaced));
         }
         drop(state);
-        self.shared.1.notify_one();
+        self.shared.1.notify_all();
         if self.worker.is_none() {
             let shared = Arc::clone(&self.shared);
             // The recording's executable tables go with the work, as the asking thread reads them.
@@ -89,6 +91,23 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
         if state.done.as_ref().is_some_and(|(key, _)| keep(key)) { state.done.take() } else { None }
     }
 
+    /// Waits up to `limit` for a result `keep` takes; false when none came, or none is coming
+    /// because nothing is running or queued.
+    pub fn wait(&self, keep: impl Fn(&K) -> bool, limit: Duration) -> bool {
+        let until = Instant::now() + limit;
+        let mut state = lock(&self.shared);
+        loop {
+            if state.done.as_ref().is_some_and(|(key, _)| keep(key)) {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= until || (state.running.is_none() && state.queued.is_none()) {
+                return false;
+            }
+            state = self.shared.1.wait_timeout(state, until - now).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+
     /// Whether a job is running or queued.
     pub fn busy(&self) -> bool {
         let state = lock(&self.shared);
@@ -101,7 +120,7 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
             return;
         }
         lock(&self.shared).trash.push(Box::new(value));
-        self.shared.1.notify_one();
+        self.shared.1.notify_all();
     }
 
     /// Times each job from now on ([`Self::times`]).
@@ -123,7 +142,7 @@ impl<K: PartialEq + Clone + Send + 'static, T: Send + 'static> Reads<K, T> {
 impl<K, T> Drop for Reads<K, T> {
     fn drop(&mut self) {
         lock(&self.shared).stop = true;
-        self.shared.1.notify_one();
+        self.shared.1.notify_all();
     }
 }
 
@@ -167,6 +186,7 @@ fn run<K: Clone, T>(shared: &Shared<K, T>, wake: impl Fn()) {
             }
         }
         drop(state);
+        shared.1.notify_all();
         wake();
     }
 }

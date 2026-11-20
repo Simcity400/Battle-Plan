@@ -81,6 +81,7 @@ fn naval_convoy_chevrons_and_condition_bars_own_the_member_hover() {
             true,
             Tick { time: 0., dt: 0. },
             false,
+            false,
             None,
         )
         .unwrap();

@@ -573,14 +573,6 @@ impl PassRosters {
         Self::with_worker(replay, wake, true)
     }
 
-    pub fn from_columnar(
-        replay: Arc<Replay>,
-        file: Arc<Natives>,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> Self {
-        Self::with_sampler(Arc::new(Sampler::today(replay, Some(file))), wake, true)
-    }
-
     /// Another reader of `sampler`'s history, with a worker of its own.
     pub fn of(sampler: Arc<Sampler>, wake: impl Fn() + Send + Sync + 'static) -> Self {
         Self::with_sampler(sampler, wake, true)
@@ -627,14 +619,6 @@ impl PassRosters {
             started: AtomicBool::new(false),
             spawn,
         }
-    }
-
-    pub fn replay(&self) -> &Arc<Replay> {
-        self.shared.samples.replay()
-    }
-
-    pub fn columnar(&self) -> Option<&Arc<Natives>> {
-        self.shared.samples.columnar()
     }
 
     pub fn sampler(&self) -> &Arc<Sampler> {

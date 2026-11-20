@@ -539,6 +539,12 @@ fn dominance_patrol_preserves_registration_repeats_and_zero_designs() {
         }
     );
     assert_eq!(hour.dominance_region(3, 100, &[]).unwrap().patrol, 0);
+    // The naval region view's derivation of one region is that region of the whole hour's.
+    let all = hour.dominance_sources_in(None);
+    let one = hour.dominance_sources_in(Some(2));
+    assert_eq!(one.as_ref().map(|map| map.keys().copied().collect::<Vec<_>>()), Ok(vec![2]), "{one:?}");
+    assert_eq!(one.as_ref().ok().and_then(|map| map.get(&2)), all.as_ref().ok().and_then(|map| map.get(&2)));
+    assert_eq!(hour.dominance_sources_in(Some(3)).map(|map| map.len()), Ok(0), "a region no ledger lists has none");
 }
 
 #[test]

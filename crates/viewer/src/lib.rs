@@ -1505,11 +1505,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let selection = selector.resolve(document.frame()?)?;
             window.open(selection);
             window.configure_air(options.air_details, options.air_range, options.air_channels);
-            window.prepare_air(&document.playback.replay_handle(), || {});
+            // A dump is a saved picture: the window stands where it settles.
+            window.set_settled(true);
+            let raids = Arc::clone(&document.icons.raids);
+            window.set_rule_relations(Arc::new(move |frame, rule, country| {
+                viewer_foundation::map::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
+            }));
+            let content = Arc::clone(&document.content);
+            window.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
+            let rosters = document.playback.roster_sampler();
             let mut gui_elapsed = 0.0_f64;
             // Draw until every flag and portrait the window asked for is decoded.
             let drawn = loop {
-                let air_generation = window.air_generation();
                 let before = document.icons.lazy.version();
                 let frame = match document.playback.current() {
                     crate::playback::Current::Frame(frame) => Ok(Arc::clone(frame)),
@@ -1517,6 +1524,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let prepared = window.prepare(
                     &document.combat,
+                    &rosters,
                     document.playback.branch(),
                     document.playback.hour(),
                     frame,
@@ -1534,9 +1542,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     None,
                 )?;
                 document.icons.lazy.settle();
-                if window.settle_air_after(air_generation) {
-                    continue;
-                }
                 if gui_elapsed < f64::from(options.settle) {
                     gui_elapsed = (gui_elapsed + 1.0 / 60.0).min(f64::from(options.settle));
                     continue;
@@ -1551,14 +1556,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for warning in &combat_warnings {
                 eprintln!("Warning: {warning}");
             }
-            if let Some(drawn) = drawn {
-                println!("Combat window: {selection:?}, rect {:?}", drawn.rect);
-                dump_overlay.extra.quads.extend(drawn.batch.quads);
-            } else {
-                println!(
-                    "Combat window: {selection:?} not shown: its combat is not engaged for the viewing country at this hour, or the flag is undecided (see the warnings)"
-                );
+            // A window named for the dump is drawn, or the dump is refused by name: never an image
+            // without it.
+            let Some(drawn) = drawn else {
+                let why = window.not_shown().unwrap_or_else(|| "it drew nothing".into());
+                return Err(invalid(format!("the combat window {selection:?} named for the dump at hour {hour} is not drawn: {why}")).into());
+            };
+            if let Some(why) = drawn.missing() {
+                return Err(invalid(format!("the combat window {selection:?} named for the dump at hour {hour} is not drawn: {why}")).into());
             }
+            // A free camera draws the map's interface, the window with it, only when asked to.
+            if camera.free().is_some() && !options.free_overlays.unwrap_or(false) {
+                return Err(invalid(format!("the combat window {selection:?} named for the dump at hour {hour} is not drawn: the map's interface is hidden for this free camera (--free-overlays off)")).into());
+            }
+            println!("Combat window: {selection:?}, rect {:?}", drawn.rect);
+            dump_overlay.extra.quads.extend(drawn.batch.quads);
         }
         // borders: the hour's recorded StateFlags, plus whatever --demilitarized added.
         let rail_mesh = document.rail_mesh()?;

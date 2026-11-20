@@ -1323,9 +1323,16 @@ impl Views {
         self.shared.display.store(hour.map_or(NOT_SHOWN, i64::from), Ordering::Release);
     }
 
-    fn shown_through(&self) -> Option<Hour> {
+    /// The hour [`Self::show_through`] last set; none for the newest.
+    pub fn shown_through(&self) -> Option<Hour> {
         let hour = self.shared.display.load(Ordering::Acquire);
         (hour != NOT_SHOWN).then_some(hour as Hour)
+    }
+
+    /// The seek ([`playhead::Playhead::epoch`]) the side last posted its views at: what was read at
+    /// an older one is another history's.
+    pub fn seek(&self) -> u64 {
+        self.shared.epoch.load(Ordering::Acquire)
     }
 
     /// The playhead the side reads.

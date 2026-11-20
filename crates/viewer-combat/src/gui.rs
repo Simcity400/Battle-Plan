@@ -17,6 +17,8 @@ use viewer_foundation::map::{
 
 /// Recorded flag keys resolved for this presentation, over the native draw resources.
 pub trait CombatResources: Resources + native_gui::Sheets {
+    /// The version of the art its flags load into: it moves as art arrives.
+    fn art_version(&self) -> u64;
     fn flag_index(&self, key: &str) -> Result<i32, String>;
     fn flag_texture(&self, key: &str, small: bool) -> Option<native_gui::Texture>;
     /// The sounds `button` plays, from its sprite's declaration and the GUI's defaults.
@@ -42,6 +44,9 @@ pub struct Windows {
     popup_rect: Option<[f32; 4]>,
     /// Where the window and each of its windows and controls drew last frame.
     root_areas: Vec<[f32; 4]>,
+    /// Its windows' fades and movements run to their ends each frame: a saved picture's, given
+    /// with every draw.
+    settled: bool,
 }
 
 pub(crate) struct Retained {
@@ -49,6 +54,11 @@ pub(crate) struct Retained {
     pub(crate) instance: Instance,
     entries: BTreeMap<String, Retained>,
     pending: Vec<ScrollAction>,
+    /// Its fades and movements run to their ends when it ticks ([`Windows::settled`]).
+    settled: bool,
+    /// The art version its last bind saw: a draw that binds at a newer one binds the whole window
+    /// again, its entries with it, at the same generation, since art arriving can change any flag.
+    bound_art: Option<u64>,
     prepared_generation: Option<u64>,
     places: BTreeMap<String, Vec<(usize, [i32; 2])>>,
     bind_refused: BTreeMap<String, usize>,
@@ -283,6 +293,8 @@ impl Retained {
             instance,
             entries: BTreeMap::new(),
             pending: Vec::new(),
+            settled: false,
+            bound_art: None,
             prepared_generation: None,
             places: BTreeMap::new(),
             bind_refused: BTreeMap::new(),
@@ -302,6 +314,9 @@ impl Retained {
         resources: &impl CombatResources,
         refused: &mut BTreeMap<String, usize>,
     ) -> Option<[i32; 2]> {
+        self.bound_art = Some(resources.art_version());
+        // Bound again, its own rows are bound again at its next draw too, at every depth.
+        self.prepared_generation = None;
         apply(&mut self.instance, root, values, resources, refused);
         let mut size = size?.map(truncate_f32);
         // Escaping entries grow by the bound escape bar's queried height.
@@ -429,7 +444,8 @@ impl Retained {
         refused: &mut BTreeMap<String, usize>,
     ) -> Option<Prepared> {
         groups.extend(repeated(values));
-        if self.prepared_generation != Some(generation) {
+        let art_moved = bind && self.bound_art != Some(resources.art_version());
+        if self.prepared_generation != Some(generation) || art_moved {
             for (path, element) in elements(root) {
                 if element.kind == Kind::Grid
                     && !groups.iter().any(|group| {
@@ -867,6 +883,9 @@ impl Retained {
             pointer = Some(self.pointer.begin(&mut self.instance, step));
         }
         // Input precedes one smoothing tick in input processing.
+        if advance && self.settled {
+            self.instance.settle_transitions();
+        }
         if advance && let Err(why) = self.instance.tick(root, resources, tick) {
             count(refused, &self.name, why);
             return None;
@@ -947,6 +966,7 @@ impl Retained {
                     );
                     continue;
                 };
+                kept.settled = self.settled;
                 let Some(prepared) = kept.prepare(
                     entry,
                     row.values,
@@ -1573,6 +1593,7 @@ impl Windows {
         hovers: bool,
         tick: Tick,
         advance: bool,
+        settled: bool,
         input: Option<Input>,
     ) -> io::Result<Drawn> {
         let viewport = extent.map(truncate_f32);
@@ -1588,6 +1609,7 @@ impl Windows {
                 ..Self::default()
             };
         }
+        self.settled = settled;
         let name = window_name(selection);
         let mut drawn = Drawn::default();
         let popup_rect = self.popup_rect.take();
@@ -1630,6 +1652,7 @@ impl Windows {
                 return Ok(drawn);
             }
         };
+        retained.settled = self.settled;
         let (actions, popup_actions): (Vec<_>, Vec<_>) = self
             .pending
             .drain(..)
@@ -1754,6 +1777,7 @@ impl Windows {
                     return Ok(drawn);
                 }
             };
+            retained.settled = self.settled;
             retained.pending.append(&mut self.pending);
             // The possible-tactics popup sits ten pixels right of the combat window.
             let position = *tactics_position

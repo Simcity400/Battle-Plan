@@ -630,6 +630,8 @@ pub struct Instance {
     time: f32,
     /// The step of the frame being ticked, which its transitions take.
     dt: f32,
+    /// Its next transitions run to their ends ([`Self::settle_transitions`]).
+    settle: bool,
     /// Ticked since it was made: a new instance is pending its first (`dt = 0`) tick.
     ticked: bool,
     /// A call changed it since its last tick's draws.
@@ -1407,6 +1409,7 @@ impl Instance {
             phase: Phase::Drawn,
             time: 0.0,
             dt: 0.0,
+            settle: false,
             ticked: false,
             written: false,
             active_known: std::cell::Cell::new(None),
@@ -3033,6 +3036,13 @@ impl Instance {
         self.tick_draws(root, resources)
     }
 
+    /// The next [`Self::tick_transitions`] runs every fade and movement to its end, as a window
+    /// shown long enough ago stands: a saved picture shows its windows where they settle, while
+    /// the drawables' clocks keep their own time.
+    pub fn settle_transitions(&mut self) {
+        self.settle = true;
+    }
+
     /// Where the instance's windows stand in the GUI lifecycle's transition list ([`Registration`]).
     pub fn registration(&self) -> Registration {
         self.registration
@@ -3248,6 +3258,7 @@ impl Instance {
     pub fn tick_transitions(&mut self, root: &Element) -> Result<(), String> {
         self.check(root)?;
         self.active_known.set(None);
+        let settle = std::mem::take(&mut self.settle);
         if self.phase != Phase::Clocked {
             return Err(format!(
                 "the transitions of {} were run before its clocks for the frame: run every \
@@ -3263,11 +3274,16 @@ impl Instance {
             return Ok(());
         }
         let elements = self.tree.elements(root);
-        let dt = self.dt;
+        let dt = if settle { f32::INFINITY } else { self.dt };
         for at in (0..self.registered.len()).rev() {
             let index = self.registered[at];
             self.update_fade(&elements, index, dt)?;
             self.update_movement(&elements, index, dt)?;
+            // Settled, a movement that just ended takes its end's effect in the same step: a hide
+            // hides, with its children.
+            if settle {
+                self.update_movement(&elements, index, dt)?;
+            }
         }
         self.phase = Phase::Moved;
         Ok(())
@@ -5581,5 +5597,58 @@ mod disabled_icon_tests {
         assert_eq!(shading(None), up);
         assert_eq!(shading(Some(true)), up);
         assert_eq!(shading(Some(false)), disable);
+    }
+
+    /// A saved picture shows a window where its opening settles: its show movement and fade run
+    /// to their ends at once, while a live frame's first tick leaves them where they start.
+    #[test]
+    fn settled_transitions_show_a_window_at_its_settled_place() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        const GUI: &[u8] = br#"guiTypes={
+            containerWindowType={name=root position={x=-160 y=0} size={width=160 height=90}
+                fade_type=linear fade_time=150
+                show_position={x=10 y=5} show_animation_type=linear show_animation_time=150}}"#;
+        let gui = native::read(GUI);
+        let root = gui.template("root").unwrap();
+        let resources = fixture();
+        let tick = Tick { time: 0.0, dt: 0.0 };
+        let mut live = Instance::construct(root, [800, 600], &resources).unwrap();
+        live.gui_show(root, root).unwrap();
+        let mut saved = live.clone();
+        live.tick(root, &resources, tick).unwrap();
+        assert_ne!(live.position(), [10, 5], "live, the window is still moving in");
+        saved.settle_transitions();
+        saved.tick(root, &resources, tick).unwrap();
+        assert_eq!(saved.position(), [10, 5], "saved, it stands at its show position");
+        assert_eq!(saved.opacity(), 1.0, "and has faded in");
+    }
+
+    /// A window hidden before a saved picture is hidden in it: the settled step runs its fade and
+    /// its hide movement to their ends and takes the hide those ends make, in the same step.
+    #[test]
+    fn a_settled_step_completes_a_pending_hide() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        const GUI: &[u8] = br#"guiTypes={
+            containerWindowType={name=root position={x=0 y=0} size={width=160 height=90}
+                show_position={x=10 y=5} show_animation_type=linear show_animation_time=150
+                hide_position={x=-200 y=5} hide_animation_type=linear hide_animation_time=150}}"#;
+        let gui = native::read(GUI);
+        let root = gui.template("root").unwrap();
+        let resources = fixture();
+        let tick = Tick { time: 0.0, dt: 0.0 };
+        let mut live = Instance::construct(root, [800, 600], &resources).unwrap();
+        live.gui_show(root, root).unwrap();
+        live.settle_transitions();
+        live.tick(root, &resources, tick).unwrap();
+        assert!(live.drawn(), "shown");
+        live.hide(root, root).unwrap();
+        let mut saved = live.clone();
+        live.tick(root, &resources, tick).unwrap();
+        assert!(live.drawn(), "live, the window is still moving out");
+        saved.settle_transitions();
+        saved.tick(root, &resources, tick).unwrap();
+        assert!(!saved.drawn(), "saved, its hide is complete");
     }
 }

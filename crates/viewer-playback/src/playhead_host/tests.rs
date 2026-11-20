@@ -2734,7 +2734,7 @@ mod side_thread {
         let composes = Arc::new(Mutex::new(0));
         let (layer, release, began) = Sum::held_settle(&composes);
         let mut side = side("window never waits", Box::new(layer));
-        side.ask(View::default(), Head::Paced(7), None);
+        side.ask(View::default(), Head::Paced(7), None, None);
         // The side's thread is inside a settle, holding the side. Windows until it says it has
         // begun: the release of a window is its signal to prepare the next step, and the first
         // step is the reset's compose rather than a settle.
@@ -2768,9 +2768,9 @@ mod side_thread {
         let composes = Arc::new(Mutex::new(0));
         let mut side = side("view between steps", Box::new(Sum::new(&composes)));
         let high = View { camera_height: 4.0, ..View::default() };
-        side.ask(View::default(), Head::Paced(4), None);
+        side.ask(View::default(), Head::Paced(4), None, None);
         windows_until(&mut side, Duration::from_secs(120), "the first picture", |side| side.applied() == Some(4));
-        side.ask(high.clone(), Head::Paced(6), None);
+        side.ask(high.clone(), Head::Paced(6), None, None);
         // The products say the view once a window has taken them, which is the view the frame draws.
         windows_until(&mut side, Duration::from_secs(120), "the view asked is taken", |side| side.view().camera_height == 4.0);
         let heights = side.with_side(|side| side.parts().unwrap().1[0].any().downcast_ref::<Sum>().unwrap().viewed.clone());
@@ -2796,7 +2796,7 @@ mod side_thread {
         let composes = Arc::new(Mutex::new(0));
         let (layer, release, began) = Sum::settle_stops(&composes);
         let mut side = side("stepped failure", Box::new(layer));
-        side.ask(View::default(), Head::Stepped(5), None);
+        side.ask(View::default(), Head::Stepped(5), None, None);
         began.recv_timeout(Duration::from_secs(120)).expect("the side's thread settles the step within 120 s");
         let _ = release.send(());
         assert!(side.stepped_window(5).is_none(), "no window once the side has stopped");
@@ -2810,7 +2810,7 @@ mod side_thread {
     fn a_stepped_frame_refuses_by_name_rather_than_wait_for_a_picture_nothing_will_make() {
         let composes = Arc::new(Mutex::new(0));
         let mut side = side("stepped bound", Box::new(Sum::new(&composes)));
-        side.ask(View::default(), Head::Stepped(3), None);
+        side.ask(View::default(), Head::Stepped(3), None, None);
         drop(side.stepped_window(3).expect("the picture of the hour asked"));
         // The side's thread has nothing to prepare: the ask it reads stands at the hour it answered.
         let short = (Duration::from_millis(20), Duration::from_millis(200));
@@ -2829,7 +2829,7 @@ mod side_thread {
         let composes = Arc::new(Mutex::new(0));
         let (layer, release, began) = Sum::held_settle(&composes);
         let mut side = side("seek while catching up", Box::new(layer));
-        side.ask(View::default(), Head::Stepped(6), None);
+        side.ask(View::default(), Head::Stepped(6), None, None);
         began.recv_timeout(Duration::from_secs(120)).expect("the side's thread settles within its catch-up in 120 s");
         let before = side.entry().playhead().epoch();
         side.entry().anchor(2, false, 1.0, true);
@@ -2848,7 +2848,7 @@ mod side_thread {
         let composes = Arc::new(Mutex::new(0));
         let mut side = side("stepped picture", Box::new(Sum::new(&composes)));
         for hour in [3, 5, 6] {
-            side.ask(View::default(), Head::Stepped(hour), None);
+            side.ask(View::default(), Head::Stepped(hour), None, None);
             let mut window = side.stepped_window(hour).expect("the picture of the hour asked");
             window.take(Default::default());
             drop(window);
@@ -2858,7 +2858,7 @@ mod side_thread {
         // A second saved frame at the same hour with another view is another picture. Before, the
         // picture of the first view answered it.
         let high = View { camera_height: 4.0, ..View::default() };
-        side.ask(high, Head::Stepped(6), None);
+        side.ask(high, Head::Stepped(6), None, None);
         let mut window = side.stepped_window(6).expect("the picture of the view asked");
         window.take(Default::default());
         drop(window);

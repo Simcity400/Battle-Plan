@@ -645,8 +645,17 @@ impl<'a> Hour<'a> {
             self.content.dominance,
         ))
     }
-    fn dominance_sources(
+    pub(super) fn dominance_sources(
         &mut self,
+    ) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
+        self.dominance_sources_in(None)
+    }
+
+    /// [`Self::dominance_sources`] of the region `only` alone, when given: the same sources for it,
+    /// none of the others computed.
+    pub(super) fn dominance_sources_in(
+        &mut self,
+        only: Option<u32>,
     ) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
         let owner = self
             .ids
@@ -664,7 +673,7 @@ impl<'a> Hour<'a> {
         }
         let regions: BTreeSet<_> = data::<tables::NavalMissionLedgers>(self.frame)?
             .iter()
-            .filter(|row| owners.contains(&row.owner))
+            .filter(|row| owners.contains(&row.owner) && only.is_none_or(|only| only == row.region))
             .map(|row| row.region)
             .collect();
         Ok(regions

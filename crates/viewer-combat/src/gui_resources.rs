@@ -107,6 +107,10 @@ impl<'a> GuiResources<'a> {
 }
 
 impl CombatResources for GuiResources<'_> {
+    fn art_version(&self) -> u64 {
+        self.small.version().wrapping_add(self.large.version())
+    }
+
     fn button_sounds(&self, button: &native::Button) -> native::ButtonSounds {
         let sprite_click = self
             .assets

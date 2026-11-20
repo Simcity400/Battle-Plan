@@ -3518,6 +3518,45 @@ impl Lookups {
 /// The same hour-table construction, recording only explicit builder child scopes. Today's source
 /// of each kind in `left_out` is not read: the map's layers draw it ([`Preparation::set_layered`]).
 #[allow(clippy::too_many_arguments)]
+/// The naval dominance sources of `frame` for the country in slot `ours` in sea region `region`,
+/// made as the hour's mission tables make them ([`hour_tables_profiled`]): what the naval region
+/// view reads, from the rows of its own hour and nothing the overlay holds.
+#[allow(clippy::too_many_arguments, reason = "the derivation's inputs, each from another owner")]
+pub fn naval_dominance_sources(
+    frame: &DecodedFrame,
+    map: &MapData,
+    content: &CounterContent,
+    ours: u32,
+    region: u32,
+    reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+    mission_topology: Result<
+        (
+            &installed_content_core::province_graph::ProvinceGraph,
+            &installed_content_core::province_geometry::ProvinceGeometry,
+        ),
+        String,
+    >,
+) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
+    if frame.complete::<tables::NavalMissionLedgers>().is_ok_and(|rows| rows.is_empty()) {
+        return Ok(BTreeMap::new());
+    }
+    let CountryInputs { links, country_ids, .. } = country_inputs(frame, map, ours).map_err(|error| error.to_string())?;
+    let native = NativeInputs::read(frame).map_err(|error| error.to_string())?;
+    let forces = table_access_rows::<tables::TaskForces>(frame)
+        .map_err(|error| error.to_string())?
+        .rows()
+        .iter()
+        .map(|row| (row.id, row))
+        .collect();
+    let world = dashboard_text::triggers::World::new(frame, reads.trigger_content.facts()).map_err(|error| error.to_string());
+    let cells = viewer_foundation::map::movement_reads::Cells::default();
+    let moves = world
+        .as_ref()
+        .map(|world| viewer_foundation::map::movement_reads::Moves::new(world, reads, &cells))
+        .map_err(Clone::clone);
+    naval_mission_inputs::Hour::read(frame, content, &native, (&links, &country_ids), forces, (mission_topology, moves), ours)?.dominance_sources_in(Some(region))
+}
+
 pub fn hour_tables_profiled(
     frame: &DecodedFrame,
     map: &MapData,

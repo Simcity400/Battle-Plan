@@ -45,12 +45,7 @@ fn retained<'a>(
             foreign: &[],
         });
     };
-    let pass = state
-        .pass
-        .as_ref()
-        .ok_or("air combat daily roster history is loading")?
-        .as_ref()
-        .map_err(Clone::clone)?;
+    let pass = state.pass.as_ref().map_err(Clone::clone)?;
     let timeout = *content.assets.air_timeout.as_ref().map_err(Clone::clone)?;
     Ok(derive::retained_through(row, *pass, timeout))
 }

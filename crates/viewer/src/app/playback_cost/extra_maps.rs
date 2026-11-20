@@ -235,7 +235,7 @@ impl Extras {
         let view = main.or(self.sides.first().map(|drawn| &drawn.side)).map(|side| side.view().clone()).unwrap_or_default();
         let (started, draw_cpu) = (Instant::now(), current_thread_cpu_time());
         for drawn in &mut self.sides {
-            drawn.side.ask(view.clone(), head, None);
+            drawn.side.ask(view.clone(), head, None, None);
             if let Some(mut window) = window_for(&mut drawn.side, head) {
                 window.take(Default::default());
             }
@@ -260,7 +260,7 @@ impl Extras {
         }
         let other = self.other.as_mut().map(|side| {
             let started = Instant::now();
-            side.ask(view.clone(), Head::Clock, None);
+            side.ask(view.clone(), Head::Clock, None, None);
             if let Some(mut window) = side.window() {
                 window.take(Default::default());
             }

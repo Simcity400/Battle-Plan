@@ -355,6 +355,11 @@ impl LazyFlags {
     }
 
     /// Files indexed.
+    /// The version of the textures its flags decode into: it moves as a flag arrives.
+    pub fn version(&self) -> u64 {
+        self.textures.version()
+    }
+
     pub fn len(&self) -> usize {
         self.index.len()
     }

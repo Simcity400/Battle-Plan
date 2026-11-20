@@ -65,7 +65,8 @@ pub(crate) struct State {
     pub shift: bool,
     pub control: bool,
     pub initial_side: bool,
-    pub pass: Option<Result<Option<i32>, String>>,
+    /// The latest daily pass that visited the viewer, at the hour read.
+    pub pass: Result<Option<i32>, String>,
 }
 
 impl Default for State {
@@ -80,7 +81,7 @@ impl Default for State {
             shift: false,
             control: false,
             initial_side: true,
-            pass: None,
+            pass: Err("the air combat daily roster history was not read".into()),
         }
     }
 }

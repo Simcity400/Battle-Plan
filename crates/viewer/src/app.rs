@@ -1144,6 +1144,13 @@ pub struct Viewer {
     overlay: Option<Batch>,
     prepared_overlay: Option<crate::document::PreparedOverlay>,
     overlay_fraction: Option<f32>,
+    /// A saved frame's overlay is older than art that decoded after it was painted: the next
+    /// painting lays the hour out again ([`Viewer::hold_saved_frame`]).
+    overlay_art_moved: bool,
+    /// How many frames running a saved frame due for readback found its overlay older than its art.
+    overlay_art_retries: u32,
+    /// The loaded content the combat window was given its reads' inputs for.
+    combat_inputs: Option<usize>,
     /// The families of map-icon windows that asked this frame for a pass of their own
     /// ([`crate::map_views::Running::windows`]): a frame that presents the pools for their passes
     /// alone presents these and no others.
@@ -1772,6 +1779,9 @@ impl Viewer {
             prepared_overlay: None,
             overlay_pools: Default::default(),
             overlay_fraction: None,
+            overlay_art_moved: false,
+            overlay_art_retries: 0,
+            combat_inputs: None,
 
             counter_view,
             unit_selection: Default::default(),
@@ -1850,6 +1860,7 @@ impl Viewer {
         self.head_rows = Default::default();
         self.held_clicks.clear();
         self.forget_overlay_builds();
+        self.combat.content_replaced();
         if let Some(side) = self.playhead_map.take() {
             self.drop_later(side);
         }
@@ -1859,7 +1870,7 @@ impl Viewer {
         self.playhead_opened = false;
         self.presented = MapPresented::default();
         self.shown_whole = false;
-        self.document = Some(document);
+        drop(self.replace_document(Some(document)));
         if !self.dashboard_map
             && let Some(scene) = &mut self.scene
         {
@@ -2039,7 +2050,7 @@ impl Viewer {
             crate::perf_log::gpu_times(scene.retire_gpu_frame_times());
         }
         let retired = (
-            self.document.take(),
+            self.replace_document(None),
             self.scene.take(),
             self.overlay_tables.take(),
             self.prepared_overlay.take(),
@@ -2121,8 +2132,9 @@ impl Viewer {
         self.seek_owed = false;
         self.opened = None;
         self.playing = false;
-        self.capture = None;
+        drop(self.end_capture());
         self.combat.close();
+        self.retire_combat_inputs();
         self.error = None;
         self.map_error = None;
         true
@@ -2295,6 +2307,79 @@ impl Viewer {
     /// whole at its own hour or refused by name, however long it takes to make.
     fn saves_a_frame(&self) -> bool {
         self.capture.as_ref().is_some_and(|capture| !capture.paced) || self.options.window_dump
+    }
+
+    /// Whether the frames saved are no one's view (a window dump, a stepped capture): their windows
+    /// stand where their openings settle. A desktop export shows what is on screen.
+    fn settles_windows(&self) -> bool {
+        self.saves_a_frame() && self.embedded.is_none() && !self.dashboard_map
+    }
+
+    /// Whether a saved frame's combat window is there: none asked for, or the read of its hour
+    /// shown. While the combat named at load resolves or the window loads, the frame waits for the
+    /// side's stepped picture to say; a combat named at load that matched nothing, a read the side
+    /// could not make, or one it made that is not of the hour on screen is refused by name.
+    ///
+    /// A combat named at load must be drawn: one its read closed or does not show is refused, and
+    /// one still looked up after [`SETTLES`] frames of a standing picture (`picture`) is refused
+    /// naming the rows it waited for.
+    ///
+    /// `left_out` says why the window's quads did not reach this frame, if they did not: a named
+    /// combat shown but left out of the picture is refused too.
+    fn saved_combat(&mut self, picture: bool, left_out: Option<&str>) -> Result<bool, String> {
+        if let Some(why) = &self.combat_rows.selector_refused {
+            return Err(why.clone());
+        }
+        if let Some(selector) = self.combat_rows.pending {
+            self.combat_rows.selector_waits += u32::from(picture);
+            if self.combat_rows.selector_waits > SETTLES {
+                return Err(format!("{selector:?}, named at load, was not looked up: its rows of LandCombats, NavalCombats and NavalResults did not come in {SETTLES} frames of the picture"));
+            }
+            return Ok(false);
+        }
+        let named = self.options.combat.is_some();
+        if self.combat.selection.is_some() && self.combat.is_loading() {
+            return match live_of(&self.playhead_map).and_then(|side| side.products().combat_whole.clone()) {
+                Some(Err(why)) => Err(format!("its read was not made: {why}")),
+                Some(Ok(())) => Err("its read was made but is not of the hour on screen".into()),
+                None => Ok(false),
+            };
+        }
+        match (self.combat.not_shown(), left_out) {
+            (Some(why), _) if named => Err(why),
+            (None, Some(why)) if named => Err(format!("{:?}: {why}", self.combat.selection)),
+            _ => Ok(true),
+        }
+    }
+
+    /// A saved frame draws again until its overlay is laid out over the art it draws (`stale`,
+    /// none without an overlay) and the rest of its picture is there (`rest`). Art that decoded
+    /// after the overlay was painted, such as the combat window's flags and portraits, leaves the
+    /// layout older than the art: once readback is due this frame or the next, the next frame paints
+    /// it, which lays `hour` out again. Art still moving it after [`SETTLES`] frames refuses the
+    /// capture by name.
+    fn hold_saved_frame(&mut self, hour: replay_data::Hour, stale: Option<bool>, rest: bool, ctx: &egui::Context) -> Result<(), String> {
+        let Some(capture) = self.capture.as_mut().filter(|capture| !capture.paced) else { return Ok(()) };
+        let due = capture.remaining <= 1;
+        if stale != Some(false) || !rest {
+            capture.remaining = capture.remaining.max(1);
+        }
+        if stale != Some(true) {
+            self.overlay_art_retries = 0;
+            return Ok(());
+        }
+        if !due {
+            return Ok(());
+        }
+        self.overlay_art_retries += 1;
+        if self.overlay_art_retries > SETTLES {
+            let why = format!("A saved frame draws the art of its own hour: art still arrived after the picture of hour {hour} was drawn, {SETTLES} frames running");
+            self.refuse_capture(&why, ctx);
+            return Err(why);
+        }
+        self.overlay_fraction = None;
+        self.overlay_art_moved = true;
+        Ok(())
     }
 
     /// Installs the overlay the map's side made for its step, with the drawn plates of the one it
@@ -2487,6 +2572,22 @@ impl Viewer {
     }
 
     /// Frees `value` on the dropper's thread, here when there is none.
+    /// Installs `document` in place of the one open, or clears it, and lets go of what was taken
+    /// from the one before: every document installed or cleared goes through here. The document
+    /// replaced, for the caller to drop or retire.
+    fn replace_document(&mut self, document: Option<Document>) -> Option<Document> {
+        self.retire_combat_inputs();
+        std::mem::replace(&mut self.document, document)
+    }
+
+    /// What the combat window's reads took from the content open (its naval sources provider and
+    /// rule relations, which hold the content): retired with it, off the frame.
+    fn retire_combat_inputs(&mut self) {
+        self.combat_inputs = None;
+        let inputs = self.combat.take_inputs();
+        self.retire(inputs);
+    }
+
     fn retire<T: Send + 'static>(&self, value: T) {
         match &self.dropper {
             Some(dropper) => dropper.drop_later(value),
@@ -3181,7 +3282,7 @@ impl Viewer {
         self.loading = Some(receiver);
         self.opened = Some(Instant::now());
         self.combat.close();
-        self.document = None;
+        drop(self.replace_document(None));
         self.diplomatic_selected = None;
         self.ground_selection = None;
         self.hover_rows = Default::default();
@@ -3275,15 +3376,30 @@ impl Viewer {
     /// A window dump cannot write an unavailable map. Surface its failure to
     /// the caller instead of leaving a capture parked on an error view.
     fn failed_window_capture(&mut self, error: &str, ctx: &egui::Context) {
-        if let Some(capture) = self.capture.take_if(|capture| capture.exit) {
-            let message = format!("Capture {} failed: {error}", capture.path.display());
+        if self.capture.as_ref().is_some_and(|capture| capture.exit) {
+            self.refuse_capture(error, ctx);
+        }
+    }
+
+    /// Ends the capture with a refusal, whoever asked for it: a window dump reports it and closes;
+    /// an export reports it by name, and the next export starts.
+    fn refuse_capture(&mut self, error: &str, ctx: &egui::Context) {
+        let Some(capture) = self.end_capture() else { return };
+        let message = format!("Capture {} failed: {error}", capture.path.display());
+        if capture.exit {
             *self
                 .failure
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(message.clone());
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            self.capture_note = Some(message);
         }
+        self.capture_note = Some(message);
+    }
+
+    /// Takes the capture, saved or refused, with the retries its frame made.
+    fn end_capture(&mut self) -> Option<Capture> {
+        (self.overlay_art_retries, self.overlay_art_moved) = (0, false);
+        self.capture.take()
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
@@ -3314,6 +3430,8 @@ impl Viewer {
                     self.error = None;
                 }
                 self.combat_rows.pending = self.options.combat;
+                self.combat_rows.selector_refused = None;
+                self.combat_rows.selector_waits = 0;
                 self.playhead = Some(Playhead {
                     branch: document.playback.branch(),
                     hour: document.playback.hour(),
@@ -3344,7 +3462,7 @@ impl Viewer {
                     self.volumes = document.game_audio;
                 }
                 self.shown_whole = false;
-                self.document = Some(document);
+                drop(self.replace_document(Some(document)));
                 // The loader built the whole hour-independent scene; the
                 // frames only upload hour data into it from here.
                 self.scene = Some(scene);
@@ -3445,7 +3563,7 @@ impl Viewer {
             Some(_) => {}
             None => return,
         }
-        let mut capture = self.capture.take().expect("matched above");
+        let mut capture = self.end_capture().expect("matched above");
         let output = if capture.frames > 1 || capture.index > 0 {
             let stem = capture
                 .path
@@ -4327,6 +4445,21 @@ impl Viewer {
                 view: overlay_view.clone(),
                 rosters: document.playback.air_rosters(),
             });
+            // What the open combat window reads, which the side reads for each publication's hour.
+            self.combat.set_playing(self.playing);
+            self.combat.set_settled(self.settles_windows());
+            // What the window's reads take from the content, given once per loaded content.
+            let content_at = Arc::as_ptr(&document.content) as usize;
+            if self.combat_inputs != Some(content_at) {
+                self.combat_inputs = Some(content_at);
+                let raids = Arc::clone(&document.icons.raids);
+                self.combat.set_rule_relations(Arc::new(move |frame, rule, country| {
+                    viewer_foundation::map::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
+                }));
+                let content = Arc::clone(&document.content);
+                self.combat.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
+            }
+            let combat_ask = self.combat.asking(&document.combat, &document.playback.roster_sampler(), &self.perspective, self.counter_view.settings.nato);
             self.overlay_asked = overlay_ask.as_ref().map(|ask| ask.shown(&document.content.counters.defines));
             let wanted = builds_warnings(self.diagnostics, self.capture.as_ref());
             let saved = self.saves_a_frame();
@@ -4339,7 +4472,7 @@ impl Viewer {
             {
                 let presentation = Arc::clone(&self.counter_view.presentation);
                 let side = self.playhead_map.as_mut().expect("the map's side is open");
-                side.ask(view, at, overlay_ask);
+                side.ask(view, at, overlay_ask, combat_ask);
                 let window = match at {
                     crate::playhead_host::Head::Stepped(hour) => side.stepped_window(hour),
                     _ => side.window(),
@@ -4368,6 +4501,10 @@ impl Viewer {
                             presentation.take_memory(&made.on);
                         }
                         installed = Some(made);
+                    }
+                    // The combat window's read of the publication's hour, shown once the map is there.
+                    if let Some(made) = window.take_combat() {
+                        self.combat.offer(made);
                     }
                 }
             }
@@ -4408,6 +4545,11 @@ impl Viewer {
             }
             if let Some(made) = installed {
                 self.install_overlay(made);
+            }
+            // Frames that draw no map never prepare the combat window, so the reads it let go of
+            // are freed here too.
+            if let Some(retired) = self.combat.take_retired() {
+                self.retire(retired);
             }
             // The hour the overlay the frame draws stands at is the side's own: the layout taken
             // above, or, for an hour the overlay read nothing new in, the layout the frame already
@@ -4628,16 +4770,13 @@ impl Viewer {
                 self.fleet_selection.clear();
             }
         }
-        let engaged = self.layer_engaged();
         let animation_time = self
             .capture
             .as_ref()
             .and_then(|capture| capture.time)
             .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         // Hit tests and drawing use the same GUI clock.
-        let prepared = self
-            .combat_prepared(document, &perspective, engaged, ui.ctx())
-            .map_err(|error| error.to_string())?;
+        let prepared = self.combat_prepared().map_err(|error| error.to_string())?;
         let combat_geometry = self
             .combat
             .draw(&document.combat, prepared, extent, false, animation_time, false, None)
@@ -5537,9 +5676,10 @@ impl Viewer {
                 }
             }
         }
-        let (overlay_ms, additions) = 'overlay: {
+        // The frame's interface quads, and whether the combat window's batch is among them.
+        let (overlay_ms, additions, combat_out, combat_art) = 'overlay: {
             let Some((rows, tables)) = held.clone() else {
-                break 'overlay (0.0, Batch::default());
+                break 'overlay (0.0, Batch::default(), Some("the frame drew no overlay to draw it in".to_owned()), None);
             };
             let now = crate::document::Hour::new(&document.content, &rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved));
             let _other_cost = replay_frame::cpu::scope("frame.overlay.prepare", Some("other"));
@@ -5726,7 +5866,8 @@ impl Viewer {
                     // The first frame drawn shows the art the drawing itself asks for: the batch
                     // is drawn, the art it asked for settled and the hour laid out over it again
                     // (the side lays it out, as for any other frame) until none is left. A frame
-                    // after one rendered draws once and the art arrives in a later frame.
+                    // after one rendered draws once and the art arrives in a later frame, unless a
+                    // saved frame found its layout older than the art.
                     // The icon windows a draw asks the view's native pools for are made over the
                     // frames after it, so a saved frame draws again until none is pending, within
                     // the pools' own growth rounds: its icons are never missing for want of one.
@@ -5736,6 +5877,7 @@ impl Viewer {
                     // out over, so nothing is placed, drawn or judged over another's.
                     let mut installed = false;
                     let mut settles = 0;
+                    let art_moved = std::mem::take(&mut self.overlay_art_moved);
                     loop {
                         let (Some(rows), Some(tables)) = (self.overlay_frame.clone(), self.overlay_tables.clone()) else {
                             break;
@@ -5763,7 +5905,7 @@ impl Viewer {
                         if self.label_report != *prepared.label_report() {
                             self.label_report.clone_from(prepared.label_report());
                         }
-                        if self.rendered.is_some() {
+                        if self.rendered.is_some() && !art_moved {
                             break;
                         }
                         let pending = prepared.retries();
@@ -5793,7 +5935,9 @@ impl Viewer {
                             // that is playing draws what it has: the art reaches the frames after
                             // it, and no stopped picture is made of this one.
                             Err(why) if self.saves_a_frame() => {
-                                return Err(format!("A saved frame draws the art of its own hour: the overlay of hour {} was not laid out again over the art that arrived while the frame drew it: {why}", rows.hour));
+                                let why = format!("A saved frame draws the art of its own hour: the overlay of hour {} was not laid out again over the art that arrived while the frame drew it: {why}", rows.hour);
+                                self.refuse_capture(&why, ui.ctx());
+                                return Err(why);
                             }
                             Err(_) => break,
                         };
@@ -5999,26 +6143,10 @@ impl Viewer {
             drop(_other_cost);
             let _other_cost = replay_frame::cpu::scope("frame.interface", Some("other"));
             let _combat_cost = replay_frame::cpu::scope("frame.interface.combat", Some("other"));
-            let engaged = self.layer_engaged();
-            laps.lap("engaged");
             self.combat.set_playing(self.playing);
-            let raids = Arc::clone(&document.icons.raids);
-            self.combat.set_rule_relations(Arc::new(move |frame, rule, country| {
-                viewer_foundation::map::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
-            }));
-            self.combat.set_navy_sources(match &self.overlay_tables {
-                Some(tables) => tables.naval_dominance_sources(),
-                None => Arc::new(Err("naval dominance sources: the overlay's tables at the head are loading".into())),
-            });
-            let wake = ui.ctx().clone();
-            self.combat
-                .prepare_air(
-                    &document.playback.replay_handle(),
-                    viewer_foundation::worker_priority::waking(move || wake.request_repaint()),
-                );
-            let prepared = self
-                .combat_prepared(document, &perspective, engaged, ui.ctx())
-                .map_err(|error| error.to_string())?;
+            let prepared = self.combat_prepared().map_err(|error| error.to_string())?;
+            // The art the window's draw began with: art that arrives after it drew can change it.
+            let combat_art = document.icons.lazy.version();
             let drawn = self
                 .combat
                 .draw(
@@ -6477,6 +6605,11 @@ impl Viewer {
             ) {
                 ui.ctx().request_repaint_after(delay);
             }
+            // Why the combat window put nothing into the frame's quads, if it did not.
+            let combat_out = match &drawn {
+                None => Some("its quads were not drawn into this frame".to_owned()),
+                Some(drawn) => drawn.missing(),
+            };
             if let Some(drawn) = drawn {
                 additions.quads.extend(drawn.batch.quads);
             }
@@ -6487,7 +6620,7 @@ impl Viewer {
                 additions.quads.extend(confirmation.drawn.batch.quads);
             }
             laps.lap("combat_hover");
-            (overlay_ms, additions)
+            (overlay_ms, additions, combat_out, Some(combat_art))
         };
         let held = self.overlay_frame.clone().zip(self.overlay_tables.clone()).or(held);
         let now = held.as_ref().map(|(rows, _)| crate::document::Hour::new(&document.content, rows, 0.0).with_air_rosters(Some(document.playback.air_rosters())).with_moved_hours(Arc::clone(&self.overlay_moved)));
@@ -6842,30 +6975,38 @@ impl Viewer {
         // is the reference, not a version read here: a background load that landed after the
         // layout but before this check would otherwise let the frame save without it.
         let (_, shown_at) = self.hour_on_screen(document);
-        if let Some(capture) = self.capture.as_mut().filter(|capture| !capture.paced) {
+        if self.capture.as_ref().is_some_and(|capture| !capture.paced) {
             // Anything the settle decodes moves the version, which makes the overlay stale.
             document.icons.lazy.settle();
-            let laid_out = match (&held, &now) {
+            let (stale, overlay) = match (&held, &now) {
                 (Some((rows, tables)), Some(now)) => {
-                    let laid_out = self
-                        .prepared_overlay
-                        .as_ref()
-                        .is_some_and(|prepared| !prepared.is_stale(now));
+                    let stale = self.prepared_overlay.as_ref().map(|prepared| prepared.is_stale(now));
                     // Laid out over the newest rows at the head with tables made from them, nothing
-                    // loading.
-                    let at_head = self.overlay_missed.is_empty() && rows.hour == shown_at;
-                    // And until the raid offer cycle is complete at the shown hour: every target
+                    // loading, and the raid offer cycle complete at the shown hour: every target
                     // evaluated, as a paused frame ends. That is the scripts reader's batch the
                     // tables hold.
+                    let at_head = self.overlay_missed.is_empty() && rows.hour == shown_at;
                     let raids = tables.raids();
-                    laid_out && at_head && !raids.report.pending && raids.report.cycle_complete()
+                    (stale, at_head && !raids.report.pending && raids.report.cycle_complete())
                 }
                 // No overlay is coming for the view: the picture is whole without one, its refusal named.
-                _ => true,
+                _ => (Some(false), true),
             };
-            if !laid_out || document.icons.lazy.has_pending() {
-                capture.remaining = capture.remaining.max(1);
-            }
+            let hour = held.as_ref().map_or(shown_at, |(rows, _)| rows.hour);
+            let picture = self.picture_ready();
+            let art_moved = combat_art.is_some_and(|art| art != document.icons.lazy.version()) || document.icons.lazy.has_pending();
+            let (left_out, art_retry) = combat_left_out(interface, combat_out, art_moved);
+            // A window drawn again for art that arrived goes through the art retries and their bound.
+            let stale = if art_retry { Some(true) } else { stale };
+            let combat = match self.saved_combat(picture, left_out.as_deref()) {
+                Ok(there) => there,
+                Err(why) => {
+                    let why = format!("A saved frame draws the combat window of its own hour {hour}: {why}");
+                    self.refuse_capture(&why, ui.ctx());
+                    return Err(why);
+                }
+            };
+            self.hold_saved_frame(hour, stale, overlay && !document.icons.lazy.has_pending() && combat && !art_retry, ui.ctx())?;
         }
         self.save_capture(state, document, camera, pixels, &warnings, ui.ctx());
         let mut warnings = warnings;
@@ -7821,6 +7962,17 @@ fn settle_plan(side: &mut crate::playhead_host::MapSide, hour: replay_data::Hour
 }
 
 /// The playhead's map while its reader has not failed: the one the window takes everything from.
+/// Why a named combat window's quads are not in a saved frame, and whether to draw it again first:
+/// one that drew nothing while art was still arriving for it (`art_moved`) is drawn again, within the
+/// art retries' bound, before an empty window is refused.
+fn combat_left_out(interface: bool, out: Option<String>, art_moved: bool) -> (Option<String>, bool) {
+    match (interface, out) {
+        (false, _) => (Some("the map's interface is hidden in this camera mode, so the window's quads are not drawn".to_owned()), false),
+        (true, Some(_)) if art_moved => (None, true),
+        (true, out) => (out, false),
+    }
+}
+
 fn live_of(map: &Option<crate::playhead_host::side::SideThread>) -> Option<&crate::playhead_host::side::SideThread> {
     map.as_ref().filter(|side| side.failure().is_none())
 }
@@ -9337,6 +9489,192 @@ pub(crate) mod tests {
                 window_dump.then_some("Capture unavailable.png failed: hour was not recorded")
             );
         }
+    }
+
+    fn window_dump_viewer() -> Viewer {
+        Viewer::create(
+            Config::default(),
+            Options { out: Some("frame.png".into()), window_dump: true, ..Default::default() },
+            None,
+            Arc::default(),
+            None,
+            None,
+        )
+    }
+
+    fn remaining(viewer: &Viewer) -> Option<u32> {
+        viewer.capture.as_ref().map(|capture| capture.remaining)
+    }
+
+    /// A window dump of an open air region: the window's flags and portraits decode after the
+    /// overlay was painted, which leaves its layout older than the art. Unless the next frame
+    /// paints it and lays it out again, every frame waits on it and the dump never saves.
+    #[test]
+    fn a_saved_frame_whose_overlay_the_art_moved_under_paints_it_again() {
+        let mut viewer = window_dump_viewer();
+        viewer.capture.as_mut().expect("a window dump captures").remaining = 0;
+        viewer.overlay_fraction = Some(0.0);
+        viewer.hold_saved_frame(10, Some(true), true, &egui::Context::default()).unwrap();
+        assert_eq!(remaining(&viewer), Some(1), "not saved over a layout older than its art");
+        assert_eq!(viewer.overlay_fraction, None, "the next frame paints the overlay");
+        assert!(viewer.overlay_art_moved, "and lays its hour out again over the art");
+
+        viewer.capture.as_mut().expect("still capturing").remaining = 0;
+        viewer.overlay_fraction = Some(0.0);
+        viewer.overlay_art_moved = false;
+        viewer.hold_saved_frame(10, Some(false), true, &egui::Context::default()).unwrap();
+        assert_eq!(remaining(&viewer), Some(0), "laid out over its art, the frame is saved");
+        assert_eq!(viewer.overlay_fraction, Some(0.0), "and nothing is painted again");
+        assert!(!viewer.overlay_art_moved);
+
+        viewer.hold_saved_frame(10, None, true, &egui::Context::default()).unwrap();
+        assert_eq!(remaining(&viewer), Some(1), "no overlay yet: it waits for one");
+    }
+
+    /// Art that moves the overlay again after every painting refuses the saved frame by name within
+    /// a bounded number of frames, however briefly each painting's own settle takes.
+    #[test]
+    fn a_saved_frame_whose_art_never_stops_moving_is_refused_by_name() {
+        let mut viewer = window_dump_viewer();
+        viewer.capture.as_mut().expect("a window dump captures").remaining = 0;
+        let refused = (0..=SETTLES).find_map(|_| viewer.hold_saved_frame(10, Some(true), true, &egui::Context::default()).err());
+        let refused = refused.expect("refused within its frames");
+        assert!(refused.contains("hour 10"), "{refused}");
+        assert!(viewer.capture.is_none(), "and the dump ends unsaved");
+        assert!(viewer.failure.lock().unwrap().as_deref().is_some_and(|failure| failure.contains("hour 10")), "reporting why");
+
+        let mut viewer = window_dump_viewer();
+        for _ in 0..SETTLES * 3 {
+            viewer.hold_saved_frame(10, Some(true), true, &egui::Context::default()).unwrap();
+            viewer.hold_saved_frame(10, Some(false), true, &egui::Context::default()).unwrap();
+        }
+        assert_eq!(viewer.overlay_art_retries, 0, "a layout that caught up ends the run of retries");
+    }
+
+    /// A desktop export refused for art that never stopped moving is ended, not left armed: the
+    /// host hears why by name, the window stays open, and its next export starts.
+    #[test]
+    fn a_refused_export_is_ended_and_the_next_one_starts() {
+        let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
+        let export = |path: &str| Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false };
+        viewer.capture = Some(export("first.png"));
+        let ctx = egui::Context::default();
+        let mut refused = None;
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            refused = (0..=SETTLES).find_map(|_| viewer.hold_saved_frame(10, Some(true), true, ui.ctx()).err());
+        });
+        output.textures_delta.clear();
+        assert!(refused.is_some(), "refused within its frames");
+        assert!(viewer.capture.is_none(), "the refused export is no longer armed");
+        assert_eq!((viewer.overlay_art_retries, viewer.overlay_art_moved), (0, false), "nor its retries");
+        assert!(viewer.capture_note.as_deref().is_some_and(|note| note.starts_with("Capture first.png failed: ") && note.contains("hour 10")), "{:?}", viewer.capture_note);
+        assert!(viewer.failure.lock().unwrap().is_none(), "an export fails no process");
+        assert!(!output.viewport_output.values().any(|viewport| viewport.commands.iter().any(|command| matches!(command, egui::ViewportCommand::Close))), "and closes no window");
+
+        viewer.capture = Some(export("second.png"));
+        viewer.overlay_fraction = Some(0.0);
+        viewer.hold_saved_frame(10, Some(true), true, &ctx).unwrap();
+        assert!(viewer.capture.is_some(), "the next export starts");
+        assert_eq!(viewer.overlay_art_retries, 1, "with retries of its own");
+    }
+
+    /// A saved frame waits for the combat named at load to open and refuses one that matched
+    /// nothing, never saving a picture without the window it was asked for.
+    #[test]
+    fn a_saved_frame_waits_for_its_combat_window_and_refuses_one_that_cannot_open() {
+        let mut viewer = window_dump_viewer();
+        assert_eq!(viewer.saved_combat(true, None), Ok(true), "no window asked for");
+        viewer.combat_rows.pending = Some(viewer_combat::Selector::Id(5));
+        assert_eq!(viewer.saved_combat(true, None), Ok(false), "the combat named at load is not resolved yet");
+        viewer.combat_rows.pending = None;
+        viewer.combat_rows.selector_refused = Some("no recorded combat matches Id(5) at hour 10".into());
+        assert!(viewer.saved_combat(true, None).is_err_and(|why| why.contains("Id(5)")), "it matched nothing: refused by name");
+    }
+
+    /// A window named at load that is no combat (an air region, a state, a naval region) reads no
+    /// rows to open: it opens on the first frame, with no rows at the head at all.
+    #[test]
+    fn a_window_named_at_load_that_reads_no_rows_opens_without_them() {
+        use viewer_combat::Selector;
+        for selector in [Selector::AirRegion(8), Selector::State(362), Selector::NavalRegion(4)] {
+            let mut viewer = window_dump_viewer();
+            viewer.combat_rows.pending = Some(selector);
+            let _ = viewer.combat_prepared();
+            assert!(viewer.combat_rows.pending.is_none(), "{selector:?} is not left waiting for rows");
+            assert_eq!(viewer.combat.selection, selector.direct(), "{selector:?} opens its window");
+        }
+    }
+
+    /// A combat named at load whose rows never come is refused by name within a bounded number of
+    /// frames of a standing picture, never waited for forever; frames before the picture stands do
+    /// not count.
+    #[test]
+    fn a_combat_named_at_load_that_cannot_be_looked_up_is_refused_within_a_bound() {
+        let mut viewer = window_dump_viewer();
+        viewer.combat_rows.pending = Some(viewer_combat::Selector::Province(362));
+        for _ in 0..100 {
+            assert_eq!(viewer.saved_combat(false, None), Ok(false), "no picture yet: it waits");
+        }
+        let refused = (0..=SETTLES).find_map(|_| viewer.saved_combat(true, None).err());
+        assert!(refused.is_some_and(|why| why.contains("Province(362)") && why.contains("LandCombats")), "refused by name within its frames");
+    }
+
+    /// A named window that drew nothing while its art was still arriving (a portrait queued as its
+    /// only drawable) is drawn again, not refused; once its art stands still an empty window is
+    /// refused, and a hidden interface always is.
+    #[test]
+    fn a_named_window_drawn_empty_while_its_art_arrives_is_drawn_again() {
+        let empty = || Some("the window drew no quads".to_owned());
+        assert_eq!(combat_left_out(true, empty(), true), (None, true), "its art moved: drawn again");
+        assert_eq!(combat_left_out(true, empty(), false), (empty(), false), "its art stands still: refused");
+        assert_eq!(combat_left_out(true, None, true), (None, false), "drawn: nothing to wait for");
+        assert!(combat_left_out(false, None, true).0.is_some(), "a hidden interface is refused whatever the art");
+    }
+
+    /// Unloading a recording lets go of what the combat window took from its content (the naval
+    /// sources provider holds the whole content), whether or not a window was ever opened.
+    #[test]
+    fn unloading_a_recording_retires_what_the_combat_window_took_from_its_content() {
+        let mut viewer = Viewer::create(Config::default(), Options { replay: Some("campaign.battleplan".into()), ..Default::default() }, None, Arc::default(), None, None);
+        viewer.combat.set_navy_sources_of(Arc::new(|_: &replay_frame::frame::DecodedFrame, _, _| Ok(std::collections::BTreeMap::new())));
+        viewer.combat_inputs = Some(1);
+        assert!(viewer.unload_recording(Path::new("campaign.battleplan")));
+        assert!(!viewer.combat.holds_inputs(), "the provider went with the recording");
+        assert_eq!(viewer.combat_inputs, None, "and is given again for the next content");
+        // A reload clears the document as its load starts, whether or not that load then fails;
+        // every document cleared or installed goes through the one place that lets go of it.
+        viewer.combat.set_navy_sources_of(Arc::new(|_: &replay_frame::frame::DecodedFrame, _, _| Ok(std::collections::BTreeMap::new())));
+        viewer.combat_inputs = Some(2);
+        drop(viewer.replace_document(None));
+        assert!(!viewer.combat.holds_inputs(), "a reload lets go of the content before");
+        assert_eq!(viewer.combat_inputs, None);
+    }
+
+    /// A combat named at load must be drawn: a window its read closed, or one open that shows
+    /// nothing (a battle the viewing country is not in), refuses the saved frame by name. A
+    /// window nobody named that closes is no window.
+    #[test]
+    fn a_combat_named_at_load_that_is_not_drawn_is_refused() {
+        let mut viewer = window_dump_viewer();
+        viewer.combat.open(viewer_foundation::combat_selection::Selection::Naval(2));
+        viewer.combat.close();
+        assert_eq!(viewer.saved_combat(true, None), Ok(true), "not named at load: a closed window is no window");
+        viewer.options.combat = Some(viewer_combat::Selector::Id(2));
+        assert!(viewer.saved_combat(true, None).is_err(), "named at load and closed: refused");
+    }
+
+    /// A capture far from its readback, such as a profiling sweep, draws its frames as they come:
+    /// new art lays nothing out again until the frame it saves is near.
+    #[test]
+    fn a_capture_far_from_its_readback_lays_nothing_out_again() {
+        let mut viewer = window_dump_viewer();
+        viewer.capture.as_mut().expect("a window dump captures").remaining = 1000;
+        viewer.overlay_fraction = Some(0.0);
+        viewer.hold_saved_frame(10, Some(true), true, &egui::Context::default()).unwrap();
+        assert_eq!(remaining(&viewer), Some(1000));
+        assert_eq!(viewer.overlay_fraction, Some(0.0), "nothing painted again");
+        assert!(!viewer.overlay_art_moved, "nor laid out again");
+        assert_eq!(viewer.overlay_art_retries, 0);
     }
 
     #[test]

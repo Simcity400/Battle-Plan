@@ -2,13 +2,25 @@ use super::*;
 use std::sync::Arc;
 use viewer_foundation::map::test_support::gui::{Fixture, fixture, fixture_with, windows};
 
+thread_local! {
+    /// The flag texture a test has let arrive, and the art version it arrived at; none at first.
+    static ARRIVED: std::cell::Cell<(Option<native_gui::Texture>, u64)> = const { std::cell::Cell::new((None, 0)) };
+    /// How many times a bind looked a flag texture up.
+    static LOOKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl CombatResources for Fixture {
+    fn art_version(&self) -> u64 {
+        ARRIVED.with(|arrived| arrived.get().1)
+    }
+
     fn flag_index(&self, key: &str) -> Result<i32, String> {
         Err(format!("the fixture has no recorded flag index for {key}"))
     }
 
     fn flag_texture(&self, _: &str, _: bool) -> Option<native_gui::Texture> {
-        None
+        LOOKS.with(|looks| looks.set(looks.get() + 1));
+        ARRIVED.with(|arrived| arrived.get().0)
     }
 
     fn button_sounds(
@@ -683,6 +695,7 @@ fn naval_loss_grid_uses_authored_slots_and_runtime_bounds() {
             [800.0, 600.0],
             true,
             Tick { time: 0.0, dt: 0.0 },
+            false,
             false,
             None,
         )
@@ -1571,6 +1584,7 @@ fn an_opened_window_slides_from_its_position_to_its_show_position_and_keeps_its_
             false,
             Tick { time, dt },
             true,
+            false,
             None,
         )
         .unwrap()
@@ -1583,6 +1597,106 @@ fn an_opened_window_slides_from_its_position_to_its_show_position_and_keeps_its_
     assert_eq!(shown[0], -6.0);
     // A drag moves it from there.
     assert_eq!(draw(0.6, 0.1, [10.0, 5.0])[..2], [shown[0] + 10.0, shown[1] + 5.0]);
+    // A saved picture's window stands where its opening settles with no time passed, in every GUI
+    // made anew: the setting comes with each draw.
+    for _ in 0..2 {
+        let rect = Windows::default()
+            .draw(&windows, &resources, &Bindings::default(), 1, Selection::State(9904), [0.0; 2], false, &mut None, [1920.0, 1080.0], false, Tick { time: 0.0, dt: 0.0 }, true, true, None)
+            .unwrap()
+            .rect;
+        assert_eq!(rect[0], -6.0, "settled at once");
+    }
+}
+
+/// A named window whose only drawable is a flag still loading draws nothing; once the flag's art
+/// arrives the window draws it at the same hour, its bindings unchanged.
+#[test]
+fn a_flag_whose_art_arrives_is_drawn_at_the_same_hour() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let windows = windows(
+        br#"guiTypes={containerWindowType={name=countrystateview size={width=100 height=50}
+            iconType={name=flag spriteType=GFX_even}}}"#,
+    );
+    let resources = fixture();
+    let mut bindings = Bindings::default();
+    bindings.values.insert("flag".into(), crate::Widget { flag: Some("GER".into()), ..Default::default() });
+    let mut gui = Windows::default();
+    let draw = |gui: &mut Windows| {
+        gui.draw(&windows, &resources, &bindings, 1, Selection::State(9904), [0.0; 2], false, &mut None, [1920.0, 1080.0], false, Tick { time: 0.0, dt: 0.0 }, true, true, None)
+            .unwrap()
+            .batch
+            .quads
+            .len()
+    };
+    ARRIVED.with(|arrived| arrived.set((None, 0)));
+    assert_eq!(draw(&mut gui), 0, "its flag is still loading: nothing drawn");
+    ARRIVED.with(|arrived| arrived.set((Some(native_gui::Texture { texture: 0, uv: [0.0, 0.0, 1.0, 1.0], size: [10, 10] }), 1)));
+    assert!(draw(&mut gui) > 0, "the flag arrived: drawn at the same hour and generation");
+}
+
+/// The parts a view drew at generation 1 whose repeated entry repeats a row that shows a flag: the
+/// flag two rows deep.
+fn entry_flag_parts(retained: &mut Retained, windows: &NativeWindows, resources: &Fixture) -> String {
+    let root = windows.gui_type(b"view").unwrap();
+    let mut leaf = Values::new();
+    leaf.insert("flag".into(), crate::Widget { flag: Some("GER".into()), ..Default::default() });
+    let mut entry = Values::new();
+    entry.insert("inner".into(), crate::Widget { entry_template: Some("leaf".into()), entries: vec![leaf], ..Default::default() });
+    let groups = vec![Group { path: "grid".into(), rows: vec![Row { naval_layout: None, key: "0".into(), template: "entry", values: &entry, explicit: None }] }];
+    let mut refused = BTreeMap::new();
+    let prepared = retained
+        .prepare(root, &Values::new(), groups, windows, resources, Tick { time: 0., dt: 0. }, 1, true, false, true, None, &mut refused)
+        .unwrap();
+    format!("{:?}", prepared.items)
+}
+
+/// Art arriving rebinds the whole window at the same generation, its repeated entries with it at
+/// every depth: a cold flag two rows deep draws once its art arrives, a fallback flag gives way to
+/// its preferred variant, and with no art arriving a draw binds nothing again.
+#[test]
+fn art_arriving_rebinds_the_window_and_its_entries_at_the_same_generation() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let windows = windows(
+        br#"guiTypes={containerWindowType={name=view size={width=200 height=100}
+            gridBoxType={name=grid size={width=200 height=50} slotsize={width=200 height=50}
+                max_slots_horizontal=1 format=UPPER_LEFT}}
+            containerWindowType={name=entry size={width=200 height=50}
+                gridBoxType={name=inner size={width=200 height=50} slotsize={width=200 height=50}
+                    max_slots_horizontal=1 format=UPPER_LEFT}}
+            containerWindowType={name=leaf size={width=200 height=50}
+                iconType={name=flag spriteType=GFX_even}}}"#,
+    );
+    let root = windows.gui_type(b"view").unwrap();
+    let resources = fixture();
+    let mut retained = Retained::new("view", root, [800, 600], &resources).unwrap();
+    let texture = |texture| Some(native_gui::Texture { texture, uv: [0.0, 0.0, 1.0, 1.0], size: [10, 10] });
+    ARRIVED.with(|arrived| arrived.set((None, 0)));
+    assert!(!entry_flag_parts(&mut retained, &windows, &resources).contains("Cell {"), "a cold flag draws nothing");
+    ARRIVED.with(|arrived| arrived.set((texture(7), 1)));
+    assert!(entry_flag_parts(&mut retained, &windows, &resources).contains("texture: 7"), "its art arrived: the entry's flag draws at the same generation");
+    ARRIVED.with(|arrived| arrived.set((texture(9), 2)));
+    let variant = entry_flag_parts(&mut retained, &windows, &resources);
+    assert!(variant.contains("texture: 9") && !variant.contains("texture: 7"), "the preferred variant replaced the fallback: {variant}");
+    let looks = LOOKS.with(std::cell::Cell::get);
+    let _ = entry_flag_parts(&mut retained, &windows, &resources);
+    assert_eq!(LOOKS.with(std::cell::Cell::get), looks, "no art moved: nothing bound again");
+}
+
+/// A window whose template the content lacks draws nothing and says so by name: a saved picture
+/// naming it is refused rather than written without it.
+#[test]
+fn a_window_whose_template_is_missing_is_refused_by_name() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let windows = windows(br#"guiTypes={containerWindowType={name=another size={width=10 height=10}}}"#);
+    let resources = fixture();
+    let drawn = Windows::default()
+        .draw(&windows, &resources, &Bindings::default(), 1, Selection::State(9904), [0.0; 2], false, &mut None, [1920.0, 1080.0], false, Tick { time: 0.0, dt: 0.0 }, true, true, None)
+        .unwrap();
+    assert!(drawn.batch.quads.is_empty());
+    assert!(drawn.missing().is_some_and(|why| why.contains("countrystateview")), "{:?}", drawn.missing());
 }
 
 /// The state view's close button and lower panel stand outside its root's authored size: the
@@ -1612,6 +1726,7 @@ fn a_window_takes_the_pointer_over_every_child_it_draws_beyond_its_own_size() {
             false,
             Tick { time: 0.0, dt: 0.0 },
             true,
+            false,
             None,
         )
         .unwrap();

@@ -742,12 +742,12 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
             std::thread::yield_now();
         }
     };
-    side.ask(View::default(), Head::Paced(HOUR), None);
+    side.ask(View::default(), Head::Paced(HOUR), None, None);
     windows(&mut side, "the recorded viewer, slot 1, wholly", &|side| wholly(side, 1));
     // The chosen country's vision is never made while the settles are held: the frame is handed
     // the chosen view all the same, never a freeze, with nothing of slot 1 on it.
     let held = side.with_side(MapSide::hold_settles);
-    side.ask(chosen.clone(), Head::Paced(HOUR), None);
+    side.ask(chosen.clone(), Head::Paced(HOUR), None, None);
     windows(&mut side, "the chosen view handed while its vision is not made", &|side| side.view_shown().perspective == chosen.perspective);
     assert_eq!(side.view().perspective, chosen.perspective, "the frame draws the chosen view while its vision is made");
     assert!(side.products().overlay_coming(), "the frame keeps its picture while the vision is made");
@@ -757,9 +757,9 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     // Another country, played into the hour that refuses its vision (each layer hears its viewer
     // go in a settle): handed over with the refusal named, and nothing of slot 2 stands for it.
     side.anchor(REFUSED - 4, false, 0.0, true);
-    side.ask(chosen.clone(), Head::Paced(REFUSED - 4), None);
+    side.ask(chosen.clone(), Head::Paced(REFUSED - 4), None, None);
     windows(&mut side, "slot 2 at the hour before the refusal", &|side| side.applied() == Some(REFUSED - 4) && !side.composing() && side.viewer() == Some(2));
-    side.ask(refused.clone(), Head::Paced(REFUSED), None);
+    side.ask(refused.clone(), Head::Paced(REFUSED), None, None);
     windows(&mut side, "the refused country handed over, its refusal named", &|side| {
         side.view_shown().perspective == refused.perspective && side.applied() == Some(REFUSED) && side.vision_refused().is_some()
     });
@@ -782,7 +782,7 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
         assert!(side.take_overlay_withdrawal(), "a refused vision never keeps the layout of the hour before");
     });
     // The countries recorded again: the labels are read anew for slot 1, as a reader opened there.
-    side.ask(refused.clone(), Head::Paced(REFUSED + 1), None);
+    side.ask(refused.clone(), Head::Paced(REFUSED + 1), None, None);
     windows(&mut side, "slot 1 again once the countries are recorded", &|side| side.applied() > Some(REFUSED) && !side.composing() && side.viewer() == Some(1) && caught(side));
     side.with_side(|side| {
         let (mirrors, layers) = side.parts().unwrap();
