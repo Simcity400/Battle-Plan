@@ -2303,6 +2303,32 @@ impl Clock {
     }
 }
 
+/// The weather pairs' particles of one frame, owned so they advance off the frame thread
+/// ([`Pass::begin_frame`]): what [`weather_packets`] reads and changes, and the packets it makes.
+struct Advance {
+    assets: Arc<Assets>,
+    simulations: Simulations,
+    fades: fade::Fades,
+    drawn: Drawn,
+    frame: (Camera, Vec<ParentView>, f32),
+    packets: Vec<native::DrawPacket>,
+}
+
+impl Advance {
+    fn run(mut self) -> Self {
+        let (camera, views, time) = &self.frame;
+        weather_packets(
+            &self.assets,
+            &self.drawn.chosen,
+            (*camera, views, *time),
+            &self.fades,
+            &mut self.simulations,
+            &mut self.packets,
+        );
+        self
+    }
+}
+
 /// Immutable canonical packets prepared once for every seam of this frame.
 pub struct Packets(Vec<native::DrawPacket>);
 
@@ -2344,6 +2370,8 @@ pub struct Pass {
     /// How many times the field or the presentation has moved, which is what makes the draws
     /// again ([`Drawn::for_field`]).
     changes: u64,
+    /// This frame's [`Advance`], which holds `simulations`, `fades` and `drawn` while it runs.
+    lane: super::lane::Lane<Advance>,
 }
 impl Pass {
     pub fn new(
@@ -2379,6 +2407,7 @@ impl Pass {
             events: Vec::new(),
             drawn: Drawn::default(),
             changes: 0,
+            lane: super::lane::Lane::new("weather particles"),
             #[cfg(any(test, feature = "test-support"))]
             offline_packets: Default::default(),
         })
@@ -2418,6 +2447,7 @@ impl Pass {
         continuity: Continuity,
     ) -> Vec<Simulation> {
         let _cpu = replay_frame::cpu::scope("viewer", Some("weather"));
+        self.settle();
         self.changes += 1;
         let mut retired = std::mem::take(&mut self.retired);
         let continuous = continuity.keeps(
@@ -2467,6 +2497,7 @@ impl Pass {
     /// As in the game, each run rereads the map's weather switch (`weather`): off, the region
     /// wants no weather, so a listed region lets its pairs go and an unlisted one keeps them.
     pub fn produce(&mut self, height: f32, schedule: &Schedule, weather: bool) {
+        self.settle();
         let none = Presentation::default();
         let Self {
             assets,
@@ -2513,6 +2544,7 @@ impl Pass {
         names: &mut super::sound_events::Names,
         out: &mut Vec<super::sound_events::SoundEvent>,
     ) {
+        self.settle();
         let views = parent_views(&[camera], size);
         let Self {
             assets,
@@ -2546,40 +2578,65 @@ impl Pass {
         );
     }
 
-    /// Advance presentation and births once, before submitting any seam view.
-    pub fn prepare_frame(
+    /// Starts this frame's weather pairs on their own thread: the presentation clock, births and
+    /// motion advance once, before any seam view draws. Called after the frame's producer runs
+    /// and sounds, which read what the advance holds until [`Self::finish_frame`] takes it back.
+    pub fn begin_frame(
         &mut self,
         camera: Camera,
         size: [u32; 2],
         cameras: &[Camera],
         animation_time: f32,
-    ) -> Packets {
-        let _profile = viewer_foundation::profiling::thread_span("weather_packets");
-        let mut packets = Vec::new();
+    ) {
+        self.settle();
         // Pairs a producer still holds draw whatever the weather switch says ([`Self::produce`]).
         let time = self
             .clock
             .advance(animation_time, camera.height, &self.assets.graphics);
         let views = parent_views(cameras, size);
+        self.fades.stamp(time);
         let Self {
             assets,
             field,
             presentation,
             drawn,
             changes,
-            fades,
-            simulations,
             ..
         } = self;
-        fades.stamp(time);
-        weather_packets(
-            assets,
-            drawn.for_field(&assets.anchors, &assets.systems, field, presentation, *changes),
-            (camera, &views, time),
-            fades,
-            simulations,
-            &mut packets,
-        );
+        drawn.for_field(&assets.anchors, &assets.systems, field, presentation, *changes);
+        let advance = Advance {
+            assets: Arc::clone(&self.assets),
+            simulations: std::mem::take(&mut self.simulations),
+            fades: std::mem::take(&mut self.fades),
+            drawn: std::mem::take(&mut self.drawn),
+            frame: (camera, views, time),
+            packets: Vec::new(),
+        };
+        self.lane.start(move || advance.run());
+    }
+
+    /// Takes back the advance begun off the frame thread, waiting for it, and returns its packets;
+    /// none when no advance was begun.
+    fn settle(&mut self) -> Vec<native::DrawPacket> {
+        let Some(advance) = self.lane.take() else {
+            return Vec::new();
+        };
+        self.simulations = advance.simulations;
+        self.fades = advance.fades;
+        self.drawn = advance.drawn;
+        advance.packets
+    }
+
+    /// Takes back an advance the frame began and did not finish, as a refused frame leaves it.
+    pub fn join_frame(&mut self) {
+        self.settle();
+    }
+
+    /// The frame's packets at `camera`, the one [`Self::begin_frame`] advanced the pairs for:
+    /// theirs, then the entity events'.
+    pub fn finish_frame(&mut self, camera: Camera) -> Packets {
+        let _profile = viewer_foundation::profiling::thread_span("weather_packets");
+        let mut packets = self.settle();
         let entity_span = viewer_foundation::profiling::span("weather_entity_packets");
         let before = packets.len();
         self.entity_simulations.sort(sort::Eye::of(camera));

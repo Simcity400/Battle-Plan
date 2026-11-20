@@ -406,6 +406,8 @@ pub struct Scene {
     map_text_events: crate::map::animated_map_text::events::Presenter,
     map_text_refusals: viewer_foundation::table_access::Refusals,
     weather_effects: Option<crate::map::weather_effects::Pass>,
+    /// Finishes the frame's leading command buffer while the frame records the rest.
+    encode_lane: crate::map::lane::Lane<wgpu::CommandBuffer>,
     /// The railway bridges, which are meshes rather than strip; see
     /// [`Scene::set_bridges`].
     bridges: Option<ModelPass>,
@@ -1092,6 +1094,7 @@ impl Scene {
                 samples,
             ),
             weather_effects: None,
+            encode_lane: crate::map::lane::Lane::new("map encode"),
             bridges: None,
             unit_models: None,
             unit_gates: None,
@@ -2888,7 +2891,12 @@ impl Scene {
         if timer.is_none() && viewer_foundation::map::gpu_passes::recorded() {
             PassTimer::unavailable();
         }
-        let rendered = self.render_frame(device, queue, request, &mut timer);
+        let rendered = crate::map::lane::Frame::new(self, Self::join_lanes).render_frame(
+            device,
+            queue,
+            request,
+            &mut timer,
+        );
         if rendered.is_err() {
             // A text bake this frame made is rendered once: its commands go out though the
             // frame's own do not.
@@ -2908,6 +2916,14 @@ impl Scene {
         // A frame that failed before its walk leaves the schedule as if it was never cut.
         self.restore_province_frame();
         rendered
+    }
+
+    /// Takes back what the frame started on its own threads, on whatever way it ended.
+    fn join_lanes(&mut self) {
+        drop(self.encode_lane.take());
+        if let Some(weather) = &mut self.weather_effects {
+            weather.join_frame();
+        }
     }
 
     /// Counts what the actors show this frame against the frame before
@@ -3297,6 +3313,11 @@ impl Scene {
                 &mut self.sound_names,
                 &mut self.sound_events,
             );
+        }
+        // The pairs' particles advance on their own thread while the frame draws up to them.
+        let actor_views = views(camera, size);
+        if let Some(weather) = &mut self.weather_effects {
+            weather.begin_frame(camera, size, &actor_views, animation_time);
         }
         static PROFILE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *PROFILE.get_or_init(|| std::env::var_os("BATTLE_PLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some()) {
@@ -4412,7 +4433,6 @@ impl Scene {
         // Presentation clocks and births advance once. All Alternate seam envelopes submit the same
         // immutable canonical particle packets. Entity envelopes retain footprint flags and carrier
         // order independently of the uniform terrain's raster list.
-        let actor_views = views(camera, size);
         let actor_camera = actor_views[0];
         // The admitted camera moved onto the copy the actors are walked on, so the groups a
         // list holds are the ones its cull was made for.
@@ -4465,13 +4485,21 @@ impl Scene {
             }
         }
         cpu_mark("actor_envelopes");
-        let particle_packets = self.weather_effects.as_mut().map(|weather| {
-            weather.prepare_frame(camera, size, &actor_views, animation_time)
-        });
+        let particle_packets = self
+            .weather_effects
+            .as_mut()
+            .map(|weather| weather.finish_frame(camera));
         if let Some(packets) = &particle_packets {
             viewer_foundation::view_record::add("weather packets", "packets", packets.count() as u64);
         }
         cpu_mark("weather_packets");
+        // What is recorded so far is finished on its own thread while the frame records the rest;
+        // the two are submitted in this order, as the one buffer was.
+        let leading = std::mem::replace(
+            &mut encoder,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") }),
+        );
+        self.encode_lane.start(move || leading.finish());
         // Submit all regular materials before all alternate materials across layer boundaries. Preserve
         // enqueue order before the library's mesh/tile grouping.
         let [
@@ -4769,8 +4797,13 @@ impl Scene {
         if let Some(frame_timer) = &self.frame_timer {
             frame_timer.end(&mut encoder);
         }
-        command_buffers.push(ModelPass::finished_buffer(encoder.finish()));
+        let trailing = encoder.finish();
         cpu_mark("encoder_finish");
+        if let Some(leading) = self.encode_lane.take() {
+            command_buffers.push(ModelPass::finished_buffer(leading));
+        }
+        command_buffers.push(ModelPass::finished_buffer(trailing));
+        cpu_mark("encoder_join");
         // Joining here preserves native buffer order without earlier encoder waits.
         queue.submit(ModelPass::submitted_buffers(command_buffers));
         if let Some(frame_timer) = &mut self.frame_timer {
