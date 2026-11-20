@@ -358,7 +358,6 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
     let mut pass = SpritePass::new(
         &device,
         &queue,
-        1,
         &images,
         &crate::map::lazy_icons::LazyTextures::new(),
         wgpu::TextureFormat::Rgba8Unorm,

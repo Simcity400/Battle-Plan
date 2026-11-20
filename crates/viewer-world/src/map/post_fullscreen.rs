@@ -32,18 +32,8 @@ impl Fullscreen {
         state: &gpu::State,
         format: wgpu::TextureFormat,
     ) -> Result<Self, String> {
-        Self::with_samples(device, selection, state, format, 1)
-    }
-
-    pub(super) fn with_samples(
-        device: &wgpu::Device,
-        selection: &Selection,
-        state: &gpu::State,
-        format: wgpu::TextureFormat,
-        samples: u32,
-    ) -> Result<Self, String> {
         let compiled = selection.effect.compiled(selection.index)?;
-        let mut pass = gpu::Pass::packed(&compiled, state, format, samples);
+        let mut pass = gpu::Pass::packed(&compiled, state, format, 1);
         // Post uses solid fill, clockwise fronts, back-face culling, zero bias and disabled scissoring.
         // Depth is forced off by the post pass.
         pass.primitive.front_face = wgpu::FrontFace::Cw;

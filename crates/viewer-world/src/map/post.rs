@@ -1068,7 +1068,7 @@ fn blur_weights(width: f32, scale: f32) -> Option<(f32, [f32; 4], [f32; 4])> {
     Some((g[0], weights, offsets))
 }
 
-/// The post copy program, its layout and sampler: one per device, format and sample count.
+/// The post copy program, its layout and sampler: one per device and format.
 struct CopyProgram {
     copy: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -1076,7 +1076,7 @@ struct CopyProgram {
 }
 
 impl CopyProgram {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> Self {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("viewer scene copy inputs"),
             entries: &[
@@ -1097,7 +1097,7 @@ impl CopyProgram {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let stage = |label: &str, entry: &'static str, target, samples| {
+        let stage = |label: &str, entry: &'static str, target| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -1112,10 +1112,7 @@ impl CopyProgram {
                     ..Default::default()
                 },
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: samples,
-                    ..Default::default()
-                },
+                multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: Some(entry),
@@ -1131,7 +1128,7 @@ impl CopyProgram {
             })
         };
         Self {
-            copy: stage("post copy", "copy_main", format, samples),
+            copy: stage("post copy", "copy_main", format),
             layout,
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("post linear clamp"),
@@ -1206,17 +1203,15 @@ impl PostPass {
 
     pub fn new(
         device: &wgpu::Device,
-        samples: u32,
         queue: &wgpu::Queue,
         assets: &PostAssets,
         format: wgpu::TextureFormat,
     ) -> io::Result<Self> {
         let volumes = assets.volumes.clone();
-        let program = viewer_foundation::map::device_shared::shared(
-            device,
-            ("post copy", format, samples),
-            || CopyProgram::new(device, format, samples),
-        );
+        let program =
+            viewer_foundation::map::device_shared::shared(device, ("post copy", format), || {
+                CopyProgram::new(device, format)
+            });
         let luts = luts::LutRenderer::new(device, queue, assets)?;
 
         Ok(Self {
@@ -1224,12 +1219,7 @@ impl PostPass {
             compiled_reduce: compiled_reduce::Reductions::new(device, &assets.reductions)?,
             compiled_seed: compiled_seed::Seed::new(device, &assets.seed)?,
             compiled_gather: compiled_gather::Gather::new(device, &assets.gather)?,
-            compiled_restore: compiled_restore::Restore::new(
-                device,
-                &assets.restore,
-                format,
-                samples,
-            )?,
+            compiled_restore: compiled_restore::Restore::new(device, &assets.restore, format)?,
             copy: program.copy.clone(),
             layout: program.layout.clone(),
             sampler: program.sampler.clone(),
@@ -1527,8 +1517,7 @@ impl PostPass {
             mark(encoder, "post bloom y");
         }
         let restore = &kept.restore[history.parity];
-        // The grade writes every sample of the 8-bit output and resolves it; the
-        // overlays load it, draw over it and resolve it again.
+        // The grade writes the single-sample 8-bit output; the overlays load it and draw over it.
         let mut render = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("post grade"),
             color_attachments: &[Some(

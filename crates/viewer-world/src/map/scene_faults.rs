@@ -101,14 +101,7 @@ impl Faults {
             }),
             primitive: Default::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: targets
-                    .scene_attachment(wgpu::LoadOp::Load)
-                    .view
-                    .texture()
-                    .sample_count(),
-                ..Default::default()
-            },
+            multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });

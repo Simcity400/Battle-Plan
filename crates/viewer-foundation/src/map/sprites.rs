@@ -934,7 +934,6 @@ pub struct SpritePass {
     fade_packets: Vec<Option<shader_pipeline::gpu::batch::Packet>>,
     array_views: shader_pipeline::gpu::batch::Views,
     native_format: wgpu::TextureFormat,
-    native_samples: u32,
     bakes: Vec<CachedBake>,
     /// Text bakes recorded this frame, for the frame's one submission ahead of the draws that
     /// sample them ([`SpritePass::bake_buffers`]).
@@ -1027,7 +1026,8 @@ struct Icon {
 /// Vertices a freshly built pass can hold before it grows; six per quad.
 const INITIAL_VERTICES: u64 = 6 * 4096;
 
-/// The sprite pipelines and their layout, one per device, format and sample count.
+/// The sprite pipelines and their layout, one per device and format. They draw into the
+/// single-sample output.
 struct SpritePipelines {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -1035,7 +1035,7 @@ struct SpritePipelines {
 }
 
 impl SpritePipelines {
-    fn new(device: &wgpu::Device, samples: u32, format: wgpu::TextureFormat) -> Self {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sprite texture"),
             entries: &[
@@ -1071,7 +1071,7 @@ impl SpritePipelines {
             blend: Some(wgpu::BlendState::ALPHA_BLENDING),
             write_mask: wgpu::ColorWrites::ALL,
         })];
-        let snapped = |label, samples, targets: &[Option<wgpu::ColorTargetState>]| {
+        let snapped = |label, targets: &[Option<wgpu::ColorTargetState>]| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -1093,10 +1093,7 @@ impl SpritePipelines {
                     ..Default::default()
                 },
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState {
-                    count: samples,
-                    ..Default::default()
-                },
+                multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
                     entry_point: Some("fragment_main"),
@@ -1107,7 +1104,7 @@ impl SpritePipelines {
                 cache: None,
             })
         };
-        let fade_legacy = snapped("sprite fade page", 1, &page_targets);
+        let fade_legacy = snapped("sprite fade page", &page_targets);
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sprites"),
             layout: Some(&pipeline_layout),
@@ -1130,10 +1127,7 @@ impl SpritePipelines {
             },
             // Priorities order the final icon layer; they do not participate in depth tests.
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: samples,
-                ..Default::default()
-            },
+            multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fragment_main"),
@@ -1156,13 +1150,12 @@ impl SpritePass {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        samples: u32,
         textures: &IconTextures,
         lazy: &Arc<LazyTextures>,
         format: wgpu::TextureFormat,
     ) -> io::Result<Self> {
-        let pipelines = super::device_shared::shared(device, ("sprites", format, samples), || {
-            SpritePipelines::new(device, samples, format)
+        let pipelines = super::device_shared::shared(device, ("sprites", format), || {
+            SpritePipelines::new(device, format)
         });
         let layout = pipelines.layout.clone();
         let bind_groups = textures.bind_all(device, &layout, textures.screen_clamp());
@@ -1197,7 +1190,6 @@ impl SpritePass {
             bake_buffers: Vec::new(),
             bake_stream: super::native_shader::stream::Stream::gui(),
             native_format: format,
-            native_samples: samples,
             native_refusals: Default::default(),
             pipeline,
             _pipelines: pipelines,
@@ -1213,7 +1205,7 @@ impl SpritePass {
             vertices: Stream::new::<Vertex>(device),
             runs: Vec::new(),
             count: 0,
-            fade: fade::Pages::new(device, format, samples),
+            fade: fade::Pages::new(device, format),
             fade_legacy,
             fade_stream: super::native_shader::stream::Stream::gui(),
             fade_draws: Vec::new(),
@@ -1257,7 +1249,7 @@ impl SpritePass {
         effects: impl IntoIterator<Item = Arc<super::native_shader::library::Effect>>,
     ) {
         use wgpu::PrimitiveTopology::{TriangleList, TriangleStrip};
-        let (format, samples, layer) = (self.native_format, self.native_samples, self.layer);
+        let (format, layer) = (self.native_format, self.layer);
         for effect in effects {
             effect.warm();
             for index in 0..effect.source.techniques.len() {
@@ -1274,7 +1266,7 @@ impl SpritePass {
                         device,
                         &selection,
                         (default_blend, layer),
-                        (format, samples, topology),
+                        (format, 1, topology),
                     );
                     self.fade_stream.warm(
                         device,
@@ -2426,7 +2418,6 @@ impl SpritePass {
                 Output {
                     viewport,
                     format: self.native_format,
-                    samples: self.native_samples,
                     clip,
                     premultiply: self.layer,
                     layer: self.layer,
@@ -2442,7 +2433,6 @@ impl SpritePass {
                 Output {
                     viewport,
                     format,
-                    samples: 1,
                     clip,
                     premultiply: true,
                     layer: false,
@@ -2582,7 +2572,6 @@ impl SpritePass {
                 Output {
                     viewport: bake.size,
                     format,
-                    samples: 1,
                     clip: None,
                     premultiply: false,
                     layer: false,
@@ -2780,12 +2769,11 @@ fn self_contained(draw: &super::native_shader::draw::Quad) -> bool {
 type View = Result<Option<shader_pipeline::gpu::TextureBinding>, String>;
 
 /// What a compiled draw is prepared for: the GUI viewport it projects over, the target's format
-/// and samples, a placement after its projection and whether the target keeps premultiplied
-/// colour (a fade page).
+/// (every GUI target is single-sample), a placement after its projection and whether the target
+/// keeps premultiplied colour (a fade page).
 struct Output {
     viewport: [u32; 2],
     format: wgpu::TextureFormat,
-    samples: u32,
     clip: Option<fade::ClipAffine>,
     premultiply: bool,
     /// The frame is a layer composited later as a straight-alpha image
@@ -2965,7 +2953,7 @@ fn prepare_draw(
             draw.vertices.len() / draw.stride,
             draw.topology,
             output.format,
-            output.samples,
+            1,
         )
         .map(|mut packet| {
             packet.source_draws(draw.source_draws);
@@ -3350,7 +3338,6 @@ mod tests {
         let mut pass = SpritePass::new(
             &device,
             &queue,
-            1,
             &images,
             &LazyTextures::new(),
             wgpu::TextureFormat::Rgba8Unorm,
@@ -3761,7 +3748,6 @@ mod tests {
         SpritePass::new(
             device,
             queue,
-            1,
             &images,
             &LazyTextures::new(),
             wgpu::TextureFormat::Rgba8Unorm,
@@ -3971,7 +3957,6 @@ mod tests {
         let mut pass = SpritePass::new(
             &device,
             &queue,
-            1,
             &images,
             &LazyTextures::new(),
             wgpu::TextureFormat::Rgba8Unorm,

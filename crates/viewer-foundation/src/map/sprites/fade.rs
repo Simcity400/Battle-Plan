@@ -204,14 +204,13 @@ const PAGE_SIDE: u32 = 2048;
 const GRAIN: u32 = 256;
 
 impl Pages {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> Self {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let limit = device.limits().max_texture_dimension_2d;
         let side = PAGE_SIDE.min(limit);
-        let program = crate::map::device_shared::shared(
-            device,
-            ("sprite fade composite", format, samples),
-            || Program::new(device, format, samples),
-        );
+        let program =
+            crate::map::device_shared::shared(device, ("sprite fade composite", format), || {
+                Program::new(device, format)
+            });
         Self {
             side,
             limit,
@@ -376,7 +375,7 @@ fn fragment_main(fragment: CompositeFragment) -> @location(0) vec4<f32> {
 mod tests;
 
 impl Program {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> Self {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sprite fade page"),
             entries: &[
@@ -428,10 +427,7 @@ impl Program {
                 ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: samples,
-                ..Default::default()
-            },
+            multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some("fragment_main"),

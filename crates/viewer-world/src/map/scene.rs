@@ -948,8 +948,7 @@ impl Scene {
             )
         };
         let order_label_pass = [label_pass()?, label_pass()?, label_pass()?];
-        let mut sprite_pass =
-            SpritePass::new(device, queue, samples, &icon_textures, lazy, OUTPUT_FORMAT)?;
+        let mut sprite_pass = SpritePass::new(device, queue, &icon_textures, lazy, OUTPUT_FORMAT)?;
         sprite_pass.defer_builds(true);
 
         let scene = Self {
@@ -1017,7 +1016,7 @@ impl Scene {
                 SCENE_FORMAT,
             ),
             // colour
-            post: PostPass::new(device, samples, queue, &assets.post, OUTPUT_FORMAT)?,
+            post: PostPass::new(device, queue, &assets.post, OUTPUT_FORMAT)?,
             sky_effect: assets.sky_shader.clone(),
             arrow_effect: assets.arrow_shader.clone(),
             tree_effect: assets.tree_shader.clone(),
@@ -2903,6 +2902,7 @@ impl Scene {
             if let Some(frame_timer) = &mut self.frame_timer {
                 frame_timer.abandon();
             }
+            self.shadow.abandon();
         }
         self.pass_timer = timer;
         // A frame that failed before its walk leaves the schedule as if it was never cut.
@@ -3630,12 +3630,9 @@ impl Scene {
         mark(&mut encoder, "terrain_refraction");
         // Whole-frame paths validate materials/wraps/buckets/packets and shadow/post stages after
         // earlier draws. An errored encoder is never submitted. Shadow casters precede screen-space
-        // receivers and both blurs before lit terrain samples them. Clear depth even without
-        // casters.
-        drop(
-            self.shadow
-                .depth_pass(&mut encoder, wgpu::LoadOp::Clear(1.0)),
-        );
+        // receivers and both blurs before lit terrain samples them. Receivers sample the depth
+        // map without casters too, so it is clear whenever casters do not draw.
+        self.shadow.clear_depth_map(&mut encoder, shadow_casters);
         match (shadow_prepared, visible) {
             (Some(shadow_prepared), Some(visible)) => {
                 if shadow_casters {
@@ -3825,8 +3822,8 @@ impl Scene {
                     })?;
                     mark(&mut encoder, "shadow_arrow_casters");
                 }
-                // Clear the screen target independently of both gates.
-                self.shadow.clear_stand_in(&mut encoder);
+                // The receivers clear the screen target themselves; without them it is
+                // cleared all the same, for the next frame's sea bed.
                 if shadow_receivers {
                     if let Some(mut pass) = self
                         .shadow
@@ -3908,6 +3905,8 @@ impl Scene {
                     }
                     mark(&mut encoder, "shadow_receivers");
                     self.shadow.finish_receivers();
+                } else {
+                    self.shadow.clear_stand_in(&mut encoder);
                 }
                 // Blur only when the native caster gate is enabled.
                 if shadow_casters {
@@ -4738,10 +4737,6 @@ impl Scene {
         #[cfg(any(test, feature = "test-support"))]
         faults.draw_sentinel(device, &mut encoder, targets);
         mark(&mut encoder, "overlay_sprites");
-        // The last writer of the output has run; one resolve hands it to egui,
-        // the readback and the content banner.
-        targets.resolve_output(&mut encoder);
-        mark(&mut encoder, "output_resolve");
         if let Some(timer) = timed.borrow_mut().as_mut() {
             timer.finish(&mut encoder);
         }

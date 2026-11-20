@@ -29,16 +29,15 @@ pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 // mapping, including water glints, city lights and snow highlights.
 pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// The two multisampled colour chains, their resolve targets and the
-/// separate sea-bed refraction target.
+/// The multisampled scene chain, its resolve target, the single-sample output
+/// and the separate sea-bed refraction target.
 ///
-/// colour: there are two because the grade sits between them. The world passes
-/// draw into the float scene chain ([`SCENE_FORMAT`]); `post` reads the
-/// resolved scene and writes the graded frame into the 8-bit output chain
+/// colour: the world passes draw into the float scene chain ([`SCENE_FORMAT`])
+/// at the selected sample count, as the game's scene target is; `post` reads
+/// the resolved scene and writes the graded frame into the 8-bit output
 /// ([`OUTPUT_FORMAT`]), which screen-space text and icons then draw over and which
-/// egui and the PNG readback take. Both chains use the selected sample count
-/// and resolve into their own single-sample texture; the depth buffer belongs
-/// to the world passes and is shared by neither overlay nor grade.
+/// egui and the PNG readback take. The output is single-sample, as the game's
+/// post targets and back buffer are; the depth buffer belongs to the world passes.
 /// `draw_map_full_res=no` halves only the scene/depth chain;
 /// restore samples it linearly into the full-size output before grading.
 pub struct Targets {
@@ -46,7 +45,6 @@ pub struct Targets {
     scene_ms: wgpu::TextureView,
     depth_ms: wgpu::TextureView,
     scene_view: wgpu::TextureView,
-    color_ms: wgpu::TextureView,
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
     pub refraction_view: wgpu::TextureView,
@@ -98,15 +96,6 @@ impl Targets {
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
         );
-        let color_ms = (samples > 1).then(|| {
-            attachment(
-                "map colour (multisampled)",
-                size,
-                OUTPUT_FORMAT,
-                samples,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
-            )
-        });
         let color = attachment(
             "map output",
             size,
@@ -139,10 +128,6 @@ impl Targets {
             depth_ms: depth_ms.create_view(&Default::default()),
             scene_view: scene.create_view(&Default::default()),
             scene,
-            color_ms: color_ms
-                .as_ref()
-                .unwrap_or(&color)
-                .create_view(&Default::default()),
             color_view: color.create_view(&Default::default()),
             color,
             refraction_view: refraction.create_view(&Default::default()),
@@ -176,19 +161,14 @@ impl Targets {
         }
     }
 
-    /// The multisampled 8-bit output attachment. The grade writes it first and
-    /// screen-space text and icons draw over it; [`Self::resolve_output`] moves
-    /// the samples into the output texture once, after the last of them.
+    /// The single-sample 8-bit output attachment. The grade writes every pixel
+    /// first and screen-space text and icons draw over it.
     pub fn output_attachment(
         &self,
         load: wgpu::LoadOp<wgpu::Color>,
     ) -> wgpu::RenderPassColorAttachment<'_> {
         wgpu::RenderPassColorAttachment {
-            view: if self.samples == 1 {
-                &self.color_view
-            } else {
-                &self.color_ms
-            },
+            view: &self.color_view,
             depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
@@ -203,31 +183,15 @@ impl Targets {
     /// one empty pass costs one resolve and no draws. A single-sample chain
     /// has the world passes drawing into the scene texture already.
     pub fn resolve_scene(&self, encoder: &mut wgpu::CommandEncoder) {
-        self.resolve(encoder, "map scene resolve", &self.scene_ms, &self.scene_view);
-    }
-
-    /// Resolves the multisampled output into [`Self::output_view`], which egui,
-    /// the readback and the content banner read.
-    pub fn resolve_output(&self, encoder: &mut wgpu::CommandEncoder) {
-        self.resolve(encoder, "map output resolve", &self.color_ms, &self.color_view);
-    }
-
-    fn resolve(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        label: &str,
-        samples: &wgpu::TextureView,
-        into: &wgpu::TextureView,
-    ) {
         if self.samples == 1 {
             return;
         }
         drop(encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(label),
+            label: Some("map scene resolve"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: samples,
+                view: &self.scene_ms,
                 depth_slice: None,
-                resolve_target: Some(into),
+                resolve_target: Some(&self.scene_view),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
@@ -678,8 +642,9 @@ pub fn map_device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<
     descriptor
 }
 
-/// The sample counts every map target format supports on `adapter` with `features`, resolve
-/// included for the colour targets.
+/// The sample counts the map's multisampled targets (scene colour and depth) support on `adapter`
+/// with `features`, resolve included for the scene colour. The output is single-sample at every
+/// count, so it is asked only to support one sample.
 pub fn sample_counts(adapter: &wgpu::Adapter, features: wgpu::Features) -> Vec<u32> {
     [1, 2, 4, 8]
         .into_iter()
@@ -691,6 +656,9 @@ pub fn sample_counts(adapter: &wgpu::Adapter, features: wgpu::Features) -> Vec<u
             ]
             .into_iter()
             .all(|format| {
+                if format == gpu_contract_OUTPUT_FORMAT && count > 1 {
+                    return true;
+                }
                 let flags = if features
                     .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
                 {

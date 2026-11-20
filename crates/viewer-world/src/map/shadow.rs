@@ -1,7 +1,8 @@
 //! The cast-shadow depth map, screen-space receivers and two blur passes.
 //!
-//! Depth and screen targets are prepared and cleared every frame. Casters and
-//! blurs require enabled shadows and a camera below the shadow cutoff.
+//! Depth and screen targets are prepared every frame and cleared whenever this
+//! frame draws into them or they do not hold their clear values already. Casters
+//! and blurs require enabled shadows and a camera below the shadow cutoff.
 //! Receivers also run below the fog cutoff without casters.
 //!
 //! The orthographic depth target is 2_FLOAT with depth/stencil and a clear
@@ -309,6 +310,160 @@ struct Buffers {
     /// Whether `buffer` holds [`BUFFER_CLEAR`] in every texel, so clearing it again leaves the
     /// same bytes and the content it holds is the content it held.
     cleared: Cell<bool>,
+    /// Whether the depth map holds white and depth one in every texel.
+    depth_map_cleared: Cell<bool>,
+}
+
+impl Buffers {
+    fn new(device: &wgpu::Device, size: [u32; 2]) -> Self {
+        let target = |label, format, extent, usage| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: extent,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let attachment =
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let square = wgpu::Extent3d {
+            width: DEPTH_MAP_SIZE,
+            height: DEPTH_MAP_SIZE,
+            depth_or_array_layers: 1,
+        };
+        Self {
+            depth_map: target("shadow depth map", DEPTH_MAP_FORMAT, square, attachment),
+            depth_map_depth: target(
+                "shadow depth map (z)",
+                DEPTH_FORMAT,
+                square,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            ),
+            buffer: target("shadow buffer", BUFFER_FORMAT, extent(size), attachment),
+            buffer_depth: target(
+                "shadow buffer (z)",
+                super::shadow_blur::DEPTH_FORMAT,
+                extent(size),
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            ),
+            scratch: target(
+                "shadow buffer (blur)",
+                BUFFER_FORMAT,
+                extent(size),
+                attachment,
+            ),
+            size,
+            content: Cell::new(Content::next()),
+            cleared: Cell::new(false),
+            depth_map_cleared: Cell::new(false),
+        }
+    }
+
+    fn depth_pass<'a>(
+        &'a self,
+        encoder: &'a mut wgpu::CommandEncoder,
+        load: wgpu::LoadOp<f32>,
+    ) -> wgpu::RenderPass<'a> {
+        encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("shadow depth map"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.depth_map,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: match load {
+                        wgpu::LoadOp::Clear(_) => wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        wgpu::LoadOp::Load => wgpu::LoadOp::Load,
+                        wgpu::LoadOp::DontCare(value) => wgpu::LoadOp::DontCare(value),
+                    },
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_map_depth,
+                depth_ops: Some(wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                // Clear colour/depth (flags3), preserving stencil.
+                // Arrow mode2 may read/write it through its authored state.
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        })
+    }
+
+    fn buffer_pass<'a>(
+        &'a self,
+        encoder: &'a mut wgpu::CommandEncoder,
+        load: wgpu::LoadOp<f32>,
+    ) -> wgpu::RenderPass<'a> {
+        encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("shadow buffer"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.buffer,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: match load {
+                        wgpu::LoadOp::Clear(_) => wgpu::LoadOp::Clear(BUFFER_CLEAR),
+                        wgpu::LoadOp::Load => wgpu::LoadOp::Load,
+                        wgpu::LoadOp::DontCare(value) => wgpu::LoadOp::DontCare(value),
+                    },
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            // The two unlit effects keep their lit twins' depth state, so the
+            // pre-pass needs a depth buffer of its own: the grid is drawn from
+            // the near row outwards and a far ridge would otherwise paint over
+            // the near one that hides it.
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.buffer_depth,
+                depth_ops: Some(wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        })
+    }
+
+    /// Something other than its clear may have reached the screen buffer.
+    fn changed(&self) {
+        self.content.set(Content::next());
+        self.cleared.set(false);
+    }
+
+    /// Clears the screen buffer to [`BUFFER_CLEAR`] unless it holds that already; the same
+    /// bytes are not new content.
+    fn clear_buffer(&self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.cleared.replace(true) {
+            drop(self.buffer_pass(encoder, wgpu::LoadOp::Clear(1.0)));
+            self.content.set(Content::next());
+        }
+    }
+
+    /// Clears the depth map when casters draw into it this frame, or when it is not clear
+    /// already: receivers below the fog cutoff sample it without casters.
+    fn clear_depth_map(&self, encoder: &mut wgpu::CommandEncoder, casters: bool) {
+        if !self.depth_map_cleared.replace(!casters) || casters {
+            drop(self.depth_pass(encoder, wgpu::LoadOp::Clear(1.0)));
+        }
+    }
 }
 
 /// Matrices prepared once for native casters and screen-space receivers.
@@ -383,53 +538,16 @@ impl ShadowPass {
         if self.sized(size) {
             return;
         }
-        let target = |label, format, extent, usage| {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: extent,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage,
-                    view_formats: &[],
-                })
-                .create_view(&Default::default())
-        };
-        let attachment =
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let square = wgpu::Extent3d {
-            width: DEPTH_MAP_SIZE,
-            height: DEPTH_MAP_SIZE,
-            depth_or_array_layers: 1,
-        };
-        let buffers = Buffers {
-            depth_map: target("shadow depth map", DEPTH_MAP_FORMAT, square, attachment),
-            depth_map_depth: target(
-                "shadow depth map (z)",
-                DEPTH_FORMAT,
-                square,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
-            ),
-            buffer: target("shadow buffer", BUFFER_FORMAT, extent(size), attachment),
-            buffer_depth: target(
-                "shadow buffer (z)",
-                super::shadow_blur::DEPTH_FORMAT,
-                extent(size),
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
-            ),
-            scratch: target(
-                "shadow buffer (blur)",
-                BUFFER_FORMAT,
-                extent(size),
-                attachment,
-            ),
-            size,
-            content: Cell::new(Content::next()),
-            cleared: Cell::new(false),
-        };
-        self.buffers = Some(buffers);
+        self.buffers = Some(Buffers::new(device, size));
+    }
+
+    /// Forgets what the targets hold after a frame whose commands were never submitted: the
+    /// clears it recorded did not happen.
+    pub fn abandon(&self) {
+        if let Some(buffers) = &self.buffers {
+            buffers.changed();
+            buffers.depth_map_cleared.set(false);
+        }
     }
 
     /// Computes the light matrices for native casters and receivers.
@@ -452,46 +570,22 @@ impl ShadowPass {
         })
     }
 
-    /// The depth pass the casters draw into, already cleared to the "nothing
-    /// here" depth of 1.
+    /// The depth pass the casters draw into, cleared this frame by
+    /// [`Self::clear_depth_map`] to the "nothing here" depth of 1.
     pub fn depth_pass<'a>(
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
         load: wgpu::LoadOp<f32>,
     ) -> Option<wgpu::RenderPass<'a>> {
-        let buffers = self.buffers.as_ref()?;
-        Some(encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("shadow depth map"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &buffers.depth_map,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: match load {
-                        wgpu::LoadOp::Clear(_) => wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        wgpu::LoadOp::Load => wgpu::LoadOp::Load,
-                        wgpu::LoadOp::DontCare(value) => wgpu::LoadOp::DontCare(value),
-                    },
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &buffers.depth_map_depth,
-                depth_ops: Some(wgpu::Operations {
-                    load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                // Clear colour/depth (flags3), preserving stencil.
-                // Arrow mode2 may read/write it through its authored state.
-                stencil_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        }))
+        Some(self.buffers.as_ref()?.depth_pass(encoder, load))
+    }
+
+    /// Readies the depth map for this frame: cleared for the casters when they draw,
+    /// and otherwise left as it is while it holds its clear values.
+    pub fn clear_depth_map(&self, encoder: &mut wgpu::CommandEncoder, casters: bool) {
+        if let Some(buffers) = &self.buffers {
+            buffers.clear_depth_map(encoder, casters);
+        }
     }
 
     /// The screen-space pre-pass the `terrainunlit` and `treeunlit` draws fill.
@@ -501,38 +595,7 @@ impl ShadowPass {
         encoder: &'a mut wgpu::CommandEncoder,
         load: wgpu::LoadOp<f32>,
     ) -> Option<wgpu::RenderPass<'a>> {
-        let buffers = self.buffers.as_ref()?;
-        Some(encoder.counted_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("shadow buffer"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &buffers.buffer,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: match load {
-                        wgpu::LoadOp::Clear(_) => wgpu::LoadOp::Clear(BUFFER_CLEAR),
-                        wgpu::LoadOp::Load => wgpu::LoadOp::Load,
-                        wgpu::LoadOp::DontCare(value) => wgpu::LoadOp::DontCare(value),
-                    },
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            // The two unlit effects keep their lit twins' depth state, so the
-            // pre-pass needs a depth buffer of its own: the grid is drawn from
-            // the near row outwards and a far ridge would otherwise paint over
-            // the near one that hides it.
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &buffers.buffer_depth,
-                depth_ops: Some(wgpu::Operations {
-                    load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        }))
+        Some(self.buffers.as_ref()?.buffer_pass(encoder, load))
     }
 
     /// The two native `shadowblur.shader` passes, buffer to scratch and back.
@@ -591,8 +654,7 @@ impl ShadowPass {
             mark(encoder, label);
         }
         self.drawn.set(true);
-        buffers.content.set(Content::next());
-        buffers.cleared.set(false);
+        buffers.changed();
         Ok(())
     }
 
@@ -600,8 +662,7 @@ impl ShadowPass {
     pub fn finish_receivers(&self) {
         self.drawn.set(true);
         if let Some(buffers) = &self.buffers {
-            buffers.content.set(Content::next());
-            buffers.cleared.set(false);
+            buffers.changed();
         }
     }
 
@@ -611,15 +672,8 @@ impl ShadowPass {
         self.drawn.set(false);
         // Clear the screen target even when receiver draws are skipped.
         // Next frame's underwater pass still binds that full-sized target.
-        if let Some(pass) = self.prepass_pass(encoder, wgpu::LoadOp::Clear(1.0)) {
-            drop(pass);
-        }
-        // The screen target now holds the buffer's clear value in every texel, which is what
-        // it already held if the last frame cleared it too: the same bytes are not new content.
-        if let Some(buffers) = &self.buffers
-            && !buffers.cleared.replace(true)
-        {
-            buffers.content.set(Content::next());
+        if let Some(buffers) = &self.buffers {
+            buffers.clear_buffer(encoder);
         }
         encoder
             .counted_render_pass(&wgpu::RenderPassDescriptor {
@@ -1194,5 +1248,104 @@ mod tests {
         let constants = super::super::shadow_blur::constants(100, 0.0);
         let sum = constants[3] + 2.0 * (constants[4] + constants[5]);
         assert!((sum - 1.0).abs() < 1e-6, "{sum}");
+    }
+
+    /// A screen buffer that holds its clear value is not cleared again, and keeps its content,
+    /// until something else may have reached it.
+    #[test]
+    fn a_clear_screen_buffer_is_not_cleared_again_while_it_stays_clear() {
+        let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
+        let buffers = Buffers::new(&device, [4, 4]);
+        let submit = |record: &dyn Fn(&mut wgpu::CommandEncoder)| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            record(&mut encoder);
+            queue.submit([encoder.finish()]);
+        };
+        // Writes the buffer behind its flag's back, so a clear that runs shows.
+        let paint = || {
+            submit(&|encoder: &mut wgpu::CommandEncoder| {
+                drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &buffers.buffer,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                }));
+            });
+        };
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+                @group(0) @binding(0) var buffer: texture_2d<f32>;
+                @vertex fn vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+                    let p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
+                    return vec4f(p[i], 0, 1);
+                }
+                @fragment fn pixel() -> @location(0) vec4f {
+                    return textureLoad(buffer, vec2i(1, 2), 0);
+                }
+            "#
+                .into(),
+            ),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vertex"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("pixel"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&buffers.buffer),
+            }],
+        });
+        let texel = || -> [u8; 4] {
+            let pixels =
+                viewer_foundation::map::test_support::gpu::render_with(&device, &queue, |pass| {
+                    pass.set_pipeline(&pipeline);
+                    pass.set_bind_group(0, &group, &[]);
+                    pass.draw(0..3, 0..1);
+                });
+            pixels[..4].try_into().unwrap()
+        };
+        const CLEAR: [u8; 4] = [255, 0, 0, 255];
+        const PAINTED: [u8; 4] = [0, 255, 0, 255];
+
+        submit(&|encoder: &mut wgpu::CommandEncoder| buffers.clear_buffer(encoder));
+        assert_eq!(texel(), CLEAR);
+        let content = buffers.content.get();
+        paint();
+        submit(&|encoder: &mut wgpu::CommandEncoder| buffers.clear_buffer(encoder));
+        assert_eq!(texel(), PAINTED, "a clear buffer was cleared again");
+        assert_eq!(buffers.content.get(), content);
+
+        buffers.changed();
+        submit(&|encoder: &mut wgpu::CommandEncoder| buffers.clear_buffer(encoder));
+        assert_eq!(texel(), CLEAR);
+        assert_ne!(buffers.content.get(), content);
     }
 }

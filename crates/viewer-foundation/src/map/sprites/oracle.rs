@@ -27,7 +27,6 @@ pub fn render_images(
     let mut pass = SpritePass::new(
         device,
         queue,
-        1,
         &images,
         &LazyTextures::new(),
         wgpu::TextureFormat::Rgba8Unorm,
@@ -72,7 +71,6 @@ pub fn render_images(
     let mut reference = SpritePass::new(
         device,
         queue,
-        1,
         &images,
         &LazyTextures::new(),
         wgpu::TextureFormat::Rgba8Unorm,
@@ -124,7 +122,7 @@ pub fn render_images(
 }
 
 /// Draws `batch` on a 16 by 16 frame through the production upload and draw, fade pages included,
-/// over the given image pages.
+/// over the given image pages, into the output of a map drawn with 4x MSAA.
 pub fn render_presented(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -142,26 +140,24 @@ pub fn render_presented_at(
     pages: &[dds::Texture],
     size: [u32; 2],
 ) -> (Vec<u8>, usize) {
+    use crate::map::gpu_contract::{OUTPUT_FORMAT, read_texture};
     let images = IconTextures::new(device, queue, pages).unwrap();
-    let mut pass = SpritePass::new(
-        device,
-        queue,
-        1,
-        &images,
-        &LazyTextures::new(),
-        wgpu::TextureFormat::Rgba8Unorm,
-    )
-    .unwrap();
+    let mut pass =
+        SpritePass::new(device, queue, &images, &LazyTextures::new(), OUTPUT_FORMAT).unwrap();
     let arena = shader_pipeline::gpu::Arena::new(device);
     arena.reset();
     pass.upload(device, queue, &arena, batch, size, 1.);
     arena.flush(queue);
+    // The scene and depth are multisampled; the output the grade writes and the icons draw
+    // over is single-sample, as the game's back buffer is, and needs no resolve.
+    let targets = Targets::new(device, size, size, 4);
+    let output = targets.output_attachment(wgpu::LoadOp::Load);
+    assert_eq!(output.view.texture().sample_count(), 1);
+    assert!(output.resolve_target.is_none());
     let mut encoder = device.create_command_encoder(&Default::default());
-    pass.draw_pages(&mut encoder);
+    pass.draw(&mut encoder, &targets);
     queue.submit([encoder.finish()]);
-    let pixels = crate::map::test_support::gpu::render_sized(device, queue, size, |render| {
-        pass.draw_runs(render, size)
-    });
+    let pixels = read_texture(device, queue, targets.output(), 4).unwrap();
     (pixels, pass.fade_pages())
 }
 

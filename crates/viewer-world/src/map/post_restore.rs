@@ -35,11 +35,10 @@ impl Restore {
         device: &wgpu::Device,
         effect: &Arc<Effect>,
         format: wgpu::TextureFormat,
-        samples: u32,
     ) -> io::Result<Self> {
         // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
-            Self::build(device, effect, format, samples)
+            Self::build(device, effect, format)
         })
     }
 
@@ -47,7 +46,6 @@ impl Restore {
         device: &wgpu::Device,
         effect: &Arc<Effect>,
         format: wgpu::TextureFormat,
-        samples: u32,
     ) -> io::Result<Self> {
         let selection = fullscreen::select(effect, "RestoreBloom").map_err(refuse)?;
         let mut state =
@@ -58,7 +56,7 @@ impl Restore {
         state
             .samplers
             .retain(|key, _| (0..4).any(|slot| *key == binding(slot, Stage::Pixel)));
-        Fullscreen::with_samples(device, &selection, &state, format, samples)
+        Fullscreen::new(device, &selection, &state, format)
             .map(Self)
             .map_err(refuse)
     }
