@@ -113,7 +113,7 @@ pub struct Schedule {
     /// when it leaves the pad. The boxes are named by the generation their owner rebuilt them at.
     candidates: Ids,
     admitted_against: super::camera::Hold,
-    candidates_for: Option<(Camera, [u32; 2], u64, u32)>,
+    candidates_for: Option<(Camera, [u32; 2], u64, super::camera::Slack)>,
     /// Of those, the ones this camera admits, and the camera they were tested against: the pad
     /// narrows what a moved camera tests, and the camera itself still decides, so the set is the
     /// one an untested camera would give.
@@ -229,16 +229,16 @@ impl Schedule {
         if self.pending {
             return;
         }
-        let (against, pad) = self.admitted_against.at(camera, viewport);
-        if self.candidates_for != Some((against, viewport, boxes, pad.to_bits())) {
-            let admission = Admission::padded(against, viewport, pad);
+        let (against, slack) = self.admitted_against.at(camera, viewport);
+        if self.candidates_for != Some((against, viewport, boxes, slack)) {
+            let admission = Admission::held(against, viewport, slack);
             self.candidates.clear();
             for &(id, bounds) in provinces {
                 if bounds.is_some_and(|bounds| admission.admits(bounds)) {
                     self.candidates.insert(id);
                 }
             }
-            self.candidates_for = Some((against, viewport, boxes, pad.to_bits()));
+            self.candidates_for = Some((against, viewport, boxes, slack));
             self.admitted_for = None;
         }
         if self.admitted_for != Some((camera, viewport, boxes)) {

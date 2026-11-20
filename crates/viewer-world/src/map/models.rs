@@ -1991,11 +1991,11 @@ pub struct ModelFrame<'a> {
     pub camera: Camera,
     /// World x translations of the wrap copies to submit.
     pub offsets: &'a [f32],
-    /// The visible ground rectangle groups are culled against: the padded one a kept list is
-    /// admitted against ([`viewer_foundation::map::camera::Hold`]).
+    /// The ground rectangle a list gathers its groups in: the held camera's
+    /// ([`viewer_foundation::map::camera::Hold`]), which only gathers.
     pub visible: Option<[f32; 4]>,
-    /// The ground rectangle the frame's own camera reaches, which the judge holds a kept list
-    /// to: everything it admits the list must hold.
+    /// The ground rectangle the frame's own camera reaches: a gathered group outside it draws
+    /// nothing.
     pub seen: Option<[f32; 4]>,
     /// Layer opacity. Every gate in `00_graphics.lua` is a hard switch rather
     /// than a fade, so this is 1.0 for the mesh layers; the railway layer has
@@ -2293,11 +2293,10 @@ pub struct ModelPass {
     keyed: Vec<KeyedInstance>,
     alive: Vec<(usize, u32, u32)>,
     drawn: Cell<u32>,
-    /// This frame's game cull, set by the scene ([`ModelPass::set_cull`]): the padded one every
-    /// list is admitted against.
+    /// The cull of the camera every list is gathered and kept against, set by the scene
+    /// ([`ModelPass::set_cull`]). It decides nothing that is drawn.
     cull: Cell<Option<GameCull>>,
-    /// The frame's own camera's cull, which the judge holds a kept list to: every figure it
-    /// admits the list must hold.
+    /// The frame's own camera's cull: a figure is drawn exactly when it passes it.
     seen: Cell<Option<GameCull>>,
     refusals: RefCell<(u64, ActorRefusals)>,
     /// Actor refusals made, ever: a caster walk that made one is walked again.
@@ -3475,7 +3474,8 @@ impl ModelPass {
         Ok(())
     }
 
-    /// This frame's game cull: every figure is tested by it before anything is prepared for it.
+    /// This frame's culls: the held camera's (`cull`), which keys a kept list, and the frame's own
+    /// camera's (`seen`), which every figure is tested by before anything is prepared for it.
     pub fn set_cull(&self, cull: Option<GameCull>, seen: Option<GameCull>) {
         self.cull.set(cull);
         self.seen.set(seen);
@@ -3486,7 +3486,7 @@ impl ModelPass {
     /// sphere is centred half the bounds' height above the origin and reaches every point of them
     /// from there.
     pub(super) fn game_culled(&self, mesh: usize, instance: &ModelInstance, offset: f32, camera: &Camera) -> Option<Culled> {
-        let cull = self.cull.get()?;
+        let cull = self.seen.get()?;
         let mesh = self.meshes.get(mesh)?;
         let scale = instance.scale.abs();
         let centre = [instance.position[0] + offset + cull.x - camera.center[0], instance.position[1] + mesh.height * scale * 0.5, instance.position[2]];

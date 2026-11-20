@@ -1825,6 +1825,29 @@ fn a_figure_walked_on_a_camera_moved_onto_another_map_copy_is_culled_where_it_st
     assert_eq!(pass.game_culled(0, &instance, 0., &eye), Some(Culled::Distance), "walked on the eye where it stands, the figure is a map width away");
 }
 
+/// A pan draws what the game draws: a level eye looking east held at x 1000 with the pad and
+/// panned to 1006, a figure on the centre ray moved from 1437 to 1440. The game culls it, 434 from
+/// the eye past the mesh's 430. The held cull a pan keeps its lists against, as main drew by it,
+/// still admits it, 434 inside its padded 438: it only gathers, and the frame's own cull decides.
+#[test]
+fn a_pan_draws_a_moved_figure_by_its_own_camera_s_cull_and_its_held_one_only_gathers() {
+    let wide = 1.0e9;
+    let pass = ModelPass::new(&library_with_one_mesh(1.), "unit models");
+    let sides = [[1., 0., 0., wide], [-1., 0., 0., wide], [0., 0., 1., wide], [0., 0., -1., wide]];
+    let pad = viewer_foundation::map::camera::PAD;
+    let held = GameCull { eye: [1000., 0.5, 0.], sides, x: 1000., pad };
+    let own = |x: f32| GameCull { eye: [x, 0.5, 0.], sides, x, pad: 0. };
+    let camera = |x: f32| viewer_foundation::map::camera::Camera { center: [x, 0.], height: 100., map: MapSize::TEST, defines: MapDefines::test(), pose: viewer_foundation::map::camera::Pose::Map };
+    let at = |x: f32| ModelInstance { position: [x, 0., 0.], scale: 1.0, ..ModelInstance::default() };
+    let default = installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED;
+    assert_eq!(held.test([1434., 0.5, 0.], 1., default), None, "the held cull, moved by the pan, admits it");
+    pass.set_cull(Some(held), Some(own(1000.)));
+    assert_eq!(pass.game_culled(0, &at(1427.), 0., &camera(1000.)), None, "drawn while in range");
+    pass.set_cull(Some(held), Some(own(1006.)));
+    assert_eq!(pass.game_culled(0, &at(1435.), 0., &camera(1006.)), None, "429 from the panned eye: drawn");
+    assert_eq!(pass.game_culled(0, &at(1440.), 0., &camera(1006.)), Some(Culled::Distance), "434 from it: culled, as the game does");
+}
+
 /// A pose batch in flight when an animation history starts again (a seek, a branch change) was
 /// made from the samples of the history that ended: its limbs are never installed over the new
 /// history's figures, however stable a figure's identity is across the seek. And a stopped

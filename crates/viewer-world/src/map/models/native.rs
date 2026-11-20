@@ -490,8 +490,6 @@ struct RecordNames {
     staged_bytes: &'static str,
     /// Figures whose level of detail the frame's own eye changed in a kept list.
     relevelled: &'static str,
-    /// Figures the padded view admits that the frame's own camera does not: drawn off screen.
-    extras: &'static str,
     flipped: &'static str,
     waiting: &'static str,
     /// The distinct parts drawn, and the draws instancing by part would leave: by runs of one
@@ -569,7 +567,6 @@ const CASTER_RECORD: RecordNames = RecordNames {
     staged: "caster_staged",
     staged_bytes: "caster_staged_bytes",
     relevelled: "caster_relevelled",
-    extras: "caster_extras",
     flipped: "caster_groups_flipped",
     waiting: "caster_waiting",
     parts: "caster_parts",
@@ -608,7 +605,6 @@ const LIT_RECORD: RecordNames = RecordNames {
     staged: "lit_staged",
     staged_bytes: "lit_staged_bytes",
     relevelled: "lit_relevelled",
-    extras: "lit_extras",
     flipped: "lit_groups_flipped",
     waiting: "lit_waiting",
     parts: "lit_parts",
@@ -1591,16 +1587,21 @@ impl ModelPass {
         walk: &Walk<'_>,
         mut object: Option<&mut ObjectConstants>,
     ) -> io::Result<()> {
-        if crate::map::actor_check::every().is_some() {
+        let judged = crate::map::actor_check::every().is_some();
+        if judged {
             self.judge_view(&frame, walk.queue);
         }
         if self.keep_list(arena, &frame, &inputs, walk, object.as_deref_mut())? {
             if let Some(native) = self.native.borrow_mut().as_mut() {
                 viewer_foundation::view_record::add(self.label, record_names(walk.queue).kept, 1);
-                let Renderer { casters, lit, residents, .. } = native;
+                let Renderer { casters, lit, residents, admission, queue_slots, .. } = native;
                 let list = list_of(casters, lit, walk.id);
+                list.chosen_by(self.drawn_rule(&frame));
                 note_list(self.label, walk.queue, list);
                 judge_list(self.label, walk.queue, list, residents);
+                if judged {
+                    self.judge_drawn(&frame, walk.queue, list, admission, queue_slots);
+                }
             }
             return Ok(());
         }
@@ -1625,11 +1626,14 @@ impl ModelPass {
             casters,
             lit,
             residents,
+            admission,
+            queue_slots,
             ..
         } = native;
         let list = list_of(casters, lit, walk.id);
         list.finish(arena, recording, draws, &walk.shared, walk.reads, part_programs(residents), made)?;
         list.levelled_at(frame.camera.eye());
+        list.chosen_by(self.drawn_rule(&frame));
         list.unmade_for(if self.refused.get() != refused { kept::Whole::Refused } else { kept::Whole::Waiting });
         list.read(arena.frame());
         if walk.queue != Queue::Caster {
@@ -1638,6 +1642,9 @@ impl ModelPass {
         viewer_foundation::view_record::add(self.label, record_names(walk.queue).walks, 1);
         note_list(self.label, walk.queue, list);
         judge_list(self.label, walk.queue, list, residents);
+        if judged {
+            self.judge_drawn(&frame, walk.queue, list, admission, queue_slots);
+        }
         Ok(())
     }
 
@@ -1692,9 +1699,13 @@ impl ModelPass {
             })
         };
         let flips: Vec<usize> = change.changed.groups.iter().copied().filter(|&group| flips_at(group)).collect();
-        // The game cull tests a figure again where its place changed: one that crossed its mesh's
-        // distance or a side plane is spliced in or out.
-        let crossed = if self.cull.get().is_some() && !change.changed.instances.is_empty() {
+        // The drawn cull tests a figure again where its place changed, and every gathered figure
+        // when the frame draws by another cull or ground (each frame of a turn) or a group moved:
+        // one that crossed is spliced in or out, so the list draws exactly what the frame draws.
+        let redrawn = list.drawn_by() != Some(self.drawn_rule(frame)) || !change.changed.groups.is_empty();
+        let crossed = if redrawn {
+            self.cull_crossings(frame, list, None)
+        } else if self.seen.get().is_some() && !change.changed.instances.is_empty() {
             self.cull_crossings(frame, list, Some(&change.changed.instances[..]))
         } else {
             0
@@ -1771,45 +1782,17 @@ impl ModelPass {
     /// padding admits and the camera does not, which are drawn and thrown away by the GPU.
     /// Names what it finds and does not stop the frame.
     fn judge_view(&self, frame: &ModelFrame<'_>, queue: Queue) {
-        let (Some(cull), Some(seen)) = (self.cull.get(), self.seen.get()) else {
-            return;
-        };
         let what = if queue == Queue::Caster { "caster view" } else { "lit view" };
-        let mut extras = 0;
         let mut judged = 0;
         for (view, offset) in frame.offsets.iter().enumerate() {
             for (at, group) in self.field.groups.iter().enumerate() {
-                if visible(group, *offset, frame.seen) && !visible(group, *offset, frame.visible) {
-                    crate::map::actor_check::differs(what, &(view, at), &"a group in view the admitted view left out");
-                }
-            }
-            for (group_index, index, _) in self.native_walk.routes(&self.field) {
-                let (Some(group), Some(instance)) =
-                    (self.field.groups.get(group_index), self.field.instances.get(index))
-                else {
-                    continue;
-                };
                 judged += 1;
-                let centre = frame.camera.center[0];
-                let admitted = self.culled_by(&cull, group.mesh, instance, *offset, centre);
-                let in_view = self.culled_by(&seen, group.mesh, instance, *offset, centre);
-                match (in_view.is_none(), admitted.is_none()) {
-                    (true, false) => crate::map::actor_check::differs(what, &(view, index), &"a figure in view the admitted cull left out"),
-                    (false, true) => extras += 1,
-                    _ => {}
+                if visible(group, *offset, frame.seen) && !visible(group, *offset, frame.visible) {
+                    crate::map::actor_check::differs(what, &(view, at), &"a group in view the gathering left out");
                 }
             }
         }
-        viewer_foundation::view_record::add(self.label, record_names(queue).extras, extras);
-        crate::map::actor_check::checked(if queue == Queue::Caster { "caster view" } else { "lit view" }, judged);
-    }
-
-    /// [`Self::game_culled`] against a cull given rather than the frame's.
-    fn culled_by(&self, cull: &super::GameCull, mesh: usize, instance: &ModelInstance, offset: f32, centre: f32) -> Option<super::Culled> {
-        let mesh = self.meshes.get(mesh)?;
-        let scale = instance.scale.abs();
-        let at = [instance.position[0] + offset + cull.x - centre, instance.position[1] + mesh.height * scale * 0.5, instance.position[2]];
-        cull.test(at, (mesh.bound + mesh.height * 0.5) * scale, mesh.cull_distance_squared)
+        crate::map::actor_check::checked(what, judged);
     }
 
     /// Gives every figure of `list` the level of detail this frame's eye chooses for it, marking
@@ -1839,29 +1822,132 @@ impl ModelPass {
         changed
     }
 
-    /// How many figures crossed the game cull since the list was made: held by it and culled now,
-    /// or left out by the cull then and not now. Only the instances `changed`, or every one.
-    fn cull_crossings(&self, frame: &ModelFrame<'_>, list: &kept::Kept, changed: Option<&[usize]>) -> u64 {
-        let mut crossed = 0;
-        for (group, index, _) in self.native_walk.routes(&self.field) {
-            if changed.is_some_and(|changed| changed.binary_search(&index).is_err()) {
-                continue;
-            }
-            let bounds = &self.field.groups[group];
-            let instance = &self.field.instances[index];
-            let key = kept::figure_key(bounds.mesh, instance);
-            for (view, offset) in frame.offsets.iter().enumerate() {
-                if !visible(bounds, *offset, frame.visible) {
+    /// The rule this frame draws gathered figures by: its own camera's cull and ground.
+    fn drawn_rule(&self, frame: &ModelFrame<'_>) -> kept::Drawn {
+        (self.seen.get(), frame.seen.map(|ground| ground.map(f32::to_bits)))
+    }
+
+    /// The judge of a list as the frame draws it, from the source routes rather than the list's
+    /// own bookkeeping: every figure it holds the frame's own camera draws (else an extra draw),
+    /// and every route figure the list's queue draws, not hidden, that the camera draws, it holds
+    /// (else a missing one). Each view is tested on the ground the camera draws, so a gathering
+    /// that left a group out shows here as missing figures too.
+    fn judge_drawn(
+        &self,
+        frame: &ModelFrame<'_>,
+        queue: Queue,
+        list: &kept::Kept,
+        admission: &mut admission::Admission,
+        queue_slots: &[Vec<Option<[bool; 2]>>],
+    ) {
+        let what = if queue == Queue::Caster { "caster drawn" } else { "lit drawn" };
+        let route = |position: usize| self.field.native_order.get(position).copied();
+        let extras = list
+            .places()
+            .filter(|&(view, position)| {
+                route(position).is_none_or(|(group, index)| {
+                    frame.offsets.get(view).is_none_or(|offset| !self.camera_draws(frame, group, index, *offset))
+                })
+            })
+            .count();
+        let mut missing = 0;
+        let mut judged = list.figures();
+        for (view, offset) in frame.offsets.iter().enumerate() {
+            for (position, (group, index, row)) in self.native_walk.routes(&self.field).enumerate() {
+                if !visible(&self.field.groups[group], *offset, frame.seen)
+                    || self.passed_over(admission, queue_slots, queue, group, index, row)
+                    || !self.camera_draws(frame, group, index, *offset)
+                {
                     continue;
                 }
-                let culled = self.game_culled(bounds.mesh, instance, *offset, &frame.camera).is_some();
-                let held = list.units_of(index).any(|unit| list.unit(unit).view == view);
-                if if held { culled } else { !culled && list.was_culled(view, key) } {
-                    crossed += 1;
+                judged += 1;
+                if !list.holds(view, position) {
+                    missing += 1;
                 }
             }
         }
-        crossed
+        if extras > 0 {
+            crate::map::actor_check::differs(what, &extras, &"figures held that the frame's camera does not draw");
+        }
+        if missing > 0 {
+            crate::map::actor_check::differs(what, &missing, &"figures the frame's camera draws that the list left out");
+        }
+        crate::map::actor_check::checked(what, judged as u64);
+    }
+
+    /// Whether a list of `queue` leaves out the figure at this route whatever the camera: its
+    /// mesh draws in the other lit queue, or the figure is hidden.
+    fn passed_over(
+        &self,
+        admission: &mut admission::Admission,
+        queue_slots: &[Vec<Option<[bool; 2]>>],
+        queue: Queue,
+        group: usize,
+        index: usize,
+        row: Option<&walk::Row>,
+    ) -> bool {
+        let mesh = self.field.groups[group].mesh;
+        let forced = self.label == "supply trains";
+        let nodes = self.meshes[mesh].native.iter().map(|descriptor| descriptor.node);
+        if admission
+            .of(mesh, nodes, queue_slots.get(mesh).map_or(&[][..], Vec::as_slice))
+            .is_some_and(|admits| admission::passes_over(queue, forced, admits))
+        {
+            return true;
+        }
+        let (seed, identity) = self.field.instances[index].animation_key();
+        row.map_or_else(|| self.hidden.contains(&(mesh, seed, identity)), |row| row.hidden)
+    }
+
+    /// Whether the frame's own camera draws the figure at this route in the view at `offset`:
+    /// its group stands on the ground the frame draws and the game cull admits it.
+    fn camera_draws(&self, frame: &ModelFrame<'_>, group: usize, index: usize, offset: f32) -> bool {
+        let bounds = &self.field.groups[group];
+        visible(bounds, offset, frame.seen)
+            && self.game_culled(bounds.mesh, &self.field.instances[index], offset, &frame.camera).is_none()
+    }
+
+    /// How many figures crossed the frame's cull and ground since the list chose them: held by it
+    /// and culled now, or left out by them then and not now. Only the instances `changed`, or
+    /// every one, in the groups the list gathered.
+    fn cull_crossings(&self, frame: &ModelFrame<'_>, list: &kept::Kept, changed: Option<&[usize]>) -> u64 {
+        let groups = self.field.groups.len();
+        let crossed = |view: usize, position: usize| -> bool {
+            let (Some(offset), Some(&(group, index))) = (frame.offsets.get(view), self.field.native_order.get(position)) else {
+                return false;
+            };
+            let drawn = self.camera_draws(frame, group, index, *offset);
+            if list.holds(view, position) {
+                !drawn
+            } else {
+                drawn && list.was_culled(view, kept::figure_key(self.field.groups[group].mesh, &self.field.instances[index]))
+            }
+        };
+        let count = match changed {
+            Some(changed) => self
+                .native_walk
+                .routes(&self.field)
+                .enumerate()
+                .filter(|(_, (_, index, _))| changed.binary_search(index).is_ok())
+                .flat_map(|(position, (group, _, _))| {
+                    (0..frame.offsets.len())
+                        .filter(move |&view| list.visited(view, group, groups))
+                        .map(move |view| (view, position))
+                })
+                .filter(|&(view, position)| crossed(view, position))
+                .count(),
+            // Every gathered figure, by the groups the list gathered: the cost follows them.
+            None => list
+                .gathered()
+                .iter()
+                .flat_map(|&at| {
+                    let (view, group) = (at / groups.max(1), at % groups.max(1));
+                    self.native_walk.by_group.get(group).into_iter().flatten().map(move |&position| (view, position))
+                })
+                .filter(|&(view, position)| crossed(view, position))
+                .count(),
+        };
+        count as u64
     }
 
     /// A list kept this frame: its blocks reach the GPU, and a lit list gives the frame's
@@ -1967,7 +2053,6 @@ impl ModelPass {
         let began = std::time::Instant::now();
         let layout = &self.native_walk;
         let groups = self.field.groups.len();
-        let forced = self.label == "supply trains";
         let mut visited = vec![false; frame.offsets.len() * groups];
         for (view, offset) in frame.offsets.iter().enumerate() {
             for (group, bounds) in self.field.groups.iter().enumerate() {
@@ -1984,25 +2069,13 @@ impl ModelPass {
                     continue;
                 }
                 let mesh = self.field.groups[group].mesh;
-                if walk.queue != Queue::Caster
-                    && native
-                        .admission
-                        .of(
-                            mesh,
-                            self.meshes[mesh].native.iter().map(|descriptor| descriptor.node),
-                            native.queue_slots.get(mesh).map_or(&[][..], Vec::as_slice),
-                        )
-                        .is_some_and(|admits| admission::passes_over(walk.queue, forced, admits))
-                {
+                if self.passed_over(&mut native.admission, &native.queue_slots, walk.queue, group, index, row) {
                     continue;
                 }
                 let instance = self.field.instances[index];
                 let (seed, identity) = instance.animation_key();
-                if row.map_or_else(|| self.hidden.contains(&(mesh, seed, identity)), |row| row.hidden) {
-                    continue;
-                }
-                // The game cull, as the walk tests it.
-                if self.game_culled(mesh, &instance, frame.offsets[view], &frame.camera).is_some() {
+                // The frame's own ground and cull, as the walk tests them.
+                if !self.camera_draws(frame, group, index, frame.offsets[view]) {
                     culled.push((view, kept::figure_key(mesh, &instance)));
                     continue;
                 }
@@ -2543,9 +2616,11 @@ impl ModelPass {
                         self.hidden.contains(&(group.mesh, seed, identity))
                     }, |row| row.hidden);
                     if hidden { continue; }
-                    // The game culls the figure before anything is prepared for it.
+                    // The game culls the figure before anything is prepared for it; a gathered group
+                    // outside the ground the frame draws draws none of its figures.
                     let every = recording.as_deref().is_some_and(|recording| recording.every_lod);
-                    if !every && let Some(why) = self.game_culled(group.mesh, &instance, *offset, &frame.camera) {
+                    let ground = (!visible(group, *offset, frame.seen)).then_some(super::Culled::Planes);
+                    if !every && let Some(why) = ground.or_else(|| self.game_culled(group.mesh, &instance, *offset, &frame.camera)) {
                         let name = match (why, caster) {
                             (super::Culled::Distance, false) => "lit_culled_distance",
                             (super::Culled::Distance, true) => "caster_culled_distance",
@@ -2557,12 +2632,12 @@ impl ModelPass {
                             recording.culled.push((view, kept::figure_key(group.mesh, &instance)));
                         }
                         if !caster {
-                            let moved = self.cull.get().map_or(0.0, |cull| cull.x - frame.camera.center[0]);
-                            note_culled(self.label, &mesh.name, mesh.height, &instance, *offset + moved, self.cull.get(), why, arena.frame());
+                            let moved = self.seen.get().map_or(0.0, |cull| cull.x - frame.camera.center[0]);
+                            note_culled(self.label, &mesh.name, mesh.height, &instance, *offset + moved, self.seen.get(), why, arena.frame());
                         }
                         continue;
                     }
-                    if !every && self.cull.get().is_some() {
+                    if !every && self.seen.get().is_some() {
                         viewer_foundation::view_record::add(self.label, if caster { "caster_cull_passed" } else { "lit_cull_passed" }, 1);
                     }
                     // An actor with a player moves every frame; one without keeps its pose.

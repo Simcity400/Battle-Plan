@@ -308,16 +308,30 @@ type BlockRim = Option<(Arc<[u8]>, Option<Arc<[u8]>>)>;
 /// One cover cut into its wrap views, with the rim-matched heights its blocks draw.
 struct Cut {
     cover: Cover,
-    /// Which cut of the terrain's this is: a draw bound for another cut reads rim slots that
-    /// may hold other rims now.
-    epoch: u64,
-    /// Each wrap view's blocks, by the view's offset bits.
+    /// Each wrap view's blocks, by the view's offset bits. A view that draws the same blocks
+    /// from the same rim slots, each holding the same rim, as in the cut before keeps that cut's
+    /// list, so a draw bound for the list reads the same heights ([`ViewKey`]).
     views: Vec<(u32, Arc<[Drawn]>)>,
     /// The rim stream's slots, each the rim it holds; the blocks draw some of them.
     rims: Vec<Rim>,
     /// The rim stream, one patch's heights a slot, bound as one more slab; none when no block
     /// of the cut draws a rim.
     stream: Option<wgpu::Buffer>,
+}
+
+/// The cut before's list of the view at `offset` when the view draws the same blocks again, each
+/// rim from the same slot of the same stream, which still holds the same rim: a draw bound for
+/// that list reads the same heights.
+fn kept_view(before: &Cut, offset: u32, drawn: &[Drawn], slots: &[Rim], stream: &Option<wgpu::Buffer>) -> Option<Arc<[Drawn]>> {
+    let (_, was) = before.views.iter().find(|(view, _)| *view == offset)?;
+    let same_rims = drawn.iter().all(|block| match block.heights {
+        Heights::Rim(slot) => {
+            before.stream == *stream
+                && before.rims.get(slot).zip(slots.get(slot)).is_some_and(|(was, now)| Arc::ptr_eq(&was.heights, &now.heights))
+        }
+        Heights::Sampled | Heights::Coast => true,
+    });
+    (**was == *drawn && same_rims).then(|| Arc::clone(was))
 }
 
 /// The cells a patch draws across and up: 64, or fewer where the map's edge cuts it.
@@ -558,8 +572,8 @@ pub struct Terrain {
     /// the rims its slots do not hold yet, into the slots the cut before let go of.
     rim_stream: Option<wgpu::Buffer>,
     rim_slots: Vec<Rim>,
-    /// Cuts made, the last one's epoch.
-    cuts: u64,
+    /// The block list of a view no block of the cut stands in.
+    no_blocks: Arc<[Drawn]>,
     samples: u32,
     /// Each mode's retained draws, one entry per set of views a frame prepares it for.
     retained: Vec<Retained>,
@@ -585,10 +599,19 @@ struct Built {
     /// Each view's scene block in bytes, whose place is reserved for it.
     scene: usize,
     offsets: Vec<u32>,
-    cover: Cover,
-    /// The cut the draws were bound for, whose rim slots they read.
-    cut: u64,
+    /// Each view's blocks, which the draws were bound for with their rim slots.
+    views: Vec<ViewKey>,
     textures: Vec<wgpu::TextureView>,
+}
+
+/// A view's block list by identity: a cut keeps the list of a view whose blocks and rim slots
+/// stand as they stood ([`Cut::views`]), so the same list draws the same heights.
+struct ViewKey(Arc<[Drawn]>);
+
+impl PartialEq for ViewKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// One mode's retained draws over the views it was prepared for: a persistent constants buffer
@@ -793,7 +816,7 @@ impl Terrain {
             last_rims: None,
             rim_stream: None,
             rim_slots: Vec::new(),
-            cuts: 0,
+            no_blocks: Arc::from([]),
             samples,
             retained: Vec::new(),
             kept: BTreeMap::new(),
@@ -984,8 +1007,8 @@ impl Terrain {
     fn cut(&mut self, device: &wgpu::Device, arena: Option<&gpu::Arena>, cover: &Cover) -> io::Result<&Cut> {
         self.follow_effect(device);
         if self.cut.as_ref().is_none_or(|cut| cut.cover != *cover) {
-            self.cut = None;
-            let made = self.cut_cover(device, arena, cover)?;
+            let before = self.cut.take();
+            let made = self.cut_cover(device, arena, cover, before.as_ref())?;
             self.cut = Some(made);
         }
         Ok(self.cut.as_ref().expect("the cover was cut above"))
@@ -993,7 +1016,13 @@ impl Terrain {
 
     /// Cuts `cover` into its wrap views, each block drawing its coast heights, matched at its rim
     /// to the blocks of other steps around it ([`super::terrain_coast`]).
-    fn cut_cover(&mut self, device: &wgpu::Device, arena: Option<&gpu::Arena>, cover: &Cover) -> io::Result<Cut> {
+    fn cut_cover(
+        &mut self,
+        device: &wgpu::Device,
+        arena: Option<&gpu::Arena>,
+        cover: &Cover,
+        before: Option<&Cut>,
+    ) -> io::Result<Cut> {
         let offsets = match cover {
             Cover::Blocks(blocks) => blocks.iter().fold(Vec::new(), |mut offsets, block| {
                 if !offsets.contains(&block.offset) {
@@ -1113,6 +1142,7 @@ impl Terrain {
         self.last_rims = steps.map(|steps| (steps, block_rims));
         self.rim_cache = cache;
         let slots = self.place_rims(device, arena, &rims);
+        let stream = self.rim_stream.clone().filter(|_| !rims.is_empty());
         let views = views
             .into_iter()
             .map(|(offset, mut drawn)| {
@@ -1121,16 +1151,15 @@ impl Terrain {
                         *index = slots[*index];
                     }
                 }
-                (offset, Arc::from(drawn))
+                let kept = before.and_then(|before| kept_view(before, offset, &drawn, &self.rim_slots, &stream));
+                (offset, kept.unwrap_or_else(|| Arc::from(drawn)))
             })
             .collect();
-        self.cuts += 1;
         Ok(Cut {
             cover: cover.clone(),
-            epoch: self.cuts,
             views,
             rims: self.rim_slots.clone(),
-            stream: self.rim_stream.clone().filter(|_| !rims.is_empty()),
+            stream,
         })
     }
 
@@ -1202,6 +1231,7 @@ impl Terrain {
         slots
     }
     fn views(&mut self, arena: &gpu::Arena, inputs: &Inputs<'_>) -> io::Result<Views> {
+        let none = Arc::clone(&self.no_blocks);
         let cut = self.cut(arena.device(), Some(arena), inputs.cover)?;
         let mut views = Vec::with_capacity(inputs.offsets.len());
         for offset in inputs.offsets {
@@ -1209,7 +1239,7 @@ impl Terrain {
                 .views
                 .iter()
                 .find(|(view, _)| *view == offset.to_bits())
-                .map_or_else(|| Arc::from([]), |(_, blocks)| Arc::clone(blocks));
+                .map_or_else(|| Arc::clone(&none), |(_, blocks)| Arc::clone(blocks));
             let mut matrix = inputs.matrix;
             for (value, axis) in matrix[3].iter_mut().zip(inputs.matrix[0]) {
                 *value += axis * offset;
@@ -1385,8 +1415,7 @@ impl Terrain {
             samples: self.samples,
             scene: inputs.frames.iter().map(|frame| frame.len()).max().unwrap_or(0),
             offsets: inputs.offsets.iter().map(|offset| offset.to_bits()).collect(),
-            cover: inputs.cover.clone(),
-            cut: self.cut.as_ref().map_or(0, |cut| cut.epoch),
+            views: views.iter().map(|(blocks, _)| ViewKey(Arc::clone(blocks))).collect(),
             textures: inputs.textures.iter().map(|view| (*view).clone()).collect(),
         };
         let at = match self
@@ -2264,6 +2293,33 @@ mod tests {
                 Some("native texture slot 12 publishes no content")
             );
         }
+    }
+
+    /// A new cut keeps the list of a view that draws the same blocks from the same rim slots,
+    /// each still holding the same rim, so its draws stay bound; a changed block, or a slot that
+    /// now holds another rim (however alike its bytes), gives the view a new list.
+    #[test]
+    fn a_view_that_draws_the_same_blocks_from_the_same_rims_keeps_its_list_across_cuts() {
+        let rim = |byte: u8| Rim { rules: Arc::from([0u8]), heights: Arc::from([byte; 4]) };
+        let block = |x: u32, heights| Drawn { patch: Patch { origin: [x * SIDE, 0], step: 2 }, snap: [false; 4], heights };
+        let near: Arc<[Drawn]> = Arc::from([block(0, Heights::Rim(0)), block(2, Heights::Sampled)]);
+        let far: Arc<[Drawn]> = Arc::from([block(4, Heights::Coast)]);
+        let slots = vec![rim(7), rim(9)];
+        let before = Cut {
+            cover: Cover::Blocks(Vec::new()),
+            views: vec![(0, Arc::clone(&near)), (1, Arc::clone(&far))],
+            rims: slots.clone(),
+            stream: None,
+        };
+        let kept = kept_view(&before, 0, &near, &slots, &None).expect("the same blocks and rims");
+        assert!(Arc::ptr_eq(&kept, &near));
+        assert!(Arc::ptr_eq(&kept_view(&before, 1, &far, &slots, &None).unwrap(), &far));
+        let moved = [block(0, Heights::Rim(0)), block(2, Heights::Coast)];
+        assert!(kept_view(&before, 0, &moved, &slots, &None).is_none(), "a changed block");
+        let refilled = vec![rim(7), slots[1].clone()];
+        assert!(kept_view(&before, 0, &near, &refilled, &None).is_none(), "another rim in the slot");
+        assert!(kept_view(&before, 1, &far, &refilled, &None).is_some(), "a view without rims ignores them");
+        assert!(kept_view(&before, 2, &far, &slots, &None).is_none(), "a view the cut before had not");
     }
 
     #[test]

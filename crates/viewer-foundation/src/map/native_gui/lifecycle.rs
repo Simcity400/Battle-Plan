@@ -650,6 +650,23 @@ pub struct Instance {
     /// window and each phase of a tick forget it; nothing else can change the answer, so a window
     /// neither written nor ticked is not asked again.
     active_known: std::cell::Cell<Option<bool>>,
+    /// Counts every change of what a layout reads: each write and each tick that found it not
+    /// [idle](Self::idle). A move is none: a layout is made at the window's origin.
+    revision: u64,
+    /// The last layout [`Self::layout_kept`] made and what it made it from.
+    laid: std::cell::RefCell<Option<Laid>>,
+}
+
+/// A layout an instance keeps, and what it was made from: the instance's revision, its root, the
+/// caller's stamp of the resources, and whether it holds regions.
+#[derive(Clone, Debug)]
+struct Laid {
+    revision: u64,
+    /// The root's address, only compared.
+    root: usize,
+    stamp: u64,
+    regions: bool,
+    layout: Result<Option<Layout>, Refusals>,
 }
 
 /// The authored parts followed by ordinary children, in `Element::nested` order without
@@ -1413,6 +1430,8 @@ impl Instance {
             ticked: false,
             written: false,
             active_known: std::cell::Cell::new(None),
+            revision: 0,
+            laid: std::cell::RefCell::new(None),
             idle_tick: false,
             kept: false,
             held: Vec::new(),
@@ -1430,6 +1449,13 @@ impl Instance {
             }
         }
         Ok(instance)
+    }
+
+    /// A call other than a move changed it.
+    fn wrote(&mut self) {
+        self.written = true;
+        self.active_known.set(None);
+        self.revision += 1;
     }
 
     fn check(&self, root: &Element) -> Result<(), String> {
@@ -1573,6 +1599,9 @@ impl Instance {
     }
 
     fn window_position(&mut self, element: &Element, index: usize, point: [i32; 2]) {
+        if index != 0 && self.nodes[index].window.is_some_and(|window| window.position != point) {
+            self.revision += 1;
+        }
         let Some(window) = self.nodes[index].window.as_mut() else {
             return;
         };
@@ -1593,8 +1622,7 @@ impl Instance {
         pixels: [i32; 2],
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let missing = |why| vec![Refusal::new(&element.path, RefusalKind::MissingInput, why)];
         let index = self.index(root, element).map_err(missing)?;
         let container = element
@@ -1689,8 +1717,7 @@ impl Instance {
         element: &Element,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         if self.nodes[index].kind == Kind::Window {
@@ -1730,8 +1757,7 @@ impl Instance {
         element: &Element,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         self.gui_show_at(elements, index)
@@ -1784,8 +1810,7 @@ impl Instance {
         element: &Element,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         self.hide_at(elements, index)
@@ -1844,8 +1869,7 @@ impl Instance {
         element: &Element,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         let elements = authored.get(&self.tree, root);
         let Some(window) = self.nodes[index].window else {
@@ -1882,8 +1906,7 @@ impl Instance {
         element: &Element,
         hide: bool,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         self.nodes[index].shown.hide = hide;
         Ok(())
@@ -1895,8 +1918,7 @@ impl Instance {
     /// visibility, opacity, positions of windows and every clock are the instance's own and are
     /// not taken from here.
     pub fn control(&mut self, root: &Element, element: &Element) -> Result<&mut Bound, String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         self.flush(index);
         Ok(&mut self.nodes[index].control)
@@ -1910,8 +1932,7 @@ impl Instance {
         holder: &Holder,
         items: &[&Element],
     ) -> Result<GridLayout, Refusals> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         self.finalize_grid_with(root, grid, holder, |parent, viewport, position| {
             super::finalize_grid(grid, parent, viewport, items, position)
         })
@@ -1925,8 +1946,7 @@ impl Instance {
         holder: &Holder,
         items: &[([i32; 2], [i32; 2])],
     ) -> Result<GridLayout, Refusals> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         self.finalize_grid_with(root, grid, holder, |parent, _, position| {
             super::finalize_grid_resolved(grid, parent, items, position)
         })
@@ -1968,8 +1988,7 @@ impl Instance {
         resources: &dyn Resources,
         include_hidden: bool,
     ) -> Result<(), Refusals> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let missing = |why| vec![Refusal::new(&element.path, RefusalKind::MissingInput, why)];
         let index = self.index(root, element).map_err(missing)?;
         let container = element
@@ -2070,8 +2089,7 @@ impl Instance {
         value: f32,
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         self.with_scrollbar(root, element, vertical, resources, |bar, template| {
             bar.set_target(template, widgets::fixed(value), true);
         })
@@ -2086,8 +2104,7 @@ impl Instance {
         direction: i32,
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         if !matches!(direction, -1 | 1) {
             return Err(vec![Refusal::new(
                 &element.path,
@@ -2120,8 +2137,7 @@ impl Instance {
         delta: i32,
         resources: &dyn Resources,
     ) -> Result<(), Refusals> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let container = element.container().ok_or_else(|| {
             vec![Refusal::new(
                 &element.path,
@@ -2156,8 +2172,7 @@ impl Instance {
         target: impl FnOnce([i32; 2]) -> Option<i32>,
         resources: &dyn Resources,
     ) -> Result<Option<([i32; 2], i32)>, Refusals> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let mut reached = None;
         self.with_scrollbar(root, element, vertical, resources, |bar, template| {
             if !bar.state.shown {
@@ -2247,8 +2262,7 @@ impl Instance {
         {
             return Ok(());
         }
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         self.flush(index);
         self.nodes[index]
             .events
@@ -2265,8 +2279,7 @@ impl Instance {
         element: &Element,
         frame: i32,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         self.flush(index);
         self.nodes[index].control.progress_float = None;
@@ -2283,8 +2296,7 @@ impl Instance {
         element: &Element,
         value: i32,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         self.flush(index);
         self.nodes[index].events.push(Event::ProgressFloat(value));
@@ -2314,8 +2326,7 @@ impl Instance {
         resources: &dyn Resources,
         authored: &mut CallElements<'a>,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         match &mut self.nodes[index].control.text {
             Some(written) => text.clone_into(written),
@@ -2377,8 +2388,7 @@ impl Instance {
         lines: usize,
         resources: &dyn Resources,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         if lines == 0 {
             return Ok(());
         }
@@ -2405,8 +2415,7 @@ impl Instance {
         wheel: bool,
         resources: &dyn Resources,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         self.with_text_scrollbar(root, element, resources, |plain, scroll| {
             plain.input(direction, wheel);
             let high = plain.range.max as f32 / 100_000.0;
@@ -2523,8 +2532,7 @@ impl Instance {
         value: f32,
         children: bool,
     ) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         if self.nodes[index].window.is_none() {
             return Err(format!("{} is not a containerWindowType", element.path));
@@ -2537,8 +2545,7 @@ impl Instance {
     /// stopped; a drawable without frame animation remains unchanged.
     #[cfg(any(test, feature = "test-support"))]
     pub fn play(&mut self, root: &Element, element: &Element) -> Result<(), String> {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         let index = self.index(root, element)?;
         self.flush(index);
         self.nodes[index].events.push(Event::Play);
@@ -3012,8 +3019,7 @@ impl Instance {
 
     /// The state the last pointer layout drew, whose change the next tick restarts the clock of.
     pub fn point(&mut self, pointed: Option<super::Pointed>, boxes: &[String]) {
-        self.written = true;
-        self.active_known.set(None);
+        self.wrote();
         self.pointed = pointed;
         self.boxes.clear();
         self.boxes.extend_from_slice(boxes);
@@ -3070,6 +3076,7 @@ impl Instance {
             self.phase = Phase::Clocked;
             return Ok(());
         }
+        self.revision += 1;
         let empty = Bindings {
             viewport: Some(self.viewport),
             ..Bindings::default()
@@ -3271,6 +3278,7 @@ impl Instance {
             self.phase = Phase::Moved;
             return Ok(());
         }
+        self.revision += 1;
         let elements = self.tree.elements(root);
         let dt = if settle { f32::INFINITY } else { self.dt };
         for at in (0..self.registered.len()).rev() {
@@ -3305,6 +3313,7 @@ impl Instance {
             self.phase = Phase::Drawn;
             return Ok(());
         }
+        self.revision += 1;
         // No draw reaches a hidden root window. Its child drawables' own clocks have
         // already ticked, and transitions have run, so only the unused draw traversal
         // can be omitted. Copied/registry-built graphs and invalid text writes still
@@ -3721,6 +3730,34 @@ impl Instance {
             .window
             .map_or(self.viewport, |window| window.parent);
         layout(root, Some(parent), resources, &bindings)
+    }
+
+    /// [`Self::layout_with_regions`] without a pointer, kept: the layout made last is given again
+    /// while nothing it reads changed, which is while the instance's revision, `root` and
+    /// `stamp` stand. `stamp` names the resources, which the instance cannot see: the caller
+    /// changes it whenever they draw otherwise. An idle tick moves the clock's `Time` alone,
+    /// which a settled draw does not read ([`super::Shading::changing`]), as a kept pool window
+    /// relies on ([`crate::map::icon_windows::PoolView::present_kept`]).
+    pub fn layout_kept(
+        &self,
+        root: &Element,
+        resources: &dyn Resources,
+        regions: bool,
+        stamp: u64,
+    ) -> Result<Option<Layout>, Refusals> {
+        let mut laid = self.laid.borrow_mut();
+        if let Some(laid) = laid.as_ref()
+            && laid.revision == self.revision
+            && laid.root == std::ptr::from_ref(root) as usize
+            && laid.stamp == stamp
+            && laid.regions == regions
+        {
+            return laid.layout.clone();
+        }
+        let layout = self.layout_with_regions(root, resources, None, regions);
+        let root = std::ptr::from_ref(root) as usize;
+        *laid = Some(Laid { revision: self.revision, root, stamp, regions, layout: layout.clone() });
+        layout
     }
 
     /// The queried extent of `element`'s drawable on this instance: the drawable it shows
@@ -5413,12 +5450,29 @@ mod clock_pruning_tests {
             }
             written.tick(root, &resources, tick).unwrap();
             assert!(idle.idle(), "frame {frame}: settled after its tick");
-            assert_eq!(
-                idle.layout_with_regions(root, &resources, None, true).unwrap(),
-                written.layout_with_regions(root, &resources, None, true).unwrap(),
-                "frame {frame}"
-            );
+            let full = written.layout_with_regions(root, &resources, None, true).unwrap();
+            assert_eq!(idle.layout_with_regions(root, &resources, None, true).unwrap(), full, "frame {frame}");
+            // The kept layout is the full tick's, and an idle window's is not made again.
+            resources.lookups.set(0);
+            let kept = idle.layout_kept(root, &resources, true, 7).unwrap().map(Layout::as_drawn);
+            assert_eq!(kept, full.clone().map(Layout::as_drawn), "frame {frame}: kept as it draws");
+            if frame > 0 && expected {
+                assert_eq!(resources.lookups.get(), 0, "frame {frame}: an idle window's layout is kept");
+            }
         }
+        // A write, another stamp or another root lays it out again.
+        idle.set_frame(root, icon, 1).unwrap();
+        idle.tick(root, &resources, Tick { time: 2.0, dt: 1.0 / 60.0 }).unwrap();
+        let fresh = idle.layout_with_regions(root, &resources, None, true).unwrap();
+        assert_ne!(fresh, written.layout_with_regions(root, &resources, None, true).unwrap(), "the write draws another frame");
+        assert_eq!(idle.layout_kept(root, &resources, true, 7).unwrap(), fresh, "written");
+        resources.lookups.set(0);
+        assert_eq!(idle.layout_kept(root, &resources, true, 8).unwrap(), fresh, "restamped");
+        assert!(resources.lookups.get() > 0, "another stamp lays out again");
+        let copy = root.clone();
+        resources.lookups.set(0);
+        assert_eq!(idle.layout_kept(&copy, &resources, true, 8).unwrap(), fresh, "another root");
+        assert!(resources.lookups.get() > 0, "another root lays out again");
     }
 
     #[test]

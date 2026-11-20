@@ -408,16 +408,31 @@ impl Camera {
         }
     }
 
-    /// How far `other` stands from this camera when it is this one moved over the ground, and
-    /// nothing else: the same map, height, lens and direction. `None` when the view's shape
-    /// differs, which no distance covers.
-    pub fn travelled_from(&self, other: &Camera) -> Option<f32> {
-        let same = self.height == other.height
-            && self.map == other.map
-            && self.defines == other.defines
-            && self.pose == other.pose;
+    /// How far `other` stands from this camera when it is this one moved over the ground and
+    /// turned, and nothing else: the same map, height and lens. The first value is the distance
+    /// over the ground; the second bounds how far any direction tied to the view moves, twice the
+    /// sine of half the turn's angle, and is zero only when the pose is the same. `None` when the
+    /// view's shape differs, which neither covers.
+    pub fn turned_from(&self, other: &Camera) -> Option<(f32, f32)> {
+        let turn = match (&self.pose, &other.pose) {
+            (pose, other) if pose == other => Some(0.0),
+            (Pose::Free(free), Pose::Free(other)) if free.lens == other.lens => {
+                // From the axes' differences, as a trace near 3 rounds a small turn away: their
+                // squared lengths sum to twice the squared chord.
+                let moved: f32 = free
+                    .axes()
+                    .iter()
+                    .zip(other.axes())
+                    .map(|(a, b)| subtract(*a, b))
+                    .map(|d| dot(d, d))
+                    .sum();
+                Some((moved * 0.5).sqrt().max(f32::MIN_POSITIVE))
+            }
+            _ => None,
+        };
+        let same = self.height == other.height && self.map == other.map && self.defines == other.defines;
         let [dx, dz] = [other.center[0] - self.center[0], other.center[1] - self.center[1]];
-        same.then(|| (dx * dx + dz * dz).sqrt())
+        turn.filter(|_| same).map(|turn| ((dx * dx + dz * dz).sqrt(), turn))
     }
 
     /// The look-at point: on the water plane for the game's camera, one unit ahead of a free eye.
@@ -855,6 +870,25 @@ impl Camera {
         ])
     }
 
+    /// [`Self::visible_ground`] of every camera a held one's `slack` covers: one that stands up to
+    /// `slack.pad` from this one over the ground and turned by up to `slack.turn`. It holds the
+    /// eye too, where a covered view that misses the band of the map's objects has its ground.
+    pub fn held_ground(&self, viewport: [u32; 2], margin: f32, slack: Slack) -> Option<[f32; 4]> {
+        if slack.turn == 0.0 || self.free().is_none() {
+            return self.visible_ground(viewport, margin + slack.pad);
+        }
+        let eye = self.eye();
+        let mut points = frustum::in_band(
+            &frustum::turned_corners(self, viewport, self.lens().near, self.object_range(), slack.turn)?,
+            0.0,
+            frustum::OBJECT_TOP,
+        );
+        points.push(eye);
+        let rect = frustum::bounds(&points).expect("the eye is a point");
+        let margin = margin + slack.pad;
+        Some([rect[0] - margin, rect[1] - margin, rect[2] + margin, rect[3] + margin])
+    }
+
     /// How far from a free eye the map's objects stand: the content's `DRAW_MAP_OBJECTS_CUTOFF`,
     /// the distance the game removes map objects at, or the far plane if nearer. The game's camera
     /// has no such range; its height gates its objects.
@@ -1029,43 +1063,86 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// How far the camera travels, in world units, before everything admitted against it is
-/// admitted again. A travelling camera's admission is made with this to spare, so while it stays
-/// inside it the admission already holds everything the camera admits. What the pad admits and
-/// the camera does not is drawn off screen and thrown away by the GPU, so it is as small as
-/// holds an admission across a pan of a few frames: a drag of about two map units a frame keeps
-/// it for four.
+/// How far the camera travels, in world units, before what its view's retained sets gather is
+/// gathered again. A travelling camera gathers with this to spare, so while it stays inside it the
+/// gathered sets already hold everything the camera draws: a drag of about two map units a frame
+/// keeps them for four.
 pub const PAD: f32 = 8.0;
 
-/// The camera a view's admitted set was chosen for, and the padding it was chosen with. A camera
-/// standing still admits exactly what it sees, so a still picture is the one an unpadded viewer
-/// draws; a travelling one admits with [`PAD`] to spare and keeps that admission while it keeps
-/// the view's shape and stays inside the pad, so nothing admitted against a camera is chosen
-/// again frame by frame under a moving one.
+/// How far a turning free eye's view may turn before what it gathers is gathered again, as
+/// [`Camera::turned_from`] measures a turn: about 2.9 degrees.
+pub const TURN: f32 = 0.05;
+
+/// What a set gathered against a held camera allows for: every test moved out by `pad`, and a
+/// plane through the held eye leaned out by `turn` per unit of distance from it ([`Self::at`]). A
+/// camera standing up to `pad` from the held one over the ground and turned by up to `turn`
+/// ([`Camera::turned_from`]) has each plane within `pad + turn * distance` of the held one's, so
+/// the test gathers everything that camera sees.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Slack {
+    pub pad: f32,
+    pub turn: f32,
+}
+
+impl Slack {
+    /// The camera itself.
+    pub const NONE: Self = Self { pad: 0.0, turn: 0.0 };
+
+    /// A travelling camera's: [`PAD`] over the ground and no turn.
+    pub const PAN: Self = Self { pad: PAD, turn: 0.0 };
+
+    /// A turning free eye's: [`PAD`] over the ground and [`TURN`].
+    pub const TURNING: Self = Self { pad: PAD, turn: TURN };
+
+    /// How far out a test through the held eye moves at a point `distance` from it.
+    pub fn at(self, distance: f32) -> f32 {
+        self.pad + self.turn * distance
+    }
+
+    /// Whether a camera `moved` ([`Camera::turned_from`]) from the held one is inside it.
+    fn covers(self, (travel, turn): (f32, f32)) -> bool {
+        travel <= self.pad && turn <= self.turn
+    }
+}
+
+/// The camera a view's retained sets gather against, and the slack they gather with. Gathering
+/// decides nothing that is drawn: every frame draws exactly what its own camera sees, of what was
+/// gathered. A camera standing still gathers what it sees. A travelling one gathers with [`PAD`] to
+/// spare, and a turning free eye with [`TURN`] as well, and keeps what it gathered while it keeps
+/// the view's shape and stays inside the slack, so nothing is gathered again frame by frame under
+/// a moving camera.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Hold {
     seen: Option<(Camera, [u32; 2])>,
-    held: Option<(Camera, [u32; 2], f32)>,
+    held: Option<(Camera, [u32; 2], Slack)>,
 }
 
 impl Hold {
-    /// The camera this frame's view is admitted against, and the padding to admit it with.
-    pub fn at(&mut self, camera: Camera, viewport: [u32; 2]) -> (Camera, f32) {
-        let travelling = self.seen.is_some_and(|seen| seen != (camera, viewport));
-        self.seen = Some((camera, viewport));
-        if !travelling {
-            self.held = Some((camera, viewport, 0.0));
-            return (camera, 0.0);
+    /// The camera this frame's view gathers against, and the slack to gather with.
+    pub fn at(&mut self, camera: Camera, viewport: [u32; 2]) -> (Camera, Slack) {
+        let last = self.seen.replace((camera, viewport));
+        if last.is_none_or(|last| last == (camera, viewport)) {
+            self.held = Some((camera, viewport, Slack::NONE));
+            return (camera, Slack::NONE);
         }
-        if let Some((held, held_viewport, pad)) = self.held
-            && pad > 0.0
+        if let Some((held, held_viewport, slack)) = self.held
+            && slack != Slack::NONE
             && held_viewport == viewport
-            && held.travelled_from(&camera).is_some_and(|travel| travel <= pad)
+            && held.turned_from(&camera).is_some_and(|moved| slack.covers(moved))
         {
-            return (held, pad);
+            return (held, slack);
         }
-        self.held = Some((camera, viewport, PAD));
-        (camera, PAD)
+        let turned = last
+            .filter(|(_, last_viewport)| *last_viewport == viewport)
+            .and_then(|(last, _)| last.turned_from(&camera))
+            .is_some_and(|(_, turn)| turn > 0.0);
+        let slack = if turned && frustum::turned_corners(&camera, viewport, 1.0, 1.0, TURN).is_some() {
+            Slack::TURNING
+        } else {
+            Slack::PAN
+        };
+        self.held = Some((camera, viewport, slack));
+        (camera, slack)
     }
 }
 

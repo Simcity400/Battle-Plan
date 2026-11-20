@@ -192,6 +192,19 @@ pub fn visible_layout<K: Copy>(
     visible_layout_regions(icon, root, name, resources, notes, false)
 }
 
+/// [`visible_layout`] through the window's kept layout ([`Instance::layout_kept`]), for a caller
+/// that names its resources by `stamp`.
+pub fn visible_layout_kept<K: Copy>(
+    icon: &Visible<'_, K>,
+    root: &native::Element,
+    name: &str,
+    resources: &dyn native_gui::Resources,
+    notes: &mut BTreeMap<String, usize>,
+    stamp: u64,
+) -> Option<Drawn<K>> {
+    visible_layout_with(icon, name, notes, |instance| instance.layout_kept(root, resources, false, stamp))
+}
+
 fn visible_layout_regions<K: Copy>(
     icon: &Visible<'_, K>,
     root: &native::Element,
@@ -200,13 +213,22 @@ fn visible_layout_regions<K: Copy>(
     notes: &mut BTreeMap<String, usize>,
     regions: bool,
 ) -> Option<Drawn<K>> {
+    visible_layout_with(icon, name, notes, |instance| instance.layout_with_regions(root, resources, None, regions))
+}
+
+fn visible_layout_with<K: Copy>(
+    icon: &Visible<'_, K>,
+    name: &str,
+    notes: &mut BTreeMap<String, usize>,
+    layout: impl FnOnce(&Instance) -> Result<Option<native_gui::Layout>, native_gui::Refusals>,
+) -> Option<Drawn<K>> {
     if let Some(why) = icon.withheld {
         *notes
             .entry(format!("{name} is not drawn: {why}"))
             .or_default() += 1;
         return None;
     }
-    match icon.instance.layout_with_regions(root, resources, None, regions) {
+    match layout(icon.instance) {
         Ok(Some(layout)) => {
             count_noted(notes, name, &layout.diagnostics);
             Some(Drawn {

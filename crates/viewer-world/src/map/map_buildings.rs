@@ -397,7 +397,7 @@ pub struct BuildingHistory {
     /// group's box only when it leaves the pad.
     candidates: Vec<u32>,
     admitted_against: viewer_foundation::map::camera::Hold,
-    candidates_for: Option<(Camera, [u32; 2], f32, Arc<[ProvinceSlots]>)>,
+    candidates_for: Option<(Camera, [u32; 2], viewer_foundation::map::camera::Slack, Arc<[ProvinceSlots]>)>,
     /// Of those, the ones this camera admits, which the frame walks
     /// ([`BuildingFrame::through`]): the pad narrows what a moved camera tests, and the camera
     /// itself still decides, so the set is the one an untested camera would give.
@@ -522,14 +522,14 @@ impl BuildingHistory {
         // Which groups the camera admits, of those the held camera's padded view could bring
         // into view: every group's box is tested only when the held camera, the viewport or the
         // group list is not the one they were tested against.
-        let (against, pad) = self.admitted_against.at(camera, viewport);
+        let (against, slack) = self.admitted_against.at(camera, viewport);
         if let Some(groups) = self.prepared.as_ref().map(|prepared| Arc::clone(&prepared.groups))
             && enabled
         {
             if self.candidates_for.as_ref().is_none_or(|(was, port, with, tested)| {
-                *was != against || *port != viewport || *with != pad || !Arc::ptr_eq(tested, &groups)
+                *was != against || *port != viewport || *with != slack || !Arc::ptr_eq(tested, &groups)
             }) {
-                let padded = Admission::padded(against, viewport, pad);
+                let padded = Admission::held(against, viewport, slack);
                 self.candidates.clear();
                 self.candidates.extend(
                     groups
@@ -538,7 +538,7 @@ impl BuildingHistory {
                         .filter(|(_, group)| padded.admits(group.bounds))
                         .map(|(index, _)| index as u32),
                 );
-                self.candidates_for = Some((against, viewport, pad, Arc::clone(&groups)));
+                self.candidates_for = Some((against, viewport, slack, Arc::clone(&groups)));
                 self.admitted_for = None;
             }
             if self.admitted_for != Some((camera, viewport)) {

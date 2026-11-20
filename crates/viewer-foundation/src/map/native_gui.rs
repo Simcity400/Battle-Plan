@@ -1093,6 +1093,20 @@ pub struct Layout {
     pub boxes: Vec<String>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl Layout {
+    /// The layout as it draws: the clock of a part whose own program settled is set aside, since
+    /// it draws the same at every clock ([`Shading::changing`]).
+    pub fn as_drawn(mut self) -> Self {
+        for part in &mut self.parts {
+            if matches!(part.shading.settles(), Settles::Program(_)) && !part.shading.changing() {
+                (part.shading.since, part.shading.animation, part.shading.time) = (0.0, 0.0, 0.0);
+            }
+        }
+        self
+    }
+}
+
 /// The topmost control under the pointer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {

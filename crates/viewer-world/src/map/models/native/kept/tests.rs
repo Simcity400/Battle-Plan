@@ -200,9 +200,23 @@ fn listed(nodes: &[(u32, bool, bool, u8)]) -> Kept {
     }
     list.made = Some(laid_out_made());
     list.read(5);
-    list.visited = vec![true];
+    list.gathered = vec![0];
     list.index();
     list
+}
+
+/// A figure the walk began and gave no units, as a caster walk leaves one whose descriptors
+/// all draw in the alternate queue, is held at its place all the same.
+#[test]
+fn a_figure_without_units_is_held_at_its_place() {
+    let mut list = listed(&[(1, false, false, 3), (2, false, false, 4), (3, false, false, 5)]);
+    list.units.remove(1);
+    list.figures[1].units = 1..1;
+    list.figures[2].units = 1..2;
+    list.index();
+    assert!(list.holds(0, 0) && list.holds(0, 1) && list.holds(0, 2));
+    assert_eq!(list.units_of(1).count(), 0, "its instance has no units");
+    assert!(!list.holds(0, 3) && !list.holds(1, 1));
 }
 
 /// A list with room for rows: the still area above the live one, each with a megabyte.

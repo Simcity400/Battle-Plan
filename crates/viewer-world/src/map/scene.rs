@@ -344,10 +344,9 @@ pub struct Scene {
     /// view they were chosen for: a frame that moves neither chooses none.
     cover: crate::map::terrain::Cover,
     cover_for: Option<(Camera, [u32; 2])>,
-    /// The camera the frame's model lists, their shadow casters and their groups are admitted
-    /// against. It is held while the real camera travels inside
-    /// [`viewer_foundation::map::camera::PAD`], and everything admitted against it is admitted
-    /// with that to spare, so nothing retained for a view follows the camera frame by frame.
+    /// The camera the frame's model lists, their shadow casters and their groups are gathered
+    /// against, held while the real camera pans or turns inside its slack, so nothing retained for
+    /// a view is gathered again frame by frame. Every frame draws what its own camera sees.
     admitted_against: viewer_foundation::map::camera::Hold,
     generation: u64,
     // borders
@@ -3181,11 +3180,11 @@ impl Scene {
             self.cover_for = Some((camera, size));
             self.cover = crate::map::terrain::cover_for(camera, size);
         }
-        // The game culls every figure by its own test; the casters are the same figures. It is
-        // made for the camera the lists are admitted against and padded by what the real camera
-        // may travel from it, so a pan keeps every list instead of walking it again.
-        let (admitted, pad) = self.admitted_against.at(camera, size);
-        let cull = Some(crate::map::models::GameCull::padded(&admitted, size, pad));
+        // The game culls every figure by its own test; the casters are the same figures. A list
+        // gathers against a camera held while the real one pans or turns inside its slack, and
+        // draws exactly what this frame's own camera culls in.
+        let (candidates, slack) = self.admitted_against.at(camera, size);
+        let cull = Some(crate::map::models::GameCull::padded(&candidates, size, slack.pad));
         let seen = Some(crate::map::models::GameCull::of(&camera, size));
         for pass in [
             self.unit_models.as_ref(),
@@ -3202,9 +3201,9 @@ impl Scene {
         {
             pass.set_cull(cull, seen);
         }
-        // The ground the shadow casters' groups are admitted against, from the same camera, and
-        // the ground this frame's own camera reaches, which its judge holds a kept list to.
-        let visible = admitted.visible_ground(size, MARGIN + pad);
+        // The ground the lists and the shadow casters' groups gather in, from the same camera,
+        // and the ground this frame's own camera reaches, which they draw in.
+        let visible = candidates.held_ground(size, MARGIN, slack);
         let seen_ground = camera.visible_ground(size, MARGIN);
         self.detail_laps.lap("targets_shadow_resize");
         // Only a frame that stands in a new pose tick plays the actors on, emits their events
@@ -3294,27 +3293,27 @@ impl Scene {
         // A stopped picture is exact, so its figures are posed on the frame that draws them.
         let stopped = self.settled_poses;
         let jobs = &mut self.pose_jobs;
-        // The limbs a frame asks for are the limbs it can draw: the ground its figures are
-        // admitted against, on every wrap copy of the view, and nothing at all for a layer this
+        // The limbs a frame asks for are the limbs it can draw: the ground it draws its figures
+        // in, on every wrap copy of the view, and nothing at all for a layer this
         // camera and these switches draw none of (the lit and caster draws below carry the same
         // gates). The map frame's actors are admitted against no rectangle, as its draw is.
-        let pose_offsets = crate::map::border_pass::wrap_offsets(visible, camera.map.x());
+        let pose_offsets = crate::map::border_pass::wrap_offsets(seen_ground, camera.map.x());
         let posed_layers = [
-            (self.unit_models.as_mut(), self.graphics.unit_figures(), visible),
-            (self.map_buildings.as_mut(), self.graphics.buildings, visible),
+            (self.unit_models.as_mut(), self.graphics.unit_figures(), seen_ground),
+            (self.map_buildings.as_mut(), self.graphics.buildings, seen_ground),
             (
                 self.sprawl.as_mut(),
                 self.graphics.city_sprawl && draws_city_sprawl(&camera),
-                visible,
+                seen_ground,
             ),
-            (self.bridges.as_mut(), bridges_visible, visible),
+            (self.bridges.as_mut(), bridges_visible, seen_ground),
             (self.native_map_frame.as_mut(), true, None),
             (
                 self.aircraft.as_mut().map(|aircraft| &mut aircraft.0),
                 self.graphics.aircraft() && crate::map::aircraft::draws(&camera),
-                visible,
+                seen_ground,
             ),
-            (self.trains.as_mut().map(|trains| &mut trains.0), trains_visible, visible),
+            (self.trains.as_mut().map(|trains| &mut trains.0), trains_visible, seen_ground),
             (self.player.as_mut().map(|player| &mut player.pass), true, None),
         ];
         for (pass, drawn, rectangle) in posed_layers {
@@ -4528,9 +4527,9 @@ impl Scene {
         let actor_camera = actor_views[0];
         // The admitted camera moved onto the copy the actors are walked on, so the groups a
         // list holds are the ones its cull was made for.
-        let mut admitted_actor = admitted;
+        let mut admitted_actor = candidates;
         admitted_actor.center[0] += actor_camera.center[0] - camera.center[0];
-        let actor_visible = admitted_actor.visible_ground(size, MARGIN + pad);
+        let actor_visible = admitted_actor.held_ground(size, MARGIN, slack);
         let actor_seen = actor_camera.visible_ground(size, MARGIN);
         let actor_offsets: Vec<_> = actor_views
             .iter()

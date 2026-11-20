@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use {
-    super::camera::{Camera, frustum::OBJECT_TOP},
+    super::camera::{Camera, Slack, frustum, frustum::OBJECT_TOP},
     crate::map::province_map::ProvinceMap,
 };
 
@@ -42,6 +42,10 @@ pub type Planes = [[f32; 4]; 6];
 pub struct Admission {
     /// Main view followed by reached seam views.
     views: Vec<Planes>,
+    /// Each view's eye, which a turn's slack is measured from.
+    eyes: Vec<[f32; 3]>,
+    /// How far each plane moves out per unit of a box's distance from the eye ([`Slack::turn`]).
+    turn: f32,
 }
 
 impl Admission {
@@ -51,17 +55,27 @@ impl Admission {
     /// Cap normalized corner rays at five times eye height, then force y to the water plane. Recenter
     /// a wholly seam-crossing footprint by one map width while retaining original seam flags.
     pub fn new(camera: Camera, viewport: [u32; 2]) -> Self {
-        Self::padded(camera, viewport, 0.0)
+        Self::held(camera, viewport, Slack::NONE)
     }
 
     /// [`Self::new`] with every plane moved `pad` further out, so a camera that travels up to
-    /// `pad` from this one admits nothing this does not ([`super::camera::Hold`]).
+    /// `pad` from this one admits nothing this does not.
     pub fn padded(camera: Camera, viewport: [u32; 2], pad: f32) -> Self {
+        Self::held(camera, viewport, Slack { pad, turn: 0.0 })
+    }
+
+    /// [`Self::new`] for every camera `slack` covers ([`super::camera::Hold`]): every plane moved
+    /// out by the slack at the box corner furthest from the eye, so a camera that travels or turns
+    /// inside it admits nothing this does not.
+    pub fn held(camera: Camera, viewport: [u32; 2], slack: Slack) -> Self {
+        let views = views_out(camera, viewport, slack);
         Self {
-            views: views_out(camera, viewport, pad)
+            eyes: views.iter().map(Camera::eye).collect(),
+            views: views
                 .into_iter()
-                .map(|view| planes_out(view, viewport, SIDE_MARGIN + pad))
+                .map(|view| planes_out(view, viewport, SIDE_MARGIN + slack.pad))
                 .collect(),
+            turn: slack.turn,
         }
     }
 
@@ -75,9 +89,10 @@ impl Admission {
 
     /// A consumer's own `[min, max]` world box against the same camera views.
     pub fn admits_box(&self, bounds: [[f32; 3]; 2]) -> bool {
-        self.views
-            .iter()
-            .any(|planes| admits_box(bounds, 0.0, planes))
+        self.views.iter().zip(&self.eyes).any(|(planes, eye)| {
+            let reach = if self.turn > 0.0 { self.turn * furthest(bounds, *eye) } else { 0.0 };
+            !planes.iter().any(|&plane| outside(plane, bounds, 0.0, reach))
+        })
     }
 
     /// Whether `province`'s box is admitted; a province the bitmap never paints, province 0
@@ -96,15 +111,16 @@ impl Admission {
 /// reaches within its object range adds a view, nearer copies first and the east one of each pair
 /// first.
 pub fn views(camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
-    views_out(camera, viewport, 0.0)
+    views_out(camera, viewport, Slack::NONE)
 }
 
-/// [`views`] whose seam reach is widened by `pad`, so a camera that travels up to `pad` from
-/// this one reaches no map copy this does not ([`Admission::padded`]).
-fn views_out(mut camera: Camera, viewport: [u32; 2], pad: f32) -> Vec<Camera> {
+/// [`views`] whose seam reach is widened by `slack`, so a camera inside it reaches no map copy
+/// this does not ([`Admission::held`]).
+fn views_out(mut camera: Camera, viewport: [u32; 2], slack: Slack) -> Vec<Camera> {
     if camera.free().is_some() {
-        return free_views(camera, viewport, pad);
+        return free_views(camera, viewport, slack);
     }
+    let pad = slack.pad;
     let width = camera.map.x();
     let corners = footprint(camera, viewport);
     let [west_top, east_top, west_bottom, east_bottom] = corners;
@@ -145,7 +161,7 @@ fn crossed([west_top, east_top, west_bottom, east_bottom]: [f32; 4], width: f32)
 
 /// A free eye's views: the eye moved onto the first map copy, then one view per other copy its
 /// reach overlaps, as the game's seam views shift the camera by whole map widths.
-fn free_views(camera: Camera, viewport: [u32; 2], pad: f32) -> Vec<Camera> {
+fn free_views(camera: Camera, viewport: [u32; 2], slack: Slack) -> Vec<Camera> {
     let mut views = vec![camera];
     let width = camera.map.x();
     if width.is_nan() || width <= 0.0 {
@@ -155,10 +171,16 @@ fn free_views(camera: Camera, viewport: [u32; 2], pad: f32) -> Vec<Camera> {
     views[0].center[0] -= shift;
     let main = views[0];
     let range = main.object_range();
-    let Some([x0, _, x1, _]) = main.reach(viewport, range, [0.0, BOX_HEIGHT]) else {
+    let reach = if slack.turn > 0.0 {
+        frustum::turned_corners(&main, viewport, main.lens().near, range, slack.turn)
+            .and_then(|corners| frustum::bounds(&frustum::in_band(&corners, 0.0, BOX_HEIGHT)))
+    } else {
+        main.reach(viewport, range, [0.0, BOX_HEIGHT])
+    };
+    let Some([x0, _, x1, _]) = reach else {
         return views;
     };
-    let [x0, x1] = [x0 - SIDE_MARGIN - pad, x1 + SIDE_MARGIN + pad];
+    let [x0, x1] = [x0 - SIDE_MARGIN - slack.pad, x1 + SIDE_MARGIN + slack.pad];
     for copies in seam_copies(x0, x1, width) {
         let mut view = main;
         view.center[0] -= copies as f32 * width;
@@ -294,15 +316,23 @@ fn normalize([a, b, c, d]: [f32; 4]) -> [f32; 4] {
 /// One view's box test, also used by trees, ambient buckets
 /// arrows and names; contact survives.
 pub fn admits_box(bounds: [[f32; 3]; 2], offset: f32, planes: &Planes) -> bool {
-    !planes.iter().any(|&plane| outside(plane, bounds, offset))
+    !planes.iter().any(|&plane| outside(plane, bounds, offset, 0.0))
 }
 
-/// Test the box corner nearest the plane's interior, evaluating x, y, then z.
-fn outside([a, b, c, d]: [f32; 4], bounds: [[f32; 3]; 2], offset: f32) -> bool {
+/// Test the box corner nearest the plane's interior, evaluating x, y, then z, against the plane
+/// moved `reach` further out.
+fn outside([a, b, c, d]: [f32; 4], bounds: [[f32; 3]; 2], offset: f32, reach: f32) -> bool {
     let x = if a > 0.0 { bounds[0][0] } else { bounds[1][0] } + offset;
     let y = if b > 0.0 { bounds[0][1] } else { bounds[1][1] };
     let z = if c > 0.0 { bounds[0][2] } else { bounds[1][2] };
-    x * a + b * y + c * z + d > 0.0
+    x * a + b * y + c * z + d > reach
+}
+
+/// The distance from `eye` to the box's corner furthest from it.
+fn furthest(bounds: [[f32; 3]; 2], eye: [f32; 3]) -> f32 {
+    let span = |axis: usize| (bounds[0][axis] - eye[axis]).abs().max((bounds[1][axis] - eye[axis]).abs());
+    let [x, y, z] = [span(0), span(1), span(2)];
+    (x * x + y * y + z * z).sqrt()
 }
 
 /// Every painted province's box `[min x, min z, max x, max z]` in map units.
@@ -480,6 +510,7 @@ mod tests {
                 [top_shows[2], BOX_HEIGHT, top_shows[3]]
             ],
             0.0,
+            0.0,
         ));
         assert!(admission.admits(top_shows));
         assert!(!admission.admits([2998.0, 930.0, 3000.0, 932.0]));
@@ -535,10 +566,10 @@ mod tests {
             [0.0, 0.0, 1.0, -4.0],
             [0.0, 0.0, -1.0, 8.0],
         ] {
-            assert!(!outside(plane, bounds, 0.0), "contact: {plane:?}");
+            assert!(!outside(plane, bounds, 0.0, 0.0), "contact: {plane:?}");
             let mut past = plane;
             past[3] += 0.001;
-            assert!(outside(past, bounds, 0.0), "past contact: {past:?}");
+            assert!(outside(past, bounds, 0.0, 0.0), "past contact: {past:?}");
         }
         assert_eq!(normalize([0.0; 4]), [0.0; 4]);
         assert_eq!(normalize([3.0, 4.0, 0.0, 10.0]), [0.6, 0.8, 0.0, 2.0]);
@@ -632,29 +663,50 @@ mod tests {
         assert!(seam_copies(10.0, width - 10.0, width).is_empty());
     }
 
-    /// The whole of the padding: a camera that travelled up to the pad admits no province box
-    /// the padded admission at the camera it travelled from left out, so a set admitted once
-    /// stands for every camera inside the pad.
+    /// The whole of the slack: a camera that travelled up to the pad, and a free eye that also
+    /// turned up to the turn, admits no province box the held admission at the camera it moved
+    /// from left out, so a set admitted once stands for every camera inside the slack. The free
+    /// eyes reach a seam and boxes as far as their object range, where the turn's slack is widest.
     #[test]
-    fn a_camera_inside_the_pad_admits_nothing_the_padded_admission_left_out() {
-        let pad = crate::map::camera::PAD;
+    fn a_camera_inside_the_slack_admits_nothing_the_held_admission_left_out() {
+        use crate::map::camera::{PAD as pad, TURN};
+        let sample = |held: Admission, seen: Admission, what: &str, xs: std::ops::Range<i32>, zs: std::ops::Range<i32>| {
+            let mut tested = 0;
+            for x in xs.step_by(20) {
+                for z in zs.clone().step_by(20) {
+                    let box_ = [x as f32, z as f32, x as f32 + 20., z as f32 + 20.];
+                    if seen.admits(box_) {
+                        tested += 1;
+                        assert!(held.admits(box_), "{box_:?}: {what}");
+                    }
+                }
+            }
+            assert!(tested > 0, "the sample reaches the view: {what}");
+        };
         for height in [60., 110., 400.] {
             let held = camera([3200., 1500.], height);
             let padded = Admission::padded(held, VIEWPORT, pad);
             for travel in [[pad, 0.], [-pad, 0.], [0., pad], [0., -pad], [pad * 0.7, pad * 0.7]] {
                 let moved = camera([held.center[0] + travel[0], held.center[1] + travel[1]], height);
-                let seen = Admission::new(moved, VIEWPORT);
-                let mut tested = 0;
-                for x in (2600..3800).step_by(20) {
-                    for z in (900..2100).step_by(20) {
-                        let box_ = [x as f32, z as f32, x as f32 + 20., z as f32 + 20.];
-                        if seen.admits(box_) {
-                            tested += 1;
-                            assert!(padded.admits(box_), "{box_:?} at {height} after {travel:?}");
-                        }
-                    }
-                }
-                assert!(tested > 0, "the sample reaches the view at {height}");
+                let what = format!("at {height} after {travel:?}");
+                sample(padded.clone(), Admission::new(moved, VIEWPORT), &what, 2600..3800, 900..2100);
+            }
+        }
+        let slack = Slack { pad, turn: TURN };
+        let a = 0.5 * TURN;
+        let width = MapSize::TEST.x();
+        for (eye, yaw, pitch) in [([3200., 60., 1500.], 1.2, -0.2), ([width - 300., 100., 1500.], 1.5, -0.1), ([2000., 30., 800.], 4.0, 0.2)] {
+            let held = free_camera(eye, yaw);
+            let held = Camera { pose: Pose::Free(Free::new(yaw, pitch, held.lens())), ..held };
+            let admission = Admission::held(held, VIEWPORT, slack);
+            for (delta, travel) in [([a, 0., 0.], [0., 0.]), ([-a, 0., 0.], [pad * 0.7, -pad * 0.7]), ([0., a, 0.], [0., pad]), ([0., 0., 1.9 * a], [0., 0.]), ([0., -a, 0.], [0., -pad]), ([0.6 * a, 0.6 * a, -0.6 * a], [-pad, 0.])] {
+                let Pose::Free(pose) = held.pose else { unreachable!() };
+                let turned = Free { yaw: pose.yaw + delta[0], pitch: pose.pitch + delta[1], roll: delta[2], ..pose };
+                let moved = Camera { center: [held.center[0] + travel[0], held.center[1] + travel[1]], pose: Pose::Free(turned), ..held };
+                let (_, turn) = held.turned_from(&moved).unwrap();
+                assert!(turn <= TURN, "{delta:?} turns {turn}");
+                let what = format!("{eye:?} turned {delta:?} after {travel:?}");
+                sample(admission.clone(), Admission::new(moved, VIEWPORT), &what, -2000..(width as i32 + 2000), 0..3000);
             }
         }
     }

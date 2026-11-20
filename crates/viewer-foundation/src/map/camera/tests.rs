@@ -496,6 +496,77 @@ fn the_lens_sets_the_projection_and_the_centre_ray_is_forward() {
     assert!(!inside(along(0.1)));
 }
 
+/// `camera` turned by `[yaw, pitch, roll]` radians and moved `travel` over the ground.
+fn turned(camera: Camera, [yaw, pitch, roll]: [f32; 3], travel: [f32; 2]) -> Camera {
+    let Pose::Free(pose) = camera.pose else { panic!("a free eye") };
+    Camera {
+        center: [camera.center[0] + travel[0], camera.center[1] + travel[1]],
+        pose: Pose::Free(Free { yaw: pose.yaw + yaw, pitch: pose.pitch + pitch, roll: pose.roll + roll, ..pose }),
+        ..camera
+    }
+}
+
+/// A free eye that turned since the last frame gathers against a camera held with
+/// [`Slack::TURNING`], kept while it turns and travels inside it; one that only travels is held
+/// with the pad alone, and one standing still gathers what it sees. The held ground holds the
+/// ground of every camera the turn hold covers, the eye's own included where a view misses the
+/// band of the map's objects, and a turn is measured as twice the sine of half its angle, however
+/// small.
+#[test]
+fn a_turning_free_eye_gathers_from_a_held_eye_whose_ground_holds_every_view_it_covers() {
+    let lens = Lens { fov_y: 0.96, near: 1.0, far: 20_000.0 };
+    let start = free(std::f32::consts::FRAC_PI_2, -0.21, 100.0, lens);
+    assert_eq!(start.turned_from(&start), Some((0.0, 0.0)));
+    let (travel, turn) = start.turned_from(&turned(start, [0.03, 0.0, 0.0], [3.0, 4.0])).unwrap();
+    assert!((travel - 5.0).abs() < 1e-4 && (turn - 2.0 * 0.015f32.sin()).abs() < 1e-4, "{travel} {turn}");
+    let (_, small) = start.turned_from(&turned(start, [1e-4, 0.0, 0.0], [0.0, 0.0])).unwrap();
+    assert!((small - 1e-4).abs() < 2e-6, "a ten-thousandth of a radian turns {small}");
+    assert_eq!(start.turned_from(&Camera { height: 101.0, ..start }), None, "a climb is another shape");
+
+    let mut hold = Hold::default();
+    assert_eq!(hold.at(start, VIEWPORT), (start, Slack::NONE));
+    let first = turned(start, [0.004, 0.0, 0.0], [0.0, 0.0]);
+    assert_eq!(hold.at(first, VIEWPORT), (first, Slack::TURNING));
+    let (mut camera, mut kept) = (first, 0);
+    loop {
+        camera = turned(camera, [0.004, 0.0, 0.0], [0.0, 0.0]);
+        if hold.at(camera, VIEWPORT).0 != first {
+            break;
+        }
+        kept += 1;
+    }
+    assert!(kept >= 10, "a turn of a quarter degree a frame keeps what it gathered {kept} frames");
+    assert_eq!(hold.at(camera, VIEWPORT), (camera, Slack::NONE), "a stop gathers what it sees");
+    let mut panning = Hold::default();
+    panning.at(start, VIEWPORT);
+    let east = Camera { center: [start.center[0] + 1.0, start.center[1]], ..start };
+    assert_eq!(panning.at(east, VIEWPORT), (east, Slack::PAN));
+    let further = Camera { center: [east.center[0] + 1.0, east.center[1]], ..east };
+    assert_eq!(panning.at(further, VIEWPORT), (east, Slack::PAN));
+
+    let mut tested = 0;
+    // The last looks wholly above the band at height 110: only a view turned down meets it.
+    for (yaw, pitch, height) in [(0.3, -0.21, 100.0), (2.0, -0.6, 100.0), (4.0, 0.25, 100.0), (5.5, -1.2, 100.0), (0.0, 0.481, 110.0)] {
+        let held = free(yaw, pitch, height, lens);
+        let ground = held.held_ground(VIEWPORT, 0.0, Slack::TURNING).unwrap();
+        let a = 0.5 * TURN;
+        for delta in [[a, 0.0, 0.0], [-a, 0.0, 0.0], [0.0, a, 0.0], [0.0, -a, 0.0], [0.0, 0.0, 2.0 * a], [0.6 * a, -0.6 * a, 0.6 * a]] {
+            for travel in [[0.0, 0.0], [0.7 * PAD, 0.7 * PAD], [-0.7 * PAD, 0.7 * PAD]] {
+                let moved = turned(held, delta, travel);
+                let (travelled, turn) = held.turned_from(&moved).unwrap();
+                assert!(travelled <= PAD && turn <= TURN, "{delta:?} {travel:?} is inside");
+                let seen = moved.visible_ground(VIEWPORT, 0.0).unwrap();
+                assert!(
+                    ground[0] <= seen[0] && ground[1] <= seen[1] && seen[2] <= ground[2] && seen[3] <= ground[3],
+                    "{yaw} {pitch} {delta:?} {travel:?}: {seen:?} outside {ground:?}"
+                );
+                tested += 1;
+            }
+        }
+    }
+    assert_eq!(tested, 90);
+}
+
 #[test]
 fn holding_a_free_eye_wraps_x_keeps_z_on_the_map_and_lifts_it_off_the_floor() {
     let mut camera = free(0.0, 0.0, 12.0, Lens::MAP);

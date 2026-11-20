@@ -22,7 +22,7 @@ use viewer_foundation::map::gui_resources::noted_cause;
 use viewer_foundation::map::gui_resources::refused_cause;
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
 use viewer_foundation::map::icon_windows::Retry;
-use viewer_foundation::map::icon_windows::visible_layout;
+use viewer_foundation::map::icon_windows::visible_layout_kept;
 use viewer_foundation::map::icon_windows::{
     POOL_EXHAUSTED, admission, frame, point, rectangle_inside,
 };
@@ -395,6 +395,8 @@ pub struct Windows {
     /// The same as [`Self::diverged_combats`] for the result pool.
     diverged_results: Option<Cow<'static, str>>,
     items: HashMap<ItemKey, Item>,
+    /// This frame's resources, named for the windows' kept layouts ([`resources_stamp`]).
+    stamp: u64,
     /// Each icon's grids (by the grid element's path) and the items they hold.
     grids: HashMap<(IconSlot, String), Held_>,
     /// The refusals standing on the grid items' windows, the module's one refusal state
@@ -812,6 +814,7 @@ pub(super) fn present(
         update_laps.lap("dc_nu_setup");
         return Ok(());
     }
+    windows.stamp = resources_stamp(inputs, plan.countries.as_deref());
     viewer_foundation::map::redraws::note(
         if windows.settled { "naval.settled" } else { "naval.active" },
         1,
@@ -3555,11 +3558,11 @@ fn held_items(
             *gaps.entry(why.to_owned().into()).or_default() += 1;
             continue;
         }
-        match item.instance.layout_with_regions(
+        match item.instance.layout_kept(
             template,
             resources,
-            None,
             item.port_tooltip.is_some() || item.naval_convoy.is_some(),
+            windows.stamp,
         ) {
             Ok(Some(layout)) => {
                 count_noted(gaps, name, &layout.diagnostics);
@@ -3946,6 +3949,25 @@ fn port_parts(
     }
 }
 
+/// What the windows' resources draw from, as one number: the assets, templates and localisation,
+/// the hour's countries their flags resolve through, the viewport and the art decoded so far. A
+/// window laid out with other resources is laid out again ([`Instance::layout_kept`]).
+fn resources_stamp(inputs: &CounterInputs<'_>, countries: Option<&Countries>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    (
+        std::ptr::from_ref(inputs.assets) as usize,
+        std::ptr::from_ref(inputs.windows) as usize,
+        std::ptr::from_ref(inputs.localisation) as usize,
+        countries.map(|countries| std::ptr::from_ref(countries) as usize),
+        inputs.viewport,
+        inputs.ui_scale.to_bits(),
+        inputs.art,
+    )
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Base glyphs and their port items use separate batches to preserve the label draw order.
 #[allow(clippy::too_many_arguments)]
 fn draw_ports(
@@ -3981,12 +4003,13 @@ fn draw_ports(
         });
         glyphs.at_anchor(anchor);
         batch.at_anchor(anchor);
-        let drawn = visible_layout(
+        let drawn = visible_layout_kept(
             &base,
             window,
             NAVAL_BASE_WINDOW,
             resources,
             &mut report.icon_gui_notes,
+            windows.stamp,
         );
         if let Some(drawn) = &drawn {
             let key = layer(

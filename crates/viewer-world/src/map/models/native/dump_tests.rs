@@ -1476,6 +1476,87 @@ fn retained_casters_equal_a_fresh_walk_and_a_kept_frame_walks_nothing() {
     queue.submit([]);
 }
 
+/// A list gathers against a held camera and draws exactly what the frame's own camera's ground
+/// and cull admit: a group it gathers and that ground leaves out draws nothing (a turned view's
+/// widened ground reaching past the object range), and while the held camera holds, a frame whose
+/// camera moved takes the figures that crossed in or out. Each frame the kept list holds the
+/// figures a list walked whole for that frame holds.
+#[test]
+#[ignore = "requires the pinned shader compiler and a GPU"]
+fn a_kept_list_draws_what_the_frame_draws_and_only_gathers_by_the_candidates() {
+    let (_directory, library, blank) = fixture();
+    let (_serial, device, queue) = tests::device();
+    let placed: Vec<(usize, ModelInstance)> = [10., 70.]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(cluster, x)| {
+            (0..library.meshes.len()).map(move |mesh| {
+                let identity = (cluster * 100 + mesh + 1) as u32;
+                (mesh, ModelInstance { position: [x + mesh as f32, 0., 50.], scale: 1., animation_identity: identity, ..Default::default() })
+            })
+        })
+        .collect();
+    let pass = || {
+        let mut model = ModelPass::new(&library, "map buildings");
+        model.upload(&device, &queue, &library, ModelField::build(&library, placed.clone(), 16.)).unwrap();
+        model.settle_builds(true);
+        model
+    };
+    let model = pass();
+    let globals = model.textures[blank].as_ref().unwrap().view.clone();
+    let arena = shader_pipeline::gpu::Arena::new(&device);
+    let camera = Camera {
+        center: [40., 50.],
+        height: 100.,
+        map: MapSize { width: 100, height: 100 },
+        defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
+    };
+    let near = GameCull::of(&camera, [800, 600]);
+    // A free eye low between the clusters looking east: the western figures stand behind it.
+    let lens = viewer_foundation::map::camera::Lens { near: 1., far: 20_000., ..viewer_foundation::map::camera::Lens::MAP };
+    let east_eye = Camera {
+        center: [40., 50.],
+        height: 10.,
+        pose: viewer_foundation::map::camera::Pose::Free(viewer_foundation::map::camera::Free::new(std::f32::consts::FRAC_PI_2, 0., lens)),
+        ..camera
+    };
+    let step = |model: &ModelPass, camera: Camera, drawn: [f32; 4]| {
+        arena.reset();
+        let cull = GameCull::of(&camera, [800, 600]);
+        model.set_cull(Some(near), Some(cull));
+        let scene = [3; 416];
+        let frames = [scene.as_slice()];
+        let inputs = Inputs { samples: 1, frames: &frames, grid: &[0; 16], textures: [&globals; 10] };
+        let frame = ModelFrame { camera, offsets: &[0.], visible: Some([0., 0., 100., 100.]), seen: Some(drawn), alpha: 1. };
+        model.prepare_casters(&arena, frame, inputs).unwrap();
+        let renderer = model.native.borrow();
+        let list = &renderer.as_ref().unwrap().casters;
+        let counts = list.counts();
+        let mut figures: Vec<usize> = list.units().iter().map(|unit| unit.index).collect();
+        figures.sort_unstable();
+        figures.dedup();
+        (counts.walks, counts.spliced, figures)
+    };
+    let whole = |camera: Camera, drawn: [f32; 4]| step(&pass(), camera, drawn).2;
+    let west = [0., 0., 40., 100.];
+    let both = [0., 0., 100., 100.];
+    let (walks, _, west_figures) = step(&model, camera, west);
+    assert_eq!(walks, 1);
+    assert!(!west_figures.is_empty(), "the western figures are drawn");
+    assert_eq!(west_figures, whole(camera, west), "the eastern group is gathered and not drawn");
+    let (_, _, both_figures) = step(&model, camera, both);
+    assert!(both_figures.len() > west_figures.len(), "the ground widened: the eastern figures join");
+    assert_eq!(both_figures, whole(camera, both));
+    assert_eq!(step(&model, camera, west).2, west_figures, "and leave again");
+    // The drawn cull moves while the candidates hold.
+    let moved = step(&model, east_eye, both).2;
+    assert_eq!(moved, whole(east_eye, both), "the cull moved");
+    assert!(!moved.is_empty() && moved.len() < both_figures.len(), "the western figures left");
+    assert_eq!(step(&model, camera, both).2, both_figures, "and came back");
+    queue.submit([]);
+}
+
 /// A lit queue's kept list equals a fresh lit walk draw for draw, and leaves the same object
 /// block and pixel snapshot for the next pass: after the walk that makes it, in kept frames,
 /// after an instance moved and after a figure left and another joined.

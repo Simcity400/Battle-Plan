@@ -431,7 +431,7 @@ fn a_naval_icon_kept_off_screen_asks_only_while_its_province_will_be_cleaned() {
 use super::*;
 use std::collections::BTreeSet;
 use viewer_foundation::map::gui_resources::contains;
-use viewer_foundation::map::icon_windows::GUI_DELTA_CLAMP;
+use viewer_foundation::map::icon_windows::{GUI_DELTA_CLAMP, visible_layout};
 use viewer_foundation::map::native_gui::PartKind;
 use viewer_foundation::map::native_gui::lifecycle::Call;
 use viewer_foundation::map::province_schedule::Update as ScheduleUpdate;
@@ -1918,6 +1918,9 @@ fn the_windows_run_on_the_presentation_clock_they_are_given() {
             &mut report.icon_gui_notes,
         )
         .unwrap();
+        let kept = visible_layout_kept(&visible, window, NAVAL_BASE_WINDOW, &view.fixture, &mut report.icon_gui_notes, 1)
+            .unwrap();
+        assert_eq!(kept.layout.as_drawn(), drawn.layout.clone().as_drawn(), "capture {capture}: the kept layout draws as a fresh one");
         let (reused_holder, reused_items) = port_parts(
             &view.windows,
             &visible,

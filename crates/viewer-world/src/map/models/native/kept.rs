@@ -113,6 +113,9 @@ impl Made {
     }
 }
 
+/// What decides which gathered figures a frame draws: its own camera's cull and ground, by bits.
+pub(super) type Drawn = (Option<GameCull>, Option<[u32; 4]>);
+
 /// The inputs of [`Made`], in [`Made::first_difference`]'s order.
 pub(super) const MADE_INPUTS: usize = 12;
 
@@ -383,6 +386,11 @@ impl Recording {
         walked.reverse();
         walked
     }
+}
+
+/// The places a walk's visited flags set, by `view * groups + group`.
+fn gathered(visited: &[bool]) -> Vec<usize> {
+    visited.iter().enumerate().filter(|(_, visited)| **visited).map(|(at, _)| at).collect()
 }
 
 fn align(value: usize, alignment: usize) -> usize {
@@ -674,7 +682,9 @@ pub(super) struct Kept {
     /// Each unit by its instance, for the instances that change, made when first asked after the
     /// units change.
     by_instance: std::cell::OnceCell<Vec<(usize, usize)>>,
-    visited: Vec<bool>,
+    /// The groups its walk gathered, as `view * groups + group`, sorted: what a frame that draws
+    /// by another rule tests again.
+    gathered: Vec<usize>,
     /// Rows and shared blocks whose bytes this frame changed, to reach the GPU with it.
     dirty: Vec<(usize, usize)>,
     shared: Shared,
@@ -701,6 +711,9 @@ pub(super) struct Kept {
     /// The eye its figures' levels of detail stand for. A kept frame whose eye differs gives
     /// every figure the level that eye chooses ([`ModelPass::relevelled`]).
     lods_for: Option<[f32; 3]>,
+    /// The drawn cull and ground its figures were chosen by ([`Drawn`]). A kept frame that
+    /// draws by others tests every figure it gathered again.
+    drawn: Option<Drawn>,
     /// The pose set its live rows were written for ([`ModelPass::posed`]). A kept frame whose
     /// set is the same writes no standing figure's row again: its limbs stand where they stood.
     posed: u64,
@@ -798,6 +811,17 @@ impl Kept {
 
     pub(super) fn forget(&mut self) {
         self.made = None;
+        self.drawn = None;
+    }
+
+    /// The drawn cull and ground the list's figures were chosen by.
+    pub(super) fn drawn_by(&self) -> Option<Drawn> {
+        self.drawn
+    }
+
+    /// The list's figures are the ones `drawn` chooses.
+    pub(super) fn chosen_by(&mut self, drawn: Drawn) {
+        self.drawn = Some(drawn);
     }
 
     pub(super) fn live(&self) -> &[usize] {
@@ -895,9 +919,25 @@ impl Kept {
         self.bands
     }
 
-    /// Whether the walk drew `group` in `view`.
+    /// Whether the walk gathered `group` in `view`.
     pub(super) fn visited(&self, view: usize, group: usize, groups: usize) -> bool {
-        self.visited.get(view * groups + group).copied().unwrap_or(false)
+        self.gathered.binary_search(&(view * groups + group)).is_ok()
+    }
+
+    /// The groups the walk gathered, as `view * groups + group`, sorted.
+    pub(super) fn gathered(&self) -> &[usize] {
+        &self.gathered
+    }
+
+    /// Each figure's view and its route's position in walk order.
+    pub(super) fn places(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.figures.iter().map(|figure| (figure.view, figure.position))
+    }
+
+    /// Whether the list holds the figure at `position` in `view`, units or none: a caster
+    /// figure whose descriptors all draw in the alternate queue is held without any.
+    pub(super) fn holds(&self, view: usize, position: usize) -> bool {
+        self.figures.binary_search_by_key(&(view, position), |figure| (figure.view, figure.position)).is_ok()
     }
 
     /// The bytes of a block the list holds, whole.
@@ -2074,7 +2114,7 @@ impl Kept {
             bound[group] = Some(draw);
         }
         self.rebuild(next, &kept, recording, &walked, &placed, &firsts);
-        self.visited = visited;
+        self.gathered = gathered(&visited);
         self.order = if self.order_free() {
             let held: Vec<usize> = std::mem::take(&mut self.order)
                 .into_iter()
@@ -2379,7 +2419,7 @@ impl Kept {
         self.order = order;
         self.bands = bands;
         self.index();
-        self.visited = recording.visited;
+        self.gathered = gathered(&recording.visited);
         self.dirty.clear();
         self.shared = shared;
         self.bytes = bytes;
