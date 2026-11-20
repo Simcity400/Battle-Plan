@@ -32,7 +32,7 @@ export const browserTests = [
   'ui/src/widgets/special-projects/specialProjects.dom.test.ts',
   tabFullTest,
 ];
-const toolTests = ['tools/canvas-page.test.ts', 'tools/cargo-target.test.mjs', 'tools/test-ui.test.mjs', 'tools/e2e/verdicts.test.mjs', 'tools/e2e/playbackVerdicts.test.mjs'];
+const toolTests = ['tools/canvas-page.test.ts', 'tools/cargo-target.test.mjs', 'tools/test-ui.test.mjs', 'tools/e2e/verdicts.test.mjs', 'tools/e2e/playbackVerdicts.test.mjs', 'tools/e2e/allWidgets.test.mjs'];
 const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts']);
 
 export async function discoverTests(root = repositoryRoot) {

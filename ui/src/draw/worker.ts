@@ -28,6 +28,7 @@ const scheduledChanges: { at: number; surface: Surface }[] = [];
 let anchor: ClockAnchor = { position: 0, at: 0, speed: 1, playing: false, lastHour: 0, seek: 0 };
 let rate = 1, cap = 60, frameNumber = 0;
 let audit: DrawSample[] | undefined;
+let auditOffset = 0;
 const cadence = new PresentationRate(), display = new DisplayRate();
 const position = () => anchorHour(anchor, wall());
 let scheduled = false;
@@ -142,8 +143,10 @@ function report(s: Surface, head: number, notices: Present[]) {
   if (s.shown === shown) return;
   s.shown = shown;
   if (s.kind === 'race') {
-    post({ type: 'racePresent', id: s.id, owner: s.owner, seek: anchor.seek, head: s.model.fixed ?? head, hour: s.through ?? null, at: wall() });
-  } else notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, date: s.date.drawn });
+    post({ type: 'racePresent', id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
+      head: s.model.fixed ?? head, hour: s.through ?? null, at: wall() });
+  } else notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
+    head: s.model.fixed ?? head, date: s.date.drawn });
 }
 
 function record(s: Surface, at: number, head: number, sample = false, detached = false) {
@@ -212,9 +215,17 @@ function frame(at: number) {
 self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
   switch (m.type) {
     case 'audit': {
-      const records = m.start ? [] : audit ?? [];
-      audit = m.start ? [] : undefined; frameNumber = 0;
-      post({ type: 'audit', records }); break;
+      if (m.start) {
+        audit = []; auditOffset = 0; frameNumber = 0;
+        post({ type: 'audit', records: [], done: true });
+        break;
+      }
+      const records = audit ?? [], limit = Math.max(1, Math.floor(m.limit ?? records.length));
+      const chunk = records.slice(auditOffset, auditOffset + limit);
+      auditOffset += chunk.length;
+      const done = auditOffset >= records.length;
+      if (done) { audit = undefined; auditOffset = 0; }
+      post({ type: 'audit', records: chunk, done }); break;
     }
     case 'port':
       dataPort = m.port;
@@ -260,11 +271,19 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
     }
     case 'inspect': post({ type: 'inspection', request: m.request, reading: followed.snapshot(m.id) }); return;
     case 'clock':
+      const speedChanged = anchor.speed !== m.anchor.speed;
       if (anchor.playing && !m.anchor.playing) followed.paused();
       if (anchor.playing !== m.anchor.playing || !m.anchor.playing && anchor.position !== m.anchor.position) {
         for (const s of [...panels.values(), ...races.values()]) if (s.model.fixed === undefined) dirty.add(s);
       }
-      if (anchor.playing !== m.anchor.playing || anchor.seek !== m.anchor.seek) cadence.reset();
+      if (speedChanged) {
+        // A host hides moving canvases while this anchor crosses the worker boundary.
+        // Repaint them under the new rate before reporting them visible again.
+        for (const s of [...panels.values(), ...races.values()]) if (s.model.fixed === undefined) {
+          invalidate(s);
+        }
+      }
+      if (anchor.playing !== m.anchor.playing || anchor.seek !== m.anchor.seek || speedChanged) cadence.reset();
       if (anchor.seek !== m.anchor.seek) {
         scheduledChanges.length = 0;
         for (const s of [...panels.values(), ...races.values()]) {

@@ -70,19 +70,28 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   const canvas = { getContext: () => ctx } as unknown as OffscreenCanvas;
   const cell: RowCell = { key: 'none', row: 'none', text: 'No projects in progress.', x: 0, y: 0,
     width: 90, height: 12, baseline: 10, font: '12px Arial', color: 'black', align: 'left' };
-  const clock = (position: number, seek = 1) => post({ type: 'clock', anchor: { at: performance.timeOrigin + now, position,
-    seek, lastHour: 100, playing: true, speed: 1, forwardSeek: true } });
+  const clock = (position: number, seek = 1, speed = 1, generation = 0) => post({ type: 'clock', anchor: { at: performance.timeOrigin + now, position,
+    seek, lastHour: 100, playing: true, speed, generation, forwardSeek: true } });
   clock(10);
   post({ type: 'surface', id: 1, owner: 1, canvas, width: 100, height: 20, dpr: 1,
     model: { widget: 'projects', view: 'special-projects', offset: 0, clocked: true, reply, structure: currentKey(reply, 10), cells: [cell] } });
   frame();
   assert.ok(sent.some(m => m.type === 'present' && m.surfaces[0]?.date));
+  sent.length = 0;
+  clock(10, 1, 2, 4); frame();
+  assert.ok(sent.some(m => m.type === 'present' && m.surfaces.some(surface => surface.id === 1 && surface.head === 10)),
+    'a speed anchor re-presents a moving surface after the worker applies the new rate');
+  assert.ok(sent.some(m => m.type === 'present' && m.surfaces.some(surface => surface.id === 1 && surface.generation === 4)),
+    'a panel notice carries the worker anchor generation');
   post({ type: 'audit', start: true });
   now += 17; clock(11); frame();
   now += 17; clock(12); frame();
-  post({ type: 'audit', start: false });
+  post({ type: 'audit', start: false, limit: 1 });
+  const firstAudit = sent.filter(m => m.type === 'audit').at(-1);
+  assert.equal(firstAudit?.done, false, 'the worker leaves the remaining audit records for the next chunk');
+  post({ type: 'audit', start: false, limit: Number.MAX_SAFE_INTEGER });
   const audit = sent.filter(m => m.type === 'audit').at(-1);
-  assert.deepEqual(audit?.records.filter(r => r.t === 'picture').map(r => r.hour), [11, 12],
+  assert.deepEqual([...firstAudit?.records ?? [], ...audit?.records ?? []].filter(r => r.t === 'picture').map(r => r.hour), [11, 12],
     'held surfaces report the valid hour on each presented frame');
   clears.length = 0;
   now += 17; clock(24); frame();

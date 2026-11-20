@@ -84,7 +84,7 @@ function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackControll
   const { running, completed, earlier, cancelled } = groups;
   const rows = (g: typeof groups) => (['running', 'completed', 'earlier', 'cancelled'] as const).flatMap(section =>
     g[section].map(card => JSON.stringify([section, card.project.id, card.run.presentation])));
-  useRecordedRows('project list', perfLog && exactRead ? { hour: at, rows: () => rows(groups),
+  useRecordedRows('special-projects', perfLog && exactRead ? { hour: at, rows: () => rows(groups),
     exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined);
   if (!running.length && !completed.length && !earlier.length && !cancelled.length) return <WidgetState kind="empty" message="No special projects yet." />;
   const row = (card: ProjectCard, line: string, className = '') => <div key={card.project.id} className={`special-project-row${className}`} {...item(card)}>

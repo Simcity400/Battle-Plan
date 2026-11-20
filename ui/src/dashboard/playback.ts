@@ -45,6 +45,7 @@ export interface PlaybackSnapshot {
 export class PlaybackController {
   private snapshot: PlaybackSnapshot = { position: 0, hour: 0, fraction: 0, playing: false, hoursPerSecond: 1, sequence: 0, seekSequence: 0, bounds: null };
   private listeners = new Set<() => void>();
+  private anchorListeners = new Set<(previous: PlaybackSnapshot, next: PlaybackSnapshot) => void>();
   private discards = new Set<() => void>();
   private frameListeners = new Set<() => void>();
   private lastTime = 0;
@@ -75,6 +76,10 @@ export class PlaybackController {
   getHour = () => this.snapshot.hour;
   getMotion = () => this.snapshot.playing ? this.snapshot.hoursPerSecond : undefined;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  /** Called synchronously when a new playback anchor is published, before frame listeners paint it. */
+  onAnchor = (listener: (previous: PlaybackSnapshot, next: PlaybackSnapshot) => void) => {
+    this.anchorListeners.add(listener); return () => { this.anchorListeners.delete(listener); };
+  };
   onDiscard = (listener: () => void) => { this.discards.add(listener); return () => { this.discards.delete(listener); }; };
   subscribeFrame = (listener: () => void) => { this.frameListeners.add(listener); return () => { this.frameListeners.delete(listener); }; };
 
@@ -158,6 +163,7 @@ export class PlaybackController {
   /** `forward` marks a playback step, which moves no anchor unless it ends playback. */
   private publish(next: PlaybackSnapshot, discontinuity = false, forward = false): void {
     if (discontinuity && !next.forwardSeek) for (const discard of this.discards) discard();
+    const previous = this.snapshot;
     const hour = Math.floor(next.position);
     const hourChanged = hour !== this.snapshot.hour;
     const anchor = !forward || next.playing !== this.snapshot.playing;
@@ -165,6 +171,7 @@ export class PlaybackController {
       sequence: this.snapshot.sequence + (hourChanged || discontinuity ? 1 : 0),
       seekSequence: this.snapshot.seekSequence + (discontinuity ? 1 : 0) };
     perfLog?.clock(this.snapshot.position, this.snapshot.playing, this.snapshot.hoursPerSecond, this.snapshot.sequence, this.snapshot.seekSequence, this.snapshot.composedAt);
+    if (anchor) for (const listener of this.anchorListeners) listener(previous, this.snapshot);
     // A playing step's listeners paint in its frame's paint phase; anything else is told at once.
     if (!forward || !this.paintTask || !next.playing) this.tellFrame();
     else this.paintTask.wake();

@@ -1,4 +1,5 @@
 import type { PictureInterval } from '../draw/pictureDate';
+import type { PictureSample } from '../draw/notifications';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { attributeCommits, takeCommits } from './commitCount.ts';
@@ -48,6 +49,23 @@ function tally(into: Tally, count: number, bytes: number, from: number, to: numb
   into.count += count; into.bytes += bytes; into.from = Math.min(into.from, from); into.to = Math.max(into.to, to);
 }
 
+/** Runs a large audit in bounded batches while retaining the input order in its result. */
+export async function auditInBatches<T, R>(items: readonly T[], concurrency: number, operation: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length), width = Math.max(1, Math.floor(concurrency));
+  let next = 0;
+  const worker = async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await operation(items[index]!, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(width, items.length) }, worker));
+  return results;
+}
+
+const AUDIT_CONCURRENCY = 8;
+
 /** The hour a product's params ask for, if they name one. */
 function paramsHour(params: unknown): number | null {
   if (!params || typeof params !== 'object') return null;
@@ -90,6 +108,8 @@ function tileOf(product: unknown, params: unknown): { key: string; bins: unknown
 export type ExactPicture = (hour: number) => Promise<{ values: ReadonlyMap<string, string>; ranked?: boolean } | null>;
 export interface StructureRead { hour: number; rows: () => readonly string[]; exact: () => Promise<readonly string[]> }
 interface RowChange { widget: string; source: string; previous: StructureRead; current: StructureRead }
+type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows: NonNullable<PictureSample['rows']> };
+type PictureAuditResult = { widget: string; surface: string; placement: number; hour: number; error: string | null };
 
 export class PerfRecorder {
   private readers = new Map<number, { owner: number; exact: ExactPicture }>();
@@ -97,6 +117,7 @@ export class PerfRecorder {
   private commitSequence = 0;
   private commitAudit?: { at: number; serial: number; widgets: string[]; causes: object; changes: RowChange[]; input?: string }[];
   private rowChanges: RowChange[] = [];
+  private pictureAudit?: { readers?: Map<string, ExactPicture>; pictures: AuditedPicture[]; done: boolean };
 
   structure(widget: string, source: string, previous: StructureRead, current: StructureRead) {
     if (this.commitAudit && JSON.stringify(previous.rows()) !== JSON.stringify(current.rows()))
@@ -120,35 +141,56 @@ export class PerfRecorder {
     await (await import('../dashboard/pulled.ts')).capturePictures(true);
   }
 
-  async auditPictures() {
-    const records = await (await import('../dashboard/pulled.ts')).capturePictures(false);
-    const readers = this.auditReaders;
-    this.auditReaders = undefined;
-    const commits = this.commitAudit ?? [];
-    this.commitAudit = undefined;
-    const checks = new WeakMap<StructureRead, boolean>();
-    const verify = async (read: StructureRead) => {
-      if (!checks.has(read)) {
-        try { checks.set(read, JSON.stringify(read.rows()) === JSON.stringify(await read.exact())); }
-        catch { checks.set(read, false); }
+  async auditPicturesBatch(limit: number): Promise<{ done: boolean; results: PictureAuditResult[] }> {
+    if (!this.pictureAudit) {
+      const { capturePicturesBatch } = await import('../dashboard/pulled.ts');
+      const readers = this.auditReaders;
+      this.auditReaders = undefined;
+      const commits = this.commitAudit ?? [];
+      this.commitAudit = undefined;
+      const checks = new WeakMap<StructureRead, Promise<boolean>>();
+      const verify = async (read: StructureRead) => {
+        let checked = checks.get(read);
+        if (!checked) {
+          checked = (async () => {
+            try { return JSON.stringify(read.rows()) === JSON.stringify(await read.exact()); }
+            catch { return false; }
+          })();
+          checks.set(read, checked);
+        }
+        return checked;
+      };
+      for (const { changes, ...commit } of commits) {
+        const verified = await auditInBatches(changes, AUDIT_CONCURRENCY, async c => ({ widget: c.widget, source: c.source, hour: c.current.hour, previousHour: c.previous.hour,
+          before: c.previous.rows(), after: c.current.rows(), verified: await verify(c.previous) && await verify(c.current) }));
+        this.push({ t: 'commit', ...commit, changes: verified });
       }
-      return checks.get(read)!;
-    };
-    for (const { changes, ...commit } of commits) {
-      const verified = [];
-      for (const c of changes) verified.push({ widget: c.widget, source: c.source, hour: c.current.hour, previousHour: c.previous.hour,
-        before: c.previous.rows(), after: c.current.rows(), verified: await verify(c.previous) && await verify(c.current) });
-      this.push({ t: 'commit', ...commit, changes: verified });
+      const first = await capturePicturesBatch(2048);
+      const pictures: AuditedPicture[] = [];
+      for (const record of first.records) {
+        this.push({ ...record });
+        if (record.t === 'picture' && record.rows && record.hour !== null) pictures.push(record as AuditedPicture);
+      }
+      this.pictureAudit = { readers, pictures, done: first.done };
     }
-    const results = [];
-    for (const record of records) {
-      this.push({ ...record });
-      if (record.t !== 'picture' || !record.rows || record.hour === null) continue;
+    const work = this.pictureAudit;
+    const count = Math.max(1, Math.floor(limit));
+    if (!work.done && work.pictures.length < count) {
+      const { capturePicturesBatch } = await import('../dashboard/pulled.ts');
+      const next = await capturePicturesBatch(2048);
+      for (const record of next.records) {
+        this.push({ ...record });
+        if (record.t === 'picture' && record.rows && record.hour !== null) work.pictures.push(record as AuditedPicture);
+      }
+      work.done = next.done;
+    }
+    const batch = work.pictures.splice(0, count);
+    const results = await auditInBatches(batch, AUDIT_CONCURRENCY, async record => {
       const { widget, surface, placement, owner, rows } = record;
       const hour = record.hour + record.offset;
       let error: string | null = null;
       try {
-        const exact = await readers?.get(placement + '/' + owner)?.(hour);
+        const exact = await work.readers?.get(placement + '/' + owner)?.(hour);
         if (!exact || !rows.length) error = 'Displayed rows or exact read missing';
         else if (exact.ranked && JSON.stringify(rows.map(r => r.row + ':' + r.key)) !== JSON.stringify([...exact.values.keys()])) error = 'Ranked row identities differ';
         else for (const row of rows) {
@@ -160,9 +202,19 @@ export class PerfRecorder {
           }
         }
       } catch (cause) { error = String(cause); }
-      results.push({ widget, surface, placement, hour, error });
-    }
-    return results;
+      return { widget, surface, placement, hour, error };
+    });
+    const done = work.done && work.pictures.length === 0;
+    if (done) this.pictureAudit = undefined;
+    return { done, results };
+  }
+  async auditPictures(): Promise<PictureAuditResult[]> {
+    const results: PictureAuditResult[] = [];
+    do {
+      const batch = await this.auditPicturesBatch(Number.MAX_SAFE_INTEGER);
+      results.push(...batch.results);
+      if (batch.done) return results;
+    } while (true);
   }
   private lines: string[] = [];
   /** `bytes` here are UTF-16 units, the budget's measure. */
@@ -497,5 +549,6 @@ export async function startPerf(): Promise<void> {
   });
   // Driven from the debugger: `await window.__perf.start()`, `await window.__perf.stop()`.
   Object.assign(window, { __perf: { start: () => recorder.start(), stop: () => recorder.stop(), flush: () => recorder.flush(),
-    beginAudit: () => recorder.beginAudit(), auditPictures: () => recorder.auditPictures(), pressureMerges: () => invoke('playback_pressure_merges') } });
+    beginAudit: () => recorder.beginAudit(), auditPictures: () => recorder.auditPictures(), auditPicturesBatch: (limit: number) => recorder.auditPicturesBatch(limit),
+    pressureMerges: () => invoke('playback_pressure_merges') } });
 }

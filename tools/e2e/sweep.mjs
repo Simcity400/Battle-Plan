@@ -24,6 +24,7 @@ import { NativeInput, hover, interactions, mapModes, mapPictures, zoomedMapPictu
 import { pageShown } from './verdicts.mjs';
 import { TRACE_MARKS, describeNodes, startTrace, summariseTrace, summaryNodes } from './trace.mjs';
 import { ReplyRecorder } from './replies.mjs';
+import { allWidgetPages, SCREEN, SHELL_HEADER_HEIGHT, VIEWS, screenMetrics, tallViewportHeight } from './allWidgets.mjs';
 
 const flag = (name, fallback = null) => { const at = process.argv.indexOf(name); return at < 0 ? fallback : process.argv[at + 1]; };
 const port = Number(flag('--port'));
@@ -49,8 +50,11 @@ if (!PINS.includes(pin)) throw new Error(`--pin takes ${PINS.join(' or ')}, not 
 /** `--cases` names the control cases to run; in the map phases, the map interactions (`MAP_INTERACTIONS` ids),
  * whose modes, hover and pop-out are left out then, so one interaction can be measured on its own. */
 const only = flag('--cases')?.split(',') ?? null;
-/** The pages a control case visits (`--pages`): all by default, so a long controls phase can run in parts. */
+/** The pages the playback and control phases visit (`--pages`): all by default, so either phase can run in parts. */
 const onlyPages = flag('--pages')?.split(',') ?? null;
+/** The every-widget page when `--pages` names it: written into this run's web view before the campaign opens. */
+const fixture = onlyPages?.some(name => Object.hasOwn(VIEWS, name)) ? await allWidgetPages() : null;
+const pageOf = name => fixture && Object.hasOwn(VIEWS, name) ? VIEWS[name].page : name;
 /** The share of the span the `pages-at` phase visits every page at. */
 const pagesAt = flag('--pages-at') === null ? null : Number(flag('--pages-at'));
 const recordReplies = flag('--record-replies');
@@ -78,6 +82,13 @@ const TRACE_SECONDS = 4;
 const CATALOGUE_PAGE = 'Intelligence';
 
 const app = await connect(port);
+if (fixture) {
+  await app.evaluate(`(${JSON.stringify(fixture.entries)}.forEach(([key, value]) => localStorage.setItem(key, value)), true)`);
+  const loaded = new Promise(resolve => { const stop = app.on('Page.loadEventFired', () => { stop(); resolve(); }); });
+  await app.send('Page.reload');
+  await loaded;
+  for (const entry of Object.values(fixture.pages)) log('fixture', `${entry.label}: ${entry.widgets.length} widgets, ${entry.rows} rows`);
+}
 // Before the recording opens, so its source and every reply after it are recorded.
 const replies = recordReplies ? await ReplyRecorder.start(app, recordReplies,
   { pid: appPid, revision: flag('--app-revision'), root: path.resolve(import.meta.dirname, '../..') }) : null;
@@ -405,10 +416,11 @@ const traceWindow = async page => {
   }
 };
 
-const RESEARCH_INVENTORY = `(() => {
+const DASHBOARD_INVENTORY = `(() => {
   const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
   const visible = node => {
     if (!node) return false;
+    if (!node.checkVisibility({ visibilityProperty: true, opacityProperty: true })) return false;
     const box = node.getBoundingClientRect();
     let top = Math.max(box.top, viewport.top), bottom = Math.min(box.bottom, viewport.bottom);
     for (let p = node.parentElement; p && p !== grid; p = p.parentElement) {
@@ -420,22 +432,23 @@ const RESEARCH_INVENTORY = `(() => {
   };
   return [...grid.querySelectorAll('article.dash-widget')].map(a => {
     const kind = [...a.classList].find(c => c.startsWith('kind-'))?.slice(5);
-    const surfaces = kind === 'special-projects' ? [
-      ...visible(a.querySelector('.special-project-list')) ? ['special-projects'] : [],
-      ...visible(a.querySelector('.project-details')) ? ['special-project-details'] : [],
-    ] : [kind === 'research' || kind === 'active-research' ? 'research-slots' : kind];
-    return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces };
+    const placeholder = a.querySelector('.dash-empty[role="status"]');
+    const notMigrated = !!placeholder && /isn't playing back yet$/i.test(placeholder.textContent.trim());
+    // Each mounted worker canvas names a surface its pictures report. Ink visibility is tracked separately.
+    // A mounted worker surface remains a declaration while its ink is hidden between reads.
+    const surfaces = [...new Set([...a.querySelectorAll('canvas[data-surface]')].map(c => c.dataset.surface).filter(Boolean))];
+    return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces, notMigrated };
   });
 })()`;
 
-async function researchInputs() {
+async function playbackInputs() {
   await app.evaluate(`(() => {
     const visibility = [], actions = [];
     const scan = () => {
       const shown = [];
       for (const c of document.querySelectorAll('article canvas[data-placement]')) {
-        const bounds = c.hidden ? c.parentElement : c;
-        if (!bounds?.checkVisibility()) continue;
+        if (c.hidden || !c.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
+        const bounds = c;
         const article = c.closest('article'), pin = article.getAttribute('data-fixed-hour');
         const rect = bounds.getBoundingClientRect();
         let top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
@@ -452,67 +465,224 @@ async function researchInputs() {
     observer.observe(document.querySelector('.dash-grid-scroll'), { subtree: true, childList: true, attributes: true,
       attributeFilter: ['hidden','style','data-fixed-hour','data-placement'] });
     addEventListener('scroll', scan, true); scan();
-    __e2e.inputMark = kind => actions.push({ kind,
-      pinWidget: kind === 'pin' ? document.querySelector('article.kind-active-research')?.dataset.widget : undefined, at: performance.timeOrigin + performance.now() });
+    __e2e.inputMark = (kind, notApplicable = null) => actions.push({ kind,
+      ...(notApplicable ? { notApplicable } : {}),
+      at: performance.timeOrigin + performance.now() });
+    __e2e.setPinWidget = widget => {
+      const action = actions.at(-1);
+      if (action?.kind === 'pin') action.pinWidget = widget;
+    };
     __e2e.endInputs = () => { observer.disconnect(); removeEventListener('scroll', scan, true);
       return { actions, visibility, to: performance.timeOrigin + performance.now() }; };
   })()`);
   const mark = kind => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)})`);
+  // Lists each visible dated widget (one with a worker surface) that does not yet show a picture for the target hour.
+  // Widgets with no worker surface are not on the dated path: the verdict reports them as not migrated, unjudged.
+  const unsettled = `(() => {
+    const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
+    const visible = node => {
+      if (!node.checkVisibility({ visibilityProperty: true, opacityProperty: true })) return false;
+      const box = node.getBoundingClientRect();
+      let top = Math.max(box.top, viewport.top), bottom = Math.min(box.bottom, viewport.bottom);
+      for (let p = node.parentElement; p && p !== grid; p = p.parentElement) {
+        if (getComputedStyle(p).overflowY === 'visible') continue;
+        const clip = p.getBoundingClientRect(); top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+      }
+      return box.width > 0 && top < bottom;
+    };
+    const loading = article => [...article.querySelectorAll('[data-state="loading"], .skeleton, .list-skeleton, [aria-busy="true"], .spinner, .is-loading, [role="status"]')]
+      .some(node => visible(node) && (node.matches('[data-state="loading"], .skeleton, .list-skeleton, [aria-busy="true"], .spinner, .is-loading')
+        || /^Loading\\b/i.test((node.textContent || '') + ' ' + (node.getAttribute('aria-label') || ''))));
+    const lacking = article => {
+      if (loading(article)) return 'loading';
+      if ([...article.querySelectorAll('[data-state="error"], [role="alert"]')].some(visible)) return 'error';
+      if ([...article.querySelectorAll('canvas[data-placement]')].some(visible)) return null;
+      const content = article.querySelector('.dash-widget-content');
+      if (!content) return 'no content';
+      if ([...content.querySelectorAll('.dash-empty[role="status"], [data-state="empty"], [data-state="unavailable"]')].some(visible)) return null;
+      if ([...content.querySelectorAll('[data-row-ink="pending"]')].some(visible)) return 'pending rows';
+      if ([...content.querySelectorAll('canvas, img, svg')].some(visible)) return null;
+      return [...content.querySelectorAll('*')].some(node => {
+        if (node.children.length || !node.textContent.trim() || node.closest('[data-row-ink="worker"], [data-row-ink="pending"]')) return false;
+        return visible(node);
+      }) ? null : 'blank';
+    };
+    const articles = [...grid.querySelectorAll('article.dash-widget')].filter(visible);
+    if (!articles.length) return ['no visible widget'];
+    return articles.filter(article => article.querySelector('canvas[data-placement]'))
+      .map(article => [article.getAttribute('aria-label') || article.dataset.widget, lacking(article)])
+      .filter(([, why]) => why).map(([widget, reason]) => ({ widget, reason }));
+  })()`;
+  const settleInputs = async () => {
+    const started = Date.now();
+    try {
+      const settled = await s.until(`${unsettled}.length === 0`, 10_000);
+      if (settled) return { settledMs: Date.now() - started, unsettled: [] };
+      try {
+        const remaining = await app.evaluate(unsettled);
+        return {
+          settledMs: Date.now() - started,
+          unsettled: Array.isArray(remaining) ? remaining : [{ widget: 'dashboard', reason: 'settlement probe returned no evidence' }]
+        };
+      } catch (cause) {
+        return { settledMs: Date.now() - started, unsettled: [{ widget: 'dashboard', reason: `settlement probe failed: ${cause?.message ?? cause}` }] };
+      }
+    } catch (cause) {
+      return { settledMs: Date.now() - started, unsettled: [{ widget: 'dashboard', reason: `settlement wait failed: ${cause?.message ?? cause}` }] };
+    }
+  };
   await mark('rewind');
   const line = await s.timeline();
   await app.click(Session.timelineX(line, .22), line.y);
-  if (!await s.until(`Number(document.querySelector('input.header-timeline').value) < ${line.value}`)) throw new Error('Research rewind did not move back');
+  if (!await s.until(`Number(document.querySelector('input.header-timeline').value) < ${line.value}`)) throw new Error('Playback rewind did not move back');
+  const rewind = await settleInputs();
   await s.frames(4);
   const x = fraction => Session.timelineX(line, fraction);
   await app.mouse('mousePressed', x(.22), line.y, { buttons: 1 });
+  await mark('scrub');
   for (const fraction of [.3,.36,.27,.31]) {
     await app.mouse('mouseMoved', x(fraction), line.y, { buttons: 1 }); await s.frames(1);
   }
+  const scrubTarget = Math.round(line.min + .31 * (line.max - line.min));
   await app.mouse('mouseReleased', x(.31), line.y);
+  if (!await s.until(`Number(document.querySelector('input.header-timeline').value) === ${scrubTarget}`, 10_000))
+    throw new Error(`Playback scrub target ${scrubTarget} was not reached`);
   await s.frames(4);
-  const held = `['active-research','research','special-projects','nuclear-arsenal','doctrine-mastery'].every(kind => {
-    const article = document.querySelector('article.kind-' + kind);
-    return article && [...article.querySelectorAll('canvas[data-placement]:not([hidden])')].length > 0;
-  })`;
-  if (!await s.until(held)) throw new Error('Research scrub did not hold a complete visible position');
-  await mark('scrub');
-  const article = 'article.kind-active-research';
+  // Settling is a precondition for the next input, not a verdict: how long it took is recorded, so a slow stress page is
+  // reported rather than hidden or stopped at an arbitrary two seconds.
+  const scrub = await settleInputs();
+  const article = 'article.dash-widget';
   const config = article + ' [data-widget-settings]', time = '.widget-settings-menu:popover-open [aria-label="Time"] button';
-  await s.click(config);
-  if (!await s.until(`document.querySelector('${time}')`)) throw new Error('Research pin settings did not open');
-  await mark('pin'); await s.click(time, { text: 'Pinned' });
-  if (!await s.until(`document.querySelector('${article}[data-fixed-hour]')`)) throw new Error('Active research did not take its pin');
-  await s.escape(); await s.frames(4);
+  let pinApplied = false, pinWidget = null;
+  if (await s.holds(`document.querySelector(${JSON.stringify(config)})`)) {
+    await s.click(config);
+    if (await s.until(`document.querySelector('${time}')`)) {
+      const pinned = await s.app.evaluate(`!![...document.querySelectorAll('${time}')].find(button => button.textContent.trim() === 'Pinned')`);
+      if (pinned) {
+        await mark('pin');
+        await s.click(time, { text: 'Pinned' }); await s.until(`document.querySelector('${article}[data-fixed-hour]')`); await s.frames(4);
+        pinWidget = await app.evaluate(`document.querySelector('${article}[data-fixed-hour]')?.dataset.widget ?? null`);
+        await app.evaluate(`__e2e.setPinWidget(${JSON.stringify(pinWidget)})`);
+        pinApplied = true;
+      } else await mark('pin', 'no widget offers a pinnable time setting');
+    } else {
+      await mark('pin', 'no widget offers a pinnable time setting');
+    }
+    await s.escape();
+  } else await mark('pin', 'no widget offers a pinnable time setting');
   await s.click('button[aria-label="Play recording"]');
   await mark('speed'); await setSpeed(168); await s.frames(5);
-  await mark('scroll');
-  const container = '.kind-active-research .active-research';
-  const before = await app.evaluate(`document.querySelector('${container}').scrollTop`);
-  const point = await s.need(container);
-  await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: 250 });
-  if (!await s.until(`document.querySelector('${container}').scrollTop > ${before} && document.querySelector('${container} [data-worker-panel] canvas[data-placement]:not([hidden])')`))
-    throw new Error('The inner scroller did not move with a worker-owned panel');
+  // Marks the first scrollable node inside a widget and returns its selector: evaluate returns values, never nodes.
+  const selector = await s.app.evaluate(`(() => {
+    for (const node of document.querySelectorAll('[data-e2e-scroll]')) node.removeAttribute('data-e2e-scroll');
+    // A wheel can only move a node that scrolls, has room left, and is what the pointer hits at its centre.
+    const scrolls = node => node.scrollHeight - node.clientHeight - node.scrollTop > 2 && /(auto|scroll)/.test(getComputedStyle(node).overflowY);
+    for (const node of document.querySelectorAll('.dash-widget *')) {
+      if (!scrolls(node)) continue;
+      const box = node.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
+      if (y < 0 || y > innerHeight || x < 0 || x > innerWidth) continue;
+      let hit = document.elementFromPoint(x, y);
+      while (hit && hit !== node && !scrolls(hit)) hit = hit.parentElement;
+      if (hit !== node) continue;
+      node.setAttribute('data-e2e-scroll', 'true'); return '[data-e2e-scroll="true"]';
+    }
+    return null;
+  })()`);
+  if (selector) {
+    const target = selector;
+    await mark('scroll');
+    const point = await s.need(target);
+    const before = await app.evaluate(`document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0`);
+    await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: 250 });
+    if (!await s.until(`(document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0) > ${before}`))
+      throw new Error('Playback scroll target did not move');
+  } else await mark('scroll', 'nothing to scroll');
   await s.frames(5);
-  await mark('pause'); await s.click('button[aria-label="Pause playback"]'); await s.frames(5);
+  await mark('pause'); await s.click('button[aria-label="Pause playback"]');
+  if (!await s.until("document.querySelector('button[aria-label=\"Play recording\"]')", 10_000))
+    throw new Error('Playback pause did not stop the clock');
+  await s.frames(5);
   const inputs = await app.evaluate('__e2e.endInputs()');
-  await s.click(config); await s.click(time, { text: 'Live' }); await s.escape();
-  return inputs;
+  if (pinApplied) {
+    const pinnedConfig = pinWidget ? `${article}[data-widget=${JSON.stringify(pinWidget)}] [data-widget-settings]` : config;
+    if (await s.holds(`document.querySelector(${JSON.stringify(time)})`)) await s.escape();
+    if (!await s.until(`!document.querySelector(${JSON.stringify(time)})`)) throw new Error('Pinned widget settings menu did not close before restore');
+    await s.click(pinnedConfig);
+    if (!await s.until(`document.querySelector(${JSON.stringify(time)})`)) throw new Error('Pinned widget settings menu did not reopen for restore');
+    await s.click(time, { text: 'Live' }); await s.escape();
+  }
+  return { ...inputs, rewindSettledMs: rewind.settledMs, rewindUnsettled: rewind.unsettled,
+    scrubSettledMs: scrub.settledMs, unsettled: scrub.unsettled };
+}
+
+async function playbackVisibility() {
+  await app.evaluate(`(() => {
+    const reports = [], observed = new Set(), grid = document.querySelector('.dash-grid-scroll');
+    const visible = entry => entry.isIntersecting && entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0;
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const canvas = entry.target, article = canvas.closest('article.dash-widget'), placement = canvas.dataset.placement;
+        if (!article || placement === undefined) continue;
+        reports.push({ id: article.dataset.widget, placement: Number(placement), at: performance.timeOrigin + entry.time, visible: visible(entry) });
+      }
+    });
+    const scan = () => {
+      for (const canvas of grid.querySelectorAll('article.dash-widget canvas[data-placement]'))
+        if (!observed.has(canvas)) { observed.add(canvas); observer.observe(canvas); }
+    };
+    const layout = new MutationObserver(scan);
+    layout.observe(grid, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'style', 'data-placement'] });
+    addEventListener('scroll', scan, true); scan();
+    __e2e.endPlaybackVisibility = () => { layout.disconnect(); observer.disconnect(); removeEventListener('scroll', scan, true); return reports; };
+  })()`);
 }
 
 await phase('playback', async () => {
   if (!await s.holds('window.__perf')) throw new Error('the app was not started with BATTLE_PLAN_PERF_LOG: playback cannot be measured');
   const requested = onlyPages ?? (quick ? QUICK_PLAYBACK.pages : meta.pages);
-  for (const page of requested) {
-    if (!meta.pages.includes(page)) { await s.fail('playback', page, null, 'page missing from the recording'); continue; }
+  for (const requestedPage of requested) {
+    const page = pageOf(requestedPage);
+    if (!meta.pages.includes(page)) { await s.fail('playback', requestedPage, null, 'page missing from the recording'); continue; }
     await s.openPage(page);
-    const stops = page === 'Research' ? await app.evaluate(`(() => {
+    const fixed = fixture && Object.hasOwn(VIEWS, requestedPage) ? VIEWS[requestedPage] : null;
+    if (fixed?.view === 'screen') {
+      const need = await app.evaluate(`(() => { const grid = document.querySelector('.dash-grid-scroll'); return { height: grid.scrollHeight, viewport: grid.clientHeight }; })()`);
+      await app.send('Emulation.setDeviceMetricsOverride', { ...screenMetrics(Math.max(need.height, SCREEN.height)), mobile: false });
+      await app.evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    } else if (fixed?.view === 'tall') {
+      let height = meta.viewport.height, fitted = false;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const before = await app.evaluate(`(() => { const grid = document.querySelector('.dash-grid-scroll'); return { height: grid.scrollHeight, viewport: grid.clientHeight }; })()`);
+        height = tallViewportHeight(before.height, height, SHELL_HEADER_HEIGHT);
+        await app.send('Emulation.setDeviceMetricsOverride', { width: meta.viewport.width, height,
+          deviceScaleFactor: meta.viewport.dpr, mobile: false });
+        await app.evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+        const after = await app.evaluate(`(() => { const grid = document.querySelector('.dash-grid-scroll'); return { height: grid.scrollHeight, viewport: grid.clientHeight }; })()`);
+        if (after.viewport >= after.height) { fitted = true; break; }
+        height = tallViewportHeight(after.height, height, SHELL_HEADER_HEIGHT);
+      }
+      if (!fitted) throw new Error('the tall viewport did not fit the dashboard grid');
+      const tallInventory = await app.evaluate(DASHBOARD_INVENTORY);
+      const tallExpected = fixture.pages[page]?.widgets ?? [];
+      if (tallExpected.some(expected => !tallInventory.some(widget => widget.id === expected.id)))
+        throw new Error('the tall-view inventory does not cover every fixture widget');
+    } else if (fixed?.view === 'legible') {
+      await app.send('Emulation.setDeviceMetricsOverride', { width: meta.viewport.width, height: meta.viewport.height,
+        deviceScaleFactor: meta.viewport.dpr, mobile: false });
+      await app.evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    } else if (fixture) {
+      await app.send('Emulation.setDeviceMetricsOverride', { width: meta.viewport.width, height: meta.viewport.height,
+        deviceScaleFactor: meta.viewport.dpr, mobile: false });
+      await app.evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    }
+    const stops = fixed?.view === 'screen' || fixed?.view === 'tall' ? [0] : await app.evaluate(`(() => {
       const grid = document.querySelector('.dash-grid-scroll');
       const max = Math.max(0, grid.scrollHeight - grid.clientHeight);
       const offsets = [0];
       for (let y = grid.clientHeight; y < max; y += grid.clientHeight) offsets.push(y);
       if (max) offsets.push(max);
       return offsets;
-    })()`) : [0];
+    })()`);
     for (const scroll of stops) {
       await app.evaluate(`new Promise(done => { document.querySelector('.dash-grid-scroll').scrollTop = ${scroll};
         requestAnimationFrame(() => requestAnimationFrame(() => done(true))); })`);
@@ -520,57 +690,44 @@ await phase('playback', async () => {
         await setSpeed(speed);
         const seekStart = s.epoch + await app.evaluate('performance.now()');
         await seekTo(0.3);
-        const widgets = await app.evaluate(RESEARCH_INVENTORY);
         await throttle(rate);
-        const research = page === 'Research' && speed === 1440;
-        const pressureBefore = research && await app.evaluate('window.__perf.pressureMerges()');
-        if (research) await app.evaluate('window.__perf.beginAudit()');
-        const trace = research && await startTrace(app, ['disabled-by-default-display.framedisplayed', 'blink.user_timing']);
-        const clockMark = trace && await app.evaluate("performance.timeOrigin + performance.mark('research-clock').startTime");
+        const dated = speed === 1440;
+        const pressureBefore = dated && await app.evaluate('window.__perf.pressureMerges()');
+        if (dated) await app.evaluate('window.__perf.beginAudit()');
+        const trace = dated && await startTrace(app, ['disabled-by-default-display.framedisplayed', 'blink.user_timing']);
+        const clockMark = trace && await app.evaluate("performance.timeOrigin + performance.mark('dated-playback-clock').startTime");
         await app.evaluate('window.__perf.start()');
-        if (page === 'Research') await app.evaluate(`(() => {
-          const reports = [], observed = new Set();
-          const observer = new IntersectionObserver(entries => {
-            for (const e of entries) {
-              const id = e.target.closest('article.dash-widget')?.dataset.widget;
-              if (id) reports.push({ id, at: performance.timeOrigin + e.time,
-                surface: e.target.matches('article') ? null : e.target.matches('.project-details') ? 'special-project-details' : 'special-projects',
-                top: e.boundingClientRect.top, bottom: e.boundingClientRect.bottom, scrollTop: document.querySelector('.dash-grid-scroll').scrollTop,
-                visible: e.isIntersecting && e.intersectionRect.width > 0 && e.intersectionRect.height > 0 });
-            }
-          });
-          const scan = () => {
-            for (const node of document.querySelectorAll('article.dash-widget,article.kind-special-projects .special-project-list,article.kind-special-projects .project-details')) {
-              if (!observed.has(node)) { observed.add(node); observer.observe(node); }
-            }
-          };
-          const layout = new MutationObserver(scan);
-          for (const node of document.querySelectorAll('article.kind-special-projects .special-projects')) layout.observe(node, { childList: true });
-          scan();
-          __e2e.endResearchWindow = () => { layout.disconnect(); observer.disconnect(); return reports; };
-        })()`);
-        else await s.watch();
+        await s.watch();
         const from = s.epoch + await app.evaluate('performance.now()');
+        if (dated) { await playbackVisibility(); await s.frames(2); }
         await settledForReplies();
         await replies?.mark('play', { page, speed });
         await s.click('button[aria-label="Play recording"]');
-        if (research) {
+        await s.frames(2);
+        const widgets = await app.evaluate(DASHBOARD_INVENTORY);
+        const expectedWidgets = fixture?.pages[page]?.widgets
+          ?.filter(expected => !widgets.some(widget => widget.id === expected.id) || widgets.some(widget => widget.id === expected.id && widget.visible))
+          .map(({ id }) => ({ id }));
+        if (dated) {
           const line = await s.timeline();
           const endHour = line.value + Math.ceil((PLAY_SECONDS + 0.4) * speed);
           if (endHour > line.max || !await s.until(`Number(document.querySelector('input.header-timeline').value) >= ${endHour}`, 2 * PLAY_SECONDS * 1000 + 5000))
-            throw new Error('Research playback did not cover the requested game hours');
+            throw new Error('Playback did not cover the requested game hours');
         } else await sleep(PLAY_SECONDS * 1000);
         await s.click('button[aria-label="Pause playback"]');
         await replies?.mark('pause', { page, speed });
         const to = s.epoch + await app.evaluate('performance.now()');
+        const playbackReasons = await s.unwatch();
+        const visibility = dated ? await app.evaluate('__e2e.endPlaybackVisibility()') : undefined;
         let presented, audit, pressureMerges, inputs, idleCost;
         if (trace) {
-          inputs = await researchInputs();
+          inputs = await playbackInputs();
           const events = await trace();
-          const origin = clockMark - events.find(e => e.name === 'research-clock').ts / 1000;
+          const origin = clockMark - events.find(e => e.name === 'dated-playback-clock').ts / 1000;
           presented = [...new Set(events.filter(e => e.name === 'Display::FrameDisplayed').map(e => origin + e.ts / 1000))].sort((a, b) => a - b);
-          inputs.presented = presented.filter(at => at >= inputs.actions[0].at && at <= inputs.to);
-          await writeFile(path.join(out, `research-compositor-${scroll}.json.gz`), await promisify(gzip)(JSON.stringify(events)));
+          const firstInput = inputs.actions[0]?.at ?? from;
+          inputs.presented = presented.filter(at => at >= firstInput && at <= inputs.to);
+          await writeFile(path.join(out, `dated-playback-compositor-${page.replace(/[^\w.-]+/g, '_')}-${scroll}.json.gz`), await promisify(gzip)(JSON.stringify(events)));
           pressureMerges = await app.evaluate('window.__perf.pressureMerges()') - pressureBefore;
           await setSpeed(1);
           await s.click('button[aria-label="Play recording"]');
@@ -578,12 +735,18 @@ await phase('playback', async () => {
           await s.frames(120);
           idleCost = { from: start, to: await app.evaluate('performance.timeOrigin + performance.now()') };
           await s.click('button[aria-label="Pause playback"]');
-          audit = await app.evaluate('window.__perf.auditPictures()', 240_000);
+          audit = [];
+          let auditDone = false;
+          while (!auditDone) {
+            const batch = await app.evaluate('window.__perf.auditPicturesBatch(64)', 120_000);
+            if (!batch || !Array.isArray(batch.results)) throw new Error('picture audit returned no batch');
+            audit.push(...batch.results); auditDone = batch.done;
+          }
         }
         const summary = await app.evaluate('window.__perf.stop()', 120_000);
-        const visibility = page === 'Research' ? await app.evaluate('__e2e.endResearchWindow()') : undefined;
+        const observedVisibility = visibility ?? inputs?.visibility;
         await throttle(1);
-        await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: true, reasons: page === 'Research' ? [] : await s.unwatch(), from, to, seekStart, speed, page, scroll, visibility, seconds: PLAY_SECONDS, widgets, lastHour: (await s.timeline()).max,
+        await s.record({ area: 'playback', item: `${page}/${speed}`, label: null, pass: true, reasons: dated ? [] : playbackReasons, from, to, seekStart, speed, page, scroll, visibility: observedVisibility, seconds: PLAY_SECONDS, widgets, expectedWidgets, lastHour: (await s.timeline()).max,
           presented, pressureMerges, audit, inputs, idleCost, frames: summary.ui_frames, complete: summary.complete, losses: summary.losses, maps: summary.playback?.maps ?? null, screenshot: false });
       }
     }

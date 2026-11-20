@@ -48,6 +48,8 @@ HERE = Path(__file__).resolve().parent
 # Outside the repository; the nightly runner passes its own.
 DEFAULT_STATE = Path(os.environ.get("BATTLE_PLAN_CAPTURES", os.environ.get("HOI4_CAPTURES", ROOT / "captures"))) / "ci" / "e2e"
 WINDOW = (1920, 1080)
+# AllWidgets is fitted to a 4K client area so its minimum-size grid can be shown at once.
+SCREEN_VIEWS, TALL_VIEW, SCREEN = ("AllWidgets", "AllWidgetsLegible"), "AllWidgetsTall", (3840, 2160)
 BOAT_FAILED = 75
 CLOSE_SECONDS = 60
 STAGES = ("copy", "sweep", "report")
@@ -171,6 +173,7 @@ u.GetWindowThreadProcessId.argtypes = [w.HWND, c.POINTER(w.DWORD)]
 u.GetWindowTextW.argtypes = [w.HWND, w.LPWSTR, c.c_int]
 u.IsWindowVisible.argtypes = [w.HWND]
 u.GetWindowRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
+u.GetClientRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
 u.SetWindowPos.argtypes = [w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT]
 u.ShowWindow.argtypes = [w.HWND, c.c_int]
 u.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
@@ -190,7 +193,9 @@ class App:
         self.desktop = checked(u.CreateDesktopW(self.desktop_name, None, None, 0, 0x1FF, None))
         self.job = checked(k.CreateJobObjectW(None, None))
         limits = Extended()
-        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        # KILL_ON_JOB_CLOSE | PRIORITY_CLASS: other agents share this machine; above normal keeps their load off the app.
+        limits.basic.flags = 0x2000 | 0x20
+        limits.basic.priority = 0x8000  # ABOVE_NORMAL_PRIORITY_CLASS
         checked(k.SetInformationJobObject(self.job, 9, c.byref(limits), c.sizeof(limits)))
         self.log = open(log, "wb")
         null = open(os.devnull, "rb")
@@ -259,6 +264,19 @@ class App:
         checked(u.GetWindowRect(hwnd, c.byref(rect)))
         if (rect.right - rect.left, rect.bottom - rect.top) != (width, height):
             raise RuntimeError(f"the window is {rect.right - rect.left}x{rect.bottom - rect.top}, not {width}x{height}")
+
+    def client(self, width, height):
+        """Sizes the window so its client area is `width` x `height` device pixels."""
+        hwnd = self.main_window()
+        u.ShowWindow(hwnd, 9)
+        outer, inner = w.RECT(), w.RECT()
+        checked(u.GetWindowRect(hwnd, c.byref(outer)))
+        checked(u.GetClientRect(hwnd, c.byref(inner)))
+        frame = (outer.right - outer.left - inner.right, outer.bottom - outer.top - inner.bottom)
+        checked(u.SetWindowPos(hwnd, None, 0, 0, width + frame[0], height + frame[1], 0x14))
+        checked(u.GetClientRect(hwnd, c.byref(inner)))
+        if (inner.right, inner.bottom) != (width, height):
+            raise RuntimeError(f"the window's client area is {inner.right}x{inner.bottom}, not {width}x{height}")
 
     def exit_code(self):
         code = w.DWORD()
@@ -490,7 +508,10 @@ def launch(args, work, label, extra=None):
     app_args = ["--game-dir", args.game_dir, "--user-dir", str(args.user_folder)]
     app = App(Path(args.app) / "replay-desktop.exe", app_args, environment, args.out / f"app-{label}.log", port)
     try:
-        app.size(*WINDOW)
+        if args.window_client:
+            app.client(*args.window_client)
+        else:
+            app.size(*WINDOW)
     except BaseException:
         app.close()
         raise
@@ -557,6 +578,7 @@ def run_locked(args, started, state):
     phases = {}
     record = {"commit": git_head(), "started": datetime.datetime.now().isoformat(timespec="seconds"), "phases": phases,
               "refreshHz": refresh_hz(), "tier": args.tier, "requested": [],
+              "windowClient": list(args.window_client) if args.window_client else None,
               "machine": {"logicalCpus": os.cpu_count(), "start": None, "end": None}}
     if args.ui:
         record["shell"] = {**shell_build(args.app), "ui": ui_bundle(args.ui)}
@@ -719,8 +741,9 @@ def parse(argv):
     run_command.add_argument("--stages", default=",".join(STAGES))
     run_command.add_argument("--phases", help="sweep phases to run, all by default")
     run_command.add_argument("--cases", help="control case ids to run, all by default; in the map phases, the map interactions to run")
-    run_command.add_argument("--pages", help="pages the control cases visit, all by default (a long controls phase in parts)")
+    run_command.add_argument("--pages", help="pages the playback and control phases visit, all by default")
     run_command.add_argument("--pages-at", type=float, help="share of the timeline (0 to 1) the pages-at phase visits every page at")
+    run_command.add_argument("--window-client", help="window client area in device pixels, WxH")
     args = parser.parse_args(argv)
     if args.command == "run":
         if bool(args.shell) != bool(args.ui):
@@ -749,6 +772,17 @@ def parse(argv):
             parser.error("--pages-at takes a share of the timeline from 0 to 1")
         if args.phases and "pages-at" in args.phases.split(",") and args.pages_at is None:
             parser.error("--phases pages-at needs --pages-at <fraction>")
+        pages = args.pages.split(",") if args.pages else []
+        if any(view in pages for view in SCREEN_VIEWS) and TALL_VIEW in pages:
+            parser.error(f"--pages {next(view for view in SCREEN_VIEWS if view in pages)} and {TALL_VIEW} need different windows")
+        if any(view in pages for view in SCREEN_VIEWS) and not args.window_client:
+            args.window_client = "x".join(map(str, SCREEN))
+        if args.window_client:
+            try:
+                args.window_client = tuple(int(part) for part in args.window_client.lower().split("x"))
+                assert len(args.window_client) == 2 and min(args.window_client) > 0
+            except (ValueError, AssertionError):
+                parser.error("--window-client takes WxH in device pixels, such as 3840x2160")
     return args
 
 

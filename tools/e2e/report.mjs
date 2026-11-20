@@ -1,7 +1,7 @@
-import { researchVerdict } from './research.mjs';
+import { datedPlaybackVerdict } from './datedPlayback.mjs';
 // The suite's report: a table per area with each item's timings and verdict, failures with their
 // screenshots, and the run's duration. Exits 0 when everything passed, 1 otherwise.
-// usage: node tools/e2e/report.mjs --run <run.json> --sweeps <dir> --perf <work dir> --out <dir> [--baseline <dir>] [--history <file>]
+// usage: node tools/e2e/report.mjs --run <run.json> --sweeps <dir> --perf <work dir> --out <dir> [--baseline <dir>] [--history <file>] [--legacy]
 // Each app session's results are <dir>/sweep-<session>.json and its perf logs <work dir>/perf-<session>.jsonl(.map.<pid>.jsonl).
 // Only the phases the run asked for are judged. `--history` gets this run's failing steps added (`coverage.mjs`).
 import { createReadStream, existsSync } from 'node:fs';
@@ -17,6 +17,7 @@ import { perFrame } from './trace.mjs';
 
 const flag = name => { const at = process.argv.indexOf(name); return at < 0 ? null : process.argv[at + 1]; };
 const files = Object.fromEntries(['run', 'sweeps', 'perf', 'out', 'baseline', 'history'].map(name => [name, flag(`--${name}`)]));
+const legacy = process.argv.includes('--legacy') || process.argv.includes('--legacy-regrade');
 const readJSON = async file => (file && existsSync(file) ? JSON.parse(await readFile(file, 'utf8')) : null);
 
 const run = await readJSON(files.run) ?? {};
@@ -372,13 +373,13 @@ if (sweep) {
         verdict(pass), why(reasons)] };
     }));
 
-  const research = area('playback').filter(r => r.page === 'Research' && r.speed === 1440);
+  const datedRuns = area('playback').filter(r => r.speed === 1440);
   let auditedPlacements = [];
-  if (research.length || sweep.meta.sessions?.some(s => s.requestedPages?.includes('Research') && s.phases?.includes('playback'))) {
-    const result = researchVerdict(research, records ?? []);
+  if (datedRuns.length || sweep?.meta.sessions?.some(s => s.phases?.includes('playback'))) {
+    const result = datedPlaybackVerdict(datedRuns, records ?? [], { legacy });
     auditedPlacements = result.placements;
-    await writeFile(path.join(files.out, 'research-playback.json'), JSON.stringify(result, null, 2));
-    section('Research playback at 1,440 game hours per second', ['Result', 'Why'],
+    await writeFile(path.join(files.out, 'dated-playback.json'), JSON.stringify(result, null, 2));
+    section('Dashboard playback at 1,440 game hours per second', ['Result', 'Why'],
       [{ pass: result.pass, cells: [verdict(result.pass), why(result.reasons)] }]);
   }
 
@@ -433,7 +434,7 @@ if (sweep) {
   const freshKinds = records ? freshnessByKind(records, area('playback'), area('hours'), starts, auditedPlacements) : null;
   section(`Freshness by widget kind (exact while paused, worker eligibility within ${MAX_PLAYBACK_AGE_HOURS} h at p95, zero future frames)`, ['Kind', 'Placements', 'Displayed lag p95 (h)', 'Worker eligible lag p95 (h)', 'Result', 'Why'],
     freshKinds === null ? [{ pass: false, cells: ['–', '–', '–', '–', verdict(false), 'no perf log'] }]
-      : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, kind.eligible ?? '–', verdict(kind.pass), why(kind.reasons)] })));
+      : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass !== false, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, kind.eligible ?? '–', kind.pass === null ? 'not migrated' : verdict(kind.pass), why(kind.reasons)] })));
 
   under(...(run.tier === 'quick' ? ['visual'] : ['visual', 'catalogue']));
   // The visual check against the accepted baseline.

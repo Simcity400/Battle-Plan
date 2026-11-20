@@ -1,5 +1,5 @@
 import { useId, useLayoutEffect, useRef } from 'react';
-import { drawClock, drawPost, onDraw, surfaceId } from '../../dashboard/pulled.ts';
+import { clockGeneration, drawClock, drawPost, onDraw, surfaceId } from '../../dashboard/pulled.ts';
 import { perfLog } from '../../shell/perf.ts';
 import { measuredWidget } from '../../dashboard/widgetPerf.ts';
 import { hideTooltip, showTooltip, tooltipText } from '../tooltip.ts';
@@ -9,6 +9,7 @@ import type { PlaybackController } from '../../dashboard/playback';
 import type { ArsenalModel, RaceInspection, RaceTarget } from '../../draw/arsenal';
 import { arsenalNotice, arsenalRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { countryRaceItem } from './countryRace.ts';
+import { noticeMatchesAnchor } from '../../draw/anchorGeneration.ts';
 
 type ExactRead = (hour: number) => Promise<unknown>;
 export default function DatedArsenal(props: RaceChartProps & { exactRead?: ExactRead; clock: PlaybackController; model: Omit<ArsenalModel, 'width' | 'height' | 'dpr' | 'scroll'> & { exactRead?: undefined } }) {
@@ -51,7 +52,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
         if (!values.size) values.set('empty:notice', arsenalNotice(reply, hour));
         return { values, ranked: true };
       });
-      if (widget) canvas.dataset.placement = String(id);
+      if (widget) { canvas.dataset.placement = String(id); canvas.dataset.surface = 'nuclear-arsenal'; }
       drawPost(first ? { ...message, canvas: offscreen } : message, first ? [offscreen] : []);
       if (point) {
         const b = canvas.getBoundingClientRect();
@@ -62,7 +63,8 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     update.current = send;
     const stop = onDraw(m => {
       if (m.type === 'failed' || m.type === 'followFailure') { clear(); return; }
-      if ((m.type !== 'racePresent' && m.type !== 'raceInspection' && m.type !== 'raceHover') || m.id !== id || m.owner !== version || m.seek !== clock.getSnapshot().seekSequence) return;
+      if ((m.type !== 'racePresent' && m.type !== 'raceInspection' && m.type !== 'raceHover') || m.id !== id || m.owner !== version || m.seek !== clock.getSnapshot().seekSequence ||
+          (m.type === 'racePresent' && !noticeMatchesAnchor(m.generation, clockGeneration(clock)))) return;
       if (m.type === 'raceHover') {
         if (!point) return;
         const content = m.item && latest.current.tooltip?.(m.item.key, m.item);
@@ -72,7 +74,8 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
         return;
       }
       if (m.type === 'raceInspection') { if (m.request === ticket) { resolve?.(m.picture); resolve = undefined; } return; }
-      if (m.hour === null || m.hour > Math.floor(latest.current.model.fixed ?? clock.positionAt())) clear();
+      if (m.hour === null || (latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clock.positionAt())) ||
+        m.hour > Math.floor(latest.current.model.fixed ?? clock.positionAt())) clear();
       else visible(true);
     });
     const inspect = (target?: RaceTarget) => new Promise<RaceInspection | undefined>(done => {
@@ -115,12 +118,15 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       e.preventDefault(); void act({ index }, action, b.right, b.top + b.height / 2);
     };
     const anchor = clock.onDiscard(() => { if (latest.current.model.fixed === undefined) clear(); });
+    const stopClockAnchor = clock.onAnchor((previous, next) => {
+      if (latest.current.model.fixed === undefined && (previous.playing !== next.playing || previous.hoursPerSecond !== next.hoursPerSecond)) clear();
+    });
     const resize = new ResizeObserver(send); resize.observe(canvas);
     canvas.addEventListener('pointermove', pointer); canvas.addEventListener('click', pointer); canvas.addEventListener('contextmenu', pointer);
     canvas.addEventListener('focus', focus); canvas.addEventListener('blur', leave); canvas.addEventListener('pointerleave', leave); canvas.addEventListener('keydown', key);
     scroller.addEventListener('scroll', send, { passive: true });
     clear(); send();
-    return () => { perfLog?.releaseReader(id); clear(); stop(); stopClock(); anchor(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
+    return () => { perfLog?.releaseReader(id); clear(); stop(); stopClock(); anchor(); stopClockAnchor(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
       drawPost({ type: 'closeRace', id }); update.current = undefined; };
   }, [owner, props.clock, props.active, props.model.follow, props.model.fixed, props.resetKey, widget]);
   useLayoutEffect(() => { update.current?.(); }, [props.model]);

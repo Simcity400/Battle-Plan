@@ -388,6 +388,7 @@ test('Node imports check every discovered root, including browser and tools test
     'tools/test-ui.test.mjs': "export * from './missing';",
     'tools/e2e/verdicts.test.mjs': '',
     'tools/e2e/playbackVerdicts.test.mjs': '',
+    'tools/e2e/allWidgets.test.mjs': '',
     'tools/cargo-target.test.mjs': '',
   });
   await assert.rejects(checkNodeImports(await discoverTests(root), root), nodeImportError(

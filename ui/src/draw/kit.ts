@@ -58,6 +58,8 @@ export type Placement = 'pixel' | 'x' | 'y' | 'xy';
 /** The playback clock as the worker reads it: the position at `at` (epoch ms), moving at `speed` while playing. */
 export interface ClockAnchor {
   position: number; at: number; playing: boolean; speed: number; lastHour: number;
+  /** Host generation for dropping notices queued before the latest anchor. */
+  generation?: number;
   /** The clock's seeks so far: a new one means steps built ahead on the path it left are let go. */
   seek: number;
   forwardSeek?: boolean;
@@ -75,7 +77,7 @@ export interface DrawRegion {
 
 
 export type ToWorker =
-  | { type: 'audit'; start: boolean }
+  | { type: 'audit'; start: boolean; limit?: number }
   | { type: 'port'; port: MessagePort }
   | { type: 'add'; id: number; branch: string; product?: string }
   | { type: 'remove'; id: number }
@@ -93,10 +95,10 @@ export type ToWorker =
   | { type: 'options'; rate: number; measured: boolean; cap: number };
 
 export type FromWorker = { type: 'displayRate'; hz: number } | import('./notifications').Notice
-  | { type: 'audit'; records: import('./notifications').DrawSample[] }
+  | { type: 'audit'; records: import('./notifications').DrawSample[]; done: boolean }
   | { type: 'raceHover'; id: number; owner: number; seek: number; item?: import('../charts/race/race').RaceItem }
   | { type: 'raceInspection'; id: number; owner: number; request: number; seek: number; picture?: import('./arsenal').RaceInspection }
-  | { type: 'racePresent'; id: number; owner: number; seek: number; head: number; hour: number | null; at: number; rows?: readonly { row: string; key: string; value: string }[] }
+  | { type: 'racePresent'; id: number; owner: number; seek: number; generation: number; head: number; hour: number | null; at: number; rows?: readonly { row: string; key: string; value: string }[] }
   | { type: 'inspection'; request: number; reading?: import('./followed').PageReading }
   | { type: 'structure'; updates: import('./followed').PageReading[] }
   | { type: 'structureLead'; updates: import('./followed').PageReading[] }

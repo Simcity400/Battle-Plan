@@ -1,9 +1,10 @@
-import { drawClock, drawPost, onDraw, surfaceId } from '../dashboard/pulled.ts';
+import { clockGeneration, drawClock, drawPost, onDraw, surfaceId } from '../dashboard/pulled.ts';
 import type { PlaybackController } from '../dashboard/playback';
 import type { PanelModel } from './panels/view';
 import { perfLog } from '../shell/perf.ts';
 import { pictureHour } from './pictureDate.ts';
 import { cancelGeometry, invalidateGeometry } from '../charts/geometry.ts';
+import { noticeMatchesAnchor } from './anchorGeneration.ts';
 
 export function attachPanel(content: HTMLElement, clock: PlaybackController, model: (id: number, owner: number) => PanelModel | null,
   own: (visible: boolean, pending?: boolean) => void, hit: (key: string | null) => void) {
@@ -38,7 +39,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
       fixed = reading.fixed;
       drawPost({ type: 'surface', id, owner, width, height, dpr: devicePixelRatio, model: { ...reading, cells },
         ...(first && { canvas: offscreen }) }, first ? [offscreen] : []);
-      if (reading.widget) canvas.dataset.placement = String(id);
+      if (reading.widget) { canvas.dataset.placement = String(id); canvas.dataset.surface = reading.view; }
       first = false;
     };
   };
@@ -48,7 +49,8 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     if (message.type === 'hit' && message.id === id && message.owner === owner && !canvas.hidden) hit(message.key);
     if (message.type !== 'present') return;
     for (const p of message.surfaces) {
-      if (p.id !== id || p.owner !== owner || p.seek !== clock.getSnapshot().seekSequence) continue;
+      if (p.id !== id || p.owner !== owner || p.seek !== clock.getSnapshot().seekSequence || !noticeMatchesAnchor(p.generation, clockGeneration(clock))) continue;
+      if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clock.positionAt())) { release(); continue; }
       const hour = pictureHour(p.date, clock.positionAt(), fixed);
       visible(hour !== null);
       own(hour !== null, hour === null);
@@ -68,10 +70,13 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   const stopAnchor = clock.onDiscard(() => {
     if (fixed === undefined) { release(); refresh(); }
   });
+  const stopClockAnchor = clock.onAnchor((previous, next) => {
+    if (fixed === undefined && (previous.playing !== next.playing || previous.hoursPerSecond !== next.hoursPerSecond)) release();
+  });
   refresh();
   return { refresh, close() {
     perfLog?.releaseReader(id);
-    closed = true; cancelGeometry(measure); release(); off(); stopAnchor(); stopClock(); resize.disconnect();
+    closed = true; cancelGeometry(measure); release(); off(); stopAnchor(); stopClockAnchor(); stopClock(); resize.disconnect();
     content.removeEventListener('pointermove', point); content.removeEventListener('pointerleave', leave); content.removeEventListener('toggle', refresh, true);
     drawPost({ type: 'detach', id }); canvas.remove(); content.removeAttribute('data-ink-content');
   } };

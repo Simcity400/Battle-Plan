@@ -278,9 +278,11 @@ export const sessionStart = (starts, at) => Math.max(-Infinity, ...starts.filter
  * must report its dated values; out of view it reports none, as it shows none. */
 export function freshnessByKind(records, playbackResults, hourChecks = [], starts = [], dated = []) {
   const kinds = new Map();
+  const notMigratedWidgets = new Set(dated.filter(picture => picture.status === 'not migrated').map(picture => picture.widget));
   const entryOf = kind => { const entry = kinds.get(kind) ?? { kind, placements: new Set(), unreported: new Set(), wrong: [], stale: [], worst: null, eligible: null }; kinds.set(kind, entry); return entry; };
   const shown = groupBy(shownHours(records).sort((a, b) => a.at - b.at), record => record.widget);
   for (const check of hourChecks) {
+    if (notMigratedWidgets.has(check.widget)) continue;
     const entry = entryOf(check.kind);
     const where = `${check.page}: ${check.title}`;
     entry.placements.add(where);
@@ -297,6 +299,7 @@ export function freshnessByKind(records, playbackResults, hourChecks = [], start
       entry.placements.add(`${result.page}: ${widget.title}`);
       const picture = pictures.get(widget.id);
       if (picture) {
+        if (picture.status === 'not migrated') { entry.notMigrated = (entry.notMigrated ?? 0) + 1; continue; }
         if (picture.p95 !== null) entry.worst = Math.max(entry.worst ?? -Infinity, picture.p95);
         if (picture.eligibleP95 !== null) entry.eligible = Math.max(entry.eligible ?? -Infinity, picture.eligibleP95);
         if (!picture.pass) entry.stale.push(`${result.page}: failed the worker presentation gate (${picture.future} future frames, exact reads ${picture.exact ? 'passed' : 'failed'})`);
@@ -313,7 +316,9 @@ export function freshnessByKind(records, playbackResults, hourChecks = [], start
     const reasons = [];
     if (entry.unreported.size) reasons.push(`does not report the hour it shows (${[...entry.unreported].join(', ')})`);
     reasons.push(...entry.wrong, ...entry.stale);
-    return { kind: entry.kind, placements: entry.placements.size, worst: entry.worst, eligible: entry.eligible, pass: reasons.length === 0, reasons };
+    const migrated = entry.placements.size - (entry.notMigrated ?? 0);
+    return { kind: entry.kind, placements: entry.placements.size, worst: entry.worst, eligible: entry.eligible,
+      notMigrated: entry.notMigrated ?? 0, pass: migrated === 0 ? null : reasons.length === 0, reasons };
   });
 }
 

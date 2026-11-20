@@ -13,7 +13,7 @@ export interface FrameSample {
 export type DrawSample = PictureSample | FrameSample;
 
 export interface Present {
-  seek: number;
+  seek: number; generation: number;
   rows?: readonly { row: string; key: string; value?: string }[]; id: number; owner: number; date?: PictureInterval; follow?: number; readHour?: number; head?: number; cellHour?: number; at?: number;
 }
 export type Notice = { type: 'present'; surfaces: Present[] } | { type: 'hit'; id: number; owner: number; key: string | null };

@@ -14,7 +14,7 @@ import type { CameraMode, FlyAircraftStatus } from '../generated/dashboard';
 import { loadAircraftChoice, saveAircraftChoice } from './aircraftChoice';
 import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
-import { addGridItem, addGridItemBelow, bindTracks, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
+import { addGridItem, addGridItemBelow, bindTracks, clockBounds, createWidget, defaultTemplate, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { keptPageStates } from './pages';
 import type { PageEntry, PageId } from './pages';
@@ -608,7 +608,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return true;
   }, [tracks, clock]);
   const addWidgetBelow = useCallback((sourceId: string, widget: WidgetSpec) => {
-    if (templateRef.current.widgets.length >= MAX_WIDGETS) { setWarning(`A layout holds up to ${MAX_WIDGETS} widgets. Remove one to pin another.`); return; }
     update(previous => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItemBelow(previous.layouts, widget, sourceId) }));
   }, [update]);
   const runtime = useMemo(() => ({ onMapBranch, tracks, clock, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden,
@@ -680,7 +679,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         <Select label="Saved layout" value={library.activeId} disabled={editing || dirty || campaigns.some(campaign => campaign.loading)}
           onChange={selectLayout} options={library.layouts.map(entry => ({ value: entry.id, label: entry.template.name }))} /></div>
       <div className="dash-toolbar" role="toolbar" aria-label="Layout changes">
-        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker runtime={runtime} placed={template.widgets} disabled={!editing || template.widgets.length >= MAX_WIDGETS} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind, initial) => {
+        <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker runtime={runtime} placed={template.widgets} disabled={!editing} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind, initial) => {
           const widget = { ...createWidget(kind, template.tracks[0].id), ...initial };
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
         }} /></span>

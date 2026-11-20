@@ -8,7 +8,6 @@ import type { PageId } from './pages.ts';
 
 export const TRAILING_HOURS = 168;
 /** Most widgets one layout holds. */
-export const MAX_WIDGETS = 48;
 export const WIDGET_CONTENT_SCALES = [50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200] as const;
 export const GRID_COLUMNS = { lg: 12, md: 12, sm: 6, xs: 2 } as const;
 export type Breakpoint = keyof typeof GRID_COLUMNS;

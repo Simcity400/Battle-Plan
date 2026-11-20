@@ -1,4 +1,4 @@
-import { defaultTemplate, GRID_COLUMNS, MAX_WIDGETS, migrateWidget, stableJson, WIDGET_CONTENT_SCALES } from './model.ts';
+import { defaultTemplate, GRID_COLUMNS, migrateWidget, stableJson, WIDGET_CONTENT_SCALES } from './model.ts';
 import { parseStoredOptions } from './options.ts';
 import type { Breakpoint, CountryGroup, CountrySelection, DashboardTemplate, GridItem, GridLayouts, OffsetWindow, SourceRole, TrackSpec, WidgetSpec, WidgetTime } from './model';
 import { widgetDefinition } from './definitions.ts';
@@ -89,30 +89,32 @@ export function parseTemplateWithNotes(input: unknown): { template: DashboardTem
   if (!object(input) || input.version !== 1 || !text(input.name) || !['calendar', 'anchors'].includes(String(input.alignment))) return null;
   if (!Array.isArray(input.roles) || !input.roles.length
     || !Array.isArray(input.tracks) || !input.tracks.length
-    || !Array.isArray(input.widgets) || input.widgets.length > MAX_WIDGETS || !object(input.layouts)) return null;
-  const roles: SourceRole[] = [];
+    || !Array.isArray(input.widgets) || !object(input.layouts)) return null;
+  const roles: SourceRole[] = [], roleIds = new Set<string>();
   for (const role of input.roles) {
-    if (!object(role) || !id(role.id) || !text(role.label) || !(role.selectedTag === null || typeof role.selectedTag === 'string') || roles.some((item) => item.id === role.id)) return null;
+    if (!object(role) || !id(role.id) || !text(role.label) || !(role.selectedTag === null || typeof role.selectedTag === 'string') || roleIds.has(role.id)) return null;
     // An unstorable selected country clears to none, with a restoration warning.
     if (role.selectedTag !== null && !storableTag(role.selectedTag)) droppedTags++;
     roles.push({ id: role.id, label: role.label, selectedTag: storableTag(role.selectedTag) ? role.selectedTag : null });
+    roleIds.add(role.id);
   }
-  if (!roles.some((role) => role.id === 'primary')) return null;
-  const tracks: TrackSpec[] = [];
+  if (!roleIds.has('primary')) return null;
+  const tracks: TrackSpec[] = [], trackById = new Map<string, TrackSpec>();
   for (const track of input.tracks) {
-    if (!object(track) || !id(track.id) || !text(track.label) || !roles.some((role) => role.id === track.roleId)
-      || !integer(track.branchIndex, 0, 65535) || !(track.anchorOffset === null || integer(track.anchorOffset, 0)) || tracks.some((item) => item.id === track.id)) return null;
-    tracks.push({ id: track.id, roleId: track.roleId as string, label: track.label, branchIndex: track.branchIndex, anchorOffset: track.anchorOffset });
+    if (!object(track) || !id(track.id) || !text(track.label) || !roleIds.has(track.roleId as string)
+      || !integer(track.branchIndex, 0, 65535) || !(track.anchorOffset === null || integer(track.anchorOffset, 0)) || trackById.has(track.id as string)) return null;
+    const stored = { id: track.id, roleId: track.roleId as string, label: track.label, branchIndex: track.branchIndex, anchorOffset: track.anchorOffset };
+    tracks.push(stored); trackById.set(stored.id, stored);
   }
-  const trackIds = new Set(tracks.map((track) => track.id));
-  const widgets: WidgetSpec[] = [];
+  const trackIds = new Set(trackById.keys());
+  const widgets: WidgetSpec[] = [], widgetById = new Map<string, WidgetSpec>();
   for (const widget of input.widgets) {
     if (object(widget) && widget.campaign !== undefined && widget.campaign !== 'default' && widget.campaign !== 'tracks') return null;
     if (!object(widget) || !id(widget.id) || !widgetTitle(widget.title) || !id(widget.kind)
       || !(widget.configVersion === undefined || integer(widget.configVersion, 1, 65535))
       || !(widget.contentScale === undefined || WIDGET_CONTENT_SCALES.some(scale => scale === widget.contentScale))
       || !Array.isArray(widget.trackIds) || !widget.trackIds.length || !widget.trackIds.every((value) => typeof value === 'string' && trackIds.has(value))
-      || widgets.some((item) => item.id === widget.id)) return null;
+      || widgetById.has(widget.id as string)) return null;
     const countries = selection(widget.countries, count => { droppedTags += count; });
     const time = timeMode(widget.time, trackIds);
     // Options are kept even for a widget type that is not installed.
@@ -122,7 +124,8 @@ export function parseTemplateWithNotes(input: unknown): { template: DashboardTem
     const stored: WidgetSpec = { campaign, id: widget.id, kind: widget.kind, configVersion: widget.configVersion ?? 1, title: widget.title,
       trackIds: [...new Set(widget.trackIds as string[])], countries, time, contentScale: (widget.contentScale as number | undefined) ?? 100,
       ...(options && Object.keys(options).length ? { options } : {}) };
-    widgets.push(safeMigrate(stored, trackIds));
+    const migrated = safeMigrate(stored, trackIds);
+    widgets.push(migrated); widgetById.set(migrated.id, migrated);
   }
   const layouts: GridLayouts = {};
   for (const breakpoint of Object.keys(GRID_COLUMNS) as Breakpoint[]) {
@@ -130,14 +133,15 @@ export function parseTemplateWithNotes(input: unknown): { template: DashboardTem
     const inputLayout = input.layouts[breakpoint];
     if (inputLayout == null) continue;
     if (!Array.isArray(inputLayout) || inputLayout.length !== widgets.length) return null;
-    const layout: GridItem[] = [];
+    const layout: GridItem[] = [], layoutIds = new Set<string>();
     for (const item of inputLayout) {
-      if (!object(item) || !widgets.some((widget) => widget.id === item.i) || layout.some((existing) => existing.i === item.i)
+      if (!object(item) || !widgetById.has(item.i as string) || layoutIds.has(item.i as string)
         || !integer(item.x, 0, cols - 1) || !integer(item.y, 0, 10000) || !integer(item.w, 1, cols) || !integer(item.h, 1, 100)
         || item.x + item.w > cols) return null;
-      const definition = widgetDefinition(widgets.find((widget) => widget.id === item.i)!.kind);
+      const definition = widgetDefinition(widgetById.get(item.i as string)!.kind);
       layout.push({ i: item.i as string, x: item.x, y: item.y, w: item.w, h: item.h,
         minW: Math.min(cols, definition?.minSize.w ?? 1), minH: definition?.minSize.h ?? 4 });
+      layoutIds.add(item.i as string);
     }
     layouts[breakpoint] = layout;
   }
@@ -153,16 +157,18 @@ export function parseLayoutLibraryWithNotes(input: unknown): { library: LayoutLi
   let droppedTags = 0;
   if (!object(input) || input.version !== 1 || !id(input.activeId) || !Array.isArray(input.layouts)
     || !input.layouts.length || input.layouts.length > MAX_LAYOUTS) return null;
-  const layouts: LayoutLibrary['layouts'] = [];
+  const layouts: LayoutLibrary['layouts'] = [], layoutIds = new Set<string>(), layoutNames = new Set<string>();
   for (const entry of input.layouts) {
-    if (!object(entry) || !id(entry.id) || layouts.some((item) => item.id === entry.id)) return null;
+    if (!object(entry) || !id(entry.id) || layoutIds.has(entry.id)) return null;
     const parsed = parseTemplateWithNotes(entry.template);
     if (!parsed || !parsed.template.name.trim()) return null;
     const { template } = parsed;
     droppedTags += parsed.droppedTags;
     template.name = template.name.trim();
-    if (layouts.some((item) => item.template.name.toLowerCase() === template.name.toLowerCase())) return null;
+    const name = template.name.toLowerCase();
+    if (layoutNames.has(name)) return null;
     layouts.push({ id: entry.id, template });
+    layoutIds.add(entry.id); layoutNames.add(name);
   }
   return layouts.some((entry) => entry.id === input.activeId) ? { library: { version: 1, activeId: input.activeId, layouts }, droppedTags } : null;
 }

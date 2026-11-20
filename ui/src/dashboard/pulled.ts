@@ -46,6 +46,16 @@ export function capturePictures(start: boolean) {
   });
 }
 
+export function capturePicturesBatch(limit: number) {
+  return new Promise<{ records: import('../draw/notifications').DrawSample[]; done: boolean }>((resolve, reject) => {
+    const off = onDraw(message => {
+      if (message.type === 'audit') { off(); resolve({ records: message.records, done: message.done }); }
+      else if (message.type === 'failed') { off(); reject(new Error(message.reason)); }
+    });
+    drawPost({ type: 'audit', start: false, limit });
+  });
+}
+
 let nextInspection = 1;
 export function inspectFollow(id: number) {
   const request = nextInspection++;
@@ -70,19 +80,25 @@ export function openFollow(client: DashboardClient): Promise<void> {
   return opening;
 }
 
-const clocks = new WeakMap<PlaybackController, { users: number; release: () => void }>();
+const clocks = new WeakMap<PlaybackController, { users: number; generation: number; release: () => void }>();
 export function drawClock(widgetClock: PlaybackController) {
   const clock = pageClock(widgetClock);
   let binding = clocks.get(clock);
   if (!binding) {
+    binding = { users: 0, generation: 0, release: () => {} };
     const anchor = () => {
       const s = clock.getSnapshot();
       drawPost({ type: 'clock', anchor: { at: performance.timeOrigin + (s.composedAt ?? performance.now()), position: s.position,
-        playing: s.playing, speed: s.hoursPerSecond, lastHour: s.bounds?.lastHour ?? s.hour, seek: s.seekSequence, forwardSeek: s.forwardSeek } });
+        playing: s.playing, speed: s.hoursPerSecond, lastHour: s.bounds?.lastHour ?? s.hour, seek: s.seekSequence, generation: binding!.generation, forwardSeek: s.forwardSeek } });
     };
+    const stopAnchor = clock.onAnchor(() => { binding!.generation++; });
     anchor();
-    clocks.set(clock, binding = { users: 0, release: clock.subscribe(anchor) });
+    const release = clock.subscribe(anchor);
+    binding.release = () => { release(); stopAnchor(); };
+    clocks.set(clock, binding);
   }
   binding.users++;
   return () => { if (--binding.users === 0) { binding.release(); clocks.delete(clock); } };
 }
+
+export const clockGeneration = (widgetClock: PlaybackController) => clocks.get(pageClock(widgetClock))?.generation ?? 0;

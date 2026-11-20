@@ -127,6 +127,17 @@ test('the page and drawing worker advance from the same instant even if starting
   assert.equal(clock.positionAt(now), anchor.position + (now - anchor.composedAt!) / 1000 * anchor.hoursPerSecond);
 });
 
+test('anchor listeners run before a new anchor can paint', () => {
+  const clock = new PlaybackController();
+  clock.setBounds({ firstHour: 0, lastHour: 100 });
+  const events: string[] = [];
+  clock.onAnchor(() => events.push('anchor'));
+  clock.subscribeFrame(() => events.push('frame'));
+  clock.setPlaying(true);
+  assert.deepEqual(events, ['anchor', 'frame']);
+  clock.stop();
+});
+
 
 test('seek sequence survives coalesced playback updates but not pauses, speed changes or the branch end', t => {
   let now = 1000;
