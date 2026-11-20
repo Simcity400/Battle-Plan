@@ -180,11 +180,11 @@ pub(crate) struct Mirror {
 }
 
 impl Mirror {
-    /// A reader's rebuild: every live row of the lane with its selected cells, the strings the
-    /// lane knows and its status.
+    /// A reader's rebuild: every live row of the lane with the cells it reads, as its change sets
+    /// name them, the strings the lane knows and its status.
     pub(crate) fn rebuilt(lane: &Lane) -> Self {
         let cells = lane.cells();
-        let rows = cells.rows().map(|slot| (slot, (cells.key(slot).expect("keyed"), lane.columns().iter().map(|&column| owned(cells.value(column, slot))).collect()))).collect();
+        let rows = cells.rows().map(|slot| (slot, (cells.key(slot).expect("keyed"), lane.reads().iter().map(|&column| owned(cells.value(column, slot))).collect()))).collect();
         let texts = lane.texts().iter().map(|(id, text)| (id, text.to_vec())).collect();
         Self { rows, texts, status: Some(lane.status()) }
     }
@@ -222,7 +222,7 @@ impl Mirror {
     pub(crate) fn assert_holds(&self, lane: &Lane) {
         let cells = lane.cells();
         let held: BTreeMap<u32, (u128, Vec<Owned>)> =
-            cells.rows().map(|slot| (slot, (cells.key(slot).unwrap(), lane.columns().iter().map(|&column| owned(cells.value(column, slot))).collect()))).collect();
+            cells.rows().map(|slot| (slot, (cells.key(slot).unwrap(), lane.reads().iter().map(|&column| owned(cells.value(column, slot))).collect()))).collect();
         assert_eq!(self.rows, held, "hour {:?}", lane.head());
         for (_, cells) in self.rows.values() {
             for cell in cells {

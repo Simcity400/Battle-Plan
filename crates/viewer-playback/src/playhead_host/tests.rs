@@ -689,6 +689,48 @@ fn a_renumber_moves_only_the_rows_past_the_first_freed_slot() {
     assert_eq!(renumbered, 1);
 }
 
+/// A recording of format 141 lacks Divisions.theatre, added at format 142: a mirror of every
+/// Divisions column holds the rest as written and no theatre, which reads not recorded at the reset
+/// and after each step, never as a zero.
+#[test]
+fn a_mirror_of_an_earlier_format_reads_the_columns_added_since_not_recorded() {
+    use playhead::pages::{Span, WorldPages};
+    use replay::columnar_frames::{
+        Recording, fixtures,
+        synthetic::{Input, Sample},
+    };
+    use replay_data::rows::{DivisionRowAt141, compatibility::CAPTURE_ADDITIONS_FORMAT};
+    let table = TableId::Divisions;
+    let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, province: 11, ..Default::default() }, DivisionRowAt141 { id: (4_u64 << 32) | 1, province: 12, ..Default::default() }];
+    // The second division is born at hour 20, so a step inserts a row.
+    let (bytes, _) = fixtures::written_at(CAPTURE_ADDITIONS_FORMAT - 1, b"format 141", &[(1, 0, 1)], &[table], |synthetic, _, ordinal| {
+        let rows = &divisions[..if ordinal < 20 { 1 } else { 2 }];
+        synthetic.table(table, Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());
+    let every: Vec<usize> = (0..table.field_count()).collect();
+    let [province, theatre] = ["province", "theatre"].map(|name| every.iter().copied().find(|&column| table.field_name(column) == Some(name)).unwrap());
+    let mut lane = Lane::new(Arc::clone(&pages), 0, table.index(), &every, true).unwrap();
+    lane.seek(10).unwrap();
+    let mut mirror = Mirror::rebuild(&lane, &every);
+    assert_eq!((mirror.width(), mirror.holds(province), mirror.holds(theatre)), (table.field_count() - 1, true, false));
+    let read = |mirror: &Mirror| {
+        let mut rows: Vec<(u128, Read<u64>, Read<u64>)> = mirror.rows().map(|slot| (mirror.key(slot).unwrap(), mirror.cell(province, slot), mirror.cell(theatre, slot))).collect();
+        rows.sort_unstable_by_key(|row| row.0);
+        rows
+    };
+    let row = |division: &DivisionRowAt141| (u128::from(division.id), Read::Value(u64::from(division.province)), Read::Unrecorded);
+    assert_eq!(read(&mirror), [row(&divisions[0])], "the reset");
+    let mut changes = Changes::default();
+    lane.fetch_through(i32::MAX).unwrap();
+    for to in [19, 20, 40] {
+        assert_eq!(lane.step(to, &mut changes).unwrap(), to);
+        mirror.apply(&changes);
+        assert_eq!(mirror.refused(), 0, "no change set names theatre");
+    }
+    assert_eq!(read(&mirror), [row(&divisions[0]), row(&divisions[1])], "after the steps");
+}
+
 /// Hours between two pieces are a gap: every table reads as not recorded there, never as its
 /// last rows, and the next piece's reset makes them recorded again.
 #[test]

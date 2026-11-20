@@ -68,7 +68,7 @@ impl Projection {
         let change = step.step.table(table)?;
         if change.reset() || change.log().is_some() || change.renumber().is_some() || change.head() != Some(target)
             || lane.status().0 != Status::Complete || !lane.keyed()
-            || self.reader.columns().iter().any(|col| lane.columns().binary_search(col).is_err()) { return None; }
+            || self.reader.columns().iter().any(|col| lane.requested().binary_search(col).is_err()) { return None; }
         let mut edits = BTreeMap::new();
         for &key in change.deleted().keys()?.iter().chain(change.inserted().keys()?) {
             if read.keys.contains(key) { edits.insert(key, u64::MAX); }

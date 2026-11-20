@@ -45,14 +45,14 @@ impl Bits {
 /// first, at `after`'s head; none where the table cannot be carried over and must be reset. The
 /// strings `after` has named move into the change set: the crossing's text cells are its run's ids.
 pub fn crossed(before: &Lane, after: &mut Lane, out: &mut Changes) -> io::Result<Option<Crossed>> {
-    if before.table() != after.table() || before.columns() != after.columns() || before.keyed() != after.keyed() {
+    if before.table() != after.table() || before.requested() != after.requested() || before.reads() != after.reads() || before.keyed() != after.keyed() {
         return Ok(None);
     }
     if before.log().is_some() || after.log().is_some() {
         return Ok(None);
     }
     let (Some(head), Some(_)) = (after.head(), before.head()) else { return Ok(None) };
-    let columns: Vec<usize> = after.columns().to_vec();
+    let columns: Vec<usize> = after.reads().to_vec();
     out.begin(after.table(), &columns, after.keyed(), false);
     let mut held = Crossed::default();
     {

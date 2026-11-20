@@ -193,6 +193,9 @@ fn main() -> io::Result<()> {
         Some(path) => Some(read_selection(&pages, path, options.numeric)?),
         None => None,
     };
+    for wanted in options.join.iter().flatten().chain(&options.churn_new) {
+        available(&pages, wanted)?;
+    }
     let mut tables = Vec::new();
     let mut absent = Vec::new();
     for (table, id) in TableId::ALL.iter().enumerate() {
@@ -200,7 +203,8 @@ fn main() -> io::Result<()> {
         if options.tables.as_ref().is_some_and(|wanted| !wanted.contains(&name)) || selection.as_ref().is_some_and(|held| !held.iter().any(|declared| declared.table == table)) {
             continue;
         }
-        if pages.runs().iter().any(|run| !run.pages.iter().any(|page| page.tables[table].first.is_some() || page.tables[table].restore.is_some())) {
+        // A table the recording's format predates is in no page.
+        if pages.runs().iter().any(|run| !run.pages.iter().any(|page| page.tables.get(table).is_some_and(|entry| entry.first.is_some() || entry.restore.is_some()))) {
             absent.push(name);
             continue;
         }
@@ -246,8 +250,7 @@ fn read_selection(pages: &WorldPages, path: &str, numeric: bool) -> io::Result<V
     let mut declared = Vec::new();
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
         let (table_name, columns) = line.split_once(':').map_or((line, None), |(table, columns)| (table, Some(columns)));
-        let table = TableId::ALL.iter().position(|id| format!("{id:?}") == table_name).ok_or_else(|| invalid(format!("No table {table_name}")))?;
-        let kinds = pages.kinds(table).expect("a schema table");
+        let (table, kinds) = available(pages, table_name)?;
         let mut chosen: Vec<usize> = match columns {
             None => (0..kinds.len()).collect(),
             Some("numeric") => (0..kinds.len()).filter(|&column| !list(kinds[column])).collect(),
@@ -270,6 +273,12 @@ fn read_selection(pages: &WorldPages, path: &str, numeric: bool) -> io::Result<V
 
 fn game(run: &Run, hour: u32) -> Hour {
     run.first_hour + hour as Hour
+}
+
+/// The kinds of `table`'s columns its pages hold, which a restore decodes at.
+fn held_kinds(pages: &dyn Pages, table: usize) -> &[Kind] {
+    let kinds = pages.kinds(table).expect("a schema table");
+    &kinds[..pages.held(table).min(kinds.len())]
 }
 
 fn lane(pages: &Arc<dyn Pages>, table: usize, columns: &[usize]) -> io::Result<Lane> {
@@ -448,6 +457,9 @@ struct Mirror {
     live: Vec<bool>,
     keys: Vec<u128>,
     cells: Vec<Column>,
+    /// Per column, whether its lane reads it: a column the recording's format predates is in no
+    /// change set and stays unrecorded.
+    read: Vec<bool>,
     texts: HashMap<u32, Vec<u8>>,
     status: Option<(Status, Option<Hour>)>,
     head: Option<Hour>,
@@ -457,12 +469,13 @@ struct Mirror {
 
 impl Mirror {
     fn new(kinds: &[Kind], columns: &[usize]) -> Self {
-        Self { columns: columns.to_vec(), live: Vec::new(), keys: Vec::new(), cells: columns.iter().map(|&column| Column::new(kinds[column])).collect(), texts: HashMap::new(), status: None, head: None, refused: 0 }
+        Self { columns: columns.to_vec(), live: Vec::new(), keys: Vec::new(), cells: columns.iter().map(|&column| Column::new(kinds[column])).collect(), read: vec![true; columns.len()], texts: HashMap::new(), status: None, head: None, refused: 0 }
     }
 
     /// The reader's rebuild: its arrays of `columns` made from a sought lane's cells.
     fn rebuild(lane: &Lane, kinds: &[Kind], columns: &[usize]) -> Self {
         let mut mirror = Self::new(kinds, columns);
+        mirror.read = columns.iter().map(|column| lane.reads().contains(column)).collect();
         let cells = lane.cells();
         mirror.grow(cells.slots() as usize);
         let live: Vec<u32> = cells.rows().collect();
@@ -473,7 +486,8 @@ impl Mirror {
             }
         }
         for (column, &index) in mirror.cells.iter_mut().zip(columns) {
-            let held = cells.column(index).expect("a selected column");
+            // A column the recording's format predates holds no cell: its rows stay unrecorded.
+            let Some(held) = cells.column(index) else { continue };
             match column {
                 Column::Numbers { values, state, .. } => {
                     for &slot in &live {
@@ -535,9 +549,9 @@ impl Mirror {
             }
         }
         let written = changes.columns();
-        for (column, &index) in self.cells.iter_mut().zip(&self.columns) {
+        for ((column, &index), &read) in self.cells.iter_mut().zip(&self.columns).zip(&self.read) {
             let Ok(at) = written.binary_search_by_key(&index, |held| held.column()) else {
-                self.refused += 1;
+                self.refused += u64::from(read);
                 continue;
             };
             let written = &written[at];
@@ -709,7 +723,7 @@ fn check_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::R
         let block = (target / BLOCK) as usize;
         if target + 1 == block as u32 * BLOCK + u32::from(run.pages[block].hours) {
             block_ends += 1;
-            let (rebuilt, _) = reader::rebuild(pages.extents(0), &run.pages, kinds, table, block, run.first_hour)?;
+            let (rebuilt, _) = reader::rebuild(pages.extents(0), &run.pages, held_kinds(&**pages, table), table, block, run.first_hour)?;
             a += differ(full.cells(), &rebuilt, &all, &mut first);
             if full.status() != (rebuilt.status(), rebuilt.sampled_at()) {
                 a += 1;
@@ -786,7 +800,8 @@ fn check_passing_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) 
                 order += 1;
             }
             for row in 0..held.len() {
-                got.push((held.born()[row], held.last()[row], held.keys().expect("keyed")[row], held.columns().iter().map(|column| format!("{:?}", column.value(row))).collect()));
+                let cell = |column: usize| held.columns().iter().find(|written| written.column() == column).map_or(Value::Unrecorded, |written| written.value(row));
+                got.push((held.born()[row], held.last()[row], held.keys().expect("keyed")[row], all.iter().map(|&column| format!("{:?}", cell(column))).collect()));
             }
         })?;
         let head = passing.head().expect("sought");
@@ -983,7 +998,7 @@ fn time(pages: &Arc<dyn Pages>, tables: &[usize], options: &Options, selection: 
             out,
             "{}",
             json!({
-                "table": name(lane.table()), "columns": lane.columns().len(), "steps_ns": steps, "worst_over_3_p99": spike, "worst_ends_at_hour": worst_at,
+                "table": name(lane.table()), "columns": lane.requested().len(), "steps_ns": steps, "worst_over_3_p99": spike, "worst_ends_at_hour": worst_at,
                 "boundary_steps": timed.boundary.len(), "boundary_mean_ns": mean(&timed.boundary), "plain_mean_ns": mean(&timed.plain),
                 "boundary_tracks_opened": timed.boundary_tracks,
                 "reader_ns": timed.reader_ns, "lane_ns": step_ns.saturating_sub(timed.reader_ns),
@@ -1180,8 +1195,7 @@ fn compare_rebuilt(pages: &dyn Pages, mirrors: &HashMap<usize, Box<Mirror>>, run
         for _ in 0..threads {
             scope.spawn(|| {
                 while let Some(&table) = tables.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let kinds = pages.kinds(table).expect("a schema table");
-                    match reader::rebuild(pages.extents(run), &held.pages, kinds, table, block, held.first_hour) {
+                    match reader::rebuild(pages.extents(run), &held.pages, held_kinds(pages, table), table, block, held.first_hour) {
                         Ok((rebuilt, texts)) => {
                             let mut first = None;
                             let mirror = &mirrors[&table];
@@ -1245,6 +1259,13 @@ fn second_declared(selection: &[Declared], tables: &[usize], odd: bool, keyed: b
 /// The table named `wanted`.
 fn table_named(wanted: &str) -> io::Result<usize> {
     TableId::ALL.iter().position(|id| format!("{id:?}") == wanted).ok_or_else(|| invalid(format!("No table {wanted}")))
+}
+
+/// Table `wanted` and its kinds, refused by name when the recording withholds it.
+fn available<'p>(pages: &'p WorldPages, wanted: &str) -> io::Result<(usize, &'p [Kind])> {
+    let table = table_named(wanted)?;
+    let kinds = pages.kinds(table).ok_or_else(|| invalid(format!("{wanted} is withheld: {}", pages.withheld(table).unwrap_or("the recording holds no such table"))))?;
+    Ok((table, kinds))
 }
 
 /// Every column of `table`, keyed.

@@ -108,7 +108,7 @@ pub(crate) fn refusal(query: &Query, cells: &TableState) -> Option<String> {
 
 /// The lane is sought and holds every column `query` reads.
 pub(crate) fn holds(query: &Query, lane: &Lane) -> bool {
-    lane.head().is_some() && query.declared().iter().all(|column| lane.columns().contains(column))
+    lane.head().is_some() && query.declared().iter().all(|column| lane.requested().contains(column))
 }
 
 #[inline]

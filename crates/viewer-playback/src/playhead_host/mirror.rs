@@ -455,14 +455,15 @@ pub struct Mirror {
 }
 
 impl Mirror {
-    /// The cells of `columns` (ascending) of a sought lane, with its keys when it is keyed.
+    /// The cells of `columns` (ascending) of a sought lane, with its keys when it is keyed. A
+    /// column past the lane's own ([`Self::width`]) is held by none and reads not recorded.
     pub fn rebuild(lane: &Lane, columns: &[usize]) -> Self {
         let cells = lane.cells();
         let kinds: Vec<Kind> = cells.columns().iter().map(|column| column.kind()).collect();
         let mut position = vec![ABSENT; kinds.len()];
         let mut held = Vec::with_capacity(columns.len());
-        for (at, &index) in columns.iter().enumerate() {
-            position[index] = at as u16;
+        for &index in columns.iter().filter(|&&index| index < kinds.len()) {
+            position[index] = held.len() as u16;
             held.push(Column { index, cells: Cells::new(kinds[index]), missing: None, unrecorded: None, lists: 0 });
         }
         let slots = cells.slots() as usize;
@@ -485,7 +486,7 @@ impl Mirror {
                 column.set(slot as usize, source.value(slot));
             }
         }
-        let text = columns.iter().any(|&index| kinds[index] == Kind::Bytes);
+        let text = held.iter().any(|column| kinds[column.index] == Kind::Bytes);
         let texts: HashMap<u32, Box<[u8]>> = if text { lane.texts().iter().map(|(id, text)| (id, text.into())).collect() } else { HashMap::new() };
         let texts_bytes = texts.values().map(|text| text.len() + 40).sum();
         let reason = match lane.status().0 {

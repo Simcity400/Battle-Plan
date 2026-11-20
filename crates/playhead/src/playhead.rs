@@ -2697,7 +2697,7 @@ impl Stepper {
                     table: slot.table,
                     generation: self.generation,
                     run: piece.run,
-                    columns: lane.columns().to_vec(),
+                    columns: lane.requested().to_vec(),
                     keyed: lane.keyed(),
                     passing: lane.passing(),
                     hour: piece.first,

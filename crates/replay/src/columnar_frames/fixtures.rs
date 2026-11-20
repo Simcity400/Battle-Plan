@@ -382,14 +382,31 @@ pub fn written_at(
     streams: &[TableId],
     write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
 ) -> (Vec<u8>, Vec<Seen>) {
+    use replay_data::identity::{CaptureMode as Mode, Identity as Game, IdentityCodec, SampleBoundary, SessionStart, Verification};
     let columns = columns_at(format).unwrap();
     let schema = schema().unwrap();
     let identity = Identity { schema: envelope::schema_digest_prefix(&schema[..columns.len()], &columns).unwrap(), ..identity(campaign, 0) };
+    // Every run belongs to this one session.
+    let game = Game {
+        game_version: "synthetic".into(),
+        exe_hash: [1; 32],
+        exe_size: 1,
+        vanilla_hash: [2; 32],
+        dlc: Vec::new(),
+        mods: Vec::new(),
+        coverage_policy: 1,
+        language: "synthetic".into(),
+        recorder_version: "synthetic".into(),
+        collector_hash: [3; 32],
+        verification: Verification::Unchecked,
+    };
+    let mut session = Vec::new();
+    SessionStart { id: 1, process_id: 1, process_start_time: 1, qpc_frequency: 1, sample_boundary: SampleBoundary::EndOfHour, capture_mode: Mode::Full, identity: game }.encode(&mut session).unwrap();
     let capture = crate::columnar_file::Capture {
         campaign_id: campaign.to_vec(),
         content: Vec::new(),
         capture_mode: 0,
-        sessions: Vec::new(),
+        sessions: vec![session],
         run_sessions: Vec::new(),
         stop: None,
         format,

@@ -21,7 +21,7 @@ fn held(lane: &Lane) -> Vec<(u128, i64)> {
     let cells = lane.cells();
     let mut rows: Vec<_> = cells
         .rows()
-        .map(|slot| match cells.value(lane.columns()[0], slot) {
+        .map(|slot| match cells.value(lane.requested()[0], slot) {
             Value::Number(bits) => (cells.key(slot).unwrap(), bits as i64),
             other => panic!("slot {slot} holds {other:?}"),
         })
@@ -82,8 +82,9 @@ fn a_span_of_hours_reads_back_to_its_restores_and_plays_only_the_span() {
 
 /// A recording of format 141, written as that build wrote it, opens for the playhead whole and as
 /// a span: its tables play as written; a column appended at format 142 holds no cell, even in a
-/// table restored with its last complete read as that format framed it; and each table added at
-/// format 142 has no kinds, is withheld by name as not recorded, and gets no lane.
+/// table restored with its last complete read as that format framed it, and a lane declared with
+/// it resets and steps with no change set naming it; and each table added at format 142 has no
+/// kinds, is withheld by name as not recorded, and gets no lane.
 #[test]
 fn a_recording_of_an_earlier_format_plays_what_it_held_and_withholds_the_tables_added_since() {
     use replay::columnar_frames::synthetic::{Input, Sample};
@@ -128,5 +129,49 @@ fn a_recording_of_an_earlier_format_plays_what_it_held_and_withholds_the_tables_
         let mut rows: Vec<(u128, Value<'_>, Value<'_>)> = cells.rows().map(|slot| (cells.key(slot).unwrap(), cells.value(province, slot), cells.value(theatre, slot))).collect();
         rows.sort_unstable_by_key(|row| row.0);
         assert_eq!(rows, [(u128::from(divisions[0].id), Value::Number(11), Value::Unrecorded), (u128::from(divisions[1].id), Value::Number(12), Value::Unrecorded)], "{span:?}");
+        assert_eq!((lane.requested(), lane.reads()), (every.as_slice(), &every[..every.len() - 1]));
+        let named = |changes: &Changes| changes.columns().iter().map(|written| written.column()).collect::<Vec<_>>();
+        let mut changes = Changes::default();
+        lane.reset_into(&mut changes).unwrap();
+        assert_eq!(named(&changes), every[..every.len() - 1], "{span:?}: the reset");
+        lane.fetch_through(i32::MAX).unwrap();
+        for to in [BLOCK as i32 + 41, BLOCK as i32 + 79] {
+            assert_eq!(lane.step(to, &mut changes).unwrap(), to);
+            assert!(!named(&changes).contains(&theatre), "{span:?}: the step to {to}");
+            let cells = lane.cells();
+            assert!(cells.rows().all(|slot| cells.value(theatre, slot) == Value::Unrecorded), "{span:?}: the step to {to}");
+        }
     }
+}
+
+/// A format-141 recording of two pieces crosses from one to the other as a step: the crossing of a
+/// Divisions lane declared with every column carries the rows gone, new and changed, and names no
+/// column the format predates, which stays unrecorded.
+#[test]
+fn a_recording_of_an_earlier_format_crosses_its_piece_boundary_without_the_columns_added_since() {
+    use replay::columnar_frames::synthetic::{Input, Sample};
+    use replay_data::rows::{DivisionRowAt141, compatibility::CAPTURE_ADDITIONS_FORMAT};
+    let table = TableId::Divisions;
+    let runs = [(1, 0, 1), (2, 10_000, 1)];
+    let division = |id: u64, province: u32| DivisionRowAt141 { id: (id << 32) | 1, province, ..Default::default() };
+    let pieces = [[division(3, 11), division(4, 12)], [division(3, 13), division(5, 14)]];
+    let (bytes, _) = fixtures::written_at(CAPTURE_ADDITIONS_FORMAT - 1, b"format 141", &runs, &[table], |synthetic, run, _| {
+        synthetic.table(table, Input::Snapshot { rows: &pieces[run as usize], partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
+    });
+    let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());
+    let every: Vec<usize> = (0..table.field_count()).collect();
+    let [province, theatre] = ["province", "theatre"].map(|name| every.iter().copied().find(|&column| table.field_name(column) == Some(name)).unwrap());
+    let mut before = Lane::new(Arc::clone(&pages), 0, table.index(), &every, true).unwrap();
+    before.seek(BLOCK as i32 - 1).unwrap();
+    let mut after = Lane::new(Arc::clone(&pages), 1, table.index(), &every, true).unwrap();
+    after.seek(10_000).unwrap();
+    let mut changes = Changes::default();
+    let crossed = crate::boundary::crossed(&before, &mut after, &mut changes).unwrap().expect("a table holding state crosses");
+    assert_eq!((crossed.stood, crossed.gone, crossed.born, crossed.changed), (1, 1, 1, 1));
+    let named: Vec<usize> = changes.columns().iter().map(|written| written.column()).collect();
+    assert_eq!(named, every[..every.len() - 1]);
+    let written = changes.columns().iter().find(|written| written.column() == province).unwrap();
+    assert_eq!(written.len(), 2, "the changed row and the new one");
+    let cells = after.cells();
+    assert!(cells.rows().all(|slot| cells.value(theatre, slot) == Value::Unrecorded));
 }

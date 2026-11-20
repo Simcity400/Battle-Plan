@@ -355,6 +355,10 @@ pub struct Lane {
     run: usize,
     table: usize,
     kinds: Vec<Kind>,
+    /// The columns it was declared with.
+    declared: Arc<[usize]>,
+    /// The declared columns its pages hold, which it reads; the rest hold no cell and read not
+    /// recorded.
     columns: Arc<[usize]>,
     keyed: bool,
     cells: TableState,
@@ -411,13 +415,16 @@ impl Lane {
         let log = reader::class_of(&held_run.pages, table)?.then(Box::default);
         // Its cells hold the columns the pages hold, decoded as written; any later reads not recorded.
         let kinds = kinds[..pages.held(table).min(kinds.len())].to_vec();
+        let read: Arc<[usize]> = columns.iter().copied().filter(|&column| column < kinds.len()).collect();
         Ok(Self {
             pages,
             run,
             table,
             cells: TableState::new(&kinds),
             kinds,
-            columns: columns.into(),
+            declared: columns.into(),
+            written: vec![Vec::new(); read.len()],
+            columns: read,
             keyed,
             under: None,
             ahead: VecDeque::new(),
@@ -431,7 +438,6 @@ impl Lane {
             status_moving: false,
             timed: false,
             spent: Spent::default(),
-            written: vec![Vec::new(); columns.len()],
             lives: Lives::default(),
             deletes: Vec::new(),
             inserts: Vec::new(),
@@ -453,7 +459,13 @@ impl Lane {
         self.run
     }
 
-    pub fn columns(&self) -> &[usize] {
+    /// The columns it was declared with; those its pages do not hold read not recorded.
+    pub fn requested(&self) -> &[usize] {
+        &self.declared
+    }
+
+    /// The requested columns its pages hold: the only columns its cells and change sets hold.
+    pub fn reads(&self) -> &[usize] {
         &self.columns
     }
 
@@ -477,7 +489,7 @@ impl Lane {
 
     /// What it was declared to read: its columns, whether keyed, and whether passing.
     pub fn declared(&self) -> (&[usize], bool, bool) {
-        (self.columns(), self.keyed(), self.passing())
+        (self.requested(), self.keyed(), self.passing())
     }
 
     /// The selected cells, live bits and keys at the head. Its own status is [`Self::status`].
