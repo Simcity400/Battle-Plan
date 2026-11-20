@@ -524,10 +524,10 @@ pub const DERIVED_TEMPERATURE_FORMAT: u16 = 102;
 pub const EVENT_LOSS_FORMAT: u16 = 102;
 /// Provisional main+1: DivisionStatus holds each name member's own template
 /// reference (30, `name_template`), a [`Witnessed`](crate::rows::Witnessed)
-/// packet only a `name_template_witness` collector fills, so the oracle can
-/// compare a division whose member names a deleted template against what the
-/// game holds rather than the template a save rebinds on load. Older
-/// recordings have no field.
+/// packet, so the oracle can compare a division whose member names a deleted
+/// template against what the game holds rather than the template a save rebinds
+/// on load. Older recordings have no field; recordings of this format made
+/// before every recording carried it leave it empty.
 pub const NAME_TEMPLATE_FORMAT: u16 = 102;
 /// Provisional main+1: DivisionTemplateIcons holds each composition grid's
 /// (definition, cell count) entries (15, `grids`,

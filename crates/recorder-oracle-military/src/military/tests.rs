@@ -438,7 +438,7 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
 }
 
 #[test]
-fn division_status_naming_takes_the_witnessed_member_template() {
+fn division_status_naming_takes_the_recorded_member_template() {
     use replay_data::{
         rows::DivisionStatusRow, rows::NameOperands, rows::Recorded, rows::Witnessed,
     };
@@ -489,7 +489,7 @@ fn division_status_naming_takes_the_witnessed_member_template() {
             },
         },
     );
-    let naming_differences = |frame: &DecodedFrame, template: Option<u64>| {
+    let naming_report = |frame: &DecodedFrame, template: Option<u64>| {
         let mut frame = frame.clone();
         set(
             &mut frame,
@@ -519,21 +519,29 @@ fn division_status_naming_takes_the_witnessed_member_template() {
             &mut report,
         )
         .unwrap();
-        report
+        let differences = report
             .differences
             .into_iter()
             .filter(|difference| difference.contains("override") || difference.contains("name "))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        let not_in_recording = report
+            .limitations
+            .keys()
+            .any(|reason| reason.starts_with("this recording does not record the name member"));
+        (differences, not_in_recording)
     };
-    // The witnessed member names a template deleted since, which no
+    let naming_differences =
+        |frame: &DecodedFrame, template: Option<u64>| naming_report(frame, template).0;
+    // The recorded member names a template deleted since, which no
     // recorded template holds: the game shows the stored name.
     assert_eq!(
-        naming_differences(&frame, Some(deleted)),
-        Vec::<String>::new()
+        naming_report(&frame, Some(deleted)),
+        (Vec::<String>::new(), false)
     );
-    // Unwitnessed, the division's saved template stands in and its group
-    // would hide the override.
-    assert_eq!(naming_differences(&frame, None).len(), 1);
+    // Naming operands without a reference are a recording that does not
+    // record it: its member is named so, and its empty group, the group of a
+    // deleted template, is admitted with the shown override.
+    assert_eq!(naming_report(&frame, None), (Vec::<String>::new(), true));
     // A recorded template with that reference refutes the deletion.
     set(
         &mut frame,

@@ -38,10 +38,10 @@
 //! [`ATTACK_INPUTS_FORMAT`]: crate::rows::compatibility::ATTACK_INPUTS_FORMAT
 use super::*;
 
-/// A packet only some rows hold: an empty payload is a row without it, and
-/// any other payload is the packet. A current writer stores it only where a
-/// diagnostic witnessed it, so it costs other rows nothing; older recordings
-/// hold it in every row, whose payload is never empty.
+/// A packet only some rows hold: an empty payload is a row without it, which
+/// costs that row nothing, and any other payload is the packet. A diagnostic
+/// packet is held only where the diagnostic witnessed it; older recordings hold
+/// the attack packets in every row, whose payload is never empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(any(test, feature = "test-support"), derive(replay_spool::Spooled))]
 pub struct Witnessed<T>(pub Option<T>);

@@ -785,11 +785,10 @@ fn land(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
 
 fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDivisions>()?;
-    // Each division's name member template reference, where a
-    // name_template_witness build recorded it with the division's status.
+    // Each division's name member template reference, recorded with the division's status.
     let statuses = frame.complete::<tables::DivisionStatus>()?;
-    let references = witnessed_name_templates(statuses);
-    let templates = NameTemplates::new(frame, save, r, !references.is_empty())?;
+    let references = MemberTemplates::new(statuses);
+    let templates = NameTemplates::new(frame, save, r, references.any())?;
     // A member's naming is its own copy or its division's DivisionStatus row's.
     let values = replay_data::rows::land_combat_member_values(
         rows,
@@ -870,7 +869,7 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
             Some(values) => naming(
                 r,
                 &label,
-                Naming::from(&values.naming).with_template(references.get(&row.division).copied()),
+                Naming::from(&values.naming).with_template(references.of(row.division)),
                 unit,
                 &templates,
             ),
@@ -894,7 +893,7 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         }
     }
     r.compared("LandCombatDivisions", rows.len());
-    r.limitation("Only participant order/full handles, province, template, committed/reserve role, the reserve speed share's presence on exactly the saved reserves and the naming operands are compared; the share's value (composed from live movement-speed operands and SLOWEST_SPEED) and the stat block's initiative have no save counterpart; hit points, organisation and entrenchment are the Divisions and DivisionStatus oracle's. The naming type, order word, ordered and programmatic flags and a player's custom name are compared against the saved division_name block, and the selected group key against the saved division_names_group of the member's template (its witnessed reference, a deleted one holding none, else the template a load rebinds, or another of its country's or none under a named limitation); a programmatic override is compared where the game shows it (a type-zero member whose group is null) and is otherwise generated text the game does not show, never recorded. Direction latch words, exile operands and the stat block's equipment category mask (`categories`) are live combat inputs with no text-save counterpart (the per-unit stat block is rebuilt, not saved) and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
+    r.limitation("Only participant order/full handles, province, template, committed/reserve role, the reserve speed share's presence on exactly the saved reserves and the naming operands are compared; the share's value (composed from live movement-speed operands and SLOWEST_SPEED) and the stat block's initiative have no save counterpart; hit points, organisation and entrenchment are the Divisions and DivisionStatus oracle's. The naming type, order word, ordered and programmatic flags and a player's custom name are compared against the saved division_name block, and the selected group key against the saved division_names_group of the member's template (its recorded reference, a deleted one holding none; in a recording that does not record the reference, the template a load rebinds, or another of its country's or none under a named limitation); a programmatic override is compared where the game shows it (a type-zero member whose group is null) and is otherwise generated text the game does not show, never recorded. Direction latch words, exile operands and the stat block's equipment category mask (`categories`) are live combat inputs with no text-save counterpart (the per-unit stat block is rebuilt, not saved) and are never compared here; their viewer replay is verified by render parity instead. Current combat stat block, raw maximum caches, attack/defense composition operands, initiative/reconnaissance and commander selection are not established by those matches. Current division names are hourly inputs; remaining template/icon dictionary joins retain their existing cadence. This table is an hourly input sample, not a per-attack damage event stream", "LandCombatDivisions");
     Ok(())
 }
 
@@ -906,32 +905,71 @@ pub struct Naming<'a> {
     pub programmatic: u8,
     pub custom: &'a [u8],
     pub group: &'a [u8],
-    /// The member's own template reference (zero for none) when a
-    /// `name_template_witness` build recorded it.
-    pub template: Option<u64>,
+    /// The member's own template reference.
+    pub template: MemberTemplate,
 }
 
 impl<'a> Naming<'a> {
-    /// These operands with the member's witnessed template reference.
-    pub fn with_template(mut self, template: Option<u64>) -> Self {
+    /// These operands with the member's template reference.
+    pub fn with_template(mut self, template: MemberTemplate) -> Self {
         self.template = template;
         self
     }
 }
 
-/// The member template references a `name_template_witness` build recorded,
-/// by division.
-pub fn witnessed_name_templates(
-    rows: &[replay_data::rows::DivisionStatusRow],
-) -> BTreeMap<u64, u64> {
-    rows.iter()
-        .filter_map(|row| match &row.name_template {
-            replay_data::rows::Recorded::Value(replay_data::rows::Witnessed(Some(template))) => {
-                Some((row.division, *template))
+/// What the recording holds of a name member's own template reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemberTemplate {
+    /// The recorded reference, zero for none.
+    Recorded(u64),
+    /// The recording does not record member references: it was made before every recording
+    /// carried them.
+    NotInRecording,
+    /// The recording records them, but the hour's DivisionStatus holds none for this division:
+    /// no row, or a row without naming operands.
+    Absent,
+}
+
+/// The hour's recorded name member template references, by division.
+pub struct MemberTemplates {
+    references: BTreeMap<u64, u64>,
+    /// Whether the recording records them: a collector that does records one in every
+    /// DivisionStatus row with naming operands.
+    recorded: bool,
+}
+
+impl MemberTemplates {
+    pub fn new(rows: &[replay_data::rows::DivisionStatusRow]) -> Self {
+        use replay_data::rows::{Recorded, Witnessed};
+        let mut references = BTreeMap::new();
+        let mut recorded = true;
+        for row in rows {
+            match (&row.name_template, &row.naming) {
+                (Recorded::Value(Witnessed(Some(template))), _) => {
+                    references.insert(row.division, *template);
+                }
+                (_, Recorded::Value(Some(_))) => recorded = false,
+                _ => {}
             }
-            _ => None,
-        })
-        .collect()
+        }
+        Self {
+            references,
+            recorded,
+        }
+    }
+
+    /// Whether any reference is recorded.
+    pub fn any(&self) -> bool {
+        !self.references.is_empty()
+    }
+
+    pub fn of(&self, division: u64) -> MemberTemplate {
+        match self.references.get(&division) {
+            Some(&template) => MemberTemplate::Recorded(template),
+            None if self.recorded => MemberTemplate::Absent,
+            None => MemberTemplate::NotInRecording,
+        }
+    }
 }
 
 /// The templates a name member's group is resolved against.
@@ -945,15 +983,15 @@ pub struct NameTemplates<'a> {
 
 impl<'a> NameTemplates<'a> {
     /// The save's templates, with the recording's own at this hour when a
-    /// witnessed member reference may need them to prove a deletion.
+    /// recorded member reference may need them to prove a deletion.
     pub fn new(
         frame: &DecodedFrame,
         save: &'a Save,
         r: &Report,
-        witnessed: bool,
+        referenced: bool,
     ) -> io::Result<Self> {
-        let recorded = if !witnessed {
-            Err("no member template reference is witnessed")
+        let recorded = if !referenced {
+            Err("no member template reference is recorded")
         } else if r.refresh_is_current(TableId::DivisionTemplates, frame.hour) {
             Ok(frame
                 .complete::<tables::DivisionTemplates>()?
@@ -972,7 +1010,8 @@ impl<'a> NameTemplates<'a> {
     }
 }
 
-const UNWITNESSED_MEMBER_TEMPLATE: &str = "deployment copies its line's name member into the new division, template reference included, so a live member can name an older template of its country, or one deleted since (no group); the save does not store that reference and a load rebinds it to the division's template. Without the name_template_witness, a recorded group that differs from that template's is only checked to be no group or the group of a saved template of the same country";
+const MEMBER_TEMPLATE_NOT_IN_RECORDING: &str = "this recording does not record the name member's template reference (it was made before every recording carried it). Deployment copies its line's name member into the new division, template reference included, so a live member can name an older template of its country, or one deleted since (no group); the save does not store that reference and a load rebinds it to the division's template. For such a recording alone, a recorded group that differs from that template's is only checked to be no group or the group of a saved template of the same country";
+const MEMBER_TEMPLATE_ABSENT: &str = "no name member template reference is recorded for the member's division at this hour (it has no DivisionStatus row with naming operands), so its name group is not compared";
 
 /// The group a type-zero member's generator resolves, as the save writes a
 /// template's `division_names_group` (only for a set group): `Some(None)`
@@ -980,47 +1019,23 @@ const UNWITNESSED_MEMBER_TEMPLATE: &str = "deployment copies its line's name mem
 fn member_group<'t>(
     r: &mut Report,
     label: &str,
-    witnessed: Option<u64>,
+    reference: MemberTemplate,
     recorded: &[u8],
     unit: &save::Division,
     templates: &NameTemplates<'t>,
 ) -> Option<Option<&'t [u8]>> {
     // A load rebinds the member to the fake-intel template when set, else
-    // the standard one; that stands in when the reference is not witnessed.
+    // the standard one; that stands in only where the recording lacks the reference.
     let rebound = unit.alternate_template.or(unit.template);
-    let Some(reference) = witnessed else {
-        let Some(template) = rebound else {
-            return Some(None);
-        };
-        let Some(saved) = templates.saved.get(&template) else {
-            r.difference(
-                format!("{label} name template {template}"),
-                "saved division_templates entry",
-                "absent",
-            );
+    let reference = match reference {
+        MemberTemplate::Recorded(reference) => reference,
+        MemberTemplate::Absent => {
+            r.limitation(MEMBER_TEMPLATE_ABSENT, label);
             return None;
-        };
-        let group = saved.names_group.as_deref();
-        if group.unwrap_or_default() == recorded {
-            return Some(group);
         }
-        let held = if recorded.is_empty() {
-            Some(None)
-        } else {
-            templates
-                .saved
-                .values()
-                .filter(|other| other.country == saved.country)
-                .find_map(|other| other.names_group.as_deref().filter(|&key| key == recorded))
-                .map(Some)
-        };
-        return match held {
-            Some(held) => {
-                r.limitation(UNWITNESSED_MEMBER_TEMPLATE, label);
-                Some(held)
-            }
-            None => Some(group),
-        };
+        MemberTemplate::NotInRecording => {
+            return rebound_group(r, label, recorded, rebound, templates);
+        }
     };
     if reference == 0 {
         return Some(None);
@@ -1064,6 +1079,49 @@ fn member_group<'t>(
     }
 }
 
+/// [`member_group`] for a recording without the member's reference: the template a load rebinds
+/// stands in, and a differing recorded group is held only to the groups the member could name.
+fn rebound_group<'t>(
+    r: &mut Report,
+    label: &str,
+    recorded: &[u8],
+    rebound: Option<u64>,
+    templates: &NameTemplates<'t>,
+) -> Option<Option<&'t [u8]>> {
+    let Some(template) = rebound else {
+        return Some(None);
+    };
+    let Some(saved) = templates.saved.get(&template) else {
+        r.difference(
+            format!("{label} name template {template}"),
+            "saved division_templates entry",
+            "absent",
+        );
+        return None;
+    };
+    let group = saved.names_group.as_deref();
+    if group.unwrap_or_default() == recorded {
+        return Some(group);
+    }
+    let held = if recorded.is_empty() {
+        Some(None)
+    } else {
+        templates
+            .saved
+            .values()
+            .filter(|other| other.country == saved.country)
+            .find_map(|other| other.names_group.as_deref().filter(|&key| key == recorded))
+            .map(Some)
+    };
+    match held {
+        Some(held) => {
+            r.limitation(MEMBER_TEMPLATE_NOT_IN_RECORDING, label);
+            Some(held)
+        }
+        None => Some(group),
+    }
+}
+
 impl<'a> From<&'a replay_data::rows::NameOperands> for Naming<'a> {
     fn from(row: &'a replay_data::rows::NameOperands) -> Self {
         Self {
@@ -1073,7 +1131,7 @@ impl<'a> From<&'a replay_data::rows::NameOperands> for Naming<'a> {
             programmatic: row.programmatic,
             custom: &row.custom,
             group: &row.group,
-            template: None,
+            template: MemberTemplate::NotInRecording,
         }
     }
 }

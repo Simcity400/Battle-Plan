@@ -218,18 +218,9 @@ fn camouflage(camouflage: Option<carmy::Camouflage>) -> Option<DivisionCamouflag
     })
 }
 
-/// Whether this build records the name member's template reference, which only
-/// the fresh-save oracle reads (`name_template_witness`).
-const NAME_TEMPLATE_WITNESS: bool = cfg!(feature = "name_template_witness");
-
-/// The recorded name member template reference: empty unless this is a
-/// `name_template_witness` build and the naming operands were read.
+/// The recorded name member template reference: empty where the naming operands were not read.
 fn name_template(naming: Option<cname_group_member::Inputs>) -> Witnessed<u64> {
-    Witnessed(
-        naming
-            .filter(|_| NAME_TEMPLATE_WITNESS)
-            .map(|naming| naming.template),
-    )
+    Witnessed(naming.map(|naming| naming.template))
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3852,26 +3843,27 @@ mod tests {
             assert_eq!(indices, [0]);
             assert_eq!(TableView::Complete(rows), captured.tables()[1]);
         }
-        // The member's template reference is recorded only by a
-        // name_template_witness build, where a changed one defeats reuse.
+        // The member's template reference is recorded, so a changed one defeats reuse.
         let moved = 3005 << 32 | 52;
         captured.status.rows[0].naming = Some(cname_group_member::Inputs {
             template: moved,
             ..naming
         });
-        let input = captured.table_inputs(Some(&mut projection), None);
-        assert_eq!(
-            matches!(input[1], TableInput::ComparedChanges { .. }),
-            NAME_TEMPLATE_WITNESS
-        );
+        assert!(matches!(
+            captured.table_inputs(Some(&mut projection), None)[1],
+            TableInput::ComparedChanges { .. }
+        ));
         let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
         else {
             panic!("the naming fixture's status rows are complete");
         };
-        assert_eq!(
-            rows[0].name_template,
-            Recorded::Value(Witnessed(NAME_TEMPLATE_WITNESS.then_some(moved)))
-        );
+        assert_eq!(rows[0].name_template, Recorded::Value(Witnessed(Some(moved))));
+        captured.status.rows[0].naming = None;
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
+        else {
+            panic!("the naming fixture's status rows are complete");
+        };
+        assert_eq!(rows[0].name_template, Recorded::Value(Witnessed(None)));
         captured.status.rows[0].naming = Some(naming);
         captured.names.first[0] ^= 1;
         assert!(matches!(

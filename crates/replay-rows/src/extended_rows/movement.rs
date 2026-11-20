@@ -1245,11 +1245,10 @@ pub struct DivisionStatusRow {
     /// The name member's own template reference ([`Self::naming`]'s generator
     /// resolves its group through it): a full native reference, zero for
     /// none. It can name a template deleted since, which resolves no group
-    /// and which a save rebinds to the division's template on load. Only the
-    /// fresh-save oracle reads it, so current writers leave it empty
-    /// ([`Witnessed`]) except in a collector built with the off-by-default
-    /// `name_template_witness` diagnostic, which records every division's
-    /// whose naming operands it read.
+    /// and which a save rebinds to the division's template on load. Recorded for
+    /// every division whose naming operands were read; empty ([`Witnessed`]) in a
+    /// row without them, and in every row of a recording made before every
+    /// recording carried it: such a recording does not record it.
     pub name_template: Recorded<Witnessed<u64>>,
     /// The stat block's movement operands ([`DivisionMovementStats`]), read, carried
     /// and refused with [`Self::attack_stats`]. Older formats use NotRecorded.

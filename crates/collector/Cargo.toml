@@ -34,10 +34,6 @@ executor_join_help = []
 # from inputs (the power-balance description trees) for the hour's sampled slice, for
 # `recorder derived` to compare with the derivation.
 breakdown_witness = ["collector-governance/breakdown_witness"]
-# Diagnostic oracle, off by default: also record each division's name member template reference
-# (DivisionStatus.name_template), which only the fresh-save oracle reads, to compare a member that
-# names a deleted template.
-name_template_witness = []
 # Verification only, off in the product: convert ScriptVariables both ways every hour and count
 # and name their differences in status.json's `conversion_check`.
 conversion_check = ["collector-intel/conversion_check"]

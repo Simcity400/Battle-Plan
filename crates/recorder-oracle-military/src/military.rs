@@ -408,10 +408,9 @@ pub fn compare_division_status(
 ) -> io::Result<()> {
     let rows = complete::<tables::DivisionStatus>(frame)?;
     division_history::compare(frame, save, tokens, report)?;
-    // Name member template references a name_template_witness build recorded.
-    let references = super::combat_details::witnessed_name_templates(rows);
+    let references = super::combat_details::MemberTemplates::new(rows);
     let templates =
-        super::combat_details::NameTemplates::new(frame, save, report, !references.is_empty())?;
+        super::combat_details::NameTemplates::new(frame, save, report, references.any())?;
     // The game writes in roster order, independently of logical owner.
     let ordinals = save
         .counter_inputs
@@ -788,7 +787,7 @@ pub fn compare_division_status(
                     report,
                     &format!("division status {}", row.division),
                     super::combat_details::Naming::from(naming)
-                        .with_template(references.get(&row.division).copied()),
+                        .with_template(references.of(row.division)),
                     saved,
                     &templates,
                 ),

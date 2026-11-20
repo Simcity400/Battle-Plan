@@ -1222,7 +1222,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         &templates,
     );
     assert_eq!(report.differences.len(), 1);
-    // A witnessed member reference decides the group. One with no saved
+    // A recorded member reference decides the group. One with no saved
     // entry, of the template kind and held by none of the recording's
     // templates at the hour, names a template deleted since: the game
     // resolves no group, so it is compared exactly as a null group, the
@@ -1241,7 +1241,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         report
     };
     let report = run(
-        Naming::from(&shown).with_template(Some(deleted)),
+        Naming::from(&shown).with_template(MemberTemplate::Recorded(deleted)),
         &templates,
     );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -1270,7 +1270,10 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
             "name group",
         ),
     ] {
-        let report = run(operands.with_template(Some(deleted)), &templates);
+        let report = run(
+            operands.with_template(MemberTemplate::Recorded(deleted)),
+            &templates,
+        );
         assert!(
             report
                 .differences
@@ -1287,11 +1290,14 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         saved: &saved_templates,
         recorded: Ok(BTreeSet::from([standard, fake, deleted])),
     };
-    let report = run(Naming::from(&shown).with_template(Some(deleted)), &held);
+    let report = run(
+        Naming::from(&shown).with_template(MemberTemplate::Recorded(deleted)),
+        &held,
+    );
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("name member template"));
     let report = run(
-        Naming::from(&shown).with_template(Some(999 << 32 | 53)),
+        Naming::from(&shown).with_template(MemberTemplate::Recorded(999 << 32 | 53)),
         &templates,
     );
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
@@ -1300,16 +1306,34 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         saved: &saved_templates,
         recorded: Err("stale"),
     };
-    let report = run(Naming::from(&shown).with_template(Some(deleted)), &stale);
+    let report = run(
+        Naming::from(&shown).with_template(MemberTemplate::Recorded(deleted)),
+        &stale,
+    );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert!(report.limitations.contains_key("stale"));
-    // A witnessed zero reference holds no group either.
-    let report = run(Naming::from(&shown).with_template(Some(0)), &templates);
+    // A recorded zero reference holds no group either.
+    let report = run(
+        Naming::from(&shown).with_template(MemberTemplate::Recorded(0)),
+        &templates,
+    );
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    // Without the witness, a load rebinds the member to the division's
-    // template, but deployment can leave the live member on an older template
-    // of its country or a deleted one. Only those groups are admitted, under
-    // a named limitation; the override then follows the recorded group.
+    // A recording that records the references but none for this member
+    // names that, and compares no group and nothing the group decides.
+    let report = run(
+        Naming::from(&shown).with_template(MemberTemplate::Absent),
+        &templates,
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        report.limitations.keys().collect::<Vec<_>>(),
+        [MEMBER_TEMPLATE_ABSENT]
+    );
+    // A recording that does not record the reference: a load rebinds the
+    // member to the division's template, but deployment can leave the live
+    // member on an older template of its country or a deleted one. Only those
+    // groups are admitted, under a limitation naming the recording; the
+    // override then follows the recorded group.
     for (operands, admitted) in [
         (Naming::from(&shown), true),
         (
@@ -1343,15 +1367,17 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
             report.differences
         );
         assert!(
-            report.limitations.contains_key(UNWITNESSED_MEMBER_TEMPLATE)
+            report
+                .limitations
+                .contains_key(MEMBER_TEMPLATE_NOT_IN_RECORDING)
                 == (admitted || deleted_group),
             "{:?}",
             report.limitations
         );
     }
-    // A witnessed reference to a saved template is compared against it.
+    // A recorded reference to a saved template is compared against it.
     let report = run(
-        Naming::from(&programmatic).with_template(Some(fake)),
+        Naming::from(&programmatic).with_template(MemberTemplate::Recorded(fake)),
         &templates,
     );
     assert!(
@@ -1365,7 +1391,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
 }
 
 #[test]
-fn combat_members_take_their_witnessed_template_from_the_division_status() {
+fn combat_members_take_their_recorded_template_from_the_division_status() {
     use replay_data::{rows::DivisionStatusRow, rows::LandCombatDivisionRow, rows::Witnessed};
     let (mut frame, mut save, ..) = super::super::fixtures::fixture();
     let combat = (7_u64 << 32) | 62;
@@ -1450,34 +1476,53 @@ fn combat_members_take_their_witnessed_template_from_the_division_status() {
                 ..Default::default()
             },
         ]));
-    let naming_differences = |frame: &DecodedFrame| {
+    let naming_report = |frame: &DecodedFrame| {
         let mut report = Report::default();
         divisions(frame, &save, &mut report).map(|()| {
-            report
+            let differences = report
                 .differences
                 .into_iter()
                 .filter(|difference| {
                     difference.contains("override") || difference.contains("name ")
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (differences, report.limitations)
         })
     };
-    let status = |template: Option<u64>| {
+    let naming_differences = |frame: &DecodedFrame| naming_report(frame).map(|(d, _)| d);
+    let status = |template: Option<u64>, naming: Option<replay_data::rows::NameOperands>| {
         TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
             division,
             name_template: Recorded::Value(Witnessed(template)),
+            naming: Recorded::Value(naming),
             ..Default::default()
         }]))
     };
-    // The member's witnessed reference names a deleted template, which no
-    // recorded template holds: its shown override is compared exactly.
-    *frame.tables[TableId::DivisionStatus.index()] = status(Some(deleted));
-    assert_eq!(naming_differences(&frame).unwrap(), Vec::<String>::new());
-    // Unwitnessed, the division's own template stands in.
-    *frame.tables[TableId::DivisionStatus.index()] = status(None);
-    assert_eq!(naming_differences(&frame).unwrap().len(), 1);
+    let operands = replay_data::rows::NameOperands::default();
+    // The member's recorded reference names a deleted template, which no
+    // recorded template holds: its shown override is compared exactly, under
+    // no limitation of the member template.
+    *frame.tables[TableId::DivisionStatus.index()] = status(Some(deleted), Some(operands.clone()));
+    let (differences, limitations) = naming_report(&frame).unwrap();
+    assert_eq!(differences, Vec::<String>::new());
+    assert!(!limitations.contains_key(MEMBER_TEMPLATE_NOT_IN_RECORDING));
+    assert!(!limitations.contains_key(MEMBER_TEMPLATE_ABSENT));
+    // A status row with naming operands and no reference is a recording that
+    // does not record them, and is named so.
+    *frame.tables[TableId::DivisionStatus.index()] = status(None, Some(operands.clone()));
+    let (differences, limitations) = naming_report(&frame).unwrap();
+    assert_eq!(differences, Vec::<String>::new());
+    assert!(limitations.contains_key(MEMBER_TEMPLATE_NOT_IN_RECORDING));
+    // A recording that records them, whose status row for the member's
+    // division has no naming operands, holds no reference for the member: named,
+    // never the template a load rebinds.
+    *frame.tables[TableId::DivisionStatus.index()] = status(None, None);
+    let (differences, limitations) = naming_report(&frame).unwrap();
+    assert_eq!(differences, Vec::<String>::new());
+    assert!(limitations.contains_key(MEMBER_TEMPLATE_ABSENT));
+    assert!(!limitations.contains_key(MEMBER_TEMPLATE_NOT_IN_RECORDING));
     // A recorded template with that reference refutes the deletion.
-    *frame.tables[TableId::DivisionStatus.index()] = status(Some(deleted));
+    *frame.tables[TableId::DivisionStatus.index()] = status(Some(deleted), Some(operands.clone()));
     *frame.tables[TableId::DivisionTemplates.index()] =
         TableView::Complete(TableRows::DivisionTemplates(vec![
             replay_data::rows::DivisionTemplateRow {
