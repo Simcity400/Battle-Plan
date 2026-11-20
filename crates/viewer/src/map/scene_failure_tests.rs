@@ -413,6 +413,11 @@ fn production_scene_targets_and_post_recover() -> io::Result<()> {
             "the water samples the half-size sea bed"
         );
         assert_eq!(
+            scene.shadow_screen(),
+            Some(viewer_world::map::shadow::Screen::Half),
+            "the shipped shadow readers sample the half-size screen buffer"
+        );
+        assert_eq!(
             fixture.pixels(&scene, &format!("step-{step}"))?,
             fixture.pixels(&control, &format!("control-{step}"))?
         );

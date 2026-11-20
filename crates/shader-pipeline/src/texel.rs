@@ -23,6 +23,20 @@ impl TexelRead {
     }
 }
 
+/// How a stage reads the texture at `binding`, named `texture`, by texel, worded to follow its
+/// shader's name; `None` when it only samples it at normalised coordinates. A stage that cannot
+/// be read is said so, and counts as reading by texel.
+pub fn by_texel(wgsl: &str, binding: u32, texture: &str) -> Option<String> {
+    match texel_reads(wgsl, binding) {
+        Ok(reads) if reads.is_empty() => None,
+        Ok(reads) => {
+            let reads: Vec<_> = reads.into_iter().map(TexelRead::describe).collect();
+            Some(format!("reads the {texture} by texel: it {}", reads.join("; it ")))
+        }
+        Err(error) => Some(format!("could not be read for its {texture} reads: {error}")),
+    }
+}
+
 /// Every [`TexelRead`] of the pixel or vertex texture at `binding` in a stage's WGSL. An image
 /// the walk cannot follow to its declaration counts against every texture.
 pub fn texel_reads(wgsl: &str, binding: u32) -> Result<BTreeSet<TexelRead>, String> {
@@ -130,6 +144,28 @@ mod tests {
             texel_reads(&stage("return vec4<f32>(uv, 0.0, 1.0);"), 7)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_texel_read_is_worded_by_every_way_it_reads_and_an_unreadable_stage_counts() {
+        let why = |wgsl: &str| by_texel(wgsl, 11, "refraction texture");
+        assert_eq!(why(&stage("return textureSample(refraction, linear, uv);")), None);
+        assert_eq!(
+            why(&stage(
+                "let size = vec2<f32>(textureDimensions(refraction));
+                 return textureSample(refraction, linear, uv + 1.0 / size, vec2<i32>(1, 0));"
+            ))
+            .as_deref(),
+            Some(
+                "reads the refraction texture by texel: it samples it at texel offsets; it reads \
+                 its own size"
+            )
+        );
+        assert!(
+            why("not wgsl")
+                .unwrap()
+                .starts_with("could not be read for its refraction texture reads: compiled stage:")
         );
     }
 }

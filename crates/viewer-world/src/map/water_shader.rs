@@ -37,17 +37,12 @@ pub fn reads_snow_mud(compiled: &shader_pipeline::Compiled) -> bool {
 /// The sea bed this program can sample: half size when it samples the refraction texture only at
 /// screen UVs, else the output's size and why, for reads a smaller target would answer wrongly.
 pub fn sea_bed(compiled: &shader_pipeline::Compiled) -> (SeaBed, Option<String>) {
-    let reads = shader_pipeline::texel::texel_reads(
+    let Some(why) = shader_pipeline::texel::by_texel(
         &compiled.pixel.wgsl,
         binding(REFRACTION_SLOT, Stage::Pixel),
-    );
-    let why = match reads {
-        Ok(reads) if reads.is_empty() => return (SeaBed::Half, None),
-        Ok(reads) => {
-            let reads: Vec<_> = reads.into_iter().map(|read| read.describe()).collect();
-            format!("reads the refraction texture by texel: it {}", reads.join("; it "))
-        }
-        Err(error) => format!("could not be read for its refraction reads: {error}"),
+        "refraction texture",
+    ) else {
+        return (SeaBed::Half, None);
     };
     (
         SeaBed::Full,
@@ -91,6 +86,8 @@ pub struct Inputs<'a> {
 pub const SNOW_MUD_SLOT: u32 = 9;
 /// The pixel slot the engine binds the sea-bed refraction target to for the water effect.
 pub const REFRACTION_SLOT: u32 = 5;
+/// The pixel slot the engine binds the shadow screen buffer to for the water effect.
+pub const SHADOW_SLOT: u32 = 15;
 
 pub struct Water {
     retained: super::shader_scene::Program,
@@ -100,6 +97,8 @@ pub struct Water {
     pub reads_snow_mud: bool,
     /// The sea bed this technique samples, and why when it is not [`SeaBed::Half`] ([`sea_bed`]).
     pub sea_bed: (SeaBed, Option<String>),
+    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
+    pub texel_reads: Option<String>,
 }
 
 impl Water {
@@ -134,6 +133,7 @@ impl Water {
         let compiled = effect.compiled(selection.index).map_err(refuse)?;
         let reads_snow_mud = reads_snow_mud(&compiled);
         let sea_bed = sea_bed(&compiled);
+        let texel_reads = super::shadow::texel_reads(&compiled, SHADOW_SLOT, technique);
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
@@ -197,6 +197,7 @@ impl Water {
             vertices,
             reads_snow_mud,
             sea_bed,
+            texel_reads,
         })
     }
 

@@ -47,9 +47,14 @@ pub struct Geometry<'a> {
     pub runs: &'a [Run],
 }
 
+/// The pixel slot the engine binds the shadow screen buffer to for rivers.
+pub const SHADOW_SLOT: u32 = 15;
+
 pub struct River {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
+    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
+    pub texel_reads: Option<String>,
 }
 
 impl River {
@@ -83,6 +88,7 @@ impl River {
             .ok_or_else(|| refuse(format!("{technique} absent; retained program unavailable")))?;
         let program = &effect.source;
         let compiled = effect.compiled(selection.index).map_err(refuse)?;
+        let texel_reads = super::shadow::texel_reads(&compiled, SHADOW_SLOT, technique);
         let mut state =
             gpu::State::authored(program, &program.techniques[selection.index]).map_err(refuse)?;
         state
@@ -139,7 +145,11 @@ impl River {
             &raster,
             &depth_state,
         );
-        Ok(Self { retained, pipeline })
+        Ok(Self {
+            retained,
+            pipeline,
+            texel_reads,
+        })
     }
 
     pub fn draw(

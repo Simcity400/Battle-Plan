@@ -25,9 +25,14 @@ fn constants(fade: f32) -> Vec<u8> {
     bytes
 }
 
+/// The pixel slot the engine binds the shadow screen buffer to for the lit canopy.
+pub const SHADOW_SLOT: u32 = 8;
+
 pub struct Lit {
     retained: super::shader_scene::Program,
     pub pipeline: Arc<gpu::Pipeline>,
+    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
+    pub texel_reads: Option<String>,
 }
 
 impl Lit {
@@ -59,6 +64,7 @@ impl Lit {
             .map_err(refuse)?
             .ok_or_else(|| refuse(format!("{name} absent; retained program unavailable")))?;
         let compiled = effect.compiled(selection.index).map_err(refuse)?;
+        let texel_reads = super::shadow::texel_reads(&compiled, SHADOW_SLOT, name);
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
@@ -85,7 +91,11 @@ impl Lit {
             &raster,
             &DepthStencilState::default(),
         );
-        Ok(Self { retained, pipeline })
+        Ok(Self {
+            retained,
+            pipeline,
+            texel_reads,
+        })
     }
 
     pub fn retain(

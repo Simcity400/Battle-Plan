@@ -61,12 +61,18 @@ fn late_depth(mut state: DepthStencilState, late: bool) -> DepthStencilState {
     state
 }
 
+/// The pixel slot battle plans, raids, trade routes and map symbols bind the shadow screen
+/// buffer to.
+pub const SHADOW_SLOT: u32 = 2;
+
 pub struct Arrow {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     reference: u32,
     block: u32,
     written: u32,
+    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
+    pub texel_reads: Option<String>,
 }
 
 impl Arrow {
@@ -129,6 +135,7 @@ impl Arrow {
             ))
         })?;
         let compiled = effect.compiled(selection.index).map_err(refuse)?;
+        let texel_reads = super::shadow::texel_reads(&compiled, SHADOW_SLOT, technique);
         let technique = &effect.source.techniques[selection.index];
         let mut state = gpu::State::authored(&effect.source, technique).map_err(refuse)?;
         state
@@ -200,6 +207,7 @@ impl Arrow {
             reference,
             block,
             written,
+            texel_reads,
         })
     }
 

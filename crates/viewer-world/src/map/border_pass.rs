@@ -909,6 +909,11 @@ pub struct BorderPass {
 }
 
 impl BorderPass {
+    /// How the program drawn reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
+    pub fn texel_reads(&self) -> Option<&str> {
+        self.compiled.as_ref().ok()?.texel_reads.as_deref()
+    }
+
     /// Builds the content pipelines and uploads their textures.
     pub fn new(
         device: &wgpu::Device,

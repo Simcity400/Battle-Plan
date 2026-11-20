@@ -694,6 +694,16 @@ pub struct RiverPass {
 }
 
 impl RiverPass {
+    /// How the program built for `high` reads the shadow screen buffer by texel
+    /// ([`super::shadow::texel_reads`]).
+    pub fn texel_reads(&self, high: bool, visit: &mut dyn FnMut(&str)) {
+        if let Some(Ok(river)) = self.compiled.borrow().get(&high)
+            && let Some(reads) = &river.texel_reads
+        {
+            visit(reads);
+        }
+    }
+
     /// Builds the pipeline and uploads the three river surface textures.
     pub fn new(
         device: &wgpu::Device,

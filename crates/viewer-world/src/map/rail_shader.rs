@@ -40,10 +40,15 @@ pub struct Geometry<'a> {
     pub strips: Option<(&'a wgpu::Buffer, u32)>,
 }
 
+/// The pixel slot the engine binds the shadow screen buffer to for railways.
+pub const SHADOW_SLOT: u32 = 15;
+
 pub struct Rail {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     stencil_reference: u32,
+    /// How the program reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
+    pub texel_reads: Option<String>,
 }
 
 impl Rail {
@@ -74,6 +79,7 @@ impl Rail {
             .ok_or_else(|| refuse(format!("{technique} absent; retained program unavailable")))?;
         let program = &effect.source;
         let compiled = effect.compiled(selection.index).map_err(refuse)?;
+        let texel_reads = super::shadow::texel_reads(&compiled, SHADOW_SLOT, technique);
         let mut state =
             gpu::State::authored(program, &program.techniques[selection.index]).map_err(refuse)?;
         state
@@ -136,6 +142,7 @@ impl Rail {
             retained,
             pipeline,
             stencil_reference,
+            texel_reads,
         })
     }
 

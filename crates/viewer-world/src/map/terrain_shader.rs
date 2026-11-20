@@ -507,10 +507,16 @@ fn water_height(effect: &Effect) -> Result<f32, String> {
         })
 }
 
+/// The pixel slot the lit and underwater modes bind the shadow screen buffer to.
+pub const SHADOW_SLOT: u32 = 12;
+
 pub struct Terrain {
     pub effect: Arc<Effect>,
     pipelines: BTreeMap<Mode, Result<Arc<gpu::Pipeline>, String>>,
     programs: BTreeMap<Mode, super::shader_scene::Program>,
+    /// How each built mode that binds the shadow screen buffer reads it by texel
+    /// ([`super::shadow::texel_reads`]).
+    texel_reads: BTreeMap<Mode, String>,
     positions: wgpu::Buffer,
     bytes: Vec<u8>,
     map: [u32; 2],
@@ -750,6 +756,7 @@ impl Terrain {
             effect: effect.clone(),
             pipelines: BTreeMap::new(),
             programs: BTreeMap::new(),
+            texel_reads: BTreeMap::new(),
             positions,
             bytes: bytes.to_vec(),
             map,
@@ -792,6 +799,7 @@ impl Terrain {
                 self.effect = recorded;
                 self.pipelines.clear();
                 self.programs.clear();
+                self.texel_reads.clear();
                 // Another program draws another picture from the same inputs.
                 self.kept.clear();
                 built = self.build_pipeline(device, mode);
@@ -816,6 +824,12 @@ impl Terrain {
             .map_err(refuse)?
             .ok_or_else(|| refuse(format!("{technique} absent; retained program unavailable")))?;
         let compiled = self.effect.compiled(selection.index).map_err(refuse)?;
+        // The receivers draw into the screen buffer; the other modes sample it.
+        if mode != Mode::Receiver
+            && let Some(reads) = super::shadow::texel_reads(&compiled, SHADOW_SLOT, technique)
+        {
+            self.texel_reads.insert(mode, reads);
+        }
         let mut state = gpu::State::authored(
             &self.effect.source,
             &self.effect.source.techniques[selection.index],
@@ -900,6 +914,16 @@ impl Terrain {
         );
         Ok(pipeline)
     }
+    /// How `mode`'s built program reads the shadow screen buffer by texel.
+    pub fn texel_reads(&self, mode: Mode) -> Option<&str> {
+        self.pipelines
+            .get(&mode)
+            .is_some_and(Result::is_ok)
+            .then(|| self.texel_reads.get(&mode))
+            .flatten()
+            .map(String::as_str)
+    }
+
     /// The map's width and height in pixels, which the terrain's blocks tile.
     pub fn map(&self) -> [u32; 2] {
         self.map

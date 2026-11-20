@@ -45,9 +45,14 @@ pub fn constants(extent: u32, height: f32) -> [f32; 8] {
     ]
 }
 
+/// The pixel slot the native blur binds the buffer it blurs to.
+pub const SOURCE_SLOT: u32 = 0;
+
 pub struct Blur {
     pipelines: [Arc<gpu::Pipeline>; 2],
     vertices: wgpu::Buffer,
+    /// How each technique reads the buffer it blurs by texel ([`super::shadow::texel_reads`]).
+    texel_reads: [Option<String>; 2],
 }
 
 impl Blur {
@@ -58,17 +63,19 @@ impl Blur {
 
     fn build(device: &wgpu::Device, effect: &Arc<Effect>) -> io::Result<Self> {
         let mut cache = gpu::Cache::default();
-        let mut pipeline = |axis, name| -> Result<Arc<gpu::Pipeline>, String> {
+        let mut texel_reads: [Option<String>; 2] = Default::default();
+        let mut pipeline = |axis: usize, name| -> Result<Arc<gpu::Pipeline>, String> {
             let selection = effect
                 .select(name)?
                 .ok_or_else(|| format!("missing {name} technique"))?;
             let compiled = selection.effect.compiled(selection.index)?;
+            texel_reads[axis] = super::shadow::texel_reads(&compiled, SOURCE_SLOT, name);
             let mut state =
                 gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])?;
             // The native call binds only PS texture/sampler 0. Other registers retain.
             state
                 .samplers
-                .retain(|slot, _| *slot == binding(0, Stage::Pixel));
+                .retain(|slot, _| *slot == binding(SOURCE_SLOT, Stage::Pixel));
             let mut pass = gpu::Pass::packed(&compiled, &state, COLOR_FORMAT, 1);
             let attributes = compiled
                 .vertex
@@ -131,7 +138,12 @@ impl Blur {
                 contents: bytemuck::cast_slice(&vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
+            texel_reads,
         })
+    }
+
+    pub fn texel_reads(&self) -> impl Iterator<Item = &str> {
+        self.texel_reads.iter().flatten().map(String::as_str)
     }
 
     pub fn bindings(
@@ -154,7 +166,7 @@ impl Blur {
                         bytemuck::cast_slice(bytes).to_vec(),
                     ),
                 ]),
-                &BTreeMap::from([(binding(0, Stage::Pixel), source.clone())]),
+                &BTreeMap::from([(binding(SOURCE_SLOT, Stage::Pixel), source.clone())]),
             )
             .map_err(refuse)
     }

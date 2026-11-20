@@ -47,6 +47,16 @@ impl WaterPass {
             .map_or(SeaBed::Half, |water| water.sea_bed.0)
     }
 
+    /// How the water last compiled reads the shadow screen buffer by texel
+    /// ([`super::shadow::texel_reads`]).
+    pub fn texel_reads(&self, visit: &mut dyn FnMut(&str)) {
+        if let Some((_, Ok(water))) = &*self.compiled.borrow()
+            && let Some(reads) = &water.texel_reads
+        {
+            visit(reads);
+        }
+    }
+
     /// Why the water last compiled does not sample the half-size sea bed.
     pub fn sea_bed_refusal(&self) -> Option<String> {
         self.compiled

@@ -3000,6 +3000,13 @@ impl Scene {
         for model in model_passes!(self).into_iter().flatten() {
             model.settle_builds(self.settled_builds);
         }
+        // The terrain's modes that read the shadow screen buffer, built here, where the scene's
+        // fields can be borrowed apart; `shadow_screen_wanted` builds the others.
+        self.compiled_terrain.warm(
+            device,
+            &crate::map::shadow::terrain_readers(self.graphics.high_gfx_shaders),
+        );
+        let shadow_screen = self.shadow_screen_wanted(device);
         let mut passes = passes::Frame::new(&mut self.pass_diagnostics);
         self.arena.reset();
         let arena = &self.arena;
@@ -3032,10 +3039,11 @@ impl Scene {
         let generation_changed = self.targets.as_ref().is_none_or(|t| {
             t.size() != size || t.world_size() != world_size || t.sea_bed() != sea_bed
         });
-        // Receiver and blur stay backbuffer-sized, even when the
-        // scene is half size. Camera projection/culling and GUI also retain size.
+        // Receiver and blur follow the backbuffer, at half its size unless a reader reads it by
+        // texel, whatever the scene's resolution. Camera projection/culling and GUI also retain
+        // size.
         if generation_changed
-            || !self.shadow.sized(size)
+            || !self.shadow.sized(size, shadow_screen)
             || !self.post.prepared(size, world_size)
         {
             // Everything sized to this view is made in this one step, so a device that cannot
@@ -3057,7 +3065,7 @@ impl Scene {
                         .as_ref()
                         .or(self.targets.as_ref())
                         .expect("made or kept");
-                    self.shadow.resize(device, size);
+                    self.shadow.resize(device, size, shadow_screen);
                     self.post.prepare(device, targets, generation_changed);
                     Ok(made)
                 },
@@ -4898,6 +4906,11 @@ impl Scene {
         self.shadow.drawn()
     }
 
+    /// How large the shadow screen buffer is made, once it is.
+    pub fn shadow_screen(&self) -> Option<crate::map::shadow::Screen> {
+        self.shadow.screen()
+    }
+
     /// The terrain blocks and quads the last frame drew, for reporting.
     pub fn terrain_drawn(&self) -> (usize, u64) {
         (self.cover.blocks(), self.cover.quads())
@@ -4934,6 +4947,79 @@ impl Scene {
         )
     }
 
+    /// The screen buffer's size for the programs these settings draw: full while any of them
+    /// reads it by texel. Builds those programs first, as their frames would, so the buffer is
+    /// made for them before it is drawn; built programs are only looked up. The terrain's are
+    /// built by the caller.
+    fn shadow_screen_wanted(&self, device: &wgpu::Device) -> crate::map::shadow::Screen {
+        let high = self.graphics.high_gfx_shaders;
+        if self.graphics.water {
+            self.water.warm(device, high, self.graphics.water_reflections);
+        }
+        if let Some(rivers) = self.rivers.as_ref().filter(|_| self.graphics.rivers) {
+            rivers.warm(device, high);
+        }
+        if let Some(railways) = self.railways.as_ref().filter(|_| self.graphics.rails()) {
+            railways.warm(device);
+        }
+        if let Some(trees) = self.trees.as_ref().filter(|_| self.graphics.trees) {
+            trees.warm(device, high);
+        }
+        let mut full = false;
+        self.shadow_texel_reads(&mut |_, _| full = true);
+        if full {
+            crate::map::shadow::Screen::Full
+        } else {
+            crate::map::shadow::Screen::Half
+        }
+    }
+
+    /// Every built program these settings draw that reads the shadow screen buffer by texel, by
+    /// its shader's name and how it reads ([`crate::map::shadow::texel_reads`]).
+    fn shadow_texel_reads(&self, visit: &mut dyn FnMut(&str, &str)) {
+        let high = self.graphics.high_gfx_shaders;
+        if self.graphics.shadows {
+            for reads in self.shadow.texel_reads() {
+                visit("shadow blur", reads);
+            }
+        }
+        for mode in crate::map::shadow::terrain_readers(high) {
+            if let Some(reads) = self.compiled_terrain.texel_reads(mode) {
+                visit("terrain", reads);
+            }
+        }
+        if let Some(reads) = self.borders.as_ref().and_then(BorderPass::texel_reads) {
+            visit("borders", reads);
+        }
+        if let Some(reads) = self.demilitarized.as_ref().and_then(DemilitarizedPass::texel_reads) {
+            visit("demilitarized zone borders", reads);
+        }
+        if let Some(rivers) = self.rivers.as_ref().filter(|_| self.graphics.rivers) {
+            rivers.texel_reads(high, &mut |reads| visit("rivers", reads));
+        }
+        if let Some(railways) = self.railways.as_ref().filter(|_| self.graphics.rails()) {
+            railways.texel_reads(&mut |reads| visit("railways", reads));
+        }
+        if let Some(trees) = self.trees.as_ref().filter(|_| self.graphics.trees) {
+            trees.texel_reads(high, &mut |reads| visit("tree canopy", reads));
+        }
+        if self.graphics.water {
+            self.water.texel_reads(&mut |reads| visit("water", reads));
+        }
+        for reads in self.orders.iter().flat_map(OrderPass::texel_reads) {
+            visit("map arrows", reads);
+        }
+        for (shader, pass) in [
+            ("radar symbols", &self.radar),
+            ("air ranges", &self.air_ranges),
+            ("air transfer progress", &self.air_transfers),
+        ] {
+            if let Some(reads) = pass.as_ref().and_then(|pass| pass.texel_reads()) {
+                visit(shader, reads);
+            }
+        }
+    }
+
     pub fn pass_warnings(&self) -> Vec<String> {
         let mut warnings: Vec<_> = passes::lines(&self.pass_diagnostics).collect();
         warnings.extend(self.compiled_terrain.not_kept().map(|(technique, reason)| {
@@ -4944,6 +5030,13 @@ impl Scene {
         }) && let Some(reason) = self.water.sea_bed_refusal()
         {
             warnings.push(format!("Map shader water: {reason}"));
+        }
+        if self.shadow_screen() == Some(crate::map::shadow::Screen::Full) {
+            let mut named = BTreeSet::new();
+            self.shadow_texel_reads(&mut |shader, reason| {
+                named.insert(format!("Map shader {shader}: {reason}"));
+            });
+            warnings.extend(named);
         }
         if let Some(reason) = self.compiled_terrain.coast_refusal() {
             warnings.push(format!(
@@ -5148,8 +5241,9 @@ pub(crate) fn world_pass<'a>(
 }
 
 /// With full-resolution rendering disabled, halve the renderer's positive signed dimensions with
-/// truncation. Full-size cameras, shadow receivers and interface pixels retain their
-/// dimensions. [`validate_size`] refuses a zero result.
+/// truncation. Full-size cameras and interface pixels retain their dimensions, and shadow
+/// receivers keep half of them or all ([`crate::map::shadow::Screen`]). [`validate_size`] refuses
+/// a zero result.
 pub fn world_size(size: [u32; 2], full_resolution: bool) -> [u32; 2] {
     if full_resolution {
         size

@@ -10,11 +10,18 @@
 //! admitted late arrows in that order. Terrain and the map frame are excluded.
 //! The light matrix replaces the scene view-projection for these draws.
 //!
-//! Tree and terrain receivers draw their ordinary geometry into a
-//! backbuffer-sized BGRA8 UNORM target with depth/stencil. Its clear colour is
-//! fully lit with zero fog. Horizontal and vertical blur passes filter the
-//! shadow channel and preserve the centre sample's fog factors. Blur offsets
-//! scale with camera height.
+//! Tree and terrain receivers draw their ordinary geometry into a BGRA8 UNORM
+//! target with depth/stencil. Its clear colour is fully lit with zero fog.
+//! Horizontal and vertical blur passes filter the shadow channel and preserve
+//! the centre sample's fog factors. Blur offsets scale with camera height.
+//!
+//! The game's screen buffer is backbuffer-sized; ours is half that on each
+//! side, rounded up ([`Screen::Half`]), to save fill on integrated GPUs. The
+//! vanilla readers sample it with the authored linear filter at normalised
+//! screen coordinates, so it upsamples bilinearly where it is read, and shadow
+//! and fog edges are slightly softer than the game's. A reader that reads it by
+//! texel ([`texel_reads`]) keeps it full size. The blur keeps the game's reach
+//! on screen: its offsets are taken from the view's own size.
 //!
 //! One ShadowMap binding carries either depth or screen-space data as required
 //! by the current pass. The depth texture retains authored linear sampling;
@@ -39,8 +46,8 @@ pub const DEPTH_MAP_SIZE: u32 = 2048;
 /// Single-channel 32-bit floating-point depth target.
 pub const DEPTH_MAP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
-/// The screen-space buffer's format. The engine's is a backbuffer-sized RGBA
-/// target, and the three values it carries are all in the unit interval.
+/// The screen-space buffer's format. The engine's is an RGBA target, and the
+/// three values it carries are all in the unit interval.
 pub const BUFFER_FORMAT: wgpu::TextureFormat = super::shadow_blur::COLOR_FORMAT;
 
 /// the screen-space buffer's clear value: fully lit, no fog.
@@ -288,6 +295,50 @@ pub fn draws_shadows(camera: &Camera) -> bool {
     camera.height < camera.defines.shadows[0]
 }
 
+/// How large the screen buffer, its depth and the blur's scratch are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Screen {
+    /// Half the view on each side, rounded up, so an odd side's last column or row has a texel
+    /// of its own: enough for readers that sample it only at normalised screen UVs.
+    Half,
+    /// The view's size, while a program drawn reads the buffer by texel.
+    Full,
+}
+
+impl Screen {
+    pub fn size(self, view: [u32; 2]) -> [u32; 2] {
+        match self {
+            Self::Half => view.map(|side| side.div_ceil(2)),
+            Self::Full => view,
+        }
+    }
+}
+
+/// The terrain modes that sample the screen buffer at `high` graphics: the sea bed under the
+/// water, which reads the last frame's, and the lit terrain.
+pub fn terrain_readers(high: bool) -> [super::terrain_shader::Mode; 2] {
+    use super::terrain_shader::Mode;
+    [Mode::Underwater, Mode::Lit(high)]
+}
+
+/// Why a program that binds the screen buffer at pixel `slot` keeps it full size: how its
+/// `technique` reads the buffer by texel, which a half-size buffer answers wrongly. `None` when
+/// it only samples the buffer at normalised UVs.
+pub fn texel_reads(
+    compiled: &shader_pipeline::Compiled,
+    slot: u32,
+    technique: &str,
+) -> Option<String> {
+    let why = shader_pipeline::texel::by_texel(
+        &compiled.pixel.wgsl,
+        shader_pipeline::binding(slot, installed_content_core::pdxshader::program::Stage::Pixel),
+        "shadow buffer",
+    )?;
+    Some(format!(
+        "half-size shadow buffer not used: the {technique} technique {why}"
+    ))
+}
+
 /// Caster and receiver camera gates. Blurs share the caster gate; receivers also run below
 /// DRAW_FOW_CUTOFF with draw_shadows disabled.
 pub fn stages(camera: &Camera, shadows_enabled: bool) -> [bool; 2] {
@@ -296,14 +347,16 @@ pub fn stages(camera: &Camera, shadows_enabled: bool) -> [bool; 2] {
 }
 
 /// The per-size resources: the depth map, the screen-space buffer and the
-/// buffer the horizontal blur writes on its way to the vertical one.
+/// buffer the horizontal blur writes on its way to the vertical one, both at [`Self::screen`].
 struct Buffers {
     depth_map: wgpu::TextureView,
     depth_map_depth: wgpu::TextureView,
     buffer: wgpu::TextureView,
     buffer_depth: wgpu::TextureView,
     scratch: wgpu::TextureView,
+    /// The view's size, which the blur's offsets are scaled by.
     size: [u32; 2],
+    screen: Screen,
     /// What `buffer` holds, for the next frame's sea-bed pass, which samples it and is drawn
     /// only while what it reads changes.
     content: Cell<Content>,
@@ -315,7 +368,7 @@ struct Buffers {
 }
 
 impl Buffers {
-    fn new(device: &wgpu::Device, size: [u32; 2]) -> Self {
+    fn new(device: &wgpu::Device, size: [u32; 2], screen: Screen) -> Self {
         let target = |label, format, extent, usage| {
             device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -337,6 +390,7 @@ impl Buffers {
             height: DEPTH_MAP_SIZE,
             depth_or_array_layers: 1,
         };
+        let screen_extent = extent(screen.size(size));
         Self {
             depth_map: target("shadow depth map", DEPTH_MAP_FORMAT, square, attachment),
             depth_map_depth: target(
@@ -345,20 +399,21 @@ impl Buffers {
                 square,
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
             ),
-            buffer: target("shadow buffer", BUFFER_FORMAT, extent(size), attachment),
+            buffer: target("shadow buffer", BUFFER_FORMAT, screen_extent, attachment),
             buffer_depth: target(
                 "shadow buffer (z)",
                 super::shadow_blur::DEPTH_FORMAT,
-                extent(size),
+                screen_extent,
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
             ),
             scratch: target(
                 "shadow buffer (blur)",
                 BUFFER_FORMAT,
-                extent(size),
+                screen_extent,
                 attachment,
             ),
             size,
+            screen,
             content: Cell::new(Content::next()),
             cleared: Cell::new(false),
             depth_map_cleared: Cell::new(false),
@@ -523,22 +578,34 @@ impl ShadowPass {
         })
     }
 
-    /// Lets go of the screen-sized targets; the next [`Self::resize`] makes them again.
+    /// Lets go of the view-sized targets; the next [`Self::resize`] makes them again.
     pub fn release(&mut self) {
         self.buffers = None;
     }
 
-    /// Whether the screen-sized targets are made for `size`.
-    pub fn sized(&self, size: [u32; 2]) -> bool {
-        self.buffers.as_ref().is_some_and(|b| b.size == size)
+    /// Whether the targets are made for a view of `size` with the screen buffer at `screen`.
+    pub fn sized(&self, size: [u32; 2], screen: Screen) -> bool {
+        self.buffers
+            .as_ref()
+            .is_some_and(|b| b.size == size && b.screen == screen)
     }
 
-    /// Rebuilds the screen-sized targets.
-    pub fn resize(&mut self, device: &wgpu::Device, size: [u32; 2]) {
-        if self.sized(size) {
+    /// Rebuilds the targets for a view of `size` with the screen buffer at `screen`.
+    pub fn resize(&mut self, device: &wgpu::Device, size: [u32; 2], screen: Screen) {
+        if self.sized(size, screen) {
             return;
         }
-        self.buffers = Some(Buffers::new(device, size));
+        self.buffers = Some(Buffers::new(device, size, screen));
+    }
+
+    /// How large the screen buffer is made, once it is.
+    pub fn screen(&self) -> Option<Screen> {
+        self.buffers.as_ref().map(|buffers| buffers.screen)
+    }
+
+    /// How the blur's techniques read the buffer they blur by texel ([`texel_reads`]).
+    pub fn texel_reads(&self) -> impl Iterator<Item = &str> {
+        self.compiled_blur.texel_reads()
     }
 
     /// Forgets what the targets hold after a frame whose commands were never submitted: the
@@ -658,7 +725,7 @@ impl ShadowPass {
         Ok(())
     }
 
-    /// Receiver-only frames still bind the full fog target.
+    /// Receiver-only frames still bind the fog target.
     pub fn finish_receivers(&self) {
         self.drawn.set(true);
         if let Some(buffers) = &self.buffers {
@@ -671,7 +738,7 @@ impl ShadowPass {
     pub fn clear_stand_in(&self, encoder: &mut wgpu::CommandEncoder) {
         self.drawn.set(false);
         // Clear the screen target even when receiver draws are skipped.
-        // Next frame's underwater pass still binds that full-sized target.
+        // Next frame's underwater pass still binds that target.
         if let Some(buffers) = &self.buffers {
             buffers.clear_buffer(encoder);
         }
@@ -1250,12 +1317,144 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-6, "{sum}");
     }
 
+    #[test]
+    fn the_screen_buffer_is_half_the_view_rounded_up_unless_full() {
+        assert_eq!(Screen::Half.size([1920, 1080]), [960, 540]);
+        assert_eq!(Screen::Half.size([2049, 1153]), [1025, 577]);
+        assert_eq!(Screen::Half.size([1, 1]), [1, 1]);
+        assert_eq!(Screen::Full.size([2049, 1153]), [2049, 1153]);
+    }
+
+    /// A lit program or the blur that reads the screen buffer at its slot by texel offset or by
+    /// its size keeps it full size, named; plain sampling, or texel reads of another texture, do
+    /// not.
+    #[test]
+    fn a_program_reading_the_screen_buffer_by_texel_keeps_it_full_size() {
+        use installed_content_core::pdxshader::program::Stage;
+        use shader_pipeline::binding;
+        let reads = |slot: u32, technique: &str, body: &str| {
+            let (own, other) = (binding(slot, Stage::Pixel), binding(slot + 1, Stage::Pixel));
+            let wgsl = format!(
+                "@group(1) @binding({own}) var screen: texture_2d<f32>;
+                 @group(1) @binding({other}) var other: texture_2d<f32>;
+                 @group(2) @binding({own}) var linear: sampler;
+                 @fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {{
+                     {body}
+                 }}"
+            );
+            let stage = shader_pipeline::Shader {
+                wgsl,
+                independent_draws: false,
+                buffers: Vec::new(),
+                textures: vec![
+                    (own, shader_pipeline::TextureKind::D2),
+                    (other, shader_pipeline::TextureKind::D2),
+                ],
+                samplers: vec![own],
+                sampling_pairs: vec![(own, own), (other, own)],
+                inputs: Vec::new(),
+                clock: Default::default(),
+            };
+            texel_reads(
+                &shader_pipeline::Compiled {
+                    vertex: shader_pipeline::Shader {
+                        wgsl: String::new(),
+                        textures: Vec::new(),
+                        samplers: Vec::new(),
+                        sampling_pairs: Vec::new(),
+                        ..stage.clone()
+                    },
+                    pixel: stage,
+                },
+                slot,
+                technique,
+            )
+        };
+        for (slot, technique) in [
+            (super::super::terrain_shader::SHADOW_SLOT, "terrain"),
+            (super::super::shadow_blur::SOURCE_SLOT, "ShadowBlurHorizontal"),
+        ] {
+            assert_eq!(
+                reads(slot, technique, "return textureSample(screen, linear, uv);"),
+                None
+            );
+            assert_eq!(
+                reads(
+                    slot,
+                    technique,
+                    "return textureSample(other, linear, uv, vec2<i32>(1, 0));"
+                ),
+                None,
+                "another texture's offsets"
+            );
+            assert_eq!(
+                reads(
+                    slot,
+                    technique,
+                    "return textureSample(screen, linear, uv, vec2<i32>(1, 0));"
+                )
+                .as_deref(),
+                Some(
+                    format!(
+                        "half-size shadow buffer not used: the {technique} technique reads the \
+                         shadow buffer by texel: it samples it at texel offsets"
+                    )
+                    .as_str()
+                )
+            );
+            assert_eq!(
+                reads(
+                    slot,
+                    technique,
+                    "let texel = 1.0 / vec2<f32>(textureDimensions(screen));
+                     return textureSample(screen, linear, uv + texel);"
+                )
+                .as_deref(),
+                Some(
+                    format!(
+                        "half-size shadow buffer not used: the {technique} technique reads the \
+                         shadow buffer by texel: it reads its own size"
+                    )
+                    .as_str()
+                )
+            );
+        }
+    }
+
+    /// The receivers' targets and the blur's are made at the screen size, the depth map at its
+    /// own fixed size, and a view whose half rounds the same still makes its own: the blur's
+    /// reach is the view's.
+    #[test]
+    fn the_screen_targets_follow_the_view_at_the_screen_size() {
+        let (_serial, device, _queue) = viewer_foundation::map::test_support::gpu::device();
+        let side = |view: &wgpu::TextureView| {
+            let size = view.texture().size();
+            [size.width, size.height]
+        };
+        for (view, screen, made) in [
+            ([7, 5], Screen::Half, [4, 3]),
+            ([8, 6], Screen::Half, [4, 3]),
+            ([1, 1], Screen::Half, [1, 1]),
+            ([7, 5], Screen::Full, [7, 5]),
+        ] {
+            let buffers = Buffers::new(&device, view, screen);
+            assert_eq!(buffers.size, view);
+            for target in [&buffers.buffer, &buffers.buffer_depth, &buffers.scratch] {
+                assert_eq!(side(target), made, "{view:?} {screen:?}");
+            }
+            for target in [&buffers.depth_map, &buffers.depth_map_depth] {
+                assert_eq!(side(target), [DEPTH_MAP_SIZE; 2]);
+            }
+        }
+    }
+
     /// A screen buffer that holds its clear value is not cleared again, and keeps its content,
     /// until something else may have reached it.
     #[test]
     fn a_clear_screen_buffer_is_not_cleared_again_while_it_stays_clear() {
         let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
-        let buffers = Buffers::new(&device, [4, 4]);
+        // An odd view, whose half-size buffer still holds the texel read below.
+        let buffers = Buffers::new(&device, [7, 5], Screen::Half);
         let submit = |record: &dyn Fn(&mut wgpu::CommandEncoder)| {
             let mut encoder = device.create_command_encoder(&Default::default());
             record(&mut encoder);

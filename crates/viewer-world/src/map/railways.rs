@@ -1663,6 +1663,15 @@ pub struct RailPass {
 }
 
 impl RailPass {
+    /// How the program drawn reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
+    pub fn texel_reads(&self, visit: &mut dyn FnMut(&str)) {
+        if let Some(Ok(rail)) = &*self.compiled.borrow()
+            && let Some(reads) = &rail.texel_reads
+        {
+            visit(reads);
+        }
+    }
+
     /// Builds the pipeline and uploads the rail texture.
     pub fn new(
         device: &wgpu::Device,

@@ -751,6 +751,17 @@ pub struct TreePass {
 }
 
 impl TreePass {
+    /// How the canopy program built for `high` reads the shadow screen buffer by texel
+    /// ([`super::shadow::texel_reads`]).
+    pub fn texel_reads(&self, high: bool, visit: &mut dyn FnMut(&str)) {
+        if let Some((held, lit)) = &*self.compiled_lit.borrow()
+            && *held == high
+            && let Some(reads) = &lit.texel_reads
+        {
+            visit(reads);
+        }
+    }
+
     /// Builds the pipeline and uploads the tree textures.
     pub fn new(
         device: &wgpu::Device,

@@ -353,6 +353,11 @@ pub struct DemilitarizedPass {
 }
 
 impl DemilitarizedPass {
+    /// How the program drawn reads the shadow screen buffer by texel ([`super::shadow::texel_reads`]).
+    pub fn texel_reads(&self) -> Option<&str> {
+        self.compiled.as_ref().ok()?.texel_reads.as_deref()
+    }
+
     /// Builds the pipeline and uploads the six class textures.
     ///
     /// The textures are the same six `map/terrain/border_<class>_<quality>.dds` the ordinary border pass

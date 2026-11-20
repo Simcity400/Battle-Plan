@@ -169,6 +169,16 @@ fn draw_list(parts: &[Option<&OrderField>; ORDER_PARTS], placed: &[Part; ORDER_P
 }
 
 impl OrderPass {
+    /// How each arrow program built reads the shadow screen buffer by texel
+    /// ([`super::shadow::texel_reads`]); a program shared by several arrow types is met once per
+    /// type.
+    pub fn texel_reads(&self) -> impl Iterator<Item = &str> {
+        self.types
+            .values()
+            .flat_map(|resources| resources.compiled.values())
+            .filter_map(|arrow| arrow.texel_reads.as_deref())
+    }
+
     /// Admits this frame's arrows; a hidden plan family admits none, so its labels go too.
     pub fn prepare(
         &mut self,

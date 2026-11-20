@@ -487,6 +487,12 @@ impl Pass {
         Ok(())
     }
 
+    /// How the symbol program reads the shadow screen buffer by texel
+    /// ([`super::shadow::texel_reads`]).
+    pub fn texel_reads(&self) -> Option<&str> {
+        self.program.texel_reads.as_deref()
+    }
+
     pub fn warnings(&self) -> Vec<String> {
         let mut lines: Vec<_> = self
             .field
