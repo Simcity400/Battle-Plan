@@ -11,9 +11,12 @@
 //! pixels earlier passes left outside their viewport, so a mip chain is not
 //! equivalent.
 //!
-//! Bloom blurs the seed horizontally into a second target and vertically back, where the grading
-//! in force gives its taps a weight; with every weight zero the blurs would write zeros, so they
-//! are not drawn and the restore adds a zeroed texture. It remains enabled independently of the
+//! Bloom blurs the seed horizontally into a quarter-size target and vertically into a second one,
+//! which the restore adds, where the grading in force gives its taps a weight; with every weight
+//! zero the blurs would write zeros, so they are not drawn and the restore adds a zeroed texture.
+//! The game blurs at the seed's size; a quarter of the scene halves both blurs' pixels again for
+//! a glow the restore's filtering leaves essentially the same, and the taps keep the seed's
+//! spacing, so the glow is as wide. It remains enabled independently of the
 //! `draw_bloom` display option.
 //!
 //! Restore adds the blurred seed, exposure, tone mapping, gamma, colour cube and level adjustment.
@@ -789,10 +792,11 @@ struct ReductionStep {
 }
 
 /// The seed size, fixed backing size of both reduction targets, shrinking viewports and rectangle
-/// read by the gather pass.
+/// read by the gather pass, and the size of the two bloom blur targets.
 #[derive(Clone, Debug, PartialEq)]
 struct ReductionSchedule {
     seed: [u32; 2],
+    bloom: [u32; 2],
     backing: [u32; 2],
     steps: Vec<ReductionStep>,
     gather: [u32; 2],
@@ -821,6 +825,7 @@ impl ReductionSchedule {
         }
         Self {
             seed,
+            bloom: seed.map(|value| value.div_ceil(2)),
             backing,
             steps,
             gather: active,
@@ -832,10 +837,11 @@ impl ReductionSchedule {
 /// size, and the scene copy's binding of the targets they were made for.
 struct Chain {
     size: [u32; 2],
-    /// The native downsample target: bright-pass RGB and log-luminance alpha,
-    /// later overwritten by the vertical blur and read by `RestoreBloom`.
+    /// The native downsample target: bright-pass RGB and log-luminance alpha.
     seed_view: wgpu::TextureView,
+    /// The horizontal blur's target, and the vertical blur's, which `RestoreBloom` reads.
     bloom_view: wgpu::TextureView,
+    blurred_view: wgpu::TextureView,
     reductions: [wgpu::TextureView; 2],
     schedule: ReductionSchedule,
     copy: wgpu::BindGroup,
@@ -992,8 +998,9 @@ fn native_block(
     ]
 }
 
-/// The two blurs' b2, horizontal into the blur target then vertical back into the seed; `None`
-/// where the grading gives the blur no weight, when the blurs are not drawn at all.
+/// The two blurs' b2, horizontal from the seed then vertical, both into quarter-size targets;
+/// `None` where the grading gives the blur no weight, when the blurs are not drawn at all. The taps
+/// step in seed texels whatever size the blur draws at, so the glow keeps the seed's width.
 fn blur_blocks(chain: &Chain, values: PostValuesResolved) -> Option<[Blur; 2]> {
     let [width, scale, _] = values.bloom;
     blur_weights(width, scale).map(|(weight0, weights, offsets)| {
@@ -1275,7 +1282,8 @@ impl PostPass {
         let size = targets.world_size();
         let schedule = ReductionSchedule::new(size);
         let seed_view = target(device, "post bright/log seed", schedule.seed, BLOOM_FORMAT);
-        let bloom_view = target(device, "post bloom blur", schedule.seed, BLOOM_FORMAT);
+        let bloom_view = target(device, "post bloom blur", schedule.bloom, BLOOM_FORMAT);
+        let blurred_view = target(device, "post bloom blurred", schedule.bloom, BLOOM_FORMAT);
         let reductions = [
             target(device, "post reduction 0", schedule.backing, LUMINANCE_FORMAT),
             target(device, "post reduction 1", schedule.backing, LUMINANCE_FORMAT),
@@ -1298,6 +1306,7 @@ impl PostPass {
             size,
             seed_view,
             bloom_view,
+            blurred_view,
             reductions,
             schedule,
             copy,
@@ -1391,10 +1400,9 @@ impl PostPass {
                 &history.adapted[parity],
             )
         };
-        // The vertical blur writes the blurred seed back into the seed target, so the restore reads
-        // it there; with no weight it reads the zeroed texture the blurs would have written zeros into.
+        // With no weight the restore reads the zeroed texture the blurs would have written zeros into.
         let blurred = if blurs.is_some() {
-            &chain.seed_view
+            &chain.blurred_view
         } else {
             &self.zero_bloom
         };
@@ -1513,7 +1521,7 @@ impl PostPass {
             self.compiled_bloom
                 .draw(encoder, &chain.bloom_view, horizontal);
             mark(encoder, "post bloom x");
-            self.compiled_bloom.draw(encoder, &chain.seed_view, vertical);
+            self.compiled_bloom.draw(encoder, &chain.blurred_view, vertical);
             mark(encoder, "post bloom y");
         }
         let restore = &kept.restore[history.parity];

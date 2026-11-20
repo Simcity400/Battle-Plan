@@ -23,10 +23,10 @@ fn world() -> (MapData, BorderMeshes) {
     let definition = |id| (id, ProvinceDefinition { id, rgb: [0; 3], kind: ProvinceKind::Land, continent: 0 });
     let map = MapData { width: PROVINCES, height: 1, province_ids: (1..=PROVINCES).collect(), definitions: (1..=PROVINCES).map(definition).collect(), country_colors: Default::default() };
     let vertex = Vertex { position: [0.0; 3], uv: [0; 2] };
-    let draws: Vec<BorderDraw> = (1..PROVINCES).map(|a| BorderDraw { province_a: a, province_b: a + 1, chunk: (a - 1) / 10, base_vertex: (a - 1) % 10 * 4, vertex_count: 4, index_count: 6 }).collect();
+    let draws: Vec<BorderDraw> = (1..PROVINCES).map(|a| BorderDraw { province_a: a, province_b: a + 1, chunk: (a - 1) / 10, base_vertex: (a - 1) % 10 * 4, vertex_count: 4, index_count: 6, coarse_base_vertex: (a - 1) % 10 * 4, coarse_vertex_count: 4 }).collect();
     let chunks: Vec<Vec<Vertex>> = (0..PROVINCES.div_ceil(10)).map(|_| vec![vertex; 40]).collect();
-    let mesh = |class| BorderMesh { class, chunks: if class == BorderClass::Province { chunks.clone() } else { Vec::new() }, draws: if class == BorderClass::Province { draws.clone() } else { Vec::new() } };
-    let meshes = BorderMeshes { meshes: BorderClass::ALL.iter().map(|&class| mesh(class)).collect(), hidden: BorderMesh { class: BorderClass::Province, chunks: Vec::new(), draws: Vec::new() }, indices: vec![0, 2, 1, 2, 3, 1], one_pixel_provinces: vec![] };
+    let mesh = |class| BorderMesh { class, chunks: if class == BorderClass::Province { chunks.clone() } else { Vec::new() }, coarse_chunks: if class == BorderClass::Province { chunks.clone() } else { Vec::new() }, draws: if class == BorderClass::Province { draws.clone() } else { Vec::new() } };
+    let meshes = BorderMeshes { meshes: BorderClass::ALL.iter().map(|&class| mesh(class)).collect(), hidden: BorderMesh { class: BorderClass::Province, chunks: Vec::new(), coarse_chunks: Vec::new(), draws: Vec::new() }, indices: vec![0, 2, 1, 2, 3, 1], one_pixel_provinces: vec![] };
     (map, meshes)
 }
 
@@ -471,7 +471,7 @@ fn naval_dated_with_its_hour(name: &str, whole: bool) -> Vec<replay_data::Hour> 
     use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
     let definition = |id, kind| (id, ProvinceDefinition { id, rgb: [0; 3], kind, continent: 0 });
     let map = MapData { width: 2, height: 1, province_ids: vec![1, 2], definitions: [definition(1, ProvinceKind::Land), definition(2, ProvinceKind::Sea)].into_iter().collect(), country_colors: Default::default() };
-    let empty = |class| BorderMesh { class, chunks: vec![], draws: vec![] };
+    let empty = |class| BorderMesh { class, chunks: vec![], coarse_chunks: vec![], draws: vec![] };
     let meshes = BorderMeshes { meshes: BorderClass::ALL.iter().map(|&class| empty(class)).collect(), hidden: empty(BorderClass::Province), indices: vec![], one_pixel_provinces: vec![] };
     let fog = FogContent { topology: Topology { land: BTreeSet::from([1]), sea: BTreeSet::from([2]), neighbors: BTreeMap::from([(1, vec![2]), (2, vec![1])]) }, defines: test_defines() };
     let layers: Vec<Box<dyn Layer>> = vec![

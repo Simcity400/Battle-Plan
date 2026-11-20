@@ -24,7 +24,7 @@ use installed_content_states::states::StateDefinition;
 
 use {
     super::{
-        borders::{self, BorderClass, BorderDraw, BorderMeshes},
+        borders::{self, BorderClass, BorderDraw, BorderMesh, BorderMeshes},
         demilitarized::Zone,
         political::Regions,
     },
@@ -627,11 +627,42 @@ fn chunk_bytes(chunk: &[borders::Vertex]) -> Vec<u8> {
 /// The engine shares one index buffer across every draw and offsets it by the draw's base vertex;
 /// wgpu can do that too, but folding the base vertex in here lets every strip of a class that lands
 /// in one vertex chunk be drawn with a single call instead of one call per province pair.
-fn run_indices(base_vertex: u32, points: u32, out: &mut Vec<u32>) {
+pub(super) fn run_indices(base_vertex: u32, points: u32, out: &mut Vec<u32>) {
     for segment in 0..points.saturating_sub(1) {
         let base = base_vertex + segment * 2;
         out.extend_from_slice(&[base, base + 2, base + 1, base + 2, base + 3, base + 1]);
     }
+}
+
+/// The fine level's quads of `draw`, then, into `coarse`, its coarse level's.
+fn draw_indices(draw: &BorderDraw, fine: &mut Vec<u32>, coarse: &mut Vec<u32>) {
+    run_indices(draw.base_vertex, draw.vertex_count / 2, fine);
+    run_indices(draw.coarse_base_vertex, draw.coarse_vertex_count / 2, coarse);
+}
+
+/// One run's index list: the fine level's indices, then the coarse level's, which index the
+/// chunk's coarse vertices ([`super::borders::BorderMesh::coarse_chunks`]); and how many are fine.
+fn joined(mut fine: Vec<u32>, coarse: Vec<u32>) -> (u32, Vec<u32>) {
+    let count = fine.len() as u32;
+    fine.extend(coarse);
+    (count, fine)
+}
+
+/// Each chunk's index list ([`joined`]) over the draws in it, for chunks below `chunks`.
+fn per_chunk(chunks: usize, draws: impl Iterator<Item = BorderDraw>) -> BTreeMap<usize, (u32, Vec<u32>)> {
+    let mut lists: BTreeMap<usize, (Vec<u32>, Vec<u32>)> = BTreeMap::new();
+    for draw in draws {
+        if (draw.chunk as usize) >= chunks {
+            continue;
+        }
+        let (fine, coarse) = lists.entry(draw.chunk as usize).or_default();
+        draw_indices(&draw, fine, coarse);
+    }
+    lists
+        .into_iter()
+        .filter(|(_, (fine, _))| !fine.is_empty())
+        .map(|(chunk, (fine, coarse))| (chunk, joined(fine, coarse)))
+        .collect()
 }
 
 /// One hour's border index runs, bucketed without a device so a builder thread
@@ -646,6 +677,8 @@ pub struct ClassPlan {
 struct PlannedRun {
     source: usize,
     chunk: usize,
+    /// How many of `indices` are the fine level's ([`joined`]).
+    fine: u32,
     /// Shared with a neighbouring hour's plan when equal ([`ClassPlan::share`]),
     /// which is how [`BorderPass::set_plan`] knows to keep the buffer it has.
     indices: Arc<Vec<u32>>,
@@ -711,20 +744,12 @@ impl ClassPlan {
             .meshes
             .get(source.bucket())
             .map_or(0, |mesh| mesh.chunks.len());
-        let mut per_chunk: BTreeMap<usize, Vec<u32>> = BTreeMap::new();
-        for draw in draws {
-            if (draw.chunk as usize) >= chunks {
-                continue;
-            }
-            let indices = per_chunk.entry(draw.chunk as usize).or_default();
-            run_indices(draw.base_vertex, draw.vertex_count / 2, indices);
-        }
-        per_chunk
+        per_chunk(chunks, draws)
             .into_iter()
-            .filter(|(_, indices)| !indices.is_empty())
-            .map(|(chunk, indices)| PlannedRun {
+            .map(|(chunk, (fine, indices))| PlannedRun {
                 source: source.bucket(),
                 chunk,
+                fine,
                 indices: Arc::new(indices),
             })
             .collect()
@@ -757,17 +782,17 @@ impl ClassPlan {
             }
             let runs = &mut self.runs[at];
             for &chunk in chunks {
-                let mut indices = Vec::new();
+                let (mut fine, mut coarse) = (Vec::new(), Vec::new());
                 for &at in draws.get(chunk).map_or(&[][..], Vec::as_slice) {
-                    let draw = mesh.draws[at as usize];
                     if class(at as usize) == Some(*target) {
-                        run_indices(draw.base_vertex, draw.vertex_count / 2, &mut indices);
+                        draw_indices(&mesh.draws[at as usize], &mut fine, &mut coarse);
                     }
                 }
                 runs.retain(|run| run.chunk != chunk);
-                if !indices.is_empty() {
+                if !fine.is_empty() {
                     let place = runs.partition_point(|run| run.chunk < chunk);
-                    runs.insert(place, PlannedRun { source: BorderClass::Province.bucket(), chunk, indices: Arc::new(indices) });
+                    let (fine, indices) = joined(fine, coarse);
+                    runs.insert(place, PlannedRun { source: BorderClass::Province.bucket(), chunk, fine, indices: Arc::new(indices) });
                 }
             }
         }
@@ -852,12 +877,14 @@ fn planned_buffer(device: &wgpu::Device, indices: &Arc<Vec<u32>>) -> io::Result<
     Ok(made)
 }
 
-/// One index buffer over one vertex chunk of one source bucket.
+/// One index buffer over one vertex chunk of one source bucket: `fine` indices of the fine level,
+/// then `coarse` of the coarse level.
 struct Run {
     source: usize,
     chunk: usize,
     indices: Arc<wgpu::Buffer>,
-    count: u32,
+    fine: u32,
+    coarse: u32,
     /// The planned indices the buffer holds, when it came from a [`ClassPlan`].
     planned: Option<Arc<Vec<u32>>>,
 }
@@ -867,6 +894,8 @@ struct Run {
 pub struct BorderFrame {
     /// `vCamPos.y`, which decides the province and state fades.
     pub camera_height: f32,
+    /// Whether the camera draws the coarse level ([`super::line_lod::coarse`]).
+    pub coarse: bool,
     /// The content's province and state fade heights; see [`borders::class_alpha`].
     pub fades: [[f32; 2]; 2],
     /// Whether the map mode draws province borders; the resources, infrastructure and manpower
@@ -899,8 +928,10 @@ pub struct BorderPass {
     compiled: Result<super::border_shader::Border, String>,
     textures: Vec<wgpu::TextureView>,
     pub compiled_straits: super::strait_shader::Straits,
-    /// Vertex chunks per source bucket, in [`BorderClass::ALL`] order.
+    /// Vertex chunks per source bucket, in [`BorderClass::ALL`] order, at the fine level and at
+    /// the coarse level.
     vertices: Vec<Vec<wgpu::Buffer>>,
+    coarse_vertices: Vec<Vec<wgpu::Buffer>>,
     /// Index runs per drawn class, in [`BorderClass::ALL`] order.
     runs: Vec<Vec<Run>>,
     /// Every traced edge, per source bucket in [`BorderClass::ALL`] order, kept for re-bucketing
@@ -959,6 +990,7 @@ impl BorderPass {
             textures,
             compiled_straits,
             vertices: Vec::new(),
+            coarse_vertices: Vec::new(),
             runs: BorderClass::ALL.iter().map(|_| Vec::new()).collect(),
             draws: Vec::new(),
         })
@@ -975,24 +1007,28 @@ impl BorderPass {
         straits: &[StraitVertex],
     ) -> io::Result<()> {
         self.compiled_straits.upload(device, straits)?;
-        self.vertices = meshes
-            .meshes
-            .iter()
-            .map(|mesh| {
-                mesh.chunks
-                    .iter()
-                    .enumerate()
-                    .map(|(index, chunk)| {
-                        buffer(
-                            device,
-                            &format!("border {} chunk {index}", mesh.class.texture_name()),
-                            wgpu::BufferUsages::VERTEX,
-                            &chunk_bytes(chunk),
-                        )
-                    })
-                    .collect::<io::Result<Vec<_>>>()
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        let upload = |level: &str, chunks: fn(&BorderMesh) -> &Vec<Vec<borders::Vertex>>| {
+            meshes
+                .meshes
+                .iter()
+                .map(|mesh| {
+                    chunks(mesh)
+                        .iter()
+                        .enumerate()
+                        .map(|(index, chunk)| {
+                            buffer(
+                                device,
+                                &format!("border {} {level}chunk {index}", mesh.class.texture_name()),
+                                wgpu::BufferUsages::VERTEX,
+                                &chunk_bytes(chunk),
+                            )
+                        })
+                        .collect::<io::Result<Vec<_>>>()
+                })
+                .collect::<io::Result<Vec<_>>>()
+        };
+        self.vertices = upload("", |mesh| &mesh.chunks)?;
+        self.coarse_vertices = upload("coarse ", |mesh| &mesh.coarse_chunks)?;
         self.draws = meshes
             .meshes
             .iter()
@@ -1064,7 +1100,8 @@ impl BorderPass {
                     Ok(Run {
                         source: run.source,
                         chunk: run.chunk,
-                        count: run.indices.len() as u32,
+                        fine: run.fine,
+                        coarse: run.indices.len() as u32 - run.fine,
                         indices: planned_buffer(device, &run.indices)?,
                         planned: Some(Arc::clone(&run.indices)),
                     })
@@ -1085,22 +1122,14 @@ impl BorderPass {
         draws: impl Iterator<Item = BorderDraw>,
     ) -> io::Result<Vec<Run>> {
         let chunks = self.vertices.get(source.bucket()).map_or(0, Vec::len);
-        let mut per_chunk: BTreeMap<usize, Vec<u32>> = BTreeMap::new();
-        for draw in draws {
-            if (draw.chunk as usize) >= chunks {
-                continue;
-            }
-            let indices = per_chunk.entry(draw.chunk as usize).or_default();
-            run_indices(draw.base_vertex, draw.vertex_count / 2, indices);
-        }
-        per_chunk
+        per_chunk(chunks, draws)
             .into_iter()
-            .filter(|(_, indices)| !indices.is_empty())
-            .map(|(chunk, indices)| {
+            .map(|(chunk, (fine, indices))| {
                 Ok(Run {
                     source: source.bucket(),
                     chunk,
-                    count: indices.len() as u32,
+                    fine,
+                    coarse: indices.len() as u32 - fine,
                     indices: Arc::new(buffer(
                         device,
                         "border indices",
@@ -1142,13 +1171,15 @@ impl BorderPass {
                         .iter()
                         .filter(|_| alpha > 0.)
                         .filter_map(|run| {
-                            self.vertices
+                            let level = if frame.coarse { &self.coarse_vertices } else { &self.vertices };
+                            let range = super::line_lod::drawn(run.fine, run.coarse, frame.coarse);
+                            level
                                 .get(run.source)
                                 .and_then(|chunks| chunks.get(run.chunk))
                                 .map(|vertices| super::border_shader::Run {
                                     vertices,
                                     indices: &run.indices,
-                                    count: run.count,
+                                    range,
                                 })
                         })
                         .collect(),

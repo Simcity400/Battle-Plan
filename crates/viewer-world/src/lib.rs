@@ -46,6 +46,7 @@ pub mod map {
     pub mod gradient;
     pub mod labels;
     pub(crate) mod lane;
+    pub mod line_lod;
     pub mod map_buildings;
     pub mod map_mode;
     pub mod mapframe;

@@ -272,6 +272,9 @@ fn widened_quads_carry_the_right_rails_uv_and_winding() {
     }
     // The first point is the first crack midpoint, and smoothing left it there.
     assert_eq!(vertices[0].position[0], 0.0);
+    // A straight boundary's coarse level is its two ends, widened exactly as the fine ones.
+    assert_eq!((draw.coarse_base_vertex, draw.coarse_vertex_count), (0, 4));
+    assert_eq!(mesh.coarse_chunks[0], [vertices[0], vertices[1], vertices[14], vertices[15]]);
     // The shared index buffer is the engine's quad pattern.
     assert_eq!(meshes.indices[..6], [0, 2, 1, 2, 3, 1]);
     assert_eq!(meshes.indices[6..12], [2, 4, 3, 4, 5, 3]);
@@ -433,6 +436,16 @@ fn chunking_splits_a_long_polyline_and_keeps_the_strip_continuous() {
     assert_eq!(first.uv, [0, 3]);
     assert_eq!(second.uv, [0, 3]);
     assert_eq!(mesh.chunks[2][0].uv, [0, 6]);
+    // Each run's coarse level goes to its own chunk and keeps the run's ends, so the coarse
+    // strip meets itself at the seams too.
+    assert_eq!(
+        mesh.draws.iter().map(|draw| (draw.chunk, draw.coarse_base_vertex, draw.coarse_vertex_count)).collect::<Vec<_>>(),
+        [(0, 0, 4), (1, 0, 4), (2, 0, 4)]
+    );
+    assert_eq!(mesh.coarse_chunks.len(), 3);
+    assert_eq!(mesh.coarse_chunks[0][2].position, mesh.coarse_chunks[1][0].position);
+    let counters: Vec<i16> = mesh.coarse_chunks.iter().flat_map(|chunk| chunk.iter().step_by(2).map(|vertex| vertex.uv[1])).collect();
+    assert_eq!(counters, [0, 3, 3, 6, 6, 7]);
     // Every point still appears: three runs of four points with two shared points.
     // Three runs of four, four and two points, the middle two sharing a point with a
     // neighbour: 4 + 4 + 2 points become 20 vertices for the 8 point boundary.
@@ -444,6 +457,65 @@ fn chunking_splits_a_long_polyline_and_keeps_the_strip_continuous() {
     );
     // A limit too small to hold a segment is a named error.
     assert!(build_with_limit(&map, &always(BorderClass::Country), &dry, &heights, 1.5, 3).is_err());
+}
+
+#[test]
+fn the_coarse_level_keeps_the_strip_within_the_tolerance_at_its_width() {
+    // A boundary along row 4 with a two-row notch over columns 6 to 9, and a ridge across it at
+    // columns 12 and 13.
+    let (width, height) = (16_u32, 8_u32);
+    let ids: Vec<u32> = (0..height)
+        .flat_map(|y| (0..width).map(move |x| if y < if (6..10).contains(&x) { 2 } else { 4 } { 1 } else { 2 }))
+        .collect();
+    let mut values = flat(width, height);
+    for y in 0..height {
+        for x in 12..14 {
+            values[(y * width + x) as usize] = 135;
+        }
+    }
+    let map = ProvinceMap { width, height, ids: &ids };
+    let heights = HeightField { width, height, values: &values };
+    let meshes = build(&map, &always(BorderClass::Country), &dry, &heights, 1.5).unwrap();
+    let mesh = meshes.mesh(BorderClass::Country);
+    assert_eq!(mesh.draws.len(), 1);
+    let draw = mesh.draws[0];
+    let fine = &mesh.chunks[0];
+    let coarse = &mesh.coarse_chunks[0][draw.coarse_base_vertex as usize..][..draw.coarse_vertex_count as usize];
+    assert!(4 < coarse.len() && coarse.len() < fine.len(), "{} of {}", coarse.len(), fine.len());
+    let centre = |pair: &[Vertex]| {
+        [(pair[0].position[0] + pair[1].position[0]) * 0.5, (pair[0].position[2] + pair[1].position[2]) * 0.5]
+    };
+    let line: Vec<[f32; 2]> = coarse.chunks(2).map(centre).collect();
+    for pair in coarse.chunks(2) {
+        let across = (pair[0].position[0] - pair[1].position[0]).hypot(pair[0].position[2] - pair[1].position[2]);
+        assert!((across - 1.5).abs() < 1e-4, "{pair:?}");
+        assert_eq!([pair[0].uv[0], pair[1].uv[0]], [0, 1]);
+        assert_eq!(pair[0].uv[1], pair[1].uv[1]);
+    }
+    let counters: Vec<i16> = coarse.iter().step_by(2).map(|vertex| vertex.uv[1]).collect();
+    assert!(counters.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!((counters[0], *counters.last().unwrap()), (0, fine[fine.len() - 1].uv[1]));
+    for pair in fine.chunks(2) {
+        let point = centre(pair);
+        let off = line.windows(2).map(|segment| line_lod::offset(segment[0], segment[1], point).0).fold(f32::INFINITY, f32::min);
+        assert!(off <= line_lod::TOLERANCE + 1e-4, "{point:?} is {off} off the coarse line");
+    }
+    // The ridge is under a straight stretch: only its height keeps points on it.
+    assert!(line.iter().any(|point| (11.0..15.0).contains(&point[0])), "{line:?}");
+    // A zone or hover outline over the boundary draws the same strip at each level.
+    let triangles = |strip: &[Vertex]| -> Vec<[[f32; 3]; 3]> {
+        let mut indices = Vec::new();
+        super::super::border_pass::run_indices(0, strip.len() as u32 / 2, &mut indices);
+        indices.chunks(3).map(|triangle| std::array::from_fn(|corner| strip[triangle[corner] as usize].position)).collect()
+    };
+    let zone = super::super::demilitarized::ZonePlan::of_draws(
+        &meshes,
+        vec![(BorderClass::Country, 0)],
+        |_, _| true,
+        |_, _| BorderClass::Country,
+    );
+    assert_eq!(zone.triangles(true), triangles(coarse));
+    assert_eq!(zone.triangles(false), triangles(fine));
 }
 
 #[test]

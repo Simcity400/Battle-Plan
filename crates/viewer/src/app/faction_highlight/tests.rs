@@ -26,12 +26,14 @@ fn plan() -> FactionHighlight {
                 .map(|&class| BorderMesh {
                     class,
                     chunks: vec![],
+                    coarse_chunks: vec![],
                     draws: vec![],
                 })
                 .collect(),
             hidden: BorderMesh {
                 class: BorderClass::Province,
                 chunks: vec![],
+                coarse_chunks: vec![],
                 draws: vec![],
             },
             indices: vec![],

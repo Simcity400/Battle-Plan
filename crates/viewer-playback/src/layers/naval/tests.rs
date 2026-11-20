@@ -290,7 +290,7 @@ fn political_content() -> Arc<crate::layers::political::Content> {
     use viewer_world::map::borders::{BorderClass, BorderMesh, BorderMeshes};
     let definition = |id, kind| (id, ProvinceDefinition { id, rgb: [0; 3], kind, continent: 0 });
     let map = MapData { width: 2, height: 1, province_ids: vec![1, 2], definitions: [definition(1, ProvinceKind::Land), definition(2, ProvinceKind::Sea)].into_iter().collect(), country_colors: Default::default() };
-    let empty = |class| BorderMesh { class, chunks: vec![], draws: vec![] };
+    let empty = |class| BorderMesh { class, chunks: vec![], coarse_chunks: vec![], draws: vec![] };
     let meshes = BorderMeshes { meshes: BorderClass::ALL.iter().map(|&class| empty(class)).collect(), hidden: empty(BorderClass::Province), indices: vec![], one_pixel_provinces: vec![] };
     Arc::new(crate::layers::political::Content::new(Arc::new(map), std::sync::Arc::new(meshes)))
 }

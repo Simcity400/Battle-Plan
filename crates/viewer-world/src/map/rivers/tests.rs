@@ -24,6 +24,11 @@ fn flow_runs_preserve_native_group_parity_and_index_order() {
         ribbon(&river, &heights, &mut mesh);
     }
     assert_eq!(
+        (&mesh.coarse_runs, &mesh.coarse_indices, mesh.vertices.len()),
+        (&mesh.runs, &mesh.indices, 4 * 3 * 2),
+        "three points with a fade between them keep every point, so the coarse level draws the fine quads"
+    );
+    assert_eq!(
         mesh.runs,
         vec![
             super::super::river_shader::Run {
@@ -318,11 +323,11 @@ fn a_ribbon_carries_the_tangent_the_uv_and_the_end_fade() {
     assert_eq!(trace.rivers.len(), 1);
     assert_eq!(mesh.ribbons, 1);
     let points = trace.rivers[0].points.len();
-    assert_eq!(mesh.vertices.len(), points * 2);
+    let (fine, coarse) = mesh.vertices.split_at(points * 2);
     assert_eq!(mesh.indices.len(), (points - 1) * 6);
 
     // The two rails of one point share a position along the flow and differ across it.
-    let (left, right) = (mesh.vertices[40], mesh.vertices[41]);
+    let (left, right) = (fine[40], fine[41]);
     assert_eq!(left.uv_tangent[0], 0.0);
     assert_eq!(right.uv_tangent[0], 1.0);
     assert_eq!(left.uv_tangent[1], right.uv_tangent[1]);
@@ -335,16 +340,145 @@ fn a_ribbon_carries_the_tangent_the_uv_and_the_end_fade() {
         "ribbon is {across} wide"
     );
     // The along-flow coordinate is the point index, independent of arc length.
-    let step = mesh.vertices[42].uv_tangent[1] - left.uv_tangent[1];
+    let step = fine[42].uv_tangent[1] - left.uv_tangent[1];
     assert_eq!(step, 1.0);
     assert_eq!(left.uv_tangent[1], 20.0);
 
     // A source fades at its first end; its final pair and middle are opaque.
-    assert_eq!(mesh.vertices[0].position[3], 0.0);
-    assert_eq!(mesh.vertices.last().unwrap().position[3], 1.0);
-    assert_eq!(mesh.vertices[points].position[3], 1.0);
+    assert_eq!(fine[0].position[3], 0.0);
+    assert_eq!(fine.last().unwrap().position[3], 1.0);
+    assert_eq!(fine[points].position[3], 1.0);
     // Byte 120 is sampled as height 12.0, without a sea-level clamp.
-    assert_eq!(mesh.vertices[0].position[1], 12.0);
+    assert_eq!(fine[0].position[1], 12.0);
+
+    // The coarse level keeps the ends and the knees of the taper and fade, in its own vertices
+    // after the fine ones. On a straight river each kept point is the fine vertex pair of its
+    // point index, and the fine rails and fade stand within the tolerances of the coarse ribbon.
+    assert!(coarse.len() * 4 < fine.len(), "{} of {}", coarse.len(), fine.len());
+    assert_eq!(mesh.coarse_indices.len(), (coarse.len() / 2 - 1) * 6);
+    assert!(mesh.coarse_indices.iter().all(|&index| index as usize >= fine.len()));
+    assert_eq!(mesh.coarse_runs.len(), 1);
+    assert_eq!(mesh.coarse_runs[0].direction, mesh.runs[0].direction);
+    let fine_of = |vertex: &RiverVertex| fine[vertex.uv_tangent[1] as usize * 2 + vertex.uv_tangent[0] as usize];
+    for vertex in coarse {
+        assert_eq!(*vertex, fine_of(vertex));
+    }
+    let kept: Vec<usize> = coarse.iter().step_by(2).map(|vertex| vertex.uv_tangent[1] as usize).collect();
+    assert_eq!((kept[0], *kept.last().unwrap()), (0, points - 1));
+    assert!(coarse_rail_error(fine, coarse) <= super::super::line_lod::TOLERANCE + 1e-4);
+    for segment in kept.windows(2) {
+        let (a, b) = (segment[0], segment[1]);
+        for index in a..=b {
+            let t = (index - a) as f32 / (b - a) as f32;
+            for side in 0..2 {
+                let (start, end, fine) = (fine[a * 2 + side], fine[b * 2 + side], fine[index * 2 + side]);
+                let alpha = start.position[3] + (end.position[3] - start.position[3]) * t;
+                assert!((fine.position[3] - alpha).abs() <= COARSE_ALPHA_TOLERANCE + 1e-4, "point {index}");
+            }
+        }
+    }
+}
+
+/// The most a ribbon's coarse rails stand off its fine ones: at a kept point, the coarse vertex
+/// off the fine vertex, and at a dropped point, the fine vertex off the coarse rail beside it.
+fn coarse_rail_error(fine: &[RiverVertex], coarse: &[RiverVertex]) -> f32 {
+    let xz = |vertex: &RiverVertex| [vertex.position[0], vertex.position[2]];
+    let kept: Vec<usize> = coarse.iter().step_by(2).map(|vertex| vertex.uv_tangent[1] as usize).collect();
+    let mut worst = 0.0_f32;
+    for (at, &index) in kept.iter().enumerate() {
+        for side in 0..2 {
+            let here = xz(&coarse[at * 2 + side]);
+            worst = worst.max(distance(here, xz(&fine[index * 2 + side])));
+            if let Some(&next) = kept.get(at + 1) {
+                let there = xz(&coarse[(at + 1) * 2 + side]);
+                for dropped in index + 1..next {
+                    worst = worst.max(super::super::line_lod::offset(here, there, xz(&fine[dropped * 2 + side])).0);
+                }
+            }
+        }
+    }
+    worst
+}
+
+/// A wide river's banks swing by several units round a bend its centre makes by one: the coarse
+/// level keeps points there until both banks stand within the tolerance of the fine ones.
+#[test]
+fn a_wide_river_keeps_its_banks_within_the_tolerance_round_a_small_sharp_bend() {
+    let mut points: Vec<[f32; 2]> = (0..400).map(|x| [x as f32, 8.0]).collect();
+    for point in &mut points[200..203] {
+        point[1] = 9.0;
+    }
+    let river = River {
+        points,
+        widths: vec![99; 400],
+        seed: Seed::Source,
+        seed_pixel: [0, 8],
+    };
+    let values = flat(8, 8);
+    let mut mesh = RiverMesh::default();
+    ribbon(
+        &river,
+        &HeightField {
+            width: 8,
+            height: 8,
+            values: &values,
+        },
+        &mut mesh,
+    );
+    let (fine, coarse) = mesh.vertices.split_at(800);
+    let error = coarse_rail_error(fine, coarse);
+    assert!(error <= super::super::line_lod::TOLERANCE + 1e-4, "a coarse bank stands {error} off");
+    assert!(coarse.len() * 10 < fine.len(), "{} of {}", coarse.len(), fine.len());
+}
+
+/// A point kept for the banks splits a span: the fade of every point it still drops is measured
+/// against the new span, so a bend inside the source's fade keeps the fade within its tolerance too.
+#[test]
+fn a_bend_in_the_fade_keeps_the_fade_within_its_tolerance_as_well_as_the_banks() {
+    for (bend, lift, width) in (1..40).flat_map(|bend| [0.6_f32, 1.0, 2.0, 3.5].into_iter().flat_map(move |lift| [24_u8, 60, 99].map(|width| (bend, lift, width)))) {
+        let mut points: Vec<[f32; 2]> = (0..60).map(|x| [x as f32, 8.0]).collect();
+        for point in &mut points[bend..bend + 2] {
+            point[1] = 8.0 + lift;
+        }
+        let river = River {
+            points,
+            widths: vec![width; 60],
+            seed: Seed::Source,
+            seed_pixel: [0, 8],
+        };
+        let values = flat(8, 8);
+        let mut mesh = RiverMesh::default();
+        ribbon(
+            &river,
+            &HeightField {
+                width: 8,
+                height: 8,
+                values: &values,
+            },
+            &mut mesh,
+        );
+        let (fine, coarse) = mesh.vertices.split_at(120);
+        assert!(coarse_rail_error(fine, coarse) <= super::super::line_lod::TOLERANCE + 1e-4, "bend at {bend}, lift {lift}, width {width}");
+        let kept: Vec<usize> = coarse.iter().step_by(2).map(|vertex| vertex.uv_tangent[1] as usize).collect();
+        // The fade is drawn along each rail: measured at each fine rail vertex's place on the coarse rail.
+        let xz = |vertex: &RiverVertex| [vertex.position[0], vertex.position[2]];
+        for (at, segment) in kept.windows(2).enumerate() {
+            let (a, b) = (segment[0], segment[1]);
+            for side in 0..2 {
+                let (start, end) = (&coarse[at * 2 + side], &coarse[(at + 1) * 2 + side]);
+                for index in a..=b {
+                    let fine = &fine[index * 2 + side];
+                    let (_, t) = super::super::line_lod::offset(xz(start), xz(end), xz(fine));
+                    let alpha = start.position[3] + (end.position[3] - start.position[3]) * t;
+                    assert!(
+                        (fine.position[3] - alpha).abs() <= COARSE_ALPHA_TOLERANCE + 1e-4,
+                        "bend at {bend}, lift {lift}, width {width}: rail {side} point {index} fades {} against {alpha}",
+                        fine.position[3]
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

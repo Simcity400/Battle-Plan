@@ -34,7 +34,7 @@ use replay_data::rows::tables;
 
 use {
     super::{
-        border_pass::{BorderAssets, land_class},
+        border_pass::{BorderAssets, land_class, run_indices},
         borders::{BorderClass, BorderMeshes, Vertex},
         political::Regions,
     },
@@ -154,12 +154,23 @@ pub struct ZonePlan {
     edges: usize,
 }
 
+/// One class's strips at both levels, as the border pass holds them ([`super::line_lod`]): the fine
+/// level's vertices then the coarse level's, and the fine level's indices then the coarse level's.
 #[derive(Clone, Debug, PartialEq)]
 struct PlannedRun {
     class: BorderClass,
     /// In `borders::Vertex`'s 16-byte layout.
     vertices: Vec<u8>,
     indices: Vec<u32>,
+    /// How many of `indices` are the fine level's.
+    fine: u32,
+}
+
+/// One class's strips while they are gathered, each level on its own.
+#[derive(Default)]
+struct Gathered {
+    fine: (Vec<Vertex>, Vec<u32>),
+    coarse: (Vec<Vertex>, Vec<u32>),
 }
 
 impl ZonePlan {
@@ -233,22 +244,20 @@ impl ZonePlan {
         let mut plan = Self::default();
         // One bucket per base material; a land edge's material is the hour's own class, every other
         // edge keeps the class the content settled at trace time.
-        let mut per_class: Vec<(Vec<Vertex>, Vec<u32>)> = BorderClass::ALL
-            .iter()
-            .map(|_| (Vec::new(), Vec::new()))
-            .collect();
+        let mut per_class: Vec<Gathered> = BorderClass::ALL.iter().map(|_| Gathered::default()).collect();
         // Material 0xff is remapped to Province only when a custom highlight
         // claims it; retaining these strips closes coasts and isolated islands.
         for (mesh, hidden, draw) in draws {
             if !highlight(draw.province_a, draw.province_b) {
                 continue;
             }
-            let Some(chunk) = mesh.chunks.get(draw.chunk as usize) else {
-                continue;
+            let strip = |chunks: &'a [Vec<Vertex>], base: u32, count: u32| {
+                chunks.get(draw.chunk as usize)?.get(base as usize..(base + count) as usize)
             };
-            let first = draw.base_vertex as usize;
-            let last = first + draw.vertex_count as usize;
-            let Some(strip) = chunk.get(first..last) else {
+            let (Some(fine), Some(coarse)) = (
+                strip(&mesh.chunks, draw.base_vertex, draw.vertex_count),
+                strip(&mesh.coarse_chunks, draw.coarse_base_vertex, draw.coarse_vertex_count),
+            ) else {
                 continue;
             };
             let class = match (mesh.class, hidden) {
@@ -256,42 +265,61 @@ impl ZonePlan {
                 (BorderClass::Province, false) => land(draw.province_a, draw.province_b),
                 (other, false) => other,
             };
-            let (vertices, indices) = &mut per_class[class.bucket()];
-            let base = vertices.len() as u32;
-            vertices.extend_from_slice(strip);
-            for segment in 0..(draw.vertex_count / 2).saturating_sub(1) {
-                let quad = base + segment * 2;
-                indices.extend_from_slice(&[
-                    quad,
-                    quad + 2,
-                    quad + 1,
-                    quad + 2,
-                    quad + 3,
-                    quad + 1,
-                ]);
+            let gathered = &mut per_class[class.bucket()];
+            for ((vertices, indices), strip) in [(&mut gathered.fine, fine), (&mut gathered.coarse, coarse)] {
+                run_indices(vertices.len() as u32, strip.len() as u32 / 2, indices);
+                vertices.extend_from_slice(strip);
             }
             plan.edges += 1;
         }
-        for (class, (vertices, indices)) in BorderClass::ALL.iter().zip(per_class) {
+        for (class, gathered) in BorderClass::ALL.iter().zip(per_class) {
+            let Gathered { fine: (mut vertices, mut indices), coarse } = gathered;
             if indices.is_empty() {
                 continue;
             }
+            let fine = indices.len() as u32;
+            let base = vertices.len() as u32;
+            vertices.extend(coarse.0);
+            indices.extend(coarse.1.into_iter().map(|index| index + base));
             plan.runs.push(PlannedRun {
                 class: *class,
                 vertices: vertex_bytes(&vertices),
                 indices,
+                fine,
             });
         }
         plan
     }
 }
 
-/// One class's highlighted geometry.
+#[cfg(test)]
+impl ZonePlan {
+    /// The positions of the triangles the plan draws at the coarse level or the fine one.
+    pub(crate) fn triangles(&self, coarse: bool) -> Vec<[[f32; 3]; 3]> {
+        let mut triangles = Vec::new();
+        for run in &self.runs {
+            let position = |index: u32| -> [f32; 3] {
+                let at = index as usize * VERTEX_STRIDE as usize;
+                std::array::from_fn(|axis| {
+                    f32::from_le_bytes(run.vertices[at + axis * 4..][..4].try_into().expect("four bytes"))
+                })
+            };
+            let drawn = super::line_lod::drawn(run.fine, run.indices.len() as u32 - run.fine, coarse);
+            let indices = &run.indices[drawn.start as usize..drawn.end as usize];
+            triangles.extend(indices.chunks(3).map(|triangle| std::array::from_fn(|corner| position(triangle[corner]))));
+        }
+        triangles
+    }
+}
+
+/// One class's highlighted geometry: `fine` indices of the fine level, then `coarse` of the coarse
+/// level.
 struct Run {
     class: BorderClass,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
-    count: u32,
+    fine: u32,
+    coarse: u32,
 }
 
 /// How the edges a demilitarised zone splits from the ordinary border buckets draw.
@@ -443,7 +471,8 @@ impl DemilitarizedPass {
                     wgpu::BufferUsages::VERTEX,
                     &run.vertices,
                 )?,
-                count: run.indices.len() as u32,
+                fine: run.fine,
+                coarse: run.indices.len() as u32 - run.fine,
                 indices: buffer(
                     device,
                     "highlighted indices",
@@ -467,17 +496,18 @@ impl DemilitarizedPass {
         targets: &Targets,
         inputs: super::border_shader::Inputs<'_>,
         edges: ZoneEdges,
+        coarse: bool,
     ) -> io::Result<()> {
         // Native buckets follow material order, with reason-byte order inside
         // each: DMZ 7 before the custom palette entries at 10+. The faction hover outline is
         // interaction feedback, not a border, and draws whatever the border switches say.
         let mut batches = Vec::new();
         for class in BorderClass::ALL {
-            let mut zone = self.batch(class, &self.runs, self.color);
+            let mut zone = self.batch(class, &self.runs, self.color, coarse);
             edges.apply(class, &mut zone.alpha, &mut zone.selection, &mut zone.runs);
             batches.push(zone);
             if let Some(color) = self.hover_color {
-                batches.push(self.batch(class, &self.hover, color));
+                batches.push(self.batch(class, &self.hover, color, coarse));
             }
         }
         // One initialization and every material's texture bind are required
@@ -492,6 +522,7 @@ impl DemilitarizedPass {
         class: BorderClass,
         runs: &'a [Run],
         color: [f32; 4],
+        coarse: bool,
     ) -> super::border_shader::Batch<'a> {
         let runs = runs
             .iter()
@@ -499,7 +530,7 @@ impl DemilitarizedPass {
             .map(|run| super::border_shader::Run {
                 vertices: &run.vertices,
                 indices: &run.indices,
-                count: run.count,
+                range: super::line_lod::drawn(run.fine, run.coarse, coarse),
             })
             .collect::<Vec<_>>();
         super::border_shader::Batch {

@@ -660,7 +660,7 @@ mod tests {
         let heights = texture(map, &bytes);
         let unknown = texture(grid, &vec![255; (grid[0] * grid[1]) as usize]);
         let size = [128, 64];
-        let targets = Targets::new(&device, size, size, 1);
+        let targets = Targets::new(&device, size, size, 1, viewer_foundation::map::gpu_contract::SeaBed::Half);
         let hatch = UnknownHatch::new(&device, 1).unwrap();
         // Looking straight down, the map fills the target and depth falls as height rises.
         let view_projection = [

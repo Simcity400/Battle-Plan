@@ -121,6 +121,8 @@ fn a_kept_block_stands_at_the_devices_offset_alignment_and_zeroes_what_follows_i
 fn luminance_reduces_in_fixed_targets_and_gathers_the_last_rectangle() {
     let schedule = ReductionSchedule::new([2048, 1152]);
     assert_eq!(schedule.seed, [1024, 576]);
+    // The bloom blurs at a quarter of the scene, the luminance from the half-size seed.
+    assert_eq!(schedule.bloom, [512, 288]);
     assert_eq!(schedule.backing, [512, 288]);
     let viewports: Vec<_> = schedule.steps.iter().map(|step| step.viewport).collect();
     assert_eq!(
@@ -142,6 +144,8 @@ fn luminance_reduces_in_fixed_targets_and_gathers_the_last_rectangle() {
 
     let odd = ReductionSchedule::new([1023, 575]);
     assert_eq!((odd.seed, odd.backing), ([511, 287], [256, 144]));
+    assert_eq!(odd.bloom, [256, 144]);
+    assert_eq!(ReductionSchedule::new([1920, 1080]).bloom, [480, 270]);
     assert!(odd.steps[0].uv_scale[0] > 1.0);
     // Half-resolution world for a 2051x1155 output: native floors twice;
     // restore still uses the full output viewport, not this chain's dimensions.

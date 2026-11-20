@@ -478,7 +478,12 @@ pub struct RiverVertex {
     pub uv_tangent: [f32; 4],
 }
 
-/// The finished ribbon geometry: one vertex buffer and one index buffer over every river.
+/// The finished ribbon geometry: one vertex buffer over every river, and its index lists and flow
+/// runs at the fine level and at the coarse level ([`super::line_lod`]).
+///
+/// Each ribbon's fine vertices are followed by its coarse ones, if it has any: a ribbon whose
+/// coarse level would keep more than [`COARSE_KEEPS_AT_MOST`] of its points draws its fine quads
+/// at both levels.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RiverMesh {
     pub vertices: Vec<RiverVertex>,
@@ -486,7 +491,15 @@ pub struct RiverMesh {
     /// Ribbons the mesh holds, one per traced river.
     pub ribbons: usize,
     pub runs: Vec<super::river_shader::Run>,
+    pub coarse_indices: Vec<u32>,
+    pub coarse_runs: Vec<super::river_shader::Run>,
 }
+
+/// How far a coarse ribbon's fade may stand off the fine one's.
+const COARSE_ALPHA_TOLERANCE: f32 = 1.0 / 32.0;
+/// The largest share of a ribbon's points its own coarse level may keep: past it, the vertices it
+/// would add cost more than the triangles it would save.
+const COARSE_KEEPS_AT_MOST: f32 = 0.8;
 
 impl RiverMesh {
     pub fn is_empty(&self) -> bool {
@@ -554,6 +567,31 @@ fn river_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {
     ((high - low) * fz + low) * 0.1
 }
 
+/// Appends the quads of a ribbon of `count` points from vertex `base`, and extends the last flow run
+/// when it flows the same way.
+fn quads(
+    indices: &mut Vec<u32>,
+    runs: &mut Vec<super::river_shader::Run>,
+    base: usize,
+    count: usize,
+    direction: f32,
+) {
+    let first = indices.len() as u32;
+    for segment in 0..count as u32 - 1 {
+        let quad = base as u32 + segment * 2;
+        indices.extend_from_slice(&[quad, quad + 2, quad + 1, quad + 2, quad + 3, quad + 1]);
+    }
+    let end = indices.len() as u32;
+    if let Some(last) = runs.last_mut().filter(|last| last.direction == direction) {
+        last.indices.end = end;
+    } else {
+        runs.push(super::river_shader::Run {
+            indices: first..end,
+            direction,
+        });
+    }
+}
+
 /// Sources taper/fade at the first point; junction
 /// walks taper/fade at their far end. Fade distances accumulate the lengths of the *unnormalized
 /// centred tangents*, including the current point, in double precision. The last pair reuses
@@ -566,73 +604,190 @@ fn ribbon(river: &River, heights: &HeightField<'_>, mesh: &mut RiverMesh) {
         return;
     }
     let junction = matches!(river.seed, Seed::Junction(_));
-    let base = mesh.vertices.len();
     let mut lengths = Vec::with_capacity(count - 1);
+    let mut halves = Vec::with_capacity(count);
     let mut total = 0.0_f64;
-    let mut tangent = [0.0; 2];
-    let mut offset = [0.0; 2];
-    for index in 0..count {
-        if index + 1 < count {
-            let previous = points[index.saturating_sub(1)];
-            let next = points[index + 1];
-            let direction = [next[0] - previous[0], next[1] - previous[1]];
-            let length = (direction[0] * direction[0] + direction[1] * direction[1]).sqrt();
-            tangent = if length > 0.0 {
-                [direction[0] / length, direction[1] / length]
-            } else {
-                [0.0; 2]
-            };
-            let endpoint_index = if junction { count - 2 - index } else { index };
-            let half =
-                (width_for_index(river.widths[index]) * 0.5).min(endpoint_index as f32 * 0.05);
-            offset = [tangent[1] * half, -tangent[0] * half];
-            lengths.push(length);
-            total += f64::from(length);
-        }
-        for (side, sign) in [(0.0_f32, 1.0_f32), (1.0, -1.0)] {
-            let x = points[index][0] + offset[0] * sign;
-            let z = points[index][1] + offset[1] * sign;
-            mesh.vertices.push(RiverVertex {
-                position: [x, river_height(heights, x, z), z, f32::from(!junction)],
-                uv_tangent: [side, index as f32, tangent[0], tangent[1]],
-            });
-        }
+    for index in 0..count - 1 {
+        let length = distance(points[index.saturating_sub(1)], points[index + 1]);
+        let endpoint_index = if junction { count - 2 - index } else { index };
+        halves.push((width_for_index(river.widths[index]) * 0.5).min(endpoint_index as f32 * 0.05));
+        lengths.push(length);
+        total += f64::from(length);
     }
+    halves.push(halves[count - 2]);
     let unfaded = (total - f64::from(RIVER_FADE_FROM)).max(0.0);
     let mut along = 0.0_f64;
-    for (index, length) in lengths.into_iter().enumerate() {
-        along += f64::from(length);
-        let distance = if junction { along } else { total - along };
-        let alpha =
-            (1.0 - (distance - unfaded) / f64::from(RIVER_FADE_FROM - RIVER_FADE_TO)) as f32;
-        mesh.vertices[base + index * 2].position[3] = alpha.clamp(0.0, 1.0);
-        mesh.vertices[base + index * 2 + 1].position[3] = alpha.clamp(0.0, 1.0);
-    }
-    let first = mesh.indices.len() as u32;
-    for segment in 0..count as u32 - 1 {
-        let quad = base as u32 + segment * 2;
-        mesh.indices
-            .extend_from_slice(&[quad, quad + 2, quad + 1, quad + 2, quad + 3, quad + 1]);
-    }
+    let mut alphas: Vec<f32> = lengths
+        .iter()
+        .map(|&length| {
+            along += f64::from(length);
+            let distance = if junction { along } else { total - along };
+            let alpha = 1.0 - (distance - unfaded) / f64::from(RIVER_FADE_FROM - RIVER_FADE_TO);
+            (alpha as f32).clamp(0.0, 1.0)
+        })
+        .collect();
+    alphas.push(f32::from(!junction));
     // Pack group as twice the wave index plus palette index, then select its parity.
     let direction = match river.seed {
         Seed::Junction(value) if value & 1 != 0 => 1.0,
         _ => -1.0,
     };
-    let end = mesh.indices.len() as u32;
-    if let Some(last) = mesh
-        .runs
-        .last_mut()
-        .filter(|last| last.direction == direction)
-    {
-        last.indices.end = end;
+    let every: Vec<usize> = (0..count).collect();
+    let fine = frames(&points, &halves, &every);
+    let base = mesh.vertices.len();
+    push_rails(&points, &every, &fine, &alphas, heights, &mut mesh.vertices);
+    quads(&mut mesh.indices, &mut mesh.runs, base, count, direction);
+    let (kept, coarse) = coarse_points(&points, &halves, &alphas, &fine, heights);
+    let (coarse_base, coarse_count) = if kept.len() as f32 > count as f32 * COARSE_KEEPS_AT_MOST {
+        (base, count)
     } else {
-        mesh.runs.push(super::river_shader::Run {
-            indices: first..end,
-            direction,
+        let coarse_base = mesh.vertices.len();
+        push_rails(&points, &kept, &coarse, &alphas, heights, &mut mesh.vertices);
+        (coarse_base, kept.len())
+    };
+    quads(&mut mesh.coarse_indices, &mut mesh.coarse_runs, coarse_base, coarse_count, direction);
+    mesh.ribbons += 1;
+}
+
+/// A ribbon point's flow tangent and the offset of its rails from it.
+#[derive(Clone, Copy, Debug)]
+struct Frame {
+    tangent: [f32; 2],
+    offset: [f32; 2],
+}
+
+fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    (d[0] * d[0] + d[1] * d[1]).sqrt()
+}
+
+fn rail(point: [f32; 2], offset: [f32; 2], sign: f32) -> [f32; 2] {
+    [point[0] + offset[0] * sign, point[1] + offset[1] * sign]
+}
+
+/// The frame of each of the points `kept` (ascending) at its own half width, its tangent from the
+/// kept points either side of it; the last reuses the tangent before it.
+fn frames(points: &[[f32; 2]], halves: &[f32], kept: &[usize]) -> Vec<Frame> {
+    let mut frames: Vec<Frame> = Vec::with_capacity(kept.len());
+    for (at, &index) in kept.iter().enumerate() {
+        let tangent = match kept.get(at + 1) {
+            Some(&next) => {
+                let previous = points[kept[at.saturating_sub(1)]];
+                let next = points[next];
+                let length = distance(previous, next);
+                if length > 0.0 {
+                    [(next[0] - previous[0]) / length, (next[1] - previous[1]) / length]
+                } else {
+                    [0.0; 2]
+                }
+            }
+            None => frames.last().map_or([0.0; 2], |frame| frame.tangent),
+        };
+        let half = halves[index];
+        frames.push(Frame {
+            tangent,
+            offset: [tangent[1] * half, -tangent[0] * half],
         });
     }
-    mesh.ribbons += 1;
+    frames
+}
+
+/// Appends the two rail vertices of each of the points `kept`, each keeping its point index.
+fn push_rails(
+    points: &[[f32; 2]],
+    kept: &[usize],
+    frames: &[Frame],
+    alphas: &[f32],
+    heights: &HeightField<'_>,
+    out: &mut Vec<RiverVertex>,
+) {
+    for (&index, frame) in kept.iter().zip(frames) {
+        for (side, sign) in [(0.0_f32, 1.0_f32), (1.0, -1.0)] {
+            let [x, z] = rail(points[index], frame.offset, sign);
+            out.push(RiverVertex {
+                position: [x, river_height(heights, x, z), z, alphas[index]],
+                uv_tangent: [side, index as f32, frame.tangent[0], frame.tangent[1]],
+            });
+        }
+    }
+}
+
+/// The points of one ribbon its coarse level keeps, and their frames.
+///
+/// [`line_lod::simplify`] keeps every point whose centre and width stand off the line by more than
+/// [`line_lod::TOLERANCE`], its height by more than [`line_lod::HEIGHT_TOLERANCE`] or its fade by
+/// more than [`COARSE_ALPHA_TOLERANCE`]. A kept point's tangent comes from its coarse neighbours,
+/// so more are kept until both coarse rails stand within the tolerance of the fine ones: a kept
+/// vertex off its fine vertex keeps the point's two neighbours, which give it the fine tangent, and
+/// a fine vertex off the coarse rail beside it keeps the worst such point of the span.
+fn coarse_points(
+    points: &[[f32; 2]],
+    halves: &[f32],
+    alphas: &[f32],
+    fine: &[Frame],
+    heights: &HeightField<'_>,
+) -> (Vec<usize>, Vec<Frame>) {
+    use super::line_lod::{self, TOLERANCE, lerp};
+    let centre: Vec<f32> = points.iter().map(|point| river_height(heights, point[0], point[1])).collect();
+    let deviation = |a: usize, b: usize, index: usize| {
+        let (off, t) = line_lod::offset(points[a], points[b], points[index]);
+        let widen = (halves[index] - lerp(halves[a], halves[b], t)).abs();
+        let rise = (centre[index] - lerp(centre[a], centre[b], t)).abs();
+        let fade = (alphas[index] - lerp(alphas[a], alphas[b], t)).abs();
+        ((off + widen) / TOLERANCE)
+            .max(rise / line_lod::HEIGHT_TOLERANCE)
+            .max(fade / COARSE_ALPHA_TOLERANCE)
+    };
+    let mut kept = line_lod::simplify(points.len(), &[], &deviation);
+    loop {
+        let frames = frames(points, halves, &kept);
+        let mut more = Vec::new();
+        for (at, &index) in kept.iter().enumerate() {
+            if distance(frames[at].offset, fine[index].offset) > TOLERANCE {
+                if at > 0 && kept[at - 1] + 1 < index {
+                    more.push(index - 1);
+                }
+                if kept.get(at + 1).is_some_and(|&next| next > index + 1) {
+                    more.push(index + 1);
+                }
+            }
+            let Some(&next) = kept.get(at + 1) else {
+                continue;
+            };
+            // A point kept for the rails splits a span, so its dropped points are measured again.
+            let mut scalar = (1.0, None);
+            let mut worst = (TOLERANCE, None);
+            for dropped in index + 1..next {
+                let off = deviation(index, next, dropped);
+                if off > scalar.0 {
+                    scalar = (off, Some(dropped));
+                }
+                for sign in [1.0, -1.0] {
+                    let (off, t) = line_lod::offset(
+                        rail(points[index], frames[at].offset, sign),
+                        rail(points[next], frames[at + 1].offset, sign),
+                        rail(points[dropped], fine[dropped].offset, sign),
+                    );
+                    if off > worst.0 {
+                        worst = (off, Some(dropped));
+                    }
+                    // The fade is drawn along each rail, so it is measured at the rail's own place too.
+                    let fade = (alphas[dropped] - lerp(alphas[index], alphas[next], t)).abs() / COARSE_ALPHA_TOLERANCE;
+                    if fade > scalar.0 {
+                        scalar = (fade, Some(dropped));
+                    }
+                }
+            }
+            more.extend(worst.1);
+            more.extend(scalar.1);
+        }
+        if more.is_empty() {
+            return (kept, frames);
+        }
+        kept.extend(more);
+        kept.sort_unstable();
+        kept.dedup();
+    }
 }
 
 // ------------------------------------------------------------------ the GPU pass
@@ -685,7 +840,9 @@ pub struct RiverPass {
     compiled: RefCell<BTreeMap<bool, Result<super::river_shader::River, String>>>,
     samples: u32,
     format: wgpu::TextureFormat,
+    /// The fine level's runs, then the coarse level's, over the one vertex and index buffer.
     runs: Vec<super::river_shader::Run>,
+    coarse_runs: Vec<super::river_shader::Run>,
     diffuse: Bound,
     normal: Bound,
     masks: Bound,
@@ -718,6 +875,7 @@ impl RiverPass {
             samples,
             format,
             runs: Vec::new(),
+            coarse_runs: Vec::new(),
             diffuse: upload(
                 device,
                 queue,
@@ -744,14 +902,25 @@ impl RiverPass {
         })
     }
 
-    /// Uploads the ribbon geometry. Called once per document: the mesh depends only on content.
+    /// Uploads the ribbon geometry, the coarse level's indices after the fine level's. Called once
+    /// per document: the mesh depends only on content.
     pub fn upload(&mut self, device: &wgpu::Device, mesh: &RiverMesh) -> io::Result<()> {
         self.runs.clone_from(&mesh.runs);
+        let index_base = mesh.indices.len() as u32;
+        self.coarse_runs = mesh
+            .coarse_runs
+            .iter()
+            .map(|run| super::river_shader::Run {
+                indices: run.indices.start + index_base..run.indices.end + index_base,
+                direction: run.direction,
+            })
+            .collect();
         if mesh.is_empty() {
             self.vertices = None;
             self.indices = None;
             return Ok(());
         }
+        let indices = [mesh.indices.as_slice(), mesh.coarse_indices.as_slice()].concat();
         self.vertices = Some(buffer(
             device,
             "river ribbons",
@@ -762,7 +931,7 @@ impl RiverPass {
             device,
             "river indices",
             wgpu::BufferUsages::INDEX,
-            bytemuck::cast_slice(&mesh.indices),
+            bytemuck::cast_slice(&indices),
         )?);
         Ok(())
     }
@@ -797,6 +966,7 @@ impl RiverPass {
         targets: &Targets,
         inputs: super::river_shader::Inputs<'_>,
         high: bool,
+        coarse: bool,
     ) -> io::Result<()> {
         let (Some(vertices), Some(indices)) = (&self.vertices, &self.indices) else {
             return Ok(());
@@ -811,7 +981,7 @@ impl RiverPass {
             super::river_shader::Geometry {
                 vertices,
                 indices,
-                runs: &self.runs,
+                runs: if coarse { &self.coarse_runs } else { &self.runs },
             },
         )
     }

@@ -10,6 +10,8 @@
 //! supplies the per-frame fade used by the draw pass.
 use std::{collections::HashMap, io};
 
+use super::line_lod;
+
 use viewer_foundation::map::province_map::{HeightField, ProvinceMap};
 #[cfg(test)]
 use viewer_foundation::map::province_map::{WATER_HEIGHT, world_from_pixel};
@@ -170,6 +172,10 @@ pub struct BorderDraw {
     pub vertex_count: u32,
     /// `(points - 1) * 6`, taken from the start of [`BorderMeshes::indices`].
     pub index_count: u32,
+    /// The same run at the coarse level ([`super::line_lod`]): its first vertex in
+    /// [`BorderMesh::coarse_chunks`]`[chunk]`, and `2 * points`.
+    pub coarse_base_vertex: u32,
+    pub coarse_vertex_count: u32,
 }
 
 /// Every strip of one class.
@@ -182,10 +188,21 @@ pub struct BorderMesh {
     pub class: BorderClass,
     /// Vertex buffers of at most [`MAX_CHUNK_VERTICES`] vertices each.
     pub chunks: Vec<Vec<Vertex>>,
+    /// The coarse level of each chunk's runs, chunk for chunk.
+    pub coarse_chunks: Vec<Vec<Vertex>>,
     pub draws: Vec<BorderDraw>,
 }
 
 impl BorderMesh {
+    fn new(class: BorderClass) -> Self {
+        Self {
+            class,
+            chunks: vec![Vec::new()],
+            coarse_chunks: vec![Vec::new()],
+            draws: Vec::new(),
+        }
+    }
+
     /// Total vertices over every chunk.
     pub fn vertex_count(&self) -> usize {
         self.chunks.iter().map(Vec::len).sum()
@@ -490,14 +507,7 @@ fn build_with_limit(
         return Err(invalid("a border chunk must hold at least two points"));
     }
     let traced = trace(map, classify, water)?;
-    let mut meshes: Vec<BorderMesh> = BorderClass::ALL
-        .iter()
-        .map(|&class| BorderMesh {
-            class,
-            chunks: vec![Vec::new()],
-            draws: Vec::new(),
-        })
-        .collect();
+    let mut meshes: Vec<BorderMesh> = BorderClass::ALL.iter().map(|&class| BorderMesh::new(class)).collect();
     let mut longest_run = 0_usize;
     for polyline in &traced.polylines {
         // A closed polyline already repeats its first point as its last; `trace` closes it before
@@ -516,11 +526,7 @@ fn build_with_limit(
             &mut longest_run,
         );
     }
-    let mut hidden = BorderMesh {
-        class: BorderClass::Province,
-        chunks: vec![Vec::new()],
-        draws: Vec::new(),
-    };
+    let mut hidden = BorderMesh::new(BorderClass::Province);
     for polyline in &traced.hidden {
         let strip = smooth(&polyline.points, polyline.wide);
         if strip.len() < 2 {
@@ -549,11 +555,15 @@ fn build_with_limit(
     })
 }
 
-/// Widens one smoothed polyline into rail vertices and appends the draws it needs.
+/// Widens one smoothed polyline into rail vertices and appends the draws it needs, at both levels.
 ///
 /// A polyline longer than a chunk is split into runs that share their last and first point, so the
 /// strip stays continuous across the seam; `uv.y` keeps counting from the polyline's own start so
 /// the diffuse keeps tiling across the split.
+///
+/// The coarse level keeps the points [`coarse_points`] picks and is widened from its own
+/// neighbours, so its strip is as wide as the fine one; each kept point keeps its own `uv.y`. A
+/// run's coarse vertices go to the coarse chunk of the run's chunk.
 fn emit(
     polyline: &Polyline,
     strip: &[[f32; 2]],
@@ -566,63 +576,114 @@ fn emit(
     let closed = polyline.closed;
     let total = strip.len();
     let run_points = limit / 2;
+    let mut runs = Vec::new();
     let mut start = 0_usize;
     while start + 1 < total {
         let take = (total - start).min(run_points);
-        let chunk = mesh.chunks.last().map(Vec::len).unwrap_or(0);
-        if chunk + take * 2 > limit && chunk > 0 {
-            mesh.chunks.push(Vec::new());
-        }
-        let buffer = match mesh.chunks.last_mut() {
-            Some(buffer) => buffer,
-            None => {
-                mesh.chunks.push(Vec::new());
-                mesh.chunks.last_mut().expect("just pushed")
-            }
-        };
-        let base_vertex = buffer.len() as u32;
-        for step in 0..take {
-            let index = start + step;
-            let point = strip[index];
-            let previous = neighbour(strip, index as isize - 1, closed);
-            let next = neighbour(strip, index as isize + 1, closed);
-            let direction = [next[0] - previous[0], next[1] - previous[1]];
-            let length = (direction[0] * direction[0] + direction[1] * direction[1]).sqrt();
-            // A zero length direction can only come from a degenerate polyline; the quad then
-            // collapses rather than producing a not-a-number position.
-            let rail_offset = if length > 0.0 {
-                [
-                    (width * 0.5 * direction[1]) / length,
-                    (width * 0.5 * -direction[0]) / length,
-                ]
-            } else {
-                [0.0, 0.0]
-            };
-
-            let counter = index as i16;
-            for (side, sign) in [(0_i16, 1.0_f32), (1, -1.0)] {
-                let x = point[0] + rail_offset[0] * sign;
-                let z = point[1] + rail_offset[1] * sign;
-                buffer.push(Vertex {
-                    position: [x, heights.border_height_at_world(x, z), z],
-                    uv: [side, counter],
-                });
-            }
-        }
-        mesh.draws.push(BorderDraw {
-            province_a: polyline.province_a,
-            province_b: polyline.province_b,
-            chunk: (mesh.chunks.len() - 1) as u32,
-            base_vertex,
-            vertex_count: (take * 2) as u32,
-            index_count: ((take - 1) * 6) as u32,
-        });
-        *longest_run = (*longest_run).max(take);
+        runs.push((start, take));
         if start + take == total {
             break;
         }
         start += take - 1;
     }
+    let kept = coarse_points(strip, closed, heights, &runs);
+    let coarse: Vec<[f32; 2]> = kept.iter().map(|&index| strip[index]).collect();
+    let mut first_kept = 0_usize;
+    for (start, take) in runs {
+        let chunk = mesh.chunks.last().map(Vec::len).unwrap_or(0);
+        if (chunk + take * 2 > limit && chunk > 0) || mesh.chunks.is_empty() {
+            mesh.chunks.push(Vec::new());
+        }
+        mesh.coarse_chunks.resize_with(mesh.chunks.len(), Vec::new);
+        let at = mesh.chunks.len() - 1;
+        let base_vertex = mesh.chunks[at].len() as u32;
+        for index in start..start + take {
+            rails(strip, index, index, closed, heights, width, &mut mesh.chunks[at]);
+        }
+        let last_kept = first_kept
+            + kept[first_kept..]
+                .iter()
+                .position(|&index| index == start + take - 1)
+                .expect("run ends are kept");
+        let coarse_base_vertex = mesh.coarse_chunks[at].len() as u32;
+        for at_coarse in first_kept..=last_kept {
+            rails(&coarse, at_coarse, kept[at_coarse], closed, heights, width, &mut mesh.coarse_chunks[at]);
+        }
+        mesh.draws.push(BorderDraw {
+            province_a: polyline.province_a,
+            province_b: polyline.province_b,
+            chunk: at as u32,
+            base_vertex,
+            vertex_count: (take * 2) as u32,
+            index_count: ((take - 1) * 6) as u32,
+            coarse_base_vertex,
+            coarse_vertex_count: ((last_kept - first_kept + 1) * 2) as u32,
+        });
+        *longest_run = (*longest_run).max(take);
+        first_kept = last_kept;
+    }
+}
+
+/// The two rail vertices of `points[index]`, with `uv.y` `counter`.
+fn rails(
+    points: &[[f32; 2]],
+    index: usize,
+    counter: usize,
+    closed: bool,
+    heights: &HeightField,
+    width: f32,
+    out: &mut Vec<Vertex>,
+) {
+    let point = points[index];
+    let previous = neighbour(points, index as isize - 1, closed);
+    let next = neighbour(points, index as isize + 1, closed);
+    let direction = [next[0] - previous[0], next[1] - previous[1]];
+    let length = (direction[0] * direction[0] + direction[1] * direction[1]).sqrt();
+    // A zero length direction can only come from a degenerate polyline; the quad then
+    // collapses rather than producing a not-a-number position.
+    let rail_offset = if length > 0.0 {
+        [
+            (width * 0.5 * direction[1]) / length,
+            (width * 0.5 * -direction[0]) / length,
+        ]
+    } else {
+        [0.0, 0.0]
+    };
+    let counter = counter as i16;
+    for (side, sign) in [(0_i16, 1.0_f32), (1, -1.0)] {
+        let x = point[0] + rail_offset[0] * sign;
+        let z = point[1] + rail_offset[1] * sign;
+        out.push(Vertex {
+            position: [x, heights.border_height_at_world(x, z), z],
+            uv: [side, counter],
+        });
+    }
+}
+
+/// The points of a smoothed strip the coarse level keeps ([`line_lod::simplify`]): the ends of its
+/// runs, every point off the line by more than [`line_lod::TOLERANCE`] or above or below it by more
+/// than [`line_lod::HEIGHT_TOLERANCE`], and on a closed loop two more a third of the way round
+/// each, so it stays a loop.
+fn coarse_points(
+    strip: &[[f32; 2]],
+    closed: bool,
+    heights: &HeightField,
+    runs: &[(usize, usize)],
+) -> Vec<usize> {
+    let height: Vec<f32> = strip
+        .iter()
+        .map(|point| heights.border_height_at_world(point[0], point[1]))
+        .collect();
+    let mut anchors: Vec<usize> = runs.iter().map(|&(start, take)| start + take - 1).collect();
+    if closed {
+        let last = strip.len().saturating_sub(1);
+        anchors.extend([last / 3, last * 2 / 3]);
+    }
+    line_lod::simplify(strip.len(), &anchors, |a, b, index| {
+        let (off, t) = line_lod::offset(strip[a], strip[b], strip[index]);
+        let rise = height[index] - line_lod::lerp(height[a], height[b], t);
+        (off / line_lod::TOLERANCE).max(rise.abs() / line_lod::HEIGHT_TOLERANCE)
+    })
 }
 
 /// The neighbouring point used for the widening normal: wrapped on a closed strip whose last point

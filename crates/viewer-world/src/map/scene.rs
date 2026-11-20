@@ -4030,6 +4030,7 @@ impl Scene {
             )
         };
         self.compiled_terrain.keep_views(&offsets);
+        let coarse_lines = crate::map::line_lod::coarse(&camera, targets.world_size());
         // Complete each admitted wrap before starting the next. Its
         // PS b2 light-grid upload is replaced by the land-border call in that wrap.
         for view in 0..offsets.len() {
@@ -4111,6 +4112,7 @@ impl Scene {
                     BorderFrame {
                         stage: BorderStage::Land,
                         camera_height: camera.height,
+                        coarse: coarse_lines,
                         fades: camera.defines.border_fades,
                         province_borders: self.visibility.province_borders,
                         visible: overlay.interface && self.graphics.land_borders(),
@@ -4154,6 +4156,7 @@ impl Scene {
                         ],
                     },
                     self.graphics.high_gfx_shaders,
+                    coarse_lines,
                 ));
             }
             mark(&mut encoder, "rivers");
@@ -4293,6 +4296,7 @@ impl Scene {
                     BorderFrame {
                         stage: BorderStage::Sea,
                         camera_height: camera.height,
+                        coarse: coarse_lines,
                         fades: camera.defines.border_fades,
                         province_borders: self.visibility.province_borders,
                         visible: overlay.interface && self.graphics.sea_borders(),
@@ -4321,6 +4325,7 @@ impl Scene {
                     targets,
                     border_inputs(),
                     edges,
+                    coarse_lines,
                 ));
             }
             mark(&mut encoder, "demilitarized");

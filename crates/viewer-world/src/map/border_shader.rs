@@ -37,7 +37,8 @@ pub struct Inputs<'a> {
 pub struct Run<'a> {
     pub vertices: &'a wgpu::Buffer,
     pub indices: &'a wgpu::Buffer,
-    pub count: u32,
+    /// The indices of `indices` drawn.
+    pub range: std::ops::Range<u32>,
 }
 
 pub struct Batch<'a> {
@@ -238,7 +239,7 @@ impl Border {
                 shader_pipeline::gpu::stats::state();
                 pass.set_index_buffer(run.indices.slice(..), wgpu::IndexFormat::Uint32);
                 shader_pipeline::gpu::stats::draw();
-                pass.draw_indexed(0..run.count, 0, 0..1);
+                pass.draw_indexed(run.range.clone(), 0, 0..1);
             }
         }
         Ok(retained)
