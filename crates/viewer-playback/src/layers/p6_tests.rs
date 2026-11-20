@@ -227,11 +227,12 @@ pub(super) fn vision_world() -> Units {
 
 /// [`vision_world`] with `extra` tables recorded whole and empty every hour.
 fn vision_world_with(extra: &[TableId]) -> Units {
-    vision_world_and(extra, |_, _| {})
+    vision_world_and(extra, |_, _| Vec::new())
 }
 
-/// [`vision_world_with`], `more` writing what else each hour holds.
-fn vision_world_and(extra: &[TableId], mut more: impl FnMut(u32, &mut Store)) -> Units {
+/// [`vision_world_with`], `more` writing what else each hour holds and returning the further
+/// statuses it records.
+fn vision_world_and(extra: &[TableId], mut more: impl FnMut(u32, &mut Store) -> Vec<(TableId, Status)>) -> Units {
     let empty = [
         TableId::FactionMembers,
         TableId::WarRelations,
@@ -302,13 +303,14 @@ fn vision_world_and(extra: &[TableId], mut more: impl FnMut(u32, &mut Store)) ->
             26 => write(store, TableId::Provinces, 5, "controller", Cell::U32(101)),
             _ => {}
         }
-        more(at, store);
+        let mut statuses = more(at, store);
         match at {
-            20..=23 => vec![(TableId::UnitIntel, Status::NotRecorded)],
+            20..=23 => statuses.push((TableId::UnitIntel, Status::NotRecorded)),
             // Truncated by a count that moves every hour: the same status for every term.
-            25.. => vec![(TableId::CountryIntel, Status::Truncated { missing: at })],
-            _ => Vec::new(),
+            25.. => statuses.push((TableId::CountryIntel, Status::Truncated { missing: at })),
+            _ => {}
         }
+        statuses
     })
 }
 
@@ -415,6 +417,7 @@ fn vision_applies_mark_their_intel_rows_reading_none_and_settle_to_the_composed_
             10 => store.table(TableId::UnitIntel.index()).unwrap().delete(0).unwrap(),
             _ => {}
         }
+        Vec::new()
     });
     let mut checked = 0;
     play(units, Box::new(Vision::new(vision_content())), 14, |hour, mirrors, layer| {
@@ -567,6 +570,11 @@ impl super::trains::Yard for Asked {
 /// The window's layers that read the viewing country (vision, engagements, rails, trains and labels)
 /// over a recording of two countries, `asked` hearing the trains' plans.
 fn viewing_world(asked: &Arc<Asked>) -> (Arc<crate::playhead_host::Entry>, Vec<Box<dyn Layer>>) {
+    viewing_world_and(asked, |_, _| Vec::new())
+}
+
+/// [`viewing_world`], `more` as [`vision_world_and`]'s.
+fn viewing_world_and(asked: &Arc<Asked>, more: impl FnMut(u32, &mut Store) -> Vec<(TableId, Status)>) -> (Arc<crate::playhead_host::Entry>, Vec<Box<dyn Layer>>) {
     use super::{engagements::Engagements, labels::Labels, rails::{Rails, tests::Stub}, trains::Trains};
     let extra = [
         TableId::Politics, TableId::CountryAppearance, TableId::ProvinceNames, TableId::LexicalTokens, TableId::SupplyNodes, TableId::TrainInventory,
@@ -579,7 +587,7 @@ fn viewing_world(asked: &Arc<Asked>) -> (Arc<crate::playhead_host::Entry>, Vec<B
         Box::new(Trains::new(Arc::clone(asked) as Arc<dyn super::trains::Yard>, None).reading_vision()),
         Box::new(Labels::new(Arc::new(installed_content_localisation::localisation::Localisation::default()), None).reading_vision()),
     ];
-    (open(vision_world_with(&extra), quick()).unwrap(), layers)
+    (open(vision_world_and(&extra, more), quick()).unwrap(), layers)
 }
 
 #[test]
@@ -675,18 +683,35 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     use crate::playhead_host::{Head, side::SideThread};
     use viewer_foundation::map::perspective::{Choice, Country};
     const HOUR: i32 = 8;
+    // An hour that records no countries: every viewing country's vision is refused there. A tag
+    // the hour does not hold is no refusal: the map is viewed as the recorded player, named so.
+    const REFUSED: i32 = 16;
     let asked = Arc::new(Asked(std::sync::Mutex::new(Vec::new())));
-    let (entry, layers) = viewing_world(&asked);
+    let (entry, layers) = viewing_world_and(&asked, |at, _| if at == REFUSED as u32 { vec![(TableId::Countries, Status::NotRecorded)] } else { Vec::new() });
     let mut side = SideThread::new(MapSide::new(entry, layers, View::default()).unwrap()).unwrap();
     side.anchor(HOUR, false, 0.0, true);
     let chosen = View { perspective: Choice { country: Country::Tag("text 1".into()), ..Choice::default() }, ..View::default() };
-    let refused = View { perspective: Choice { country: Country::Tag("no such tag".into()), ..Choice::default() }, ..View::default() };
+    let refused = View { perspective: Choice { country: Country::Tag("text 0".into()), ..Choice::default() }, ..View::default() };
     // The slot each view's parts may hold: the recorded viewer is slot 1, the chosen one slot 2, and
-    // a refused one none at all.
-    let slot = |view: &View| if view.perspective == chosen.perspective { Some(2) } else if view.perspective == refused.perspective { None } else { Some(1) };
-    // Every viewer the side holds for the frame: the vision copied out, then each drawn layer's.
+    // the refused one slot 1 where it is held and none at all at the hour that refuses it.
+    let slot = |side: &MapSide| {
+        let view = side.view_shown();
+        if view.perspective == chosen.perspective {
+            Some(2)
+        } else if view.perspective == refused.perspective && side.applied() == Some(REFUSED) {
+            None
+        } else {
+            Some(1)
+        }
+    };
+    // Every viewer the side holds for the frame: the vision copied out, then each drawn layer's,
+    // the engagements' (whose flags are read for the viewer they hold) among them.
     let viewers = |side: &MapSide| -> (Option<u32>, Vec<Option<u32>>) {
-        (side.vision().ok().map(|vision| vision.ours()), side.caught_up().iter().map(|layer| layer.viewer).collect())
+        let mut layers: Vec<Option<u32>> = side.caught_up().iter().map(|layer| layer.viewer).collect();
+        if side.draws("engagements") {
+            layers.extend(side.parts().and_then(|(_, layers)| layers.iter().find_map(|layer| layer.any().downcast_ref::<super::engagements::Engagements>())).map(super::engagements::Engagements::viewer));
+        }
+        (side.vision().ok().map(|vision| vision.ours()), layers)
     };
     let wholly = |side: &MapSide, slot: u32| {
         let (shown, layers) = viewers(side);
@@ -694,7 +719,7 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     };
     // Each part handed is withheld or made for the viewing country of the view handed with it.
     let never_mixed = |side: &MapSide| {
-        let want = slot(side.view_shown());
+        let want = slot(side);
         let (shown, layers) = viewers(side);
         let other = |held: &Option<u32>| held.is_some_and(|held| Some(held) != want);
         assert!(!other(&shown) && !layers.iter().any(other), "a part made for another viewing country handed with {:?}: {:?}; {}", side.view_shown().perspective, viewers(side), side.shown_states());
@@ -729,20 +754,43 @@ fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before()
     windows(&mut side, "a further window handed while the vision is not made", &|_| true);
     drop(held);
     windows(&mut side, "the chosen country, slot 2, wholly", &|side| wholly(side, 2));
-    // A tag the hour does not hold: its vision is refused, named, and nothing of slot 2 stands for it.
-    side.ask(refused.clone(), Head::Paced(HOUR), None);
-    windows(&mut side, "the refused country handed over, its refusal named", &|side| side.view_shown().perspective == refused.perspective && side.vision_refused().is_some());
+    // Another country, played into the hour that refuses its vision (each layer hears its viewer
+    // go in a settle): handed over with the refusal named, and nothing of slot 2 stands for it.
+    side.anchor(REFUSED - 4, false, 0.0, true);
+    side.ask(chosen.clone(), Head::Paced(REFUSED - 4), None);
+    windows(&mut side, "slot 2 at the hour before the refusal", &|side| side.applied() == Some(REFUSED - 4) && !side.composing() && side.viewer() == Some(2));
+    side.ask(refused.clone(), Head::Paced(REFUSED), None);
+    windows(&mut side, "the refused country handed over, its refusal named", &|side| {
+        side.view_shown().perspective == refused.perspective && side.applied() == Some(REFUSED) && side.vision_refused().is_some()
+    });
     assert_eq!(side.view().perspective, refused.perspective, "the refused country is handed over, not held off");
     assert!(side.products().vision.is_err(), "the frame's vision is withheld: {:?}", side.products().vision.as_ref().map(|vision| vision.ours()));
     assert!(side.products().vision_refused.as_deref().is_some_and(|why| !why.is_empty()), "the frame is told why the vision is withheld");
     assert!(!side.products().overlay_coming(), "no overlay is laid out without a vision: the frame draws without one");
     assert_eq!(side.with_side(|side| side.parts().map(|(_, layers)| layers[0].carried().entities)), Some(0), "a settled refusal is the vision's whole answer: it carries nothing");
-    windows(&mut side, "the refused view settled, so a paused map is ready", &|side| side.view_shown().perspective == refused.perspective && side.on_screen().is_some_and(|on| on.settled));
+    // Rails and trains upload only to a GPU, which this side has none of: every other layer, the
+    // labels that heard the viewer go among them, waits on nothing a refusal leaves it.
+    let caught = |side: &MapSide| {
+        let layers = side.caught_up();
+        ["vision", "engagements", "labels"].iter().all(|name| layers.iter().any(|layer| layer.name == *name && layer.caught))
+    };
+    windows(&mut side, "the refused view caught up, so a paused map waits on nothing of it", &|side| side.view_shown().perspective == refused.perspective && caught(side));
     // A layout the frame holds for this same choice, made at an hour that held its tag (a seek to
     // one that does not): the settled refusal lets it go.
     side.with_side_mut(|side| {
-        side.hand_viewer(refused.perspective.clone(), 2);
+        side.hand_viewer(refused.perspective.clone(), 1);
         assert!(side.take_overlay_withdrawal(), "a refused vision never keeps the layout of the hour before");
+    });
+    // The countries recorded again: the labels are read anew for slot 1, as a reader opened there.
+    side.ask(refused.clone(), Head::Paced(REFUSED + 1), None);
+    windows(&mut side, "slot 1 again once the countries are recorded", &|side| side.applied() > Some(REFUSED) && !side.composing() && side.viewer() == Some(1) && caught(side));
+    side.with_side(|side| {
+        let (mirrors, layers) = side.parts().unwrap();
+        let labels = layers[4].any().downcast_ref::<super::labels::Labels>().unwrap();
+        assert_eq!(labels.ours(), Some(1), "the labels' viewer is slot 1 again");
+        let mut fresh = labels.fresh();
+        fresh.compose_with(mirrors, &super::Upstream::new(&layers[..4])).unwrap();
+        assert_eq!(labels.differ(&fresh), (0, None), "the labels equal a reader opened after the refusal");
     });
 }
 

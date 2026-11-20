@@ -937,7 +937,8 @@ impl Layer for Labels {
     /// changed. Made here, on the side's thread: the layer writes nothing to the GPU, so this is
     /// its whole install.
     fn stage(&mut self) -> io::Result<()> {
-        let (settled, hour) = (self.carried().entities == 0, self.hour);
+        // Refused labels hold for no hour: their emptiness is no hour's victory points.
+        let (settled, hour) = (self.refused.is_none() && self.carried().entities == 0, self.hour);
         if self.drawn_stale {
             self.drawn = Arc::new(self.display());
             self.drawn_stale = false;
@@ -953,6 +954,10 @@ impl Layer for Labels {
     }
 
     fn carried(&self) -> Carried {
+        // Refused, a settle can do none of the marked work: the restart once the core is back reads it all.
+        if self.refused.is_some() {
+            return Carried::default();
+        }
         let flags = [self.every, self.refusals_dirty, self.wars_dirty].into_iter().filter(|&flag| flag).count();
         let sets = self.link_raws.len() + self.country_natives.len() + self.tag_slots.len() + self.capital_slots.len() + self.star_states.len() + self.pointed.len() + self.renamed.len();
         let entities = self.provinces.len() + self.moved.len() + self.renamed_states.len() + flags + sets;

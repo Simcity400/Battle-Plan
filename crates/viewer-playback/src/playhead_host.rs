@@ -2200,7 +2200,7 @@ impl MapSide {
 
     /// Whether the layout the frame holds is to be let go: it was handed for another chosen country
     /// than the picture's, made for another viewer than the vision's once it has one, or the
-    /// vision has answered with a refusal (the chosen tag absent at the hour sought). A seek's
+    /// vision has answered with a refusal (the hour sought records no countries). A seek's
     /// vision being made again is none of these: the layout before stands until the next. Taken once.
     pub fn take_overlay_withdrawal(&mut self) -> bool {
         if self.composing || self.superseded {

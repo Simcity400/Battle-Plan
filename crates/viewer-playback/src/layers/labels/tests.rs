@@ -98,7 +98,8 @@ fn labels_settled_every_step_equal_composed_and_follow_points_capitals_names_war
     let mut side = side("labels-steps");
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let mut seen = Vec::new();
-    let mut made: Option<(*const map_display_data::landscape::Labels, replay_data::Hour)> = None;
+    // The labels last seen are kept alive, so labels made again never share their address.
+    let mut made: Option<(Arc<map_display_data::landscape::Labels>, replay_data::Hour)> = None;
     frames_until(&mut side, |side, frame| {
         if frame.steps == 0 || side.composing() {
             return false;
@@ -110,10 +111,18 @@ fn labels_settled_every_step_equal_composed_and_follow_points_capitals_names_war
         fresh.compose(mirrors).unwrap();
         assert_eq!(layer.differ(&fresh), (0, None), "settled at hour {:?} equals composed", frame.applied);
         let hour = frame.applied.unwrap();
+        assert_eq!(layer.notes(), fresh.notes(), "the notes settled at hour {hour} equal those composed");
+        if GAP.contains(&hour) {
+            assert!(layer.refused().is_some() && layer.display().candidates.is_empty(), "Countries not recorded draws no labels at hour {hour}");
+            assert!(layer.notes().is_empty(), "a refused layer gives no note of its own at hour {hour}");
+            assert_eq!(layer.drawn_hours(), None, "refused labels hold for no hour, so nothing takes their emptiness as hour {hour}'s");
+            seen.push(hour);
+            return false;
+        }
         let hours = layer.drawn_hours().expect("settled labels hold for an hour");
         assert!(hours.contains(&hour), "the labels drawn at hour {hour} hold for it: {hours:?}");
-        match made.replace((Arc::as_ptr(&layer.drawn), *hours.start())) {
-            Some((before, from)) if before == Arc::as_ptr(&layer.drawn) => assert_eq!(*hours.start(), from, "unchanged labels hold from the hour they were made, at hour {hour}"),
+        match made.replace((Arc::clone(&layer.drawn), *hours.start())) {
+            Some((before, from)) if Arc::ptr_eq(&before, &layer.drawn) => assert_eq!(*hours.start(), from, "unchanged labels hold from the hour they were made, at hour {hour}"),
             Some(_) => assert_eq!(hours, hour..=hour, "labels made again at hour {hour} hold for no earlier hour"),
             None => {}
         }
@@ -123,13 +132,6 @@ fn labels_settled_every_step_equal_composed_and_follow_points_capitals_names_war
             Some(LabelName::Value { text }) => text,
             other => panic!("province {province} at hour {hour}: {other:?}"),
         };
-        assert_eq!(layer.notes(), fresh.notes(), "the notes settled at hour {hour} equal those composed");
-        if GAP.contains(&hour) {
-            assert!(layer.refused().is_some() && display.candidates.is_empty(), "Countries not recorded draws no labels at hour {hour}");
-            assert!(layer.notes().is_empty(), "a refused layer gives no note of its own at hour {hour}");
-            seen.push(hour);
-            return false;
-        }
         assert_eq!(display.perspective.as_deref(), Some("AAA"));
         // State 200's provinces 3 and 4 tie on three points throughout; state 100's star stands.
         let tied = format!("Field Capital stars: capital state 200 carries no star: {}", viewer_world::map::labels::TIED_VICTORY_POINTS);
