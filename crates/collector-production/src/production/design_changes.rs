@@ -2410,6 +2410,45 @@ fn append_history<'a>(
     Ok(())
 }
 
+/// Whether a flags row names the upgrade flags its design already holds.
+fn holds_flags(
+    variant: u64,
+    flags: [u8; 3],
+    preceding: Option<snapshots::Change<'_>>,
+    projection: Option<&Projection<'_>>,
+) -> bool {
+    let held = match preceding {
+        Some(previous) => {
+            let previous = previous.view();
+            if previous.removed {
+                return false;
+            }
+            previous.flags.or_else(|| {
+                let state = previous
+                    .snapshot?
+                    .definition
+                    .design
+                    .require("VariantChanges.design")
+                    .ok()?;
+                Some([
+                    state.can_upgrade_type,
+                    state.can_upgrade_variant,
+                    state.can_upgrade_modules,
+                ])
+            })
+        }
+        None => projection
+            .and_then(Projection::observed_baseline::<tables::VariantDefinitions>)
+            .and_then(|definitions| {
+                let index = definitions
+                    .binary_search_by_key(&variant, |row| row.id)
+                    .ok()?;
+                upgrade_flags(&definitions[index])
+            }),
+    };
+    held == Some(flags)
+}
+
 fn unchanged(
     event: snapshots::Change<'_>,
     preceding: Option<snapshots::Change<'_>>,
@@ -2418,6 +2457,9 @@ fn unchanged(
     let view = event.view();
     if view.removed {
         return false;
+    }
+    if let Some(flags) = view.flags {
+        return holds_flags(view.variant, flags, preceding, projection);
     }
     let Some(snapshot) = view.snapshot else {
         return false;

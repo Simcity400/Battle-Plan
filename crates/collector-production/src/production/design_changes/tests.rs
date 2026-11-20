@@ -1309,6 +1309,60 @@ fn membership_burst_preserves_terminal_definitions_and_every_history_row_in_fram
 }
 
 #[test]
+fn a_flags_row_naming_flags_its_design_holds_stays_out_of_the_table() {
+    let mut baseline: Vec<_> = (1..=3).map(|id| burst_definition(id, b"base")).collect();
+    let state = baseline[0].design.require_mut("fixture").unwrap();
+    [
+        state.can_upgrade_type,
+        state.can_upgrade_variant,
+        state.can_upgrade_modules,
+    ] = [1, 0, 1];
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
+    let mut first = input(0);
+    first.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(rows::TableRows::VariantDefinitions(baseline)).into();
+    encoder.encode_input(first, false).unwrap();
+    let touch = |variant, held| rows::VariantChangeRow {
+        variant,
+        flags: Some(held),
+        ..Default::default()
+    };
+    let mut history = vec![
+        touch(1, [1, 0, 1]),
+        touch(1, [1, 1, 1]),
+        touch(1, [1, 1, 1]),
+        rows::VariantChangeRow {
+            variant: 2,
+            snapshot: Some(rows::VariantSnapshot {
+                definition: burst_definition(2, b"new").into(),
+                stats: vec![0; 10],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        touch(2, [0, 0, 0]),
+        touch(3, [1, 0, 1]),
+    ];
+    for (index, row) in history.iter_mut().enumerate() {
+        row.sequence = index as u64 + 1;
+        row.hour = 1;
+    }
+    let mut captured = Captured::vacant();
+    captured.rows = history.clone();
+    captured.outcome = Outcome::Rows { len: history.len() };
+    let scratch = crate::projection::ProjectionScratch::default();
+    let projection = Projection::new(&encoder, 1, 1, false, &scratch);
+    // With no starting definitions, only a row repeating its design's change before it is dropped.
+    for (projection, kept) in [(Some(&projection), &[1, 3, 5][..]), (None, &[0, 1, 3, 5][..])] {
+        let kept: Vec<_> = kept.iter().map(|&at: &usize| history[at].clone()).collect();
+        assert!(
+            matches!(captured.table_input(projection), TableInput::Sampled(TableView::Complete(rows))
+            if rows.rows::<tables::VariantChanges>() == Some(kept.as_slice()))
+        );
+    }
+}
+
+#[test]
 fn membership_projection_refuses_intermediate_unknown_and_incomplete_occurrences() {
     let mut encoder = replay_frame::frame::FrameEncoder::new();
     let mut first = input(0);
