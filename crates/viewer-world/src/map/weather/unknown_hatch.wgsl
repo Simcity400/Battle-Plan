@@ -1,7 +1,7 @@
 // The viewer's own hatching over snow/mud cells the hour did not observe. It covers the terrain
-// blocks the terrain pass drew, vertex for vertex at the heightmap's heights, and lies on the
-// ground or on the water surface, depth-tested against what the world passes drew. The game's
-// shaders keep reading the snow/mud texture unchanged.
+// blocks the terrain pass drew, vertex for vertex at the heights the terrain draws from, and lies
+// on the ground or on the water surface, depth-tested against what the world passes drew. The
+// game's shaders keep reading the snow/mud texture unchanged.
 struct Params {
     view_projection: mat4x4<f32>,
     // The camera's look direction, and how far the depth is pulled back along it.
@@ -13,18 +13,23 @@ struct Params {
     surface: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> p: Params;
-// The heightmap the terrain's vertices stand on, rows top-down.
+// The heightmap, rows top-down, which decides ground from water.
 @group(0) @binding(1) var heights: texture_2d<f32>;
 // One texel per snow/mud cell, rows counted up from the map's bottom, set where it is unknown.
 @group(0) @binding(2) var unknown: texture_2d<f32>;
+// The terrain's height stream these blocks draw from: per vertex its own and its snapped height,
+// signed 16-bit each, sampled or capped along coasts.
+@group(1) @binding(0) var<storage, read> drawn_heights: array<u32>;
 
 // Quads along a terrain block's side.
 const SIDE: u32 = 64u;
+// The terrain's height stream stores a height byte times this.
+const STORED_PER_BYTE: f32 = 10.0;
 
 struct Hatch {
     @builtin(position) position: vec4<f32>,
     @location(0) world: vec2<f32>,
-    // The terrain's height under this point.
+    // The heightmap's height under this point.
     @location(1) ground: f32,
 }
 
@@ -35,6 +40,13 @@ fn height(at: vec2<u32>) -> f32 {
     return round(stored) * p.surface.z;
 }
 
+// The height the terrain draws at a block's vertex, from the block's first vertex in the stream.
+// A snapped vertex's own height at the vertex it moves onto is the snapped height it draws.
+fn drawn_height(base: u32, corner: vec2<u32>) -> f32 {
+    let pair = drawn_heights[base + corner.y * (SIDE + 1u) + corner.x];
+    return f32(bitcast<i32>(pair << 16u) >> 16u) / STORED_PER_BYTE * p.surface.z;
+}
+
 fn unknown_at(world: vec2<f32>) -> bool {
     if any(world < vec2<f32>(0.0)) || any(world >= vec2<f32>(p.map.xy)) {
         return false;
@@ -43,9 +55,14 @@ fn unknown_at(world: vec2<f32>) -> bool {
     return textureLoad(unknown, cell, 0).r > 0.0;
 }
 
-// One vertex of a block (origin, step, snapped edges) on the terrain's 65 by 65 vertex grid.
+// One vertex of a block (origin, step, snapped edges; its first vertex in the height stream) on
+// the terrain's 65 by 65 vertex grid.
 @vertex
-fn hatch_vertex(@builtin(vertex_index) index: u32, @location(0) drawn: vec4<u32>) -> Hatch {
+fn hatch_vertex(
+    @builtin(vertex_index) index: u32,
+    @location(0) drawn: vec4<u32>,
+    @location(1) base: u32,
+) -> Hatch {
     var corner = vec2<u32>(index % (SIDE + 1u), index / (SIDE + 1u));
     // An odd vertex on an edge meeting a coarser block moves onto that block's next vertex.
     if ((corner.x + corner.y) & 1u) == 1u {
@@ -58,8 +75,7 @@ fn hatch_vertex(@builtin(vertex_index) index: u32, @location(0) drawn: vec4<u32>
     // Quads past the map's edge, which the terrain does not draw, collapse onto it.
     corner = min(corner, min((p.map.xy - drawn.xy) / drawn.z, vec2<u32>(SIDE)));
     let at = drawn.xy + corner * drawn.z;
-    let ground = height(at);
-    var world = vec3<f32>(f32(at.x), ground, f32(at.y));
+    var world = vec3<f32>(f32(at.x), drawn_height(base, corner), f32(at.y));
     if p.surface.x > 0.5 {
         world.y = p.surface.y;
     }
@@ -69,7 +85,7 @@ fn hatch_vertex(@builtin(vertex_index) index: u32, @location(0) drawn: vec4<u32>
     var out: Hatch;
     out.position = vec4<f32>(clip.xy, pulled.z, clip.w);
     out.world = vec2<f32>(f32(at.x), f32(at.y));
-    out.ground = ground;
+    out.ground = height(at);
     return out;
 }
 
@@ -79,8 +95,8 @@ fn hatch_pixel(input: Hatch) -> @location(0) vec4<f32> {
     let s = input.world.x + input.world.y;
     let spacing = exp2(ceil(log2(max(fwidth(s), 0.0001) * 10.0)));
     let phase = fract(s / spacing);
-    // Ground shows above the water surface and water below it; each hatch keeps to its own, and
-    // to unknown cells.
+    // Ground shows where the heightmap stands above the water surface and water below it, so
+    // capped land keeps its ground hatch; each hatch keeps to its own, and to unknown cells.
     let wet = input.ground < p.surface.y;
     if wet != (p.surface.x > 0.5) || !unknown_at(input.world) {
         discard;

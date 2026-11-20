@@ -60,6 +60,16 @@ pub struct Block {
     pub snap: [bool; 4],
 }
 
+/// One block the terrain draws, as an overlay stands on it: its patch, its snapped edges in
+/// [`Block::snap`]'s order, and its first vertex in the height stream it draws from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stand {
+    pub origin: [u32; 2],
+    pub step: u32,
+    pub snap: [bool; 4],
+    pub base: u32,
+}
+
 /// Cells along a block's side: 65*65 vertices and 64*64*6 indices per block.
 pub const SIDE: u32 = 64;
 fn refuse(reason: impl Into<String>) -> io::Error {
@@ -181,7 +191,7 @@ fn validate_block(patch: Patch, map: [u32; 2]) -> io::Result<()> {
 
 /// The blocks the terrain draws for one wrap view of a `map`-sized map: those standing on that
 /// copy.
-pub fn drawn_blocks(cover: &Cover, map: [u32; 2], offset: f32) -> io::Result<Vec<Block>> {
+fn drawn_blocks(cover: &Cover, map: [u32; 2], offset: f32) -> io::Result<Vec<Block>> {
     match cover {
         Cover::Blocks(blocks) => blocks
             .iter()
@@ -1067,6 +1077,48 @@ impl Terrain {
             views.push((blocks, matrix));
         }
         Ok(views)
+    }
+
+    /// The blocks the terrain draws for `cover` in the wrap view at `offset`, by the height
+    /// stream each draws from, so an overlay stands on the heights the terrain draws.
+    pub fn standing(
+        &mut self,
+        device: &wgpu::Device,
+        cover: &Cover,
+        offset: f32,
+    ) -> io::Result<Vec<(wgpu::Buffer, Vec<Stand>)>> {
+        self.cut(device, cover)?;
+        let cut = self.cut.as_ref().expect("the cover was cut above");
+        let rim_slab = self.slabs.len();
+        let mut streams: Vec<(usize, Vec<Stand>)> = Vec::new();
+        let blocks = cut.views.iter().find(|(view, _)| *view == offset.to_bits());
+        for drawn in blocks.map_or(&[][..], |(_, blocks)| blocks) {
+            let (slab, at) = stream(&self.geometry, rim_slab, drawn);
+            let stand = Stand {
+                origin: drawn.patch.origin,
+                step: drawn.patch.step,
+                snap: drawn.snap,
+                base: u32::try_from(at / size_of::<[i16; 2]>() as u64)
+                    .map_err(|_| refuse("a terrain slab stands past a stream of u32 vertices"))?,
+            };
+            match streams.iter_mut().find(|(held, _)| *held == slab) {
+                Some((_, stands)) => stands.push(stand),
+                None => streams.push((slab, vec![stand])),
+            }
+        }
+        streams
+            .into_iter()
+            .map(|(slab, stands)| {
+                let buffer = match self.slabs.get(slab) {
+                    Some(buffer) => buffer,
+                    None => cut
+                        .stream
+                        .as_ref()
+                        .ok_or_else(|| refuse("a block draws rim heights the cut did not make"))?,
+                };
+                Ok((buffer.clone(), stands))
+            })
+            .collect()
     }
 
     pub fn prepare(

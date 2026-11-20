@@ -3954,13 +3954,16 @@ impl Scene {
         let unknown_hatch = &self.unknown_hatch;
         let hatch_heights = &self.hatch_heights.as_ref().unwrap_or(&self.heightmap).view;
         let (snow_unknown, hatch_grid) = (&self.snow_unknown.view, self.snow_presentation.size);
-        let (cover, terrain_map) = (&self.cover, self.compiled_terrain.map());
+        let terrain_map = self.compiled_terrain.map();
         if let Some((_, Ok(hatch))) = unknown_hatch {
             hatch.begin_frame();
         }
+        // `standing` is the terrain's blocks in this wrap by the heights each draws from, so the
+        // hatch stands where the terrain does.
         let draw_hatch = |encoder: &mut wgpu::CommandEncoder,
                           view: usize,
-                          surface: crate::map::weather::Surface|
+                          surface: crate::map::weather::Surface,
+                          standing: &[(wgpu::Buffer, Vec<crate::map::terrain_shader::Stand>)]|
          -> io::Result<()> {
             let Some(coverage) = hatch_coverage else {
                 return Ok(());
@@ -3974,9 +3977,10 @@ impl Scene {
                     ));
                 }
             };
-            // The blocks the terrain drew in this wrap, so the hatch stands where the terrain does.
-            let drawn =
-                crate::map::terrain_shader::drawn_blocks(cover, terrain_map, offsets[view])?;
+            let streams: Vec<_> = standing
+                .iter()
+                .map(|(buffer, stands)| (buffer.clone(), coverage.instances(stands)))
+                .collect();
             let frame = &native_frames[view];
             let [x, y, z, _] = frame.cam_look_at_dir_global_time;
             hatch.draw(
@@ -3986,7 +3990,7 @@ impl Scene {
                 targets,
                 hatch_heights,
                 snow_unknown,
-                &coverage.instances(&drawn),
+                &streams,
                 &crate::map::weather::HatchParams::new(
                     frame.view_projection,
                     [x, y, z],
@@ -4045,11 +4049,16 @@ impl Scene {
             }
             mark(&mut encoder, "terrain");
             if hatch_coverage.is_some() {
-                draw_world!(UnknownSnowMud => draw_hatch(
-                    &mut encoder,
-                    view,
-                    crate::map::weather::Surface::Ground,
-                ));
+                draw_world!(UnknownSnowMud => {
+                    let standing =
+                        self.compiled_terrain.standing(device, &self.cover, offsets[view])?;
+                    draw_hatch(
+                        &mut encoder,
+                        view,
+                        crate::map::weather::Surface::Ground,
+                        &standing,
+                    )
+                });
             }
             // Land borders, rivers, rails, trees, water and sea highlights share scene depth. The unlit shadow
             // pre-pass uses its own depth buffer.
@@ -4233,11 +4242,16 @@ impl Scene {
                 && self.graphics.water
                 && self.water.shows_snow_mud()
             {
-                draw_world!(UnknownSnowMud => draw_hatch(
-                    &mut encoder,
-                    view,
-                    crate::map::weather::Surface::Water,
-                ));
+                draw_world!(UnknownSnowMud => {
+                    let standing =
+                        self.compiled_terrain.standing(device, &self.cover, offsets[view])?;
+                    draw_hatch(
+                        &mut encoder,
+                        view,
+                        crate::map::weather::Surface::Water,
+                        &standing,
+                    )
+                });
             }
             mark(&mut encoder, "unknown_snow_mud");
             // borders

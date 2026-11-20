@@ -4,12 +4,12 @@
 //! recorded it; this pass only marks the cells whose snow and mud are unknown
 //! ([`super::Presentation::unknown`]). It lies on what the scene drew, depth-tested against it:
 //! on the terrain right after the terrain pass, over the terrain's own blocks, steps, triangles and
-//! snapped edges at the heightmap's heights, so borders, rivers, railways, trees, water and
-//! everything later draw over it; and on the water surface right after the water when its
-//! technique reads the snow/mud texture, as the shipped ice does. Each fragment keeps to its own
-//! unknown cell, the ground hatch to ground above the water and the water hatch to water. The
-//! pattern is the viewer's own.
-use crate::map::terrain_shader::{Block, SIDE};
+//! snapped edges at the heights the terrain draws from (its coast caps included), so borders,
+//! rivers, railways, trees, water and everything later draw over it; and on the water surface
+//! right after the water when its technique reads the snow/mud texture, as the shipped ice does.
+//! Each fragment keeps to its own unknown cell, the ground hatch to ground the heightmap puts
+//! above the water and the water hatch to water. The pattern is the viewer's own.
+use crate::map::terrain_shader::{SIDE, Stand};
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use std::{future::Future, io};
@@ -96,9 +96,8 @@ impl Coverage {
         }
     }
 
-    /// The blocks of `drawn` over an unknown cell, as the shader's instances: origin, step, and
-    /// the snapped edges as bits in the block's order (south, north, west, east).
-    pub fn instances(&self, drawn: &[Block]) -> Vec<[u32; 4]> {
+    /// The blocks of `drawn` over an unknown cell, as the shader's instances.
+    pub fn instances(&self, drawn: &[Stand]) -> Vec<Instance> {
         let rows = self.tiles.len() as u32 / self.columns.max(1);
         drawn
             .iter()
@@ -116,11 +115,15 @@ impl Coverage {
                     .iter()
                     .enumerate()
                     .fold(0, |bits, (edge, &set)| bits | (u32::from(set) << edge));
-                [block.origin[0], block.origin[1], block.step, snap]
+                [block.origin[0], block.origin[1], block.step, snap, block.base]
             })
             .collect()
     }
 }
+
+/// One block the shader draws: origin, step, the snapped edges as bits in the block's order
+/// (south, north, west, east), and its first vertex in the height stream it draws from.
+pub type Instance = [u32; 5];
 
 /// The pass's uniform block, laid out as the WGSL `Params`.
 #[repr(C)]
@@ -204,6 +207,9 @@ struct Ring {
     used: u64,
     groups: Vec<wgpu::BindGroup>,
     views: Option<(wgpu::TextureView, wgpu::TextureView)>,
+    /// Each terrain height stream's binding and whether this frame drew from it; the last
+    /// frame's are kept.
+    streams: Vec<(wgpu::Buffer, wgpu::BindGroup, bool)>,
 }
 
 impl UnknownHatch {
@@ -223,9 +229,9 @@ impl UnknownHatch {
                     entry_point: Some("hatch_vertex"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: size_of::<[u32; 4]>() as u64,
+                        array_stride: size_of::<Instance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![0 => Uint32x4],
+                        attributes: &wgpu::vertex_attr_array![0 => Uint32x4, 1 => Uint32],
                     })],
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -287,12 +293,18 @@ impl UnknownHatch {
         let mut ring = self.ring.borrow_mut();
         ring.slot = 0;
         ring.used = 0;
+        ring.streams.retain_mut(|(.., drawn)| std::mem::take(drawn));
     }
 
-    /// Hatches the unknown cells of `blocks` ([`Coverage::instances`]) on one surface of one wrap.
-    /// `heights` is the heightmap the terrain's vertices stand on, rows top-down, and `unknown`
+    /// Hatches the unknown cells of the blocks in `streams` ([`Coverage::instances`]) on one
+    /// surface of one wrap: each terrain height stream
+    /// ([`crate::map::terrain_shader::Terrain::standing`]) with the blocks drawn from it.
+    /// `heights` is the heightmap, rows top-down, which decides ground from water, and `unknown`
     /// one texel per cell.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the device, the targets, the pass's textures, its blocks and its parameters"
+    )]
     pub fn draw(
         &self,
         device: &wgpu::Device,
@@ -301,16 +313,20 @@ impl UnknownHatch {
         targets: &Targets,
         heights: &wgpu::TextureView,
         unknown: &wgpu::TextureView,
-        blocks: &[[u32; 4]],
+        streams: &[(wgpu::Buffer, Vec<Instance>)],
         params: &HatchParams,
     ) -> io::Result<()> {
-        if blocks.is_empty() {
+        if streams.iter().all(|(_, blocks)| blocks.is_empty()) {
             return Ok(());
         }
         let mut ring = self.ring.borrow_mut();
         let ring = &mut *ring;
         let slot = ring.slot;
-        let bytes: &[u8] = bytemuck::cast_slice(blocks);
+        let bytes: Vec<u8> = streams
+            .iter()
+            .flat_map(|(_, blocks)| bytemuck::cast_slice::<Instance, u8>(blocks))
+            .copied()
+            .collect();
         let length = bytes.len() as u64;
         scoped(device, "unknown snow and mud hatch bindings", || {
             if ring.params.as_ref().is_none_or(|(_, slots)| *slots <= slot) {
@@ -386,6 +402,26 @@ impl UnknownHatch {
                         },
                     ));
             }
+            for (buffer, _) in streams {
+                match ring.streams.iter_mut().find(|(held, ..)| held == buffer) {
+                    Some((.., drawn)) => *drawn = true,
+                    None => ring.streams.push((
+                        buffer.clone(),
+                        shader_pipeline::gpu::stats::create_bind_group(
+                            device,
+                            &wgpu::BindGroupDescriptor {
+                                label: Some("unknown snow/mud hatch terrain heights"),
+                                layout: &self.pipeline.get_bind_group_layout(1),
+                                entries: &[wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: buffer.as_entire_binding(),
+                                }],
+                            },
+                        ),
+                        true,
+                    )),
+                }
+            }
         })
         .map_err(io::Error::other)?;
         let (params_buffer, _) = ring.params.as_ref().expect("made above");
@@ -397,7 +433,7 @@ impl UnknownHatch {
             slot as u64 * PARAMS_STRIDE,
             bytemuck::bytes_of(params),
         );
-        shader_pipeline::gpu::stats::write_buffer(queue, blocks_buffer, first, bytes);
+        shader_pipeline::gpu::stats::write_buffer(queue, blocks_buffer, first, &bytes);
         ring.used += length;
         ring.slot += 1;
         let mut pass = crate::map::scene::world_pass(encoder, targets, "unknown snow/mud hatch");
@@ -407,11 +443,23 @@ impl UnknownHatch {
         shader_pipeline::gpu::stats::bind();
         pass.set_bind_group(0, &ring.groups[slot], &[]);
         shader_pipeline::gpu::stats::state();
-        pass.set_vertex_buffer(0, blocks_buffer.slice(first..first + length));
-        shader_pipeline::gpu::stats::state();
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
-        shader_pipeline::gpu::stats::draw();
-        pass.draw_indexed(0..self.count, 0, 0..blocks.len() as u32);
+        let mut at = first;
+        for (buffer, blocks) in streams.iter().filter(|(_, blocks)| !blocks.is_empty()) {
+            let (_, group, _) = ring
+                .streams
+                .iter()
+                .find(|(held, ..)| held == buffer)
+                .expect("bound above");
+            let end = at + size_of_val(blocks.as_slice()) as u64;
+            shader_pipeline::gpu::stats::bind();
+            pass.set_bind_group(1, group, &[]);
+            shader_pipeline::gpu::stats::state();
+            pass.set_vertex_buffer(0, blocks_buffer.slice(at..end));
+            shader_pipeline::gpu::stats::draw();
+            pass.draw_indexed(0..self.count, 0, 0..blocks.len() as u32);
+            at = end;
+        }
         Ok(())
     }
 }
@@ -419,10 +467,23 @@ impl UnknownHatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::terrain_shader::{Patch, heights_into, positions};
     use viewer_foundation::map::province_map::HeightField;
 
-    /// Where the shader's vertex stage places vertex `index` of `block` (an instance) on the ground.
-    fn placed(block: [u32; 4], index: u32, map: [u32; 2], heights: &[u8]) -> [f32; 3] {
+    /// The height stream the terrain draws `block` from, sampled from the heightmap.
+    fn sampled(block: [u32; 4], map: [u32; 2], heights: &[u8]) -> Vec<[i16; 2]> {
+        let mut stream = Vec::new();
+        let patch = Patch {
+            origin: [block[0], block[1]],
+            step: block[2],
+        };
+        heights_into(&positions(), heights, map, patch, &mut stream);
+        stream
+    }
+
+    /// Where the shader's vertex stage places vertex `index` of `block` (an instance) on the
+    /// ground, from the height stream `heights` the terrain draws it from.
+    fn placed(block: [u32; 4], index: u32, map: [u32; 2], heights: &[[i16; 2]]) -> [f32; 3] {
         let mut local = [index % (SIDE + 1), index / (SIDE + 1)];
         if (local[0] + local[1]) % 2 == 1 {
             if (local[1] == 0 && block[3] & 1 != 0) || (local[1] == SIDE && block[3] & 2 != 0) {
@@ -433,13 +494,15 @@ mod tests {
                 local[1] += 1;
             }
         }
-        let at: [u32; 2] = std::array::from_fn(|axis| {
-            let cells = ((map[axis] - block[axis]) / block[2]).min(SIDE);
-            block[axis] + local[axis].min(cells) * block[2]
+        let local: [u32; 2] = std::array::from_fn(|axis| {
+            local[axis].min(((map[axis] - block[axis]) / block[2]).min(SIDE))
         });
-        let row = map[1] - 1 - at[1].min(map[1] - 1);
-        let byte = heights[(row * map[0] + at[0] % map[0]) as usize];
-        [at[0] as f32, f32::from(byte) * HEIGHT_SCALE, at[1] as f32]
+        let stored = heights[(local[1] * (SIDE + 1) + local[0]) as usize][0];
+        [
+            (block[0] + local[0] * block[2]) as f32,
+            f32::from(stored) / 10.0 * HEIGHT_SCALE,
+            (block[1] + local[1] * block[2]) as f32,
+        ]
     }
 
     /// The shader's fragment rule: the ground hatch shows above the water surface, the water
@@ -461,7 +524,7 @@ mod tests {
         triangle: &[u16],
         block: [u32; 4],
         map: [u32; 2],
-        heights: &[u8],
+        heights: &[[i16; 2]],
     ) -> [[f32; 3]; 3] {
         std::array::from_fn(|corner| placed(block, u32::from(triangle[corner]), map, heights))
     }
@@ -476,9 +539,10 @@ mod tests {
         let heights = heightmap(|x, z| if (5..8).contains(&x) && z < 4 { 200 } else { 120 });
         let map = [SIDE, SIDE];
         let triangles = crate::map::terrain_shader::indices([SIDE, SIDE]);
+        let stream = sampled([0, 0, 1, 0], map, &heights);
         let mut checked = 0;
         for triangle in triangles.chunks_exact(3) {
-            let corners = triangle_at(triangle, [0, 0, 1, 0], map, &heights);
+            let corners = triangle_at(triangle, [0, 0, 1, 0], map, &stream);
             let [x, _, z] = centre(&corners);
             // Triangles of the unknown cell at the map's south-west corner.
             if x < CELL as f32 && z < CELL as f32 {
@@ -501,8 +565,9 @@ mod tests {
             values: &heights,
         };
         let map = [SIDE, SIDE];
+        let stream = sampled([0, 0, 1, 0], map, &heights);
         for triangle in crate::map::terrain_shader::indices([SIDE, SIDE]).chunks_exact(3) {
-            let corners = triangle_at(triangle, [0, 0, 1, 0], map, &heights);
+            let corners = triangle_at(triangle, [0, 0, 1, 0], map, &stream);
             for [x, y, z] in corners {
                 assert!((y - field.surface_height(x, z)).abs() < 1e-4, "{x} {z}");
             }
@@ -518,23 +583,150 @@ mod tests {
         let height = |x: u32, z: u32| f32::from((x + 2 * z) as u8) * HEIGHT_SCALE;
         // A step-2 block's vertex (3, 1) stands on pixel (6, 2).
         let coarse = [0, 0, 2, 0];
+        let stream = sampled(coarse, map, &heights);
         assert_eq!(
-            placed(coarse, SIDE + 1 + 3, map, &heights),
+            placed(coarse, SIDE + 1 + 3, map, &stream),
             [6.0, height(6, 2), 2.0]
         );
         // Its odd south-edge vertex moves onto the coarser neighbour's next vertex when snapped,
         // and its west edge, not snapped, stays.
         let snapped = [0, 0, 2, 1];
-        assert_eq!(placed(snapped, 1, map, &heights), [4.0, height(4, 0), 0.0]);
-        assert_eq!(placed(coarse, 1, map, &heights), [2.0, height(2, 0), 0.0]);
+        assert_eq!(placed(snapped, 1, map, &stream), [4.0, height(4, 0), 0.0]);
+        // The vertex it moves onto holds the snapped height the terrain draws for it.
+        assert_eq!(height(4, 0), f32::from(stream[1][1]) / 10.0 * HEIGHT_SCALE);
+        assert_eq!(placed(coarse, 1, map, &stream), [2.0, height(2, 0), 0.0]);
         let west = SIDE + 1;
-        assert_eq!(placed(snapped, west, map, &heights), [0.0, height(0, 2), 2.0]);
+        assert_eq!(placed(snapped, west, map, &stream), [0.0, height(0, 2), 2.0]);
         // A snapped east edge moves north.
         let east = [0, 0, 1, 8];
         assert_eq!(
-            placed(east, west + SIDE, map, &heights),
+            placed(east, west + SIDE, map, &sampled(east, map, &heights)),
             [64.0, height(0, 2), 2.0]
         );
+    }
+
+    /// On the GPU, the hatch over a coast-capped block stands at the cap the terrain draws, and
+    /// over an uncapped block at the heightmap's height; the capped land keeps its ground hatch.
+    #[test]
+    fn the_hatch_stands_on_the_coast_capped_heights_the_terrain_draws() {
+        use eframe::wgpu::util::DeviceExt;
+        let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
+        // Land of byte 200 (20 units); in the west half a sea pixel at every odd x and z, so each
+        // step-2 cell there holds water while each vertex, on even pixels, stands on land.
+        let map = [256u32, 128];
+        let bytes: Vec<u8> = (0..map[1])
+            .rev()
+            .flat_map(|z| {
+                (0..map[0]).map(move |x| if x < 128 && x % 2 == 1 && z % 2 == 1 { 40 } else { 200 })
+            })
+            .collect();
+        let coast =
+            crate::map::terrain_coast::Coast::new(&bytes, map, WATER_HEIGHT, HEIGHT_SCALE, 256);
+        let [west, east] = [[0, 0, 2, 0], [128, 0, 2, 0]];
+        let mut streams = Vec::new();
+        for block in [west, east] {
+            let mut heights = sampled(block, map, &bytes);
+            coast.cap(&positions(), [block[0], block[1]], block[2], &mut heights);
+            streams.extend(heights);
+        }
+        let side = (SIDE + 1) as usize;
+        assert!(streams[..side * side].iter().all(|pair| *pair == [940, 940]), "west capped");
+        assert_eq!(streams[side * side + side * 32 + 32], [2000, 2000], "east as sampled");
+        let stream = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("terrain heights"),
+            contents: bytemuck::cast_slice(&streams),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let texture = |size: [u32; 2], data: &[u8]| {
+            device
+                .create_texture_with_data(
+                    &queue,
+                    &wgpu::TextureDescriptor {
+                        label: None,
+                        size: viewer_foundation::map::gpu_contract::extent(size),
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::R8Unorm,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    },
+                    wgpu::util::TextureDataOrder::LayerMajor,
+                    data,
+                )
+                .create_view(&Default::default())
+        };
+        let grid = map.map(|side| side / CELL);
+        let heights = texture(map, &bytes);
+        let unknown = texture(grid, &vec![255; (grid[0] * grid[1]) as usize]);
+        let size = [128, 64];
+        let targets = Targets::new(&device, size, size, 1);
+        let hatch = UnknownHatch::new(&device, 1).unwrap();
+        // Looking straight down, the map fills the target and depth falls as height rises.
+        let view_projection = [
+            [1.0 / 128.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0 / 32.0, 0.0],
+            [0.0, 1.0 / 64.0, 0.0, 0.0],
+            [-1.0, -1.0, 1.0, 1.0],
+        ];
+        let params = HatchParams::new(view_projection, [0.0; 3], map, grid, Surface::Ground);
+        let base = (side * side) as u32;
+        let blocks = vec![
+            [west[0], west[1], west[2], 0, 0],
+            [east[0], east[1], east[2], 0, base],
+        ];
+        // Whether the hatch shows over the west and east blocks' insides against a surface drawn
+        // at `height`: it passes the depth test only where it stands at least that high.
+        let shows = |height: f32| {
+            hatch.begin_frame();
+            let mut encoder = device.create_command_encoder(&Default::default());
+            drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Clear(
+                    wgpu::Color::TRANSPARENT,
+                )))],
+                depth_stencil_attachment: Some(
+                    targets.depth_attachment(wgpu::LoadOp::Clear(1.0 - height / 32.0)),
+                ),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            }));
+            let streams = [(stream.clone(), blocks.clone())];
+            hatch
+                .draw(
+                    &device,
+                    &queue,
+                    &mut encoder,
+                    &targets,
+                    &heights,
+                    &unknown,
+                    &streams,
+                    &params,
+                )
+                .unwrap();
+            queue.submit([encoder.finish()]);
+            let pixels = viewer_foundation::map::gpu_contract::read_texture(
+                &device,
+                &queue,
+                targets.scene_texture(),
+                8,
+            )
+            .unwrap();
+            let drawn = |columns: std::ops::Range<usize>| {
+                (4..60).any(|row| {
+                    columns.clone().any(|column| {
+                        let at = (row * size[0] as usize + column) * 8;
+                        pixels[at..at + 6].iter().any(|&byte| byte != 0)
+                    })
+                })
+            };
+            [drawn(4..60), drawn(68..124)]
+        };
+        assert_eq!(shows(9.35), [true, true], "the capped land keeps its hatch");
+        assert_eq!(shows(9.45), [false, true], "the west stands at the cap, 9.4");
+        assert_eq!(shows(19.95), [false, true]);
+        assert_eq!(shows(20.05), [false, false], "the east stands at the heightmap's 20");
     }
 
     #[test]
@@ -542,8 +734,9 @@ mod tests {
         let map = [96, SIDE];
         let heights = vec![120; (map[0] * map[1]) as usize];
         // The block from x 64 holds 32 columns of the map; its later vertices stand on the edge.
-        assert_eq!(placed([64, 0, 1, 0], 40, map, &heights)[0], 96.0);
-        assert_eq!(placed([64, 0, 1, 0], 20, map, &heights)[0], 84.0);
+        let stream = sampled([64, 0, 1, 0], map, &heights);
+        assert_eq!(placed([64, 0, 1, 0], 40, map, &stream)[0], 96.0);
+        assert_eq!(placed([64, 0, 1, 0], 20, map, &stream)[0], 84.0);
     }
 
     #[test]
@@ -572,21 +765,21 @@ mod tests {
         unknown[3 * 64 + 17] = 255;
         let coverage = Coverage::new(&unknown, grid);
         assert!(coverage.covered());
-        let block = |origin: [u32; 2], step: u32, snap: [bool; 4]| Block {
+        let block = |origin: [u32; 2], step: u32, snap: [bool; 4], base: u32| Stand {
             origin,
             step,
-            offset: 0.0,
             snap,
+            base,
         };
         let drawn = [
-            block([0, 0], 1, [false; 4]),
-            block([64, 0], 1, [true, false, false, true]),
-            block([128, 0], 2, [false; 4]),
-            block([0, 0], 2, [false, true, false, false]),
+            block([0, 0], 1, [false; 4], 0),
+            block([64, 0], 1, [true, false, false, true], 4225),
+            block([128, 0], 2, [false; 4], 8450),
+            block([0, 0], 2, [false, true, false, false], 12675),
         ];
         assert_eq!(
             coverage.instances(&drawn),
-            [[64, 0, 1, 0b1001], [0, 0, 2, 0b0010]]
+            [[64, 0, 1, 0b1001, 4225], [0, 0, 2, 0b0010, 12675]]
         );
     }
 
