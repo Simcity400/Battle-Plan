@@ -9,6 +9,9 @@ const CHUNK: u64 = 4 << 20;
 /// Recent constant blocks compared before staging another copy: consecutive draws share the
 /// scene and light-grid blocks, and each stage often receives the same bytes.
 const RECENT: usize = 8;
+/// Bytes of one staging buffer [`Arena::flush_into`] keeps. A larger write is copied in pieces of
+/// this size, so every staging buffer the belt makes is one it can reuse.
+const BELT_CHUNK: u64 = 1 << 20;
 
 pub struct Arena {
     device: wgpu::Device,
@@ -17,6 +20,8 @@ pub struct Arena {
     inner: RefCell<Inner>,
     /// Native packed geometry is copied into staging before the next draw reuses this storage.
     packed: RefCell<Vec<f32>>,
+    /// The staging buffers [`Arena::flush_into`] copies from, made at its first flush.
+    belt: RefCell<Option<wgpu::util::StagingBelt>>,
 }
 
 #[derive(Default)]
@@ -99,6 +104,7 @@ impl Arena {
             storage_limit: u64::from(device.limits().max_storage_buffer_binding_size),
             inner: RefCell::default(),
             packed: RefCell::default(),
+            belt: RefCell::default(),
         }
     }
 
@@ -147,11 +153,32 @@ impl Arena {
     /// one staged writes nothing, and one in which a window moved writes that window's constants
     /// alone.
     pub fn flush(&self, queue: &wgpu::Queue) {
+        self.flush_with(|buffer, offset, bytes| {
+            crate::gpu::stats::write_buffer(queue, buffer, offset, bytes);
+        });
+    }
+
+    /// [`Self::flush`] as copies `encoder` records from staging buffers the arena keeps and
+    /// reuses once the GPU has copied from them: `queue.write_buffer` makes a staging buffer for
+    /// every write, which costs a frame more while the frames before it are in flight. `encoder`
+    /// must be submitted ahead of the commands that bind the uploads.
+    pub fn flush_into(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut belt = self.belt.borrow_mut();
+        let belt = belt.get_or_insert_with(|| wgpu::util::StagingBelt::new(self.device.clone(), BELT_CHUNK));
+        self.flush_with(|buffer, offset, bytes| {
+            for (at, piece) in (offset..).step_by(BELT_CHUNK as usize).zip(bytes.chunks(BELT_CHUNK as usize)) {
+                crate::gpu::stats::belt_write(belt, encoder, buffer, at, piece);
+            }
+        });
+        belt.finish_and_recall_on_submit(encoder);
+    }
+
+    fn flush_with(&self, mut write: impl FnMut(&wgpu::Buffer, u64, &[u8])) {
         let mut inner = self.inner.borrow_mut();
         let mut written = 0;
         for (buffer, offset, bytes) in std::mem::take(&mut inner.writes) {
             written += bytes.len() as u64;
-            crate::gpu::stats::write_buffer(&queue, &buffer, offset, &bytes);
+            write(&buffer, offset, &bytes);
         }
         for chunk in &mut inner.chunks {
             if chunk.staged.len() == chunk.flushed {
@@ -165,22 +192,12 @@ impl Arena {
             // Only the written blocks are copied back: the rest the buffer already holds.
             for span in unheld(from, &chunk.staged[from..known], &chunk.held[from..known]) {
                 written += (span.end - span.start) as u64;
-                crate::gpu::stats::write_buffer(
-                    &queue,
-                    &chunk.buffer,
-                    span.start as u64,
-                    &chunk.staged[span.clone()],
-                );
+                write(&chunk.buffer, span.start as u64, &chunk.staged[span.clone()]);
                 chunk.held[span.clone()].copy_from_slice(&chunk.staged[span]);
             }
             if to > known {
                 written += (to - known) as u64;
-                crate::gpu::stats::write_buffer(
-                    &queue,
-                    &chunk.buffer,
-                    known as u64,
-                    &chunk.staged[known..to],
-                );
+                write(&chunk.buffer, known as u64, &chunk.staged[known..to]);
                 chunk.held.resize(to, 0);
                 chunk.held[known..to].copy_from_slice(&chunk.staged[known..to]);
             }
@@ -423,6 +440,65 @@ fn align(value: usize, alignment: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn belt_writes_land_before_the_commands_after_them_frame_after_frame() {
+        let (device, queue) = crate::tests::device();
+        let arena = Arena::new(&device);
+        let buffer = |usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 2 * BELT_CHUNK,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let target = buffer(wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC);
+        let read = buffer(wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ);
+        let mut expected = vec![0_u8; 2 * BELT_CHUNK as usize];
+        // Two small frames, then frames each writing more than one staging buffer holds, and more
+        // than the frame before.
+        let large = (0..5).map(|step| (8, BELT_CHUNK as usize + 8 + 64 * step));
+        for (frame, (offset, length)) in [(0, 64), (16, 32)].into_iter().chain(large).enumerate() {
+            arena.reset();
+            // The piece a byte falls in is part of its value, so a piece copied from the wrong source reads wrong.
+            let bytes: Vec<u8> = (0..length).map(|at| (at * 7 + frame * 31 + at / BELT_CHUNK as usize * 101) as u8).collect();
+            arena.write(&target, offset as u64, &bytes);
+            expected[offset..offset + length].copy_from_slice(&bytes);
+            let mut uploads = device.create_command_encoder(&Default::default());
+            arena.flush_into(&mut uploads);
+            let mut after = device.create_command_encoder(&Default::default());
+            after.copy_buffer_to_buffer(&target, 0, &read, 0, 2 * BELT_CHUNK);
+            queue.submit([uploads.finish(), after.finish()]);
+            read.slice(..).map_async(wgpu::MapMode::Read, |result| result.unwrap());
+            device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap();
+            let held = read.slice(..).get_mapped_range().unwrap();
+            assert!(held[..] == expected[..], "frame {frame}");
+            drop(held);
+            read.unmap();
+        }
+        assert_eq!(
+            arena.written_bytes(),
+            64 + 32 + (0..5).map(|step| BELT_CHUNK + 8 + 64 * step).sum::<u64>(),
+            "the belt writes what a queue flush writes"
+        );
+        // Taking one more slice takes back every buffer the GPU is done with, so the belt's
+        // count is every staging buffer it holds: the two one frame's pieces fill, reused.
+        let mut belt = arena.belt.borrow_mut();
+        let belt = belt.as_mut().expect("the belt was made");
+        let four = wgpu::BufferSize::new(4).expect("nonzero");
+        let _ = belt.allocate(four, four);
+        let described = format!("{belt:?}");
+        let held: u64 = ["active_chunks: ", "closed_chunks: ", "free_chunks: "]
+            .iter()
+            .map(|field| {
+                let count = &described[described.find(field).expect("the belt names its chunks") + field.len()..];
+                count[..count.find([',', ' ']).unwrap_or(count.len())].parse::<u64>().expect("a count")
+            })
+            .sum();
+        assert_eq!(held, 2, "growing writes reuse the belt's buffers: {described}");
+    }
 
     #[test]
     #[ignore = "requires a GPU"]

@@ -406,8 +406,14 @@ pub struct Scene {
     map_text_events: crate::map::animated_map_text::events::Presenter,
     map_text_refusals: viewer_foundation::table_access::Refusals,
     weather_effects: Option<crate::map::weather_effects::Pass>,
-    /// Finishes the frame's leading command buffer while the frame records the rest.
+    /// Finishes the frame's leading command buffer while the frame records the rest, then its
+    /// trailing one while the frame flushes its uploads.
     encode_lane: crate::map::lane::Lane<wgpu::CommandBuffer>,
+    /// Finishes the models' command buffer while the frame records the rest.
+    models_lane: crate::map::lane::Lane<wgpu::CommandBuffer>,
+    /// Steps the aircraft and the city sprawl while the frame walks the rest
+    /// ([`step::Beside`]).
+    beside_lane: crate::map::lane::Lane<step::Beside>,
     /// The railway bridges, which are meshes rather than strip; see
     /// [`Scene::set_bridges`].
     bridges: Option<ModelPass>,
@@ -1095,6 +1101,8 @@ impl Scene {
             ),
             weather_effects: None,
             encode_lane: crate::map::lane::Lane::new("map encode"),
+            models_lane: crate::map::lane::Lane::new("map models encode"),
+            beside_lane: crate::map::lane::Lane::new("map step beside"),
             bridges: None,
             unit_models: None,
             unit_gates: None,
@@ -2921,9 +2929,30 @@ impl Scene {
     /// Takes back what the frame started on its own threads, on whatever way it ended.
     fn join_lanes(&mut self) {
         drop(self.encode_lane.take());
+        drop(self.models_lane.take());
+        if let Some(beside) = self.beside_lane.take() {
+            Self::take_back(beside, &mut self.aircraft, &mut self.sprawl, &mut self.city_presentation);
+        }
         if let Some(weather) = &mut self.weather_effects {
             weather.join_frame();
         }
+    }
+
+    /// Puts back what a [`step::Beside`] step was lent.
+    fn take_back(
+        beside: step::Beside,
+        aircraft: &mut Option<(
+            ModelPass,
+            Arc<crate::map::aircraft::AircraftAssets>,
+            crate::map::aircraft::AircraftPlan,
+        )>,
+        sprawl: &mut Option<ModelPass>,
+        city_presentation: &mut Option<crate::map::sprawl::Presentation>,
+    ) {
+        *aircraft = beside.aircraft;
+        *sprawl = beside.sprawl;
+        *city_presentation = beside.city_presentation;
+        viewer_foundation::profiling::adopt_thread_records(beside.records);
     }
 
     /// Counts what the actors show this frame against the frame before
@@ -3140,12 +3169,23 @@ impl Scene {
         viewer_foundation::view_record::add("poses", "ticks", u64::from(pose_tick));
         // The walk consumes the host's cut even when display switches hide its actors.
         let province_frame = self.province_frame.take();
+        let beside = step::Beside {
+            graphics: self.graphics,
+            aircraft: self.aircraft.take(),
+            sprawl: self.sprawl.take(),
+            city_presentation: self.city_presentation.take(),
+            camera,
+            size,
+            animation_time,
+            pose_tick,
+            records: None,
+        };
+        self.beside_lane.start(move || beside.step());
+        let (beside_lane, aircraft, sprawl, city_presentation) =
+            (&mut self.beside_lane, &mut self.aircraft, &mut self.sprawl, &mut self.city_presentation);
         let struck = step::Presentation {
             graphics: &self.graphics,
-            aircraft: self.aircraft.as_mut(),
             trains: self.trains.as_mut(),
-            sprawl: self.sprawl.as_mut(),
-            city_presentation: self.city_presentation.as_mut(),
             unit_history: &mut self.unit_history,
             building_history: &mut self.building_history,
             map_buildings: self.map_buildings.as_mut(),
@@ -3163,7 +3203,14 @@ impl Scene {
             province_frame: province_frame.as_ref().map(|(frame, _)| frame),
             pose_tick,
         }
-        .step(camera, size, animation_time, rails_shown);
+        .step(camera, size, animation_time, rails_shown, |from| {
+            let beside = beside_lane.take().expect("the beside step was started");
+            Self::take_back(beside, aircraft, sprawl, city_presentation);
+            aircraft.as_mut().map(|(_, _, plan)| {
+                let _missiles_span = viewer_foundation::profiling::span("step_missiles");
+                plan.missile_explosions(from, animation_time)
+            })
+        });
         // The regions' weather producers run from the list the walk just took.
         if let Some(weather) = &mut self.weather_effects {
             let schedule = self.unit_history.schedule().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -4703,6 +4750,11 @@ impl Scene {
                 mark(&mut encoder, "player");
             }
         }
+        let models = std::mem::replace(
+            &mut encoder,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") }),
+        );
+        self.models_lane.start(move || models.finish());
         //alternate entities/particles precede modes3 and1.
         draw_orders(&mut encoder, ArrowMode::Seethrough, 1)?;
         mark(&mut encoder, "orders_seethrough");
@@ -4791,17 +4843,29 @@ impl Scene {
             timer.finish(&mut encoder);
         }
         cpu_mark("timestamp_resolve");
-        self.arena.flush(queue);
-        cpu_mark("arena_flush");
-        let encoded = clock.map(|clock| clock.elapsed());
         if let Some(frame_timer) = &self.frame_timer {
             frame_timer.end(&mut encoder);
         }
-        let trailing = encoder.finish();
-        cpu_mark("encoder_finish");
         if let Some(leading) = self.encode_lane.take() {
             command_buffers.push(ModelPass::finished_buffer(leading));
         }
+        // The trailing buffer finishes on the lane while the staged writes are copied in a buffer
+        // of their own, submitted first, as the queue's own writes would be.
+        self.encode_lane.start(move || encoder.finish());
+        let mut uploads =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map uploads") });
+        self.arena.flush_into(&mut uploads);
+        command_buffers.insert(0, ModelPass::finished_buffer(uploads.finish()));
+        cpu_mark("arena_flush");
+        let encoded = clock.map(|clock| clock.elapsed());
+        if let Some(models) = self.models_lane.take() {
+            command_buffers.push(ModelPass::finished_buffer(models));
+        }
+        let trailing = self
+            .encode_lane
+            .take()
+            .expect("the trailing buffer was started");
+        cpu_mark("encoder_finish");
         command_buffers.push(ModelPass::finished_buffer(trailing));
         cpu_mark("encoder_join");
         // Joining here preserves native buffer order without earlier encoder waits.

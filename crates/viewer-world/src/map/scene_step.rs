@@ -43,18 +43,11 @@ impl Drop for Part {
 /// Every part of a scene that a frame advances, borrowed for one step.
 pub(super) struct Presentation<'a> {
     pub graphics: &'a dashboard_core::protocol::MapGraphics,
-    pub aircraft: Option<&'a mut (
-        ModelPass,
-        Arc<crate::map::aircraft::AircraftAssets>,
-        crate::map::aircraft::AircraftPlan,
-    )>,
     pub trains: Option<&'a mut (
         ModelPass,
         Arc<crate::map::trains::TrainAssets>,
         crate::map::trains::TrainPlan,
     )>,
-    pub sprawl: Option<&'a mut ModelPass>,
-    pub city_presentation: Option<&'a mut crate::map::sprawl::Presentation>,
     pub unit_history: &'a mut crate::map::unit_history::History,
     pub building_history: &'a mut BuildingHistory,
     pub map_buildings: Option<&'a mut ModelPass>,
@@ -83,6 +76,8 @@ impl Presentation<'_> {
     /// Advances everything to `animation_time` for `camera`. `rails_shown` is the camera's
     /// railway fade, below which trains run; display switches decide nothing here but which
     /// placed actors draw.
+    /// `beside` takes back the [`Beside`] step that ran beside the walk and gives the missile
+    /// explosions since the missile clock's mark, when there are aircraft.
     /// Returns the players of shown strike impacts, whose sounds are combat sounds.
     pub(super) fn step(
         self,
@@ -90,13 +85,11 @@ impl Presentation<'_> {
         size: [u32; 2],
         animation_time: f32,
         rails_shown: bool,
+        beside: impl FnOnce(f32) -> Option<Vec<crate::map::strike_effects::Impact>>,
     ) -> BTreeSet<crate::map::models::ActorAddress> {
         let Self {
             graphics,
-            mut aircraft,
             trains,
-            sprawl,
-            city_presentation,
             unit_history,
             building_history,
             map_buildings,
@@ -118,36 +111,6 @@ impl Presentation<'_> {
         let visible = camera.visible_ground(size, MARGIN);
         let animation_offsets = wrap_offsets(visible, camera.map.x());
         drop(view_span);
-        // The aircraft share no state with the rest of the walk, so they step beside it.
-        let mut fly = || {
-            let _part = Part::new("aircraft");
-            // Every mission is placed; one the display hides stays placed and only stops drawing.
-            let Some((pass, assets, plan)) = aircraft.as_deref_mut() else {
-                return None;
-            };
-            let _aircraft_span = viewer_foundation::profiling::span("step_aircraft");
-            let field_span = viewer_foundation::profiling::span("aircraft_field");
-            // The band reads the actors' players as the previous frame left them.
-            let (mut field, hidden) = plan.field(
-                assets,
-                animation_time,
-                &|mission| graphics.air_mission(mission),
-                &|key| pass.root_play_position(key),
-            );
-            drop(field_span);
-            let place_span = viewer_foundation::profiling::span("aircraft_place");
-            pass.replace_field(&assets.library(), &mut field);
-            pass.set_hidden(hidden);
-            drop(place_span);
-            if pose_tick {
-                let _animate_span = viewer_foundation::profiling::span("aircraft_animate");
-                let _animate_profile = viewer_foundation::profiling::thread_span("aircraft_animate");
-                pass.animate(animation_time, None, &[0.]);
-            }
-            drop(_aircraft_span);
-            // A pool thread's records join the frame's.
-            viewer_foundation::profiling::take_thread_records()
-        };
         let walk = || {
             let _walk = Part::new("walk");
             // Trains run below the railway fade, whether or not the display shows them.
@@ -162,38 +125,6 @@ impl Presentation<'_> {
                 if pose_tick {
                     let _animate_span = viewer_foundation::profiling::span("train_animate");
                     pass.animate(animation_time, visible, &animation_offsets);
-                }
-            }
-            // City actors are precreated outside the dynamic mesh creation budget. Each province's
-            // damage inputs select their states.
-            if let (Some(pass), Some(presentation)) = (sprawl, city_presentation) {
-                let _part = Part::new("cities");
-                let _cities_span = viewer_foundation::profiling::span("step_cities");
-                let update_span = viewer_foundation::profiling::span("city_update");
-                let placed = presentation.update(
-                    camera,
-                    size,
-                    crate::map::models::draws_city_sprawl(&camera),
-                    animation_time,
-                );
-                viewer_foundation::view_record::add(
-                    "city sprawl",
-                    if placed.is_some() { "field_rebuilt" } else { "field_kept" },
-                    1,
-                );
-                if let Some(placed) = placed {
-                    let _place_span = viewer_foundation::profiling::span("city_place");
-                    viewer_foundation::view_record::add("city sprawl", "placed", placed.len() as u64);
-                    pass.update_placed(placed, crate::map::sprawl::SPRAWL_TILE);
-                }
-                drop(update_span);
-                let clocks_span = viewer_foundation::profiling::span("city_clocks");
-                pass.set_clock_records(presentation.clock_records(), animation_time);
-                drop(clocks_span);
-                if pose_tick {
-                    let _animate_span = viewer_foundation::profiling::span("city_animate");
-                    let _animate_profile = viewer_foundation::profiling::thread_span("city_animate");
-                    pass.animate(animation_time, None, &[0.0]);
                 }
             }
             let mut gates = unit_gates.unwrap_or(UnitGates::OFF);
@@ -283,17 +214,13 @@ impl Presentation<'_> {
             }
         };
         let joined = Part::new("join");
-        let flown = fly();
         walk();
-        drop(joined);
-        viewer_foundation::profiling::adopt_thread_records(flown);
         // Missile scenarios finished since the last frame start their explosions on the clock
         // the flying aircraft share. Their own clock mark moves with the start, so a frame that
         // fails later starts none of them again.
-        if let Some((_, _, plan)) = aircraft {
-            let _missiles_span = viewer_foundation::profiling::span("step_missiles");
-            let from = missile_clock.unwrap_or(animation_time);
-            let explosions = plan.missile_explosions(from, animation_time);
+        let explosions = beside(missile_clock.unwrap_or(animation_time));
+        drop(joined);
+        if let Some(explosions) = explosions {
             strikes.receive_explosions(&explosions, animation_time);
         }
         *missile_clock = Some(animation_time);
@@ -338,6 +265,90 @@ impl Presentation<'_> {
             struck.extend(pass.clock_actor_addresses());
         }
         struck
+    }
+}
+
+/// The parts of the presentation step that share no state with the walk: the aircraft and the
+/// city sprawl. The scene lends them to a lane of their own and takes them back after the walk,
+/// which then starts the aircraft's missile explosions ([`Presentation::step`]).
+pub(super) struct Beside {
+    pub graphics: dashboard_core::protocol::MapGraphics,
+    pub aircraft: Option<(
+        ModelPass,
+        Arc<crate::map::aircraft::AircraftAssets>,
+        crate::map::aircraft::AircraftPlan,
+    )>,
+    pub sprawl: Option<ModelPass>,
+    pub city_presentation: Option<crate::map::sprawl::Presentation>,
+    pub camera: Camera,
+    pub size: [u32; 2],
+    pub animation_time: f32,
+    pub pose_tick: bool,
+    /// The lane thread's profiling records, which join the frame's.
+    pub records: Option<viewer_foundation::profiling::ThreadRecords>,
+}
+
+impl Beside {
+    pub(super) fn step(mut self) -> Self {
+        let Self { graphics, camera, size, animation_time, pose_tick, .. } = self;
+        if let Some((pass, assets, plan)) = self.aircraft.as_mut() {
+            let _part = Part::new("aircraft");
+            // Every mission is placed; one the display hides stays placed and only stops drawing.
+            let _aircraft_span = viewer_foundation::profiling::span("step_aircraft");
+            let field_span = viewer_foundation::profiling::span("aircraft_field");
+            // The band reads the actors' players as the previous frame left them.
+            let (mut field, hidden) = plan.field(
+                assets,
+                animation_time,
+                &|mission| graphics.air_mission(mission),
+                &|key| pass.root_play_position(key),
+            );
+            drop(field_span);
+            let place_span = viewer_foundation::profiling::span("aircraft_place");
+            pass.replace_field(&assets.library(), &mut field);
+            pass.set_hidden(hidden);
+            drop(place_span);
+            if pose_tick {
+                let _animate_span = viewer_foundation::profiling::span("aircraft_animate");
+                let _animate_profile = viewer_foundation::profiling::thread_span("aircraft_animate");
+                pass.animate(animation_time, None, &[0.]);
+            }
+        }
+        let (sprawl, city_presentation) = (self.sprawl.as_mut(), self.city_presentation.as_mut());
+        // City actors are precreated outside the dynamic mesh creation budget. Each province's
+        // damage inputs select their states.
+        if let (Some(pass), Some(presentation)) = (sprawl, city_presentation) {
+            let _part = Part::new("cities");
+            let _cities_span = viewer_foundation::profiling::span("step_cities");
+            let update_span = viewer_foundation::profiling::span("city_update");
+            let placed = presentation.update(
+                camera,
+                size,
+                crate::map::models::draws_city_sprawl(&camera),
+                animation_time,
+            );
+            viewer_foundation::view_record::add(
+                "city sprawl",
+                if placed.is_some() { "field_rebuilt" } else { "field_kept" },
+                1,
+            );
+            if let Some(placed) = placed {
+                let _place_span = viewer_foundation::profiling::span("city_place");
+                viewer_foundation::view_record::add("city sprawl", "placed", placed.len() as u64);
+                pass.update_placed(placed, crate::map::sprawl::SPRAWL_TILE);
+            }
+            drop(update_span);
+            let clocks_span = viewer_foundation::profiling::span("city_clocks");
+            pass.set_clock_records(presentation.clock_records(), animation_time);
+            drop(clocks_span);
+            if pose_tick {
+                let _animate_span = viewer_foundation::profiling::span("city_animate");
+                let _animate_profile = viewer_foundation::profiling::thread_span("city_animate");
+                pass.animate(animation_time, None, &[0.0]);
+            }
+        }
+        self.records = viewer_foundation::profiling::take_thread_records();
+        self
     }
 }
 
@@ -463,10 +474,7 @@ mod tests {
             self.unit_history.advance_schedule(camera, [1024, 768]);
             Presentation {
                 graphics,
-                aircraft: None,
                 trains: Some(&mut self.trains),
-                sprawl: None,
-                city_presentation: None,
                 unit_history: &mut self.unit_history,
                 building_history: &mut self.building_history,
                 map_buildings: None,
@@ -484,7 +492,7 @@ mod tests {
                 province_frame: None,
                 pose_tick: true,
             }
-            .step(camera, [1024, 768], time, true);
+            .step(camera, [1024, 768], time, true, |_| None);
             self.last = Some(time);
             // The frame's events reach the particle simulations as the scene hands them over.
             let events = frame_events(

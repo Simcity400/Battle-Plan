@@ -192,6 +192,23 @@ pub fn write_buffer(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, byt
     add(Count::WriteNs, started.elapsed().as_nanos() as u64);
 }
 
+/// [`write_buffer`] through `belt`: the copy is recorded into `encoder`. An empty write is none.
+pub fn belt_write(
+    belt: &mut wgpu::util::StagingBelt,
+    encoder: &mut wgpu::CommandEncoder,
+    buffer: &wgpu::Buffer,
+    offset: u64,
+    bytes: &[u8],
+) {
+    let Some(size) = wgpu::BufferSize::new(bytes.len() as u64) else {
+        return;
+    };
+    upload(bytes.len());
+    let started = std::time::Instant::now();
+    belt.write_buffer(encoder, buffer, offset, size).copy_from_slice(bytes);
+    add(Count::WriteNs, started.elapsed().as_nanos() as u64);
+}
+
 /// A buffer made with no contents, counted as one created.
 pub fn create_buffer(device: &wgpu::Device, descriptor: &wgpu::BufferDescriptor<'_>) -> wgpu::Buffer {
     created_buffer();
