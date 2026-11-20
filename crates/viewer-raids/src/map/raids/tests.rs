@@ -590,6 +590,30 @@ fn a_kept_state_building_icon_follows_its_states_order() {
     assert_eq!(second.report.withheld, 1);
 }
 
+/// A paused hour evaluated again continues its cycle and a complete one stays complete: only the
+/// next hour's rebuild marks every row pending. A saved window frame whose step evaluated its hour
+/// once more otherwise showed a batch of a cycle it had finished, and waited on it forever.
+#[test]
+fn an_hour_evaluated_again_keeps_the_rows_it_evaluated() {
+    let mut assets = assets();
+    assets.batch = Ok(1);
+    let mut frame = frame();
+    put::<tables::RaidTargetStatuses>(&mut frame, vec![status(0, 4), status(1, 1)]);
+    let mut cycle = cycle::Cycle::new(frame.branch, 0);
+    let evaluate = |frame: &DecodedFrame, cycle: &mut cycle::Cycle| {
+        let world = World::new(frame, assets.trigger_content.facts()).unwrap();
+        let sweep = offers::Sweep::new(&assets, &world, 0, &launch::Unreconstructed);
+        cycle.begin(&assets, &sweep).unwrap();
+        cycle.step(&sweep);
+        cycle.progress()
+    };
+    assert_eq!(evaluate(&frame, &mut cycle), (1, 2));
+    assert_eq!(evaluate(&frame, &mut cycle), (2, 2), "the hour's next evaluation continues its cycle");
+    assert_eq!(evaluate(&frame, &mut cycle), (2, 2), "and a complete hour stays complete");
+    frame.hour += 1;
+    assert_eq!(evaluate(&frame, &mut cycle), (1, 2), "the next hour begins again");
+}
+
 #[test]
 fn a_state_target_resolves_to_the_province_nearest_its_centre() {
     let assets = assets();

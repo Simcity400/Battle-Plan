@@ -191,6 +191,10 @@ const MAP_INPUT_OWNER: &str = "map camera input owner";
 /// for less, and art still arriving past this is refused by name rather than drawn incomplete.
 const SETTLES: u32 = 8;
 
+/// How long a saved frame is held for the rest of its picture before it is refused by name: the
+/// bound the map's side keeps on a stepped frame's own wait.
+const HELD_GIVEN_UP: Duration = Duration::from_secs(300);
+
 /// Whether this map takes the map-mode keys: a lone map always; on a dashboard, the map that
 /// owns keyboard input, or the hovered one while no map owns it.
 fn takes_map_keys(
@@ -623,6 +627,8 @@ struct Capture {
     /// The harness's paced frames follow a wall clock, as a window's do: none waits for its hour,
     /// its icons or its raid cycle.
     paced: bool,
+    /// The host's number for a desktop export, which the capture's end answers once.
+    request: Option<u64>,
 }
 
 /// The open maps whose visual mods changed since they loaded, each with the revision it loaded
@@ -1149,6 +1155,10 @@ pub struct Viewer {
     overlay_art_moved: bool,
     /// How many frames running a saved frame due for readback found its overlay older than its art.
     overlay_art_retries: u32,
+    /// Since when a saved frame due for readback has been held for its picture.
+    held_since: Option<Instant>,
+    /// Desktop exports that ended and are not yet answered: each request, and why it was refused.
+    export_results: Vec<(u64, Result<String, String>)>,
     /// The loaded content the combat window was given its reads' inputs for.
     combat_inputs: Option<usize>,
     /// The families of map-icon windows that asked this frame for a pass of their own
@@ -1567,6 +1577,7 @@ impl Viewer {
             frames: options.window_frames.max(1),
             index: 0,
             paced: false,
+            request: None,
         });
         // counters: the perspective starts where the command line put it.
         let perspective = options.perspective.clone();
@@ -1781,6 +1792,8 @@ impl Viewer {
             overlay_fraction: None,
             overlay_art_moved: false,
             overlay_art_retries: 0,
+            held_since: None,
+            export_results: Vec::new(),
             combat_inputs: None,
 
             counter_view,
@@ -2067,11 +2080,12 @@ impl Viewer {
 
     /// Nothing of this window is drawn: its maps stop sounding and let their playheads go.
     fn not_drawn(&mut self) {
+        self.export_closed("its map was hidden before its picture was saved");
         self.release_audio();
         self.close_playhead();
         if let Some(dashboard) = &mut self.dashboard {
             dashboard.release_audio();
-            dashboard.close_playheads();
+            dashboard.not_drawn();
         }
     }
 
@@ -2132,7 +2146,7 @@ impl Viewer {
         self.seek_owed = false;
         self.opened = None;
         self.playing = false;
-        drop(self.end_capture());
+        self.export_closed("its recording closed");
         self.combat.close();
         self.retire_combat_inputs();
         self.error = None;
@@ -2194,6 +2208,7 @@ impl Viewer {
             None => Some("The requested branch is not present in this recording".into()),
         };
         if let Some(error) = self.error.clone() {
+            self.refuse_capture(&error, ui.ctx());
             self.rendered = None;
             self.silence_unshown();
             ui.centered_and_justified(|ui| {
@@ -2205,6 +2220,7 @@ impl Viewer {
             let result = self.map(ui, frame, &mut document);
             self.after_frame_with_visual_mods(&document, result.as_ref().err());
             if let Err(error) = result {
+                self.refuse_capture(&error, ui.ctx());
                 self.error = Some(error);
                 self.rendered = None;
             }
@@ -2353,16 +2369,36 @@ impl Viewer {
     }
 
     /// A saved frame draws again until its overlay is laid out over the art it draws (`stale`,
-    /// none without an overlay) and the rest of its picture is there (`rest`). Art that decoded
-    /// after the overlay was painted, such as the combat window's flags and portraits, leaves the
-    /// layout older than the art: once readback is due this frame or the next, the next frame paints
-    /// it, which lays `hour` out again. Art still moving it after [`SETTLES`] frames refuses the
-    /// capture by name.
-    fn hold_saved_frame(&mut self, hour: replay_data::Hour, stale: Option<bool>, rest: bool, ctx: &egui::Context) -> Result<(), String> {
+    /// none without an overlay) and the rest of its picture is there (`waiting` names what is not).
+    /// Art that decoded after the overlay was painted, such as the combat window's flags and
+    /// portraits, leaves the layout older than the art: once readback is due this frame or the
+    /// next, the next frame paints it, which lays `hour` out again. Art still moving it after
+    /// [`SETTLES`] frames, or a frame due for readback held past [`HELD_GIVEN_UP`], refuses the
+    /// capture by name: a window dump's as the frame's error, an export's to its requester.
+    fn hold_saved_frame(&mut self, hour: replay_data::Hour, stale: Option<bool>, waiting: Option<String>, ctx: &egui::Context) -> Result<(), String> {
+        self.hold_saved_frame_within(hour, stale, waiting, HELD_GIVEN_UP, ctx)
+    }
+
+    /// [`Self::hold_saved_frame`] held at most `given_up`.
+    fn hold_saved_frame_within(&mut self, hour: replay_data::Hour, stale: Option<bool>, waiting: Option<String>, given_up: Duration, ctx: &egui::Context) -> Result<(), String> {
         let Some(capture) = self.capture.as_mut().filter(|capture| !capture.paced) else { return Ok(()) };
         let due = capture.remaining <= 1;
-        if stale != Some(false) || !rest {
+        let held = stale != Some(false) || waiting.is_some();
+        if held {
             capture.remaining = capture.remaining.max(1);
+        }
+        if !(held && due) {
+            self.held_since = None;
+        } else {
+            let what = || {
+                waiting.clone().unwrap_or_else(|| match stale {
+                    None => "no overlay was laid out for it".to_owned(),
+                    _ => "its overlay was older than its art".to_owned(),
+                })
+            };
+            if !self.held_within(hour, given_up, what, ctx)? {
+                return Ok(());
+            }
         }
         if stale != Some(true) {
             self.overlay_art_retries = 0;
@@ -2374,12 +2410,36 @@ impl Viewer {
         self.overlay_art_retries += 1;
         if self.overlay_art_retries > SETTLES {
             let why = format!("A saved frame draws the art of its own hour: art still arrived after the picture of hour {hour} was drawn, {SETTLES} frames running");
-            self.refuse_capture(&why, ctx);
-            return Err(why);
+            return self.refused_frame(why, ctx);
         }
         self.overlay_fraction = None;
         self.overlay_art_moved = true;
         Ok(())
+    }
+
+    /// Whether a saved frame held for `hour` waits on: once held past `given_up` it is refused,
+    /// naming `what` it waited for, and false is returned to the export the frame draws on after.
+    fn held_within(&mut self, hour: replay_data::Hour, given_up: Duration, what: impl FnOnce() -> String, ctx: &egui::Context) -> Result<bool, String> {
+        if self.held_since.get_or_insert_with(Instant::now).elapsed() < given_up {
+            return Ok(true);
+        }
+        let why = format!("A saved frame draws its own hour whole: hour {hour} was still held after {} s, {}", given_up.as_secs(), what());
+        self.refused_frame(why, ctx).map(|()| false)
+    }
+
+    /// A saved frame of a loaded map that cannot draw `hour` yet (`what` it waits for: its first
+    /// picture, a size to draw at) waits within [`HELD_GIVEN_UP`], the hold it then goes on to;
+    /// loading the recording is not counted.
+    fn wait_to_draw(&mut self, hour: replay_data::Hour, what: impl FnOnce() -> String, ctx: &egui::Context) -> Result<(), String> {
+        self.wait_to_draw_within(hour, what, HELD_GIVEN_UP, ctx)
+    }
+
+    /// [`Self::wait_to_draw`] waiting at most `given_up`.
+    fn wait_to_draw_within(&mut self, hour: replay_data::Hour, what: impl FnOnce() -> String, given_up: Duration, ctx: &egui::Context) -> Result<(), String> {
+        if !self.capture.as_ref().is_some_and(|capture| !capture.paced) {
+            return Ok(());
+        }
+        self.held_within(hour, given_up, what, ctx).map(drop)
     }
 
     /// Installs the overlay the map's side made for its step, with the drawn plates of the one it
@@ -3056,6 +3116,7 @@ impl Viewer {
 
     fn open(&mut self, mut path: PathBuf, ctx: &egui::Context, expected_revision: Option<String>) {
         let _stage = viewer_foundation::load_record::stage("open.ui");
+        self.export_closed("its map was replaced before its picture was saved");
         if self.embedded.is_some() {
             match path.canonicalize() {
                 Ok(canonical) => path = canonical,
@@ -3358,47 +3419,85 @@ impl Viewer {
         }
     }
 
-    /// A `--window-dump` waits for this load, so its failure ends the capture
-    /// and the process; the map's thread hands the message to main, which exits 1.
-    /// Other captures belong to the map on screen and stay armed.
+    /// A load that failed has no map to capture: a `--window-dump`, which waits for it, ends with
+    /// the process (the map's thread hands the message to main, which exits 1), and an export is
+    /// refused to its requester.
     fn failed_load(&mut self, error: String, ctx: &egui::Context) {
-        self.failed_window_capture(&format!("replay could not be loaded: {error}"), ctx);
+        self.refuse_capture(&format!("replay could not be loaded: {error}"), ctx);
         self.error = Some(error);
     }
 
+    /// The hour on screen cannot be drawn (a recorded gap, a refused or stopped reader), so no
+    /// capture can save it.
     fn hour_error(&mut self, error: Option<String>, ctx: &egui::Context) {
         if let Some(error) = &error {
-            self.failed_window_capture(error, ctx);
+            self.refuse_capture(error, ctx);
         }
         self.map_error = error;
     }
 
-    /// A window dump cannot write an unavailable map. Surface its failure to
-    /// the caller instead of leaving a capture parked on an error view.
-    fn failed_window_capture(&mut self, error: &str, ctx: &egui::Context) {
-        if self.capture.as_ref().is_some_and(|capture| capture.exit) {
-            self.refuse_capture(error, ctx);
+    /// Ends the capture with a refusal, whoever asked for it: a window dump reports it and closes,
+    /// and an export answers its requester by name, never as the map's error, so the next export
+    /// starts. Whether it was a window dump's.
+    fn refuse_capture(&mut self, error: &str, ctx: &egui::Context) -> bool {
+        let dump = self.refused(error).unwrap_or(false);
+        if dump {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        dump
+    }
+
+    /// A saved frame refused for `why`: the frame's error for a window dump, which ends with it;
+    /// an export is answered and the frame draws on.
+    fn refused_frame(&mut self, why: String, ctx: &egui::Context) -> Result<(), String> {
+        if self.refuse_capture(&why, ctx) { Err(why) } else { Ok(()) }
+    }
+
+    /// An export still armed when what it draws goes (`why`) is refused to its requester. A window
+    /// dump ends on its own frame's errors.
+    pub(crate) fn export_closed(&mut self, why: &str) {
+        if self.capture.as_ref().is_some_and(|capture| !capture.exit) {
+            self.refused(why);
         }
     }
 
-    /// Ends the capture with a refusal, whoever asked for it: a window dump reports it and closes;
-    /// an export reports it by name, and the next export starts.
-    fn refuse_capture(&mut self, error: &str, ctx: &egui::Context) {
-        let Some(capture) = self.end_capture() else { return };
+    /// Ends the capture refused for `error`, said by name; whether it was a window dump's, which
+    /// fails its process. None when no capture was armed.
+    fn refused(&mut self, error: &str) -> Option<bool> {
+        let capture = self.end_capture()?;
         let message = format!("Capture {} failed: {error}", capture.path.display());
         if capture.exit {
             *self
                 .failure
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = Some(message.clone());
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        self.answer_export(&capture, Err(message.clone()));
         self.capture_note = Some(message);
+        Some(capture.exit)
     }
 
-    /// Takes the capture, saved or refused, with the retries its frame made.
+    /// A desktop export's end, for its requester: what it saved, or why it was refused.
+    fn answer_export(&mut self, capture: &Capture, answer: Result<String, String>) {
+        if let Some(request) = capture.request {
+            self.export_results.push((request, answer));
+        }
+    }
+
+    /// Arms an export as the host's would, for a map that has no picture to save in a test.
+    #[cfg(test)]
+    pub(crate) fn arm_export(&mut self, path: &str, id: u64) {
+        self.capture = Some(Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(id) });
+    }
+
+    /// The exports that ended since the last call: each request, and why it was refused.
+    pub(crate) fn take_export_results(&mut self) -> Vec<(u64, Result<String, String>)> {
+        std::mem::take(&mut self.export_results)
+    }
+
+    /// Takes the capture, saved or refused, with the retries and the hold its frame made.
     fn end_capture(&mut self) -> Option<Capture> {
-        (self.overlay_art_retries, self.overlay_art_moved) = (0, false);
+        (self.overlay_art_retries, self.overlay_art_moved, self.held_since) = (0, false, None);
         self.capture.take()
     }
 
@@ -3552,6 +3651,7 @@ impl Viewer {
         camera: Camera,
         pixels: [u32; 2],
         warnings: &[String],
+        shown: (replay_data::BranchId, replay_data::Hour),
         ctx: &egui::Context,
     ) {
         match &mut self.capture {
@@ -3563,7 +3663,7 @@ impl Viewer {
             Some(_) => {}
             None => return,
         }
-        let mut capture = self.end_capture().expect("matched above");
+        let capture = self.end_capture().expect("matched above");
         let output = if capture.frames > 1 || capture.index > 0 {
             let stem = capture
                 .path
@@ -3590,48 +3690,54 @@ impl Viewer {
             }
             render::write_png(scene, &state.device, &state.queue, &output)
         })();
-        match written {
-            Ok(()) => {
-                // The warning area is the window's own report of what this hour
-                // could not draw, and a capture is read beside a `--dump`, which
-                // prints the same list; printing it here is what lets the two be
-                // compared without a human reading the window.
-                for warning in warnings {
-                    eprintln!("Warning: {warning}");
-                }
-                println!(
-                    "Captured branch {}, hour {}{} to {} at {}x{}",
-                    document.playback.branch(),
-                    document.playback.hour(),
-                    // counters: which frame between two recorded hours this is,
-                    // in the words `--dump` uses, so the two can be compared.
-                    if document.hour_fraction > 0.0 {
-                        format!(" + {:.3} h", document.hour_fraction)
-                    } else {
-                        String::new()
-                    },
-                    output.display(),
-                    pixels[0],
-                    pixels[1]
-                );
-                println!(
-                    "Camera: {},{},{}",
-                    camera.center[0], camera.center[1], camera.height
-                );
-                if let Some(line) = self.flight_line(document) {
-                    println!("{line}");
-                }
-                if let Some(time) = capture.time {
-                    println!("Animation time: {time:.6} s");
-                }
-                if self.camera_mode == CameraMode::Walk
-                    && let Some(walk) = self.walk.report()
-                {
-                    println!("{walk}; player draws {}", scene.player_drawn());
-                }
-                println!("Colour grading {}", if self.postfx { "on" } else { "off" });
-                self.capture_note = Some(format!("Saved {}", output.display()));
+        if written.is_ok() {
+            // The warning area is the window's own report of what this hour
+            // could not draw, and a capture is read beside a `--dump`, which
+            // prints the same list; printing it here is what lets the two be
+            // compared without a human reading the window.
+            for warning in warnings {
+                eprintln!("Warning: {warning}");
             }
+            println!(
+                "Captured branch {}, hour {}{} to {} at {}x{}",
+                shown.0,
+                shown.1,
+                // counters: which frame between two recorded hours this is,
+                // in the words `--dump` uses, so the two can be compared.
+                if document.hour_fraction > 0.0 {
+                    format!(" + {:.3} h", document.hour_fraction)
+                } else {
+                    String::new()
+                },
+                output.display(),
+                pixels[0],
+                pixels[1]
+            );
+            println!(
+                "Camera: {},{},{}",
+                camera.center[0], camera.center[1], camera.height
+            );
+            if let Some(line) = self.flight_line(document) {
+                println!("{line}");
+            }
+            if let Some(time) = capture.time {
+                println!("Animation time: {time:.6} s");
+            }
+            if self.camera_mode == CameraMode::Walk
+                && let Some(walk) = self.walk.report()
+            {
+                println!("{walk}; player draws {}", scene.player_drawn());
+            }
+            println!("Colour grading {}", if self.postfx { "on" } else { "off" });
+        }
+        self.capture_written(capture, &output, shown, written.map_err(|error| error.to_string()), ctx);
+    }
+
+    /// A capture's frame was written to `output`, or failed to be: the export is answered with
+    /// the branch and hour the frame drew (`shown`), or why it failed, and a sequence goes on.
+    fn capture_written(&mut self, mut capture: Capture, output: &Path, shown: (replay_data::BranchId, replay_data::Hour), written: Result<(), String>, ctx: &egui::Context) {
+        let answer = match written {
+            Ok(()) => Ok(format!("Saved {}: branch {}, hour {}", output.display(), shown.0, shown.1)),
             Err(error) => {
                 let message = format!("{}: {error}", capture.path.display());
                 if capture.exit
@@ -3640,11 +3746,12 @@ impl Viewer {
                     *failure = Some(message.clone());
                 }
                 eprintln!("{message}");
-                if self.embedded.is_some() {
-                    self.error = Some(message.clone());
-                }
-                self.capture_note = Some(message);
+                Err(message)
             }
+        };
+        self.capture_note = Some(answer.clone().unwrap_or_else(|why| why));
+        if capture.frames <= 1 {
+            self.answer_export(&capture, answer);
         }
         if capture.frames > 1 {
             capture.frames -= 1;
@@ -4260,7 +4367,7 @@ impl Viewer {
                 };
                 self.after_frame_with_visual_mods(document, result.as_ref().err());
                 if let Err(error) = result {
-                    self.failed_window_capture(&error, ui.ctx());
+                    self.refuse_capture(&error, ui.ctx());
                     self.error = Some(error);
                     false
                 } else {
@@ -4469,6 +4576,7 @@ impl Viewer {
             let through = shown_head.map(|head| head.hour).filter(|_| !saved && self.playing);
             let mut installed = None;
             let mut withdrawn = false;
+            let mut unsettled = None;
             {
                 let presentation = Arc::clone(&self.counter_view.presentation);
                 let side = self.playhead_map.as_mut().expect("the map's side is open");
@@ -4477,13 +4585,15 @@ impl Viewer {
                     crate::playhead_host::Head::Stepped(hour) => side.stepped_window(hour),
                     _ => side.window(),
                 };
-                if let Some(mut window) = window {
+                if let Some(mut window) = { window } {
                     // A saved frame (stepped, or a window dump) draws the plan and the combat
                     // markers of its hour.
                     if saved && window.side().failure().is_none() {
                         let hour = window.side().last_frame().head;
-                        settle_models(window.side_mut(), hour, Duration::from_secs(120))?;
-                        settle_plan(window.side_mut(), hour, Duration::from_secs(120))?;
+                        unsettled = settle_models(window.side_mut(), hour, Duration::from_secs(120))
+                            .and_then(|()| settle_plan(window.side_mut(), hour, Duration::from_secs(120)))
+                            .err()
+                            .map(|why| format!("A saved frame draws the models and plan of its own hour {hour}: {why}"));
                     }
                     if let Some(scene) = self.scene.as_mut() {
                         let mut gpu = crate::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, whole: through.is_none() };
@@ -4507,6 +4617,34 @@ impl Viewer {
                         self.combat.offer(made);
                     }
                 }
+                // The side could not make the stepped hour whole in time: the capture is refused,
+                // and the side goes on for the frames after it.
+                if let Some(why) = side.take_refusal() {
+                    unsettled = Some(format!("A saved frame draws its own hour whole: {why}"));
+                }
+            }
+            // The side counts the overlay handed over as the viewer's, refused frame or not: a
+            // paused side lays out nothing new for inputs it already answered.
+            if withdrawn {
+                self.forget_overlay();
+            }
+            if let Some(made) = installed {
+                self.install_overlay(made);
+            }
+            // The hour the overlay the frame draws stands at is the side's own: the layout taken
+            // above, or, for an hour the overlay read nothing new in, the layout the frame already
+            // holds, which the maker laid out again for nobody and said stands at this hour too.
+            if let Some(side) = live_of(&self.playhead_map) {
+                self.overlay_hour = side.products().overlay_hour;
+            }
+            // A capture's own wait or settle failing ends the capture by name, never the map. The
+            // frame it was drawn for never draws: it may hold no window of the side, and its layers
+            // stand where the saved frame left them. The next frame is a live one.
+            if let Some(why) = unsettled {
+                self.refused_frame(why, ui.ctx())?;
+                self.rendered = None;
+                ui.ctx().request_repaint();
+                return Ok(());
             }
             // Playing past the newest hour the overlay's layout stands at, every mover holds its
             // last place: the frame draws, writes and says that hour, and the head it steers by
@@ -4539,23 +4677,10 @@ impl Viewer {
                 // seek back, at the hour sought, never at the history the seek left.
                 side.views().show_through(taken.zip(shown_head).map(|(taken, head)| taken.min(head.hour)));
             }
-            // The overlay held is another viewing country's and none of this one's is coming: it goes.
-            if withdrawn {
-                self.forget_overlay();
-            }
-            if let Some(made) = installed {
-                self.install_overlay(made);
-            }
             // Frames that draw no map never prepare the combat window, so the reads it let go of
             // are freed here too.
             if let Some(retired) = self.combat.take_retired() {
                 self.retire(retired);
-            }
-            // The hour the overlay the frame draws stands at is the side's own: the layout taken
-            // above, or, for an hour the overlay read nothing new in, the layout the frame already
-            // holds, which the maker laid out again for nobody and said stands at this hour too.
-            if let Some(side) = live_of(&self.playhead_map) {
-                self.overlay_hour = side.products().overlay_hour;
             }
             if let Some(battles) = self.playhead_map.as_ref().and_then(|side| side.products().battles.clone()) {
                 self.battles = battles;
@@ -4572,9 +4697,11 @@ impl Viewer {
                 (rect.width() * ui.ctx().pixels_per_point()).round() as u32,
                 (rect.height() * ui.ctx().pixels_per_point()).round() as u32,
             ]);
-            if frame.is_none() || frame != embedded.frame_size() {
+            let placed = embedded.frame_size();
+            if frame.is_none() || frame != placed {
                 self.rendered = None;
                 ui.ctx().request_repaint();
+                self.wait_to_draw(document.playback.hour(), || format!("its window measured {frame:?} pixels while its host placed it at {placed:?}"), ui.ctx())?;
                 return Ok(());
             }
         }
@@ -4597,6 +4724,7 @@ impl Viewer {
         if size.x <= 0.0 || size.y <= 0.0 {
             self.rendered = None;
             ui.ctx().request_repaint();
+            self.wait_to_draw(document.playback.hour(), || format!("its map had no area to draw in ({} by {} points)", size.x, size.y), ui.ctx())?;
             return Ok(());
         }
         // capture: `--window-dump` renders at the size it was asked for rather
@@ -4647,6 +4775,7 @@ impl Viewer {
             if profiling() {
                 profile_print(format!("PROFILE no_map frame {}", self.profile_frame));
             }
+            self.wait_to_draw(document.playback.hour(), || "no picture of it was composed".to_owned(), ui.ctx())?;
             self.rendered = None;
             ui.ctx().request_repaint();
             ui.centered_and_justified(|ui| {
@@ -5936,8 +6065,10 @@ impl Viewer {
                             // it, and no stopped picture is made of this one.
                             Err(why) if self.saves_a_frame() => {
                                 let why = format!("A saved frame draws the art of its own hour: the overlay of hour {} was not laid out again over the art that arrived while the frame drew it: {why}", rows.hour);
-                                self.refuse_capture(&why, ui.ctx());
-                                return Err(why);
+                                if self.refuse_capture(&why, ui.ctx()) {
+                                    return Err(why);
+                                }
+                                break;
                             }
                             Err(_) => break,
                         };
@@ -6974,23 +7105,33 @@ impl Viewer {
         // has decoded and been laid out, as a headless dump does. The overlay's own layout version
         // is the reference, not a version read here: a background load that landed after the
         // layout but before this check would otherwise let the frame save without it.
-        let (_, shown_at) = self.hour_on_screen(document);
+        let (shown_branch, shown_at) = self.hour_on_screen(document);
         if self.capture.as_ref().is_some_and(|capture| !capture.paced) {
             // Anything the settle decodes moves the version, which makes the overlay stale.
             document.icons.lazy.settle();
-            let (stale, overlay) = match (&held, &now) {
+            let (stale, waiting) = match (&held, &now) {
                 (Some((rows, tables)), Some(now)) => {
                     let stale = self.prepared_overlay.as_ref().map(|prepared| prepared.is_stale(now));
                     // Laid out over the newest rows at the head with tables made from them, nothing
                     // loading, and the raid offer cycle complete at the shown hour: every target
                     // evaluated, as a paused frame ends. That is the scripts reader's batch the
                     // tables hold.
-                    let at_head = self.overlay_missed.is_empty() && rows.hour == shown_at;
-                    let raids = tables.raids();
-                    (stale, at_head && !raids.report.pending && raids.report.cycle_complete())
+                    let raids = &tables.raids().report;
+                    let waiting = if let Some(missed) = missed_tables(&self.overlay_missed) {
+                        Some(format!("its overlay was laid out without {missed}"))
+                    } else if rows.hour != shown_at {
+                        Some(format!("its overlay stood at hour {} while the map showed hour {shown_at}", rows.hour))
+                    } else if raids.pending {
+                        Some("its raid icons were still being built".to_owned())
+                    } else if !raids.cycle_complete() {
+                        Some(format!("its raid offers had evaluated {} of {} targets", raids.cycle.0, raids.cycle.1))
+                    } else {
+                        None
+                    };
+                    (stale, waiting)
                 }
                 // No overlay is coming for the view: the picture is whole without one, its refusal named.
-                _ => (Some(false), true),
+                _ => (Some(false), None),
             };
             let hour = held.as_ref().map_or(shown_at, |(rows, _)| rows.hour);
             let picture = self.picture_ready();
@@ -6998,17 +7139,26 @@ impl Viewer {
             let (left_out, art_retry) = combat_left_out(interface, combat_out, art_moved);
             // A window drawn again for art that arrived goes through the art retries and their bound.
             let stale = if art_retry { Some(true) } else { stale };
+            // An export refused here ends, and the frame is presented as any other.
             let combat = match self.saved_combat(picture, left_out.as_deref()) {
                 Ok(there) => there,
                 Err(why) => {
-                    let why = format!("A saved frame draws the combat window of its own hour {hour}: {why}");
-                    self.refuse_capture(&why, ui.ctx());
-                    return Err(why);
+                    self.refused_frame(format!("A saved frame draws the combat window of its own hour {hour}: {why}"), ui.ctx())?;
+                    true
                 }
             };
-            self.hold_saved_frame(hour, stale, overlay && !document.icons.lazy.has_pending() && combat && !art_retry, ui.ctx())?;
+            let waiting = waiting
+                .or_else(|| document.icons.lazy.has_pending().then(|| "flags and portraits it drew were still decoding".to_owned()))
+                .or_else(|| {
+                    (!combat).then(|| match &self.combat_rows.pending {
+                        Some(selector) => format!("the combat it names ({selector:?}) was not found in its rows yet"),
+                        None => "its combat window's read of the hour was still loading".to_owned(),
+                    })
+                })
+                .or_else(|| art_retry.then(|| "its combat window was drawn again for art that arrived".to_owned()));
+            self.hold_saved_frame(hour, stale, waiting, ui.ctx())?;
         }
-        self.save_capture(state, document, camera, pixels, &warnings, ui.ctx());
+        self.save_capture(state, document, camera, pixels, &warnings, (shown_branch, shown_at), ui.ctx());
         let mut warnings = warnings;
         if let Some(audio) = self.audio.as_ref().filter(|audio| audio.owns()) {
             let status = audio.status();
@@ -7434,6 +7584,21 @@ fn present_audio(
     );
 }
 
+/// A window dump whose window closes before it wrote its last frame (closed while loading, or
+/// mid-sequence) fails by name: its process never ends as though it saved. An embedded map hands
+/// its host every export that ended, its widgets' too, even when a panic skipped the pass's own
+/// drain: it drops before the host hears the map ended and refuses what is left.
+impl Drop for Viewer {
+    fn drop(&mut self) {
+        if self.capture.as_ref().is_some_and(|capture| capture.exit) {
+            self.refused("the window closed before its picture was saved");
+        }
+        if self.embedded.is_some() {
+            self.answer_exports();
+        }
+    }
+}
+
 impl eframe::App for Viewer {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         if self.options.window_dump {
@@ -7459,6 +7624,7 @@ impl eframe::App for Viewer {
         engine_executable::executable_tables::scope(self.tables(), || {
             self.embedded_logic(ctx, frame)
         });
+        self.answer_exports();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -7466,6 +7632,7 @@ impl eframe::App for Viewer {
         let tables = self.tables();
         let pass = replay_frame::cpu::scope("frame.ui", Some("other"));
         engine_executable::executable_tables::scope(tables, || self.campaign_ui(ui, frame));
+        self.answer_exports();
         drop(pass);
         self.trace_switch_frame();
         crate::perf_log::frame_end();
@@ -7473,6 +7640,20 @@ impl eframe::App for Viewer {
 }
 
 impl Viewer {
+    /// Hands the host every export that ended since the last pass, the dashboard maps' too: a
+    /// pass that returned early, or that hid the map, still answers them.
+    fn answer_exports(&mut self) {
+        let mut ended = self.take_export_results();
+        if let Some(dashboard) = self.dashboard.as_mut() {
+            ended.extend(dashboard.take_export_results());
+        }
+        if let Some(embedded) = &self.embedded {
+            for (request, answer) in ended {
+                embedded.report_export(request, answer);
+            }
+        }
+    }
+
     /// The executable tables of the recording this viewer shows, which its work reads.
     pub(crate) fn tables(&self) -> Option<engine_executable::executable_tables::Tables> {
         self.document
@@ -7527,12 +7708,13 @@ impl Viewer {
         if self.dashboard_active {
             // The Campaign map is not drawn while dashboard maps show, even
             // while they load or failed to: it stops sounding.
+            self.export_closed("its map was hidden before its picture was saved");
             self.release_audio();
             self.close_playhead();
         } else if let Some(dashboard) = &mut self.dashboard {
             // Nor are dashboard maps while the Campaign map shows, loaded or not.
             dashboard.release_audio();
-            dashboard.close_playheads();
+            dashboard.not_drawn();
         }
         if self.dashboard_active
             && let Some(dashboard) = &mut self.dashboard
@@ -7973,6 +8155,11 @@ fn combat_left_out(interface: bool, out: Option<String>, art_moved: bool) -> (Op
     }
 }
 
+/// The tables an overlay was laid out without, by name; none when it had them all.
+fn missed_tables(missed: &[replay_data::rows::TableId]) -> Option<String> {
+    (!missed.is_empty()).then(|| missed.iter().map(|table| format!("{table:?}")).collect::<Vec<_>>().join(", "))
+}
+
 fn live_of(map: &Option<crate::playhead_host::side::SideThread>) -> Option<&crate::playhead_host::side::SideThread> {
     map.as_ref().filter(|side| side.failure().is_none())
 }
@@ -8170,6 +8357,7 @@ pub(crate) mod tests {
             frames,
             index: 0,
             paced: false,
+            request: None,
         };
         // Ordinary viewing builds none; diagnostics mode builds them on every frame.
         assert!(!builds_warnings(false, None));
@@ -9375,36 +9563,32 @@ pub(crate) mod tests {
         assert!(viewer.options.replay.is_none());
     }
 
+    /// A desktop export as the host asks for one, numbered `request`.
+    fn export(path: &str, request: u64) -> Capture {
+        Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false, request: Some(request) }
+    }
+
+    fn closes(output: &egui::FullOutput) -> bool {
+        output.viewport_output.values().any(|viewport| viewport.commands.iter().any(|command| matches!(command, egui::ViewportCommand::Close)))
+    }
+
+    /// A load that failed ends every capture by name: a window dump with its process, and an
+    /// export to its requester, never left armed for a map that did not come.
     #[test]
-    fn failed_replay_load_ends_a_window_dump_and_keeps_a_host_export() {
+    fn failed_replay_load_ends_every_capture_by_name() {
         for disconnected in [false, true] {
             for window_dump in [false, true] {
                 let failure = Arc::new(Mutex::new(None));
                 let mut viewer = Viewer::create(
                     Config::default(),
-                    Options {
-                        replay: Some("broken.battleplan".into()),
-                        out: Some("capture.png".into()),
-                        window_dump,
-                        ..Default::default()
-                    },
+                    Options { replay: Some("broken.battleplan".into()), out: Some("capture.png".into()), window_dump, ..Default::default() },
                     None,
                     Arc::clone(&failure),
                     None,
                     None,
                 );
                 if !window_dump {
-                    viewer.capture = Some(Capture {
-                        path: "campaign-map.png".into(),
-                        remaining: 0,
-                        pinned: None,
-                        exit: false,
-                        time: None,
-                        step: 0.0,
-                        frames: 1,
-                        index: 0,
-                        paced: false,
-                    });
+                    viewer.capture = Some(export("campaign-map.png", 4));
                 }
                 let (send, receive) = mpsc::channel();
                 viewer.loading = Some(receive);
@@ -9419,76 +9603,81 @@ pub(crate) mod tests {
                 let mut output = ctx.run_ui(Default::default(), |ui| viewer.poll(ui.ctx()));
                 output.textures_delta.clear();
                 assert!(viewer.loading.is_none());
-                assert_eq!(viewer.capture.is_some(), !window_dump);
+                assert!(viewer.capture.is_none(), "no capture stays armed");
                 assert_eq!(viewer.error.as_deref(), Some(expected));
-                let closes = output.viewport_output.values().any(|viewport| {
-                    viewport
-                        .commands
-                        .iter()
-                        .any(|command| matches!(command, egui::ViewportCommand::Close))
-                });
-                assert_eq!(closes, window_dump);
-                let reported = failure.lock().unwrap();
+                assert_eq!(closes(&output), window_dump);
+                let reported = failure.lock().unwrap().clone();
+                let answered = viewer.take_export_results();
                 if window_dump {
-                    let message = reported.as_ref().unwrap();
-                    assert!(message.contains("capture.png"));
-                    assert!(message.contains("replay could not be loaded"));
-                    assert!(message.contains(expected));
+                    let message = reported.unwrap();
+                    assert!(message.contains("capture.png") && message.contains("replay could not be loaded") && message.contains(expected), "{message}");
+                    assert!(answered.is_empty());
                 } else {
-                    assert!(reported.is_none());
+                    assert!(reported.is_none(), "an export fails no process");
+                    assert!(matches!(answered.as_slice(), [(4, Err(why))] if why.starts_with("Capture campaign-map.png failed: replay could not be loaded") && why.contains(expected)), "{answered:?}");
                 }
             }
         }
     }
 
+    /// A capture asked of a map standing in a recorded gap is refused by name, a window dump's and
+    /// an export's alike. An export left armed there returned before every save, turned the next
+    /// export away as active, and wrote whatever hour a later seek reached to its path.
     #[test]
-    fn an_unavailable_map_ends_a_window_dump_instead_of_waiting_for_another_frame() {
+    fn a_capture_in_a_recorded_gap_is_refused_by_name() {
         for window_dump in [false, true] {
             let failure = Arc::new(Mutex::new(None));
             let mut viewer = Viewer::create(
                 Config::default(),
-                Options {
-                    out: Some("unavailable.png".into()),
-                    window_dump,
-                    ..Default::default()
-                },
+                Options { out: Some("unavailable.png".into()), window_dump, ..Default::default() },
                 None,
                 Arc::clone(&failure),
                 None,
                 None,
             );
             if !window_dump {
-                viewer.capture = Some(Capture {
-                    path: "export.png".into(),
-                    remaining: 0,
-                    pinned: None,
-                    exit: false,
-                    time: None,
-                    step: 0.0,
-                    frames: 1,
-                    index: 0,
-                    paced: false,
-                });
+                viewer.capture = Some(export("export.png", 9));
             }
             let ctx = egui::Context::default();
             let mut output = ctx.run_ui(Default::default(), |ui| {
-                viewer.failed_window_capture("hour was not recorded", ui.ctx());
+                viewer.hour_error(Some("hour 12 was not recorded".into()), ui.ctx());
             });
             output.textures_delta.clear();
-            let closes = output.viewport_output.values().any(|viewport| {
-                viewport
-                    .commands
-                    .iter()
-                    .any(|command| matches!(command, egui::ViewportCommand::Close))
-            });
-            assert_eq!(closes, window_dump);
-            assert_eq!(viewer.capture.is_none(), window_dump);
-            let reported = failure.lock().unwrap();
-            assert_eq!(
-                reported.as_deref(),
-                window_dump.then_some("Capture unavailable.png failed: hour was not recorded")
-            );
+            assert_eq!(closes(&output), window_dump);
+            assert!(viewer.capture.is_none(), "no capture stays armed in the gap");
+            assert_eq!(viewer.map_error.as_deref(), Some("hour 12 was not recorded"));
+            let reported = failure.lock().unwrap().clone();
+            let answered = viewer.take_export_results();
+            if window_dump {
+                assert_eq!(reported.as_deref(), Some("Capture unavailable.png failed: hour 12 was not recorded"));
+                assert!(answered.is_empty());
+            } else {
+                assert!(reported.is_none(), "an export fails no process");
+                assert_eq!(answered, [(9, Err("Capture export.png failed: hour 12 was not recorded".to_owned()))]);
+                assert!(viewer.error.is_none(), "nor becomes the map's error");
+            }
         }
+    }
+
+    /// Closing the recording an export draws ends the export, which its requester hears by name.
+    #[test]
+    fn an_export_whose_recording_closes_answers_its_requester() {
+        let mut viewer = Viewer::create(Config::default(), Options { replay: Some("campaign.battleplan".into()), ..Default::default() }, None, Arc::default(), None, None);
+        viewer.capture = Some(export("map.png", 6));
+        assert!(viewer.unload_recording(Path::new("campaign.battleplan")));
+        assert!(viewer.capture.is_none());
+        assert_eq!(viewer.take_export_results(), [(6, Err("Capture map.png failed: its recording closed".to_owned()))]);
+    }
+
+    /// An export the map cannot start answers its requester at once, never as the map's error.
+    #[test]
+    fn an_export_the_map_cannot_start_answers_its_requester() {
+        let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        viewer.host_map_action(dashboard::protocol::MapAction::Export { path: "map.png".into(), view_id: None, request: 8 }, &ctx, &mut frame);
+        assert_eq!(viewer.take_export_results(), [(8, Err("Open a map and wait for any active export to finish".to_owned()))]);
+        assert!(viewer.error.is_none() && viewer.capture.is_none());
     }
 
     fn window_dump_viewer() -> Viewer {
@@ -9514,7 +9703,7 @@ pub(crate) mod tests {
         let mut viewer = window_dump_viewer();
         viewer.capture.as_mut().expect("a window dump captures").remaining = 0;
         viewer.overlay_fraction = Some(0.0);
-        viewer.hold_saved_frame(10, Some(true), true, &egui::Context::default()).unwrap();
+        viewer.hold_saved_frame(10, Some(true), None, &egui::Context::default()).unwrap();
         assert_eq!(remaining(&viewer), Some(1), "not saved over a layout older than its art");
         assert_eq!(viewer.overlay_fraction, None, "the next frame paints the overlay");
         assert!(viewer.overlay_art_moved, "and lays its hour out again over the art");
@@ -9522,12 +9711,12 @@ pub(crate) mod tests {
         viewer.capture.as_mut().expect("still capturing").remaining = 0;
         viewer.overlay_fraction = Some(0.0);
         viewer.overlay_art_moved = false;
-        viewer.hold_saved_frame(10, Some(false), true, &egui::Context::default()).unwrap();
+        viewer.hold_saved_frame(10, Some(false), None, &egui::Context::default()).unwrap();
         assert_eq!(remaining(&viewer), Some(0), "laid out over its art, the frame is saved");
         assert_eq!(viewer.overlay_fraction, Some(0.0), "and nothing is painted again");
         assert!(!viewer.overlay_art_moved);
 
-        viewer.hold_saved_frame(10, None, true, &egui::Context::default()).unwrap();
+        viewer.hold_saved_frame(10, None, None, &egui::Context::default()).unwrap();
         assert_eq!(remaining(&viewer), Some(1), "no overlay yet: it waits for one");
     }
 
@@ -9537,7 +9726,7 @@ pub(crate) mod tests {
     fn a_saved_frame_whose_art_never_stops_moving_is_refused_by_name() {
         let mut viewer = window_dump_viewer();
         viewer.capture.as_mut().expect("a window dump captures").remaining = 0;
-        let refused = (0..=SETTLES).find_map(|_| viewer.hold_saved_frame(10, Some(true), true, &egui::Context::default()).err());
+        let refused = (0..=SETTLES).find_map(|_| viewer.hold_saved_frame(10, Some(true), None, &egui::Context::default()).err());
         let refused = refused.expect("refused within its frames");
         assert!(refused.contains("hour 10"), "{refused}");
         assert!(viewer.capture.is_none(), "and the dump ends unsaved");
@@ -9545,37 +9734,125 @@ pub(crate) mod tests {
 
         let mut viewer = window_dump_viewer();
         for _ in 0..SETTLES * 3 {
-            viewer.hold_saved_frame(10, Some(true), true, &egui::Context::default()).unwrap();
-            viewer.hold_saved_frame(10, Some(false), true, &egui::Context::default()).unwrap();
+            viewer.hold_saved_frame(10, Some(true), None, &egui::Context::default()).unwrap();
+            viewer.hold_saved_frame(10, Some(false), None, &egui::Context::default()).unwrap();
         }
         assert_eq!(viewer.overlay_art_retries, 0, "a layout that caught up ends the run of retries");
     }
 
-    /// A desktop export refused for art that never stopped moving is ended, not left armed: the
-    /// host hears why by name, the window stays open, and its next export starts.
+    /// A desktop export refused for art that never stopped moving is ended, not left armed: its
+    /// requester hears why by name, the map's own error stays as it was, the window stays open,
+    /// and the next export starts.
     #[test]
-    fn a_refused_export_is_ended_and_the_next_one_starts() {
+    fn a_refused_export_answers_its_requester_and_the_next_one_starts() {
         let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
-        let export = |path: &str| Capture { path: path.into(), remaining: 0, pinned: None, exit: false, time: None, step: 0.0, frames: 1, index: 0, paced: false };
-        viewer.capture = Some(export("first.png"));
+        viewer.capture = Some(export("first.png", 1));
+        viewer.error = Some("an independent map error".into());
         let ctx = egui::Context::default();
-        let mut refused = None;
+        let mut frames = Vec::new();
         let mut output = ctx.run_ui(Default::default(), |ui| {
-            refused = (0..=SETTLES).find_map(|_| viewer.hold_saved_frame(10, Some(true), true, ui.ctx()).err());
+            frames = (0..=SETTLES).map(|_| viewer.hold_saved_frame(10, Some(true), None, ui.ctx())).collect();
         });
         output.textures_delta.clear();
-        assert!(refused.is_some(), "refused within its frames");
+        assert!(frames.iter().all(Result::is_ok), "an export's refusal is no error of the map's frame");
         assert!(viewer.capture.is_none(), "the refused export is no longer armed");
         assert_eq!((viewer.overlay_art_retries, viewer.overlay_art_moved), (0, false), "nor its retries");
-        assert!(viewer.capture_note.as_deref().is_some_and(|note| note.starts_with("Capture first.png failed: ") && note.contains("hour 10")), "{:?}", viewer.capture_note);
+        let answered = viewer.take_export_results();
+        assert!(matches!(answered.as_slice(), [(1, Err(why))] if why.starts_with("Capture first.png failed: ") && why.contains("hour 10")), "{answered:?}");
+        assert_eq!(viewer.error.as_deref(), Some("an independent map error"), "the map's own error stays as it was");
         assert!(viewer.failure.lock().unwrap().is_none(), "an export fails no process");
-        assert!(!output.viewport_output.values().any(|viewport| viewport.commands.iter().any(|command| matches!(command, egui::ViewportCommand::Close))), "and closes no window");
+        assert!(!closes(&output), "and closes no window");
 
-        viewer.capture = Some(export("second.png"));
+        viewer.capture = Some(export("second.png", 2));
         viewer.overlay_fraction = Some(0.0);
-        viewer.hold_saved_frame(10, Some(true), true, &ctx).unwrap();
+        viewer.hold_saved_frame(10, Some(true), None, &ctx).unwrap();
         assert!(viewer.capture.is_some(), "the next export starts");
         assert_eq!(viewer.overlay_art_retries, 1, "with retries of its own");
+    }
+
+    /// A saved frame due for readback and held past its bound is refused by name with what it
+    /// waited for: a window dump fails its process, an export is answered, and neither waits on.
+    /// A capture far from its readback is not held to it.
+    #[test]
+    fn a_saved_frame_held_past_its_bound_is_refused_naming_what_it_waited_for() {
+        let waiting = || Some("its raid offers had evaluated 100 of 616 targets".to_owned());
+        let ctx = egui::Context::default();
+        let mut viewer = window_dump_viewer();
+        viewer.hold_saved_frame_within(10, Some(false), waiting(), HELD_GIVEN_UP, &ctx).unwrap();
+        assert!(viewer.capture.is_some(), "held within its bound");
+        let refused = viewer.hold_saved_frame_within(10, Some(false), waiting(), Duration::ZERO, &ctx).unwrap_err();
+        assert!(refused.contains("hour 10") && refused.contains("100 of 616 targets"), "{refused}");
+        assert!(viewer.capture.is_none(), "the dump ends unsaved");
+        assert!(viewer.failure.lock().unwrap().as_deref().is_some_and(|failure| failure.contains("100 of 616 targets")));
+
+        let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
+        viewer.capture = Some(export("map.png", 3));
+        viewer.hold_saved_frame_within(10, Some(false), waiting(), Duration::ZERO, &ctx).unwrap();
+        assert!(viewer.capture.is_none());
+        let answered = viewer.take_export_results();
+        assert!(matches!(answered.as_slice(), [(3, Err(why))] if why.contains("100 of 616 targets")), "{answered:?}");
+
+        let mut viewer = window_dump_viewer();
+        viewer.capture.as_mut().expect("a window dump captures").remaining = 1000;
+        viewer.hold_saved_frame_within(10, Some(false), waiting(), Duration::ZERO, &ctx).unwrap();
+        assert!(viewer.capture.is_some());
+    }
+
+    /// A loaded map that never composes the picture a saved frame waits for, or never gets a size
+    /// to draw at, is refused by name within its bound: a window dump fails, an export is answered.
+    #[test]
+    fn a_saved_frame_that_cannot_draw_its_hour_is_refused_by_name() {
+        let ctx = egui::Context::default();
+        let mut viewer = window_dump_viewer();
+        let no_picture = || "no picture of it was composed".to_owned();
+        viewer.wait_to_draw_within(10, no_picture, HELD_GIVEN_UP, &ctx).unwrap();
+        assert!(viewer.capture.is_some(), "waited within its bound");
+        let refused = viewer.wait_to_draw_within(10, no_picture, Duration::ZERO, &ctx).unwrap_err();
+        assert!(refused.contains("hour 10") && refused.contains("no picture"), "{refused}");
+        assert!(viewer.failure.lock().unwrap().as_deref().is_some_and(|failure| failure.contains("no picture")));
+
+        let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
+        viewer.capture = Some(export("map.png", 3));
+        let no_area = || "its map had no area to draw in (0 by 0 points)".to_owned();
+        viewer.wait_to_draw_within(10, no_area, Duration::ZERO, &ctx).unwrap();
+        assert!(viewer.capture.is_none());
+        assert!(matches!(viewer.take_export_results().as_slice(), [(3, Err(why))] if why.contains("no area to draw in")));
+    }
+
+    /// An export saves the frame it reads back and answers with the branch and hour that frame
+    /// drew, whatever the clock did after it was asked for: a seek or playing on refuses nothing,
+    /// and the answer never names an hour the picture does not show.
+    #[test]
+    fn an_export_answers_with_the_hour_its_frame_drew() {
+        let ctx = egui::Context::default();
+        let now = Instant::now();
+        let mut viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
+        viewer.last_step = now;
+        viewer.anchor_playback(Playhead { branch: 1, hour: 10, fraction: 0.0 }, false, 4.0, true, None, now, 1_000);
+        viewer.capture = Some(export("map.png", 7));
+        viewer.anchor_playback(Playhead { branch: 1, hour: 40, fraction: 0.0 }, true, 4.0, true, None, now + Duration::from_secs(1), 1_000);
+        assert!(viewer.capture.is_some() && viewer.take_export_results().is_empty(), "a seek refuses no export");
+        let capture = viewer.end_capture().expect("still armed");
+        viewer.capture_written(capture, Path::new("map.png"), (1, 41), Ok(()), &ctx);
+        assert_eq!(viewer.take_export_results(), [(7, Ok("Saved map.png: branch 1, hour 41".to_owned()))]);
+
+        viewer.capture = Some(export("full.png", 8));
+        let capture = viewer.end_capture().unwrap();
+        viewer.capture_written(capture, Path::new("full.png"), (1, 41), Err("disk full".to_owned()), &ctx);
+        assert_eq!(viewer.take_export_results(), [(8, Err("full.png: disk full".to_owned()))]);
+    }
+
+    /// A window dump whose window closes before it wrote its frame fails its process by name.
+    #[test]
+    fn a_window_dump_closed_before_it_saved_fails_by_name() {
+        let viewer = window_dump_viewer();
+        let failure = Arc::clone(&viewer.failure);
+        drop(viewer);
+        assert!(failure.lock().unwrap().as_deref().is_some_and(|failure| failure.contains("frame.png") && failure.contains("window closed")));
+        let viewer = Viewer::create(Config::default(), Options::default(), None, Arc::default(), None, None);
+        let failure = Arc::clone(&viewer.failure);
+        drop(viewer);
+        assert!(failure.lock().unwrap().is_none(), "no capture, no failure");
     }
 
     /// A saved frame waits for the combat named at load to open and refuses one that matched
@@ -9670,7 +9947,7 @@ pub(crate) mod tests {
         let mut viewer = window_dump_viewer();
         viewer.capture.as_mut().expect("a window dump captures").remaining = 1000;
         viewer.overlay_fraction = Some(0.0);
-        viewer.hold_saved_frame(10, Some(true), true, &egui::Context::default()).unwrap();
+        viewer.hold_saved_frame(10, Some(true), None, &egui::Context::default()).unwrap();
         assert_eq!(remaining(&viewer), Some(1000));
         assert_eq!(viewer.overlay_fraction, Some(0.0), "nothing painted again");
         assert!(!viewer.overlay_art_moved, "nor laid out again");

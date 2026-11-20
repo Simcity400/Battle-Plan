@@ -617,6 +617,7 @@ impl Parent {
             output_done,
             service,
             sent_maps: Sent::default(),
+            events: Arc::clone(&events),
         };
         let input = Arc::clone(&shared);
         thread::Builder::new()
@@ -751,6 +752,9 @@ pub struct Controller {
     output_done: mpsc::Receiver<()>,
     service: Arc<dashboard::Service>,
     sent_maps: Sent,
+    /// The host's events, which an export's answer reaches on the map's own thread: so before the
+    /// map ends and the host refuses what it never answered.
+    events: crate::host::Events,
 }
 
 impl Controller {
@@ -836,6 +840,12 @@ impl Controller {
         outgoing.toggle_diagnostics();
         drop(outgoing);
         self.shared.output_ready.notify_one();
+    }
+
+    /// Answers export `request` to the host, with what it saved or why it was refused, on this
+    /// thread.
+    pub fn report_export(&self, request: u64, answer: Result<String, String>) {
+        (self.events)(NativeEvent::Export { request, answer });
     }
 
     /// Reports the full map's camera mode and overlay choice to the host, whose controls follow

@@ -10,7 +10,8 @@
 //!
 //! A [`Cycle`] is that cache for one viewing country since a reset: each
 //! hour begins as a rebuild frame ([`Cycle::begin`]) and each step evaluates
-//! one batch at that hour ([`Cycle::step`]). A row not evaluated since the
+//! one batch at that hour ([`Cycle::step`]). An hour begins once: a paused
+//! hour executes no command, so its rows evaluated stay evaluated. A row not evaluated since the
 //! reset shows nothing. The cursor's native position is one client's frame
 //! history, which no recording holds; a cycle starts at row 0. Each kept row
 //! holds its target's scope, and an hour whose row holds another target, or
@@ -74,6 +75,8 @@ pub struct Cycle {
     cursor: usize,
     /// Rows still to evaluate at this hour.
     pending: usize,
+    /// The hour whose rebuild frame marked the rows pending.
+    begun: Option<Hour>,
     /// Per-row cached state, stored in chunks.
     rows: Vec<Arc<Vec<Row>>>,
     len: usize,
@@ -95,6 +98,7 @@ impl Cycle {
             ours,
             cursor: 0,
             pending: 0,
+            begun: None,
             rows: Vec::new(),
             len: 0,
             provinces: BTreeMap::new(),
@@ -135,13 +139,15 @@ impl Cycle {
     }
 
     /// The rebuild frame of `sweep`'s hour: new target statuses get rows and
-    /// every row is pending. `Err` when a kept row holds another target or
+    /// every row is pending. The hour already begun keeps its pending rows
+    /// unless new targets came. `Err` when a kept row holds another target or
     /// rows went away since: the cycle must start again at this hour.
     pub fn begin(&mut self, assets: &RaidAssets, sweep: &Sweep<'_, '_>) -> Result<(), String> {
         self.withheld.clone_from(&sweep.withheld);
         if !self.withheld.is_empty() {
             // Nothing can be evaluated; the rows wait for a complete hour.
             self.pending = 0;
+            self.begun = None;
             return Ok(());
         }
         let targets = sweep.targets;
@@ -159,6 +165,7 @@ impl Cycle {
                 ));
             }
         }
+        let grew = targets.len() > self.len;
         for target in &targets[self.len..] {
             if self.len.is_multiple_of(CHUNK) {
                 self.rows.push(Arc::new(Vec::with_capacity(CHUNK)));
@@ -180,7 +187,11 @@ impl Cycle {
             });
             self.len += 1;
         }
-        self.pending = self.len;
+        let hour = sweep.hour();
+        if grew || self.begun != Some(hour) {
+            self.pending = self.len;
+        }
+        self.begun = Some(hour);
         Ok(())
     }
 

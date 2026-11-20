@@ -1,0 +1,43 @@
+/** The map settings' export in a real browser, against a desktop shell that answers each export as it is told. */
+import '../styles.css';
+
+const asked: { view: string | null; menuOpen: boolean }[] = [];
+let answer: { error?: string } = {};
+Object.assign(globalThis, { isTauri: true });
+Object.assign(window, { __TAURI_INTERNALS__: { invoke: async (command: string, args: { viewId?: string | null }) => {
+  if (command !== 'export_map') throw new Error(`unexpected command ${command}`);
+  asked.push({ view: args.viewId ?? null, menuOpen: panel()?.matches(':popover-open') ?? false });
+  if (answer.error) throw answer.error;
+  return 'Saved map.png: branch 1, hour 12';
+} } });
+
+const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+async function settle(frames = 6) { for (let at = 0; at < frames; at++) await frame(); }
+const panel = () => document.querySelector<HTMLElement>('.map-controls-menu');
+const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.includes(label));
+
+const [{ createElement }, { createRoot }, { default: MapControls }] = await Promise.all([import('react'), import('react-dom/client'), import('./MapControls')]);
+createRoot(document.body.appendChild(document.createElement('div'))).render(createElement(MapControls, {
+  source: null, client: {} as never, metadata: { branches: [] } as never, branchId: null, onBranch() {},
+  options: { country: null, fog: true } as never, onOptions() {}, viewId: 'widget-1',
+}));
+
+export const fixture = {
+  async ready() { await settle(); return !!document.querySelector('.map-controls-trigger'); },
+  /** Opens the menu, exports with the shell answering `error` (none: saved), and says what the shell saw and what
+   * the menu shows once the export ended. */
+  async exportWith(error: string | null) {
+    answer = error ? { error } : {};
+    document.querySelector<HTMLButtonElement>('.map-controls-trigger')!.click();
+    await settle();
+    const opened = panel()!.matches(':popover-open');
+    button('Export map image')!.click();
+    await settle(12);
+    const shown = panel()!.matches(':popover-open');
+    const said = panel()!.querySelector('.map-menu-error')?.textContent ?? null;
+    if (shown) panel()!.hidePopover();
+    await settle();
+    return { opened, asked: asked.splice(0), shown, said };
+  },
+};
+Object.assign(window, { mapControls: fixture });

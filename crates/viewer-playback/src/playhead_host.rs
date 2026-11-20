@@ -2113,7 +2113,7 @@ impl MapSide {
                 return Err(io::Error::other(format!("The playhead stopped: {error}")));
             }
             if started.elapsed() > CATCHING_UP {
-                return Err(io::Error::other(self.waiting_state(head)));
+                return Err(io::Error::new(io::ErrorKind::TimedOut, self.waiting_state(head)));
             }
             std::thread::sleep(std::time::Duration::from_micros(200));
         }

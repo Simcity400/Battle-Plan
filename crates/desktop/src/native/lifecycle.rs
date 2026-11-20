@@ -50,6 +50,7 @@ impl super::Inner {
     /// unless the device was lost again before the new map was ready. Any other end is shown by
     /// name; the dashboard's data does not depend on the map and keeps working.
     pub(super) fn map_ended(&mut self, ending: Ending) -> bool {
+        self.refuse_exports("The map stopped before the export finished");
         let was_ready = self.status.ready;
         self.map = None;
         self.generation += 1;
@@ -90,6 +91,17 @@ enum Launched {
 }
 
 impl super::Inner {
+    /// What the map of `generation` said that the host goes on to read: none from a map that is
+    /// not this one's or that is closing, and none of an export, which is answered here. A closing
+    /// map's exports are still its own, so each it ended is answered as it ended it.
+    pub(super) fn hear(&mut self, event: NativeEvent, generation: u64) -> Option<NativeEvent> {
+        if let NativeEvent::Export { request, answer } = event {
+            self.export_ended(generation, request, answer);
+            return None;
+        }
+        (self.generation == generation && !self.shutting_down && self.map.is_some()).then_some(event)
+    }
+
     /// Whether to launch a map: not while one runs, and while one is launching only once that
     /// launch finishes, for its map may already have ended.
     fn begin_launch(&mut self) -> Result<bool, String> {
@@ -323,9 +335,9 @@ impl NativeHost {
 
     fn receive(&self, event: NativeEvent, generation: u64, app: &AppHandle) {
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.generation != generation || inner.shutting_down || inner.map.is_none() {
+        let Some(event) = inner.hear(event, generation) else {
             return;
-        }
+        };
         match event {
             NativeEvent::MapDetails { details } => inner.status.map_details = Some(details),
             NativeEvent::FlyAircraft { aircraft, state } => {
@@ -449,6 +461,7 @@ impl NativeHost {
                 inner.last_diagnostic = Some(message.clone());
                 inner.status.error = Some(message);
             }
+            NativeEvent::Export { .. } => unreachable!("answered above"),
         }
         // Publish while holding the state lock so events and ends reach the frontend in
         // mutation order.
@@ -569,6 +582,62 @@ mod tests {
         closing.shutting_down = true;
         assert!(!closing.map_ended(Ending::Failed("late".into())));
         assert!(closing.status.error.is_none());
+    }
+
+    /// An export the map was asked for, as [`Inner::ask_export`] registers and queues it.
+    fn asked(inner: &mut Inner, path: &str) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
+        inner.export_requests += 1;
+        let request = inner.export_requests;
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        inner.exports.push(crate::native::Export { request, generation: inner.generation, answer });
+        inner.pending.actions.push_back(dashboard::protocol::MapAction::Export { path: path.into(), view_id: None, request });
+        answered
+    }
+
+    fn export(request: u64, answer: Result<&str, &str>) -> dashboard::protocol::NativeEvent {
+        dashboard::protocol::NativeEvent::Export { request, answer: answer.map(str::to_owned).map_err(str::to_owned) }
+    }
+
+    /// Two exports to one path are each answered with their own end, whichever ends first.
+    #[test]
+    fn each_export_is_answered_with_its_own_end() {
+        let mut inner = showing("A");
+        let (mut first, mut second) = (asked(&mut inner, "map.png"), asked(&mut inner, "map.png"));
+        assert!(inner.hear(export(2, Err("Capture map.png failed: its recording closed")), 3).is_none());
+        assert_eq!(second.try_recv(), Ok(Err("Capture map.png failed: its recording closed".into())));
+        assert!(first.try_recv().is_err(), "the first is still waiting");
+        assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none());
+        assert_eq!(first.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 12".into())));
+        assert!(inner.exports.is_empty());
+    }
+
+    /// A closing map's export it already ended is answered as it ended it, not dropped with the
+    /// rest of what a closing map says; what it never ended is refused when it ends.
+    #[test]
+    fn a_closing_map_answers_the_exports_it_ended_and_refuses_the_rest() {
+        let mut inner = showing("A");
+        let (mut saved, mut waiting) = (asked(&mut inner, "saved.png"), asked(&mut inner, "waiting.png"));
+        inner.shutting_down = true;
+        assert!(inner.hear(export(1, Ok("Saved saved.png: branch 1, hour 12")), 3).is_none());
+        assert_eq!(saved.try_recv(), Ok(Ok("Saved saved.png: branch 1, hour 12".into())));
+        assert!(!inner.map_ended(Ending::Closed));
+        assert_eq!(waiting.try_recv(), Ok(Err("The map stopped before the export finished".into())));
+    }
+
+    /// The map that ends takes its exports with it: their askers are refused, the requests not yet
+    /// sent are never sent to the map started after it, and its late answer answers nothing.
+    #[test]
+    fn a_replacement_map_never_runs_an_export_whose_asker_was_refused() {
+        let mut inner = showing("A");
+        let mut refused = asked(&mut inner, "map.png");
+        assert!(inner.map_ended(Ending::DeviceLost("The map's GPU device was lost (Unknown: removed)".into())));
+        assert_eq!(refused.try_recv(), Ok(Err("The map stopped before the export finished".into())));
+        assert!(!inner.pending.actions.iter().any(|action| matches!(action, dashboard::protocol::MapAction::Export { .. })), "{:?}", inner.pending.actions);
+        let mut next = asked(&mut inner, "map.png");
+        assert!(inner.hear(export(1, Ok("Saved map.png: branch 1, hour 12")), 3).is_none(), "the ended map's answer");
+        assert!(next.try_recv().is_err(), "is not the new map's");
+        assert!(inner.hear(export(2, Ok("Saved map.png: branch 1, hour 13")), 4).is_none());
+        assert_eq!(next.try_recv(), Ok(Ok("Saved map.png: branch 1, hour 13".into())));
     }
 
     /// A map that is ready and loses its device before its launch has finished is started again

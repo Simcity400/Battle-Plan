@@ -93,6 +93,7 @@ struct MapView {
 
 impl MapView {
     fn retire(&mut self, frame: &eframe::Frame) {
+        self.viewer.export_closed("its map widget let its map go before its picture was saved");
         // A cancelled build's scene is dropped with its result, off the UI thread.
         let load = self.loading.take();
         if let Some(load) = &load {
@@ -164,6 +165,8 @@ pub struct DashboardMaps {
     source_bindings: BTreeMap<RequestedSource, Result<Arc<Source>, String>>,
     opening_source: Option<OpeningSource>,
     views: BTreeMap<String, MapView>,
+    /// Exports of views that went, not yet answered: each request, and why it was refused.
+    ended_exports: Vec<(u64, Result<String, String>)>,
     order: Vec<String>,
     // Content::load has its own scoped asset waves. Admit only one cold source
     // at a time instead of multiplying those waves for every map body.
@@ -206,6 +209,7 @@ impl DashboardMaps {
         &mut self,
         id: &str,
         path: String,
+        request: u64,
         ctx: &egui::Context,
         frame: &mut eframe::Frame,
     ) -> Result<(), String> {
@@ -222,6 +226,7 @@ impl DashboardMaps {
                 dashboard::protocol::MapAction::Export {
                     path,
                     view_id: None,
+                    request,
                 },
                 ctx,
                 frame,
@@ -249,6 +254,7 @@ impl DashboardMaps {
             source_bindings: BTreeMap::new(),
             opening_source: None,
             views: BTreeMap::new(),
+            ended_exports: Vec::new(),
             order: Vec::new(),
             loading: None,
             fallbacks: Default::default(),
@@ -279,9 +285,11 @@ impl DashboardMaps {
         }
     }
 
-    /// Every map lets its playhead go, as when the dashboard is not drawn.
-    pub fn close_playheads(&mut self) {
+    /// The dashboard is not drawn (the campaign map shows, or no widget is in view): every map
+    /// lets its playhead go, and an export it held is refused, answered by the next drain.
+    pub fn not_drawn(&mut self) {
         for view in self.views.values_mut() {
+            view.viewer.export_closed("its map widget was not drawn before its picture was saved");
             view.viewer.close_playhead();
         }
     }
@@ -541,6 +549,7 @@ impl DashboardMaps {
         for id in removed {
             if let Some(mut view) = self.views.remove(&id) {
                 view.retire(frame);
+                self.ended_exports.extend(view.viewer.take_export_results());
             }
         }
         self.order = views.iter().map(|view| view.id.clone()).collect();
@@ -590,6 +599,7 @@ impl DashboardMaps {
             }
             if let Some(mut old) = self.views.remove(&target.id) {
                 old.retire(frame);
+                self.ended_exports.extend(old.viewer.take_export_results());
             }
             let target_id = target.id.clone();
             self.views.insert(
@@ -1059,6 +1069,16 @@ impl DashboardMaps {
         }
     }
 
+    /// The exports every view ended since the last call, those of views that went too: each
+    /// request, and why it was refused.
+    pub fn take_export_results(&mut self) -> Vec<(u64, Result<String, String>)> {
+        let mut ended = std::mem::take(&mut self.ended_exports);
+        for view in self.views.values_mut() {
+            ended.extend(view.viewer.take_export_results());
+        }
+        ended
+    }
+
     /// What the views' pickers told the host since the last call, by view.
     pub fn take_view_events(&mut self) -> Vec<(String, crate::app::picker::ViewEvent)> {
         std::mem::take(&mut self.view_events)
@@ -1117,6 +1137,7 @@ impl DashboardMaps {
                 view.viewer.release_audio();
             }
             if !drawn.contains(&id) {
+                view.viewer.export_closed("its map widget was not drawn before its picture was saved");
                 view.viewer.close_playhead();
             }
         }
@@ -1476,6 +1497,56 @@ mod tests {
         assert!(view.source.is_some());
         drop(maps);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// A widget's export is answered though its widget went before the host heard: removing the
+    /// last widget, which hides the map, keeps the answer for the host.
+    #[test]
+    fn an_export_of_a_widget_that_went_is_still_answered() {
+        let mut maps = DashboardMaps::new(
+            Config::default(),
+            Options::default(),
+            Service::new(Arc::new(|_| true)).unwrap(),
+            None,
+            crate::worker_pool::WorkerPool::new().unwrap(),
+        )
+        .unwrap();
+        maps.limits.dimension = u32::MAX;
+        let bounds = ViewBounds { x: 0, y: 0, width: 100, height: 100 };
+        let target = DashboardMapView {
+            options: Default::default(),
+            id: "exported-widget".into(),
+            source_id: "source".into(),
+            path: String::new(),
+            revision: String::new(),
+            branch_id: "1".into(),
+            playing: false,
+            hours_per_second: 1.0,
+            hour: 0,
+            fraction: 0.0,
+            sequence: 1,
+            seek_sequence: None,
+            composed_at: 0.0,
+            bounds,
+            clip: bounds,
+            visible: true,
+        };
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        maps.set_views(vec![target.clone()], &frame, &ctx);
+        let export = dashboard::protocol::MapAction::Export { path: "widget.png".into(), view_id: None, request: 5 };
+        maps.views.get_mut(&target.id).unwrap().viewer.host_map_action(export, &ctx, &mut frame);
+        maps.set_views(Vec::new(), &frame, &ctx);
+        assert!(maps.views.is_empty());
+        assert_eq!(maps.take_export_results(), [(5, Err("Open a map and wait for any active export to finish".to_owned()))]);
+        assert!(maps.take_export_results().is_empty(), "answered once");
+
+        // A widget's export held while the dashboard stops drawing (the campaign map shows, or
+        // no widget is in view) is refused, and its answer drained with the rest.
+        maps.set_views(vec![target.clone()], &frame, &ctx);
+        maps.views.get_mut(&target.id).unwrap().viewer.arm_export("widget.png", 6);
+        maps.not_drawn();
+        assert_eq!(maps.take_export_results(), [(6, Err("Capture widget.png failed: its map widget was not drawn before its picture was saved".to_owned()))]);
     }
 
     #[test]

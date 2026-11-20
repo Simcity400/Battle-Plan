@@ -68,6 +68,17 @@ struct Inner {
     popout: Option<PopOutWindow>,
     /// The last mute choice sent with [`NativeHost::set_muted`].
     muted: Option<bool>,
+    /// Exports asked of the map ([`NativeHost::export`]) and not yet answered.
+    exports: Vec<Export>,
+    /// The number the last export request was given.
+    export_requests: u64,
+}
+
+/// An export the map was asked for: answered once, by the map of `generation` or by its end.
+struct Export {
+    request: u64,
+    generation: u64,
+    answer: tokio::sync::oneshot::Sender<Result<String, String>>,
 }
 
 /// Tells the pop-out's owner that its viewer's status changed.
@@ -81,6 +92,22 @@ struct PopOutWindow {
 }
 
 impl Inner {
+    /// The map of `generation` ended export `request`: saved, or refused with why.
+    fn export_ended(&mut self, generation: u64, request: u64, answer: Result<String, String>) {
+        if let Some(at) = self.exports.iter().position(|export| export.request == request && export.generation == generation) {
+            let _ = self.exports.remove(at).answer.send(answer);
+        }
+    }
+
+    /// Refuses every export not yet answered, with `why`, and takes back those not yet sent, so a
+    /// later map never runs a request whose asker was refused.
+    fn refuse_exports(&mut self, why: &str) {
+        self.pending.actions.retain(|action| !matches!(action, dashboard::protocol::MapAction::Export { .. }));
+        for export in self.exports.drain(..) {
+            let _ = export.answer.send(Err(why.to_owned()));
+        }
+    }
+
     /// Hands the map what waits for it; nothing while none runs.
     fn flush(&mut self) {
         let Some(map) = self.map.as_ref() else {
@@ -96,6 +123,23 @@ impl Inner {
                 break;
             }
         }
+    }
+
+    /// [`NativeHost::export`] under its lock.
+    fn ask_export(&mut self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
+        if self.map.is_none() || !self.status.ready || self.shutting_down {
+            return Err("The native map is not ready".into());
+        }
+        self.pending.action_room()?;
+        let request = self.export_requests + 1;
+        let action = dashboard::protocol::MapAction::Export { path, view_id, request };
+        action.validate().map_err(str::to_owned)?;
+        self.export_requests = request;
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        self.exports.push(Export { request, generation: self.generation, answer });
+        self.pending.actions.push_back(action);
+        self.flush();
+        Ok(answered)
     }
 
     /// Tells the frontend the main viewer's status. A pop-out viewer's status is published only
@@ -234,8 +278,19 @@ impl NativeHost {
             .clone()
     }
 
+    /// Asks the running map to export its picture to `path` (a dashboard view's with `view_id`).
+    /// The answer comes once the map saved it or refused it, or its map ended first. The request
+    /// is numbered, registered and sent under one lock, to the map running now.
+    pub fn export(&self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
+        let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        inner.ask_export(path, view_id)
+    }
+
     pub fn map_action(&self, action: dashboard::protocol::MapAction) -> Result<(), String> {
         action.validate().map_err(str::to_owned)?;
+        if matches!(action, dashboard::protocol::MapAction::Export { .. }) {
+            return Err("An export is asked for with export_map, which answers it".into());
+        }
         let mut inner = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if let dashboard::protocol::MapAction::Unload { path } = &action
             && inner.map.is_none()

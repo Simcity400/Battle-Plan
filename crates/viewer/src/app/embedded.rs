@@ -56,6 +56,7 @@ impl Viewer {
                         self.dashboard = Some(Box::new(dashboard));
                     }
                     Err(error) => {
+                        self.refuse_exports(pending.actions, &format!("The map widgets could not start: {error}"));
                         self.error = Some(error.to_string());
                         self.report_embedded(ctx);
                         return;
@@ -359,6 +360,15 @@ impl Viewer {
         }
     }
 
+    /// Answers each export among `actions`, which this pass does not run, refused for `why`.
+    fn refuse_exports(&mut self, actions: impl IntoIterator<Item = dashboard::protocol::MapAction>, why: &str) {
+        for action in actions {
+            if let dashboard::protocol::MapAction::Export { request, .. } = action {
+                self.export_results.push((request, Err(why.to_owned())));
+            }
+        }
+    }
+
     pub(crate) fn host_map_action(
         &mut self,
         action: dashboard::protocol::MapAction,
@@ -410,19 +420,22 @@ impl Viewer {
             MapAction::Export {
                 path,
                 view_id: Some(id),
+                request,
             } => {
-                self.error = match self.dashboard.as_mut() {
-                    Some(dashboard) => dashboard.export_view(&id, path, ctx, frame).err(),
+                let refused = match self.dashboard.as_mut() {
+                    Some(dashboard) => dashboard.export_view(&id, path, request, ctx, frame).err(),
                     None => Some("The requested map widget is unavailable".into()),
                 };
+                if let Some(why) = refused {
+                    self.export_results.push((request, Err(why)));
+                }
             }
             MapAction::Export {
                 path,
                 view_id: None,
+                request,
             } => {
-                if self.document.is_none() || self.capture.is_some() {
-                    self.error = Some("Open a map and wait for any active export to finish".into());
-                } else {
+                if self.document.is_some() && self.capture.is_none() {
                     self.capture = Some(Capture {
                         path: PathBuf::from(path),
                         remaining: 0,
@@ -433,7 +446,10 @@ impl Viewer {
                         frames: 1,
                         index: 0,
                         paced: false,
+                        request: Some(request),
                     });
+                } else {
+                    self.export_results.push((request, Err("Open a map and wait for any active export to finish".into())));
                 }
             }
             // The host saved and checked them; the map only applies them.

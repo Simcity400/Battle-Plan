@@ -92,6 +92,7 @@ fn arm(viewer: &mut Viewer, path: PathBuf, camera: Camera) {
         frames: 1,
         index: 0,
         paced: false,
+        request: None,
     });
 }
 
@@ -250,9 +251,10 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     assert_eq!(viewer.scene_target.texture, texture);
     assert!(viewer.scene.as_ref().unwrap().generation() > registered);
 
+    assert!(viewer.capture.is_none(), "the failed frame refused its capture by name");
     let recovered_path = fixture.output.join("recovered.png");
     viewer.scene.as_mut().unwrap().test_faults.fatal = None;
-    viewer.capture.as_mut().unwrap().path = recovered_path.clone();
+    arm(&mut viewer, recovered_path.clone(), request.camera);
     viewer.retry_map();
     until(&mut viewer, &ctx, &frame, &target, |v| {
         v.capture.is_none() || v.error.is_some()

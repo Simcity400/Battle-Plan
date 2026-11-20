@@ -56,6 +56,8 @@ struct Ask {
     overlay: Option<overlay::Ask>,
     /// What the open combat window reads; none while no window is open.
     combat: Option<viewer_combat::Asking>,
+    /// This ask's place among the frame's asks: a refusal answers the one ask it was made for.
+    serial: u64,
 }
 
 /// What a stepped frame's picture was made whole for: its hour, and the view, overlay placement,
@@ -115,6 +117,10 @@ struct Turn {
     /// Looks its thread has taken at what the frame asks: whether that thread still runs.
     looks: u64,
     stop: bool,
+    /// A stepped frame's hour not made whole in time, with the serial of the ask it answers, and
+    /// why: refused to the capture that asked for it, while the side goes on for the frames after.
+    /// A later ask, even at the same hour, is prepared afresh.
+    refused: Option<(u64, Hour, String)>,
 }
 
 struct Shared {
@@ -156,6 +162,8 @@ pub struct SideThread {
     /// Pictures the side has composed: a change set dated over an older one is void.
     composed: Arc<std::sync::atomic::AtomicU64>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Why the last stepped frame got no window for its hour while the side goes on, until taken.
+    refused: Option<String>,
 }
 
 impl SideThread {
@@ -171,7 +179,7 @@ impl SideThread {
         // tables: this thread works on that one recording, so they are in scope on it throughout.
         let tables = sight.as_ref().and_then(|content| content.tables);
         let shared = Arc::new(Shared {
-            held: Mutex::new(Turn { side, framed: true, ready: None, published: None, reached: None, looks: 0, stop: false }),
+            held: Mutex::new(Turn { side, framed: true, ready: None, published: None, reached: None, looks: 0, stop: false, refused: None }),
             ask: Mutex::new(None),
             signal: Condvar::new(),
         });
@@ -185,13 +193,16 @@ impl SideThread {
                 advance(&shared);
             }
         })?;
-        Ok(Self { shared, entry, sight, views, products, installs, install_failure: None, doing, composed, thread: Some(thread) })
+        Ok(Self { shared, entry, sight, views, products, installs, install_failure: None, doing, composed, thread: Some(thread), refused: None })
     }
 
     /// The view and head of the frame being drawn, with what only the frame knows of the overlay
     /// and what its open combat window reads, for the step prepared next. Never waits.
     pub fn ask(&self, view: View, at: Head, overlay: Option<overlay::Ask>, combat: Option<viewer_combat::Asking>) {
-        *lock(&self.shared.ask) = Some(Ask { view, at, overlay, combat });
+        let mut ask = lock(&self.shared.ask);
+        let serial = ask.as_ref().map_or(0, |ask| ask.serial + 1);
+        *ask = Some(Ask { view, at, overlay, combat, serial });
+        drop(ask);
         self.shared.signal.notify_all();
     }
 
@@ -293,15 +304,16 @@ impl SideThread {
         let started = Instant::now();
         let mut said = 0;
         let mut turn = lock(&self.shared.held);
-        while !self.shared.ready(&turn, hour) && turn.side.failure().is_none() {
+        let serial = || lock(&self.shared.ask).as_ref().map_or(0, |ask| ask.serial);
+        let refused = |turn: &Turn| turn.refused.as_ref().is_some_and(|(asked, at, _)| *at == hour && *asked == serial());
+        while !self.shared.ready(&turn, hour) && turn.side.failure().is_none() && !refused(&turn) {
             turn = self.shared.signal.wait_timeout(turn, late).unwrap_or_else(std::sync::PoisonError::into_inner).0;
-            if self.shared.ready(&turn, hour) || turn.side.failure().is_some() {
+            if self.shared.ready(&turn, hour) || turn.side.failure().is_some() || refused(&turn) {
                 break;
             }
             let waited = started.elapsed();
             if waited >= given_up {
-                let state = waiting_for(&self.shared, &turn, hour, waited);
-                turn.side.fail(state);
+                turn.refused = Some((serial(), hour, waiting_for(&self.shared, &turn, hour, waited)));
                 break;
             }
             let times = waited.as_nanos() / late.as_nanos().max(1);
@@ -316,7 +328,17 @@ impl SideThread {
             self.products.failure = Some(failure.to_owned());
             return None;
         }
+        if refused(&turn) {
+            self.refused = turn.refused.as_ref().map(|(_, _, why)| why.clone());
+            return None;
+        }
         Some(Window { turn, signal: &self.shared.signal, products: &mut self.products })
+    }
+
+    /// Why the last stepped frame got no window for its hour while the side goes on: a capture's
+    /// refusal, never the reader's failure. Taken once.
+    pub fn take_refusal(&mut self) -> Option<String> {
+        self.refused.take()
     }
 
     /// The overlay laid out again over the art that arrived while the frame drew: a saved frame
@@ -562,13 +584,20 @@ fn advance(shared: &Shared) {
             turn = wait(shared, turn);
             continue;
         };
+        // A refused hour is the one ask's that it answers: any other ask lets it go.
+        if turn.refused.as_ref().is_some_and(|(asked, at, _)| *asked != ask.serial || ask.at != Head::Stepped(*at)) {
+            turn.refused = None;
+        }
         match ask.at {
-            Head::Stepped(hour) if turn.ready.as_ref().is_some_and(|ready| ready.answers(hour, &ask)) => turn = wait(shared, turn),
+            Head::Stepped(hour) if turn.ready.as_ref().is_some_and(|ready| ready.answers(hour, &ask)) || turn.refused.is_some() => turn = wait(shared, turn),
             Head::Stepped(hour) => {
                 // The lock is held throughout: the frame that asked waits for this hour's picture
-                // and for nothing else, and nothing else of the side is read meanwhile.
+                // and for nothing else, and nothing else of the side is read meanwhile. Preparing
+                // it changes the side, so no picture stands whole until it succeeds.
+                turn.ready = None;
                 match toward(&mut turn.side, &ask, hour, Made::Stepped) {
                     Ok(()) => turn.ready = Some(Ready::of(hour, &ask)),
+                    Err(error) if error.kind() == io::ErrorKind::TimedOut => turn.refused = Some((ask.serial, hour, error.to_string())),
                     Err(error) => turn.side.fail(format!("The map's playhead stopped: {error}")),
                 }
                 // The picture stands at the hour, or the side stopped: either answers the frame

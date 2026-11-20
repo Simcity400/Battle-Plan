@@ -272,12 +272,14 @@ struct Sum {
     settling: Option<mpsc::Sender<()>>,
     /// Its settle stops the side by name once released.
     settle_stops: bool,
+    /// Its first settle at this hour times out, as a catch-up past its bound does.
+    times_out_at: Option<i32>,
     frame: u64,
 }
 
 impl Sum {
     fn new(composes: &Arc<Mutex<u32>>) -> Self {
-        Self { column: None, second: false, refuse_high: false, hide_high: false, read: Vec::new(), viewed: Vec::new(), values: Vec::new(), dirty: Dirty::default(), composes: Arc::clone(composes), gate: None, entered: None, settle_gate: None, settling: None, settle_stops: false, frame: 0 }
+        Self { column: None, second: false, refuse_high: false, hide_high: false, read: Vec::new(), viewed: Vec::new(), values: Vec::new(), dirty: Dirty::default(), composes: Arc::clone(composes), gate: None, entered: None, settle_gate: None, settling: None, settle_stops: false, times_out_at: None, frame: 0 }
     }
 
     /// Composes only when the test sends on the gate it returns.
@@ -373,6 +375,10 @@ impl Layer for Sum {
         self.frame += 1;
         let Some(column) = self.column else { return Ok(()) };
         let mirror = mirrors.get(column.table).unwrap();
+        if self.times_out_at.is_some() && mirror.head() == self.times_out_at {
+            self.times_out_at = None;
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "the test layer times out once"));
+        }
         self.read.push(mirror.head());
         let values = &mut self.values;
         self.dirty.settle(|slot| {
@@ -2805,18 +2811,31 @@ mod side_thread {
     }
 
     /// Nothing will stand the picture at the hour a frame waits for: it refuses by name within its
-    /// bound, saying what it waited for, instead of waiting for ever.
+    /// bound, saying what it waited for, instead of waiting for ever. The refusal is the capture's
+    /// that waited: the side goes on, and the frames after it take their windows.
     #[test]
     fn a_stepped_frame_refuses_by_name_rather_than_wait_for_a_picture_nothing_will_make() {
         let composes = Arc::new(Mutex::new(0));
-        let mut side = side("stepped bound", Box::new(Sum::new(&composes)));
+        let mut side = side("stepped bound", Box::new(Sum { times_out_at: Some(6), ..Sum::new(&composes) }));
         side.ask(View::default(), Head::Stepped(3), None, None);
         drop(side.stepped_window(3).expect("the picture of the hour asked"));
         // The side's thread has nothing to prepare: the ask it reads stands at the hour it answered.
         let short = (Duration::from_millis(20), Duration::from_millis(200));
         assert!(side.whole_at(6, short.0, short.1).is_none(), "no window for an hour nothing stands at");
-        let why = side.failure().expect("refused by name");
+        let why = side.take_refusal().expect("refused by name");
         assert!(why.contains("hour 6") && why.contains("Stepped(3)") && why.contains("whole at Some(3)"), "says what it waited for: {why}");
+        assert!(side.failure().is_none(), "the side does not stop for a capture's refusal");
+        drop(side.stepped_window(3).expect("the side still answers the frames after"));
+        // The side's own catch-up to hour 6 times out: that ask is refused, and the side goes on.
+        side.ask(View::default(), Head::Stepped(6), None, None);
+        assert!(side.stepped_window(6).is_none(), "no window for an hour not made whole");
+        let why = side.take_refusal().expect("refused by name");
+        assert!(why.contains("times out once"), "says why: {why}");
+        assert!(side.failure().is_none(), "the side does not stop for a capture's refusal");
+        // A new ask at the refused hour is prepared afresh, never answered with the refusal before.
+        side.ask(View::default(), Head::Stepped(6), None, None);
+        drop(side.stepped_window(6).expect("the refused hour asked again is made whole"));
+        assert!(side.take_refusal().is_none());
     }
 
     /// A seek taken while the side catches up to a stepped frame's hour: the rows at the head are

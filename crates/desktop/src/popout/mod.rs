@@ -801,12 +801,9 @@ pub fn popout_fly_aircraft(
 
 /// Exports the map of pop-out window `generation`, captured before the save dialog opened; a
 /// window that closed meanwhile is refused.
-pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<(), String> {
+pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
     let generation = generation.ok_or("The map is not popped out")?;
-    running(popouts, Some(generation))?.map_action(MapAction::Export {
-        path,
-        view_id: None,
-    })
+    running(popouts, Some(generation))?.export(path, None)
 }
 
 #[cfg(test)]
@@ -852,6 +849,7 @@ mod tests {
             MapAction::Export {
                 path: "a.png".into(),
                 view_id: None,
+                request: 1,
             },
             MapAction::Inspect,
             MapAction::Folders {

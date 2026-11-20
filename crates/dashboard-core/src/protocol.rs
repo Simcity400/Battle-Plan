@@ -118,6 +118,12 @@ pub enum NativeEvent {
         view_id: String,
         toggle: MapToggle,
     },
+    /// The [`MapAction::Export`] numbered `request` ended: what it saved (the file, branch and
+    /// hour), or why it was refused.
+    Export {
+        request: u64,
+        answer: Result<String, String>,
+    },
     /// A Ctrl+click switched the view's viewing country, as the game's observer switches the
     /// observed country. The host owns the choice and sends it back in [`MapOptions`].
     ObserveCountry {
@@ -203,10 +209,13 @@ pub enum MapAction {
     Configure {
         options: MapOptions,
     },
+    /// Saves the map's picture to `path`; the host numbers each `request`, which the map's
+    /// [`NativeEvent::Export`] answers once.
     Export {
         path: String,
         #[serde(rename = "viewId")]
         view_id: Option<String>,
+        request: u64,
     },
     Inspect,
     /// The host's saved content folders; the viewer applies them without saving.
@@ -436,7 +445,7 @@ impl MapAction {
                 }
                 options.validate_modes()?;
             }
-            Self::Export { path, view_id } => {
+            Self::Export { path, view_id, .. } => {
                 validate_local_path(path)?;
                 if view_id
                     .as_ref()
@@ -1111,7 +1120,8 @@ b"
             assert!(
                 MapAction::Export {
                     path: "C:/map.png".into(),
-                    view_id
+                    view_id,
+                    request: 1,
                 }
                 .validate()
                 .is_ok()
@@ -1120,7 +1130,8 @@ b"
         assert!(
             MapAction::Export {
                 path: "C:/map.png".into(),
-                view_id: Some(String::new())
+                view_id: Some(String::new()),
+                request: 1,
             }
             .validate()
             .is_err()

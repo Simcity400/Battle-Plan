@@ -751,6 +751,7 @@ pub(crate) fn measure(
         frames: 1,
         index: 0,
         paced: schedule.paced.is_some(),
+        request: None,
     });
     let ctx = egui::Context::default();
     ctx.set_theme(egui::Theme::Dark);
@@ -1366,7 +1367,7 @@ pub(crate) fn measure(
         json!({"center":camera.center,"height":camera.height,"pose":format!("{:?}",camera.pose)});
     report["map_mode"] = json!(options.map_mode.token());
     report["perspective"] = json!(format!("{:?}", options.perspective));
-    report["last_frame_warnings"] = json!(options.diagnostics.then_some(viewer.map_warnings));
+    report["last_frame_warnings"] = json!(options.diagnostics.then(|| std::mem::take(&mut viewer.map_warnings)));
     report["frames_with_warnings"] = json!(options.diagnostics.then_some(warning_frames));
     report["diagnostic_warnings_collected"] = json!(options.diagnostics);
     report["schedule"] = json!(if schedule.paced.is_some() {

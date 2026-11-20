@@ -52,6 +52,15 @@ export default function MapControls({ source, client, metadata, branchId, onBran
     catch (cause) { setError(errorMessage(cause)); }
     finally { setBusy(false); }
   };
+  // The open menu hides the native map, which refuses an export: it closes, and the map shows
+  // again, before the export is asked for. A refusal opens the menu again to say why.
+  const exportImage = async (view?: string) => {
+    menu.close();
+    setBusy(true); setError(null);
+    try { await afterPaint(); await exportMap(view); }
+    catch (cause) { setError(errorMessage(cause)); menu.popup.current?.showPopover(); }
+    finally { setBusy(false); }
+  };
   return <>
     <button ref={trigger} type="button" className={compact ? "icon-button map-controls-trigger is-compact" : "icon-button map-controls-trigger"} data-widget-settings={compact || undefined} popoverTarget={id}
       aria-label="Map settings" data-tooltip="Map settings" aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
@@ -70,7 +79,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
           <JoinNote key={join.segmentId} join={join} busy={busy} onChoose={onChooseHistory && (parent => void run(() => onChooseHistory(join.segmentId, parent)))} />)}
       </div>}
       <div className="map-menu-section">
-        <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available with the native map in the desktop app'} onClick={() => void run(() => exportMap(viewId))}><Icon name="save" />Export map image</button>
+        <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available with the native map in the desktop app'} onClick={() => void exportImage(viewId)}><Icon name="save" />Export map image</button>
         {poppedOut && popoutProblem && <p className="map-menu-error" role="alert">{popoutProblem}</p>}
         {poppedOut && popoutStopped && <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run(() => restartPopout(popoutGeneration))}><Icon name="refresh" />Restart pop-out map</button>}
         {poppedOut && desktopAvailable && popoutCameraMode && <div className="map-option-row"><span>Pop-out camera</span>
@@ -80,7 +89,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
         {poppedOut && desktopAvailable && popoutCameraMode === 'fly' && onAircraft && <div className="map-option-row"><span>Pop-out aircraft</span>
           <AircraftPicker client={client} source={source} chosen={aircraft} status={popoutFlyAircraft} onChoose={onAircraft} host={aircraftHost} /></div>}
         {poppedOut !== undefined && desktopAvailable && (poppedOut ? <>
-          <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Save the pop-out window's map as a PNG image" onClick={() => void run(() => exportMap('popout'))}><Icon name="save" />Export pop-out map</button>
+          <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Save the pop-out window's map as a PNG image" onClick={() => void exportImage('popout')}><Icon name="save" />Export pop-out map</button>
           <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Move the pop-out map to the next monitor" onClick={() => void run(() => nextPopoutMonitor(popoutGeneration))}><Icon name="monitor" />Move pop-out to next monitor</button>
           <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run(() => closePopout(popoutGeneration))}><Icon name="close" />Close pop-out map</button>
         </> : <button type="button" className="map-menu-action" disabled={!metadata || busy} data-tooltip="Show this map alone in its own window, following this app's clock and settings" onClick={() => void run(async () => { await openPopout(); })}><Icon name="monitor" />Pop out map</button>)}
@@ -106,4 +115,9 @@ function JoinNote({ join, busy, onChoose }: { join: BranchJoin; busy: boolean; o
       options={[...join.choices.map(choice => ({ value: choice.segmentId, label: `Play of ${formatDateTime(choice.firstHour)} – ${formatDateTime(choice.lastHour)}` })),
         ...join.evidence === 'chosen' ? [{ value: 'automatic', label: 'As the recording decides' }] : []]} /></div>}
   </>;
+}
+
+/** Resolves once the frame after the next has painted: layout effects and the map's placement have run. */
+function afterPaint(): Promise<void> {
+  return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }

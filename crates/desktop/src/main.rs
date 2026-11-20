@@ -89,7 +89,7 @@ async fn export_map(
     host: State<'_, NativeHost>,
     popouts: State<'_, popout::PopOuts>,
     view_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     // The pop-out window to export is the one open when the request starts, not after the dialog.
     let popout = (view_id.as_deref() == Some(popout::VIEW_ID))
         .then(|| popouts.current_generation())
@@ -103,14 +103,19 @@ async fn export_map(
     })
     .await
     .map_err(|e| e.to_string())?;
-    if let Some(path) = path {
-        let path = path.to_string_lossy().into_owned();
-        if view_id.as_deref() == Some(popout::VIEW_ID) {
-            return popout::export(&popouts, popout, path);
-        }
-        host.map_action(dashboard::protocol::MapAction::Export { path, view_id })?;
-    }
-    Ok(())
+    let Some(path) = path else { return Ok(None) };
+    let path = path.to_string_lossy().into_owned();
+    // Answered once the map saved the picture or refused it, not when it queued the request.
+    let answered = if view_id.as_deref() == Some(popout::VIEW_ID) {
+        popout::export(&popouts, popout, path)?
+    } else {
+        host.export(path, view_id)?
+    };
+    // What the map saved: the file, and the branch and hour it drew.
+    answered
+        .await
+        .map_err(|_| "The map stopped before the export finished".to_owned())?
+        .map(Some)
 }
 
 #[tauri::command]
