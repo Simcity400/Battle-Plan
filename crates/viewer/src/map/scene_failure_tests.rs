@@ -348,13 +348,13 @@ fn production_scene_targets_and_post_recover() -> io::Result<()> {
     let mut scene = fixture.scene()?;
     let mut control = fixture.scene()?;
     let mut generation = 0;
-    for (step, (size, full, postfx, replaces)) in [
-        ([256, 144], true, true, true),
-        ([256, 144], true, true, false),
-        ([2049, 1153], true, true, true),
-        ([2049, 1153], false, true, true),
-        ([2049, 1153], false, false, false),
-        ([2049, 1153], false, true, false),
+    for (step, (size, full, postfx, replaces, sea_bed)) in [
+        ([256, 144], true, true, true, [128, 72]),
+        ([256, 144], true, true, false, [128, 72]),
+        ([2049, 1153], true, true, true, [1025, 577]),
+        ([2049, 1153], false, true, true, [1025, 577]),
+        ([2049, 1153], false, false, false, [1025, 577]),
+        ([2049, 1153], false, true, false, [1025, 577]),
     ]
     .into_iter()
     .enumerate()
@@ -409,7 +409,8 @@ fn production_scene_targets_and_post_recover() -> io::Result<()> {
                 targets.refraction_view.texture().width(),
                 targets.refraction_view.texture().height()
             ],
-            size
+            sea_bed,
+            "the water samples the half-size sea bed"
         );
         assert_eq!(
             fixture.pixels(&scene, &format!("step-{step}"))?,

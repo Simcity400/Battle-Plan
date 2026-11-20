@@ -40,6 +40,7 @@ pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// post targets and back buffer are; the depth buffer belongs to the world passes.
 /// `draw_map_full_res=no` halves only the scene/depth chain;
 /// restore samples it linearly into the full-size output before grading.
+/// The sea-bed target is [`SeaBed::size`].
 pub struct Targets {
     scene: wgpu::Texture,
     scene_ms: wgpu::TextureView,
@@ -52,13 +53,20 @@ pub struct Targets {
     /// What the sea-bed target holds: a content of its own, so a pass kept while its inputs
     /// repeat draws again into a target made afresh, whose colour is gone.
     refraction_content: crate::map::textures::Content,
+    sea_bed: SeaBed,
     size: [u32; 2],
     world_size: [u32; 2],
     samples: u32,
 }
 
 impl Targets {
-    pub fn new(device: &wgpu::Device, size: [u32; 2], world_size: [u32; 2], samples: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        size: [u32; 2],
+        world_size: [u32; 2],
+        samples: u32,
+        sea_bed: SeaBed,
+    ) -> Self {
         let attachment = |label, size, format, samples, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -105,17 +113,16 @@ impl Targets {
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
         );
-        // Water t5 retains the renderer's unscaled dimensions even with a half-size HDR scene.
         let refraction = attachment(
             "water refraction",
-            size,
+            sea_bed.size(size),
             REFRACTION_FORMAT,
             1,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
         let refraction_depth = attachment(
             "water refraction depth",
-            size,
+            sea_bed.size(size),
             DEPTH_FORMAT,
             1,
             wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -133,6 +140,7 @@ impl Targets {
             refraction_view: refraction.create_view(&Default::default()),
             refraction_depth: refraction_depth.create_view(&Default::default()),
             refraction_content: crate::map::textures::Content::next(),
+            sea_bed,
             size,
             world_size,
             samples,
@@ -236,9 +244,13 @@ impl Targets {
         self.samples
     }
 
-    /// HDR scene and depth dimensions; output, GUI and refraction keep [`Self::size`].
+    /// HDR scene and depth dimensions; output and GUI keep [`Self::size`].
     pub fn world_size(&self) -> [u32; 2] {
         self.world_size
+    }
+
+    pub fn sea_bed(&self) -> SeaBed {
+        self.sea_bed
     }
 
     /// What the sea-bed target holds. Only [`Self::refraction_attachment`] writes it, so a pass
@@ -286,6 +298,26 @@ impl Targets {
 
     pub fn output_view(&self) -> &wgpu::TextureView {
         &self.color_view
+    }
+}
+
+/// How large the sea-bed refraction target and its depth are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeaBed {
+    /// Half the output each way, rounded up so every output keeps a texel. Water that samples
+    /// it only at screen UVs, which any target size maps alike, reads it through its linear
+    /// clamped sampler; a sharper sea bed is not worth its cost.
+    Half,
+    /// The output's size, for water that reads the target by texel.
+    Full,
+}
+
+impl SeaBed {
+    pub fn size(self, output: [u32; 2]) -> [u32; 2] {
+        match self {
+            Self::Half => output.map(|side| side.div_ceil(2)),
+            Self::Full => output,
+        }
     }
 }
 
@@ -800,6 +832,15 @@ mod limit_tests {
 mod tests {
     use super::*;
     use wgpu::{Backend, DeviceType};
+
+    #[test]
+    fn the_sea_bed_target_is_half_the_output_rounded_up_unless_full() {
+        assert_eq!(SeaBed::Half.size([1920, 1080]), [960, 540]);
+        assert_eq!(SeaBed::Half.size([2049, 1153]), [1025, 577]);
+        assert_eq!(SeaBed::Half.size([1, 1]), [1, 1]);
+        assert_eq!(SeaBed::Half.size([3, 2]), [2, 1]);
+        assert_eq!(SeaBed::Full.size([2049, 1153]), [2049, 1153]);
+    }
 
     /// The compiled effects' optional device states, clamp-to-border sampling and dual-source
     /// blending, are named the same way when the device lacks them: effects that author them

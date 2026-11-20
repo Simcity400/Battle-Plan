@@ -1,5 +1,5 @@
 //! Water technique selection and compiled pipeline cache.
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_foundation::map::gpu_contract::{SeaBed, Targets};
 use eframe::wgpu;
 use std::{cell::RefCell, io, sync::Arc};
 use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
@@ -34,6 +34,26 @@ impl WaterPass {
             .borrow()
             .as_ref()
             .is_some_and(|(_, water)| water.as_ref().is_ok_and(|water| water.reads_snow_mud))
+    }
+
+    /// The sea bed the water these settings draw samples, compiled now so the targets are made
+    /// for it before the sea bed is drawn; half size for water that cannot be drawn.
+    pub fn sea_bed(&self, device: &wgpu::Device, high: bool, refractions: bool) -> SeaBed {
+        self.compile(device, super::water_shader::technique(high, refractions));
+        self.compiled
+            .borrow()
+            .as_ref()
+            .and_then(|(_, water)| water.as_ref().ok())
+            .map_or(SeaBed::Half, |water| water.sea_bed.0)
+    }
+
+    /// Why the water last compiled does not sample the half-size sea bed.
+    pub fn sea_bed_refusal(&self) -> Option<String> {
+        self.compiled
+            .borrow()
+            .as_ref()
+            .and_then(|(_, water)| water.as_ref().ok())
+            .and_then(|water| water.sea_bed.1.clone())
     }
 
     /// Compiles the pipeline frames with these settings draw with, so they compile nothing.

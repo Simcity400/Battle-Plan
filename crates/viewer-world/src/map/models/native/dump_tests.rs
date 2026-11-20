@@ -989,7 +989,7 @@ fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusa
             queue.submit([encoder.finish()]);
             read_texture(&device, &queue, &colour, 4).unwrap()
         } else {
-            let targets = Targets::new(&device, [16, 16], [16, 16], samples);
+            let targets = Targets::new(&device, [16, 16], [16, 16], samples, viewer_foundation::map::gpu_contract::SeaBed::Half);
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     color_attachments: &[Some(

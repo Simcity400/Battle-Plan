@@ -150,7 +150,7 @@ pub fn render_presented_at(
     arena.flush(queue);
     // The scene and depth are multisampled; the output the grade writes and the icons draw
     // over is single-sample, as the game's back buffer is, and needs no resolve.
-    let targets = Targets::new(device, size, size, 4);
+    let targets = Targets::new(device, size, size, 4, crate::map::gpu_contract::SeaBed::Half);
     let output = targets.output_attachment(wgpu::LoadOp::Load);
     assert_eq!(output.view.texture().sample_count(), 1);
     assert!(output.resolve_target.is_none());

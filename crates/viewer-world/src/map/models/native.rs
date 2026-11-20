@@ -3505,7 +3505,7 @@ mod tests {
             // Drawn in place, `bundled` draws each list: 0 directly, 1 by its runs' bundles
             // (`record_range`), 2 each drawable draw from a bundle of its own.
             let render = |lists: &[DrawList], encode: bool, empty: bool, bundled: u8| {
-                let targets = Targets::new(&device, [16, 16], [16, 16], samples);
+                let targets = Targets::new(&device, [16, 16], [16, 16], samples, viewer_foundation::map::gpu_contract::SeaBed::Half);
                 let mut encoder = device.create_command_encoder(&Default::default());
                 {
                     let mut pass = encoder.counted_render_pass(&wgpu::RenderPassDescriptor {

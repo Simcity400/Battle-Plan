@@ -1,5 +1,5 @@
 //! Water draw ; registration and strip allocation.
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_foundation::map::gpu_contract::{SeaBed, Targets};
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content_core::{
     ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
@@ -34,6 +34,27 @@ pub fn reads_snow_mud(compiled: &shader_pipeline::Compiled) -> bool {
         .any(|&(slot, _)| slot == binding(SNOW_MUD_SLOT, Stage::Pixel))
 }
 
+/// The sea bed this program can sample: half size when it samples the refraction texture only at
+/// screen UVs, else the output's size and why, for reads a smaller target would answer wrongly.
+pub fn sea_bed(compiled: &shader_pipeline::Compiled) -> (SeaBed, Option<String>) {
+    let reads = shader_pipeline::texel::texel_reads(
+        &compiled.pixel.wgsl,
+        binding(REFRACTION_SLOT, Stage::Pixel),
+    );
+    let why = match reads {
+        Ok(reads) if reads.is_empty() => return (SeaBed::Half, None),
+        Ok(reads) => {
+            let reads: Vec<_> = reads.into_iter().map(|read| read.describe()).collect();
+            format!("reads the refraction texture by texel: it {}", reads.join("; it "))
+        }
+        Err(error) => format!("could not be read for its refraction reads: {error}"),
+    };
+    (
+        SeaBed::Full,
+        Some(format!("half-size sea bed not used: the water shader {why}")),
+    )
+}
+
 pub fn technique(high: bool, refractions: bool) -> &'static str {
     // Low-graphics selection precedes underwater selection; debug drawing defaults on.
     if !high {
@@ -43,6 +64,12 @@ pub fn technique(high: bool, refractions: bool) -> &'static str {
     } else {
         "water_no_refractions"
     }
+}
+
+/// The refraction UVs' half-pixel offset, of the output: the sea-bed target may be smaller, but the
+/// same UV is the same point of the scene, which is the one the game samples.
+fn half_pixel(output: [u32; 2]) -> [f32; 2] {
+    output.map(|side| 0.5 / side as f32)
 }
 
 fn quad(map: [u32; 2]) -> [[i16; 2]; 4] {
@@ -62,6 +89,8 @@ pub struct Inputs<'a> {
 
 /// The pixel slot the engine binds the map's snow/mud texture to for the water effect.
 pub const SNOW_MUD_SLOT: u32 = 9;
+/// The pixel slot the engine binds the sea-bed refraction target to for the water effect.
+pub const REFRACTION_SLOT: u32 = 5;
 
 pub struct Water {
     retained: super::shader_scene::Program,
@@ -69,6 +98,8 @@ pub struct Water {
     vertices: wgpu::Buffer,
     /// Whether the technique reads the snow/mud texture at all, after dead-code elimination.
     pub reads_snow_mud: bool,
+    /// The sea bed this technique samples, and why when it is not [`SeaBed::Half`] ([`sea_bed`]).
+    pub sea_bed: (SeaBed, Option<String>),
 }
 
 impl Water {
@@ -102,6 +133,7 @@ impl Water {
             .ok_or_else(|| refuse(format!("{technique} absent; retained program unavailable")))?;
         let compiled = effect.compiled(selection.index).map_err(refuse)?;
         let reads_snow_mud = reads_snow_mud(&compiled);
+        let sea_bed = sea_bed(&compiled);
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
@@ -164,6 +196,7 @@ impl Water {
             pipeline,
             vertices,
             reads_snow_mud,
+            sea_bed,
         })
     }
 
@@ -186,13 +219,8 @@ impl Water {
             .collect();
         // Clear all 112 bytes of b1; b3 has a 16-byte allocation.
         // Initialize only 12 bytes: time,0.5/width,0.5/height. Last4 unknown.
-        let b3 = bytemuck::cast_slice(&[
-            inputs.time,
-            0.5 / inputs.size[0] as f32,
-            0.5 / inputs.size[1] as f32,
-            0.0,
-        ])
-        .to_vec();
+        let [x, y] = half_pixel(inputs.size);
+        let b3 = bytemuck::cast_slice(&[inputs.time, x, y, 0.0]).to_vec();
         let mut bound = Vec::new();
         for frame in inputs.frames {
             let buffers = BTreeMap::from([
@@ -255,6 +283,63 @@ mod tests {
             quad([0x8000, 0xffff]),
             [[i16::MIN, 0], [0, 0], [i16::MIN, -1], [0, -1]]
         );
+    }
+
+    #[test]
+    fn the_refraction_offset_is_half_an_output_pixel_not_a_sea_bed_texel() {
+        let output = [2049, 1153];
+        let sea_bed = SeaBed::Half.size(output);
+        assert_eq!(half_pixel(output), [0.5 / 2049., 0.5 / 1153.]);
+        assert_ne!(half_pixel(output), half_pixel(sea_bed));
+    }
+
+    #[test]
+    fn water_reading_the_refraction_texture_by_texel_keeps_the_full_size_sea_bed() {
+        let refraction = binding(REFRACTION_SLOT, Stage::Pixel);
+        let water = |body: &str| {
+            let wgsl = format!(
+                "@group(1) @binding({refraction}) var refraction: texture_2d<f32>;
+                 @group(2) @binding({refraction}) var linear: sampler;
+                 @fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {{
+                     {body}
+                 }}"
+            );
+            let stage = shader_pipeline::Shader {
+                wgsl,
+                independent_draws: false,
+                buffers: Vec::new(),
+                textures: vec![(refraction, shader_pipeline::TextureKind::D2)],
+                samplers: vec![refraction],
+                sampling_pairs: vec![(refraction, refraction)],
+                inputs: Vec::new(),
+                clock: Default::default(),
+            };
+            sea_bed(&shader_pipeline::Compiled {
+                vertex: shader_pipeline::Shader {
+                    wgsl: String::new(),
+                    textures: Vec::new(),
+                    samplers: Vec::new(),
+                    sampling_pairs: Vec::new(),
+                    ..stage.clone()
+                },
+                pixel: stage,
+            })
+        };
+        assert_eq!(water("return textureSample(refraction, linear, uv);"), (SeaBed::Half, None));
+        let (size, why) = water("return textureSample(refraction, linear, uv, vec2<i32>(1, 0));");
+        assert_eq!(size, SeaBed::Full);
+        assert_eq!(
+            why.as_deref(),
+            Some(
+                "half-size sea bed not used: the water shader reads the refraction texture by texel: it samples it at texel offsets"
+            )
+        );
+        let (size, why) = water(
+            "let texel = 1.0 / vec2<f32>(textureDimensions(refraction));
+             return textureSample(refraction, linear, uv + texel);",
+        );
+        assert_eq!(size, SeaBed::Full);
+        assert!(why.unwrap().ends_with("by texel: it reads its own size"));
     }
 
     #[test]

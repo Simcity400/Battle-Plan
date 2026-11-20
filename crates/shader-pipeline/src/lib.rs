@@ -25,6 +25,7 @@ mod reads;
 mod sampling;
 mod source;
 pub mod stream;
+pub mod texel;
 pub mod vertices;
 
 /// Native registers are separate namespaces. Vertex and pixel bindings are separate too.

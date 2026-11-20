@@ -3004,10 +3004,18 @@ impl Scene {
             device.limits().max_texture_dimension_2d,
         )
         .map_err(|error| invalid(format!("Map post seed: {error}")))?;
-        let generation_changed = self
-            .targets
-            .as_ref()
-            .is_none_or(|t| t.size() != size || t.world_size() != world_size);
+        let sea_bed = if !no_water && self.graphics.water {
+            self.water.sea_bed(
+                device,
+                self.graphics.high_gfx_shaders,
+                self.graphics.water_reflections,
+            )
+        } else {
+            viewer_foundation::map::gpu_contract::SeaBed::Half
+        };
+        let generation_changed = self.targets.as_ref().is_none_or(|t| {
+            t.size() != size || t.world_size() != world_size || t.sea_bed() != sea_bed
+        });
         // Receiver and blur stay backbuffer-sized, even when the
         // scene is half size. Camera projection/culling and GUI also retain size.
         if generation_changed
@@ -3027,7 +3035,7 @@ impl Scene {
                 || {
                     let made = generation_changed
                         .then(|| {
-                            Targets::new(device, size, world_size, self.graphics.samples)
+                            Targets::new(device, size, world_size, self.graphics.samples, sea_bed)
                         });
                     let targets = made
                         .as_ref()
@@ -4884,6 +4892,12 @@ impl Scene {
         warnings.extend(self.compiled_terrain.not_kept().map(|(technique, reason)| {
             format!("Map shader {technique}: drawn every frame: {reason}")
         }));
+        if self.targets.as_ref().is_some_and(|targets| {
+            targets.sea_bed() == viewer_foundation::map::gpu_contract::SeaBed::Full
+        }) && let Some(reason) = self.water.sea_bed_refusal()
+        {
+            warnings.push(format!("Map shader water: {reason}"));
+        }
         if let Some(reason) = self.compiled_terrain.coast_refusal() {
             warnings.push(format!(
                 "Map coasts: 1 refused coarse-terrain shore cap, so zoomed-out coasts can show the \
@@ -5087,7 +5101,7 @@ pub(crate) fn world_pass<'a>(
 }
 
 /// With full-resolution rendering disabled, halve the renderer's positive signed dimensions with
-/// truncation. Full-size cameras, refraction, shadow receivers and interface pixels retain their
+/// truncation. Full-size cameras, shadow receivers and interface pixels retain their
 /// dimensions. [`validate_size`] refuses a zero result.
 pub fn world_size(size: [u32; 2], full_resolution: bool) -> [u32; 2] {
     if full_resolution {
