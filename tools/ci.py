@@ -96,7 +96,8 @@ def load_pipeline(text):
             local=tuple(table.get("local", ())), ci_only=table.get("ci-only", False),
             group=table.get("group", ""), whole=tuple(table.get("whole", ())), base=table.get("base", False),
             unset=tuple(table.get("unset", ())), widen=tuple(table.get("widen", ())),
-            report=table.get("report", ""), not_run=tuple(table.get("not-run", {}).items()),
+            report=table.get("report", ""),
+            not_run=tuple((reason, rule.get("panic", ""), tuple(rule.get("crates", ()))) for reason, rule in table.get("not-run", {}).items()),
             shards=table.get("shards", 0), warm=tuple(table.get("warm", ())), dependents=table.get("dependents", True),
             definition=json.dumps([table, data["toolchain"].get(table["toolchain"]), groups.get(table.get("group"))], sort_keys=True))
         problems = [f"tier {job.tier!r}"] if job.tier not in tiers else []
@@ -106,6 +107,7 @@ def load_pipeline(text):
         problems += [f"group {job.group!r}"] if job.group not in groups else []
         problems += ["name, used twice"] if job.name in {known.name for known in jobs} else []
         problems += ["report, which not-run reads"] if job.not_run and not job.report else []
+        problems += ["not-run rule's panic or crates"] if any(not panic or not crates for _, panic, crates in job.not_run) else []
         problems += [f"shards {job.shards!r}, a positive count for a crates job"] if job.shards and (
             job.kind != "crates" or not isinstance(job.shards, int) or job.shards < 1) else []
         problems += ["warm, a command for a crates job with shards"] if job.warm and not job.shards else []
@@ -426,7 +428,8 @@ def last_panic(test, stderr):
 
 def sorted_failures(report, rules):
     """(passed, [(test, output)] of the failures no rule names, {reason: {binary: count}} of those
-    one does) from a nextest JUnit report, or None when it is not one. A rule is (reason, regex).
+    one does) from a nextest JUnit report, or None when it is not one. A rule is (reason, regex,
+    crates), and names only failures of the test binaries of those crates.
     A failure is the rule's only when nextest reports libtest's plain panic exit (not a timeout,
     abort, leak or other exit code) and the regex matches the first line of the last panic on
     the test's own thread, with no error returned after it; any other panic, caught or on
@@ -435,7 +438,7 @@ def sorted_failures(report, rules):
         root = ElementTree.fromstring(report)
     except ElementTree.ParseError:
         return None
-    patterns = [(reason, re.compile(pattern)) for reason, pattern in rules]
+    patterns = [(reason, re.compile(pattern), set(crates)) for reason, pattern, crates in rules]
     passed, failures, held = 0, [], {}
     for suite in root.iter("testsuite"):
         for case in suite.iter("testcase"):
@@ -452,7 +455,8 @@ def sorted_failures(report, rules):
             binary = suite.get("name") or case.get("classname") or ""
             plain = [part.tag for part in failed] == ["failure"] and failed[0].get("type") == PANIC_EXIT
             message = last_panic(case.get("name"), stderr) if plain else None
-            reason = next((reason for reason, pattern in patterns if pattern.search(message)), None) if message else None
+            crate = binary.split("::", 1)[0]
+            reason = next((reason for reason, pattern, crates in patterns if crate in crates and pattern.search(message)), None) if message else None
             if reason is None:
                 failures.append((f"{binary} {case.get('name')}", output))
             else:
