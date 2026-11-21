@@ -748,7 +748,7 @@ def probe(tool):
     if not found:
         return None
     try:
-        said = subprocess.run([found, "--version"], capture_output=True, text=True, errors="replace").stdout
+        said = subprocess.run([found, "--version"], capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL).stdout
     except OSError:
         said = None
     return [found, said]
@@ -768,7 +768,7 @@ def consistency(pipeline, values):
                     data = (ROOT / path).read_bytes()
                     read[path] = hashlib.sha256(data).hexdigest()
                     Path(scratch, Path(path).name).write_bytes(data)
-                agrees[name] = subprocess.run(expand(toolchain.consistent, values), cwd=scratch, capture_output=True).returncode == 0
+                agrees[name] = subprocess.run(expand(toolchain.consistent, values), cwd=scratch, capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
             except OSError:
                 agrees[name] = False
     return agrees, read
@@ -800,7 +800,7 @@ def toolchain_digests(pipeline, tree, values, consistent):
         version = None
         if toolchain.version:
             try:
-                found = subprocess.run(expand(toolchain.version, values), cwd=ROOT, capture_output=True, text=True)
+                found = subprocess.run(expand(toolchain.version, values), cwd=ROOT, capture_output=True, text=True, stdin=subprocess.DEVNULL)
                 version = found.stdout if found.returncode == 0 else None
             except OSError:
                 pass
