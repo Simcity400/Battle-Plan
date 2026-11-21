@@ -137,7 +137,7 @@ command = ["{python}", "tools/check-content-dependencies.py"]
 
 [[job]]
 name = "feature-unification"
-group = "repo"
+group = "tools"
 tier = "check"
 toolchain = "rust"
 inputs = ["Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml", "vendor/*/Cargo.toml", "tools/check-feature-unification.py"]
