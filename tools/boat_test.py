@@ -178,8 +178,8 @@ class Rank(unittest.TestCase):
         self.assertEqual(bt.rank(sorted(states), states, "c", "large", lambda _: False), ["b", "a", "c", "d"])
 
     def test_a_vm_still_starting_comes_after_the_running_ones_and_before_the_stopped(self):
-        states = {"a": vm("a", "stopped"), "b": vm("b", "starting"), "c": vm("c"), "d": vm("d", "resuming")}
-        self.assertEqual(bt.rank(sorted(states), states, None, "large", lambda _: False), ["c", "b", "d", "a"])
+        states = {"a": vm("a", "stopped"), "b": vm("b", "starting"), "c": vm("c"), "d": vm("d", "resuming"), "e": vm("e", "provisioning"), "f": vm("f", "cloning")}
+        self.assertEqual(bt.rank(sorted(states), states, None, "large", lambda _: False), ["c", "b", "d", "e", "f", "a"])
 
     def test_large_work_skips_running_default_vms_but_can_grow_stopped_ones(self):
         states = {"a": vm("a", "idle", "default"), "b": vm("b", "stopped", "default")}
@@ -910,6 +910,13 @@ class Wake(Harness):
             vmid, _, lock, created = bt.choose(self.state, "lane", "large")
         lock.close()
         self.assertEqual((vmid, created), ("w", False))
+
+    def test_a_refused_resume_wakes_the_next_vm(self):
+        fake = self.use(FakeBoat([vm("a", "stopped"), vm("b", "stopped")]))
+        self.state.update("a", used=0)
+        self.state.update("b", used=1)
+        fake.refused.add("a")
+        self.assertEqual(bt.wake(self.state, "lane", "large"), ("b", "resuming"))
 
     def test_leaves_alone_a_vm_that_already_runs_or_starts(self):
         for state in ("idle", "starting"):

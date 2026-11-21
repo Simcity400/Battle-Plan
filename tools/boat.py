@@ -121,7 +121,7 @@ STARTED = {"ready", "idle", "running"}
 COOLDOWN_SECONDS = 1800
 CREATE_SPACING_SECONDS = 5.1
 UNAVAILABLE = 75
-USABLE = {"ready", "idle", "running", "starting", "resuming", "stopped"}
+USABLE = {"ready", "idle", "running", "provisioning", "cloning", "starting", "resuming", "stopped"}
 BROKEN_TOOLCHAIN = 72
 REMOTE_CLAIMED = 73
 RETRY_SECONDS = (2, 5, 10, 20, 40, 60)
@@ -791,7 +791,11 @@ def wake(state, lane, size, rebuilds=lambda vmid: (0, 0), begun=None):
                 boat("extend", vmid, "--ttl", str(LEASE_SECONDS), retry=False)
                 return vmid, vm["state"]
             grow = resume_type(vm.get("type"), size)
-            boat("resume", vmid, "--ttl", str(LEASE_SECONDS), "--no-wait", *(["--type", grow] if grow else []), retry=False)
+            try:
+                boat("resume", vmid, "--ttl", str(LEASE_SECONDS), "--no-wait", *(["--type", grow] if grow else []), retry=False)
+            except Failure as error:
+                say(f"{error}; passing it by")
+                continue
             state.update(vmid, woken=now)
             return vmid, "resuming"
         vmid, lock, _ = clone(state, lane, size, allocator)
