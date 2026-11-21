@@ -853,7 +853,7 @@ def toolchain_channel(worktree):
     """The Rust channel the worktree's rust-toolchain.toml names, or "" when it names none."""
     try:
         return str(tomllib.loads((worktree / "rust-toolchain.toml").read_text(encoding="utf-8"))["toolchain"]["channel"])
-    except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, KeyError, TypeError, tomllib.TOMLDecodeError):
         return ""
 
 

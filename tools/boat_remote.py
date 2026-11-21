@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import errno
 import fcntl
 import gzip
 import hashlib
@@ -16,6 +17,7 @@ import time
 
 ROOT = Path('/home/user/hoi4')
 HOST = 'x86_64-unknown-linux-gnu'
+TRANSIENT_ERRNOS = {errno.EAGAIN, errno.ENOMEM, errno.EINTR}
 SRC = ROOT / 'src'
 CLAIM = ROOT / 'claim'
 STRANDED = ROOT / 'stranded'
@@ -193,10 +195,10 @@ def toolchain_fault(channel):
         return None
     try:
         result = subprocess.run(['cargo', '--version'], cwd=ROOT, env={**os.environ, 'RUSTUP_TOOLCHAIN': channel, 'RUSTUP_AUTO_INSTALL': '0'}, capture_output=True, text=True, timeout=60)
-    except (FileNotFoundError, PermissionError) as error:
-        return repr(error)
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
         return None
+    except OSError as error:
+        return None if error.errno in TRANSIENT_ERRNOS else repr(error)
     return ((result.stderr or result.stdout).strip() or f'exit {result.returncode}') if result.returncode > 0 else None
 
 def manifest():

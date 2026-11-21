@@ -941,6 +941,18 @@ class Wake(Harness):
         self.assertFalse((self.state.logs / "timings.jsonl").exists())
 
 
+class ToolchainChannel(unittest.TestCase):
+    def test_the_channel_is_read_and_a_file_that_cannot_be_read_names_none(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "rust-toolchain.toml"
+            path.write_text('[toolchain]\nchannel = "1.96.0"\n', encoding="utf-8")
+            self.assertEqual(bt.toolchain_channel(Path(folder)), "1.96.0")
+            path.write_text('[toolchain]\nchannel = "1.96.0"\n', encoding="utf-16")
+            self.assertEqual(bt.toolchain_channel(Path(folder)), "")
+            path.unlink()
+            self.assertEqual(bt.toolchain_channel(Path(folder)), "")
+
+
 class AtomicJson(unittest.TestCase):
     def test_a_replace_a_reader_blocks_for_a_moment_still_lands(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -992,6 +1004,8 @@ class RemoteToolchain(unittest.TestCase):
         self.assertEqual(self.probe("1.96.0", raises=subprocess.TimeoutExpired("cargo", 60)), (None, ["1.96.0"]))
         self.assertIn("FileNotFoundError", self.probe("1.96.0", raises=FileNotFoundError(2, "No such file", "cargo"))[0])
         self.assertIn("PermissionError", self.probe("1.96.0", raises=PermissionError(13, "Permission denied", "cargo"))[0])
+        self.assertIn("Exec format error", self.probe("1.96.0", raises=OSError(8, "Exec format error", "cargo"))[0])
+        self.assertEqual(self.probe("1.96.0", raises=OSError(12, "Cannot allocate memory")), (None, ["1.96.0"]))
         self.assertEqual(self.probe("1.96.0", -9), (None, ["1.96.0"]))
 
     def test_an_exec_reply_without_output_reads_as_empty(self):
