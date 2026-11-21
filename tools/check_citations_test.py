@@ -2,6 +2,9 @@
 
 import importlib.util
 import os
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +28,16 @@ class CandidateFiles(unittest.TestCase):
 
     def test_a_scan_that_matches_nothing_is_clean(self):
         self.assertEqual(list(cc.candidate_files(None, ['tools/no-such-file-for-this-test'])), [])
+
+    def test_untracked_files_are_scanned_whatever_their_names(self):
+        with tempfile.TemporaryDirectory() as folder:
+            subprocess.run(['git', 'init', '-q', folder], check=True)
+            os.chdir(folder)
+            names = ['untracked.md', 'caf\u00e9.md']
+            for name in names:
+                Path(folder, name).write_text('Offset only', encoding='utf-8')
+            self.assertEqual(sorted(cc.candidate_files(None, ['.'])), sorted(names))
+            os.chdir(self.cwd)
 
 
 if __name__ == '__main__':
