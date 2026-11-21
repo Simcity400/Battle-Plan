@@ -84,6 +84,13 @@ impl Header {
                 .filter(|&end| end <= image_size as usize)
                 .and_then(|_| copy(start, len))
         };
+        let directories = within(pe + 24 + 108, 4)
+            .map(|count| u32::from_le_bytes(count[..].try_into().unwrap()))
+            .ok_or("worker_sampler collector data directories unreadable")?;
+        let optional = u16::from_le_bytes(nt[20..22].try_into().unwrap()) as usize;
+        if directories < 7 || optional < 112 + 7 * 8 {
+            return Err("worker_sampler collector debug directory missing".into());
+        }
         let directory = within(pe + 24 + 112 + 6 * 8, 8)
             .ok_or("worker_sampler collector debug directory missing")?;
         let rva = u32::from_le_bytes(directory[..4].try_into().unwrap()) as usize;
