@@ -417,7 +417,7 @@ async function playbackInputs() {
     __e2e.endInputs = () => { observer.disconnect(); removeEventListener('scroll', scan, true);
       return { actions, visibility, to: performance.timeOrigin + performance.now() }; };
   })()`);
-  const mark = kind => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)})`);
+  const mark = (kind, notApplicable = null) => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)}, ${JSON.stringify(notApplicable)})`);
   const unsettled = `(() => {
     const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
     const visible = node => {
@@ -512,9 +512,10 @@ async function playbackInputs() {
   } else await mark('pin', 'no widget offers a pinnable time setting');
   await s.click('button.header-play[aria-label="Play"]');
   await mark('speed'); await setSpeed(168); await s.frames(5);
-  const selector = await s.app.evaluate(`(() => {
+  const candidates = await s.app.evaluate(`(() => {
     for (const node of document.querySelectorAll('[data-e2e-scroll]')) node.removeAttribute('data-e2e-scroll');
     const scrolls = node => node.scrollHeight - node.clientHeight - node.scrollTop > 2 && /(auto|scroll)/.test(getComputedStyle(node).overflowY);
+    let count = 0;
     for (const node of document.querySelectorAll('.dash-widget *')) {
       if (!scrolls(node)) continue;
       const box = node.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
@@ -522,18 +523,21 @@ async function playbackInputs() {
       let hit = document.elementFromPoint(x, y);
       while (hit && hit !== node && !scrolls(hit)) hit = hit.parentElement;
       if (hit !== node) continue;
-      node.setAttribute('data-e2e-scroll', 'true'); return '[data-e2e-scroll="true"]';
+      node.setAttribute('data-e2e-scroll', String(count++));
     }
-    return null;
+    return count;
   })()`);
-  if (selector) {
-    const target = selector;
+  if (candidates) {
     await mark('scroll');
-    const point = await s.need(target);
-    const before = await app.evaluate(`document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0`);
-    await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: 250 });
-    if (!await s.until(`(document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0) > ${before}`))
-      throw new Error('Playback scroll target did not move');
+    let scrolled = false;
+    for (let candidate = 0; candidate < candidates && !scrolled; candidate++) {
+      const target = `[data-e2e-scroll="${candidate}"]`;
+      const point = await s.need(target);
+      const before = await app.evaluate(`document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0`);
+      await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: 250 });
+      scrolled = await s.until(`(document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0) > ${before}`, 2_000);
+    }
+    if (!scrolled) throw new Error(`None of ${candidates} scrollable widget areas moved under the wheel`);
   } else await mark('scroll', 'nothing to scroll');
   await s.frames(5);
   await mark('pause'); await s.click('button.header-play[aria-label="Pause"]');
