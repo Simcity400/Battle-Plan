@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { colourOf, coloursIn, flagIn, forgetTimelines, heldFacts, heldStyles, heldTimeline, identitySince, stylesIn, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
+import { colourOf, coloursIn, flagIn, forgetTimelines, heldFacts, heldStyles, heldTimeline, identitySince, lookStarts, stylesIn, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
 import type { CountryTimeline } from './countryTimeline';
 import { answerHeld } from './countryNamesAt.ts';
 import { FactRequests, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
@@ -55,6 +55,14 @@ test('a held timeline answers every hour it holds, as country-styles would, and 
   assert.equal(heldStyles(client, source, undefined, 12, ['GER']), undefined);
   forgetTimelines(client, 'timeline');
   assert.equal(at(12, ['GER']), undefined, 'a forgotten timeline is read again');
+});
+
+test('a look runs from each hour it changes and ends where the timeline stops holding appearances, until it holds them again', () => {
+  const timeline = { reply: { known: [[0, 99], [120, 200]] }, runs: new Map([['GER', [[0], [50], [130]]]]) } as unknown as CountryTimeline;
+  assert.deepEqual(lookStarts(timeline, 'GER', 0, 150), [[0, true], [50, true], [100, false], [120, true], [130, true], [201, false]]);
+  assert.deepEqual(lookStarts(timeline, 'GER', 60, 150), [[60, true], [100, false], [120, true], [130, true], [201, false]], 'from the first hour asked');
+  assert.deepEqual(lookStarts(undefined, 'GER', 0, 150), [[150, true], [151, false]], 'the hour asked alone, no timeline held');
+  assert.deepEqual(lookStarts(timeline, 'ITA', 0, 150), [[150, true], [151, false]], 'a country the timeline does not hold');
 });
 
 test('a malformed country facts reply is refused', () => {

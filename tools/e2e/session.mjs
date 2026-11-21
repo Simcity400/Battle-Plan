@@ -228,6 +228,8 @@ export class Session {
     await this.app.evaluate(`document.querySelector('.dash-grid-scroll')?.scrollTo({ top: 0 })`);
   }
 
+  static CLOCK_HOUR = 'window.__perf.hour()';
+
   timeline() {
     return this.app.evaluate(`(() => { const r = document.querySelector('input.header-timeline'); if (!r) return null; const b = r.getBoundingClientRect();
       return { left: b.left, top: b.top, width: b.width, y: b.top + b.height / 2, min: Number(r.min), max: Number(r.max), value: Number(r.value) }; })()`);

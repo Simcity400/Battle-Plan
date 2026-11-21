@@ -1,4 +1,3 @@
-
 use dashboard_follow::{Answer, Follow, Message, Query, Rows, StepStats, answer_at, decode};
 use playhead::{
     Declared, Hook, Playhead, Report, Settings, Timeline,
@@ -16,8 +15,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "follow-bench <recording> [--run=N | --from=<game hour> --hours=N] --page=0|7|50|500 --select=<file> [--hook=on|off] [--flat] [--speed=1440] [--hz=60] \
+const USAGE: &str = "follow-bench <recording> [--run=N | --from=<game hour> --hours=N] --page=0|7|50|500 [--select=<file> | --occupied-states] [--hook=on|off] [--flat] [--speed=1440] [--hz=60] \
     [--step-threads=2] [--fetch-threads=1] [--seek=<frames>] [--seeks=20] [--seconds=S] [--check] [--service] [--log=<Table>] [--table]";
+
+const OCCUPATION_TABLES: [TableId; 10] = [
+    TableId::StateResistance,
+    TableId::States,
+    TableId::StateGarrisons,
+    TableId::GarrisonStrengths,
+    TableId::StateAssignedManpower,
+    TableId::StateOccupationLaws,
+    TableId::OccupationSettings,
+    TableId::LexicalTokens,
+    TableId::Countries,
+    TableId::CountryLinks,
+];
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -40,6 +52,7 @@ struct Options {
     service: bool,
     log: Option<String>,
     table: bool,
+    occupied_states: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -62,6 +75,7 @@ fn main() -> io::Result<()> {
         service: false,
         log: None,
         table: false,
+        occupied_states: false,
     };
     for option in rest {
         match option.as_str() {
@@ -69,6 +83,7 @@ fn main() -> io::Result<()> {
             "--check" => options.check = true,
             "--service" => options.service = true,
             "--table" => options.table = true,
+            "--occupied-states" => options.occupied_states = true,
             _ => {
                 let (name, value) = option.split_once('=').ok_or_else(|| invalid(USAGE))?;
                 let number = || value.parse::<f64>().map_err(|_| invalid(USAGE));
@@ -92,7 +107,7 @@ fn main() -> io::Result<()> {
             }
         }
     }
-    if options.select.is_empty() {
+    if options.select.is_empty() && !options.occupied_states {
         return Err(invalid(USAGE));
     }
     let span = match (options.run, options.from) {
@@ -103,17 +118,19 @@ fn main() -> io::Result<()> {
     };
     let opened = WorldPages::open(Path::new(recording), span)?;
     options.pieces = opened.pieces().to_vec();
-    let selection = read_selection(&opened, &options.select)?;
+    let selection = if options.occupied_states { occupied_selection(&opened)? } else { read_selection(&opened, &options.select)? };
     let pages: Arc<dyn Pages> = Arc::new(opened);
-    let mut page = match &options.log {
+    let mut page = if options.occupied_states {
+        occupied_page(&pages)?
+    } else { match &options.log {
         Some(name) => {
             let table = table_of(name)?;
             let kinds = pages.kinds(table).ok_or_else(|| invalid(format!("{name} is not in the schema")))?;
             vec![Query::Cells { table, columns: (0..kinds.len()).filter(|&column| numeric(kinds[column])).take(3).collect(), rows: Rows::Appended }]
         }
         None => page(options.page, &pages, options.pieces[0].first)?,
-    };
-    if options.table {
+    }};
+    if options.table && !options.occupied_states {
         page.push(Query::Cells { table: TableId::Countries.index(), columns: vec![dashboard_declare::field(TableId::Countries, "political_power_raw")?], rows: Rows::All });
     }
     let summary = play(&pages, selection, &page, &options)?;
@@ -143,6 +160,23 @@ fn read_selection(pages: &WorldPages, path: &str) -> io::Result<Vec<Declared>> {
         declared.push(Declared { table, columns: chosen, keyed: false, passing: false, hourly: false });
     }
     Ok(declared)
+}
+
+fn occupied_selection(pages: &WorldPages) -> io::Result<Vec<Declared>> {
+    OCCUPATION_TABLES.iter().map(|&table| {
+        let table = table.index();
+        let kinds = pages.kinds(table).ok_or_else(|| invalid(format!("{:?} is not in the schema", TableId::ALL[table])))?;
+        Ok(Declared { table, columns: (0..kinds.len()).collect(), keyed: false, passing: false, hourly: false })
+    }).collect()
+}
+
+fn occupied_page(pages: &Arc<dyn Pages>) -> io::Result<Vec<Query>> {
+    OCCUPATION_TABLES.iter().map(|&table| {
+        let index = table.index();
+        let kinds = pages.kinds(index).ok_or_else(|| invalid(format!("{table:?} is not in the schema")))?;
+        let columns = (0..kinds.len()).collect();
+        Ok(Query::Cells { table: index, columns, rows: Rows::All })
+    }).collect()
 }
 
 fn numeric(kind: Kind) -> bool {
@@ -222,6 +256,15 @@ fn percentiles(values: &mut [u64]) -> serde_json::Value {
     values.sort_unstable();
     let at = |q: f64| values[((values.len() - 1) as f64 * q).round() as usize];
     json!({ "n": values.len(), "p50": at(0.5), "p99": at(0.99), "worst": values[values.len() - 1] })
+}
+
+fn percentiles_ms(values: &mut [u64]) -> serde_json::Value {
+    if values.is_empty() {
+        return json!(null);
+    }
+    values.sort_unstable();
+    let at = |q: f64| values[((values.len() - 1) as f64 * q).round() as usize] as f64 / 1_000_000.0;
+    json!({ "n": values.len(), "p50": at(0.5), "p99": at(0.99), "worst": at(1.0) })
 }
 
 fn signed(values: &mut [i64]) -> serde_json::Value {
@@ -612,8 +655,23 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
         "push": { "offered": push_counters.offered, "written": push_counters.written, "superseded": push_counters.superseded, "merges": push_counters.merges,
             "unmerged": push_counters.unmerged, "most_queued": push_counters.most_queued, "bytes": push_counters.bytes, "byte_bound": dashboard_follow::lead::BYTES },
     }));
+    let occupied = options.occupied_states.then(|| {
+        let measured: Vec<&StepStats> = stats.iter().filter(|stat| !stat.reset && !stat.gap).collect();
+        let mut hook: Vec<u64> = measured.iter().map(|stat| stat.ns).collect();
+        let bytes: u64 = measured.iter().map(|stat| u64::from(stat.bytes)).sum();
+        let stands = measured.iter().filter(|stat| stat.sent == 0).count();
+        let data = measured.len().saturating_sub(stands);
+        json!({
+            "step_hook_ms": percentiles_ms(&mut hook),
+            "bytes_per_second": if wall > 0.0 { bytes as f64 / wall } else { 0.0 },
+            "stand_steps": stands,
+            "data_steps": data,
+            "declared_tables": OCCUPATION_TABLES.len(),
+            "full_rows": true,
+        })
+    });
     Ok(json!({
-        "page": page.len(), "hook": following, "flat": options.flat, "speed": settings.speed, "hz": settings.rate, "quantum": quantum,
+        "page": page.len(), "hook": following, "flat": options.flat, "occupied_states": options.occupied_states, "speed": settings.speed, "hz": settings.rate, "quantum": quantum,
         "step_threads": settings.step_threads, "fetch_threads": settings.fetch_threads, "wall_s": wall,
         "steps": steps.len(), "stalled_steps": stalled, "stalls": counters.stalls, "seeks": seeks.len(),
         "hook_ns": percentiles(&mut hook_ns), "hook_reset_ns": percentiles(&mut reset_ns),
@@ -631,6 +689,7 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
         "held_follow_peak": { "queries": follow_peak.queries, "sent": follow_peak.sent, "pending": follow_peak.pending, "queries_bytes": follow_peak.queries_bytes, "index": follow_peak.index, "total": follow_peak.total },
         "check": checked,
         "service": service,
+        "occupied": occupied,
     }))
 }
 

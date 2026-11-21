@@ -33,7 +33,7 @@ impl Reply {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Header {
     pub served_check: u32,
@@ -141,7 +141,7 @@ struct Served {
     tiles: Option<Tiles>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct Tiles {
     bin_hours: i64,
@@ -151,7 +151,7 @@ struct Tiles {
     each: Vec<TileTime>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct TileTime {
     index: i64,
@@ -216,7 +216,7 @@ fn chart(serve: &mut dyn FnMut(&str, &Value) -> Reply, params: &Value) -> Served
     Served { reply, seconds, storage, tiles: Some(tiles) }
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, PartialEq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     pub queries: usize,
@@ -231,7 +231,7 @@ pub struct Report {
 
 const SLOWEST: usize = 10;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Slow {
     pub product: String,
@@ -239,7 +239,7 @@ pub struct Slow {
     pub milliseconds: f64,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, PartialEq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tally {
     pub queries: usize,
@@ -258,7 +258,7 @@ pub struct Tally {
     milliseconds: Vec<f64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Mismatch {
     pub product: String,

@@ -57,7 +57,7 @@ fn aliases(frame: &DecodedFrame, ids: &[(&str, Option<(u32, u32)>)]) -> HashMap<
 
 pub struct DiplomaticRelations;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiplomaticRelationsParams {
@@ -79,7 +79,7 @@ pub struct OpinionOwner {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomaticRelationsReply {
@@ -257,7 +257,7 @@ pub fn run_pacts(recording: &Recording, run: u32) -> io::Result<RunPacts> {
 
 pub struct DiplomaticPacts;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiplomaticPactsParams {
@@ -299,7 +299,7 @@ pub struct DiplomacyPact {
     pub ended_by: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomacyPactsReply {

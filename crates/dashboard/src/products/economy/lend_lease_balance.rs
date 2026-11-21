@@ -19,7 +19,7 @@ pub const SCALE: u32 = 100_000;
 
 pub struct LendLeaseBalance;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LendLeaseBalanceParams {
@@ -40,7 +40,7 @@ pub struct LendLeaseRow {
     pub values: [String; 4],
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct LendLeaseBalanceReply {
@@ -169,11 +169,10 @@ impl AtHour for LendLeaseBalance {
         params.holder.as_ref()
     }
 
-    fn uses_sample(_table: TableId) -> bool { false }
 
     const CLOCK_DEPENDENT: bool = false;
 
-    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         (table == TableId::Countries).then(|| dashboard_base::products::at_hour::field_columns(table, &["canonical_slot", "tag"]))
     }
 

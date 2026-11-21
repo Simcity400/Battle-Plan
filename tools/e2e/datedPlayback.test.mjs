@@ -41,6 +41,18 @@ test('input checks carry visible pixels across a rewind, its next frames and a c
   assert.equal(inputPictures(frames, visibility, [...records, picture(4, 70), picture(5, 80)]).future, 1);
 });
 
+test('an input applies once every drawing lane has presented its seek, not the first', () => {
+  const tick = (at, seek, hour) => ({ t: 'tick', at, hour, playing: false, seek });
+  const frame = (at, lane, seek, head) => ({ t: 'workerFrame', at, lane, seek, head, playing: false });
+  const picture = (at, seek, hour) => ({ t: 'picture', at, placement: 12, seek, hour, since: hour, through: hour });
+  const shown = [{ at: 0, shown: [[12, null, 'w']] }];
+  const records = [tick(0, 1, 100), frame(0, 0, 1, 100), frame(0, 1, 1, 100), picture(0, 1, 100),
+    tick(10, 2, 200), frame(11, 0, 2, 200), frame(16, 1, 2, 200), picture(16, 2, 200)];
+  const checked = inputPictures([0, 12, 20], shown, records);
+  assert.equal(checked.wrongSeek, 0, 'the old picture on the lane that has not yet applied is not judged');
+  assert.equal(checked.pass, true);
+});
+
 test('input marks judge a scrub from the start of its drag and a pin after it applies', () => {
   const tick = { t: 'tick', at: 0, hour: 100, playing: false, seek: 2 };
   const picture = { t: 'picture', at: 15, placement: 1, hour: 80, since: 80, through: 80, seek: 2, fixedHour: 80 };
@@ -193,6 +205,10 @@ test('Research requires five visible dated widgets, a full playing window and sa
     actions: window.inputs.actions.map(action => action.kind === 'pin' ? { kind: 'pin', at: action.at } : action) } }), false,
     'a pin action without a pin widget is missing coverage');
   assert.equal(verdict([...records, ...records.filter(r => r.t === 'workerFrame')]), false, 'double presentation exceeds the 60 FPS cap');
+  assert.equal(verdict([...records, ...records.filter(r => r.t === 'workerFrame').map(r => ({ ...r, lane: 1 }))]), true,
+    'each drawing lane presents at 60 FPS of its own');
+  assert.equal(verdict([...records, ...records.filter(r => r.t === 'workerFrame').filter((_, at) => at % 2 === 0).map(r => ({ ...r, lane: 1 }))]), false,
+    'a lane presenting fewer frames fails the cap');
   const frames = records.map(r => r.t === 'frame' ? { ...r, commits: r.at === 0 ? 1 : 0, commitSequence: 1 } : r);
   assert.equal(verdict([...frames, { t: 'commit', serial: 1, at: -1, widgets: [], changes: [] }]), true,
     'a commit completed before playback falls outside the window even when counted by its first page frame');

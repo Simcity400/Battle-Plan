@@ -4,7 +4,7 @@ use std::{io, path::Path, time::UNIX_EPOCH};
 
 pub const MAX_MESSAGE_BYTES: usize = crate::transport::MAX_REPLY_BYTES;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeCommand {
     MapAction {
@@ -41,7 +41,7 @@ pub enum NativeCommand {
     Close,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeEvent {
     MapDetails {
@@ -131,7 +131,7 @@ pub const MAP_UI_SCALE_CHOICES: [u32; 11] = [50, 75, 90, 100, 110, 125, 150, 175
 
 pub const MAP_FRAME_LIMIT_RANGE: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum MapAction {
     Unload {
@@ -472,7 +472,7 @@ impl Default for MapOptions {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapDetails {
     pub content_ready: bool,

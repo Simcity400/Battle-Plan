@@ -21,7 +21,7 @@ use std::{
 use ts_rs::TS;
 
 pub struct Wargoals;
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WargoalsParams {
@@ -34,7 +34,7 @@ struct WargoalsAsk {
     tag: String,
     country: Country,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalEntry {
@@ -48,7 +48,7 @@ pub struct WargoalEntry {
     pub liberate: Vec<String>,
     pub puppets: Vec<String>,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalJustification {
@@ -66,7 +66,7 @@ pub struct WargoalJustification {
     pub completion: i32,
     pub paused: Option<bool>,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalStateName {
@@ -74,7 +74,7 @@ pub struct WargoalStateName {
     pub name: String,
     pub known: bool,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalPair {
@@ -90,7 +90,7 @@ pub enum WargoalStanding {
     AtWar,
     SameFaction,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct WargoalsReply {

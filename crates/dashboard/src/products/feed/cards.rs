@@ -72,7 +72,7 @@ pub struct ScriptCost {
     pub amount: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptEdge {
@@ -87,7 +87,7 @@ pub struct ScriptEdge {
     pub costs: Option<Vec<ScriptCost>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptOccurrence {
@@ -98,7 +98,7 @@ pub struct ScriptOccurrence {
     pub edges: Vec<ScriptEdge>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptPageRow {
@@ -115,7 +115,7 @@ pub struct ScriptPageRow {
     pub occurrence: Option<ScriptOccurrence>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScriptOccurrencePage {

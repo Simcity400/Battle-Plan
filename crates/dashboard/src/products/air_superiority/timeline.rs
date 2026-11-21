@@ -37,7 +37,7 @@ const SERIES: &str = "air-scores";
 const TOP: usize = 10;
 pub const TILE_DAYS: i32 = 256;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AirTimelineParams {
@@ -137,7 +137,7 @@ pub struct AirTimelineRow {
     pub cells: Vec<(u32, Option<AirDayCell>)>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirTimelineReply {
@@ -889,7 +889,7 @@ impl Product for AirSuperiorityTimeline {
 
 pub struct AirSuperiorityRanking;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AirRankingReply {

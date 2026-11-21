@@ -340,7 +340,8 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
           } else if (input.type === 'preparedQuery') {
             command = preparedQueryCommand(input);
           } else if (input.type === 'product') {
-            command = { type: 'product', request: input.request };
+            const { sourceId, revision, product, params } = input.request ?? {};
+            command = { type: 'product', request: { sourceId, revision, product, params } };
           } else throw new Error('Unknown recording operation');
           response.end(JSON.stringify(await send(command, controller.signal)));
         } catch (error) {

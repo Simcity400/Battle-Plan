@@ -1760,6 +1760,25 @@ impl Strings {
         self.held.get(&id).or_else(|| self.pinned.get(&id)).map(|text| &**text)
     }
 
+    pub fn hold(&mut self, id: u32, text: &[u8]) {
+        if self.held.get(&id).is_some_and(|held| **held == *text) {
+            return;
+        }
+        self.bytes += text.len();
+        if let Some(old) = self.held.insert(id, text.into()) {
+            self.bytes -= old.len();
+        }
+        self.by_text = None;
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &[u8])> {
+        self.held.iter().chain(&self.pinned).map(|(&id, text)| (id, &**text))
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.held_bytes()
+    }
+
     pub fn pin(&mut self, id: u32, text: &[u8]) -> io::Result<()> {
         if id < self.next {
             return Err(invalid(format!("A writer's string {id} is among the appends")));

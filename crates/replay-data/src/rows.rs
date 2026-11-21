@@ -1457,6 +1457,14 @@ impl RowChanges {
         Self { rows, deleted }
     }
 
+    pub fn rows(&self) -> &TableRows {
+        &self.rows
+    }
+
+    pub fn deleted(&self) -> &[u128] {
+        &self.deleted
+    }
+
     pub fn heap_bytes(&self) -> usize {
         self.rows.heap_bytes() + self.deleted.capacity() * size_of::<u128>()
     }

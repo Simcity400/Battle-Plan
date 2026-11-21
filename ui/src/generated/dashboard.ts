@@ -3498,7 +3498,7 @@ family: ScoreboardFamily | null,
 /**
  * The declared measure whose nonzero value marks its value a partial subtotal.
  */
-partial: ScoreboardFamily | null, };
+partial: ScoreboardFamily | null, noneAtZero: boolean, };
 export type ScoreboardColumnKey = "factories" | "armySize" | "territory" | "casualties" | "casualtiesDealt" | "casualtiesTaken" | "planes" | "ships" | "factoriesBuilt" | "factoriesTopbar" | "equipmentProduced" | "politicalPower" | "commandPower" | "stability" | "warSupport" | "nukes";
 export type ScoreboardFamily = { kind: string, measure: string, };
 export type ScoreboardParams = { branchId: string, hour: number, columns: Array<ScoreboardColumnKey>,

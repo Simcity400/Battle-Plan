@@ -24,9 +24,9 @@ export type { CountryLabel } from './countryLabelData';
 import type { CountryLabel, CountryLabelValue } from './countryLabelData';
 
 export function useCountryLabelsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  maxHours = Infinity) {
-  const names = useCountryNamesAt(client, track, wanted, active, maxHours);
-  const flags = useCountryFlagsRead(client, track, wanted, active);
+  maxHours = Infinity, exact = false) {
+  const names = useCountryNamesAt(client, track, wanted, active, maxHours, 0, exact);
+  const flags = useCountryFlagsRead(client, track, wanted, active, 'panel', exact);
   const first = track?.branch.firstHour, last = track?.branch.lastHour;
   const index = useMemo(() => new CountryLabelIndex(active && first !== undefined && last !== undefined ? [first, last] : null),
     [client, track?.source?.id, track?.source?.revision, track?.branch.id, active, first, last]);
@@ -52,5 +52,5 @@ export function useCountryLabelsAt(client: DashboardClient, track: Pick<BoundTra
   }, [read, known]);
   const version = useRef({ labelAt, revision: 0 });
   if (version.current.labelAt !== labelAt) version.current = { labelAt, revision: version.current.revision + 1 };
-  return { labelAt, revision: version.current.revision };
+  return { labelAt, exactAt: read, revision: version.current.revision };
 }

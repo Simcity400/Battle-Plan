@@ -20,7 +20,8 @@ export const CAPTURE = `(() => {
   const lines = [];
   let cursor = 0;
   const timeline = () => document.querySelector('input.header-timeline');
-  const head = () => { const input = timeline(); return input && input.value !== '' ? Number(input.value) : null; };
+  // The published clock while playing (the slider follows only anchors), the slider's value where no measured clock is.
+  const head = () => { const hour = window.__perf?.hour(); if (hour != null) return hour; const input = timeline(); return input && input.value !== '' ? Number(input.value) : null; };
   const text = new TextDecoder();
   const COMMANDS = { dashboard_product: 'product', dashboard_open_source: 'open' };
   const fetched = window.fetch;

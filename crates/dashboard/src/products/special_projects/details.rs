@@ -37,7 +37,7 @@ const COMPLETION_MARKER: u32 = super::fold::COMPLETION_MARKER;
 pub struct SpecialProjectDetailsAt;
 pub struct SpecialProjectEffectsAt;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecialProjectDetailsParams {
@@ -45,7 +45,7 @@ pub struct SpecialProjectDetailsParams {
     pub country: Country,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecialProjectEffectsParams {
@@ -178,7 +178,7 @@ pub struct ProjectRuntimeDetails {
     pub choices: Option<Vec<ProjectChoice>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectDetails {
@@ -205,7 +205,7 @@ pub struct ProjectEffects {
     pub refusals: BTreeMap<String, usize>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectEffects {
@@ -490,9 +490,8 @@ impl AtHour for SpecialProjectDetailsAt {
         Some(&params.country)
     }
 
-    fn uses_sample(_table: TableId) -> bool { false }
 
-    fn projection(_params: &Self::Params, table: TableId) -> Option<Vec<usize>> {
+    fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         (table == TableId::Projects).then(|| dashboard_base::products::at_hour::field_columns(table, &["definition_id", "runtime"]))
     }
 

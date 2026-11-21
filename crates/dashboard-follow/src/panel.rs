@@ -22,13 +22,13 @@ pub struct ProductRead {
     pub value: Arc<PanelData>,
     pub rows: u64,
     pub encoded: Option<Arc<[u8]>>,
-    pub through: Hour,
+    pub live: Option<Arc<Live>>,
+    pub lanes: Vec<Declared>,
 }
 
 pub type ProductReader = Arc<dyn Fn(Hour, bool, &std::sync::atomic::AtomicBool, Option<ProductStep<'_>>) -> ProductRead + Send + Sync>;
 
 pub struct AtHour {
-    pub declared: Vec<Declared>,
     pub advance: ProductReader,
     pub cold: ExactReader,
     pub read: ExactReader,

@@ -1,6 +1,6 @@
 ﻿import assert from 'node:assert/strict';
 import test from 'node:test';
-import { allWidgetPages, FIXTURE, LEGIBLE, LEGIBLE_ROWS, SCREEN, VIEWS, legible, pack, screenMetrics, tallViewportHeight, tightest } from './allWidgets.mjs';
+import { allWidgetPages, FIXTURE, LEGIBLE, LEGIBLE_ROWS, REBUILT, REBUILT_ALONE, REBUILT_KINDS, SCREEN, VIEWS, legible, pack, screenMetrics, tallViewportHeight, tightest } from './allWidgets.mjs';
 
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 const resting = (item, all) => item.y === 0 || all.some(other => other !== item && other.y + other.h === item.y && other.x < item.x + item.w && item.x < other.x + other.w);
@@ -66,7 +66,7 @@ test('the fixture pages hold every widget the app offers once, at its minimum or
   const saved = new Map(entries);
   const read = { getItem: key => saved.get(key) ?? null, setItem: () => { throw new Error('read only'); } };
   const listed = pages.loadPages(read);
-  assert.deepEqual(listed.map(entry => entry.id), [...pages.PAGES.map(entry => entry.id), built[FIXTURE].id, built[LEGIBLE].id], 'the built-in pages stay');
+  assert.deepEqual(listed.map(entry => entry.id), [...pages.PAGES.map(entry => entry.id), built[FIXTURE].id, built[LEGIBLE].id, built[REBUILT].id, built[REBUILT_ALONE].id], 'the built-in pages stay');
   for (const [view, { page }] of Object.entries(VIEWS)) assert.ok(built[page], `${view} plays a page the fixture builds`);
   for (const [label, sizeOf] of [[FIXTURE, meta => meta.minSize], [LEGIBLE, meta => meta.defaultSize]]) {
     const page = built[label];
@@ -89,6 +89,16 @@ test('the fixture pages hold every widget the app offers once, at its minimum or
     }
     assert.equal(page.rows, Math.max(...lg.map(item => item.y + item.h)));
   }
+  const rebuilt = built[REBUILT], rebuiltLayout = storage.loadLayouts(read, rebuilt.id);
+  assert.equal(rebuiltLayout.warning, null, 'the rebuilt page restores whole');
+  assert.equal(rebuilt.widgets.length, widgetMetas.length);
+  assert.deepEqual([...new Set(rebuilt.widgets.map(widget => widget.kind))].sort(), [...REBUILT_KINDS].sort());
+  assert.equal(new Set(rebuilt.widgets.map(widget => widget.id)).size, rebuilt.widgets.length, 'each copy its own widget');
+  const rebuiltFit = screenMetrics(rebuilt.rows * 32);
+  assert.deepEqual([rebuiltFit.width * rebuiltFit.deviceScaleFactor, rebuiltFit.height * rebuiltFit.deviceScaleFactor].map(Math.round), [SCREEN.width, SCREEN.height]);
+  const alone = built[REBUILT_ALONE];
+  assert.equal(storage.loadLayouts(read, alone.id).warning, null, 'the page of each rebuilt widget alone restores whole');
+  assert.deepEqual(alone.widgets.map(widget => widget.kind).sort(), [...REBUILT_KINDS].sort(), 'each rebuilt widget once');
   const minimum = built[FIXTURE];
   assert.equal(minimum.inView, minimum.widgets.length);
   assert.ok(minimum.rows <= Math.ceil(widgetMetas.reduce((sum, meta) => sum + meta.minSize.w * meta.minSize.h, 0) / 12) + 8, `${minimum.rows} rows`);

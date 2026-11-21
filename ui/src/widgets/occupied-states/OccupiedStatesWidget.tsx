@@ -1,137 +1,157 @@
-import { nameReadText } from '../../dashboard/nameReads.ts';
-import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles.ts';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
-import Table, { CountryCell } from '../../charts/table/Table';
-import type { TableColumn } from '../../charts/table/Table';
-import { narrowTableOf, tableSortOf } from '../../charts/table/options';
-import { jumpItem } from '../../charts/jump';
 import { countryNameDetails, fitTooltip } from '../../charts/tooltip.ts';
+import { hideTooltip, showTooltip } from '../../charts/tooltip.ts';
+import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { formatDateTime } from '../../dashboard/calendar.ts';
+import { readingValues, type TableReading } from '../../draw/tables/surface.ts';
+import { useContextMenu } from '../../components/ContextMenu';
+import { jumpItem } from '../../charts/jump';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
-import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
+import { useCountryLooks } from '../../dashboard/countryLooks';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt } from '../../dashboard/groups';
-import { useChoiceHour } from '../../dashboard/atHead';
 import { useHeadProduct } from '../../dashboard/headProduct';
-import { usePushedLooksHour } from '../../dashboard/pushedLooks';
-import { reporting } from '../../dashboard/follow/liveCells.ts';
+import { useHeldTimeline } from '../../dashboard/countryNamesAt';
+import { useContentRevision } from '../../dashboard/contentRevision';
+import { lookStarts } from '../../dashboard/countryTimeline';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackMotion } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf.ts';
-import { DEFAULT_SORT, OPTIONS } from './definition';
-import { STRENGTH, garrisonBar, garrisonCell, garrisonText, garrisonTone, occupationTooltip, occupiedRows, percentCell, stateName, validateOccupiedStates } from './occupiedStatesData.ts';
-import type { OccupiedRow } from './occupiedStatesData';
+import { OPTIONS } from './definition';
+import { emptyReason, occupationTooltip, occupiedRows, occupiedStructure, validateOccupiedStates, type CountryRole, type OccupiedDetail } from './occupiedStatesData.ts';
+import { lookAt } from '../../draw/tables/looks.ts';
+import type { OccupiedFilter } from './occupiedTable';
+import OccupiedTableSurface from './OccupiedTableSurface.tsx';
 import './occupiedStates.css';
 
 const NO_WARNINGS: string[] = [];
-const NO_ROWS: readonly OccupiedRow[] = [];
+const NO_TAGS: readonly string[] = [];
 const PARAMS = {} as const;
-const rowKey = (row: OccupiedRow) => row.key;
-const painted = (value: unknown) => percentCell(BigInt(Math.trunc(value as number)).toString());
-const countriesOf = (rows: readonly OccupiedRow[]) => [...new Set(rows.flatMap(row => [row.value.owner, row.value.occupier, row.value.occupied]
-  .filter((tag): tag is string => tag !== null)))].sort().join(',');
+const EVERY_COUNTRY: OccupiedFilter = { passing: null, unrecorded: [], bounds: [] };
+const filters = new WeakMap<object, Map<string, OccupiedFilter>>();
 
-export default function OccupiedStatesWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const hoursPerSecond = usePlaybackMotion(runtime.clock);
+function filterTimeline(tags: readonly string[], matches: (tag: string, hour: number) => boolean, unrecordedAt: (hour: number) => string | null,
+  changes: readonly number[], first: number, last: number): OccupiedFilter {
+  const bounds = [...new Set([first, ...changes.filter(at => at > first && at <= last), last + 1])].sort((a, b) => a - b);
+  const passing: Record<string, [number, number][]> = {}, unrecorded: [number, number, string][] = [];
+  for (let at = 0; at + 1 < bounds.length; at++) {
+    const from = bounds[at]!, to = bounds[at + 1]! - 1;
+    for (const tag of tags) if (matches(tag, from)) {
+      const ranges = passing[tag] ??= [], previous = ranges.at(-1);
+      if (previous && previous[1] === from - 1) previous[1] = to; else ranges.push([from, to]);
+    }
+    const reason = unrecordedAt(from), previous = unrecorded.at(-1);
+    if (reason !== null) { if (previous && previous[1] === from - 1 && previous[2] === reason) previous[1] = to; else unrecorded.push([from, to, reason]); }
+  }
+  return { passing, unrecorded, bounds };
+}
+
+export default function OccupiedStatesWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const viewportHeight = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
-  const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
-  const role = options.countryRole === 'occupied' ? 'occupied' : 'occupier';
-  const head = useHeadProduct(runtime, widget, 'occupied-states', track ? PARAMS : null, { active, validate: validateOccupiedStates });
+  const role: CountryRole = options.countryRole === 'occupied' ? 'occupied' : 'occupier';
+  const head = useHeadProduct(runtime, widget, 'occupied-states', track ? PARAMS : null, { active, validate: validateOccupiedStates,
+    structure: occupiedStructure });
   const data = head.data;
-  const live = head.live;
   const shown = useShownHour();
   const shownAt = useRef(head.shownAt);
   shownAt.current = head.shownAt;
-  const tableLive = useMemo(() => reporting(live, () => shown(shownAt.current())), [live, shown]);
   useEffect(() => { if (head.data) shown(shownAt.current()); });
   const hour = head.at ?? track?.branch.lastHour ?? 0;
-  const needsGroups = widget.countries.kind !== 'all';
-  const groups = useCountryGroups(runtime, track, active && needsGroups);
+  const groups = useCountryGroups(runtime, track, active);
+  const tagsText = useMemo(() => (groups.data?.countryIdentities ?? []).map(history => history.tag).sort().join(','), [groups.data]);
+  const tags = useMemo(() => tagsText ? tagsText.split(',') : NO_TAGS, [tagsText]);
+  const named = tags;
   const selected = selectedCountryKeys(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   const fallback = useMemo(() => selected, [selectedKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
     [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
-  const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches), head.live.subscribe);
-  const view = useMemo(() => data && match.ready && !match.reason
-    ? occupiedRows(data, widget.countries.kind === 'all' ? null : tag => match.matches(tag, choiceAt), role, membershipUnrecordedAt(widget.countries, groups.data, choiceAt)) : null,
-  [data, match, widget.countries, groups.data, choiceAt, role]);
-  const rows = view?.rows ?? NO_ROWS;
-  const [drawn, setDrawn] = useState('');
-  const onVisibleRows = useCallback((shownRows: readonly OccupiedRow[]) => setDrawn(countriesOf(shownRows)), [setDrawn]);
-  const tagsKey = useMemo(() => countriesOf(rows), [rows]);
-  const stableTags = useMemo(() => tagsKey ? tagsKey.split(',') : [], [tagsKey]);
-  const namesHour = usePushedLooksHour(runtime, widget, track, stableTags, head.read === 'followed', hour).hour;
-  const wanted = useMemo(() => drawn ? drawn.split(',').map(tag => ({ hour: namesHour, tag })) : [], [drawn, namesHour]);
-  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  const sortingNames = useMemo(() => sort.column === 'owner' || sort.column === 'occupier'
-    ? rows.flatMap(row => row.value[sort.column as 'owner' | 'occupier'] === null ? [] : [{ hour: namesHour, tag: row.value[sort.column as 'owner' | 'occupier']! }]) : [],
-  [rows, sort.column, namesHour]);
-  const names = useCountryNamesAt(runtime.client, track, sortingNames, active);
-  const laws = useMemo(() => new Map((data?.laws ?? []).map(law => [law.token, law])), [data]);
-  const redRaw = data?.garrisonRedRaw ?? null;
-  const columns = useMemo<readonly TableColumn<OccupiedRow>[]>(() => {
-    const label = labelAt(namesHour);
-    const country = (field: 'owner' | 'occupier', title: string, priority?: number): TableColumn<OccupiedRow> => ({ key: field, header: title, label: title, renderMissing: true,
-      width: 'minmax(150px, 1fr)', priority,
-      value: row => { const tag = row.value[field]; return tag === null ? null : nameReadText(names.get(nameKey(namesHour, tag))); },
-      text: row => { const tag = row.value[field]; return tag === null ? null : label(tag).name; },
-      render: row => { const tag = row.value[field]; return tag === null ? 'Unknown' : <CountryCell {...label(tag)} />; } });
-    const lawName = (row: OccupiedRow) => row.value.law === null ? row.value.lawMissing ?? 'Not recorded'
-      : contentTitle(laws.get(row.value.law)?.name, row.value.law, 'Occupation law name unavailable');
-    return [
-      { key: 'state', header: 'State', label: 'State', renderMissing: true, width: 'minmax(160px, 1.2fr)', value: row => row.value.name ?? null, render: stateName },
-      country('owner', 'Owner', 1), country('occupier', 'Occupier'),
-      { key: 'resistance', header: 'Resistance', label: 'Resistance', numeric: true, bar: 10000000, width: '150px', value: () => null, paint: painted },
-      { key: 'compliance', header: 'Compliance', label: 'Compliance', numeric: true, bar: 10000000, width: '150px', priority: 2, value: () => null, paint: painted },
-      { key: 'garrison', header: 'Garrison', label: 'Garrison', numeric: true, width: '175px', priority: 3, bar: 100000n, value: () => null,
-        paint: value => garrisonText(value as number), missingText: () => '-',
-        barOf: row => garrisonCell(row.value).bar, barCell: { id: STRENGTH, value: garrisonBar, tone: garrisonTone(redRaw) },
-        cellClass: row => garrisonCell(row.value).red ? 'occupation-garrison-alert' : undefined },
-      { key: 'law', header: 'Occupation law', label: 'Occupation law', renderMissing: true, width: 'minmax(200px, 1.2fr)', priority: 4,
-        text: lawName, value: row => row.value.law === null ? null : lawName(row),
-        render: row => { const token = row.value.law; const law = token === null ? undefined : laws.get(token);
-          return <span className="occupation-law" data-tooltip={token === null ? row.value.lawMissing ?? undefined : contentTitleHint(token, law?.missing)}>
-            {law?.icon ? <img src={law.icon} alt="" /> : null}<span>{lawName(row)}</span></span>; } },
-    ];
-  }, [names, labelAt, laws, redRaw, namesHour]);
-  const tooltip = useCallback((row: OccupiedRow) => {
-    const label = labelAt(namesHour);
-    const content = occupationTooltip(row, live.read(), tag => label(tag).name, data?.strengthMissing ?? '');
-    return fitTooltip([{ ...content, ...countryNameDetails(row.value.occupied === null ? null : label(row.value.occupied)) }], viewportHeight);
-  }, [labelAt, namesHour, live, data?.strengthMissing, viewportHeight]);
+  const first = track?.branch.firstHour, last = track?.branch.lastHour;
+  const filter = useMemo<OccupiedFilter>(() => {
+    if (widget.countries.kind === 'all' || !match.ready || !groups.data || first === undefined || last === undefined) return EVERY_COUNTRY;
+    const key = JSON.stringify([widget.countries, fallback, first, last]);
+    let held = filters.get(groups.data);
+    if (!held) filters.set(groups.data, held = new Map());
+    let made = held.get(key);
+    if (!made) held.set(key, made = filterTimeline(tags, match.matches, at => membershipUnrecordedAt(widget.countries, groups.data, at),
+      countryMatchChangeHours(match.matches) ?? [], first, last));
+    return made;
+  }, [widget.countries, match, groups.data, fallback, tags, first, last]);
+  const timeline = useHeldTimeline(runtime.client, track, useContentRevision(runtime.client, active), active);
+  const startsText = JSON.stringify(named.map(tag => [tag, lookStarts(timeline, tag, first ?? hour, hour)]));
+  const starts = useMemo(() => JSON.parse(startsText) as [string, [number, boolean][]][], [startsText]);
+  const wanted = useMemo(() => starts.flatMap(([tag, hours]) => hours.flatMap(([at, held]) => held ? [{ hour: at, tag }] : [])), [starts]);
+  const { labelAt, exactAt } = useCountryLabelsAt(runtime.client, track, wanted, active, Infinity, true);
+  const labelsText = JSON.stringify(starts.map(([tag, hours]) => [tag, hours.map(([at, held]) => {
+    const look = held ? exactAt(at)(tag) : undefined;
+    return [at, look?.known ? look.name : null, look?.flag ?? null, look && !look.known ? look.name : null];
+  })]));
+  const labels = useMemo(() => Object.fromEntries((JSON.parse(labelsText) as [string, [number, string | null, string | null, string | null][]][])
+    .map(([tag, runs]) => [tag, runs.map(([from, name, flag, status]) => ({ from, name, flag: flag ?? undefined, status: status ?? undefined }))])), [labelsText]);
+  const label = labelAt(hour);
+  const looks = useCountryLooks(runtime.client, track, named, hour, active);
+  const countryColours = useMemo(() => new Map(named.flatMap(tag => {
+    const colour = looks.color(tag, hour);
+    return colour ? [[tag, `rgb(${colour[0]}, ${colour[1]}, ${colour[2]})`] as const] : [];
+  })), [named, looks, hour]);
+  const context = useMemo(() => ({ filter, role, labels }), [filter, role, labels]);
+  const exactRead = head.exactRead;
+  const exactRows = exactRead && match.ready && !match.reason ? async (at: number) => {
+    const reply = validateOccupiedStates(await exactRead(at));
+    const exact = occupiedRows(reply, widget.countries.kind === 'all' ? null : tag => match.matches(tag, at), role, membershipUnrecordedAt(widget.countries, groups.data, at));
+    return emptyReason(reply, exact) ? ['empty:notice'] : exact.rows.map(row => row.key);
+  } : undefined;
+  const tooltip = (key: string, drawn: TableReading) => {
+    const detail = drawn.detail as OccupiedDetail | undefined;
+    if (!detail) return null;
+    const { value, law } = detail, at = Math.floor(drawn.hour), values = readingValues(drawn);
+    const lookOf = (tag: string) => {
+      const runs = labels[tag], look = lookAt(runs, at), held = label(tag);
+      return runs ? { ...held, name: look?.name ?? look?.status ?? 'Country name unavailable', flag: look?.flag } : held;
+    };
+    const numbers = { get: (at: string) => { const read = values.get(at); return typeof read === 'number' || typeof read === 'bigint' ? Number(read) : undefined; },
+      missing: values.missing };
+    const content = occupationTooltip({ key, state: value.state, value }, numbers, tag => lookOf(tag).name, detail.strengthMissing,
+      token => contentTitle(law?.token === token ? law.name : undefined, token, 'Occupation law name unavailable'));
+    return fitTooltip([{ ...content, subtitle: formatDateTime(at), ...countryNameDetails(value.occupied === null ? null : lookOf(value.occupied)) }], viewportHeight);
+  };
+  const tooltipOwner = `occupied-table:${widget.id}`;
+  useEffect(() => () => hideTooltip(tooltipOwner), [tooltipOwner]);
   const warnings = data?.warnings ?? NO_WARNINGS;
-  useWhyCommit('OccupiedStatesWidget', { data, at: head.at, read: head.read, drawn, namesHour, labels: labelAt, names, groups: groups.data });
-  useEffect(() => {
-    onDiagnostics(warnings);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [warnings, onDiagnostics]);
+  const contextMenu = useContextMenu('Occupied states actions');
+  useWhyCommit('OccupiedStatesWidget', { data, at: head.at, read: head.read, filter, labels, groups: groups.data });
+  useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
 
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign to see occupied states." />;
   else if (head.read === 'off') body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (head.error && !data) body = <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
+  else if (groups.error && !groups.data) body = <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
-  else if (!data || !match.ready || !view) body = <WidgetState kind="loading" label="Loading occupied states…" />;
-  else if (data.missing !== null) body = <WidgetState kind="unavailable" message={`Occupied states weren’t recorded at this time: ${data.missing}`} />;
-  else if (!rows.length && view.membership) body = <WidgetState kind="unavailable" message={view.membership} />;
-  else if (!rows.length && view.selectionUnknown) body = <WidgetState kind="unavailable" message="Occupied states unavailable for these countries." />;
-  else if (!rows.length) body = <WidgetState kind={data.complete ? 'empty' : 'unavailable'} message={data.complete ? 'No occupied states match these countries at this moment.' : 'Some occupied states are missing.'} />;
+  else if (!data || !match.ready || !groups.data) body = <WidgetState kind="loading" label="Loading occupied states…" />;
   else body = <>
-    {!data.complete && <p className="occupation-note">Some occupied states are missing.</p>}
-    {view.selectionUnknown && <p className="occupation-note">Some states couldn’t be matched to these countries.</p>}
-    <Table rowRevision={row => [row.value, columns]} key={`${track.source.id}:${track.branch.id}`} label="Occupied states" rows={rows} rowKey={rowKey} columns={columns} sort={sort}
-      setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
-      narrow={narrowTableOf(options)} menu={() => [jumpItem(runtime, track.id, hour)]} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} live={tableLive} />
+    {data.missing === null && !data.complete && <p className="occupation-note">Some occupied states are missing.</p>}
+    {data.missing === null && data.states.some(state => state[role] === null) && widget.countries.kind !== 'all'
+      && <p className="occupation-note">Some states couldn’t be matched to these countries.</p>}
+    <OccupiedTableSurface widget={widget} runtime={runtime} clock={runtime.clock} data={data} context={context} follow={head.workerFollow} shownAt={head.at ?? hour}
+      live={head.live} countryColours={countryColours} onHover={(key, at, drawn) => {
+        const content = key !== null && at && drawn ? tooltip(key, drawn) : null;
+        if (content && at) showTooltip(tooltipOwner, content, at.x, at.y, key!); else hideTooltip(tooltipOwner);
+      }} setOption={setOption} exactRows={exactRows} headerSlot={headerSlot}
+      fixed={widget.time.mode === 'follow' || head.hour === null ? undefined : head.hour - (track?.axisOffset ?? 0)} />
   </>;
-  return <div className="occupied-states" ref={head.root}>
-    {needsGroups && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
+  return <div className="occupied-states" ref={head.root} onContextMenu={event => {
+    if (!track) return;
+    event.preventDefault();
+    contextMenu.open(event.clientX, event.clientY, [jumpItem(runtime, track.id, hour)]);
+  }}>
+    {groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}
     {body}
+    {contextMenu.menu}
   </div>;
 }

@@ -216,7 +216,7 @@ fn push_run<T>(runs: &mut Vec<T>, run: T, joins: impl Fn(&mut T, &T) -> bool) {
 
 pub struct CasualtyPairs;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CasualtyPairsParams {
@@ -253,7 +253,7 @@ pub struct CasualtyPairSeries {
     pub runs: Vec<CasualtyPairRun>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyPairsReply {
@@ -549,7 +549,7 @@ impl Product for CasualtyPairs {
 
 pub struct CasualtyBreakdown;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CasualtyBreakdownParams {
@@ -599,7 +599,7 @@ pub struct CasualtyBreakdownCountryRun {
     pub incomplete: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyWarName {
@@ -609,7 +609,7 @@ pub struct CasualtyWarName {
     pub key: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyWarNameRun {
@@ -618,7 +618,7 @@ pub struct CasualtyWarNameRun {
     pub name: CasualtyWarName,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyBreakdownWar {
@@ -630,7 +630,7 @@ pub struct CasualtyBreakdownWar {
     pub names: Vec<CasualtyWarNameRun>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyBreakdownReply {
@@ -865,7 +865,7 @@ impl Product for CasualtyBreakdown {
 
 pub struct CasualtyLabels;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CasualtyLabelsReply {

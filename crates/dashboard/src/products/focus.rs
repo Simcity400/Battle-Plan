@@ -430,7 +430,7 @@ fn pages(first: usize, rows: usize) -> FocusPages {
     FocusPages { first: first as u64, count: (rows as u64).div_ceil(PAGE_ROWS), rows: rows as u64 }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusHourParams {
@@ -457,7 +457,7 @@ pub struct FocusHour {
     pub daily_gain_raw: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusHourReply {
@@ -466,7 +466,7 @@ pub struct FocusHourReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusOrderPageParams {
@@ -480,7 +480,7 @@ pub struct FocusOrderPageParams {
     pub page: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusOrderPage {
@@ -488,7 +488,7 @@ pub struct FocusOrderPage {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusCompletions {
@@ -611,7 +611,7 @@ impl Product for FocusCompletionsProduct {
 
 const FOCUS_TABLES: [TableId; 4] = [TableId::Countries, TableId::CountryLinks, TableId::Focus, TableId::CompletedFocuses];
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FocusUnavailableParams {
@@ -627,7 +627,7 @@ pub struct FocusTableRefusal {
     pub missing_rows: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FocusUnavailable {

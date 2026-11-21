@@ -338,6 +338,48 @@ fn a_packed_block_end_renumbers_from_the_live_bits() {
 }
 
 #[test]
+fn a_keyed_lanes_view_finds_rows_by_key_and_names_their_strings() {
+    let settings = Settings { restore_blocks: 1, whole_every: 1, pack_margin: 8, ..Settings::at(3) };
+    let (recording, states) = record(settings, 2, |at, changes| {
+        if at < 100 {
+            changes.insert_at(at, u128::from(at) + 1000).unwrap();
+            changes.write(at, 3, Cell::Bytes(at)).unwrap();
+        } else if at < 190 {
+            changes.delete(at - 100).unwrap();
+        }
+    });
+    assert!(recording.runs[0].pages[0].tables[0].packed);
+    let read = |lane: &Lane, head: usize| {
+        let view = lane.view();
+        assert!(lane.cells().bytes().index > 0, "hour {head}: the key index is kept");
+        assert!(states[head].rows().next().is_some());
+        for slot in states[head].rows() {
+            let key = states[head].key(slot).unwrap();
+            let at = view.slot(key).unwrap_or_else(|| panic!("hour {head}: row {key} found by its key"));
+            let Value::Text(id) = view.value(3, at) else { panic!("hour {head}: row {key}'s text") };
+            assert_eq!(view.string(id), Some(format!("text {id}").as_bytes()), "hour {head}: row {key}");
+        }
+    };
+    for hour in [50, 99, 150, BLOCK - 1, BLOCK + 10] {
+        let mut sought = lane(&recording);
+        sought.seek(hour as i32).unwrap();
+        read(&sought, hour as usize);
+    }
+    let mut stepped = lane(&recording);
+    stepped.seek(0).unwrap();
+    give_all(&mut stepped);
+    let mut changes = Changes::default();
+    let mut to = 99;
+    while to < 2 * BLOCK {
+        let head = stepped.step(to as i32, &mut changes).unwrap();
+        if states[head as usize].rows().next().is_some() { read(&stepped, head as usize); }
+        if head as u32 == to {
+            to += 100;
+        }
+    }
+}
+
+#[test]
 fn a_mirror_kept_from_change_sets_equals_the_cells() {
     let (recording, states) = record(Settings { cap: 256, ..Settings::at(3) }, 2, |at, changes| {
         if at % 30 == 0 {
@@ -469,6 +511,72 @@ fn status_is_reported_only_when_it_changes() {
         from = to + 1;
     }
     assert!(reported > 20);
+}
+
+#[test]
+fn a_lane_holds_the_rows_an_hour_read_in_part() {
+    let kinds = vec![KINDS.to_vec()];
+    let mut store = Store::new(kinds.clone(), vec![false]);
+    store.attach(Encoder::new(&kinds, Settings { cap: 64, restore_blocks: 1, ..Settings::at(3) }).unwrap());
+    let mut memory = Memory::default();
+    let mut states = Vec::new();
+    let hours = 2 * BLOCK + 40;
+    store.begin_run(0);
+    for at in 0..hours {
+        store.begin_hour(at as i32, &[]).unwrap();
+        let partly = at % 5 == 2 || at % BLOCK == BLOCK - 1;
+        store.status(0, if partly { Status::Truncated { missing: 3 } } else { Status::Complete }, true, Some(at as i32), true).unwrap();
+        let mut changes = store.table(0).unwrap();
+        let read: Vec<u32> = changes.held().rows().filter(|slot| !partly || (slot + at) % 3 == 0).collect();
+        if partly {
+            changes.read_rows(&read).unwrap();
+        }
+        if at == 0 {
+            for slot in 0..8 {
+                changes.insert_at(slot, 100 + u128::from(slot)).unwrap();
+                changes.write(slot, 0, Cell::I32(0)).unwrap();
+            }
+        }
+        for &slot in read.iter().filter(|&&slot| slot < 8) {
+            changes.write(slot, 0, Cell::I32((at * 7 + slot) as i32)).unwrap();
+        }
+        if at % 10 == 2 {
+            changes.insert_at(8, 900 + u128::from(at)).unwrap();
+            changes.write(8, 0, Cell::I32(at as i32)).unwrap();
+        } else if at % 10 == 6 && changes.held().rows().any(|slot| slot == 8) {
+            changes.delete(8).unwrap();
+        }
+        if partly {
+            changes.read_done();
+        }
+        store.end_hour(&mut memory).unwrap();
+        if at % BLOCK == BLOCK - 1 {
+            store.end_block();
+        }
+        states.push(store.table_state(0).unwrap().clone());
+    }
+    store.end_run(&mut memory).unwrap();
+    let recording = Arc::new(Recording { bytes: memory.bytes, runs: vec![Run::new(0, memory.pages).unwrap()], kinds });
+    let read = |hour: usize| matches!(states[hour].status(), Status::Truncated { .. }).then(|| states[hour].view().unwrap_or(&[]).to_vec());
+    assert!((0..hours as usize).filter(|&hour| read(hour).is_some_and(|rows| rows.contains(&8))).count() > 5, "hours read in part begin rows");
+    for hour in (0..hours as usize).filter(|&hour| hour % 5 == 2 || hour % 5 == 3 || hour as u32 % BLOCK == BLOCK - 1) {
+        let mut lane = lane(&recording);
+        lane.seek(hour as i32).unwrap();
+        assert_eq!(lane.read_rows().map(<[u32]>::to_vec), read(hour), "sought to hour {hour}");
+    }
+    for step in [1, 7] {
+        let mut lane = lane(&recording);
+        lane.seek(0).unwrap();
+        give_all(&mut lane);
+        let mut changes = Changes::default();
+        let mut to = 0;
+        while to + step < hours {
+            to += step;
+            let head = lane.step(to as i32, &mut changes).unwrap() as usize;
+            assert_eq!(lane.read_rows().map(<[u32]>::to_vec), read(head), "stepped by {step} to hour {head}");
+            to = head as u32;
+        }
+    }
 }
 
 #[test]

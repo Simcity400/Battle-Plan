@@ -16,7 +16,7 @@ use ts_rs::TS;
 
 pub struct LandBattleTerrains;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LandBattleTerrainParams {
@@ -31,7 +31,7 @@ pub struct LandTerrainName {
     pub name: Option<String>,
     pub missing: Option<String>,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 pub struct LandBattleTerrainReply {
     pub provinces: Vec<LandTerrainName>,

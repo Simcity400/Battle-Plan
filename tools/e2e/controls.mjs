@@ -24,7 +24,7 @@ export const CASES = [
   { id: 'header/play-pause', page: 'Overview', async run(s) {
     const was = (await s.timeline()).value;
     await press(s, this.id, 'play', LABELLED('Play recording'), `document.querySelector('button[aria-label="Pause playback"]')`);
-    await s.until(`Number(document.querySelector('input.header-timeline').value) > ${was}`, 4000);
+    await s.until(`${Session.CLOCK_HOUR} > ${was}`, 4000);
     await press(s, this.id, 'pause', LABELLED('Pause playback'), `document.querySelector('button[aria-label="Play recording"]')`);
   } },
   { id: 'header/speed-menu', page: 'Overview', async run(s) {

@@ -12,6 +12,7 @@ import CountryPicker from '../components/CountryPicker';
 import { countryNameAt, useSlotTags } from './countrySlots.ts';
 import { useMapMuted } from '../shell/muteSetting';
 import { commitZone } from '../shell/commitCount';
+import { attachDateFace } from '../draw/dateFaceHost.ts';
 
 export function PlaybackCountryPicker({ clock, track, selectedSlot, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined; selectedSlot: number | null }
   & Omit<ComponentProps<typeof CountryPicker>, 'flagAt'>) {
@@ -61,7 +62,8 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
   const gaps = useMemo(() => reference && bounds ? timelineGaps(reference.branch.gaps ?? [], reference.axisOffset, bounds.firstHour, bounds.lastHour) : [], [reference, bounds]);
   const axisOffset = reference?.axisOffset;
   const liveDate = useMemo(() => axisOffset == null ? undefined
-    : { read: () => clock.getHour() + axisOffset, subscribe: clock.subscribeFrame }, [clock, axisOffset]);
+    : { read: () => clock.getHour() + axisOffset, subscribe: clock.subscribeFrame, settled: clock.subscribe,
+      face: (host: HTMLElement, date: Element, hour: Element) => attachDateFace(host, date, hour, clock, axisOffset) }, [clock, axisOffset]);
   const timeline = useRef<HTMLInputElement>(null);
   const previous = useRef<HTMLButtonElement>(null);
   const play = useRef<HTMLButtonElement>(null);
@@ -91,25 +93,25 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId }: {
     const [fillTo, knobTo] = frames(1);
     moving.current = [fill.current.animate([fillFrom, fillTo], timing), knob.current.animate([knobFrom, knobTo], timing)];
   };
-  const settle = useRef(() => {});
-  settle.current = () => {
-    const { hour, bounds } = clock.getSnapshot();
-    const key = `${hour}:${bounds?.firstHour}:${bounds?.lastHour}:${referenceKey}`;
-    if (key === painted.current) return;
-    painted.current = key;
+  const settle = useRef((_anchor?: boolean) => {});
+  settle.current = (anchor = false) => {
+    const { hour, bounds, playing } = clock.getSnapshot();
     if (previous.current) previous.current.disabled = !bounds || hour <= bounds.firstHour;
     if (play.current) play.current.disabled = !bounds || hour >= bounds.lastHour;
     if (next.current) next.current.disabled = !bounds || hour >= bounds.lastHour;
     const input = timeline.current;
-    if (!input) return;
+    if (!input || playing && !anchor && document.activeElement !== input) return;
+    const key = `${hour}:${bounds?.firstHour}:${bounds?.lastHour}:${referenceKey}`;
+    if (key === painted.current) return;
+    painted.current = key;
     input.value = String(hour);
     const raw = reference ? hour + reference.axisOffset : null;
     const gap = raw == null ? undefined : reference?.branch.gaps?.find(item => item.firstHour <= raw && item.lastHour >= raw);
     input.setAttribute('aria-valuetext', raw == null ? 'No recording selected' : `${formatDateTime(raw)}${gap ? `; reported recording gap: ${gap.reason}` : ''}`);
   };
-  useLayoutEffect(() => { painted.current = ''; settle.current(); place.current(); });
+  useLayoutEffect(() => { painted.current = ''; settle.current(true); place.current(); });
   useLayoutEffect(() => {
-    const stops = [clock.subscribeFrame(() => settle.current()), clock.subscribe(() => place.current())];
+    const stops = [clock.subscribeFrame(() => settle.current()), clock.subscribe(() => { settle.current(true); place.current(); })];
     return () => { for (const stop of stops) stop(); for (const animation of moving.current) animation.cancel(); };
   }, [clock]);
   const pointer = useRef<{ pressed: boolean; hour: number | null }>({ pressed: false, hour: null });

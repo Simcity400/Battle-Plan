@@ -1,12 +1,17 @@
 ﻿
 export const FIXTURE = 'AllWidgets';
 export const LEGIBLE = 'AllWidgetsLegible';
+export const REBUILT = 'RebuiltWidgets';
+export const REBUILT_ALONE = 'RebuiltAlone';
+export const REBUILT_KINDS = ['occupied-states', 'scoreboard'];
 const UI = new URL('../../ui/src/', import.meta.url);
 
 export const VIEWS = {
   AllWidgets: { page: FIXTURE, view: 'screen' },
   AllWidgetsLegible: { page: LEGIBLE, view: 'legible' },
   AllWidgetsTall: { page: LEGIBLE, view: 'tall' },
+  RebuiltWidgets: { page: REBUILT, view: 'screen' },
+  RebuiltAlone: { page: REBUILT_ALONE, view: 'screen' },
 };
 export const SCREEN = { width: 3840, height: 2160 };
 export const SHELL_HEADER_HEIGHT = 82;
@@ -71,11 +76,11 @@ export async function allWidgetPages() {
   if (model.GRID_COLUMNS.md !== cols) throw new Error('the wide breakpoints have different columns: the fixture packs one');
   const written = new Map();
   const shim = { getItem: key => written.get(key) ?? null, setItem: (key, value) => written.set(key, value) };
-  const page = (label, size, arrange) => {
+  const page = (label, size, arrange, metas = widgetMetas) => {
     const id = `page-${label.toLowerCase()}`;
-    const sizes = widgetMetas.map(meta => ({ kind: meta.kind, ...size(meta), min: meta.minSize }));
+    const sizes = metas.map(meta => ({ kind: meta.kind, copy: meta.copy, ...size(meta), min: meta.minSize }));
     const { sorted, places, inView = sorted.length } = arrange(sizes);
-    const widgets = sorted.map(({ kind }) => model.createWidget(kind, 'main', `${id}-${kind}`));
+    const widgets = sorted.map(({ kind, copy }) => model.createWidget(kind, 'main', `${id}-${kind}${copy === undefined ? '' : `-${copy}`}`));
     const wide = places.map(({ x, y }, at) => ({ i: widgets[at].id, x, y, w: sorted[at].w, h: sorted[at].h, minW: sorted[at].min.w, minH: sorted[at].min.h }));
     const narrow = width => {
       let y = 0;
@@ -91,9 +96,13 @@ export async function allWidgetPages() {
     return { id, label, rows: Math.max(...wide.map(item => item.y + item.h)), inView,
       widgets: widgets.map(widget => ({ id: widget.id, kind: widget.kind })) };
   };
+  const rebuilt = REBUILT_KINDS.map(kind => widgetMetas.find(meta => meta.kind === kind) ?? (() => { throw new Error(`no widget ${kind} to rebuild`); })());
   const pages = {
     [FIXTURE]: page(FIXTURE, meta => meta.minSize, sizes => tightest(sizes, cols)),
     [LEGIBLE]: page(LEGIBLE, meta => meta.defaultSize, sizes => legible(sizes, cols, LEGIBLE_ROWS)),
+    [REBUILT]: page(REBUILT, meta => meta.minSize, sizes => tightest(sizes, cols),
+      widgetMetas.map((_, copy) => ({ ...rebuilt[copy % rebuilt.length], copy }))),
+    [REBUILT_ALONE]: page(REBUILT_ALONE, meta => meta.defaultSize, sizes => tightest(sizes, cols), rebuilt.map((meta, copy) => ({ ...meta, copy }))),
   };
   const listed = [...pageList.defaultPages(), ...Object.values(pages).map(({ id, label }) => ({ id, label }))];
   const unlisted = pageList.savePages(listed, shim);

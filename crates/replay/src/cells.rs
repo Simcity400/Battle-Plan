@@ -260,18 +260,6 @@ impl TableReader {
         self.sampled
     }
 
-    pub fn unchanged_through(&self, sample: bool) -> Option<i32> {
-        let at = self.hour()?;
-        if self.log.is_some() || self.status != Status::Complete || sample && self.sampled == Some(at) { return Some(at); }
-        let block_first = self.first_hour + (self.block * BLOCK) as i32;
-        let within = u16::try_from(at - block_first).ok()?;
-        let (_, _, _, status) = unit::reader::status(&self.entry, within, block_first).ok()?;
-        let next_part = self.entry.parts.get(self.next_part).map(|part| part.first);
-        let next = [status, self.cursor.next_change().ok()?, next_part].into_iter().flatten()
-            .fold(self.block_hours(self.block), u16::min);
-        Some(at.max(block_first + i32::from(next) - 1))
-    }
-
     pub fn read_rows(&self) -> Option<&[u32]> {
         matches!(self.status, Status::Truncated { .. }).then_some(self.view.as_slice())
     }

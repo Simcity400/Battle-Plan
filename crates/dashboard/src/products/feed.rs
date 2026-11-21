@@ -252,7 +252,7 @@ pub struct EventFeedUnavailable {
     pub count: Option<u32>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FeedPageParams {
@@ -271,7 +271,7 @@ pub struct FeedPageParams {
     pub scope: Option<Vec<super::groups::MembershipRun>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedPageRow {
@@ -288,7 +288,7 @@ pub struct EventFeedPageRow {
     pub row: Option<EventFeedRow>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EventFeedPage {

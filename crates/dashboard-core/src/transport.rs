@@ -40,7 +40,7 @@ pub fn transient_error(message: &str) -> bool {
 }
 const FRAGMENT_BYTES: usize = 16 * 1024;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
 #[serde(tag = "scope", rename_all = "camelCase", deny_unknown_fields)]
 pub enum MapSettingsTarget {
     Global,
@@ -64,7 +64,7 @@ impl MapSettingsTarget {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductRequest {
     pub source_id: String,
@@ -89,7 +89,7 @@ impl ProductRequest {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum DataCommand {
     MapSettings {
@@ -140,7 +140,7 @@ impl DataCommand {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum DataEvent {
     Chunk {
@@ -157,7 +157,7 @@ pub enum DataEvent {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceReply {
     #[doc = " A client lease. Several leases may share one underlying source and cache."]

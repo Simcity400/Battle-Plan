@@ -1,11 +1,11 @@
 
 use playhead::{
     Timeline,
-    pages::{Pages, Span, WorldPages},
+    pages::{Pages, WorldPages},
 };
 use replay::{campaign::Replay, columnar_frames::Recording};
 use replay_columnar::state::Kind;
-use replay_data::{BranchId, rows::TableId};
+use replay_data::BranchId;
 use std::{
     io,
     path::Path,
@@ -68,7 +68,7 @@ pub fn of(replay: &Replay, branch: BranchId) -> io::Result<Units> {
     }
     let recording = replay.recording();
     let name = name(recording);
-    let read = shared(&name, || read(recording.selecting(&TableId::ALL)?))?;
+    let read = shared(&name, || read(recording))?;
     let timeline = Timeline::branch(&*read.pages, &read.branches, branch, &pieces)?;
     Ok(Units { name, pages: read.pages, timeline, kinds: read.kinds })
 }
@@ -94,18 +94,14 @@ fn run_branches(recording: &Recording) -> Vec<BranchId> {
     (0..recording.run_count()).filter_map(|run| recording.run(run).ok().map(|run| run.branch)).collect()
 }
 
-fn read(recording: Recording) -> io::Result<Read> {
-    let opened = WorldPages::over(recording, Span::Whole)?;
+fn read(recording: &Recording) -> io::Result<Read> {
+    let opened = WorldPages::shared(recording)?;
     let branches: Arc<[BranchId]> = opened.branches().into();
     let kinds = Arc::new(opened.schema().to_vec());
-    Ok(Read { pages: Arc::new(opened), kinds, branches })
+    Ok(Read { pages: opened, kinds, branches })
 }
 
-pub fn name(recording: &Recording) -> String {
-    let revision = recording.revision();
-    let digest: String = revision.root.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("{digest}:{}", revision.length)
-}
+pub use playhead::pages::name;
 
 fn held(name: &str) -> Option<Read> {
     let opened = OPENED.lock().unwrap_or_else(PoisonError::into_inner);

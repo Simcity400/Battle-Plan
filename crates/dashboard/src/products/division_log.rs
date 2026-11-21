@@ -200,7 +200,7 @@ pub fn map(hour: i32, key: u128, cells: &[Cell], names: &Names) -> Mapped {
 
 pub struct DivisionLog;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DivisionLogParams {
@@ -351,7 +351,7 @@ fn named(art: &Content, (query, names, source): (&Query<'_>, &Names, &Source), h
     Ok(())
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogTemplate {
@@ -359,7 +359,7 @@ pub struct DivisionLogTemplate {
     pub name: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogGap {
@@ -368,7 +368,7 @@ pub struct DivisionLogGap {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DivisionLogManifestReply {

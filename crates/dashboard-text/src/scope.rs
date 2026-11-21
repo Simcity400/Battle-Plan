@@ -270,6 +270,11 @@ impl Query {
                 TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
                 tags(),
             ],
+            Query::Resolve(ScopeKey(Scope::Keyword(Keyword::CapitalScope)), _) => vec![
+                TableRead::fields(TableId::Politics, &["capital"]),
+                TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
+                tags(),
+            ],
             _ => return None,
         })
     }

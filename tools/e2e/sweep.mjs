@@ -432,7 +432,9 @@ async function playbackInputs() {
     const lacking = article => {
       if (loading(article)) return 'loading';
       if ([...article.querySelectorAll('[data-state="error"], [role="alert"]')].some(visible)) return 'error';
-      if ([...article.querySelectorAll('canvas[data-placement]')].some(visible)) return null;
+      const canvases = [...article.querySelectorAll('canvas[data-placement]')].filter(visible);
+      if (canvases.some(canvas => canvas.closest('[data-table-pending]'))) return 'pending rows';
+      if (canvases.length) return null;
       const content = article.querySelector('.dash-widget-content');
       if (!content) return 'no content';
       if ([...content.querySelectorAll('.dash-empty[role="status"], [data-state="empty"], [data-state="unavailable"]')].some(visible)) return null;
@@ -643,7 +645,7 @@ await phase('playback', async () => {
         if (dated) {
           const line = await s.timeline();
           const endHour = line.value + Math.ceil((PLAY_SECONDS + 0.4) * speed);
-          if (endHour > line.max || !await s.until(`Number(document.querySelector('input.header-timeline').value) >= ${endHour}`, 2 * PLAY_SECONDS * 1000 + 5000))
+          if (endHour > line.max || !await s.until(`${Session.CLOCK_HOUR} >= ${endHour}`, 2 * PLAY_SECONDS * 1000 + 5000))
             throw new Error('Playback did not cover the requested game hours');
         } else await sleep(PLAY_SECONDS * 1000);
         await s.click('button[aria-label="Pause playback"]');

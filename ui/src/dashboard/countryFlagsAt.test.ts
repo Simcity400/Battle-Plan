@@ -61,8 +61,9 @@ test('dated labels forward the hour limit to the name read and distinguish pendi
         assert.equal(call.args[0], client);
         assert.equal(call.args[2], wanted);
         assert.equal(call.args[3], true);
-        assert.equal(call.args.length, call.kind === 'names' ? 5 : 4);
+        assert.equal(call.args.length, call.kind === 'names' ? 7 : 6);
         if (call.kind === 'names') assert.equal(call.args[4], limit ?? Infinity);
+        assert.equal(call.args.at(-1), false);
       }
     }
   } finally { delete host.__labelFixture; }

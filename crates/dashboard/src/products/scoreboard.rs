@@ -127,7 +127,7 @@ fn family(measure: (&str, &str)) -> ScoreboardFamily {
     ScoreboardFamily { kind: measure.0.to_owned(), measure: measure.1.to_owned() }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardColumn {
@@ -145,9 +145,10 @@ pub struct ScoreboardColumn {
     pub family: Option<ScoreboardFamily>,
     #[doc = " The declared measure whose nonzero value marks its value a partial subtotal."]
     pub partial: Option<ScoreboardFamily>,
+    pub none_at_zero: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardColumnsReply {
@@ -180,6 +181,7 @@ fn registry(label: impl Fn(&str) -> Option<String>) -> Vec<ScoreboardColumn> {
                 note: def.note.map(str::to_owned),
                 family: def.measure.filter(|_| matches!(measure, Some(Ok(_)))).map(family),
                 partial: def.partial.filter(|partial| declared(*partial).is_ok()).map(family),
+                none_at_zero: matches!(&measure, Some(Ok((series, _))) if series.absent_none),
             }
         })
         .collect()
@@ -231,7 +233,7 @@ impl Product for ScoreboardColumns {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScoreboardTop {
@@ -242,7 +244,7 @@ pub struct ScoreboardTop {
     pub descending: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScoreboardParams {
@@ -280,7 +282,7 @@ pub struct ScoreboardRow {
     pub cells: Vec<ScoreboardCell>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ScoreboardReply {

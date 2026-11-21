@@ -27,7 +27,7 @@ pub const FIELDS: [(&str, &str); 5] = [
 
 pub struct IntelNetworkCoverage;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IntelCoverageParams {
@@ -42,7 +42,7 @@ pub struct IntelNetwork {
     pub target: Country,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IntelCoverageReply {

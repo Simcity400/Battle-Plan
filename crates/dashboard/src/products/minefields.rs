@@ -116,7 +116,7 @@ fn fold<'a>(rows: &[NavalRegionalMineRow], name: impl Fn(u32) -> Option<&'a str>
 
 pub struct Minefields;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MinefieldsParams {
@@ -126,7 +126,7 @@ pub struct MinefieldsParams {
     pub countries: Option<Vec<Country>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MinefieldsReply {
@@ -227,7 +227,7 @@ impl AtHour for Minefields {
 
 pub type MineRuns = Vec<(i32, i32, Option<String>)>;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MineLine {
@@ -235,7 +235,7 @@ pub struct MineLine {
     pub runs: MineRuns,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MinefieldHistoryReply {
@@ -247,7 +247,7 @@ pub struct MinefieldHistoryReply {
 
 dashboard_base::reply_warnings!(MinefieldHistoryReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MinefieldHistoryParams {
@@ -349,7 +349,7 @@ pub struct MineReport {
     pub sunk: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct MinefieldReportsReply {
@@ -362,7 +362,7 @@ pub struct MinefieldReportsReply {
 
 dashboard_base::reply_warnings!(MinefieldReportsReply);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MinefieldReportsParams {

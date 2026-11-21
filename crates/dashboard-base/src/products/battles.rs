@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BattleWindow {
     pub first_hour: i32,
     pub last_hour: i32,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 pub struct BattleWarning {
     pub hour: i32,
     pub reason: String,
@@ -20,18 +20,18 @@ pub enum BattleBound {
     Exact,
     By,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 pub struct BattleMoment {
     pub hour: i32,
     pub bound: BattleBound,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(untagged)]
 pub enum BattleEnd {
     Moment(BattleMoment),
     Unknown { unknown: String },
 }
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 pub struct BattlePlace {
     pub name: Option<String>,
     pub hour: i32,
@@ -39,12 +39,12 @@ pub struct BattlePlace {
     #[ts(optional)]
     pub named_at: Option<i32>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 pub struct BattleCountry {
     pub tag: String,
     pub hour: i32,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(untagged)]
 pub enum BattleValue {
     Known {
@@ -61,7 +61,7 @@ pub enum BattleValue {
         unknown: String,
     },
 }
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 pub struct BattleSide {
     pub label: String,
     pub countries: Vec<BattleCountry>,
@@ -71,14 +71,14 @@ pub struct BattleSide {
     pub counts: Vec<BattleValue>,
     pub losses: Vec<BattleValue>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 #[serde(untagged)]
 pub enum BattleWinner {
     Side { side: usize },
     Unknown { unknown: String },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
 pub struct BattleRow {
     pub id: String,
     pub place: BattlePlace,

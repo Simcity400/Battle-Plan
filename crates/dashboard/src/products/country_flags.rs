@@ -65,7 +65,7 @@ const MAX_FLAG_EDGE: u32 = 128;
 const MAX_FLAGS: usize = 32;
 const UNAVAILABLE: &str = "flag artwork unavailable in the recorded content";
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryFlagParams {
@@ -75,7 +75,7 @@ pub struct CountryFlagParams {
     pub size: CountryFlagSize,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagImage {
@@ -93,7 +93,7 @@ pub struct CountryFlagImage {
     pub png: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagUnavailable {
@@ -102,7 +102,7 @@ pub struct CountryFlagUnavailable {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagReply {
