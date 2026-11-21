@@ -328,7 +328,13 @@ lto = "off"
 [profile.dev.package."*"]
 opt-level = 3
 
-[profile.test.package.collector]
+[profile.ci]
+inherits = "dev"
+
+[profile.ci.package."*"]
+opt-level = 1
+
+[profile.ci.package.collector]
 opt-level = 0
 
 [profile.release-lto]

@@ -182,6 +182,7 @@ tier = "check"
 kind = "crates"
 toolchain = "rust"
 base = true
+dependents = false
 shared = ["tools/check-clippy.py"]
 command = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "cargo", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
 local = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "{python}", "tools/boat.py", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
@@ -194,9 +195,9 @@ group = "rust"
 tier = "check"
 kind = "crates"
 toolchain = "rust"
-command = ["cargo", "nextest", "run", "--profile", "hosted", "--no-fail-fast", "--no-tests=pass", "{packages}"]
+command = ["cargo", "nextest", "run", "--cargo-profile", "ci", "--profile", "hosted", "--no-fail-fast", "--no-tests=pass", "{packages}"]
 report = "target/nextest/hosted/junit.xml"
 shards = 8
-warm = ["cargo", "test", "--workspace", "--no-run", "--no-fail-fast"]
+warm = ["cargo", "test", "--profile", "ci", "--workspace", "--no-run", "--no-fail-fast"]
 not-run = { "needs the game install" = '^(?:.*: Custom \{ kind: NotFound, error: "BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation" \}|[\w -]+ requires? BATTLEPLAN_GAME_DIR with the supported installation|BATTLEPLAN_GAME_DIR(?: must name the installed game| must name the supported installation for executable metadata)?)$' }
 widen = [".config/nextest.toml"]

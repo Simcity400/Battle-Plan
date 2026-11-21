@@ -69,6 +69,7 @@ class Job:
     not_run: tuple
     shards: int
     warm: tuple
+    dependents: bool
     definition: str
 
 
@@ -96,7 +97,7 @@ def load_pipeline(text):
             group=table.get("group", ""), whole=tuple(table.get("whole", ())), base=table.get("base", False),
             unset=tuple(table.get("unset", ())), widen=tuple(table.get("widen", ())),
             report=table.get("report", ""), not_run=tuple(table.get("not-run", {}).items()),
-            shards=table.get("shards", 0), warm=tuple(table.get("warm", ())),
+            shards=table.get("shards", 0), warm=tuple(table.get("warm", ())), dependents=table.get("dependents", True),
             definition=json.dumps([table, data["toolchain"].get(table["toolchain"]), groups.get(table.get("group"))], sort_keys=True))
         problems = [f"tier {job.tier!r}"] if job.tier not in tiers else []
         problems += [f"kind {job.kind!r}"] if job.kind not in KINDS else []
@@ -319,8 +320,10 @@ def decide_inputs(job, ctx):
 
 
 def decide_crates(job, ctx):
-    """The changed crates and their direct dependents; the workspace when the change is wide, or
-    on a tier that runs everything, naming the crates that lie beyond a pull request's scope."""
+    """The changed crates and, unless the job says `dependents = false` (Clippy: a dependent's
+    lints cannot change when its own source did not, and the tests compile it), their direct
+    dependents; the workspace when the change is wide, or on a tier that runs everything, naming
+    the crates that lie beyond a pull request's scope."""
     wide = widened(ctx, job)
     if ctx.crates is None:
         rust = wide or ctx.everything or any(path.startswith("crates/") for path in ctx.changed)
@@ -328,7 +331,8 @@ def decide_crates(job, ctx):
     crates = ctx.crates
     owner = crate_owner(crates)
     changed = {owner(path) for path in ctx.changed} - {None}
-    selected = set(crates) if wide else changed | {crate.name for crate in crates.values() if crate.deps & changed}
+    dependents = {crate.name for crate in crates.values() if crate.deps & changed} if job.dependents else set()
+    selected = set(crates) if wide else changed | dependents
     if not selected and not ctx.everything:
         return Decision(job, "skipped", "no crate changed since the base")
     beyond = [] if wide or not ctx.everything else sorted(set(crates) - selected)
@@ -842,7 +846,7 @@ def live_units(messages):
 
 
 def prune(profile, live):
-    """Removes from a profile folder (`.cargo-target/debug`) every unit the last build did not
+    """Removes from a profile folder (such as `.cargo-target/debug`) every unit the last build did not
     use, so a unit that comes back later (a feature or profile setting changed and changed back)
     is built again rather than found fresh against files it never saw; then the executables,
     which no runner reuses and which would fill the cache."""
@@ -887,7 +891,8 @@ def warm(name, target, github_output=None):
             live = live_units(messages.read().decode("utf-8", errors="replace"))
         print(f"warmed {name} in {time.monotonic() - started:.0f}s, exit {code}, {len(live)} units", flush=True)
         if code == 0:
-            print(f"pruned {prune(Path(target) / 'debug', live)} units the build did not use", flush=True)
+            profiles = [folder for folder in Path(target).iterdir() if (folder / ".fingerprint").is_dir()]
+            print(f"pruned {sum(prune(folder, live) for folder in profiles)} units the build did not use", flush=True)
             (Path(target) / BUILT_FROM).write_text(git("rev-parse", "HEAD").strip() + "\n", encoding="utf-8")
         else:
             print(f"the build failed: the folder still names {source[:10] if source else 'no commit'}", flush=True)

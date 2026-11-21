@@ -184,6 +184,15 @@ class Crates(unittest.TestCase):
         ctx.changed = {"crates/core/src/lib.rs"}
         self.assertEqual(decide("clippy", ctx).state, "not run")
 
+    def test_a_job_without_dependents_takes_the_changed_crates_only(self):
+        pipeline = ci.load_pipeline(PIPELINE.replace('local = ["boat", "clippy", "{packages}"]\n', 'local = ["boat", "clippy", "{packages}"]\ndependents = false\n'))
+        ctx = context(["crates/core/src/lib.rs"])
+        ctx.pipeline, ctx.definitions = pipeline, {job.name: job.definition for job in pipeline.jobs}
+        job = next(job for job in pipeline.jobs if job.name == "clippy")
+        self.assertEqual(ci.decide(job, ctx, "check").arguments, ["-p", "core"])
+        ctx.everything = True
+        self.assertEqual(ci.decide(job, ctx, "main").arguments, ["--workspace"])
+
     def test_a_changed_runner_script_selects_no_crates(self):
         self.assertEqual(decide("clippy", context(["tools/boat.py"])).state, "skipped")
 
