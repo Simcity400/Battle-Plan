@@ -243,7 +243,7 @@ export default function App() {
   const lastNativePath = useRef<string | null>(null);
   const content = useRef<HTMLElement>(null);
   const header = useCallback((element: HTMLElement) => {
-    const observer = new ResizeObserver(() => element.parentElement?.style.setProperty('--shell-header-height', `${element.offsetHeight}px`));
+    const observer = new ResizeObserver(([entry]) => element.parentElement?.style.setProperty('--shell-header-height', `${entry.borderBoxSize[0].blockSize}px`));
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
