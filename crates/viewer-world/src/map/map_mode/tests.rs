@@ -1882,7 +1882,7 @@ fn scripted_forced_refresh_refuses_inherited_temps_without_guessing_zero() {
             set_temp_variable = { highlighted = 0 }
         } } }
         filter = { top = { type = country
-            targets = { target_root_trigger = { OR = { check_variable = { inherited = 0 } always = yes } } targets = { SOV } }
+            targets = { target_root_trigger = { OR = { check_variable = { var = inherited value = 0 compare = equals } always = yes } } targets = { SOV } }
             color = { set_temp_variable = { red = 0 } set_temp_variable = { green = 1 }
                 set_temp_variable = { blue = 0 } set_temp_variable = { alpha = 1 }
                 set_temp_variable = { highlighted = 0 } }

@@ -454,7 +454,6 @@ fn political_gpu_fallback_oracles() {
     political_gpu_fallback_lockstep(&fallback);
     political_gpu_fallback_pool_interleavings(&fallback);
     political_gpu_fallback_named_changes_equal_the_whole_update(&fallback);
-    political_gpu_decoded_frames(&fallback);
     membership_gpu_tests::retained_membership_keeps_exact_bytes_areas_and_refusals_across_hours(
         &fallback,
     );
@@ -1269,7 +1268,8 @@ fn a_second_mode_layer_takes_the_country_layers_place() {
     assert_eq!(holders(POLITICAL), [Held::Naval, Held::Country]);
 }
 
-fn political_gpu_decoded_frames(fallback: &Fallback) {
+#[test]
+fn political_gpu_decoded_frames() {
     use super::super::political::{regions, strategic_regions_of, tests as fixtures};
     use replay_data::rows::{TableId, TableRows};
     use replay_frame::frame::{FrameDecoder, FrameEncoder, TableView};
@@ -1286,7 +1286,7 @@ fn political_gpu_decoded_frames(fallback: &Fallback) {
     let mut layer = Layer::new(LayerKind::Fixed(field.strategic_thickness), &keys, &color, &field);
     layer.no_region_color = field.navy_neutral;
     layer.region_opacity = 0;
-    let mut harness = fallback.harness(map.width, map.height);
+    let mut harness = Harness::new(map.width, map.height);
     let mut gpu = PoliticalGpu::new(&harness.device, bitmap, &layer).unwrap();
     let strategic = gradient::build_layer(&bitmap, &layer).unwrap();
     let (actual, _) = harness.gpu(&mut gpu, &layer, 0);
@@ -1298,7 +1298,7 @@ fn political_gpu_decoded_frames(fallback: &Fallback) {
     let mut decoder = FrameDecoder::new();
     let mut gpu = Some(gpu);
     let mut country = None;
-    for (step, controller) in [200, 100, 200].into_iter().enumerate() {
+    for (step, (controller, country_key)) in [(200, 2), (100, 1), (200, 2)].into_iter().enumerate() {
         source.hour = 42 + step as i32;
         let TableView::Complete(TableRows::Provinces(rows)) =
             &mut *source.tables[TableId::Provinces.index()]
@@ -1309,6 +1309,7 @@ fn political_gpu_decoded_frames(fallback: &Fallback) {
         let encoded = encoder.encode(source.clone(), step == 0).unwrap();
         let frame = decoder.advance(&encoded).unwrap();
         let regions = regions(&map, frame).unwrap();
+        assert_eq!(regions.country_of[3], country_key, "recorded hour {}", frame.hour);
         let color = |key| regions.country_color(key);
         let layer = Layer::new(LayerKind::Country, &regions.country_of, &color, &field);
         let country = country.get_or_insert_with(|| {

@@ -1099,9 +1099,18 @@ fn assert_installed_history(history: &unit_history::History, expected_ids: &BTre
 }
 
 #[test]
+fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() {
+    check_retained_province_frames(19, 16_384);
+}
+
+#[test]
 // quarantine: #143 province scheduling allocates and scans bitsets sized by the largest id
 #[ignore = "quarantined under #143"]
-fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() {
+fn retained_province_frames_preserve_sparse_high_ids() {
+    check_retained_province_frames(100_019, u32::MAX);
+}
+
+fn check_retained_province_frames(stride: u32, last_id: u32) {
     use unit_history::{Target, test_support::GATES, test_support::target as unit_target};
     use viewer_foundation::{
         map::camera::{MapDefines, MapSize, Placement},
@@ -1110,8 +1119,8 @@ fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() 
     };
     content_reader_core::test_game::enter();
     let ids: Vec<_> = (0..192u32)
-        .map(|index| index * 100_019 + 7)
-        .chain([u32::MAX - 2, u32::MAX])
+        .map(|index| index * stride + 7)
+        .chain([last_id - 2, last_id])
         .collect();
     let boxes = |count: usize, shift: f32| {
         Arc::new(
@@ -1289,7 +1298,7 @@ fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() 
             if hour % 5 == 2 {
                 let mut only_naval = sources.clone();
                 let mut candidate = only_naval.candidates.last().unwrap().clone();
-                candidate.province = u32::MAX - 10_000 - hour;
+                candidate.province = last_id - 10_000 - hour;
                 candidate.ordinal += 100;
                 expected_ids.insert(candidate.province);
                 only_naval.candidates.push(candidate);
@@ -1364,7 +1373,7 @@ fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() 
         })]));
         if number.is_multiple_of(61) {
             history.schedule.lock().unwrap().advance(
-                ids.iter().copied().chain([u32::MAX - 1]),
+                ids.iter().copied().chain([last_id - 1]),
                 |_| true,
                 steady,
             );
@@ -1430,7 +1439,7 @@ fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() 
             .any(|(_, update)| *update == unit_history::Update::OffScreen);
         saw[2] |= !history.queue_trace.is_empty();
         saw[3] |= !history.combats.entities.is_empty();
-        saw[4] |= dense.records.iter().any(|record| record.id > 4_000_000_000);
+        saw[4] |= dense.records.iter().any(|record| record.id == last_id);
     }
     assert!(
         saw.into_iter().all(|saw| saw),

@@ -10,7 +10,8 @@ pub(super) fn enter() {
         content_reader_core::test_game::executable()
             .trigger("add_to_temp_variable", 0, Reader::Body, 0)
             .trigger("any_owned_state", country, Reader::Body, 0)
-            .trigger("check_variable", 0, Reader::Body, 0x14045AC70)
+            .trigger("check_variable", 0, Reader::Body, 0)
+            .trigger("compare", 0, Reader::Assign, 0)
             .trigger("divide_temp_variable", 0, Reader::Body, 0)
             .trigger("has_cosmetic_tag", country, Reader::Assign, 0)
             .trigger("has_dlc", 0, Reader::Assign, 0)
@@ -24,6 +25,8 @@ pub(super) fn enter() {
             .trigger("set_temp_variable", 0, Reader::Body, 0)
             .trigger("state", ScopeKind::State.bit(), Reader::Assign, 0)
             .trigger("tag", country, Reader::Assign, 0)
+            .trigger("value", 0, Reader::Assign, 0)
+            .trigger("var", 0, Reader::Assign, 0)
             .build()
     });
     executable_tables::enter(Some(*tables));

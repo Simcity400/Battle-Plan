@@ -126,7 +126,7 @@ fn pool_check_starts_a_fresh_variable_context() {
     crate::map::test_game::enter();
     let pools = content(
         br#"default = { tank = {
-        pool = { limit = { check_variable = { global.pool_ready = 1 } } models = { ready } }
+        pool = { limit = { check_variable = { var = global.pool_ready value = 1 compare = equals } } models = { ready } }
     }}"#,
     )
     .unwrap();
