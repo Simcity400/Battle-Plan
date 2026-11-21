@@ -63,11 +63,6 @@ jobs:
       CHANNEL: ${{ inputs.channel || 'nightly' }}
       PROFILE: ${{ inputs.channel == 'stable' && 'release-lto' || 'release' }}
       CARGO_TERM_COLOR: always
-      CARGO_INCREMENTAL: "0"
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_IDLE_TIMEOUT: "0"
-      SCCACHE_GHA_RW_MODE: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 'READ_WRITE' || 'READ_ONLY' }}
     defaults:
       run:
         shell: bash
@@ -92,10 +87,12 @@ jobs:
       - name: Install the Rust toolchain
         run: rustup toolchain install
 
-      - name: Share compiled crates across runs
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+      - name: Reuse downloaded crates
+        uses: Swatinem/rust-cache@v2
         with:
-          version: v0.19.0
+          cache-targets: false
+          shared-key: candidate
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Name the version
         id: version
@@ -130,10 +127,6 @@ jobs:
           $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]0x1F
           npm run build:desktop -- -- --profile $env:PROFILE
           if ($LASTEXITCODE -ne 0) { throw "The installer build failed (exit $LASTEXITCODE)." }
-
-      - name: Report the compile cache
-        if: always()
-        run: sccache --show-stats
 
       - name: Collect the candidate
         id: collect
