@@ -1139,12 +1139,13 @@ def emit(spec, version):
 BUILDS = {"c184": "1.19.5.0", "0bdb": "1.19.4.2", "f584": "1.19.4.1"}
 EXPECTED_WITHHELD = {
     "f584": {
-        "template_mutations::requisition_hq_from_army": "its code really changed in 1.19.4.2",
-        "template_mutations::add_hq_manpower": "reached only through requisition_hq_from_army",
-        "script_event_sites::OPTION_COMMAND_VTABLE_RVA": "1.19.4.2 added a virtual to its base class",
-        "template_mutations::set_garrison_priority": "reached only through a command vtable whose shape changed",
-        "world_input_mutations::mio_queue_remove": "reached only through a command vtable whose shape changed",
-        "changes::sites::repair dockyard setting": "reached only through a command vtable whose shape changed",
+        0xc4a420: ("template_mutations::requisition_hq_from_army", "its code really changed in 1.19.4.2"),
+        0x19c9a20: ("template_mutations::add_hq_manpower", "reached only through requisition_hq_from_army"),
+        0x29b6ce0: ("script_event_sites::OPTION_COMMAND_VTABLE_RVA", "1.19.4.2 added a virtual to its base class"),
+        0x11e59f0: ("template_mutations::set_garrison_priority",
+                    "reached only through a command vtable whose shape changed"),
+        0xe29230: ("world_input_mutations::mio_queue_remove", "reached only through a command vtable whose shape changed"),
+        0xf23420: ("changes::sites::repair dockyard setting", "reached only through a command vtable whose shape changed"),
     },
 }
 PINNED = os.path.join(os.path.dirname(DATA), "..", "pinned")
@@ -1234,10 +1235,17 @@ def verify(spec, images, reference, written, promoted_from=None):
     for rva in sorted(source - spec_keys):
         print("FAIL key %#x is not generated; run tools/sites.py generate" % rva)
         failed = True
-    for b, expected_names in EXPECTED_WITHHELD.items():
-        for name in sorted(set(expected_names) - set(names.values())):
-            print("FAIL %s expects %s withheld, but no key has that name" % (BUILDS.get(b, b), name))
-            failed = True
+    expected_withheld = {}
+    for b, entries in EXPECTED_WITHHELD.items():
+        expected_withheld[b] = set()
+        for rva, (name, _) in sorted(entries.items()):
+            at = moved.get(rva) if promoted_from else rva
+            if at is None or names.get(at) != name:
+                print("FAIL %s expects %s withheld at %#x, but %s; after a promotion, key it at its new position"
+                      % (BUILDS.get(b, b), name, rva, "the key there is %s" % names[at] if at in names else "no key is there"))
+                failed = True
+            else:
+                expected_withheld[b].add(at)
     checked_builds = {b for b in BUILDS if digest(exe(b)) in layout_checked()}
     if reference not in checked_builds:
         print("FAIL the reference build %s is not in engine_sites::LAYOUT_CHECKED" % BUILDS[reference])
@@ -1251,7 +1259,7 @@ def verify(spec, images, reference, written, promoted_from=None):
         else:
             expected_at = addresses(b)
         for checked in ((True, False) if b in checked_builds else (False,)):
-            expected = set() if checked else {rva for rva, name in names.items() if name in EXPECTED_WITHHELD.get(b, ())} | unwitnessed
+            expected = set() if checked else expected_withheld.get(b, set()) | unwitnessed
             reasons, wrong, withheld = report(images[b], spec, expected_at, checked)
             print("%s (%s), layouts %s:" % (BUILDS[b], b, "checked" if checked else "by witnesses"))
             for k, n in sorted(reasons.items()):

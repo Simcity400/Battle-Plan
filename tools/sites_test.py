@@ -228,26 +228,34 @@ const AFTER: Rva = Rva(0x54);
                 sites.verify(spec, images, "new", written=False)
                 self.assertEqual(seen, {"new image": None, "old image": {}, "other image": recorded["other"]})
 
-    def test_expected_refusals_follow_their_site_names_to_any_position(self):
+    def test_expected_refusals_name_one_key_and_follow_it_through_a_promotion(self):
         with tempfile.TemporaryDirectory() as root:
             executables = {}
             for build in ("new", "old"):
                 executables[build] = Path(root, build + ".exe")
                 executables[build].write_bytes(build.encode())
-            spec = {"keys": [{"rva": 0x28, "name": "sites::Changed", "kind": "code"}], "vtables": []}
+            spec = {"keys": [{"rva": 0x28, "name": "sites::Shared", "kind": "code"},
+                             {"rva": 0x30, "name": "sites::Shared", "kind": "code"}], "vtables": []}
             withheld = {"new image": set(), "old image": {0x28}}
             builds = {"new": "2.0", "old": "1.0"}
-            with (patch.object(sites, "BUILDS", builds), patch.object(sites, "addresses", return_value={}),
+            moved = {}
+            with (patch.object(sites, "BUILDS", builds), patch.object(sites, "addresses", side_effect=lambda build: moved),
                   patch.object(sites, "report", side_effect=lambda image, *_: ({}, [], withheld[image])),
-                  patch.object(sites, "source_keys", return_value={0x28: ("sites::Changed", "", 1)}),
+                  patch.object(sites, "source_keys",
+                               return_value={0x28: ("sites::Shared", "", 1), 0x30: ("sites::Shared", "", 2)}),
                   patch.object(sites, "exe", side_effect=lambda build: str(executables[build])),
                   patch.object(sites, "layout_checked", return_value={sites.digest(str(executables["new"]))}),
                   patch("sys.stdout", io.StringIO())):
                 images = {"new": "new image", "old": "old image"}
-                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {"sites::Changed": "its code changed"}}):
+                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {0x28: ("sites::Shared", "its code changed")}}):
                     self.assertFalse(sites.verify(spec, images, "new", written=False))
-                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {"sites::Gone": "renamed away"}}):
+                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {0x30: ("sites::Shared", "its code changed")}}):
                     self.assertTrue(sites.verify(spec, images, "new", written=False))
+                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {0x28: ("sites::Gone", "renamed away")}}):
+                    self.assertTrue(sites.verify(spec, images, "new", written=False))
+                moved.update({0x10: 0x28, 0x18: 0x30})
+                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {0x10: ("sites::Shared", "its code changed")}}):
+                    self.assertFalse(sites.verify(spec, images, "new", written=False, promoted_from="old"))
 
     def test_a_missing_or_truncated_generated_locator_is_refused_rather_than_renaming_sites(self):
         with tempfile.TemporaryDirectory() as root:
