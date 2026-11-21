@@ -67,6 +67,11 @@ fn main() -> io::Result<()> {
     let facts = facts.map(|(_, pack)| pack);
     let out = Path::new(out);
     let state = out.with_extension("state");
+    if let (Some(start), Some(block)) = (start, stop_after)
+        && block <= u64::from(start)
+    {
+        return Err(io::Error::other(format!("Block {block} of capture {capture} comes before block {}, the first this start writes", u64::from(start) + 1)));
+    }
     let start = match (start, start_file) {
         (None, None) => None,
         (Some(block), Some(file)) => {
