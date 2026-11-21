@@ -25,6 +25,7 @@ reference: relocate the old one while it is still the reference, put the new one
 move each key to its position there (its sites/<build>.json), and generate; published names move
 with their keys. Then relocate every other build against the new spec and check.
 Needs Python 3.11, capstone and numpy.
+Set HOI4RE_DATA to the RE data directory if hoi4re is not on PATH.
 """
 import argparse
 import bisect
@@ -33,6 +34,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import struct
 import sys
 import tempfile
@@ -42,7 +44,9 @@ import numpy as np
 from capstone import x86
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA = os.environ.get("HOI4RE_DATA", r"C:\Tools\hoi4_mcp\hoi4re\data")
+DATA = os.environ.get("HOI4RE_DATA", "")
+if not DATA and (hoi4re := shutil.which("hoi4re")):
+    DATA = os.path.join(os.path.dirname(hoi4re), "hoi4re", "data")
 INDEX = os.path.join(DATA, "builds", "{build}", "index.sqlite3")
 OUTPUT = os.path.join(ROOT, "crates", "engine-sites", "src", "generated.rs")
 LIB = os.path.join(ROOT, "crates", "engine-sites", "src", "lib.rs")
@@ -1271,6 +1275,8 @@ def main(argv):
     r.add_argument("--exe", required=True)
     r.add_argument("--build", required=True)
     a = p.parse_args(argv)
+    if not DATA:
+        p.error("set HOI4RE_DATA to the RE data directory or put hoi4re on PATH")
     reference = next(iter(BUILDS))
     images = {b: Image(exe(b), b) for b in BUILDS}
     ref = images[reference]
