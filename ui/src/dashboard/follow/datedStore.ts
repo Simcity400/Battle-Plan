@@ -266,7 +266,7 @@ export class DatedStore {
             if (r) {
               r.offset = message.clock;
               r.entry.answer = answer; r.entry.hour = start; r.entry.through = through;
-              r.seek = stamp; r.lane = lane; r.shown = { start, through: r.entry.through };
+              r.seek = stamp; r.lane = lane; r.shown = { start, through: r.entry.through }; r.waiting = undefined;
               r.entry.version++; this.changed(r.entry);
             }
           }

@@ -413,6 +413,19 @@ test('a native reset keeps an old picture to the hours it was confirmed through 
   assert.ok(covered === null || covered.through <= 33, `hours the reset left unread stay uncovered while the replacement waits for its cells: ${JSON.stringify(covered)}`);
 });
 
+test('a lane reading answered again after a native reset advances with its lane', () => {
+  let hour = 10;
+  const { store, add, deliver } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  deliver(datedStep(10, [{ id: entry.id, answer: one(1n, 7n) }], 1));
+  hour = 20;
+  deliver(datedStep(20, [{ id: entry.id, answer: one(1n, 7n) }], 1, true));
+  hour = 34;
+  deliver(datedStep(34, [], 1));
+  assert.deepEqual(store.coverage(entry), { start: 20, through: 34 });
+});
+
 test('page seeks admit their own packets immediately and a native reset supersedes its queued future', () => {
   let head = 10;
   const { store, add, deliver, frame } = dated(() => head);
