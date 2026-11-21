@@ -84,3 +84,6 @@ unify-windows-core = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 viewer-world = { path = ".", features = ["test-support"] }
+
+[lints]
+workspace = true

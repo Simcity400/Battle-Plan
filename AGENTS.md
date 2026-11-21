@@ -81,7 +81,7 @@ All Rust is in `crates/`; names group by prefix.
 
 ## Verifying
 
-- Run `python tools/check_changed.py` once, when the work is done, not as you go. It checks only what your changes touch. Work that passed needs no second check. If you are going to build anyway, skip it.
+- Run `python tools/check_changed.py` once, when the work is done (for a PR, once pushed): it checks what your changes touch and posts the result as HEAD's `local/check_changed` status. Work that passed needs no second check. If you are going to build anyway, skip it.
 - Test behaviour that can break: format readers and writers, recovery, parsing of game and mod files, and the logic a bug fix changed. Leave out what the types already guarantee and tests that mirror the implementation.
 - Extend before you add: put the case in an existing test where one fits. Test at the lowest layer that fails on `main`, not again in a wrapper.
 - A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.
@@ -110,7 +110,7 @@ All Rust is in `crates/`; names group by prefix.
 
 - Don't write READMEs or other docs. When a change makes existing doc text wrong, fix or delete that text.
 - Plans, research notes and scratch files stay outside the worktree.
-- This file has a size budget. After editing it, run `python tools/check-agent-context.py --write`. `check_changed.py` fails growth against `main`, so cut text before adding it.
+- This file has a size budget: cut text before adding it, then run `python tools/check-agent-context.py --write`.
 
 ## Running the game
 

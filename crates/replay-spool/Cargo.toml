@@ -11,3 +11,6 @@ doctest = false
 
 [dependencies]
 replay-spool-derive.workspace = true
+
+[lints]
+workspace = true

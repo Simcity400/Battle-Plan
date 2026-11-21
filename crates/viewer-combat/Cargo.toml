@@ -75,3 +75,6 @@ unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 viewer-combat = { path = ".", features = ["test-support"] }
 viewer-counter-products = { path = "../viewer-counter-products", features = ["test-support"] }
+
+[lints]
+workspace = true

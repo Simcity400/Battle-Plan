@@ -126,28 +126,35 @@ pub(super) fn heights_into(
     patch: Patch,
     out: &mut Vec<[i16; 2]>,
 ) {
+    out.clear();
+    out.extend(positions.iter().map(|&position| vertex_heights(position, bytes, map, patch)));
+}
+
+pub(super) fn vertex_heights(
+    [x, z, edge, direction]: [i16; 4],
+    bytes: &[u8],
+    map: [u32; 2],
+    patch: Patch,
+) -> [i16; 2] {
     let sample = |x: u32, z: u32| {
         let x = x % map[0];
         let z = z.min(map[1] - 1);
         i16::from(bytes[((map[1] - 1 - z) * map[0] + x) as usize]) * 10
     };
-    out.clear();
-    out.extend(positions.iter().map(|&[x, z, edge, direction]| {
-        let world = [
-            patch.origin[0] + x as u32 * patch.step,
-            patch.origin[1] + z as u32 * patch.step,
-        ];
-        let first = sample(world[0], world[1]);
-        let alternate = if edge == 0 {
-            first
-        } else {
-            sample(
-                world[0] + u32::from(direction == 0) * patch.step,
-                world[1] + u32::from(direction == 1) * patch.step,
-            )
-        };
-        [first, alternate]
-    }));
+    let world = [
+        patch.origin[0] + x as u32 * patch.step,
+        patch.origin[1] + z as u32 * patch.step,
+    ];
+    let first = sample(world[0], world[1]);
+    let alternate = if edge == 0 {
+        first
+    } else {
+        sample(
+            world[0] + u32::from(direction == 0) * patch.step,
+            world[1] + u32::from(direction == 1) * patch.step,
+        )
+    };
+    [first, alternate]
 }
 
 fn validate_block(patch: Patch, map: [u32; 2]) -> io::Result<()> {
@@ -373,7 +380,7 @@ impl Coasts {
                 widest_step(map),
             )
         });
-        let heights = coast.as_ref().map_or_else(
+        let mut heights: Vec<_> = coast.as_ref().map_or_else(
             |_| Vec::new(),
             |coast| {
                 coastal_heights(coast, patches, bytes, map, workers)
@@ -382,6 +389,7 @@ impl Coasts {
                     .collect()
             },
         );
+        heights.sort_unstable_by_key(|(patch, _)| *patch);
         Self {
             from: Arc::clone(effect),
             coast,
@@ -391,6 +399,11 @@ impl Coasts {
 
     fn follows(&self, effect: &Arc<Effect>) -> bool {
         Arc::ptr_eq(&self.from, effect)
+    }
+
+    fn capped(&self, patch: Patch) -> Option<&[[i16; 2]]> {
+        let at = self.heights.binary_search_by_key(&patch, |(held, _)| *held).ok()?;
+        Some(&self.heights[at].1)
     }
 }
 
@@ -515,6 +528,8 @@ struct Retained {
     built: Built,
     pipeline: Arc<gpu::Pipeline>,
     buffer: wgpu::Buffer,
+    bases: wgpu::Buffer,
+    programs: Vec<(wgpu::Buffer, gpu::BindingProgram, gpu::Bindings)>,
     bytes: Vec<u8>,
     frames: Vec<usize>,
     grid: Option<usize>,
@@ -525,6 +540,7 @@ struct Retained {
     bundle: Option<(wgpu::RenderBundle, [u64; 4])>,
     still: u32,
     used: u64,
+    prepared: u64,
 }
 
 struct Keep {
@@ -967,6 +983,7 @@ impl Terrain {
                                         patch,
                                         cells,
                                         copy(offset),
+                                        self.coasts.capped(patch),
                                     )
                                     .map(|rimmed| Arc::<[u8]>::from(bytemuck::cast_slice(&rimmed))),
                             };
@@ -1260,6 +1277,9 @@ impl Terrain {
                 let mut slabs = self.slabs.clone();
                 slabs.extend(self.cut.as_ref().and_then(|cut| cut.stream.clone()));
                 let geometry = &self.geometry;
+                let replaced = self.retained.iter().position(|kept| {
+                    kept.built.mode == mode && kept.prepared < frame && Arc::ptr_eq(&kept.pipeline, pipeline)
+                });
                 let made = bind_retained(
                     arena,
                     pipeline,
@@ -1270,9 +1290,18 @@ impl Terrain {
                     &slabs,
                     geometry,
                     &|drawn| stream(geometry, rim_slab, drawn),
+                    replaced.map(|at| &self.retained[at]),
                 )?;
-                self.retained.push(made);
-                self.retained.len() - 1
+                match replaced {
+                    Some(at) => {
+                        self.retained[at] = made;
+                        at
+                    }
+                    None => {
+                        self.retained.push(made);
+                        self.retained.len() - 1
+                    }
+                }
             }
         };
         if let Some(retained) = inputs.retained {
@@ -1314,11 +1343,11 @@ impl Terrain {
                 let heights = match kept {
                     Some(heights) => heights,
                     None => {
-                        let mut sampled = heights(&self.bytes, self.map, patch);
-                        if let (true, Ok(capper)) = (coast, &self.coasts.coast) {
-                            capper.cap(&positions(), patch.origin, patch.step, &mut sampled);
-                        }
-                        let made: Arc<[u8]> = bytemuck::cast_slice(&sampled).into();
+                        let capped = self.coasts.capped(patch).filter(|_| coast);
+                        let made: Arc<[u8]> = match capped {
+                            Some(capped) => bytemuck::cast_slice(capped).into(),
+                            None => bytemuck::cast_slice(&heights(&self.bytes, self.map, patch)).into(),
+                        };
                         self.retained_heights.retain(|(v, ..)| *v != view);
                         self.retained_heights.push((view, patch, coast, made.clone()));
                         made
@@ -1329,6 +1358,7 @@ impl Terrain {
         }
         let kept = &mut self.retained[at];
         kept.used = frame;
+        kept.prepared = frame;
         let mut dirty: Vec<std::ops::Range<usize>> = Vec::new();
         for (view, scene) in inputs.frames.iter().enumerate() {
             let Some(&place) = kept.frames.get(view) else {
@@ -1541,13 +1571,16 @@ fn bind_retained(
     slabs: &[wgpu::Buffer],
     geometry: &BTreeMap<Patch, Geometry>,
     stream: &dyn Fn(&Drawn) -> (usize, u64),
+    replaced: Option<&Retained>,
 ) -> io::Result<Retained> {
     let device = arena.device();
     let mode = built.mode;
     let empty = |built: Built, buffer: wgpu::Buffer| Retained {
         pipeline: Arc::clone(pipeline),
+        bases: buffer.clone(),
         buffer,
         bytes: Vec::new(),
+        programs: Vec::new(),
         frames: Vec::new(),
         grid: None,
         draws: Vec::new(),
@@ -1557,6 +1590,7 @@ fn bind_retained(
         bundle: None,
         still: 0,
         used: 0,
+        prepared: 0,
         built,
     };
     let spare = || {
@@ -1599,26 +1633,36 @@ fn bind_retained(
             );
         }
     }
-    let bases_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("native terrain instance slabs"),
-        size: (bases.len() * 4).max(4) as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    arena.write(&bases_buffer, 0, bytemuck::cast_slice(&bases));
-    let mut programs: Vec<(usize, gpu::BindingProgram)> = Vec::new();
+    let base_bytes = (bases.len() * 4).max(4) as u64;
+    let bases_buffer = match replaced.filter(|replaced| replaced.bases.size() >= base_bytes) {
+        Some(replaced) => replaced.bases.clone(),
+        None => device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("native terrain instance slabs"),
+            size: base_bytes.next_power_of_two(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }),
+    };
+    let held = replaced.filter(|replaced| replaced.bases == bases_buffer && replaced.built.textures == built.textures);
+    let mut programs: Vec<(usize, gpu::BindingProgram, Option<gpu::Bindings>)> = Vec::new();
     for &(_, slab, ..) in &groups {
-        if programs.iter().any(|(held, _)| *held == slab) {
+        if programs.iter().any(|(held, ..)| *held == slab) {
             continue;
         }
-        let made = pipeline
-            .rows_program(
-                arena,
-                |read| textures.get(&read),
-                Some([slabs[slab].clone(), bases_buffer.clone()]),
-            )
-            .map_err(refuse)?;
-        programs.push((slab, made));
+        let kept = held.and_then(|held| held.programs.iter().find(|(bound, ..)| *bound == slabs[slab]));
+        programs.push(match kept {
+            Some((_, program, bound)) => (slab, program.clone(), Some(bound.clone())),
+            None => {
+                let program = pipeline
+                    .rows_program(
+                        arena,
+                        |read| textures.get(&read),
+                        Some([slabs[slab].clone(), bases_buffer.clone()]),
+                    )
+                    .map_err(refuse)?;
+                (slab, program, None)
+            }
+        });
     }
     let program = &programs.first().expect("a group was made above").1;
     let mut reserved = [0usize; 3];
@@ -1721,23 +1765,31 @@ fn bind_retained(
             device.limits().max_buffer_size
         )));
     }
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("native terrain constants"),
-        size: bytes.len() as u64,
-        usage: wgpu::BufferUsages::UNIFORM
-            | wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+    let size = bytes.len() as u64;
+    let buffer = match replaced.filter(|replaced| replaced.buffer.size() >= size) {
+        Some(replaced) => replaced.buffer.clone(),
+        None => device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("native terrain constants"),
+            size: size.next_power_of_two().min(device.limits().max_buffer_size).max(size),
+            usage: wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }),
+    };
+    if !replaced.is_some_and(|replaced| replaced.buffer == buffer) {
+        for (.., bound) in &mut programs {
+            *bound = None;
+        }
+    }
     let mut draws = Vec::with_capacity(groups.len());
     for ((view, slab, indices, count, patches), (block, arrays, base)) in
         groups.iter().zip(&laid)
     {
-        let program = &programs
-            .iter()
-            .find(|(held, _)| held == slab)
-            .expect("a program was made for every slab")
-            .1;
+        let (_, program, bound) = programs
+            .iter_mut()
+            .find(|(held, ..)| held == slab)
+            .expect("a program was made for every slab");
         let mut indexes: Vec<u32> = arrays
             .iter()
             .zip(&rows)
@@ -1764,15 +1816,20 @@ fn bind_retained(
                 (&bytes[place.0..place.0 + place.1], place.0 as u32)
             })
             .collect::<Vec<_>>();
+        let bindings = match bound {
+            Some(bound) => program.rebind_rows(bound, &blocks, *block as u32),
+            None => program.bind_rows(arena, &buffer, &blocks, *block as u32),
+        }
+        .map_err(refuse)?;
+        bound.get_or_insert_with(|| bindings.clone());
         draws.push(Keep {
             indices: indices.clone(),
             count: *count,
             instances: patches.len() as u32,
-            bindings: program
-                .bind_rows(arena, &buffer, &blocks, *block as u32)
-                .map_err(refuse)?,
+            bindings,
         });
     }
+    arena.write(&bases_buffer, 0, bytemuck::cast_slice(&bases));
     arena.write(&buffer, 0, &bytes);
     Ok(Retained {
         frames,
@@ -1781,6 +1838,11 @@ fn bind_retained(
         places,
         view_blocks,
         bytes,
+        bases: bases_buffer,
+        programs: programs
+            .into_iter()
+            .filter_map(|(slab, program, bound)| Some((slabs[slab].clone(), program, bound?)))
+            .collect(),
         ..empty(built, buffer)
     })
 }
@@ -2095,6 +2157,63 @@ mod tests {
         assert!(kept_view(&before, 0, &near, &refilled, &None).is_none(), "another rim in the slot");
         assert!(kept_view(&before, 1, &far, &refilled, &None).is_some(), "a view without rims ignores them");
         assert!(kept_view(&before, 2, &far, &slots, &None).is_none(), "a view the cut before had not");
+    }
+
+    #[test]
+    fn a_cover_change_after_a_still_frame_binds_into_the_groups_it_replaces() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let game = std::path::PathBuf::from(
+            std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap(),
+        );
+        let layers = ResolvedLayers::from_folders(&[(game.as_path(), &[][..])]).unwrap();
+        let map = [512, 256];
+        let effect = load(&layers, map, Decode::default()).unwrap();
+        let instance = gpu::instance();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, _queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let arena = gpu::Arena::new(&device);
+        let bytes = vec![200u8; (map[0] * map[1]) as usize];
+        let mut terrain = Terrain::new(&device, &effect, &bytes, map, 1, &Workers::default()).unwrap();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let scene = vec![0u8; 4096];
+        let row = |z: u32| {
+            Cover::Blocks((0..4).map(|x| Block { origin: [x * 2 * SIDE, z], step: 2, offset: 0.0, snap: [false; 4] }).collect())
+        };
+        let mut prepare = |cover: &Cover| {
+            arena.reset();
+            let inputs = Inputs {
+                retained: None,
+                frames: &[&scene],
+                offsets: &[0.0],
+                cover,
+                matrix: [[0.0; 4]; 4],
+                light_grid: [0.0; 4],
+                textures: [&view; 16],
+            };
+            let prepared = terrain.prepare(&arena, Mode::Receiver, inputs).unwrap();
+            terrain.retained[prepared.at].draws.iter().map(|keep| keep.bindings.clone()).collect::<Vec<_>>()
+        };
+        let (south, north) = (row(0), row(2 * SIDE));
+        let bound = prepare(&south);
+        let kept = prepare(&south);
+        assert!(!bound.is_empty() && bound.iter().zip(&kept).all(|(a, b)| a.same_groups(b)));
+        let moved = prepare(&north);
+        assert_eq!(moved.len(), bound.len());
+        assert!(
+            bound.iter().zip(&moved).all(|(a, b)| a.same_groups(b)),
+            "a cover change after a still frame binds into the groups of the entry it replaces"
+        );
     }
 
     #[test]

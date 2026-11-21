@@ -26,3 +26,6 @@ test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }
 unify-bytemuck = { workspace = true }
 unify-num-traits = { workspace = true }
+
+[lints]
+workspace = true

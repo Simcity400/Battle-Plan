@@ -47,3 +47,6 @@ unify-bytemuck = { workspace = true }
 unify-either = { workspace = true }
 unify-num-traits = { workspace = true }
 unify-smallvec = { workspace = true }
+
+[lints]
+workspace = true

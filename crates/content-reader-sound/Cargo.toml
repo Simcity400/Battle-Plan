@@ -31,3 +31,6 @@ unify-either = { workspace = true }
 unify-log = { workspace = true }
 unify-num-traits = { workspace = true }
 unify-smallvec = { workspace = true }
+
+[lints]
+workspace = true

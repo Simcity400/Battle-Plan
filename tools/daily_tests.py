@@ -5,16 +5,24 @@
 
 `install` makes the runner's own worktree of origin/main and registers the Windows task that runs
 it daily at `--at`, or as soon as it can after a missed start. `run` moves that worktree to the
-newest origin/main and holds TESTS_RUNNING while it runs every Rust test, the UI typecheck and
-tests, the dependency checks and the acceptance suite (tools/e2e/suite.py: the release app, built
-on Boat, on a copy of the `--fixture` recording). It compiles only with DISK_FLOOR free,
-without incremental compilation, and once the build finishes removes from its Cargo target
-whatever that build neither produced nor used, so the target holds one build. `--recorded-replies`
-names the replies the acceptance sweep recorded (`--record-replies`) from the `--fixture` recording,
-which the browser tests replay (BATTLE_PLAN_RECORDED_REPLIES). Its report goes to
-captures\\ci: latest.md, a folder per run with each step's log, kept 30 days, and
-history.tsv, kept whole. The acceptance suite's report is e2e/e2e.md in the run's folder; its
-visual baseline and last work stay in E2E_STATE.
+newest origin/main and holds TESTS_RUNNING while it runs, in GROUPS, the repository checks, the UI
+typecheck and tests, every Rust test and the acceptance suite (tools/e2e/suite.py: the release
+app, built on Boat, on a copy of the `--fixture` recording). RUST_BUILD says where the Rust tests
+compile: "boat" builds them on Boat and runs them here (tools/boat.py test); "local" runs nextest
+here, without incremental compilation, and once the build finishes removes from its Cargo target
+whatever that build neither produced nor used, so the target holds one build. Either runs only
+with DISK_FLOOR free, removing the runner's own Cargo target first when that brings it there.
+Rust tests are counted passed, failed, skipped or missing (tools/ci_results.py). `--recorded-replies` names the replies the acceptance sweep
+recorded (`--record-replies`) from the `--fixture` recording, which the browser tests replay
+(BATTLE_PLAN_RECORDED_REPLIES). Its report goes to captures\\ci: latest.md, rewritten
+as each group ends, a folder per run with each step's log, kept 30 days, and history.tsv, kept
+whole. The acceptance suite's report is e2e/e2e.md in the run's folder; its visual baseline and
+last work stay in E2E_STATE.
+
+On GitHub, through tools/ci_results.py, each group's result is the commit status
+`STATUS/<group>` on the tested commit as the group ends, the whole run's is `STATUS`, and one
+issue stays open while runs fail. A run that never reported leaves TESTS_RUNNING behind; the
+next run records it in history.tsv and on GitHub as unfinished.
 """
 
 import argparse
@@ -24,6 +32,7 @@ import msvcrt
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -32,6 +41,8 @@ import tomllib
 import traceback
 from pathlib import Path
 from xml.sax.saxutils import escape
+
+import ci_results
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKTREE = Path(r"ci\main")
@@ -49,8 +60,11 @@ NO_WINDOW = subprocess.CREATE_NO_WINDOW
 KEEP = datetime.timedelta(days=30)
 RUN_FOLDER = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{4}-[0-9a-f]{10}(?:-\d+)?$")
 RUN_MARK = "daily-tests-run.tsv"
-SUMMARY = re.compile(r"^\s*Summary \[")
-LISTED = re.compile(r"^\s*(\S.*?)\s+\[\s*[\d.]+s\]\s+(?:\(\s*\d+/\d+\)\s+)?(\S+\s+\S+)\s*$")
+OPEN_GROUPS = "open-groups.json"
+OUTCOME = "outcome.json"
+CHECKOUT_LOCK = "checkout.lock"
+STATUS = "daily-tests"
+ISSUE_TITLE = "Daily tests are failing on main"
 GB = 2**30
 DISK_FLOOR = 60 * GB
 UNIT_HASH = re.compile(r"-([0-9a-f]{16})(?=\.|$)")
@@ -58,34 +72,56 @@ UNIT_FOLDER = re.compile(r"^(.+)-([0-9a-f]{16})$")
 UNHASHED_EXTENSIONS = re.compile(r"[A-Za-z]+(?:\.[A-Za-z]+)?")
 
 
+RUST_BUILD = "boat"
+BOAT_FAILED = 75
+BOAT_RUST_LIMIT = datetime.timedelta(hours=6)
+NEXTEST_PROFILE = "daily"
+RUST_LIST = [
+    "cargo", "nextest", "list", "--workspace", "--profile", NEXTEST_PROFILE, "--message-format", "json",
+]
 RUST_TESTS = [
-    "cargo", "nextest", "run", "--workspace", "--no-fail-fast", "--final-status-level", "fail",
-    "--cargo-message-format", "json-render-diagnostics",
+    "cargo", "nextest", "run", "--workspace", "--profile", NEXTEST_PROFILE, "--no-fail-fast",
+    "--final-status-level", "fail", "--cargo-message-format", "json-render-diagnostics",
 ]
 
 
 def steps():
     """Each step: its name, its log's name, its command or a function of the run's `Build` and the
-    log giving its exit code and result, and the step or steps it needs to have passed."""
+    log giving its exit code and result, and the step or steps it needs to have passed. A group's
+    steps are together, the quick groups first, so their results come before the long ones'."""
     npm = shutil.which("npm.cmd") or "npm.cmd"
     python = str(Path(sys.executable).with_name("python.exe"))
     check = lambda script: [python, f"tools/{script}.py"]
     return [
-        ("Disk space", "disk", check_disk, None),
-        ("Rust tests", "rust", RUST_TESTS, "disk"),
-        ("Rust target sweep", "rust-sweep", sweep_target, "rust-build"),
-        ("UI install", "ui-install", [npm, "ci"], None),
-        ("UI typecheck", "ui-check", [npm, "run", "check:ui"], "ui-install"),
-        ("UI tests", "ui-tests", [npm, "run", "test:ui"], "ui-install"),
         ("Build dependencies", "build-dependencies", check("check-build-dependencies"), None),
         ("Content dependencies", "content-dependencies", check("check-content-dependencies"), None),
         ("Feature unification", "feature-unification", check("check-feature-unification"), None),
+        ("Nextest config", "nextest-config", check("check-nextest-config"), None),
         ("Machine paths", "machine-paths", check("check-machine-paths"), None),
         ("Citations", "citations", check("check-citations"), None),
         ("Agent context", "agent-context", check("check-agent-context"), None),
+        ("UI install", "ui-install", [npm, "ci"], None),
+        ("UI typecheck", "ui-check", [npm, "run", "check:ui"], "ui-install"),
+        ("UI tests", "ui-tests", [npm, "run", "test:ui"], "ui-install"),
+        ("Disk space", "disk", check_disk, None),
+        *([
+            ("Rust tests", "rust", rust_tests, "disk"),
+            ("Rust target sweep", "rust-sweep", sweep_target, "rust-build"),
+        ] if RUST_BUILD == "local" else [
+            ("Rust tests on Boat", "rust", boat_rust_tests, "disk"),
+        ]),
         ("Acceptance app build", "e2e-build", [python, "tools/e2e/suite.py", "build", "--out", str(E2E_APP)], None),
         ("Acceptance suite", "e2e", acceptance, ("e2e-build", "ui-install")),
     ]
+
+
+GROUPS = {
+    "repository": ("build-dependencies", "content-dependencies", "feature-unification", "nextest-config",
+                   "machine-paths", "citations", "agent-context"),
+    "ui": ("ui-install", "ui-check", "ui-tests"),
+    "rust": ("disk", "rust", "rust-sweep"),
+    "acceptance": ("e2e-build", "e2e"),
+}
 
 
 def bounded(command, stdout, stderr, seconds, environment=None):
@@ -127,16 +163,31 @@ def git(*args):
         return read(stdout)
 
 
-def lock_runner():
+def lock_runner(name="runner.lock"):
     """Lock out other runs for this process's life; None while another run holds the lock."""
     REPORTS.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(REPORTS / "runner.lock", os.O_RDWR | os.O_CREAT)
+    descriptor = os.open(REPORTS / name, os.O_RDWR | os.O_CREAT)
     try:
         msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
     except OSError:
         os.close(descriptor)
         return None
     return descriptor
+
+
+def hold_checkout():
+    """The checked-out runner's hold on the worktree for its life, or None while another holds it:
+    a runner whose parent died must not see the next run move its checkout."""
+    return lock_runner(CHECKOUT_LOCK)
+
+
+def checkout_free():
+    """Whether no checked-out runner holds the worktree."""
+    held = lock_runner(CHECKOUT_LOCK)
+    if held is None:
+        return False
+    os.close(held)
+    return True
 
 
 def duration(seconds):
@@ -162,6 +213,12 @@ def record_history(started, commit, result, failed):
         history.write(f"{started:%Y-%m-%d %H:%M}\t{(commit or '')[:10]}\t{result}\t{count}\n")
 
 
+def write_marker(text):
+    """Replaces TESTS_RUNNING whole, so an interrupted rewrite keeps the run it named."""
+    (REPORTS / (MARKER.name + ".tmp")).write_text(text, encoding="utf-8")
+    os.replace(REPORTS / (MARKER.name + ".tmp"), MARKER)
+
+
 def run_step(command, log, environment, seconds, stdout=None):
     """The step's exit code, or None when it ran out of time and was stopped. Its stdout goes to
     `stdout` when given, else to its log with its stderr."""
@@ -170,16 +227,36 @@ def run_step(command, log, environment, seconds, stdout=None):
         return bounded(command, stdout or output, errors, seconds, environment)
 
 
-def target_dir():
-    """The runner worktree's Cargo target: CARGO_TARGET_DIR, else its config's build.target-dir."""
-    configured = os.environ.get("CARGO_TARGET_DIR")
-    if not configured:
-        try:
-            with open(WORKTREE / ".cargo" / "config.toml", "rb") as config:
-                configured = tomllib.load(config).get("build", {}).get("target-dir")
-        except FileNotFoundError:
-            pass
+def configured_target():
+    """The runner worktree's own Cargo target: its config's build.target-dir, else `target`."""
+    try:
+        with open(WORKTREE / ".cargo" / "config.toml", "rb") as config:
+            configured = tomllib.load(config).get("build", {}).get("target-dir")
+    except FileNotFoundError:
+        configured = None
     return WORKTREE / (configured or "target")
+
+
+def target_dir():
+    """The Cargo target a local build uses: CARGO_TARGET_DIR, else the worktree's own."""
+    configured = os.environ.get("CARGO_TARGET_DIR")
+    return WORKTREE / configured if configured else configured_target()
+
+
+def rust_target():
+    """Where the Rust tests' files go: Boat's test programs under the worktree's own `.cargo-target`
+    (tools/boat.py test), else the Cargo target."""
+    return WORKTREE / ".cargo-target" if RUST_BUILD == "boat" else target_dir()
+
+
+def nextest_junit():
+    """Where nextest writes the daily profile's JUnit report: its store under the workspace root."""
+    try:
+        with open(WORKTREE / ".config" / "nextest.toml", "rb") as config:
+            store = tomllib.load(config).get("store", {}).get("dir")
+    except (OSError, tomllib.TOMLDecodeError):
+        store = None
+    return WORKTREE / (store or "target/nextest") / NEXTEST_PROFILE / "junit.xml"
 
 
 def size_of(folder):
@@ -207,12 +284,13 @@ def gigabytes(size):
 
 
 class Build:
-    """What the steps share: the Rust target, the `Units` of its build once it finished, and the run's
-    folder, environment, deadline and acceptance fixture."""
+    """What the steps share: the Rust target, the `Units` of its build once it finished, the counted
+    Rust `ci_results.Tests` once they ran, and the run's folder, environment, deadline and
+    acceptance fixture."""
 
     def __init__(self, target, folder=None, environment=None, deadline=None, fixture=None):
         self.target = target
-        self.units = None
+        self.units = self.tests = None
         self.folder, self.environment, self.deadline, self.fixture = folder, environment, deadline, fixture
 
 
@@ -241,18 +319,148 @@ def acceptance(build, log):
     return 1, f"failed: {report['failed']} failing rows, e2e/e2e.md"
 
 
+LOCKS = {".boat-test.lock", ".cargo-lock"}
+
+
+def not_owned(target):
+    """Why `target` is not the runner's to remove, or None: it must be the runner worktree's own
+    Cargo target, a plain folder holding no link, ignored by Git and holding nothing Git tracks, with
+    no Boat test run or Cargo build holding a lock in it. Nothing else builds in the runner's
+    worktree, and the runner lock keeps out other runs."""
+    try:
+        if target.resolve() != configured_target().resolve():
+            return "it is not the runner worktree's own Cargo target"
+        attributes = getattr(os.lstat(target), "st_file_attributes", 0)
+        if not target.is_dir() or target.is_symlink() or attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            return "it is not a plain folder"
+        relative = target.resolve().relative_to(WORKTREE.resolve()).as_posix()
+        if git("ls-files", "--", relative):
+            return "Git tracks files in it"
+        try:
+            git("check-ignore", "--quiet", "--no-index", "--", relative)
+        except RuntimeError:
+            return "Git does not ignore it"
+        for directory, folders, files in os.walk(target):
+            for name in folders:
+                if getattr(os.lstat(os.path.join(directory, name)), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                    return f"it links elsewhere at {os.path.relpath(os.path.join(directory, name), target)}"
+            for name in LOCKS.intersection(files):
+                with open(os.path.join(directory, name), "a+b") as held:
+                    held.seek(0)
+                    try:
+                        msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
+                    except OSError:
+                        return f"a build holds {os.path.relpath(os.path.join(directory, name), target)}"
+                    held.seek(0)
+                    msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
+    except (OSError, RuntimeError) as error:
+        return f"it could not be checked: {error}"
+    return None
+
+
 def check_disk(build, log):
+    """Passes with DISK_FLOOR free on the target's drive. Below it, removes the runner's own Cargo
+    target when that alone brings the drive to the floor, and keeps it when it would not."""
     drive = build.target.anchor
     try:
         free = shutil.disk_usage(drive).free
     except OSError as error:
         log.write_text(f"{error}\n", encoding="utf-8")
-        return 1, f"failed: the free space on {drive} could not be read"
+        return 1, "failed: the free space could not be read"
     floor = f"the {gigabytes(DISK_FLOOR)} floor"
-    log.write_text(f"{gigabytes(free)} free on {drive}; {floor}\n", encoding="utf-8")
+    notes = [f"{gigabytes(free)} free on {drive}; {floor}"]
+    reclaimed = ""
+    refused = not_owned(build.target) if free < DISK_FLOOR and build.target.exists() else None
+    if refused:
+        notes.append(f"kept {build.target}: {refused}")
+    elif free < DISK_FLOOR and build.target.exists():
+        size = size_of(build.target) or 0
+        if free + size < DISK_FLOOR:
+            notes.append(f"kept the runner's Cargo target {build.target} ({gigabytes(size)}): "
+                         f"removing it would not reach the floor")
+        else:
+            try:
+                shutil.rmtree(build.target)
+            except OSError as error:
+                notes.append(f"could not remove all of {build.target}: {error}")
+            try:
+                free = shutil.disk_usage(drive).free
+            except OSError as error:
+                notes.append(f"{error}")
+                log.write_text("\n".join(notes) + "\n", encoding="utf-8")
+                return 1, "failed: the free space could not be read"
+            notes.append(f"removed the runner's Cargo target {build.target} ({gigabytes(size)}); "
+                         f"{gigabytes(free)} free")
+            reclaimed = f", after removing the runner's {gigabytes(size)} Cargo target"
+    log.write_text("\n".join(notes) + "\n", encoding="utf-8")
     if free < DISK_FLOOR:
-        return 1, f"failed: {gigabytes(free)} free on {drive}, below {floor}"
-    return 0, f"passed: {gigabytes(free)} free on {drive}"
+        return 1, f"failed: {gigabytes(free)} free{reclaimed}, below {floor}"
+    return 0, f"passed: {gigabytes(free)} free{reclaimed}"
+
+
+def rust_tests(build, log):
+    """Lists the workspace's tests, which builds them, then runs them with nextest; counts each test
+    the filters select as passed, failed or missing, and each they leave out as skipped. Keeps the
+    listing and JUnit report in the run's folder."""
+    junit = nextest_junit()
+    listing = build.folder / "rust-list.json"
+    with open(log, "wb") as output:
+        try:
+            junit.unlink(missing_ok=True)
+        except OSError as error:
+            output.write(f"could not remove the last run's {junit}: {error}\n".encode())
+            return 1, "failed: the last run's JUnit report could not be removed"
+        with open(listing, "wb") as listed:
+            code = bounded(RUST_LIST, listed, output, build.deadline - time.monotonic(), build.environment)
+        if code == 0:
+            output.write(b"\n")
+            output.flush()
+            with tempfile.TemporaryFile() as messages:
+                code = bounded(RUST_TESTS, messages, output, build.deadline - time.monotonic(), build.environment)
+                units, finished = cargo_units(messages)
+            if code is not None and (finished or (finished is None and junit.is_file())):
+                build.units = units
+    report = None
+    if junit.is_file():
+        shutil.copyfile(junit, build.folder / "rust-junit.xml")
+        report = junit.read_text(encoding="utf-8", errors="replace")
+    listed_text = listing.read_text(encoding="utf-8", errors="replace") if listing.is_file() else None
+    build.tests = ci_results.tests(listed_text, report)
+    if code is None:
+        return 1, f"stopped: out of time; {build.tests.describe()}"
+    if code == 0 and build.tests.complete():
+        return 0, f"passed: {build.tests.describe()}"
+    return 1, f"failed (exit {code}): {build.tests.describe()}"
+
+
+def boat_rust_tests(build, log):
+    """Builds every workspace crate's tests on Boat and runs them here (tools/boat.py test), once
+    again when Boat itself failed; counts them from the programs' output. Stopped after
+    BOAT_RUST_LIMIT, since libtest stops no test that hangs."""
+    import boat
+    packages = sorted(boat.workspace(WORKTREE)[0])
+    command = [
+        str(Path(sys.executable).with_name("python.exe")), "tools/boat.py", "test", "--no-fail-fast",
+        *(argument for package in packages for argument in ("-p", package)),
+    ]
+    stop = min(build.deadline, time.monotonic() + BOAT_RUST_LIMIT.total_seconds())
+    with open(log, "wb") as output:
+        for attempt in range(2):
+            began = output.tell()
+            code = bounded(command, output, subprocess.STDOUT, stop - time.monotonic(), build.environment)
+            output.seek(0, os.SEEK_END)
+            if code != BOAT_FAILED or attempt or time.monotonic() >= stop:
+                break
+            output.write(b"\nBoat itself failed (exit 75); running it again.\n\n")
+            output.flush()
+    build.tests = ci_results.libtest(log.read_bytes()[began:].decode("utf-8", errors="replace"))
+    if code is None:
+        return 1, f"stopped: out of time; {build.tests.describe()}"
+    if code == BOAT_FAILED:
+        return 1, f"failed: Boat itself failed twice (exit 75); {build.tests.describe()}"
+    if code == 0 and build.tests.complete():
+        return 0, f"passed: {build.tests.describe()}"
+    return 1, f"failed (exit {code}): {build.tests.describe()}"
 
 
 class Units:
@@ -390,16 +598,6 @@ def sweep_target(build, log):
     return 0, f"passed: removed {len(removals)} stale entries"
 
 
-def not_passed(log):
-    """Each test nextest lists as failing, with its status; None without its summary."""
-    text = log.read_text(encoding="utf-8", errors="replace").splitlines()
-    summaries = [index for index, line in enumerate(text) if SUMMARY.match(line)]
-    if not summaries:
-        return None
-    listed = (LISTED.match(line) for line in text[summaries[-1] + 1 :])
-    return [f"{match.group(1)} {match.group(2)}" for match in listed if match]
-
-
 def run_folder(started, commit):
     """A folder this run creates for its logs, marked as the runner's; never an existing one."""
     name = f"{started:%Y-%m-%d-%H%M}-{commit[:10]}"
@@ -432,10 +630,83 @@ def prune(now):
             continue
 
 
+def publisher():
+    """Where results are published: the repository the runner's worktree is a clone of."""
+    return ci_results.GitHub(WORKTREE, shutil.which("gh") or "gh")
+
+
+class Publishing:
+    """Statuses and the tracking issue through a `ci_results.GitHub`, with what failed kept to report."""
+
+    def __init__(self, github):
+        self.github, self.failures = github, []
+
+    def status(self, commit, context, state, description):
+        if commit:
+            self.note(self.github.status(commit, context, state, description))
+
+    def track(self, failing, body):
+        self.note(self.github.track(failing, ISSUE_TITLE, body))
+
+    def note(self, failure):
+        if failure:
+            self.failures.append(f"Not published: {failure}")
+
+
+class RunFailed(RuntimeError):
+    """A failure of the run itself, named without local paths."""
+
+
+def write_open_groups(folder, groups):
+    (folder / (OPEN_GROUPS + ".tmp")).write_text(json.dumps({"open": groups}), encoding="utf-8")
+    os.replace(folder / (OPEN_GROUPS + ".tmp"), folder / OPEN_GROUPS)
+
+
+def close_open_groups(folder, commit, publishing, description):
+    """Sets each group the run's folder names as not yet ended to error on `commit`."""
+    try:
+        groups = json.loads((folder / OPEN_GROUPS).read_text(encoding="utf-8"))["open"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    for group in groups:
+        publishing.status(commit, f"{STATUS}/{group}", "error", description)
+
+
+def run_step_row(build, name, slug, command, needs, passed, log):
+    """Runs one step unless a step it needs did not pass or time is up; its report row."""
+    missing = [need for need in ((needs,) if isinstance(needs, str) else needs or ()) if need not in passed]
+    if missing:
+        return f"| {name} | not run: {', '.join(missing)} failed | | |"
+    if time.monotonic() >= build.deadline:
+        return f"| {name} | not run: out of time | | |"
+    began = time.monotonic()
+    if callable(command):
+        code, outcome = command(build, log)
+    else:
+        code = run_step(command, log, build.environment, build.deadline - began)
+        outcome = "passed" if code == 0 else "stopped: out of time" if code is None else f"failed (exit {code})"
+    if code == 0:
+        passed.add(slug)
+    if slug == "rust" and build.units is not None:
+        passed.add("rust-build")
+    return f"| {name} | {outcome} | {duration(time.monotonic() - began)} | {log.name} |"
+
+
+def group_result(slugs, names, passed, tests):
+    """A group's commit status state and description."""
+    failed = [names[slug] for slug in slugs if slug not in passed]
+    description = "passed" if not failed else f"failed: {', '.join(failed)}"
+    if "rust" in slugs:
+        description += f"; {(tests or ci_results.Tests()).describe()}"
+    return ("failure" if failed else "success"), description
+
+
 def run_checked_out(args):
     commit, started, deadline, folder = args.continue_run
     started = datetime.datetime.fromisoformat(started)
     deadline, folder = float(deadline), Path(folder)
+    if hold_checkout() is None:
+        raise RuntimeError("another checked-out runner holds the worktree")
     actual = git("rev-parse", "HEAD")
     if actual != commit:
         raise RuntimeError(f"checked-out runner expected {commit}, HEAD is {actual}")
@@ -447,67 +718,139 @@ def run_checked_out(args):
     environment.pop("BATTLE_PLAN_RECORDED_REPLIES", None)
     if args.recorded_replies:
         environment["BATTLE_PLAN_RECORDED_REPLIES"] = args.recorded_replies
-    build =Build(target_dir(), folder, environment, deadline, args.fixture)
+    build = Build(rust_target(), folder, environment, deadline, args.fixture)
     size_at_start = size_of(build.target)
     plan = steps()
-    rows, failures, passed, summary = [], None, set(), None
+    names = {slug: name for name, slug, _, _ in plan}
+    groups = {group: [slug for slug in slugs if slug in names] for group, slugs in GROUPS.items()}
+    groups = {group: slugs for group, slugs in groups.items() if slugs}
+    publishing = Publishing(publisher())
+    write_open_groups(folder, list(groups))
+    for group in groups:
+        publishing.status(commit, f"{STATUS}/{group}", "pending", "running")
+    table = ["| Step | Result | Time | Log |", "|---|---|---|---|"]
+    rows, passed, done, ended = [], set(), set(), []
     for name, slug, command, needs in plan:
-        log = folder / f"{slug}.log"
-        missing = [need for need in ((needs,) if isinstance(needs, str) else needs or ()) if need not in passed]
-        if missing:
-            rows.append(f"| {name} | not run: {', '.join(missing)} failed | | |")
-            continue
-        if time.monotonic() >= deadline:
-            rows.append(f"| {name} | not run: out of time | | |")
-            continue
-        began = time.monotonic()
-        if callable(command):
-            code, outcome = command(build, log)
-            if code == 0:
-                passed.add(slug)
-            took = duration(time.monotonic() - began)
-            rows.append(f"| {name} | {outcome} | {took} | {log.name} |")
-            continue
-        if slug == "rust":
-            with tempfile.TemporaryFile() as messages:
-                code = run_step(command, log, environment, deadline - began, messages)
-                units, finished = cargo_units(messages)
-        else:
-            code = run_step(command, log, environment, deadline - began)
-        took = duration(time.monotonic() - began)
-        if slug == "rust":
-            failures = not_passed(log)
-            text = log.read_text(encoding="utf-8", errors="replace").splitlines()
-            summary = next((line.strip() for line in reversed(text) if SUMMARY.match(line)), None)
-            if code is not None and (finished or (finished is None and summary)):
-                build.units = units
-                passed.add("rust-build")
-        if code == 0:
-            passed.add(slug)
-            rows.append(f"| {name} | passed | {took} | {log.name} |")
-        elif code is None:
-            rows.append(f"| {name} | stopped: out of time | {took} | {log.name} |")
-        else:
-            rows.append(f"| {name} | failed (exit {code}) | {took} | {log.name} |")
+        rows.append(run_step_row(build, name, slug, command, needs, passed, folder / f"{slug}.log"))
+        done.add(slug)
+        for group, slugs in groups.items():
+            if group not in ended and done.issuperset(slugs):
+                ended.append(group)
+                state, description = group_result(slugs, names, passed, build.tests)
+                publishing.status(commit, f"{STATUS}/{group}", state, description)
+                running = [other for other in groups if other not in ended]
+                write_open_groups(folder, running)
+                try:
+                    write_report("RUNNING", [
+                        heading, f"Started {started:%Y-%m-%d %H:%M}. Logs: {folder}", "", *table, *rows, "",
+                        f"Still running: {', '.join(running)}." if running else "Reporting.",
+                    ])
+                except OSError:
+                    pass
     result = "passed" if all(slug in passed for _, slug, _, _ in plan) else "failed"
+    tests = build.tests or ci_results.Tests()
+    counted = [f"Rust tests: {tests.describe()}."]
+    if tests.failures:
+        counted += ["", "## Tests that did not pass", "", *(f"- {test}" for test in tests.failures)]
     lines = [
         heading,
         f"{started:%Y-%m-%d %H:%M} to {datetime.datetime.now():%H:%M}. Logs: {folder}",
         f"Rust target {build.target}: {gigabytes(size_at_start)} at start, "
         f"{gigabytes(size_of(build.target))} at end.",
-        "",
-        "| Step | Result | Time | Log |",
-        "|---|---|---|---|",
-        *rows,
+        "", *table, *rows, "", *counted,
     ]
-    if summary:
-        lines += ["", summary]
-    if failures:
-        lines += ["", "## Tests that did not pass", "", *(f"- {test}" for test in failures)]
+    if publishing.failures:
+        lines += ["", *publishing.failures]
+    public = [heading, "", *table, *rows, "", *counted]
     (folder / "result.json").write_text(json.dumps({
-        "result": result, "failed": None if failures is None else len(failures), "lines": lines,
+        "result": result, "failed": tests.failed, "lines": lines, "public": public,
     }), encoding="utf-8")
     return 0
+
+
+def unfinished_run():
+    """The start, commit and folder of the run that left MARKER behind without recording its
+    result, or None; the commit and folder are None when it never made its folder."""
+    try:
+        parts = MARKER.read_text(encoding="utf-8").split()
+        started = datetime.datetime.strptime(" ".join(parts[1:3]), "%Y-%m-%d %H:%M")
+    except (OSError, ValueError):
+        return None
+    folder = REPORTS / parts[3] if len(parts) > 3 and RUN_FOLDER.match(parts[3]) else None
+    try:
+        commit = (folder / RUN_MARK).read_text(encoding="utf-8").strip().split("\t")[1] if folder else None
+    except (OSError, IndexError):
+        commit = None
+    return started, commit, folder
+
+
+def save_outcome(folder, outcome):
+    """Saves a run's outcome in its folder whole or not at all; whether it was saved."""
+    if folder is None:
+        return True
+    try:
+        (folder / (OUTCOME + ".tmp")).write_text(json.dumps(outcome), encoding="utf-8")
+        os.replace(folder / (OUTCOME + ".tmp"), folder / OUTCOME)
+    except OSError:
+        return False
+    return True
+
+
+def outcome_of(started, result, failed, public):
+    """What a run publishes and records once its result is known."""
+    heading = "RUNNER ERROR" if result == "error" else result.upper()
+    return {"result": result, "failed": failed, "recorded": False,
+            "state": {"passed": "success", "failed": "failure"}.get(result, "error"),
+            "description": f"{result} {started:%Y-%m-%d %H:%M}", "failing": result != "passed",
+            "body": report_text(heading, public)}
+
+
+def saved_outcome(started, folder):
+    """The outcome a stopped run saved, else the one its checked-out runner's result gives when only
+    the parent stopped; None without either."""
+    for name in (OUTCOME, "result.json"):
+        try:
+            saved = json.loads((folder / name).read_text(encoding="utf-8"))
+            if name == OUTCOME:
+                return saved
+            public = saved.get("public") or [f"Result: {saved['result']}."]
+            return outcome_of(started, saved["result"], saved["failed"], public)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return None
+
+
+def report_unfinished(unfinished, publishing):
+    """Records a run that never reported, in history.tsv and on GitHub, or publishes the result it
+    saved before it stopped; the report lines it adds. A history.tsv it cannot append to is said,
+    and its statuses are published still."""
+    started, commit, folder = unfinished
+    outcome = saved_outcome(started, folder) if folder else None
+    lines = []
+
+    def history(result, failed):
+        try:
+            record_history(started, commit, result, failed)
+        except OSError as error:
+            lines.append(f"Could not append the run started {started:%Y-%m-%d %H:%M} to history.tsv: {error}")
+
+    if outcome:
+        if not outcome.get("recorded"):
+            history(outcome["result"], outcome["failed"])
+        if outcome["state"] == "error":
+            close_open_groups(folder, commit, publishing, "the run ended before this group did")
+        publishing.status(commit, STATUS, outcome["state"], outcome["description"])
+        publishing.track(outcome["failing"], outcome["body"])
+        said = f"The daily run started {started:%Y-%m-%d %H:%M} saved its result but stopped before publishing it; published now."
+        return [said, *lines, ""]
+    history("unfinished", None)
+    said = f"The daily run started {started:%Y-%m-%d %H:%M}" + (f" on {commit[:10]}" if commit else "")
+    said += " never reported: it was stopped, or the machine went down, before it finished."
+    publishing.status(commit, STATUS, "error", f"unfinished: the run started {started:%Y-%m-%d %H:%M} never reported")
+    if folder:
+        close_open_groups(folder, commit, publishing, "unfinished: the run never reached this group's end")
+    publishing.track(True, report_text("UNFINISHED", [said]))
+    return [said, *lines, ""]
 
 
 def run(args):
@@ -516,17 +859,27 @@ def run(args):
     lock = lock_runner()
     if lock is None:
         return 0
+    if not checkout_free():
+        os.close(lock)
+        return 0
     deadline = time.monotonic() + DEADLINE.total_seconds()
     started = datetime.datetime.now()
     commit, folder, log = None, None, None
+    publishing = Publishing(publisher())
+    earlier = []
     try:
         try:
-            MARKER.write_text(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n", encoding="utf-8")
+            unfinished = unfinished_run()
+            if unfinished:
+                earlier = report_unfinished(unfinished, publishing)
+            write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n")
             write_report("RUNNING", [f"Started {started:%Y-%m-%d %H:%M}. Earlier runs: history.tsv."])
             git("fetch", "--quiet", "origin", "main")
             git("checkout", "--quiet", "--detach", "--force", "origin/main")
             commit = git("rev-parse", "HEAD")
             folder = run_folder(started, commit)
+            write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M} {folder.name}\n")
+            publishing.status(commit, STATUS, "pending", f"running since {started:%Y-%m-%d %H:%M}")
             log = folder / "runner.log"
             command = [
                 sys.executable, str(WORKTREE / "tools" / "daily_tests.py"), "run",
@@ -536,16 +889,20 @@ def run(args):
             ]
             remaining = deadline - time.monotonic()
             if remaining <= REPORT_MARGIN:
-                raise RuntimeError("out of time before starting the checked-out runner")
+                raise RunFailed("out of time before starting the checked-out runner")
             code = run_step(command, log, None, remaining)
             if code is None:
-                raise RuntimeError("checked-out runner stopped: out of time")
+                raise RunFailed("checked-out runner stopped: out of time")
             if code != 0:
-                raise RuntimeError(f"checked-out runner failed (exit {code})")
-            completed = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+                raise RunFailed(f"checked-out runner failed (exit {code})")
+            try:
+                completed = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                raise RunFailed("the checked-out runner left no readable result") from None
             result, failed, lines = completed["result"], completed["failed"], completed["lines"]
+            public = completed.get("public") or [f"main {commit[:10]}: {result}.", "Its report is latest.md on the test machine."]
             code = {"passed": 0, "failed": 1}[result]
-        except Exception:
+        except Exception as failure:
             error = traceback.format_exc().rstrip()
             if log is not None:
                 try:
@@ -554,12 +911,25 @@ def run(args):
                     pass
             result, failed, code = "error", None, 2
             lines = ["```", error, "```"]
+            said = failure if isinstance(failure, RunFailed) else type(failure).__name__
+            public = [f"The runner failed: {said}.", "Its report is latest.md on the test machine."]
+        heading = "RUNNER ERROR" if result == "error" else result.upper()
+        outcome = outcome_of(started, result, failed, public)
+        state = outcome["state"]
+        if not save_outcome(folder, outcome):
+            code = 2
         try:
             record_history(started, commit, result, failed)
+            outcome["recorded"] = True
+            save_outcome(folder, outcome)
         except OSError:
-            result, code = "error", 2
+            heading, code = "RUNNER ERROR", 2
             lines += ["", "Could not append history.tsv:", "```", traceback.format_exc().rstrip(), "```"]
-        heading = "RUNNER ERROR" if result == "error" else result.upper()
+        if result == "error" and folder is not None:
+            close_open_groups(folder, commit, publishing, "the run ended before this group did")
+        publishing.status(commit, STATUS, state, outcome["description"])
+        publishing.track(outcome["failing"], outcome["body"])
+        lines = [*earlier, *lines, *([""] + publishing.failures if publishing.failures else [])]
         report = report_text(heading, lines)
         try:
             write_report(heading, lines)
@@ -574,12 +944,13 @@ def run(args):
             prune(started)
         except OSError:
             code = 2
-        return code
-    finally:
         try:
             MARKER.unlink(missing_ok=True)
-        finally:
-            os.close(lock)
+        except OSError:
+            code = 2
+        return code
+    finally:
+        os.close(lock)
 
 
 TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>

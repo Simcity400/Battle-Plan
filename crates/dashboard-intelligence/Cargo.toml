@@ -63,3 +63,6 @@ unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-core = { workspace = true }
+
+[lints]
+workspace = true

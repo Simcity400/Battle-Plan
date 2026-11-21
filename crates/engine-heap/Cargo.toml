@@ -20,3 +20,6 @@ windows-sys = { workspace = true, features = ["Win32_System_Memory"] }
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 test-unify = { workspace = true }
+
+[lints]
+workspace = true

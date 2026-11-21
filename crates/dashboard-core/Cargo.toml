@@ -54,3 +54,6 @@ unify-num-traits = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-winapi-util = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
+
+[lints]
+workspace = true

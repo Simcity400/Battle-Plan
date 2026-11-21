@@ -31,3 +31,6 @@ engine-land-inputs.workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 test-unify = { workspace = true }
+
+[lints]
+workspace = true
