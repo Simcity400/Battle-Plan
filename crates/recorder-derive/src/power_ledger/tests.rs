@@ -94,6 +94,9 @@ const LINKED_DELETED: i32 = 103;
 const SHARED: i32 = 104;
 const SHARED_PUBLISHED: i32 = 105;
 const SHARED_DELETED: i32 = 106;
+const REPUBLISHED: i32 = 107;
+const OTHER_PUBLISHED: i32 = 108;
+const UNSHARED_DELETED: i32 = 109;
 const NO_CHANGES: i32 = 26;
 
 fn edit(store: &mut Store, hour: i32) {
@@ -215,6 +218,20 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(96, 1, PowerDailyCostKind::MioResearch, Q / 10, 8) }, TEXTS).unwrap();
         }
         SHARED_DELETED => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 3 << 32 | 1).unwrap();
+            testing::put(store, TableId::CountryPowerDaily, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2, 8) }, TEXTS).unwrap();
+        }
+        REPUBLISHED => {
+            testing::put(store, TableId::CountryPowerDaily, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2 + Q / 10, 8) }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 3, ..cost(96, 1, PowerDailyCostKind::MioResearch, Q / 10, 8) }, TEXTS).unwrap();
+        }
+        OTHER_PUBLISHED => {
+            testing::put(store, TableId::CountryPowerDaily, &CountryPowerDailyRow { country: 4, ..daily(96, 3 * Q, Q / 4, 9) }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &CountryPowerDailyCostRow { country: 4, ..cost(96, 0, PowerDailyCostKind::Relation, Q / 4, 9) }, TEXTS).unwrap();
+        }
+        UNSHARED_DELETED => {
+            testing::put(store, TableId::Countries, &CountryRow { id: 4, canonical_slot: 40, ..Default::default() }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 4, canonical_slot: 40 }, TEXTS).unwrap();
             testing::remove(store, TableId::CountryPowerDailyCosts, 3 << 32 | 1).unwrap();
             testing::put(store, TableId::CountryPowerDaily, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2, 8) }, TEXTS).unwrap();
         }
@@ -444,6 +461,10 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     assert_eq!((shared(&published, 0), shared(&published, 1)), (Some(Q / 2), Some(Q / 10)));
     let (shared_deleted, _) = through(0..=SHARED_DELETED);
     assert_eq!((shared(&shared_deleted, 0), shared(&shared_deleted, 1)), (Some(Q / 2), None), "on a shared holder a deletion withdraws the dropped cost and keeps the survivor as published");
+    let (other, _) = through(0..=OTHER_PUBLISHED);
+    assert_eq!(shared(&other, 0), Some(Q / 4));
+    let (unshared, _) = through(0..=UNSHARED_DELETED);
+    assert_eq!(shared(&unshared, 0), Some(Q / 4), "a deletion leaves a part another application published as it was");
 }
 
 #[test]

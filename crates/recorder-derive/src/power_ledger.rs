@@ -751,6 +751,9 @@ impl PowerLedger {
             for (ordinal, (sum, payments, first)) in items {
                 let key = part_key(holder, POLITICAL, ordinal);
                 let held = if opens { Self::held_part(own, pending, key, day)? } else { None };
+                if publication.deleted_only && held.as_ref().is_none_or(|held| held.sequence != Some(sequence)) {
+                    continue;
+                }
                 let part = Part {
                     holder,
                     currency: POLITICAL,
