@@ -1,6 +1,10 @@
-use std::sync::{
-    OnceLock,
-    atomic::{Ordering, fence},
+use std::{
+    marker::PhantomData,
+    ptr,
+    sync::{
+        OnceLock,
+        atomic::{Ordering, fence},
+    },
 };
 
 pub trait Changes {
@@ -22,17 +26,56 @@ pub struct EntryImage {
 #[derive(Clone, Copy, Debug)]
 pub struct HolderImage<'a> {
     pub header: [u8; 16],
-    pub entries: &'a [EntryImage],
-    pub text: &'a [u8],
+    entries: &'a [EntryImage],
+    text: *const u8,
+    text_len: usize,
+    _text: PhantomData<&'a [u8]>,
 }
 
-impl HolderImage<'_> {
-    pub fn identity(&self, entry: &EntryImage) -> Result<&[u8], &'static str> {
+impl<'a> HolderImage<'a> {
+    pub fn new(header: [u8; 16], entries: &'a [EntryImage], text: &'a [u8]) -> Self {
+        Self {
+            header,
+            entries,
+            text: text.as_ptr(),
+            text_len: text.len(),
+            _text: PhantomData,
+        }
+    }
+
+    /// # Safety
+    /// For `'a`, `text` points to `text_len` bytes in one allocation, and the bytes each of
+    /// `entries` names there are initialized and unchanged. Other bytes in the span may change.
+    pub unsafe fn published(
+        header: [u8; 16],
+        entries: &'a [EntryImage],
+        text: *const u8,
+        text_len: usize,
+    ) -> Self {
+        Self {
+            header,
+            entries,
+            text,
+            text_len,
+            _text: PhantomData,
+        }
+    }
+
+    pub fn entries(&self) -> &'a [EntryImage] {
+        self.entries
+    }
+
+    pub fn identity(&self, entry: &EntryImage) -> Result<&'a [u8], &'static str> {
+        if !self.entries.as_ptr_range().contains(&ptr::from_ref(entry)) {
+            return Err("character portrait pre-image entry from another holder");
+        }
         let [start, len] = entry.text;
-        start
-            .checked_add(len)
-            .and_then(|end| self.text.get(start..end))
-            .ok_or("character portrait pre-image outside its text")
+        if start.checked_add(len).is_none_or(|end| end > self.text_len) {
+            return Err("character portrait pre-image outside its text");
+        }
+        // SAFETY: the range lies within the text span and belongs to one of this image's
+        // entries, which its constructor keeps unchanged for `'a`.
+        Ok(unsafe { std::slice::from_raw_parts(self.text.add(start), len) })
     }
 }
 

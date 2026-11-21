@@ -1612,7 +1612,8 @@ pub(crate) struct NavalMissionLoan {
 #[derive(Default)]
 pub(crate) struct SlowStores {
     pub(crate) doctrine_bytes: u64,
-    pub(crate) doctrines: Option<Box<std::sync::Mutex<collector_slow_tables::doctrines::Store>>>,
+    pub(crate) doctrines:
+        Option<engine_allocation::SharedBox<std::sync::Mutex<collector_slow_tables::doctrines::Store>>>,
     pub(crate) available: Option<Box<crate::slicing::SliceFingerprints>>,
     pub(crate) advisors: Option<Box<hired_advisors::AdvisorStore>>,
     pub(crate) local_subunits: Option<Box<model_inputs::LocalStore>>,

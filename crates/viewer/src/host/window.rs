@@ -43,6 +43,7 @@ pub(crate) struct Link {
     cursor: AtomicU8,
     tracking: AtomicBool,
     surrogate: Mutex<Option<u16>>,
+    window_released: AtomicBool,
 }
 
 impl Link {
@@ -74,12 +75,13 @@ impl Window {
             cursor: AtomicU8::new(0),
             tracking: AtomicBool::new(false),
             surrogate: Mutex::new(None),
+            window_released: AtomicBool::new(false),
         });
         let class = wide(CLASS);
         let title = wide(title);
-        // SAFETY: a class registered once per process with this module's procedure; the window
-        // keeps one strong reference to the link, released at WM_NCDESTROY. A creation that fails
-        // after WM_NCCREATE releases it a second time below (#19).
+        // SAFETY: a class registered once per process with this module's procedure. The window
+        // procedure takes the strong reference passed here at WM_NCCREATE and releases it at
+        // WM_NCDESTROY, marking the link; a failed creation releases it only when it was not.
         unsafe {
             let instance = GetModuleHandleW(ptr::null());
             let description = WNDCLASSEXW {
@@ -112,8 +114,11 @@ impl Window {
                 raw.cast(),
             );
             if hwnd.is_null() {
-                drop(Arc::from_raw(raw));
-                return Err(io::Error::last_os_error());
+                let error = io::Error::last_os_error();
+                if !link.window_released.load(Ordering::Acquire) {
+                    drop(Arc::from_raw(raw));
+                }
+                return Err(error);
             }
             if parent.is_none() {
                 let mut outer = RECT { left: 0, top: 0, right: size[0] as i32, bottom: size[1] as i32 };
@@ -333,6 +338,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         }
         if message == WM_NCDESTROY {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            (*raw).window_released.store(true, Ordering::Release);
             drop(Arc::from_raw(raw));
             return DefWindowProcW(hwnd, message, wparam, lparam);
         }

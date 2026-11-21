@@ -297,7 +297,7 @@ pub fn capture_presentation(
                 let count = crate::cpdx_array::Array::from_header(image.header, 0x38)
                     .ok_or("commander array invalid")?
                     .count as usize;
-                if count != image.entries.len() {
+                if count != image.entries().len() {
                     return Err("character portrait pre-image incomplete");
                 }
                 crate::allocation::resize_default(&mut row.portraits, count)
@@ -305,7 +305,7 @@ pub fn capture_presentation(
                 row.portraits_len = count;
                 row.portrait_text.clear();
                 row.portrait_text_len = 0;
-                for (index, entry) in image.entries.iter().enumerate() {
+                for (index, entry) in image.entries().iter().enumerate() {
                     let text = image.identity(entry)?;
                     let start = row.portrait_text_len;
                     crate::allocation::resize(&mut row.portrait_text, start + text.len(), 0)
@@ -1237,11 +1237,7 @@ mod tests {
         header[..8].copy_from_slice(&0x10000_u64.to_le_bytes());
         header[8..12].copy_from_slice(&2_u32.to_le_bytes());
         header[12..].copy_from_slice(&2_u32.to_le_bytes());
-        let image = HolderImage {
-            header,
-            entries,
-            text: b"before",
-        };
+        let image = HolderImage::new(header, entries, b"before");
         test_images::set(CHARACTER + ccharacter::PORTRAIT_DATA, Some(image));
         let row = capture(&f, 0, HANDLE);
         test_images::set(0, None);

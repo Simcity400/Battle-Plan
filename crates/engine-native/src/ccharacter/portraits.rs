@@ -212,7 +212,7 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                 )
                 .ok_or("character portrait array invalid")?
                 .count as usize;
-                if count != image.entries.len() {
+                if count != image.entries().len() {
                     return Err("character portrait pre-image incomplete");
                 }
                 required = required
@@ -222,7 +222,7 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                 if len == output.len() || count > entries.len().saturating_sub(used) {
                     return Ok(None);
                 }
-                for entry in image.entries {
+                for entry in image.entries() {
                     entries[used] = crate::character_portrait_entry::from_image(&image, entry)?;
                     used += 1;
                 }

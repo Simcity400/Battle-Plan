@@ -33,6 +33,22 @@ fn park(batch: &mut acquisition::Batch<'_>, request: acquisition::Job) -> Pendin
 }
 
 #[test]
+fn a_slow_loan_dropped_by_an_unwinding_capture_leaves_the_doctrine_observer_store_alive() {
+    let shared = Shared::new(0, 0, 1);
+    let bound = collector_observers::doctrine_changes::bound_context();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let stores = unsafe { lend_slow_stores(&shared) };
+        let lent = stores.doctrines.as_deref().map(|store| store as *const _ as usize);
+        assert_eq!(lent, Some(bound));
+        panic!("slow capture unwinds with its stores on loan");
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(engine_allocation::SharedBox::as_ptr(&shared.doctrine_store) as usize, bound);
+    assert_eq!(engine_allocation::SharedBox::strong_count(&shared.doctrine_store), 1);
+    assert!(shared.doctrine_store.lock().is_ok());
+}
+
+#[test]
 fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inputs() {
     let shared = Shared::new(0, 0, 1);
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();

@@ -1,7 +1,10 @@
+use std::borrow::Cow;
+
 use crate::{Verified, Withheld};
 
 pub struct Image<'a> {
     sections: Vec<Section<'a>>,
+    live: Option<&'a dyn Fn(usize, &mut [u8]) -> bool>,
     pointer_base: u64,
     pub(crate) base: usize,
 }
@@ -9,6 +12,7 @@ pub struct Image<'a> {
 struct Section<'a> {
     name: [u8; 8],
     rva: u32,
+    size: u32,
     bytes: &'a [u8],
 }
 
@@ -53,32 +57,26 @@ fn header(read: impl Fn(usize, usize) -> Option<Vec<u8>>) -> Verified<Header> {
     })
 }
 
-impl Image<'static> {
-    /// The image of the module loaded at `base` in this process.
-    ///
-    /// # Safety
-    /// `base` must be the base of a loaded PE32+ module that stays loaded for the program's life, and
-    /// whose section bytes are readable and unchanged while this image borrows them (#18).
-    pub unsafe fn module(base: usize) -> Verified<Self> {
+impl<'a> Image<'a> {
+    pub fn live(base: usize, copy: &'a dyn Fn(usize, &mut [u8]) -> bool) -> Verified<Self> {
         let read = |offset: usize, len: usize| {
-            // SAFETY: the headers of a loaded module are mapped and readable.
-            Some(unsafe { std::slice::from_raw_parts((base + offset) as *const u8, len) }.to_vec())
+            let mut bytes = vec![0; len];
+            copy(base.checked_add(offset)?, &mut bytes).then_some(bytes)
         };
         let header = header(read)?;
         let sections = header
             .sections
             .iter()
-            .map(|&(name, rva, virtual_size, _, _)| Section {
+            .map(|&(name, rva, size, _, _)| Section {
                 name,
                 rva,
-                // SAFETY: a loaded module maps every section at its RVA for its virtual size.
-                bytes: unsafe {
-                    std::slice::from_raw_parts((base + rva as usize) as *const u8, virtual_size as usize)
-                },
+                size,
+                bytes: &[],
             })
             .collect();
         Ok(Self {
             sections,
+            live: Some(copy),
             pointer_base: base as u64,
             base,
         })
@@ -113,9 +111,11 @@ impl OwnedImage {
                 .map(|(name, rva, bytes)| Section {
                     name: *name,
                     rva: *rva,
+                    size: bytes.len() as u32,
                     bytes,
                 })
                 .collect(),
+            live: None,
             pointer_base: self.pointer_base,
             base,
         }
@@ -123,27 +123,38 @@ impl OwnedImage {
 }
 
 impl<'a> Image<'a> {
-    pub(crate) fn section(&self, name: &[u8]) -> Option<(u32, &'a [u8])> {
-        self.sections
-            .iter()
-            .find(|s| s.name.split(|&b| b == 0).next() == Some(name))
-            .map(|s| (s.rva, s.bytes))
+    fn containing(&self, rva: u32) -> Option<&Section<'a>> {
+        self.sections.iter().find(|s| rva >= s.rva && rva - s.rva < s.size)
     }
 
-    pub(crate) fn section_of(&self, rva: u32) -> Option<&[u8]> {
-        self.sections
-            .iter()
-            .find(|s| rva >= s.rva && ((rva - s.rva) as usize) < s.bytes.len())
-            .map(|s| s.name.split(|&b| b == 0).next().unwrap_or(&[]))
+    fn read(&self, section: &Section<'a>, start: usize, len: usize) -> Option<Cow<'a, [u8]>> {
+        let end = start.checked_add(len)?;
+        if end > section.size as usize {
+            return None;
+        }
+        let Some(copy) = self.live else {
+            return section.bytes.get(start..end).map(Cow::Borrowed);
+        };
+        let mut bytes = vec![0; len];
+        let address = self.base.checked_add(section.rva as usize)?.checked_add(start)?;
+        copy(address, &mut bytes).then_some(Cow::Owned(bytes))
     }
 
-    pub(crate) fn bytes(&self, rva: u32, len: usize) -> Option<&'a [u8]> {
+    pub(crate) fn section(&self, name: &[u8]) -> Option<(u32, Cow<'a, [u8]>)> {
         let s = self
             .sections
             .iter()
-            .find(|s| rva >= s.rva && ((rva - s.rva) as usize) < s.bytes.len())?;
-        let start = (rva - s.rva) as usize;
-        s.bytes.get(start..start.checked_add(len)?)
+            .find(|s| s.name.split(|&b| b == 0).next() == Some(name))?;
+        Some((s.rva, self.read(s, 0, s.size as usize)?))
+    }
+
+    pub(crate) fn section_of(&self, rva: u32) -> Option<&[u8]> {
+        self.containing(rva).map(|s| s.name.split(|&b| b == 0).next().unwrap_or(&[]))
+    }
+
+    pub(crate) fn bytes(&self, rva: u32, len: usize) -> Option<Cow<'a, [u8]>> {
+        let s = self.containing(rva)?;
+        self.read(s, (rva - s.rva) as usize, len)
     }
 
     pub(crate) fn u32(&self, rva: u32) -> Option<u32> {
@@ -156,7 +167,7 @@ impl<'a> Image<'a> {
 
     pub(crate) fn pointer(&self, rva: u32) -> Option<u32> {
         let b = self.bytes(rva, 8)?;
-        let value = u64::from_le_bytes(b.try_into().ok()?);
+        let value = u64::from_le_bytes(b[..].try_into().ok()?);
         u32::try_from(value.checked_sub(self.pointer_base)?).ok()
     }
 
@@ -164,13 +175,17 @@ impl<'a> Image<'a> {
         self.pointer_base
     }
 
-    pub(crate) fn cstring(&self, rva: u32) -> Option<&'a [u8]> {
-        let s = self
-            .sections
-            .iter()
-            .find(|s| rva >= s.rva && ((rva - s.rva) as usize) < s.bytes.len())?;
-        let tail = &s.bytes[(rva - s.rva) as usize..];
-        let end = tail.iter().take(1024).position(|&b| b == 0)?;
-        Some(&tail[..end])
+    pub(crate) fn cstring(&self, rva: u32) -> Option<Cow<'a, [u8]>> {
+        let s = self.containing(rva)?;
+        let start = (rva - s.rva) as usize;
+        let tail = self.read(s, start, (s.size as usize - start).min(1024))?;
+        let end = tail.iter().position(|&b| b == 0)?;
+        Some(match tail {
+            Cow::Borrowed(bytes) => Cow::Borrowed(&bytes[..end]),
+            Cow::Owned(mut bytes) => {
+                bytes.truncate(end);
+                Cow::Owned(bytes)
+            }
+        })
     }
 }

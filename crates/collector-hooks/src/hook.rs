@@ -1069,6 +1069,10 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
         | PAGE_EXECUTE_WRITECOPY;
     let mut at = sp.checked_next_multiple_of(WORD)?;
     let mut allocation = None;
+    // SAFETY: each read copies a committed, readable stack range into the local buffer, and a
+    // range that cannot be copied leaves the scan unproved.
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let mut bytes = [0_u8; 512 * WORD];
     let mut buffer = [0_usize; 512];
     loop {
         let mut region: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
@@ -1097,10 +1101,12 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
             if count == 0 {
                 return None;
             }
-            for (index, word) in buffer[..count].iter_mut().enumerate() {
-                // SAFETY: committed, readable memory of a suspended thread's stack; nothing frees
-                // it while that thread is held. A word may be uninitialized there (#20).
-                *word = unsafe { ptr::read_volatile((at as *const usize).add(index)) };
+            let copied = &mut bytes[..count * WORD];
+            if !engine_native::Memory::copy(&memory, at, copied) {
+                return None;
+            }
+            for (word, chunk) in buffer.iter_mut().zip(copied.chunks_exact(WORD)) {
+                *word = <[u8; WORD]>::try_from(chunk).map_or(0, usize::from_ne_bytes);
             }
             if holds(&buffer[..count]) {
                 return Some(true);

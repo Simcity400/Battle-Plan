@@ -177,7 +177,7 @@ impl Located {
             for &index in candidates {
                 let f = &FUNCTIONS[index as usize];
                 let mask = slice(&MASKS, f.masks);
-                if head(bytes, mask) == f.head && fingerprint(bytes, mask) == f.hash {
+                if head(&bytes, mask) == f.head && fingerprint(&bytes, mask) == f.hash {
                     let hit = &mut hits[index as usize];
                     hit.0 = begin;
                     hit.1 += 1;
@@ -246,7 +246,7 @@ impl Located {
                             continue;
                         }
                         let Some(bytes) = image.bytes(target, f.len as usize) else { continue };
-                        if fingerprint(bytes, slice(&MASKS, f.masks)) != f.hash {
+                        if fingerprint(&bytes, slice(&MASKS, f.masks)) != f.hash {
                             continue;
                         }
                         match found {
@@ -276,7 +276,7 @@ impl Located {
                             && (!f.pdata || ends.get(&target) == Some(&(target + f.len)))
                             && image
                                 .bytes(target, f.len as usize)
-                                .is_some_and(|bytes| fingerprint(bytes, slice(&MASKS, f.masks)) == f.hash)
+                                .is_some_and(|bytes| fingerprint(&bytes, slice(&MASKS, f.masks)) == f.hash)
                     })
                 });
                 if elsewhere {
@@ -374,7 +374,7 @@ impl Located {
                 let verified = (function.len + tail - offset).min(ORIGINAL as u32) as usize;
                 let mut original = [0; ORIGINAL];
                 if let Some(bytes) = image.bytes(start + offset, verified) {
-                    original[..verified].copy_from_slice(bytes);
+                    original[..verified].copy_from_slice(&bytes);
                     (original, verified as u8)
                 } else {
                     ([0; ORIGINAL], 0)
@@ -622,7 +622,7 @@ fn rtti(image: &Image<'_>) -> Vec<Result<u32, Reason>> {
         }
         let (Some(descriptor), Some(offset)) = (image.u32(at + 12), image.u32(at + 4)) else { continue };
         let Some(name) = image.cstring(descriptor + 16) else { continue };
-        if let Some(&index) = want.get(&(fingerprint(name, &[]), offset)) {
+        if let Some(&index) = want.get(&(fingerprint(&name, &[]), offset)) {
             locators.insert(at, index);
         }
     }
