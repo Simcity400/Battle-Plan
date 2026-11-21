@@ -257,9 +257,8 @@ impl Memory for CountedMemory<'_> {
     }
 }
 
-fn reader<'a, M: Memory>(memory: &'a M) -> Reader<'a, M> {
+fn reader<'a, M: Memory>(memory: &'a M, resolver: &'a mut crelation_status::Resolver) -> Reader<'a, M> {
     let countries = ccountry::Reader::new(memory, 0, GS).unwrap();
-    let resolver = Box::leak(Box::new(crelation_status::Resolver::default()));
     resolver.begin(&countries);
     resolver.grow().unwrap();
     Reader {
@@ -967,8 +966,8 @@ fn expected_warmed_war1_reads() -> Vec<(usize, usize)> {
     reads
 }
 
-fn warmed_war1_reader<'a, M: Memory>(memory: &'a M) -> (Reader<'a, M>, ccountry::Country) {
-    let mut walker = reader(memory);
+fn warmed_war1_reader<'a, M: Memory>(memory: &'a M, resolver: &'a mut crelation_status::Resolver) -> (Reader<'a, M>, ccountry::Country) {
+    let mut walker = reader(memory, resolver);
     let first = walker.resolve(4).unwrap();
     let second = walker.resolve(2).unwrap();
     walker.diplomacy(first).unwrap();
@@ -981,7 +980,8 @@ fn warmed_war1_reader<'a, M: Memory>(memory: &'a M) -> (Reader<'a, M>, ccountry:
 fn status_header_hints_keep_primary_scalar_observation_order() {
     let bytes = fixture();
     let memory = ObservedMemory::new(&bytes);
-    let (mut walker, first) = warmed_war1_reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
     memory.reads.borrow_mut().clear();
     assert!(walker.relation(WAR1, first).unwrap().is_some());
     assert_eq!(*memory.reads.borrow(), expected_warmed_war1_reads());
@@ -991,7 +991,8 @@ fn status_header_hints_keep_primary_scalar_observation_order() {
 fn current_matrix_header_reuse_keeps_every_other_observation() {
     let bytes = fixture();
     let memory = ObservedMemory::new(&bytes);
-    let (mut walker, first) = warmed_war1_reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
     let expected_row = walker.relation(WAR1, first).unwrap();
     memory.reads.borrow_mut().clear();
     assert_eq!(walker.relation(WAR1, first), Ok(expected_row));
@@ -1007,14 +1008,16 @@ fn owned_status_reuse_keeps_both_owner_orders_and_exact_remaining_reads() {
         base: 0,
         bytes: &bytes,
     };
-    let (mut original, first) = warmed_war1_reader(&baseline);
+    let mut resolver = crelation_status::Resolver::default();
+    let (mut original, first) = warmed_war1_reader(&baseline, &mut resolver);
     let row = original.relation(WAR1, first).unwrap();
     let full = expected_warmed_war1_reads();
     for emitter_first in [false, true] {
         let memory = ObservedMemory::new(&bytes);
         let mut scratch = prepared_snapshot(5, 8);
         let allocated = scratch.allocated_bytes();
-        let (mut walker, first) = warmed_war1_reader(&memory);
+        let mut resolver = crelation_status::Resolver::default();
+        let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
         let second = walker.resolve(2).unwrap();
         walker.ownership = Some(&mut scratch);
         let owners = if emitter_first {
@@ -1097,8 +1100,10 @@ fn owned_status_reuse_preserves_first_faults_and_fresh_owner_faults() {
             original.blocked = address + byte..address + byte + 1;
             let mut candidate = ObservedMemory::new(&bytes);
             candidate.blocked = original.blocked.clone();
-            let (mut original_reader, first) = warmed_war1_reader(&original);
-            let (mut candidate_reader, _) = warmed_war1_reader(&candidate);
+            let mut original_resolver = crelation_status::Resolver::default();
+            let mut candidate_resolver = crelation_status::Resolver::default();
+            let (mut original_reader, first) = warmed_war1_reader(&original, &mut original_resolver);
+            let (mut candidate_reader, _) = warmed_war1_reader(&candidate, &mut candidate_resolver);
             let mut scratch = prepared_snapshot(5, 8);
             candidate_reader.ownership = Some(&mut scratch);
             original.reads.borrow_mut().clear();
@@ -1134,7 +1139,8 @@ fn owned_status_reuse_preserves_first_faults_and_fresh_owner_faults() {
             blocked: Cell::new(usize::MAX),
         };
         let mut scratch = prepared_snapshot(5, 8);
-        let (mut walker, first) = warmed_war1_reader(&memory);
+        let mut resolver = crelation_status::Resolver::default();
+        let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
         walker.ownership = Some(&mut scratch);
         assert!(walker.relation(WAR1, first).unwrap().is_some());
         memory.blocked.set(address);
@@ -1150,7 +1156,8 @@ fn owned_status_reuse_checks_raw_alias_keys_and_a_status_cache_miss_revalidates(
         base: 0,
         bytes: &bytes,
     };
-    let (mut walker, first) = warmed_war1_reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
     walker.ownership = Some(&mut scratch);
     assert!(walker.relation(WAR1, first).unwrap().is_some());
 
@@ -1158,7 +1165,8 @@ fn owned_status_reuse_checks_raw_alias_keys_and_a_status_cache_miss_revalidates(
     p32(&mut changed, WAR1 + crelation::FIRST_COUNTRY, 1);
     let mut memory = ObservedMemory::new(&changed);
     memory.blocked = status(0, 2)..status(0, 2) + 1;
-    let (mut walker, first) = warmed_war1_reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
     walker.ownership = Some(&mut scratch);
     assert_eq!(
         walker.relation(WAR1, first),
@@ -1175,7 +1183,8 @@ fn owned_status_reuse_checks_raw_alias_keys_and_a_status_cache_miss_revalidates(
         base: 0,
         bytes: &changed,
     };
-    let (mut walker, first) = warmed_war1_reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
     walker.ownership = Some(&mut scratch);
     assert_eq!(
         walker.relation(WAR1, first),
@@ -1193,7 +1202,8 @@ fn owned_status_reuse_checks_raw_alias_keys_and_a_status_cache_miss_revalidates(
         } else {
             scratch.status_graphs.clear();
         }
-        let (mut walker, first) = warmed_war1_reader(&memory);
+        let mut resolver = crelation_status::Resolver::default();
+        let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
         walker.ownership = Some(&mut scratch);
         let expected = walker.relation(WAR1, first).unwrap();
         let allocated = walker.ownership.as_ref().unwrap().allocated_bytes();
@@ -1239,7 +1249,8 @@ fn matrix_reuse_and_status_hints_preserve_each_first_header_fault() {
             for byte in 0..16 {
                 let mut memory = ObservedMemory::new(&bytes);
                 memory.blocked = address + byte..address + byte + 1;
-                let (mut walker, first) = warmed_war1_reader(&memory);
+                let mut resolver = crelation_status::Resolver::default();
+                let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
                 memory.reads.borrow_mut().clear();
                 assert_eq!(walker.relation(WAR1, first), Err(reason));
                 assert_eq!(&*memory.reads.borrow(), &expected[..=failed]);
@@ -1358,7 +1369,8 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
                 protection,
                 armed: Cell::new(false),
             };
-            let (mut walker, first) = warmed_war1_reader(&memory);
+            let mut resolver = crelation_status::Resolver::default();
+            let (mut walker, first) = warmed_war1_reader(&memory, &mut resolver);
             assert_eq!(
                 walker.relation(WAR1, first),
                 Err("relation status vtable mismatch")
@@ -1388,7 +1400,8 @@ fn status_header_hints_preserve_owned_page_protection_after_later_auth_failure()
 fn fixed_gathers_preserve_exact_widths_and_repeated_observations() {
     let bytes = fixture();
     let memory = ObservedMemory::new(&bytes);
-    let mut reader = reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let mut reader = reader(&memory, &mut resolver);
     let first = reader.countries.at(1).unwrap().unwrap();
     let second = reader.countries.at(2).unwrap().unwrap();
     memory.reads.borrow_mut().clear();
@@ -1473,7 +1486,8 @@ fn fixed_gathers_preserve_exact_widths_and_repeated_observations() {
 fn pair_gather_resolves_uncached_alias_before_observing_war_pointer() {
     let bytes = fixture();
     let memory = ObservedMemory::new(&bytes);
-    let mut walker = reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let mut walker = reader(&memory, &mut resolver);
     let first = walker.countries.at(1).unwrap().unwrap();
     memory.reads.borrow_mut().clear();
     assert_eq!(
@@ -1506,7 +1520,7 @@ fn pair_gather_resolves_uncached_alias_before_observing_war_pointer() {
     let mut memory = ObservedMemory::new(&bytes);
     memory.blocked = COUNTRY[0] + ccountry::ID..COUNTRY[0] + ccountry::ID + 1;
     assert_eq!(
-        reader(&memory).pair_status(DIPLOMACY[1], first, WAR1),
+        reader(&memory, &mut crelation_status::Resolver::default()).pair_status(DIPLOMACY[1], first, WAR1),
         Err("country id unreadable")
     );
     assert!(
@@ -1650,7 +1664,8 @@ fn fixed_gathers_leave_gaps_and_nonemitting_rows_unread() {
     }
     let mut memory = ObservedMemory::new(&bytes);
     memory.blocked = WAR1 + crelation::START_HOUR..WAR1 + crelation::START_HOUR + 1;
-    let mut walker = reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let mut walker = reader(&memory, &mut resolver);
     let second = walker.countries.at(2).unwrap().unwrap();
     assert_eq!(walker.relation(WAR1, second), Ok(None));
     assert!(
@@ -1666,7 +1681,8 @@ fn fixed_gathers_leave_gaps_and_nonemitting_rows_unread() {
         bytes: &bytes,
         blocked: WAR1 + crelation::FIRST_COUNTRY..WAR1 + crelation::FIRST_COUNTRY + 4,
     };
-    let mut reader = reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let mut reader = reader(&memory, &mut resolver);
     let first = reader.countries.at(1).unwrap().unwrap();
     assert_eq!(reader.relation(WAR1, first), Ok(None));
 }
@@ -1697,7 +1713,8 @@ fn dense_authentication_cells_key_full_ids_and_fall_back_beyond_storage() {
         guards: Cell::new(0),
         blocked: Cell::new(usize::MAX),
     };
-    let mut dense = reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let mut dense = reader(&memory, &mut resolver);
     assert_eq!(dense.resolver.capacity(), [FAR + 1, 5]);
     let start = memory.guards.get();
     let first = dense.resolve(1).unwrap();
@@ -1727,11 +1744,15 @@ fn dense_authentication_cells_key_full_ids_and_fall_back_beyond_storage() {
     assert_eq!(memory.guards.get() - start, 3);
 
     let countries = ccountry::Reader::new(&memory, 0, GS).unwrap();
-    let resolver = Box::leak(Box::new(crelation_status::Resolver::with_capacity(2)));
-    resolver.begin(&countries);
+    let mut short_resolver = crelation_status::Resolver::with_capacity(2);
+    short_resolver.begin(&countries);
     let mut short = Reader {
-        resolver,
-        ..reader(&memory)
+        memory: &memory,
+        base: 0,
+        countries,
+        resolver: &mut short_resolver,
+        current_matrix: (0, None),
+        ownership: None,
     };
     let start = memory.guards.get();
     for round in 1..=2 {
@@ -1765,11 +1786,12 @@ fn successful_authentication_is_local_and_failed_authentication_is_never_cached(
         guards: Cell::new(0),
         blocked: Cell::new(usize::MAX),
     };
-    let mut first_reader = reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let mut first_reader = reader(&memory, &mut resolver);
     let country = first_reader.resolve(4).unwrap();
     memory.blocked.set(COUNTRY[0] + ccountry::ID);
     assert_eq!(first_reader.resolve(4), Ok(country));
-    assert_eq!(reader(&memory).resolve(4), Err("country id unreadable"));
+    assert_eq!(reader(&memory, &mut crelation_status::Resolver::default()).resolve(4), Err("country id unreadable"));
     for _ in 0..2 {
         assert_eq!(
             walk_from(&memory, &memory, 0, GS, crate::walk::Buffer::Count, &mut crelation_status::Resolver::default(), None, None),
@@ -1783,7 +1805,9 @@ fn successful_authentication_is_local_and_failed_authentication_is_never_cached(
     memory.blocked.set(usize::MAX);
     assert_eq!(first_reader.resolve(2).unwrap().id, 2);
 
-    let mut matrix_reader = reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+
+    let mut matrix_reader = reader(&memory, &mut resolver);
     matrix_reader.current_matrix = (DIPLOMACY[0], None);
     let second = matrix_reader.resolve(2).unwrap();
     memory
@@ -1918,7 +1942,8 @@ fn pointer_batches_use_exact_strided_reads_and_preserve_failure_prefixes() {
     }
 
     let memory = routed();
-    let walker = reader(&memory);
+    let mut resolver = crelation_status::Resolver::default();
+    let walker = reader(&memory, &mut resolver);
     memory.memory.reads.borrow_mut().clear();
     assert_eq!(walker.active(WAR1), Ok(true));
     let expected = vec![

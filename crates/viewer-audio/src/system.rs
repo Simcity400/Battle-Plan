@@ -651,10 +651,14 @@ impl Control {
     }
 
     fn step(&mut self) {
+        self.step_at(Instant::now());
+    }
+
+    fn step_at(&mut self, now: Instant) {
         self.receive_loads();
         self.request_loads();
-        self.keep_device();
-        self.mix();
+        self.keep_device(now);
+        self.mix(now);
         self.write_log();
     }
 
@@ -714,7 +718,7 @@ impl Control {
         }
     }
 
-    fn keep_device(&mut self) {
+    fn keep_device(&mut self, now: Instant) {
         if self.silent {
             return;
         }
@@ -724,21 +728,24 @@ impl Control {
             self.output = None;
             self.status.lock().unwrap_or_else(|e| e.into_inner()).device =
                 Some(Err(format!("The audio output was lost ({why})")));
-            self.next_open = Instant::now() + REOPEN;
-            self.unplayed = Instant::now();
+            let lost = Instant::now();
+            self.next_open = lost + REOPEN;
+            self.unplayed = lost;
         }
-        if self.output.is_none() && self.owner != 0 && Instant::now() >= self.next_open {
+        if self.output.is_none() && self.owner != 0 && now >= self.next_open {
             self.output = open_device(&self.status);
+            let opened = Instant::now();
             if self.output.is_none() {
-                self.next_open = Instant::now() + REOPEN;
+                self.next_open = opened + REOPEN;
             }
-            self.unplayed = Instant::now();
+            self.unplayed = opened;
         }
     }
 
-    fn mix(&mut self) {
+    fn mix(&mut self, now: Instant) {
         if self.output.is_none() {
-            let due = (self.unplayed.elapsed().as_secs_f64() * f64::from(RATE)) as usize;
+            let due = (now.saturating_duration_since(self.unplayed).as_secs_f64() * f64::from(RATE))
+                as usize;
             let steps = due / STEP;
             for _ in 0..steps.min(CATCH_UP) {
                 self.hand_off_music();

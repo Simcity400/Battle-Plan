@@ -46,6 +46,9 @@ REFRESH_LOG = "refresh.log"
 REFRESH_COMMIT = "origin/main"
 GAME_PROCESS = "hoi4.exe"
 LAUNCHER = "warm_target.py"
+TEST_HOLD = "BATTLE_PLAN_WARM_TEST_HOLD"
+TEST_HOLD_MS = 600_000
+TEST_REACHED = ".reached"
 STAGING_RECORDS = "warming"
 STAGING_PREFIX = ".warming-"
 EXTERNAL_SUFFIX = "-cargo-target"
@@ -1007,6 +1010,7 @@ def update_seed(root, args):
     slot_record = os.path.join(directory, SEED_FILE)
     if os.path.exists(slot_record):
         os.remove(slot_record)
+    hold_for_test("retired")
     checkout = slot_checkout(root, slot)
     try:
         top = os.path.normcase(os.path.abspath(git(checkout, "rev-parse", "--show-toplevel")))
@@ -1189,6 +1193,26 @@ def sweep_external(target_roots):
 def game_running():
     out = run(["tasklist", "/FI", f"IMAGENAME eq {GAME_PROCESS}", "/NH"], os.getcwd(), check=False)
     return GAME_PROCESS.lower() in out.lower()
+
+
+def hold_for_test(point):
+    name = os.environ.get(TEST_HOLD)
+    if not name or not name.endswith(":" + point):
+        return
+    kernel = ctypes.windll.kernel32
+    kernel.OpenEventW.restype = ctypes.c_void_p
+    event = kernel.OpenEventW(0x00100000, False, name)
+    reached = kernel.OpenEventW(0x0002, False, name + TEST_REACHED)
+    try:
+        if not event or not reached:
+            raise WarmError(f"the test hold {name} is not open")
+        kernel.SetEvent(ctypes.c_void_p(reached))
+        if kernel.WaitForSingleObject(ctypes.c_void_p(event), TEST_HOLD_MS) != 0:
+            raise WarmError(f"the test hold {name} expired")
+    finally:
+        for handle in (event, reached):
+            if handle:
+                kernel.CloseHandle(ctypes.c_void_p(handle))
 
 
 def start_refresh(root, worktree):

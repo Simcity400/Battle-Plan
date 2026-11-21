@@ -778,7 +778,12 @@ impl Counters {
 
     fn strategic_layout_at(&self, mirrors: &Mirrors) -> bool {
         #[cfg(any(test, feature = "test-support"))]
-        self.validated[usize::from(!engine_executable::executable_tables::is_initialized())].fetch_add(1, Ordering::Relaxed);
+        {
+            let identity = |tables: engine_executable::executable_tables::Tables| std::ptr::from_ref(tables);
+            let recorded = self.content.tables.map(identity);
+            let in_scope = recorded.is_some() && engine_executable::executable_tables::current().map(identity) == recorded;
+            self.validated[usize::from(!in_scope)].fetch_add(1, Ordering::Relaxed);
+        }
         let columns = self.columns();
         let (definitions, tokens) = (mirrors.get(TableId::ModifierDefinitions), mirrors.get(TableId::LexicalTokens));
         let whole = match (definitions, tokens) {

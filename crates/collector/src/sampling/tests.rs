@@ -2820,38 +2820,46 @@ fn callback_priority_raises_the_acquisition_and_restores_the_game_priority() {
 
 #[test]
 fn a_parked_spool_wakes_on_a_ready_buffer_without_waiting_for_its_deadline() {
-    use std::{sync::mpsc, time::Duration, time::Instant};
-    let shared = Arc::new(Shared::new(0, 0, 1));
-    shared.wake_spool();
-    let (registered, ready) = mpsc::channel();
-    let spool = {
-        let shared = Arc::clone(&shared);
-        std::thread::spawn(move || {
-            shared.spool_waker.set(std::thread::current()).unwrap();
-            registered.send(()).unwrap();
-            let started = Instant::now();
-            while shared.frames.ready_is_empty() {
-                std::thread::park_timeout(Duration::from_secs(60));
-                assert!(started.elapsed() < Duration::from_secs(30));
-            }
-            started.elapsed()
-        })
-    };
-    ready.recv().unwrap();
-    std::thread::sleep(Duration::from_millis(20));
-    shared.frames.push_ready(1);
-    shared.wake_spool();
-    let waited = spool.join().unwrap();
-    assert!(waited < Duration::from_secs(10), "{waited:?}");
-    let early = {
+    use std::sync::mpsc;
+    for wake_before_park in [false, true] {
         let shared = Arc::new(Shared::new(0, 0, 1));
-        shared.spool_waker.set(std::thread::current()).unwrap();
         shared.wake_spool();
-        let started = Instant::now();
-        std::thread::park_timeout(Duration::from_secs(60));
-        started.elapsed()
-    };
-    assert!(early < Duration::from_secs(10), "{early:?}");
+        let (admitted_tx, admitted) = mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spool = {
+            let shared = Arc::clone(&shared);
+            let release = Arc::clone(&release);
+            let cancel = Arc::clone(&cancel);
+            crate::spawn_ending(move || {
+                shared.spool_waker.set(std::thread::current()).unwrap();
+                while shared.frames.ready_is_empty() && !cancel.load(Ordering::Acquire) {
+                    admitted_tx.send(()).unwrap();
+                    if wake_before_park {
+                        release.wait();
+                    }
+                    std::thread::park();
+                }
+            })
+        };
+        admitted.recv().unwrap();
+        crate::decode::hand_ready(&shared, 1, 1);
+        if wake_before_park {
+            release.wait();
+        }
+        if spool.done.recv_timeout(crate::TEST_HANG_GUARD).is_err() {
+            let finished = spool.is_finished();
+            cancel.store(true, Ordering::Release);
+            spool.thread().unpark();
+            let joined = spool.thread.join();
+            if let Err(panic) = joined {
+                std::panic::resume_unwind(panic);
+            }
+            assert!(finished, "the ready handoff did not wake the spool (woken before park: {wake_before_park})");
+        } else {
+            spool.thread.join().unwrap();
+        }
+    }
 }
 
 #[test]

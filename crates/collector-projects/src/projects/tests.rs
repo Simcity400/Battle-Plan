@@ -1169,6 +1169,40 @@ fn projects_truncation_matrix_matches_direct_with_same_caps() {
     let (split, _, _) = kit::split(&memory, &capacities);
     assert_eq!(split.programs.outcome, Outcome::Rows { len: 1 });
     assert_eq!(split.breakthroughs.outcome, Outcome::Rows { len: 1 });
+    let bytes = kit::many_programs_fixture();
+    let memory = kit::memory(&bytes);
+    for cap in [0, 1, kit::PROGRAMS - 1, kit::PROGRAMS, kit::PROGRAMS + 1, 256] {
+        let capacities = Capacities {
+            rows: [cap; N],
+            program_names: 8192,
+            program_candidates: 1024,
+            raid_type_tokens: 256,
+            raid_show_for: 256,
+            raid_transports: 16,
+            raid_equipment_items: 16,
+            raid_equipment_archetypes: 16,
+            counteroperatives: 16,
+        };
+        let direct = kit::direct(&memory, &capacities);
+        let (split, report, _) = kit::split(&memory, &capacities);
+        assert!(report.raw_ok, "cap={cap}");
+        kit::assert_matches_direct(&split, &direct);
+        let expected = Outcome::Rows { len: kit::PROGRAMS };
+        assert_eq!(split.programs.outcome, expected, "every program is kept from an initial capacity of {cap}");
+        let ids: Vec<u32> = split.programs.rows[..expected.len()].iter().map(|row| row.id).collect();
+        assert_eq!(ids, [5, 6, 7], "programs are ordered by id, not by address");
+    }
+    let mut one = [nproject_cprogram::Row::default(); 1];
+    let walked = nproject_cprogram::walk_buffer(
+        &memory,
+        kit::BASE,
+        kit::GAME_STATE,
+        engine_native::walk::Buffer::Growing(&mut Vec::new()),
+        engine_native::walk::Buffer::Exact(&mut one),
+        engine_native::walk::Buffer::Growing(&mut Vec::new()),
+    );
+    assert_eq!(walked.outcome, Outcome::Truncated { len: 1, unread_rows: 2 }, "a one-row output keeps the first program and counts the two it could not hold");
+    assert_eq!(one[0].id, kit::program_id(0));
 }
 
 #[test]

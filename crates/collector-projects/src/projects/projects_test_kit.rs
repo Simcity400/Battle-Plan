@@ -379,6 +379,26 @@ pub fn fixture() -> Vec<u8> {
     bytes
 }
 
+pub const PROGRAMS: usize = 3;
+const PROGRAM_SIZE: usize = 0x200;
+
+pub fn program_id(index: usize) -> u32 {
+    [7, 5, 6][index]
+}
+
+pub fn many_programs_fixture() -> Vec<u8> {
+    let mut bytes = fixture();
+    let template = bytes[PROG1..PROG1 + PROGRAM_SIZE].to_vec();
+    array(&mut bytes, S1 + nproject_cprogram_status::PROGRAMS, PARR, PROGRAMS as u32);
+    for index in 0..PROGRAMS {
+        let program = PROG1 + index * PROGRAM_SIZE;
+        bytes[program..program + PROGRAM_SIZE].copy_from_slice(&template);
+        put(&mut bytes, program + nproject_cprogram::ID, program_id(index).to_le_bytes());
+        pointer(&mut bytes, PARR + 8 * index, program);
+    }
+    bytes
+}
+
 pub fn add_reserved_alias(bytes: &mut [u8]) {
     const RESERVED: usize = 0x3200;
     array(bytes, cgame_state::COUNTRIES, CTAB, 4);

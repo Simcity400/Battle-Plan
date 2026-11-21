@@ -51,12 +51,46 @@ fn frame(effect: &str, key: u64) -> Frame {
     }
 }
 
-fn step_until(control: &mut Control, done: impl Fn(&Control) -> bool) {
-    let start = Instant::now();
+const HANG_GUARD: Duration = Duration::from_secs(120);
+
+fn hold(control: &mut Control) {
+    let unplayed = control.unplayed;
+    control.step_at(unplayed);
+}
+
+struct Relay {
+    loader: mpsc::Receiver<Loaded>,
+    step: mpsc::Sender<Loaded>,
+}
+
+fn relay(control: &mut Control) -> Relay {
+    let (step, delivered) = mpsc::channel();
+    Relay { loader: std::mem::replace(&mut control.done, delivered), step }
+}
+
+fn receive_load(control: &mut Control, relay: &Relay) {
+    hold(control);
+    let loaded = relay
+        .loader
+        .recv_timeout(HANG_GUARD)
+        .expect("the loader answered the request");
+    relay.step.send(loaded).unwrap();
+    hold(control);
+    assert!(control.done.try_recv().is_err(), "the step took the loader's answer");
+}
+
+fn block() -> Duration {
+    Duration::from_secs_f64(STEP as f64 / f64::from(RATE))
+}
+
+fn play_until(control: &mut Control, done: impl Fn(&Control) -> bool) {
+    let mut clock = control.unplayed;
+    let mut played = Duration::ZERO;
     while !done(control) {
-        assert!(start.elapsed() < Duration::from_secs(5), "timed out");
-        control.step();
-        thread::sleep(Duration::from_millis(5));
+        assert!(played < Duration::from_secs(5), "not done after {played:?} of audio");
+        clock += block();
+        control.step_at(clock);
+        played += block();
     }
 }
 
@@ -92,10 +126,25 @@ fn the_silent_path_plays_by_the_clock_and_a_release_silences() {
     let (_stack, source) = source("audio_system_silent");
     let status = Arc::new(Mutex::new(Status::default()));
     let mut control = Control::new(Arc::clone(&status), None, true);
+    let relay = relay(&mut control);
     control.apply(Command::Claim(1));
     control.apply(Command::Frame(1, Arc::clone(&source), frame("shot", 1)));
     assert!(control.engine.active());
-    step_until(&mut control, |control| !control.engine.active());
+    receive_load(&mut control, &relay);
+    for _ in 0..4 * RATE as usize / STEP {
+        hold(&mut control);
+    }
+    assert!(control.engine.active(), "no audio played while the clock held");
+    let start = control.unplayed;
+    let advanced = start + block() + Duration::from_micros(1);
+    control.step_at(advanced);
+    assert_eq!(control.unplayed - start, block(), "the first step plays the one block due");
+    for _ in 0..4 * RATE as usize / STEP {
+        control.step_at(advanced);
+    }
+    assert_eq!(control.unplayed - start, block(), "stepping again at the same instant plays nothing more");
+    assert!(control.engine.active(), "one block of elapsed time plays one block, however often it is stepped");
+    play_until(&mut control, |control| !control.engine.active());
     assert!(control.output.is_none());
     assert_eq!(status.lock().unwrap().device, None);
     control.apply(Command::Frame(1, Arc::clone(&source), frame("shot", 2)));
@@ -110,11 +159,13 @@ fn the_silent_path_plays_by_the_clock_and_a_release_silences() {
 fn a_mix_applies_without_a_frame() {
     let (_stack, source) = source("audio_system_mix");
     let mut control = Control::new(Arc::new(Mutex::new(Status::default())), None, true);
+    let relay = relay(&mut control);
     control.apply(Command::Claim(4));
     let mut loud = frame("shot", 1);
     loud.mix.dev_master = 1.0;
     control.apply(Command::Frame(4, Arc::clone(&source), loud));
-    step_until(&mut control, |control| {
+    receive_load(&mut control, &relay);
+    play_until(&mut control, |control| {
         control.engine.census().3 == 1 && control.engine.loaded(0)
     });
     let mut muted = Mix {
@@ -139,9 +190,11 @@ fn a_mix_applies_without_a_frame() {
 fn an_unreadable_sample_is_refused_and_the_loader_keeps_running() {
     let (_stack, source) = source("audio_system_unreadable");
     let mut control = Control::new(Arc::new(Mutex::new(Status::default())), None, true);
+    let relay = relay(&mut control);
     control.apply(Command::Claim(1));
     control.apply(Command::Frame(1, Arc::clone(&source), frame("crackle", 1)));
-    step_until(&mut control, |control| !control.engine.active());
+    receive_load(&mut control, &relay);
+    assert!(!control.engine.active());
     assert!(
         control
             .engine
@@ -153,7 +206,8 @@ fn an_unreadable_sample_is_refused_and_the_loader_keeps_running() {
         control.engine.notes.lines()
     );
     control.apply(Command::Frame(1, Arc::clone(&source), frame("shot", 2)));
-    step_until(&mut control, |control| control.engine.loaded(0));
+    receive_load(&mut control, &relay);
+    assert!(control.engine.loaded(0));
 }
 
 #[test]
@@ -162,6 +216,7 @@ fn another_content_stack_drops_the_old_ones_notes() {
     let (_new_stack, new) = source("audio_system_notes_new");
     let status = Arc::new(Mutex::new(Status::default()));
     let mut control = Control::new(Arc::clone(&status), None, true);
+    let relay = relay(&mut control);
     let publish = |control: &mut Control| {
         control.last_evict = Instant::now() - Duration::from_secs(6);
         control.step();
@@ -169,7 +224,8 @@ fn another_content_stack_drops_the_old_ones_notes() {
     control.apply(Command::Claim(1));
     control.apply(Command::Frame(1, Arc::clone(&old), frame("absent", 1)));
     control.apply(Command::Frame(1, Arc::clone(&old), frame("crackle", 2)));
-    step_until(&mut control, |control| control.engine.notes.lines().len() == 2);
+    receive_load(&mut control, &relay);
+    assert_eq!(control.engine.notes.lines().len(), 2);
     publish(&mut control);
     assert_eq!(status.lock().unwrap().notes.len(), 2);
     control.apply(Command::Frame(1, Arc::clone(&new), frame("shot", 3)));
@@ -179,7 +235,8 @@ fn another_content_stack_drops_the_old_ones_notes() {
         control.engine.notes.lines()
     );
     assert!(status.lock().unwrap().notes.is_empty());
-    step_until(&mut control, |control| control.engine.loaded(0));
+    receive_load(&mut control, &relay);
+    assert!(control.engine.loaded(0));
     publish(&mut control);
     assert!(status.lock().unwrap().notes.is_empty());
 }

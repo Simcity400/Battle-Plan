@@ -6,6 +6,7 @@ WARM_TARGET_END_TO_END=1.
 
 import _winapi
 import argparse
+import ctypes
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import warm_target as wt
@@ -35,6 +37,22 @@ def write(path, data, mtime=None):
 def read(path):
     with open(path, "rb") as handle:
         return handle.read()
+
+
+HANG_GUARD_MS = 600_000
+SYNCHRONIZE = 0x00100000
+
+
+def wait_exit(pid):
+    try:
+        handle = _winapi.OpenProcess(SYNCHRONIZE, False, pid)
+    except OSError:
+        return
+    try:
+        if _winapi.WaitForSingleObject(handle, HANG_GUARD_MS) != _winapi.WAIT_OBJECT_0:
+            raise AssertionError(f"process {pid} did not end under the hang guard")
+    finally:
+        _winapi.CloseHandle(handle)
 
 
 class DepInfo(unittest.TestCase):
@@ -271,10 +289,14 @@ class Backdate(unittest.TestCase):
             write(os.path.join(seed, "a", "late.rs"), "fn c() {}", old)
             write(os.path.join(base, "outside.txt"), "outside", old)
             write(os.path.join(base, "seed_outside.txt"), "outside", old)
-            started = time.time_ns()
-            time.sleep(0.01)
-            write(os.path.join(mine, "a", "late.rs"), "fn c() {}")
-            late = os.stat(os.path.join(mine, "a", "late.rs")).st_mtime_ns
+            started = old + 1_000_000_000_000
+            for folder, folders, files in os.walk(mine):
+                for name in [*folders, *files]:
+                    path = os.path.join(folder, name)
+                    if os.stat(path).st_mtime_ns >= started:
+                        os.utime(path, ns=(started - 1, started - 1))
+            late = started + 1_000_000_000
+            write(os.path.join(mine, "a", "late.rs"), "fn c() {}", late)
             before = time.time_ns()
             inputs = {"a\\same.rs", "a\\changed.rs", "a\\dir", "a\\dir2", "a\\missing.rs",
                       os.path.join(mine, "a", "dir", "x.txt"), "a\\late.rs", "a\\..\\..\\outside.txt"}
@@ -485,7 +507,6 @@ class Slots(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.join(root, wt.READERS_DIR)), [os.path.basename(mine)])
 
     def test_a_warm_holds_its_slot_until_backdating_has_read_the_checkout(self):
-        from unittest import mock
         with tempfile.TemporaryDirectory() as root:
             target = os.path.join(root, "target")
             os.makedirs(target)
@@ -528,6 +549,7 @@ class BackgroundRefresh(unittest.TestCase):
         "if out.endswith('.parent.txt'):\n"
         "    subprocess.run([sys.executable, __file__, __file__ + '.child.txt'])\n")
 
+    @mock.patch.object(wt, "game_running", lambda: False)
     def test_refresh_runs_detached_below_normal_and_only_when_behind(self):
         with tempfile.TemporaryDirectory() as base:
             root, repo = os.path.join(base, "seed"), os.path.join(base, "repo")
@@ -538,28 +560,45 @@ class BackgroundRefresh(unittest.TestCase):
             subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True)
             launcher = os.path.join(root, wt.LAUNCHER)
             write(launcher, self.REPORT)
-            pid = wt.start_refresh(root, repo)
+            launched = []
+            popen = subprocess.Popen
+
+            def keep_launch(*args, **kwargs):
+                child = popen(*args, **kwargs)
+                if kwargs.get("creationflags", 0) & subprocess.DETACHED_PROCESS:
+                    launched.append(child)
+                return child
+
+            with mock.patch.object(subprocess, "Popen", keep_launch):
+                pid = wt.start_refresh(root, repo)
+            self.assertEqual([child.pid for child in launched], [pid])
+            launched[0].wait(HANG_GUARD_MS / 1000)
             for name in ("parent", "child"):
                 path = f"{launcher}.{name}.txt"
-                for _ in range(300):
-                    if os.path.exists(path) and read(path):
-                        break
-                    time.sleep(0.1)
                 self.assertEqual(int(read(path)), subprocess.BELOW_NORMAL_PRIORITY_CLASS, name)
                 os.remove(path)
-            while wt.process_alive(pid):
-                time.sleep(0.1)
+            launches = []
+            popen = subprocess.Popen
+
+            def launch_boundary(*args, **kwargs):
+                if kwargs.get("creationflags", 0) & subprocess.DETACHED_PROCESS:
+                    launches.append(args[0])
+                    raise AssertionError("a refresh was launched")
+                return popen(*args, **kwargs)
+
             head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True,
                                   text=True, check=True).stdout.strip()
             write(os.path.join(root, wt.SEED_FILE), json.dumps({"format": wt.SEED_FORMAT, "commit": head}))
-            self.assertIsNone(wt.start_refresh(root, repo))
-            write(os.path.join(root, wt.SEED_FILE), json.dumps({"format": wt.SEED_FORMAT, "commit": "0" * 40,
-                                                               "checkout": base}))
-            lock = wt.take_update_lock(root)
-            self.assertIsNone(wt.start_refresh(root, repo))
-            lock.release()
-            time.sleep(1)
-            self.assertFalse(os.path.exists(f"{launcher}.parent.txt"))
+            with mock.patch.object(subprocess, "Popen", launch_boundary):
+                self.assertIsNone(wt.start_refresh(root, repo))
+                write(os.path.join(root, wt.SEED_FILE), json.dumps({"format": wt.SEED_FORMAT, "commit": "0" * 40,
+                                                                   "checkout": base}))
+                lock = wt.take_update_lock(root)
+                try:
+                    self.assertIsNone(wt.start_refresh(root, repo))
+                finally:
+                    lock.release()
+            self.assertEqual(launches, [])
 
 
 class Garbage(unittest.TestCase):
@@ -755,25 +794,44 @@ class EndToEnd(unittest.TestCase):
         self.git(self.repo, "fetch", "-q", "origin")
         self.fresh_worktree()
         before = wt.read_seed(self.root)
-        out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
-        self.assertIn("refreshing it in the background", out)
-        pid = int(re.search(r"process (\d+)", out).group(1))
-        while os.path.exists(os.path.join(wt.slot_dir(self.root, "a"), wt.SEED_FILE)):
-            self.assertTrue(wt.process_alive(pid), read(os.path.join(self.root, wt.REFRESH_LOG)))
-            time.sleep(0.2)
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+        kernel = ctypes.windll.kernel32
+        kernel.CreateEventW.restype = ctypes.c_void_p
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        hold = rf"Local\hoi4-warm-test-{os.getpid()}:retired"
+        event = kernel.CreateEventW(None, True, False, hold)
+        reached = kernel.CreateEventW(None, True, False, hold + wt.TEST_REACHED)
+        self.assertTrue(event and reached)
+        os.environ[wt.TEST_HOLD] = hold
+        held = killed = False
+        log = lambda: read(os.path.join(self.root, wt.REFRESH_LOG)).decode(errors="replace")
+        try:
+            out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
+            self.assertIn("refreshing it in the background", out)
+            pid = int(re.search(r"process (\d+)", out).group(1))
+            held = _winapi.WaitForSingleObject(reached, HANG_GUARD_MS) == _winapi.WAIT_OBJECT_0
+            self.assertTrue(held, "the refresh never reached the retired slot: " + log())
+            self.assertFalse(os.path.exists(os.path.join(wt.slot_dir(self.root, "a"), wt.SEED_FILE)))
+        finally:
+            del os.environ[wt.TEST_HOLD]
+            if held:
+                process = _winapi.OpenProcess(SYNCHRONIZE, False, pid)
+                killed = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                                        capture_output=True).returncode == 0
+                _winapi.WaitForSingleObject(process, HANG_GUARD_MS)
+                _winapi.CloseHandle(process)
+            kernel.CloseHandle(event)
+            kernel.CloseHandle(reached)
+        self.assertTrue(killed, "the held refresh was killed at the retired slot: " + log())
         self.assertEqual(wt.read_seed(self.root), before)
         self.warm()
         self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), {"b", "c"})
-        start = time.time()
-        out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
-        self.assertIn("refreshing it in the background", out)
-        self.assertLess(time.time() - start, 60)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True,
                               text=True, check=True).stdout.strip()
-        while (wt.read_seed(self.root) or {}).get("commit") != head:
-            self.assertLess(time.time() - start, 600, read(os.path.join(self.root, wt.REFRESH_LOG)))
-            time.sleep(2)
+        out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
+        self.assertIn("refreshing it in the background", out)
+        wait_exit(int(re.search(r"process (\d+)", out).group(1)))
+        self.assertEqual((wt.read_seed(self.root) or {}).get("commit"), head,
+                         read(os.path.join(self.root, wt.REFRESH_LOG)))
         self.assertEqual(wt.read_seed(self.root)["slot"], "a")
         out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
         self.assertNotIn("background", out)

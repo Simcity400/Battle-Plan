@@ -3367,6 +3367,19 @@ fn completed_detach(value: &Value) -> Result<bool, String> {
 }
 
 fn request_refresh(output: &Path) -> Result<(), String> {
+    request_refresh_with(output, |_, published| {
+        if published.elapsed() >= Duration::from_secs(30) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        true
+    })
+}
+
+fn request_refresh_with(
+    output: &Path,
+    mut wait: impl FnMut(&Path, Instant) -> bool,
+) -> Result<(), String> {
     let active: Value = serde_json::from_slice(
         &fs::read(output.join("active.json"))
             .map_err(|e| format!("no active recorder here: {e}"))?,
@@ -3396,11 +3409,11 @@ fn request_refresh(output: &Path) -> Result<(), String> {
         let _ = fs::remove_file(&temporary);
         return Err(error.to_string());
     }
+    let published = Instant::now();
     let withdraw = || {
         let _ = fs::remove_file(&request);
         let _ = fs::remove_file(&ack);
     };
-    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Err(error) = refuse_failed_refresh(&session_dir, &active) {
             withdraw();
@@ -3411,11 +3424,10 @@ fn request_refresh(output: &Path) -> Result<(), String> {
             println!("Full refresh requested: the next hour's sample reads every scheduled table, taken as the following hourly update is entered.");
             return Ok(());
         }
-        if Instant::now() >= deadline {
+        if !wait(&request, published) {
             withdraw();
             return Err("the collector did not acknowledge the refresh request".into());
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -7562,33 +7574,36 @@ mod tests {
         )
         .unwrap();
         let folder = session.join("refresh-requests");
-        let watcher = {
-            let folder = folder.clone();
-            std::thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(120);
-                while Instant::now() < deadline {
-                    let requests: Vec<_> = fs::read_dir(&folder)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|entry| entry.ok())
-                        .map(|entry| entry.path())
-                        .filter(|path| path.extension().is_some_and(|ext| ext == "request"))
-                        .collect();
-                    if let [request] = requests.as_slice() {
-                        let token = fs::read_to_string(request).unwrap();
-                        let stem = request.file_stem().unwrap().to_str().unwrap();
-                        assert_eq!(token, stem);
-                        fs::write(request.with_extension("ack"), &token).unwrap();
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                panic!("no refresh request appeared");
-            })
+        let published = || -> Vec<_> {
+            fs::read_dir(&folder)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect()
         };
-        request_refresh(&root).unwrap();
-        watcher.join().unwrap();
-        assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
+        let mut waits = 0;
+        request_refresh_with(&root, |request, _| {
+            waits += 1;
+            assert_eq!(published(), [request.to_path_buf()]);
+            assert!(request.extension().is_some_and(|extension| extension == "request"), "the collector reads only .request files");
+            let token = fs::read_to_string(request).unwrap();
+            assert_eq!(token, request.file_stem().unwrap().to_str().unwrap());
+            if waits == 2 {
+                fs::write(request.with_extension("ack"), &token).unwrap();
+            }
+            true
+        })
+        .unwrap();
+        assert_eq!(waits, 2);
+        assert!(published().is_empty());
+        let mut refused = 0;
+        let unacknowledged = request_refresh_with(&root, |request, _| {
+            assert_eq!(published(), [request.to_path_buf()]);
+            refused += 1;
+            false
+        });
+        assert_eq!(refused, 1, "the refusal saw the published request");
+        assert!(unacknowledged.unwrap_err().contains("did not acknowledge"));
+        assert!(published().is_empty());
         assert!(request_refresh(&session).is_err());
         let _ = fs::remove_dir_all(&root);
     }

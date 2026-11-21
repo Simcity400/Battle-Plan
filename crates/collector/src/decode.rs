@@ -766,12 +766,9 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     }
     failure::stage("publish ready", None);
     shared.frame_stage(job.index, sampling::FrameStage::Ready);
-    let published = publish_ready(shared, job.index, job.game_elapsed);
+    publish_ready(shared, job.index, job.game_elapsed);
     drop(failure_scope);
     failure::stage("after ready handoff", None);
-    if published {
-        shared.wake_spool();
-    }
     crate::allocation::attempted_hour(None);
 }
 
@@ -781,9 +778,14 @@ fn publish_ready(shared: &Shared, index: usize, elapsed: i64) -> bool {
         completed.store(0, Ordering::Release);
         return false;
     }
-    shared.frames.push_ready(index);
-    completed.store(elapsed.max(1), Ordering::Release);
+    hand_ready(shared, index, elapsed);
     true
+}
+
+pub(crate) fn hand_ready(shared: &Shared, index: usize, elapsed: i64) {
+    shared.frames.push_ready(index);
+    shared.frames.slot(index).completed.store(elapsed.max(1), Ordering::Release);
+    shared.wake_spool();
 }
 
 #[cfg(test)]

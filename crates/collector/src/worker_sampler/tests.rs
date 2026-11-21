@@ -196,6 +196,7 @@ fn worker_sampler_concurrent_join_waits_for_panic_status_publication() {
         thread: Mutex::new(Some(panicked)),
         ready: AtomicBool::new(true),
         join_complete: AtomicBool::new(false),
+        follower_waits: std::sync::atomic::AtomicUsize::new(0),
     });
     let metadata = META.lock().unwrap_or_else(|e| e.into_inner());
     let first = Arc::clone(&control);
@@ -210,11 +211,28 @@ fn worker_sampler_concurrent_join_waits_for_panic_status_publication() {
         second.stop_join();
         returned.store(true, Ordering::Release);
     });
-    thread::sleep(Duration::from_millis(50));
-    let premature =
-        control.join_complete.load(Ordering::Acquire) || second_returned.load(Ordering::Acquire);
+    let guard = std::time::Instant::now() + Duration::from_secs(120);
+    while control.follower_waits.load(Ordering::Acquire) < 2 && !follower.is_finished() {
+        if std::time::Instant::now() >= guard {
+            drop(metadata);
+            panic!("the follower neither waited nor returned under the hang guard");
+        }
+        thread::yield_now();
+    }
+    let premature = control.join_complete.load(Ordering::Acquire)
+        || follower.is_finished()
+        || second_returned.load(Ordering::Acquire);
     drop(metadata);
     let first_joined = joiner.join().is_ok();
+    let guard = std::time::Instant::now() + Duration::from_secs(120);
+    while !follower.is_finished() {
+        if std::time::Instant::now() >= guard {
+            control.join_complete.store(true, Ordering::Release);
+            let _ = follower.join();
+            panic!("the follower never saw the join complete under the hang guard");
+        }
+        thread::yield_now();
+    }
     let second_joined = follower.join().is_ok();
     let joined = first_joined && second_joined;
     assert!(joined);

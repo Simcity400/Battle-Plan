@@ -662,6 +662,20 @@ fn steps_mark_their_divisions_reading_no_row_and_a_division_changed_in_several_i
     settled_equals_composed(&mut side);
 }
 
+fn process_tables() -> engine_executable::executable_tables::Tables {
+    use engine_executable::executable_tables as tables;
+    if tables::initialize_for_tests().is_err() {
+        let folder = std::env::temp_dir().join(format!("battle-plan-counters-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let exe = folder.join("hoi4.exe");
+        std::fs::write(&exe, b"another build").unwrap();
+        let _ = tables::initialize_executable(&exe);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+    tables::enter(None);
+    tables::current().expect("the process has registered tables")
+}
+
 fn scoped_tables() -> engine_executable::executable_tables::Tables {
     let nowhere = std::env::temp_dir().join("battle-plan no game here");
     Box::leak(Box::new(engine_executable::executable_tables::decode(engine_executable::build::ExecutableIdentity::of(&[]), Vec::new(), &nowhere)))
@@ -669,7 +683,9 @@ fn scoped_tables() -> engine_executable::executable_tables::Tables {
 
 #[test]
 fn a_compose_on_the_hosts_worker_validates_the_strategic_layout_with_the_recordings_tables() {
+    let process = process_tables();
     let tables = scoped_tables();
+    assert!(!std::ptr::eq(process, tables), "the process tables are another build's");
     engine_executable::executable_tables::enter(Some(tables));
     let units = record(BLOCK, |_, _| Status::Complete, |at, store| {
         if at == 0 {
@@ -692,7 +708,7 @@ fn a_compose_on_the_hosts_worker_validates_the_strategic_layout_with_the_recordi
     let [scoped, unscoped] = layer(&side).validated();
     engine_executable::executable_tables::enter(None);
     assert!(scoped > before, "the seek's compose validated the strategic layout");
-    assert_eq!(unscoped, 0, "and every validation, on whatever thread, had the recording's tables in scope");
+    assert_eq!(unscoped, 0, "and every validation, on whatever thread, had exactly the recording's tables in scope, not the process's");
     settled_equals_composed(&mut side);
 }
 

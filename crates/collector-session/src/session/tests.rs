@@ -86,6 +86,42 @@ fn fixture() -> Vec<u8> {
     bytes
 }
 
+const SOURCE_STRIDE: usize = 0x100;
+
+fn source_current(index: usize) -> i64 {
+    index as i64 * 1_000 - 7
+}
+
+fn aggregate_total(index: usize) -> i64 {
+    -(index as i64) * 3 - 1
+}
+
+fn many_sources(count: usize) -> Vec<u8> {
+    let sources = SOURCE_ARRAY;
+    let aggregates = (sources + 8 * count).next_multiple_of(0x100);
+    let first = (aggregates + 8 * count).next_multiple_of(0x100);
+    let mut bytes = vec![0; first + count * SOURCE_STRIDE - BASE];
+    put(&mut bytes, BASE + cgame_state::WORLD_THREAT, &(MANAGER as u64).to_le_bytes());
+    put(&mut bytes, MANAGER, &(cworld_threat::VTABLE_RVA.0 as u64).to_le_bytes());
+    put(&mut bytes, MANAGER + cworld_threat::TOTAL, &(-125_682_i64).to_le_bytes());
+    array(&mut bytes, MANAGER + cworld_threat::SOURCES, sources, count as u32);
+    array(&mut bytes, MANAGER + cworld_threat::COUNTRY_AGGREGATES, aggregates, count as u32);
+    for index in 0..count {
+        let at = first + index * SOURCE_STRIDE;
+        put(&mut bytes, sources + 8 * index, &(at as u64).to_le_bytes());
+        put(&mut bytes, aggregates + 8 * index, &aggregate_total(index).to_le_bytes());
+        source(&mut bytes, at, source_current(index), format!("r{}\0", index % 1_000).as_bytes());
+    }
+    bytes
+}
+
+fn job_for(sources: usize) -> SessionJob {
+    SessionJob {
+        log: RawLog::new(64 + 8 * sources, 16 * 1024 + 256 * sources),
+        ..Default::default()
+    }
+}
+
 fn small() -> (Capacities, Captured) {
     let capacities = Capacities {
         rows: [1, 2, 2],
@@ -417,6 +453,43 @@ fn session_truncation_matrix_matches_direct_with_same_caps() {
         let mut ticks = [0u64; 3];
         split.decode_session_payload(0, &first, &mut ticks);
         assert_matches_direct(&split, &direct);
+    }
+    for count in [5, 1_500] {
+        let bytes = many_sources(count);
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        for cap in [0, 1, count - 1, count, count + 1, 4 * count] {
+            let reasons = 8 * cap.min(count);
+            let capacities = Capacities {
+                rows: [1, cap, cap],
+                reason_bytes: reasons,
+            };
+            let mut direct = Captured::with_capacities(&capacities);
+            let _ticks = direct.capture(&memory, 0, BASE, 0, true);
+            let mut split = Captured::with_capacities(&capacities);
+            let ctx = SessionCopyContext {
+                hour: 0,
+                force_full: true,
+                base: 0,
+                game_state: BASE,
+            };
+            let mut first = job_for(count);
+            let report = copy_session_refresh(&memory, ctx, &mut first);
+            assert!(report.raw_ok, "count={count} cap={cap}");
+            split.raw_mode = true;
+            let mut ticks = [0u64; 3];
+            split.decode_session_payload(0, &first, &mut ticks);
+            assert_matches_direct(&split, &direct);
+            let expected = Outcome::Rows { len: count };
+            assert_eq!((split.sources.outcome, split.aggregates.outcome), (expected, expected), "every row of {count} is kept from an initial capacity of {cap}");
+            let len = expected.len();
+            let currents: Vec<i64> = split.sources.rows[..len].iter().map(|row| row.current_raw).collect();
+            assert_eq!(currents, (0..len).map(source_current).collect::<Vec<_>>(), "sources keep their order");
+            let totals: Vec<i64> = split.aggregates.rows[..len].iter().map(|row| row.total_raw).collect();
+            assert_eq!(totals, (0..len).map(aggregate_total).collect::<Vec<_>>(), "aggregates keep their order");
+        }
     }
     let capacities = Capacities {
         rows: [1, 2, 2],

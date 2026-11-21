@@ -57,8 +57,8 @@ ARCHIVES = {".exe", ".zip", ".7z", ".cab", ".gz", ".tar", ".xz"}
 
 
 def dev_config():
-    if os.environ.get("BATTLE_PLAN_DEV_CONFIG", os.environ.get("HOI4_DEV_CONFIG")):
-        return Path(os.environ["BATTLE_PLAN_DEV_CONFIG"])
+    if configured := os.environ.get("BATTLE_PLAN_DEV_CONFIG") or os.environ.get("HOI4REPLAY_DEV_CONFIG"):
+        return Path(configured)
     if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
         return Path(os.environ["LOCALAPPDATA"]) / "HOI4Replay" / "dev" / "config.toml"
     base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")

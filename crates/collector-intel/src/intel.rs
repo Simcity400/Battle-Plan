@@ -3889,32 +3889,52 @@ enum OpinionSlot {
 
 type OpinionStore = std::sync::Mutex<OpinionSlot>;
 
+#[derive(Clone)]
+enum StoreRef {
+    #[cfg(not(any(test, feature = "test-support")))]
+    Shared(&'static OpinionStore),
+    #[cfg(any(test, feature = "test-support"))]
+    Owned(std::sync::Arc<OpinionStore>),
+}
+
+impl StoreRef {
+    fn get(&self) -> &OpinionStore {
+        match self {
+            #[cfg(not(any(test, feature = "test-support")))]
+            Self::Shared(store) => store,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Owned(store) => store,
+        }
+    }
+}
+
 #[cfg(not(any(test, feature = "test-support")))]
 static RELATION_OPINIONS: OpinionStore = std::sync::Mutex::new(OpinionSlot::Unmade);
 
 #[cfg(not(any(test, feature = "test-support")))]
-fn default_opinion_store() -> &'static OpinionStore {
-    &RELATION_OPINIONS
+fn default_opinion_store() -> StoreRef {
+    StoreRef::Shared(&RELATION_OPINIONS)
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn default_opinion_store() -> &'static OpinionStore {
-    Box::leak(Box::new(std::sync::Mutex::new(OpinionSlot::Unmade)))
+fn default_opinion_store() -> StoreRef {
+    StoreRef::Owned(std::sync::Arc::new(std::sync::Mutex::new(OpinionSlot::Unmade)))
 }
 
 struct LentOpinions {
-    store: &'static OpinionStore,
+    store: StoreRef,
     shared: Option<SharedOpinions>,
 }
 
 impl LentOpinions {
-    fn borrow(store: &'static OpinionStore) -> Option<Self> {
-        let mut slot = store.try_lock().ok()?;
+    fn borrow(store: StoreRef) -> Option<Self> {
+        let mut slot = store.get().try_lock().ok()?;
         let shared = match std::mem::replace(&mut *slot, OpinionSlot::Lent) {
             OpinionSlot::Unmade => SharedOpinions::new(),
             OpinionSlot::Home(shared) => shared,
             OpinionSlot::Lent => return None,
         };
+        drop(slot);
         Some(Self {
             store,
             shared: Some(shared),
@@ -3929,7 +3949,7 @@ impl LentOpinions {
 impl Drop for LentOpinions {
     fn drop(&mut self) {
         if let Some(shared) = self.shared.take()
-            && let Ok(mut slot) = self.store.lock()
+            && let Ok(mut slot) = self.store.get().lock()
         {
             *slot = OpinionSlot::Home(shared);
         }
@@ -3954,7 +3974,7 @@ pub struct RelationsJob {
     provisioned: bool,
     walk: Option<crelation_status::Walk>,
     resolver: crelation_status::Resolver,
-    store: Option<&'static OpinionStore>,
+    store: Option<StoreRef>,
     shared: Option<LentOpinions>,
     capacity_charge: crate::raw_memory::Charge,
     pub selection: Option<SliceSelection>,
@@ -4104,7 +4124,7 @@ pub fn copy_relations_refresh(
         };
     }
     if job.shared.is_none() {
-        let store = *job.store.get_or_insert_with(default_opinion_store);
+        let store = job.store.get_or_insert_with(default_opinion_store).clone();
         job.shared = LentOpinions::borrow(store);
     }
     let anchor = usize::from(ctx.active[1]);
@@ -5757,6 +5777,7 @@ mod tests {
             active: [true; 2],
             epoch: 0,
         };
+        assert!(job.store.is_none(), "no store is made before a refresh");
         assert!(copy_relations_refresh(&relations_kit::memory(&bytes), ctx, &mut job).raw_ok);
         assert!(job.grow_for_next());
         job.grow();
@@ -5764,7 +5785,11 @@ mod tests {
         assert!(grown > initial);
         assert_eq!(grown, expected(&job));
         job.return_opinions();
-        let mut lent = LentOpinions::borrow(job.store.unwrap()).unwrap();
+        let Some(StoreRef::Owned(store)) = &job.store else {
+            panic!("the refresh made the job its own opinion store");
+        };
+        let store = std::sync::Arc::downgrade(store);
+        let mut lent = LentOpinions::borrow(job.store.clone().unwrap()).unwrap();
         let baseline = &lent.shared().baseline;
         assert!(baseline.allocated_bytes() > 0);
         assert!(!baseline.needs_growth());
@@ -5773,6 +5798,10 @@ mod tests {
         assert_eq!(LOCAL.snapshot().current.payload_vectors, grown);
         drop(job);
         assert_eq!(LOCAL.snapshot().current, Capacity::default());
+        assert!(
+            store.upgrade().is_none(),
+            "the job's own store and the baseline its refresh grew are released with it"
+        );
     }
 
     use engine_native::memory::SliceMemory;
@@ -7822,11 +7851,11 @@ mod tests {
         })
     }
 
-    fn observed_store() -> &'static OpinionStore {
+    fn observed_store() -> StoreRef {
         let mut shared = SharedOpinions::new();
         shared.drain = test_drain;
         shared.marks = vec![crelation_status::Mark::default(); 8];
-        Box::leak(Box::new(std::sync::Mutex::new(OpinionSlot::Home(shared))))
+        StoreRef::Owned(std::sync::Arc::new(std::sync::Mutex::new(OpinionSlot::Home(shared))))
     }
 
     fn relations_ctx(epoch: u64) -> RelationsCopyContext {
@@ -7859,7 +7888,7 @@ mod tests {
         let bytes = relations_kit::opinionated_fixture();
         let store = observed_store();
         let [mut first, mut second] = [(); 2].map(|()| RelationsJob {
-            store: Some(store),
+            store: Some(store.clone()),
             ..RelationsJob::new()
         });
         let memory = relations_kit::memory(&bytes);
@@ -7876,7 +7905,7 @@ mod tests {
         assert_eq!(run(&mut second), rows);
         assert!(second.shared.is_none());
         first.return_opinions();
-        let mut lent = LentOpinions::borrow(store).unwrap();
+        let mut lent = LentOpinions::borrow(store.clone()).unwrap();
         assert!(lent.shared().baseline.allocated_bytes() > 0);
         drop(lent);
         let mut cleared = bytes.clone();
@@ -7918,7 +7947,7 @@ mod tests {
                 tuples: vec![crelation_status::TupleRow::default(); rows],
                 selection,
                 fingerprints: store.take(),
-                store: Some(opinions),
+                store: Some(opinions.clone()),
                 ..RelationsJob::default()
             };
             let report = match failure {

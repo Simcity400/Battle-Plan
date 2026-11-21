@@ -435,6 +435,35 @@ pub fn fixture() -> Vec<u8> {
     bytes
 }
 
+pub const MANY: usize = 3;
+const MORE_LINES: usize = 0x11800;
+const LINE_SIZE: usize = 0x100;
+
+pub fn line_produced(line: usize) -> i64 {
+    300 + 11 * line as i64
+}
+
+pub fn stockpile_amount(entry: usize) -> i64 {
+    77 + 5 * entry as i64
+}
+
+pub fn many_rows_fixture() -> Vec<u8> {
+    let mut bytes = fixture();
+    let template = bytes[PLINE - BASE..PLINE - BASE + LINE_SIZE].to_vec();
+    array(&mut bytes, PROD + cproduction_status::LINES, PDATA, MANY as u32);
+    array(&mut bytes, PROD + cproduction_status::STOCKPILE, SDATA, MANY as u32);
+    for index in 0..MANY {
+        let line = if index == 0 { PLINE } else { MORE_LINES + (index - 1) * LINE_SIZE };
+        put(&mut bytes, line, &template);
+        put(&mut bytes, line + cproduction_line::REFERENCE_TYPE, &(0x8000_1234_0000_0038_u64 + ((index as u64) << 32)).to_le_bytes());
+        put(&mut bytes, line + cproduction_line::PRODUCED, &(line_produced(index) as u64).to_le_bytes());
+        put(&mut bytes, PDATA + 8 * index, &(line as u64).to_le_bytes());
+        put(&mut bytes, SDATA + 16 * index, &(VARIANT as u64).to_le_bytes());
+        put(&mut bytes, SDATA + 16 * index + 8, &stockpile_amount(index).to_le_bytes());
+    }
+    bytes
+}
+
 pub fn capacities() -> Capacities {
     Capacities {
         rows: [8; N],

@@ -371,6 +371,8 @@ struct Control {
     thread: Mutex<Option<JoinHandle<()>>>,
     ready: AtomicBool,
     join_complete: AtomicBool,
+    #[cfg(test)]
+    follower_waits: std::sync::atomic::AtomicUsize,
 }
 impl Control {
     fn stop_join(&self) {
@@ -388,6 +390,8 @@ impl Control {
             self.join_complete.store(true, Ordering::Release);
         } else {
             while !self.join_complete.load(Ordering::Acquire) {
+                #[cfg(test)]
+                self.follower_waits.fetch_add(1, Ordering::Release);
                 thread::yield_now();
             }
         }
@@ -442,6 +446,8 @@ pub(crate) fn start(
         thread: Mutex::new(None),
         ready: AtomicBool::new(!settings.enabled),
         join_complete: AtomicBool::new(!settings.enabled),
+        #[cfg(test)]
+        follower_waits: std::sync::atomic::AtomicUsize::new(0),
     });
     if !settings.enabled {
         return Ok(Sampler { control });

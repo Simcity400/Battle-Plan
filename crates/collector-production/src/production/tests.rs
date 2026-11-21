@@ -1185,6 +1185,30 @@ fn production_rest_truncation_matrix_matches_direct_with_same_caps() {
         captured.decode_production_rest_payload(0, kit::BASE, &first, &mut ticks);
         kit::assert_matches_direct(&captured, &direct);
     }
+    let bytes = kit::many_rows_fixture();
+    let memory = engine_native::memory::SliceMemory {
+        base: kit::BASE,
+        bytes: &bytes,
+    };
+    for cap in [0, 1, kit::MANY - 1, kit::MANY, kit::MANY + 1, 64] {
+        let capacities = Capacities {
+            rows: [cap; N],
+            definition_bytes: 0,
+            conveyor_name_bytes: 64,
+            line_custom_name_bytes: 64,
+            license_handles: 64,
+        };
+        let direct = kit::direct(&memory, &capacities);
+        let (split, _, _) = kit::split(&memory, &capacities);
+        kit::assert_matches_direct(&split, &direct);
+        let expected = Outcome::Rows { len: kit::MANY };
+        assert_eq!((split.lines.outcome, split.stockpiles.outcome), (expected, expected), "every row is kept from an initial capacity of {cap}");
+        let len = expected.len();
+        let produced: Vec<i64> = split.lines.rows[..len].iter().map(|row| row.produced_raw).collect();
+        assert_eq!(produced, (0..len).map(kit::line_produced).collect::<Vec<_>>(), "lines keep their order");
+        let amounts: Vec<i64> = split.stockpiles.rows[..len].iter().map(|row| row.amount_raw).collect();
+        assert_eq!(amounts, (0..len).map(kit::stockpile_amount).collect::<Vec<_>>(), "stockpiles keep their order");
+    }
 }
 
 #[test]

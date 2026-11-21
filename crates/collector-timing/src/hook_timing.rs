@@ -3,7 +3,10 @@ use std::{
     arch::x86_64::{_mm_lfence, _rdtsc},
     cell::Cell,
     marker::PhantomData,
-    sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
+    sync::{
+        Once,
+        atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
 const OWNED_SLOTS: usize = 64;
@@ -619,7 +622,7 @@ fn overhead_ticks(originals: u32) -> u64 {
 }
 
 fn overhead_pair() -> [u64; 2] {
-    if !CALIBRATED.load(Ordering::Acquire) {
+    if !STARTED.is_completed() {
         return [0; 2];
     }
     OVERHEAD
@@ -628,7 +631,7 @@ fn overhead_pair() -> [u64; 2] {
 }
 
 static OVERHEAD: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
-static CALIBRATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STARTED: Once = Once::new();
 const OVERHEAD_SAMPLES: usize = 512;
 
 fn calibrate_overhead() {
@@ -659,7 +662,6 @@ fn calibrate_overhead() {
     let empty = samples[0][0];
     OVERHEAD[0].store(empty, Ordering::Relaxed);
     OVERHEAD[1].store(samples[1][0].saturating_sub(empty), Ordering::Relaxed);
-    CALIBRATED.store(true, Ordering::Release);
 }
 
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -724,14 +726,12 @@ static ORIGIN_TSC: AtomicU64 = AtomicU64::new(0);
 static ORIGIN_QPC: AtomicI64 = AtomicI64::new(0);
 
 pub fn start() {
-    let (tsc, qpc) = (now(), crate::clock::qpc());
-    if ORIGIN_QPC
-        .compare_exchange(0, qpc, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
+    STARTED.call_once(|| {
+        let (tsc, qpc) = (now(), crate::clock::qpc());
         ORIGIN_TSC.store(tsc, Ordering::Release);
+        ORIGIN_QPC.store(qpc, Ordering::Release);
         calibrate_overhead();
-    }
+    });
 }
 
 pub fn tsc_hz() -> Option<u64> {
@@ -1059,12 +1059,20 @@ mod tests {
 
     #[test]
     fn sampled_spans_record_their_timer_overhead_and_estimates_net_it_out() {
-        start();
-        let calibrating = std::time::Instant::now();
-        while !CALIBRATED.load(Ordering::Acquire) {
-            assert!(calibrating.elapsed() < std::time::Duration::from_secs(10));
-            std::thread::yield_now();
-        }
+        let callers = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let starts = [(); 2].map(|()| {
+                scope.spawn(|| {
+                    callers.wait();
+                    start();
+                    overhead_pair()
+                })
+            });
+            for started in starts {
+                assert_ne!(started.join().unwrap(), [0; 2]);
+            }
+        });
+        assert!(STARTED.is_completed());
         let [empty, per_original] = OVERHEAD
             .each_ref()
             .map(|ticks| ticks.load(Ordering::Relaxed));

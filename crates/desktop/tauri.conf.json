@@ -30,7 +30,7 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "Battle Plan",
-    "shortDescription": "Replays and analytics for the game campaigns",
+    "shortDescription": "Campaign replays and analytics",
     "icon": ["icons/icon.ico", "icons/icon.png"],
     "fileAssociations": [
       { "ext": ["battleplan", "hoi4replay"], "name": "Battle Plan recording", "description": "Battle Plan recording", "role": "Viewer" }

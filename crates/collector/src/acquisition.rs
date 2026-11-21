@@ -438,6 +438,7 @@ struct TestHooks {
     before_readiness_wait: OnceLock<Box<dyn Fn() + Send + Sync>>,
     before_publication_failed: OnceLock<Box<dyn Fn() + Send + Sync>>,
     before_join_wait: OnceLock<Box<dyn Fn(Ticket) + Send + Sync>>,
+    before_work_wait: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl<J, R> Shared<J, R> {
@@ -1571,6 +1572,16 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_join_wait_hook(&self, hook: impl Fn(Ticket) + Send + Sync + 'static) {
+        assert!(self.shared.hooks.before_join_wait.set(Box::new(hook)).is_ok());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_work_wait_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        assert!(self.shared.hooks.before_work_wait.set(Box::new(hook)).is_ok());
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_publication_failed_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
         assert!(
             self.shared
@@ -1715,6 +1726,10 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
             state = shared.lock();
         } else {
             shared.burst_peers.store(0, Ordering::Release);
+            #[cfg(test)]
+            if let Some(hook) = shared.hooks.before_work_wait.get() {
+                hook();
+            }
             state = shared.wait_for_work(state);
         }
     }
@@ -2871,9 +2886,18 @@ mod tests {
             assert_eq!(pool.shared.lock().parked, 0);
         }
         let pool = Pool::start(1, 1, |request: &mut u8| *request + 1).unwrap();
+        let (idle_tx, idle) = mpsc::channel();
+        pool.set_work_wait_hook(move || {
+            let _ = idle_tx.send(());
+        });
         let parked = pool.park(&mut Some(3), false).unwrap();
         assert_eq!(unsafe { pool.submit(&mut Some(4)) }, Err(SubmitError::Full));
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        while idle.try_recv().is_ok() {}
+        {
+            let _state = pool.shared.lock();
+            pool.shared.work_ready.notify_all();
+        }
+        idle.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
         assert_eq!(pool.calibration().worker_executed, 0);
         assert_eq!(pool.unpark(parked), Some(3));
         let ticket = submit(&pool, &mut Some(4));
@@ -3328,34 +3352,49 @@ mod tests {
         }
     }
 
-    fn sleeping_pool(workers: usize) -> (Pool<u64, u64>, Arc<AtomicU64>) {
-        let started = Arc::new(AtomicU64::new(0));
-        let counter = Arc::clone(&started);
-        let pool = Pool::start(workers, 4, move |sleep_ms: &mut u64| {
-            counter.fetch_add(1, Ordering::AcqRel);
-            std::thread::sleep(std::time::Duration::from_millis(*sleep_ms));
-            *sleep_ms
-        })
-        .unwrap();
-        pool.reserve_worker_slots(4).unwrap();
-        (pool, started)
-    }
-
-    fn wait_for_starts(started: &AtomicU64, count: u64) {
-        let limit = std::time::Instant::now() + crate::TEST_HANG_GUARD;
-        while started.load(Ordering::Acquire) < count {
-            assert!(std::time::Instant::now() < limit, "job never started");
-            std::thread::yield_now();
-        }
-    }
-
     #[test]
     fn collector_parks_when_every_worker_is_busy() {
-        let (pool, started) = sleeping_pool(1);
+        let release = Gate(Arc::new(AtomicBool::new(false)));
+        let (claimed_tx, claimed) = mpsc::channel();
+        let pool = {
+            let release = Arc::clone(&release.0);
+            Pool::start(1, 4, move |job: &mut u64| {
+                claimed_tx.send(*job).unwrap();
+                wait_until(|| release.load(Ordering::Acquire));
+                *job
+            })
+            .unwrap()
+        };
+        pool.reserve_worker_slots(4).unwrap();
         let running = unsafe { pool.submit_with_priority(&mut Some(20), 0, true, true) }.unwrap();
-        wait_for_starts(&started, 1);
+        assert_eq!(claimed.recv_timeout(crate::TEST_HANG_GUARD).unwrap(), 20);
         let queued = unsafe { pool.submit_with_priority(&mut Some(2), 0, true, true) }.unwrap();
-        assert_eq!(pool.finish(queued).unwrap().report.unwrap(), 2);
+        let (slept_tx, slept) = mpsc::channel();
+        {
+            let release = Arc::clone(&release.0);
+            pool.set_join_wait_hook(move |ticket| {
+                let _ = slept_tx.send(ticket);
+                release.store(true, Ordering::Release);
+            });
+        }
+        let joined = AtomicBool::new(false);
+        let (report, woke) = std::thread::scope(|scope| {
+            let guard = scope.spawn(|| {
+                let woke = progressed(|| joined.load(Ordering::Acquire));
+                if !woke {
+                    pool.shared.stop();
+                    rescue_join(&pool, queued.slot, || joined.load(Ordering::Acquire));
+                }
+                woke
+            });
+            let report = pool.finish(queued).unwrap().report;
+            joined.store(true, Ordering::Release);
+            (report, guard.join().unwrap())
+        });
+        assert!(woke, "the join was rescued: its publication wake was lost");
+        assert_eq!(report.unwrap(), 2);
+        assert_eq!(slept.try_recv(), Ok(queued));
+        assert_eq!(claimed.try_recv(), Ok(2));
         assert_eq!(pool.finish(running).unwrap().report.unwrap(), 20);
     }
 

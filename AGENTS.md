@@ -1,6 +1,6 @@
 # Working on Battle Plan
 
-Battle Plan records the game campaigns and replays them in a Windows desktop app. The recording is the product: if it is wrong or silently incomplete, everything built on it is wrong.
+Battle Plan records campaigns and replays them in a Windows app. The recording is the product: if it is wrong or silently incomplete, everything built on it is wrong.
 
 Prefer simple systems and honest data. Understand the real constraint, then build the smallest model that makes correct behaviour unsurprising. Don't keep complexity because it exists, and don't add machinery because it looks thorough. Fight scope creep: do the task, completely, and no more.
 
