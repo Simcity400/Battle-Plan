@@ -25,6 +25,7 @@ static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSchemeResponder, page_origin: HeaderValue) {
     use tauri::http::{Response, StatusCode, header};
+
     let name = request.uri().path().strip_prefix('/').unwrap_or_default().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
         let mut response = Response::new(Vec::new());
