@@ -528,7 +528,7 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
     case 'table': {
       let table = tables.get(m.id);
       if (!table) {
-        const ctx = m.canvas?.getContext('2d', { willReadFrequently: true });
+        const ctx = m.canvas?.getContext('2d');
         if (!ctx || !m.canvas) { post({ type: 'failed', page: m.id, reason: 'Table drawing surface unavailable' }); break; }
         tables.set(m.id, table = { kind: 'table', id: m.id, owner: m.owner, model: m.model, canvas: m.canvas, ctx, scrollLeft: m.model.scrollLeft, scrollTop: m.model.scrollTop ?? 0,
           icons: new Map(), held: new Map(), markers: new Map(), picture: tablePicture(), floor: new Map(), measures: new Map() });
