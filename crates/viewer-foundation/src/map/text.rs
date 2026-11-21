@@ -676,8 +676,7 @@ mod tests {
 
     #[test]
     fn map_name_font_uses_native_fallback_and_refuses_missing_glyphs_locally() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let dds = dxt5_8x7();
         let (root, layers, interface) = stack(
             "map_fallback",
@@ -735,8 +734,7 @@ mod tests {
 
     #[test]
     fn only_a_font_outside_the_covered_root_is_named_unverified() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let dds = dxt5_8x7();
         for (name, directory, unverified) in [
             ("covered_font", "gfx/fonts", false),
@@ -783,8 +781,7 @@ mod tests {
 
     #[test]
     fn visual_mods_that_hide_every_bitmapfont_refuse_their_fonts() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_text_hidden_fonts_{}",
             std::process::id()
@@ -858,8 +855,7 @@ path=\"{art}\"
 
     #[test]
     fn a_refused_map_font_also_names_battle_plan_label_refusal() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let (root, layers, interface) = stack(
             "map_arrow_refused",
             &[(
@@ -896,8 +892,7 @@ path=\"{art}\"
 
     #[test]
     fn a_missing_family_file_is_skipped_and_named() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let dds = dxt5_8x7();
         let (root, layers, interface) = stack(
             "missing",
@@ -925,8 +920,7 @@ path=\"{art}\"
 
     #[test]
     fn a_page_divides_its_glyphs_by_the_extent_the_game_decodes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let dds = dxt5_8x7();
         let (root, layers, interface) = stack(
             "dxt",
@@ -954,8 +948,7 @@ path=\"{art}\"
 
     #[test]
     fn a_refused_font_does_not_load() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let (root, layers, interface) = stack(
             "refused",
             &[(

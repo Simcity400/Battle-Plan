@@ -64,8 +64,7 @@ fn loaded(
 
 #[test]
 fn lazy_plain_resources_share_native_metadata_without_loading_texture() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (root, layers) = stack(
         "lazy-plain",
         &[
@@ -107,8 +106,7 @@ fn lazy_plain_resources_share_native_metadata_without_loading_texture() {
 
 #[test]
 fn fonts_load_through_the_native_registry() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (root, layers) = stack(
         "fonts",
         &[
@@ -200,8 +198,7 @@ impl crate::map::native_gui::Resources for Drawn<'_> {
 
 #[test]
 fn byte_names_match_end_to_end() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (root, layers) = stack(
         "bytes",
         &[
@@ -246,24 +243,24 @@ fn byte_names_match_end_to_end() {
 
 #[test]
 fn undetermined_textures_are_refused_not_dropped() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let jpeg = vec![0, 0, 1];
+    content_reader_core::test_game::enter();
+    let mut truncated_tga = tga(1, 1);
+    truncated_tga.truncate(18);
     let (root, layers) = stack(
         "unimplemented",
         &[
             (
                 "interface/a.gfx",
-                b"spriteTypes = { spriteType = { name = \"GFX_photo\" texturefile = \"gfx/photo.jpg\" } \
+                b"spriteTypes = { spriteType = { name = \"GFX_photo\" texturefile = \"gfx/photo.dds\" } \
                   spriteType = { name = \"GFX_default_fallback_texture\" texturefile = \"gfx/b.tga\" } } \
                   bitmapfonts = { bitmapfont = { name = \"f\" path = \"gfx/fonts/j\" } }"
                     .to_vec(),
             ),
-            ("gfx/photo.jpg", jpeg.clone()),
+            ("gfx/photo.dds", b"DDS ".to_vec()),
             ("gfx/b.tga", tga(4, 4)),
             ("gfx/fonts/j.fnt", fnt(10, &[('A', 5)])),
-            ("gfx/fonts/j.tga", jpeg.clone()),
-            ("gfx/edit.dds", jpeg),
+            ("gfx/fonts/j.tga", truncated_tga),
+            ("gfx/edit.dds", b"DDS ".to_vec()),
         ],
     );
     let assets = Assets {
@@ -286,8 +283,7 @@ fn undetermined_textures_are_refused_not_dropped() {
 
 #[test]
 fn a_sixteen_bit_texture_is_loaded_at_full_precision() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut dds = vec![0_u8; 128];
     dds[..4].copy_from_slice(b"DDS ");
     for (offset, value) in [
@@ -342,8 +338,7 @@ fn a_sixteen_bit_texture_is_loaded_at_full_precision() {
 
 #[test]
 fn a_shared_refused_texture_refuses_every_user() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (root, layers) = stack(
         "shared",
         &[
@@ -355,7 +350,7 @@ fn a_shared_refused_texture_refuses_every_user() {
                   bitmapfonts = { bitmapfont = { name = \"f\" path = \"gfx/x\" } }"
                     .to_vec(),
             ),
-            ("gfx/x.dds", vec![0, 0, 1]),
+            ("gfx/x.dds", b"DDS ".to_vec()),
             ("gfx/b.tga", tga(4, 4)),
             ("gfx/x.fnt", fnt(10, &[('A', 5)])),
         ],
@@ -400,8 +395,7 @@ fn a_shared_refused_texture_refuses_every_user() {
 
 #[test]
 fn sprites_load_through_the_native_registry() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (root, layers) = stack(
         "sprites",
         &[
@@ -462,8 +456,7 @@ fn sprites_load_through_the_native_registry() {
 }
 #[test]
 fn arbitrary_effects_load_lazily_without_a_model_or_compiler() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (root, layers) = stack(
         "lazy-effect",
         &[
@@ -523,8 +516,7 @@ Effect Up { VertexShader = V PixelShader = P }
 
 #[test]
 fn force_pow2_textures_sets_the_decode_and_the_effect_globals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::with(|game| game.word("force_pow2_textures"));
     let (root, layers) = stack(
         "pow2-globals",
         &[
@@ -535,15 +527,17 @@ fn force_pow2_textures_sets_the_decode_and_the_effect_globals() {
             ("gfx/FX/defines_hlsl_dx11.fxh", Vec::new()),
         ],
     );
-    for (settings, pow2) in [
-        ("force_pow2_textures=no", ["1.000"; 4]),
+    for (settings, force_pow2_textures, pow2) in [
+        ("force_pow2_textures=no", false, ["1.000"; 4]),
         (
             "force_pow2_textures=yes",
+            true,
             ["0.917", "0.667", "0.688", "1.000"],
         ),
     ] {
         let decode =
             content_reader_settings::settings::SettingsKeys::read(settings.as_bytes()).texture_decode();
+        assert_eq!(decode.force_pow2_textures, force_pow2_textures);
         let mut resources = GuiResources::new(
             Registry::load(&layers).unwrap(),
             b"l_english",
@@ -573,8 +567,7 @@ fn force_pow2_textures_sets_the_decode_and_the_effect_globals() {
 
 #[test]
 fn a_font_page_the_mods_break_or_lack_is_named_and_the_recordings_drawn() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_font_pages_{}_{:?}",
         std::process::id(),
@@ -649,8 +642,7 @@ fn a_font_page_the_mods_break_or_lack_is_named_and_the_recordings_drawn() {
 
 #[test]
 fn what_the_mods_cannot_draw_is_the_recordings_own_declaration_with_its_registry() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_recorded_declarations_{}_{:?}",
         std::process::id(),
@@ -844,8 +836,7 @@ const FALLBACK_DECLARATION: &str =
 
 #[test]
 fn a_mod_read_that_fails_is_the_attempts_failure() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (root, layers) = mounted(
         "failed_read",
         &[
@@ -887,8 +878,7 @@ fn a_mod_read_that_fails_is_the_attempts_failure() {
 
 #[test]
 fn fonts_fall_back_to_the_recordings_own_of_their_name_only() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (root, layers) = mounted(
         "font_names",
         &[
@@ -941,8 +931,7 @@ fn fonts_fall_back_to_the_recordings_own_of_their_name_only() {
 
 #[test]
 fn only_the_kept_attempts_notes_are_named() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let shader = |technique: &str| {
         format!(
             "VertexStruct I {{ float3 p : POSITION;\n}};\n\
@@ -1010,8 +999,7 @@ fn only_the_kept_attempts_notes_are_named() {
 
 #[test]
 fn transparency_masks_keep_mip_zero_alpha_one_and_shared_texture_identity() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut image = tga(4, 1);
     image[17] = 0x28;
     for (pixel, alpha) in [0, 1, 128, 255].into_iter().enumerate() {

@@ -231,8 +231,10 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let raids = Arc::new(test_support::assets());
-        let tables = engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let tables = content_reader_core::test_game::enter();
+        let mut raids = test_support::unnamed_assets();
+        test_support::set_counts(&mut raids);
+        let raids = Arc::new(raids);
         let triggers = Arc::new(raids.trigger_content.clone());
         let entry = open(record(name, &fixture()), hourly_steps()).unwrap();
         entry.set_capture(CaptureMode::Full);

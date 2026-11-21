@@ -148,8 +148,9 @@ pub fn neutral_world(frame: &mut DecodedFrame, country: u32) {
     );
     put(frame, TableRows::CountryUnitSpeedEntries(vec![]));
     put(frame, TableRows::DivisionTransportSpeeds(vec![]));
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    if !engine_executable::executable_tables::is_initialized() {
+        crate::map::test_support::enter_fixed_modifier_tables();
+    }
     let mut keys = engine_executable::modifier_keys::all()
         .unwrap()
         .collect::<Vec<_>>();

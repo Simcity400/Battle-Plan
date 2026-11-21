@@ -3,27 +3,10 @@ use crate::map::test_support::gpu::*;
 use content_reader_core::{pdxshader::program::Program, pdxshader::program::Stage};
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::Path,
 };
 mod models;
 mod parts;
-fn is_gui_effect(name: &str) -> bool {
-    name.ends_with(".shader")
-        && (name.starts_with("buttonstate")
-            || matches!(
-                name,
-                "static_button.shader"
-                    | "text.shader"
-                    | "maskedflag.shader"
-                    | "progress.shader"
-                    | "progress_minmax.shader"
-                    | "progress_startend.shader"
-                    | "progress_reverse.shader"
-                    | "progress_radial.shader"
-                    | "circularprogressbar.shader"
-            ))
-}
-
 fn variants(program: &Program) -> Vec<Vec<String>> {
     let source = [&program.common, &program.vertex, &program.pixel]
         .iter()

@@ -728,6 +728,8 @@ pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> syntheti
         .trigger("or", 0, Reader::Body, 0)
         .trigger("not", 0, Reader::Body, 0)
         .trigger("always", 0, Reader::Assign, 0)
+        .trigger("date", 0, Reader::Comparison, 0)
+        .trigger("has_war", crate::scope::ScopeKind::Country.bit(), Reader::Assign, 0)
         .trigger("skill", combat | character, Reader::Comparison, 0)
         .trigger("is_attacker", combat, Reader::Assign, 0)
         .trigger("custom_trigger_tooltip", 0, Reader::Own(0x141446060), 0x141446C20)
