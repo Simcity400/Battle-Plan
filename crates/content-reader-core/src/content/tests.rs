@@ -2718,9 +2718,7 @@ fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn hash_mismatch_names_the_layer_and_both_digests() {
     let mut changed = Vec::new();
     check_hash(&mut changed, "DLC", "dlc034_no_step_back", [7; 32], [7; 32]);
@@ -2737,7 +2735,7 @@ fn hash_mismatch_names_the_layer_and_both_digests() {
     );
     assert_eq!(
         changed[0].to_string(),
-        "DLC dlc034_no_step_back changed since the recording (content hash mismatch); the installed files are used"
+        "DLC dlc034_no_step_back changed since the recording (content hash mismatch)"
     );
     let error = changed[0].refusal().to_string();
     assert!(error.contains("DLC dlc034_no_step_back"));
