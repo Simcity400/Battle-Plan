@@ -1,12 +1,24 @@
 import type { FromWorker, ToWorker } from '../draw/kit';
 import type { DrawSample } from '../draw/notifications';
+import { ROW_HEIGHT } from '../draw/tables/logic.ts';
 
 export interface DrawLane { postMessage(message: ToWorker, transfer: Transferable[]): void }
 
 const SURFACE = new Set<ToWorker['type']>(['surface', 'table', 'dateFace', 'race', 'pointer', 'tablePointer', 'tableScroll', 'tableRead',
   'racePointer', 'inspectRace', 'detach', 'closeRace']);
 const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'structureLead', 'followFailure']);
-const WEIGHT: Partial<Record<ToWorker['type'], number>> = { table: 4, race: 2 };
+
+function painted(message: ToWorker): number {
+  if (message.type === 'surface') return Math.max(1, message.model.cells?.length ?? 0);
+  if (message.type === 'table') {
+    const { columns, height, settings, rows: built } = message.model;
+    const room = Math.ceil((height ?? 0) / (ROW_HEIGHT[settings?.density] ?? ROW_HEIGHT.comfortable));
+    const rows = built?.length ? Math.min(room, built.length) : room;
+    return Math.max(1, (columns?.filter(column => column.shown).length ?? 0) * rows);
+  }
+  if (message.type === 'race') return Math.max(1, (message.model.slots ?? 0) * 3);
+  return 1;
+}
 
 export class DrawLanes {
   private readonly owner = new Map<number, { lane: number; weight: number; table: boolean }>();
@@ -36,8 +48,12 @@ export class DrawLanes {
           const fewer = table && this.tables[at]! !== this.tables[lane]! ? this.tables[at]! < this.tables[lane]! : this.load[at]! < this.load[lane]!;
           if (fewer) lane = at;
         }
-        held = { lane, weight: WEIGHT[message.type] ?? 1, table };
-        this.owner.set(message.id, held); this.load[lane]! += held.weight; if (table) this.tables[lane]!++;
+        held = { lane, weight: 0, table };
+        this.owner.set(message.id, held); if (table) this.tables[lane]!++;
+      }
+      if (message.type === 'surface' || message.type === 'table' || message.type === 'race' || message.type === 'dateFace') {
+        const weight = painted(message);
+        this.load[held.lane]! += weight - held.weight; held.weight = weight;
       }
       if (message.type === 'detach' || message.type === 'closeRace') {
         this.owner.delete(message.id); this.load[held.lane]! -= held.weight; if (held.table) this.tables[held.lane]!--;

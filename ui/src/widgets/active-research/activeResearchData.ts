@@ -1,10 +1,10 @@
 import type { ResearchHistory, ResearchSlotHistory, ResearchSlotsAt } from '../research/types';
-import { isUnjoinedResearch, researchAt, researchEntryAt, researchRateAt } from '../research/researchData.ts';
+import { isUnjoinedResearch, researchAt, researchEntryAt } from '../research/researchData.ts';
 import { coverageAt } from '../research/researchLayout.ts';
 import type { ResearchEntry, ResearchSlotNow } from '../../generated/dashboard';
 
 export type ActiveSlot =
-  | { kind: 'researching'; slot: ResearchSlotHistory; read: ResearchSlotNow; entry: ResearchEntry | null; token: string; aheadOf: number | null }
+  | { kind: 'researching'; slot: ResearchSlotHistory; read: ResearchSlotNow; entry: ResearchEntry | null; token: string }
   | { kind: 'idle'; slot: ResearchSlotHistory; read: ResearchSlotNow }
   | { kind: 'unavailable'; slot: ResearchSlotHistory; reason: string };
 
@@ -23,8 +23,6 @@ export function activeSlots(history: ResearchHistory, now: ResearchSlotsAt): Act
     const full = history.slots.find(owner => owner.index === slot.index) ?? slot;
     const entry = researchEntryAt(full, read.state, hour);
     if (!entry && !isUnjoinedResearch(read.state)) return [{ kind: 'idle', slot, read }];
-    const rate = researchRateAt(read.state, hour);
-    return [{ kind: 'researching', slot, read, entry, token: entry?.token ?? read.state.token!,
-      aheadOf: rate && BigInt(rate.penaltyRaw) > 0n ? read.state.details!.modifiers!.year : null }];
+    return [{ kind: 'researching', slot, read, entry, token: entry?.token ?? read.state.token! }];
   });
 }

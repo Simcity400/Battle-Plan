@@ -57,8 +57,7 @@ export function recordedPanelRows(product: string, raw: unknown): string[] {
   if (product === 'nuclear-arsenal') return arsenalStructureRows(validateNuclearArsenal(raw));
   if (product === 'research-slots') {
     const r = raw as ResearchSlotsReply;
-    return [...r.slots.map(s => JSON.stringify([s.index, s.state.token, s.state.entryFirstObservedHour])),
-      ...r.grants.grants.map(g => JSON.stringify([g.kind, g.id, g.ordinal, g.token]))];
+    return r.slots.map(s => JSON.stringify([s.index, s.state.token, s.state.entryFirstObservedHour]));
   }
   if (product === 'doctrine-mastery') {
     return (raw as DoctrineMasteryReply).folders.flatMap(f => [JSON.stringify([f.id, f.grand?.id]), ...f.completed.map(s => JSON.stringify([f.id, s.id])),
@@ -96,7 +95,7 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
     { layers: effectsLayer, owns: field => !!field.closest(effectsLayer), extendInline }),
   'research-slots': recordView(validateResearchSlots, slotsStructure, (reply, source, hour) =>
     slotValues(reply, hour, slot => source.get(liveKey(String(slot), 'progress'))),
-    { rowAttribute: 'data-research-slot', layers: '.research-lanes,.active-cards,.research-grants', meters: '.research-now-meter' },
+    { rowAttribute: 'data-research-slot', layers: '.research-lanes,.active-rows', meters: '.research-now-meter' },
     (reply, hour) => {
       let next = nextDay(hour);
       for (const { state } of reply.slots) if (state.details?.remainingDays != null) {
