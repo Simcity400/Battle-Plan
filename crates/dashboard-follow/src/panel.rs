@@ -21,7 +21,7 @@ pub struct ProductStep<'a> {
 pub struct ProductRead {
     pub value: Arc<PanelData>,
     pub rows: u64,
-    pub encoded: Option<Arc<[u8]>>,
+    pub fresh: bool,
     pub live: Option<Arc<Live>>,
     pub lanes: Vec<Declared>,
 }

@@ -313,10 +313,9 @@ impl AtHour for DoctrineMastery {
         stage == 1 && (edits.fields(TableId::DoctrineFolders, u64::MAX) || edits.fields(TableId::DoctrineTracks, dashboard_base::products::at_hour::field_mask(TableId::DoctrineTracks, &["sub_doctrine"])))
     }
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+    fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut serde_json::Value) -> io::Result<bool> {
         let mask = dashboard_base::products::at_hour::field_mask(TableId::DoctrineTracks, &TRACK_CELLS.map(|(_, field)| field));
         if !edits.only_columns(TableId::DoctrineTracks, mask) { return Ok(false); }
-        live.patch(frame, &edits.tables, data);
         Ok(true)
     }
 

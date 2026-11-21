@@ -185,6 +185,7 @@ struct StepProduct {
     cells: Vec<(Group, u32)>,
     host: Option<HostCells>,
     followed: Option<Arc<PanelData>>,
+    input: Option<Arc<PanelData>>,
     resend: bool,
 }
 
@@ -205,16 +206,15 @@ impl StepProduct {
 
     fn read_at(&mut self, page_seek: u32, epoch: u64, hour: Hour, reset: bool, cancelled: &AtomicBool, step: Option<panel::ProductStep<'_>>) -> Option<(u8, &[u8])> {
         let seed = reset || self.last.is_none_or(|(e, g, h)| e != epoch || g != page_seek || h > hour);
-        let read = catch_unwind(AssertUnwindSafe(|| (self.read)(hour, seed, cancelled, step)))
+        let send = seed || std::mem::take(&mut self.resend);
+        let read = catch_unwind(AssertUnwindSafe(|| (self.read)(hour, send, cancelled, step)))
             .unwrap_or_else(|p| panel::ProductRead { value: Arc::new(Err(format!("Panel read at hour {hour} failed: {}", panicked(&*p)))),
-                rows: 0, encoded: None, live: None, lanes: Vec::new() });
+                rows: 0, fresh: true, live: None, lanes: Vec::new() });
         self.last = Some((epoch, page_seek, hour));
         self.next = hour.checked_add(1);
         self.read_lanes(&read.lanes);
-        let send = seed || std::mem::take(&mut self.resend);
-        let value = self.follow_cells(&read.value, read.live.as_deref(), hour, send);
-        let encoded = if Arc::ptr_eq(&value, &read.value) { read.encoded } else { None };
-        self.wire.update(send, &value, encoded)
+        let value = self.follow_cells(&read.value, read.live.as_deref(), hour, send, read.fresh);
+        self.wire.update(send, &value)
     }
 
     fn read_lanes(&mut self, read: &[Declared]) {
@@ -237,12 +237,15 @@ impl StepProduct {
         }
     }
 
-    fn follow_cells(&mut self, value: &Arc<PanelData>, live: Option<&Live>, hour: Hour, seed: bool) -> Arc<PanelData> {
+    fn follow_cells(&mut self, value: &Arc<PanelData>, live: Option<&Live>, hour: Hour, seed: bool, fresh: bool) -> Arc<PanelData> {
         let (Ok(reply @ Value::Object(_)), Some(live)) = (&**value, live.filter(|live| !live.is_empty())) else {
             release(&mut self.cells, self.host.as_ref());
             self.followed = None;
+            self.input = None;
             return value.clone();
         };
+        if !seed && let (Some(input), Some(followed)) = (&self.input, &self.followed) && Arc::ptr_eq(input, value) { return followed.clone(); }
+        self.input = Some(value.clone());
         let mut reply = reply.clone();
         let mut kept = Vec::with_capacity(live.groups.len());
         if let Some(groups) = reply.get_mut("live").and_then(|live| live.get_mut("groups")).and_then(Value::as_array_mut) {
@@ -253,7 +256,7 @@ impl StepProduct {
                     Ok(id) => {
                         out.insert("follow".into(), id.into());
                         let exact = || out.get("values").and_then(Value::as_array).is_some_and(|values| values.iter().all(|value| value.as_i64().is_none_or(|n| n.unsigned_abs() < 1 << 53)));
-                        if (new || seed) && exact() { out.insert("seedHour".into(), hour.into()); } else { out.remove("values"); }
+                        if (new || seed) && fresh && exact() { out.insert("seedHour".into(), hour.into()); } else { out.remove("values"); }
                     }
                     Err(reason) => {
                         out.remove("values");
@@ -501,7 +504,7 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
             self.reads.lock().unwrap_or_else(PoisonError::into_inner).register(id);
             let seed = Some((self.playhead().epoch(), self.playhead().head(Instant::now())));
             let host = Some(HostCells { follow: self.follow.clone(), held: self.held.clone() });
-            let product = StepProduct { id, seed, read, lanes: Vec::new(), wire: Default::default(), last: None, joined: false, next: Some(Hour::MIN), cells: Vec::new(), host, followed: None, resend: false };
+            let product = StepProduct { id, seed, read, lanes: Vec::new(), wire: Default::default(), last: None, joined: false, next: Some(Hour::MIN), cells: Vec::new(), host, followed: None, input: None, resend: false };
             panels.due.insert((Hour::MIN, id));
             panels.products.insert(id, product);
             self.needs_seed.store(true, Ordering::Release);
@@ -596,11 +599,11 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     let (release, wait_release) = std::sync::mpsc::channel();
     let wait_release = Mutex::new(wait_release);
     let mut product = StepProduct {
-        id: 4, lanes: Vec::new(), seed: Some((1, 12)), last: None, next: None, joined: false, wire: Default::default(), cells: Vec::new(), host: None, followed: None, resend: false,
+        id: 4, lanes: Vec::new(), seed: Some((1, 12)), last: None, next: None, joined: false, wire: Default::default(), cells: Vec::new(), host: None, followed: None, input: None, resend: false,
         read: Arc::new(move |_, _, _, _| {
             started.send(()).unwrap();
             wait_release.lock().unwrap().recv().unwrap();
-            panel::ProductRead { value: Arc::new(Ok(Value::Null)), rows: 0, encoded: None, live: None, lanes: Vec::new() }
+            panel::ProductRead { value: Arc::new(Ok(Value::Null)), rows: 0, fresh: true, live: None, lanes: Vec::new() }
         }),
     };
     let push = Push::default();

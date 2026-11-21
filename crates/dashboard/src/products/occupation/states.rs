@@ -763,10 +763,9 @@ impl AtHour for OccupiedStates {
         }
     }
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
         if !data["missing"].is_null() || !structure_holds(frame, edits) { return Ok(false); }
         if world_moved(edits) && at.context.judged.lock().unwrap_or_else(|error| error.into_inner()).at != Some((frame.branch, frame.hour)) { return Ok(false); }
-        live.patch(frame, &edits.tables, data);
         Ok(true)
     }
 

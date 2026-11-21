@@ -33,17 +33,18 @@ impl Widget {
                 let token = AtomicBool::new(false);
                 let run = || read(step.last(), step.reset(), &token, Some(ProductStep { step, lanes }));
                 let (reading, extra) = if audit.is_some() { at_hour::counted(run) } else { (run(), 0) };
-                let (answer, rows, body, read_lanes) = (reading.value, reading.rows, reading.encoded, reading.lanes);
-                let record = delivery.packet((0, 1, step.epoch() as u32), id, step.last(), step.reset(), &answer, body);
+                let (answer, rows, read_lanes, fresh) = (reading.value, reading.rows, reading.lanes, reading.fresh);
+                let record = delivery.packet((0, 1, step.epoch() as u32), id, step.last(), step.reset(), &answer);
                 let mut cold_rows = None;
                 let mut mismatch = None;
                 if audit.is_some() {
                     let (expected, count) = at_hour::counted(|| cold(step.last(), &token));
                     cold_rows = Some(count);
-                    if expected.is_err() != answer.is_err() || hash(&expected) != blake3::hash(delivery.body().unwrap()) {
-                        mismatch = Some(match (&expected, answer.as_ref()) {
+                    let (expected, shown) = (shown(&expected, fresh), shown(&answer, fresh));
+                    if expected.is_err() != shown.is_err() || hash(&expected) != hash(&shown) {
+                        mismatch = Some(match (&expected, &shown) {
                             (Ok(left), Ok(right)) => difference("", left, right).unwrap_or_else(|| "payload bytes differ".into()),
-                            _ => format!("refusals {:?} / {:?}", expected.as_ref().err(), answer.as_ref().as_ref().err()),
+                            _ => format!("refusals {:?} / {:?}", expected.as_ref().err(), shown.as_ref().err()),
                         });
                     }
                 }
@@ -68,6 +69,15 @@ impl Widget {
             }
         }
     }
+}
+
+fn shown(data: &PanelData, values: bool) -> PanelData {
+    data.clone().map(|mut reply| {
+        for group in reply["live"]["groups"].as_array_mut().into_iter().flatten() {
+            if !values && let Some(group) = group.as_object_mut() { group.remove("values"); }
+        }
+        reply
+    })
 }
 
 fn hash(data: &PanelData) -> blake3::Hash {

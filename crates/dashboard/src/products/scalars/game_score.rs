@@ -153,7 +153,6 @@ pub(super) fn hints(localisation: &Localisation) -> (BTreeMap<String, String>, V
 }
 
 impl AtHour for GameScore {
-    const ENCODE_LIVE_CELLS: bool = true;
     const KEY: &'static str = "game-score";
     const TITLE: &'static str = "Game score";
     const CONTENT_DEPENDENT: bool = true;
@@ -173,7 +172,7 @@ impl AtHour for GameScore {
 
     const CLOCK_DEPENDENT: bool = false;
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, _data: &mut serde_json::Value) -> io::Result<bool> {
         let id = TableId::CountryGameScores;
         if !edits.only_columns(id, dashboard_base::products::at_hour::field_mask(id, &SCORES)) { return Ok(false); }
         let rows = frame.complete::<tables::CountryGameScores>()?;
@@ -190,7 +189,6 @@ impl AtHour for GameScore {
                 if shown != (matches!(known.0, Recorded::Value(_)) && known.1 == CountryGameScoreRow::KNOWN) { return Ok(false); }
             }
         }
-        live.patch(frame, &edits.tables, data);
         Ok(true)
     }
 

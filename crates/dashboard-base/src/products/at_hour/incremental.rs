@@ -329,7 +329,7 @@ struct Stream {
     identity_through: i32,
     live: Arc<Live>,
     data: Arc<PanelData>,
-    encoding: Option<super::encoding::Encoding>,
+    values_at: Option<i32>,
     reply: Option<Box<dyn std::any::Any + Send>>,
     sampled: Option<BTreeSet<TableId>>,
 }
@@ -364,11 +364,12 @@ where P::Context: Sync, P::Params: Sync {
         let mut count = 0;
         let result = engine_executable::executable_tables::scope(executable, || -> io::Result<_> {
             if let Some(state) = held.as_ref().filter(|s| s.frame.hour == hour) { return Ok(state.data.clone()); }
+            if let Some(state) = held.as_mut() { state.values_at = None; }
             let run = timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
             let owner = holder::<P>(&holders, &params, hour)?;
             let seed = reset || held.as_ref().is_none_or(|s| s.run != run || hour < s.frame.hour);
             if seed {
-                *held = Some(Stream { tables: HashMap::new(), extra: Supplemental::default(), encoding: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, identity_through: hour, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None });
+                *held = Some(Stream { tables: HashMap::new(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, identity_through: hour, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None });
             }
             let state = held.as_mut().expect("seeded");
             let previous_hour = state.frame.hour;
@@ -428,23 +429,11 @@ where P::Context: Sync, P::Params: Sync {
             if !identity_changed && selected.iter().all(|table| matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))) {
                 let changed = !edits.tables.is_empty() || !edits.replaced.is_empty();
                 if !changed && !P::clock_dependent(&state.plans, &context) {
-                    if state.extra.advance::<P>(&mut input)? && let Ok(data) = Arc::make_mut(&mut state.data) {
-                        data["live"] = state.extra.values(&state.live, &mut state.frame);
-                    }
                     return Ok(state.data.clone());
                 }
                 if state.data.is_ok() {
                     let kept = (Arc::strong_count(&state.data) > 1).then(|| state.data.clone());
                     if let Ok(data) = Arc::make_mut(&mut state.data) && P::advance(&state.frame, &params, &at, &edits, &state.live, data)? {
-                        let mut refreshed = false;
-                        if !state.extra.reads.is_empty() {
-                            state.extra.advance::<P>(&mut input)?;
-                            let fresh = state.extra.values(&state.live, &mut state.frame);
-                            refreshed = data["live"] != fresh;
-                            if refreshed { data["live"] = fresh; }
-                        }
-                        if refreshed { state.encoding = P::ENCODE_LIVE_CELLS.then(|| super::encoding::Encoding::new(data)).transpose()?; }
-                        else if let Some(encoding) = &mut state.encoding { encoding.patch(data, &state.live, &edits)?; }
                         state.reply = None;
                         return Ok(state.data.clone());
                     }
@@ -457,14 +446,6 @@ where P::Context: Sync, P::Params: Sync {
             let live = cells.finish();
             if !seed && state.data.is_ok() && *state.live == live
                 && state.reply.as_ref().and_then(|last| last.downcast_ref::<P::Reply>()).is_some_and(|last| *last == reply) {
-                state.extra.advance::<P>(&mut input)?;
-                if !state.live.is_empty() {
-                    let fresh = state.extra.values(&state.live, &mut state.frame);
-                    if state.data.as_ref().as_ref().is_ok_and(|data| data["live"] != fresh) && let Ok(data) = Arc::make_mut(&mut state.data) {
-                        data["live"] = fresh;
-                        state.encoding = P::ENCODE_LIVE_CELLS.then(|| super::encoding::Encoding::new(data)).transpose()?;
-                    }
-                }
                 return Ok(state.data.clone());
             }
             state.live = Arc::new(live);
@@ -475,16 +456,16 @@ where P::Context: Sync, P::Params: Sync {
             let live = (!state.live.is_empty()).then(|| state.extra.values(&state.live, &mut state.frame));
             let data = serde_json::to_value(WithLive { reply: &reply, live })?;
             state.reply = Some(Box::new(reply));
-            state.encoding = P::ENCODE_LIVE_CELLS.then(|| super::encoding::Encoding::new(&data)).transpose()?;
+            state.values_at = Some(hour);
             state.data = Arc::new(Ok(data));
             Ok(state.data.clone())
         });
         let result = result.unwrap_or_else(|e| { *held = None; Arc::new(Err(e.to_string())) });
-        let encoded = held.as_ref().and_then(|s| s.encoding.as_ref()).map(|e| e.body.clone());
+        let fresh = held.as_ref().is_some_and(|s| s.values_at == Some(hour));
         let live = held.as_ref().map(|s| s.live.clone()).filter(|live| !live.is_empty());
         let lanes = held.as_ref().map_or_else(Vec::new, |s| s.tables.iter().chain(&s.extra.tables)
             .filter_map(|(table, projection)| Some(Declared { table: table.index(), columns: projection.as_ref().ok()?.columns.clone(), keyed: true, passing: false, hourly: false }))
             .collect());
-        dashboard_follow::panel::ProductRead { value: result, rows: count, encoded, live, lanes }
+        dashboard_follow::panel::ProductRead { value: result, rows: count, fresh, live, lanes }
     })
 }

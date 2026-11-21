@@ -191,7 +191,7 @@ impl AtHour for ProductionLinesAt {
         }
     }
 
-    fn advance(frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+    fn advance(_frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut serde_json::Value) -> io::Result<bool> {
         if !edits.replaced.is_empty() { return Ok(false); }
         for (&table, rows) in &edits.tables {
             let mask = match table {
@@ -209,7 +209,6 @@ impl AtHour for ProductionLinesAt {
             };
             if rows.values().any(|fields| fields & !mask != 0) { return Ok(false); }
         }
-        live.patch(frame, &edits.tables, data);
         Ok(true)
     }
 

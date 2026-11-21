@@ -26,7 +26,6 @@ use std::{
 use ts_rs::TS;
 
 mod incremental;
-mod encoding;
 mod placed;
 pub use incremental::Edits;
 
@@ -93,7 +92,6 @@ pub trait AtHour: 'static {
     const TITLE: &'static str;
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = true;
-    const ENCODE_LIVE_CELLS: bool = false;
     type Params: DeserializeOwned + Send + 'static;
     type Reply: Serialize + ReplyWarnings + PartialEq + Send + 'static;
     type Context: Send + 'static;
