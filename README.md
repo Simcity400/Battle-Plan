@@ -20,15 +20,15 @@ Battle Plan records your Hearts of Iron IV campaign while you play, then replays
 
 - **The whole war, hour by hour.** Rewind, pause or fast-forward through every recorded hour. The map and the dashboard follow one clock.
 - **The game's map, redrawn.** Units, fronts, battles, weather, day and night, and over a dozen map modes, from any country's point of view and with its fog of war.
-- **A dashboard you build.** Charts, races, tables, timelines and breakdowns for armies, economies, research, diplomacy and more, with exact values and dates in every tooltip.
-- **Honest data.** Anything the recording missed shows as missing, never as zero. A load or a jump in time starts a new branch rather than invented history.
+- **A dashboard you build.** Charts, races, tables, timelines and breakdowns for armies, economies, research, diplomacy and more. Tooltips and drill-downs show the detail behind each value.
+- **Honest data.** Anything the recording missed shows as missing, never as zero. A load or an unexplained jump in time starts a new branch rather than invented history.
 - **Mods first.** A recording remembers the exact DLC and mod list it was made with, and playback uses it.
 - **Read-only.** The recorder only reads the game. It never pauses, saves or controls it.
 - **Open.** MIT licensed.
 
 ## Install
 
-[Download Battle Plan](https://github.com/Simcity400/battle-plan/releases) for Windows. One installer gives you two apps:
+[Download Battle Plan](https://github.com/Simcity400/battle-plan/releases) for Windows. Installers appear there once the first build is published; until then, [build from source](#build-from-source). One installer gives you two apps:
 
 - **Battle Plan**: the replay app, with the campaign map and the dashboard.
 - **Battle Plan Recorder**: a small tray app that records while you play.
@@ -36,7 +36,7 @@ Battle Plan records your Hearts of Iron IV campaign while you play, then replays
 You need:
 
 - Windows, with Microsoft Edge WebView2.
-- Hearts of Iron IV at the supported version. The recorder checks the executable and tells you if it isn't supported.
+- Hearts of Iron IV. An unrecognised game version shows a warning, and any part that can't verify itself on that version is left out by name.
 - A graphics card for the map. Software rendering works, with a notice.
 
 Updates arrive in the app. Choose the **stable** or **nightly** channel in **Settings**, and a badge shows when a new version is ready to download.
@@ -47,7 +47,7 @@ Updates arrive in the app. Choose the **stable** or **nightly** channel in **Set
 flowchart LR
     game["Hearts of Iron IV<br/>(your game)"] -->|reads memory, every game hour| collector["collector.dll"]
     collector --> spool["Recoverable spool"]
-    spool -->|on stop| file[".battleplan recording"]
+    spool -->|written as hours arrive| file[".battleplan recording"]
     file --> app["Battle Plan app"]
     app --> map["Campaign map"]
     app --> dash["Dashboard"]
@@ -56,8 +56,8 @@ flowchart LR
 1. **Attach.** The recorder finds the running game, checks the version and loads `collector.dll`.
 2. **Observe.** Every game hour the collector reads the game's state, and hooks catch events between hours. It only reads.
 3. **Write.** Readings are copied out straight away and encoded in the background into a spool file that survives crashes.
-4. **Publish.** When recording stops, the spool becomes an indexed, compressed `.battleplan` file.
-5. **Replay.** The app opens the recording and prepares histories and map checkpoints in the background, so scrubbing and charts are fast. That prepared data is disposable and kept apart from the recording.
+4. **Publish.** The recorder writes the indexed, compressed `.battleplan` file as hours arrive and trims the spool as it goes. Stopping finishes the file.
+5. **Replay.** The app opens the recording and reads every chart and map hour straight from it.
 
 ## Record a campaign
 
@@ -68,11 +68,13 @@ The replay app starts it for you. You can also run `battle-plan-recorder.exe` on
 1. Start the game.
 2. Click the tray icon, then press **Record**, or turn on automatic recording for this campaign or for every campaign.
 3. Play normally. Closing the panel or the replay app doesn't stop recording.
-4. Press **Stop**, then **Save** to publish the replay or **Discard** to throw the session away. Quitting the game saves automatically.
+4. Press **Stop**, then **Save** to publish the replay or **Discard** to throw away the current campaign's session. With **Auto save** on, quitting the game saves automatically; otherwise the campaign waits under **Not saved yet**.
 
 Recordings go to `%LOCALAPPDATA%\HOI4Replay\captures` by default, which is also the replay app's library. Later sessions of the same campaign continue the same file. Choose **Next time it loads: New file** to start a fresh one.
 
 ### With the command line
+
+The command-line recorder, `recorder.exe`, isn't in the installer; [build it from source](#build-from-source).
 
 ```powershell
 recorder.exe record --once --out <capture folder> --user-dir <Paradox user folder>
@@ -84,10 +86,10 @@ With `--once`, quitting the game finishes the recording. Without it, the recorde
 
 - Under **Campaigns** in the sidebar, press **+** to open a `.battleplan` file. **Archive** lists the other recordings in your library.
 - In **Settings > Folders**, choose your game and Paradox user folders.
-- Use the playback clock to play, pause, seek and switch branches. You can line up several recordings at once.
+- Use the playback clock to play, pause, step, change speed and seek. Switch branches under **Map settings > History**. You can line up several recordings at once.
 - Press **Edit** to add, move, resize or remove widgets, then **Save** the layout.
 
-Partly damaged recordings still open: you get the readable part, with a notice about what's missing.
+Damaged recordings open up to their last intact save point, with a notice about what's missing.
 
 ### Campaign map
 
@@ -111,7 +113,7 @@ replay-desktop.exe --window-dump <campaign.battleplan> --hour <n> --branch <id> 
 - **Research and intelligence:** research, doctrines, special projects, intelligence agencies, operatives, decryption.
 - **Units and leaders:** division templates, equipment and training, unit histories, generals, admirals, air aces.
 
-Tooltips and drill-downs show exact values and the date each was recorded.
+Tooltips and drill-downs show the detail behind each value.
 
 ## Mods
 
@@ -128,7 +130,7 @@ Tooltips and drill-downs show exact values and the date each was recorded.
 ```powershell
 recorder.exe inspect <replay>                                     # identity, branches, hours, gaps, coverage
 recorder.exe metrics <replay> <branch> <first hour> <last hour>   # recorded capture timings
-recorder.exe sizes <replay> --verify --columns                    # size by table and column
+recorder.exe sizes <replay> [--json]                              # size by table
 recorder.exe derived <replay> --game-dir <game> --user-dir <user> # check playback calculations
 ```
 
@@ -140,6 +142,7 @@ recorder.exe derived <replay> --game-dir <game> --user-dir <user> # check playba
 npm.cmd ci
 npm.cmd run dev          # run the desktop app
 npm.cmd run build:desktop  # release build
+cargo build --release -p recorder -p collector   # command-line recorder and collector.dll
 ```
 
 `AGENTS.md` describes how the code is laid out and how changes are checked.
