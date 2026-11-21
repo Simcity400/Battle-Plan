@@ -212,5 +212,5 @@ keyed = ["tools/boat.py", "tools/boat_remote.py"]
 command = ["{python}", "tools/boat.py", "test", "--no-fail-fast", "{packages}"]
 hosted = ["cargo", "nextest", "run", "--profile", "hosted", "--no-fail-fast", "--no-tests=pass", "{packages}"]
 report = "target/nextest/hosted/junit.xml"
-not-run = { "needs the game install" = 'BATTLE_PLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation|\brequires? BATTLE_PLAN_GAME_DIR with the supported installation\b' }
+not-run = { "needs the game install" = '^(?:.*: Custom \{ kind: NotFound, error: "BATTLE_PLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation" \}|[\w -]+ requires? BATTLE_PLAN_GAME_DIR with the supported installation|BATTLE_PLAN_GAME_DIR(?: must name the installed game| must name the supported installation for executable metadata)?)$' }
 widen = [".config/nextest.toml"]

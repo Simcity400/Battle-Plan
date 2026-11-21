@@ -77,6 +77,9 @@ NEXTEST_TESTS_FAILED = 100
 SHOWN_LINES = 40
 PANIC = re.compile(r"^thread '(?P<thread>[^'\r\n]*)'(?: \(\d+\))? panicked at [^\r\n]*:\r?\n(?P<message>[^\r\n]*)", re.M)
 SUMMARY = re.compile(r"^\s*Summary \[[^\]]*\]\s+(\d+)(/\d+)? tests? run:", re.M)
+CANCELLED = re.compile(r"^\s*Cancelling due to |\btests? (?:was|were) not run due to ", re.M)
+PANIC_EXIT = "test failure with exit code 101"
+RETURNED_ERROR = re.compile(r"^Error: ", re.M)
 COMMAND_LIMIT = 24_000
 STATUS_LIMIT = 140
 RETAIN_DAYS = 30
@@ -680,20 +683,25 @@ else:
 
 
 def last_panic(test, stderr):
-    """The first line of the message of the last panic on the test's own thread, or None."""
+    """The first line of the message of the last panic on the test's own thread, or None when
+    there is none or the test went on to report an error of its own (libtest's `Error: ` line
+    for a test that returned Err) after it."""
     found = None
     for match in PANIC.finditer(stderr):
         if match["thread"] == test:
-            found = match["message"]
-    return found
+            found = match
+    if found is None or RETURNED_ERROR.search(stderr, found.end()):
+        return None
+    return found["message"]
 
 
 def sorted_failures(report, rules):
     """(passed, [(test, output)] of the failures no rule names, {reason: {binary: count}} of those
     one does) from a nextest JUnit report, or None when it is not one. A rule is (reason, regex).
-    A failure is the rule's only when nextest reports a plain test failure (not a timeout, abort
-    or leak) and the regex finds the first line of the last panic on the test's own thread; any
-    other panic, caught or on another thread, never decides it."""
+    A failure is the rule's only when nextest reports libtest's plain panic exit (not a timeout,
+    abort, leak or other exit code) and the regex matches the first line of the last panic on
+    the test's own thread, with no error returned after it; any other panic, caught or on
+    another thread, never decides it."""
     try:
         root = ElementTree.fromstring(report)
     except ElementTree.ParseError:
@@ -713,7 +721,7 @@ def sorted_failures(report, rules):
                 *(f"{part.get('type', '')}: {part.get('message', '')}\n{part.text or ''}" for part in failed),
                 *((part.text or "") for part in (case.find("system-out"), case.find("system-err")) if part is not None)]))
             binary = suite.get("name") or case.get("classname") or ""
-            plain = [part.tag for part in failed] == ["failure"] and failed[0].get("type", "").startswith("test failure")
+            plain = [part.tag for part in failed] == ["failure"] and failed[0].get("type") == PANIC_EXIT
             message = last_panic(case.get("name"), stderr) if plain else None
             reason = next((reason for reason, pattern in patterns if pattern.search(message)), None) if message else None
             if reason is None:
@@ -725,11 +733,11 @@ def sorted_failures(report, rules):
 
 
 def finished_every_test(log_text, sorted_report):
-    """Whether nextest's summary says it ran every test it selected, as many as the report holds:
-    a run cancelled partway reports only the tests it finished."""
+    """Whether nextest's summary says it ran every test it selected, as many as the report holds,
+    and nextest never cancelled the run: a cancelled run reports only the tests it finished."""
     passed, failures, held = sorted_report
     summaries = SUMMARY.findall(log_text)
-    if not summaries or summaries[-1][1]:
+    if not summaries or summaries[-1][1] or CANCELLED.search(log_text):
         return False
     return int(summaries[-1][0]) == passed + len(failures) + sum(sum(binaries.values()) for binaries in held.values())
 

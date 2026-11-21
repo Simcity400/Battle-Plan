@@ -459,6 +459,8 @@ class Verdict(unittest.TestCase):
         fixture = ("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests: Custom { kind: NotFound, "
                    "error: \"BATTLE_PLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation\" }")
         unset = "effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation"
+        metadata = "BATTLE_PLAN_GAME_DIR must name the supported installation for executable metadata"
+        other_error = unset + ": Custom { kind: InvalidData, error: \"table digest mismatch\" }"
 
         def panic(thread, message):
             return f"thread '{thread}' (4242) panicked at crates/a/src/lib.rs:1:2:\n{message}\nnote: run with `RUST_BACKTRACE=1`\n"
@@ -468,6 +470,10 @@ class Verdict(unittest.TestCase):
         report = "<testsuites><testsuite name=\"viewer-raids\"><testcase name=\"passes\"/><testcase name=\"ignored\"><skipped/></testcase>" + "".join([
             case("a::fixture", panic("a::fixture", fixture)),
             case("a::unset", panic("a::unset", unset)),
+            case("a::metadata", panic("a::metadata", metadata)),
+            case("a::other_error", panic("a::other_error", other_error)),
+            case("a::leaks", panic("a::leaks", fixture), kind="test failure with exit code 101 (leaked handles)"),
+            case("a::caught_then_returns_err", panic("a::caught_then_returns_err", fixture) + "Error: \"checksum mismatch\"\n"),
             case("a::asserts_on_the_name", panic("a::asserts_on_the_name", 'assertion failed: parsed.contains_key("BATTLE_PLAN_GAME_DIR")')),
             case("a::caught_then_asserts", panic("a::caught_then_asserts", fixture) + panic("a::caught_then_asserts", "assertion failed: x")),
             case("a::worker", panic("worker", fixture)),
@@ -478,18 +484,21 @@ class Verdict(unittest.TestCase):
         passed, failures, held = ci.sorted_failures(report, rules)
         self.assertEqual(passed, 1)
         self.assertEqual([test for test, _ in failures], [f"viewer-raids a::{name}" for name in
-                                                          ("asserts_on_the_name", "caught_then_asserts", "worker", "times_out")])
-        self.assertEqual(held, {"needs the game install": {"viewer-raids": 2}})
-        self.assertIn("contains_key", failures[0][1])
-        self.assertEqual(ci.held_detail(held), "2 not run here: needs the game install")
+                                                          ("other_error", "leaks", "caught_then_returns_err",
+                                                           "asserts_on_the_name", "caught_then_asserts", "worker", "times_out")])
+        self.assertEqual(held, {"needs the game install": {"viewer-raids": 3}})
+        self.assertIn("table digest mismatch", failures[0][1])
+        self.assertEqual(ci.held_detail(held), "3 not run here: needs the game install")
         lines = ci.failure_report((passed, failures, held))
-        self.assertIn("not run here: needs the game install: 2 tests, in viewer-raids (2)", lines)
-        self.assertEqual(sum(line.startswith("--- FAIL ") for line in lines), 4)
+        self.assertIn("not run here: needs the game install: 3 tests, in viewer-raids (3)", lines)
+        self.assertEqual(sum(line.startswith("--- FAIL ") for line in lines), 7)
         self.assertIsNone(ci.sorted_failures("not a report", rules))
-        summary = "        Summary [ 12.000s] {} tests run: 1 passed, 6 failed, 1 skipped\n"
-        self.assertTrue(ci.finished_every_test(summary.format(7), (passed, failures, held)))
-        self.assertFalse(ci.finished_every_test(summary.format(9), (passed, failures, held)))
-        self.assertFalse(ci.finished_every_test(summary.format("7/9"), (passed, failures, held)))
+        summary = "        Summary [ 12.000s] {} tests run: 1 passed, 10 failed, 1 skipped\n"
+        self.assertTrue(ci.finished_every_test(summary.format(11), (passed, failures, held)))
+        self.assertFalse(ci.finished_every_test(summary.format(12), (passed, failures, held)))
+        self.assertFalse(ci.finished_every_test("  Cancelling due to interrupt: 1 test still running\n" + summary.format(11),
+                                                (passed, failures, held)))
+        self.assertFalse(ci.finished_every_test(summary.format("11/12"), (passed, failures, held)))
         self.assertFalse(ci.finished_every_test("error: test run cancelled\n", (passed, failures, held)))
 
 
