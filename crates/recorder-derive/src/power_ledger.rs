@@ -608,7 +608,8 @@ impl PowerLedger {
                     Recorded::Value(spent) => Some(sum + i128::from(spent)),
                     Recorded::NotRecorded => None,
                 });
-                let agrees = applied.is_none_or(|daily| held_sum.is_none() || daily.pp_cost_raw.map(i128::from) == held_sum);
+                let agrees = applied.is_some_and(|daily| held_sum.is_some() && daily.pp_cost_raw.map(i128::from) == held_sum);
+                let contradicted = applied.is_some() && !agrees;
                 match found.remove(&sequence) {
                     Some((raw, rows)) if !ambiguous.contains(&sequence) => {
                         self.reconcile_batch(hour, own, witnesses, pending, Batch { holder, day, sole, moved: moved.contains(&raw), raw, rows, held })?;
@@ -626,7 +627,7 @@ impl PowerLedger {
                     }
                     None if day == today && agrees => {}
                     _ => {
-                        if !agrees {
+                        if contradicted {
                             self.steady.insert(holder);
                         }
                         for mut part in held {
@@ -1435,7 +1436,7 @@ impl Writer for PowerLedger {
             let before = if before.is_empty() { self.aliases.clone() } else { before };
             let moved: HashSet<u32> = moves.iter().map(|moved| moved.raw).collect();
             self.reconcile(hour, out, witnesses.as_ref(), &mut pending, &before, &moved)?;
-            self.recover = !inputs::daily_complete(hour);
+            self.recover = false;
         } else if self.recover {
             self.withhold_ended(out, &mut pending, midnight(at))?;
         }

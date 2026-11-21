@@ -745,10 +745,9 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
     assert!(held(&moved_empty, 60).is_empty());
     let delayed_part = |store: &Store, ordinal: u32| cell::<Part>(store, TableId::PowerDayParts, part_key(60, POLITICAL, ordinal), "spent");
     let (unread, _) = through(0..=DELAYED_UNREAD);
-    assert_eq!((delayed_part(&unread, 0), delayed_part(&unread, 1)), (Some(Q / 2), Some(Q / 10)), "rows gone while the daily rows are unread prove nothing yet");
+    assert_eq!((delayed_part(&unread, 0), delayed_part(&unread, 1)), (None, None), "rows gone during a gap with no daily application read to confirm them leave the parts unknown");
     let (delayed, _) = through(0..=DELAYED);
-    assert_eq!((delayed_part(&delayed, 0), delayed_part(&delayed, 1)), (None, None), "the reconciliation waits for the daily application, which contradicts them");
-    assert_eq!(cell::<Coverage>(&delayed, TableId::PowerSpendCoverage, 60, "daily_mismatch"), Some(i64::from(Coverage::STEADY_MISMATCH)));
+    assert_eq!((delayed_part(&delayed, 0), delayed_part(&delayed, 1)), (None, None), "and a later daily read gives them back no amount");
 }
 
 #[test]
