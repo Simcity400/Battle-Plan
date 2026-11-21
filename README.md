@@ -91,7 +91,7 @@ An editable dashboard of widgets: ranked races, line charts, exact tables, timel
 
 - The recording remembers the exact base game, DLC and mod list it was made with, and playback uses that list, not whatever your launcher has selected. You need the same mods installed for full detail.
 - You can pick visual mods for artwork, interface, fonts and models. They change how things look, never the recorded facts.
-- A recording carries the game facts it was made with, read from the game, DLC and mods (definitions, localisation, executable tables, map layout), with their content identities and hashes but no folder paths from your machine. Sharing a recording shares that content, including from unpublished mods. A mismatch with your installation is reported, not ignored.
+- A recording carries the game facts it was made with, read from the game, DLC and mods (definitions, localisation, executable tables, map layout). It names that content by identity and hash, not by where it is installed, but the files it carries are copied as they are. Sharing a recording shares that content, including from unpublished mods, and playback reads it from the recording rather than from your installation.
 - Recordings from other people are treated as untrusted. Readers check every size and count, and damaged parts become named gaps.
 
 ## Diagnostics and recovery
