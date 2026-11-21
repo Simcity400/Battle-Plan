@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { access, copyFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { cargoTarget } from "./cargo-target.mjs";
+import { thirdPartyNotices } from "./third-party-notices.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const mode = process.argv[2];
@@ -107,6 +108,7 @@ for (let index = 0; index < cargoArgs.length; index++) {
 const forwardedRunnerArgs = appSeparator < 0 ? forwardedCargoArgs : [...forwardedCargoArgs, ...runnerArgs.slice(appSeparator)];
 
 try {
+  const notices = mode === "build" ? await thirdPartyNotices(path.join(root, "LICENSES"), SHIPPED.notices.components) : null;
   if (mode === "build") {
     if (!process.env.npm_execpath) throw new Error("Run the build through npm: npm run build:desktop");
     await run(process.execPath, [process.env.npm_execpath, "run", "build:ui"]);
@@ -142,6 +144,8 @@ try {
     await rm(path.join(root, "crates", "desktop", STAGE), { recursive: true, force: true });
     for (const name of [...SHIPPED.built, ...SHIPPED.compiler]) await shipped(path.join(output, name), name, resources);
     for (const name of SHIPPED.repository) await shipped(path.join(root, name), name, resources);
+    await writeFile(path.join(root, "crates", "desktop", STAGE, SHIPPED.notices.file), notices);
+    resources[`${STAGE}/${SHIPPED.notices.file}`] = SHIPPED.notices.file;
     const signCommand = { cmd: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
       "../../tools/sign-release.ps1", "%1"] };
     config = { build: { beforeBuildCommand: null }, bundle: { resources,

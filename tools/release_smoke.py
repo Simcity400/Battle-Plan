@@ -6,9 +6,10 @@ shipped files, and the installed Battle Plan opens a recording and draws its map
 
 The installer is opened with 7-Zip into <out>/installed, as tools/leak-gate.py opens it, so nothing is
 installed on the machine. Its executables and libraries must be exactly tools/shipped.json's: the app,
-the recorder, the collector and the shader compiler's two DLLs, beside each other. Then the installed
-replay-desktop.exe draws one frame of the recording's map through its own window (`--window-dump`), with
-LOCALAPPDATA and APPDATA in <out>, so no user data or saved preference is read or written. The recording
+the recorder, the collector and the shader compiler's two DLLs, beside each other, with LICENSE and the
+combined THIRD-PARTY-NOTICES.txt and no LICENSES folder. Then the installed replay-desktop.exe draws one
+frame of the recording's map through its own window (`--window-dump`), with LOCALAPPDATA and APPDATA in
+<out>, so no user data or saved preference is read or written. The recording
 and folders default to BATTLE_PLAN_RELEASE_SMOKE_RECORDING, BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, which the runner's
 .env names (tools/release-runner.ps1).
 """
@@ -39,18 +40,27 @@ def shipped_binaries():
     return sorted([shipped["main"], *shipped["built"], *shipped["compiler"]], key=str.lower)
 
 
-def layout_problems(installed, expected):
-    """What is wrong with the installed folder: an expected binary missing or not beside the app, or
-    any other executable or library of ours."""
-    found = []
+def shipped_notices():
+    """The licence files the installer must place in the install folder."""
+    shipped = json.loads((ROOT / "tools" / "shipped.json").read_text(encoding="utf-8"))
+    return sorted([*shipped["repository"], shipped["notices"]["file"]], key=str.lower)
+
+
+def layout_problems(installed, expected, notices):
+    """What is wrong with the installed folder: an expected binary or notice missing or not beside the
+    app, any other executable or library of ours, or a notice left in the old LICENSES folder."""
+    found, present = [], []
     for path in sorted(installed.rglob("*")):
         relative = path.relative_to(installed)
         if not path.is_file() or relative.parts[0] in NSIS_INTERNAL or relative.parts[0].startswith("$"):
             continue
         if path.suffix.lower() in (".exe", ".dll"):
             found.append(relative.as_posix())
-    problems = [f"{name} is not in the install folder" for name in expected if name not in found]
+        present.append(relative.as_posix())
+    problems = [f"{name} is not in the install folder" for name in [*expected, *notices] if name not in present]
     problems += [f"{name} is installed but not shipped" for name in found if name not in expected]
+    if (installed / "LICENSES").exists():
+        problems.append("the old LICENSES folder is installed")
     return problems
 
 
@@ -163,10 +173,10 @@ def main():
     opened = args.out / "installed"
     open_installer(args.installer, opened)
     installed = opened / "$INSTDIR" if (opened / "$INSTDIR").is_dir() else opened
-    problems = layout_problems(installed, shipped_binaries())
+    problems = layout_problems(installed, shipped_binaries(), shipped_notices())
     if problems:
         fail("The installer's layout is not the shipped one:\n" + "\n".join(problems))
-    print(f"Layout: exactly {', '.join(shipped_binaries())}.")
+    print(f"Layout: exactly {', '.join(shipped_binaries())}, with {' and '.join(shipped_notices())}.")
     frame = draw(installed / "replay-desktop.exe", args.recording, args.out, args.hour, args.game_dir, args.user_dir)
     try:
         colours = png_colours(frame)
