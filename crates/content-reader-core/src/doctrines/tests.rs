@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn folder_names_keep_assignment_and_suffix_lookup() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let mut database = Database::default();
     let names = KeyNames::default();
     append(
@@ -45,8 +44,7 @@ fn folder_names_keep_assignment_and_suffix_lookup() {
 
 #[test]
 fn bound_folder_names_refuse_the_reached_formatter_only() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let mut database = Database::default();
     append(&mut database, b"a = { name = { localization_key = TITLE value = VALUE } } b = { name = OK } c = { name = formatter|TOKEN }", "synthetic/folders.txt", &KeyNames::default());
     assert!(database.folder(b"a").unwrap_err().contains("bound name"));
@@ -61,7 +59,7 @@ fn bound_folder_names_refuse_the_reached_formatter_only() {
 
 #[test]
 fn doctrine_presentation_follows_layer_overrides_replacements_and_reused_objects() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::test_game::enter();
     let stack = crate::test_support::Stack::new("doctrine_presentation");
     let (base, addon) = (stack.base(), stack.addon());
     for (path, text) in [

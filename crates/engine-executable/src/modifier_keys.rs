@@ -29,18 +29,34 @@ pub fn all() -> std::io::Result<impl Iterator<Item = Key>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::executable_tables::{self, synthetic};
+
+    fn entered(pinned: bool) {
+        let names = (0..crate::build::FIXED_MODIFIER_GAP)
+            .map(|index| executable_tables::leak_string(format!("synthetic_modifier_{index}")))
+            .collect();
+        let tables = synthetic::Parts::empty()
+            .keywords(synthetic::keyword_table(Vec::new(), names, pinned))
+            .assemble();
+        executable_tables::enter(Some(tables));
+    }
+
     #[test]
-    fn organisation_cost_keys_name_their_verified_modifiers() {
-        crate::executable_tables::initialize_for_tests()
-            .expect("modifier name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    fn fixed_keys_name_the_pinned_row_and_are_refused_on_an_unpinned_table() {
+        entered(true);
         assert_eq!(
             super::fixed_name(super::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST).unwrap(),
-            "military_industrial_organization_policy_cost"
+            format!(
+                "synthetic_modifier_{}",
+                super::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST
+            )
         );
-        assert_eq!(
-            super::fixed_name(super::MILITARY_INDUSTRIAL_ORGANIZATION_DESIGN_TEAM_CHANGE_COST)
-                .unwrap(),
-            "military_industrial_organization_design_team_change_cost"
-        );
+        assert!(super::fixed_name(crate::build::FIXED_MODIFIER_GAP).is_err());
+        let key = super::all().unwrap().next().unwrap();
+        assert_eq!(key.name, format!("synthetic_modifier_{}", key.index));
+        entered(false);
+        assert!(super::fixed_name(0).is_err());
+        assert!(super::all().is_err());
+        assert_eq!(super::names().unwrap().len(), crate::build::FIXED_MODIFIER_GAP as usize);
     }
 }

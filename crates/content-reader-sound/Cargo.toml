@@ -11,8 +11,7 @@ content-reader-core.workspace = true
 symphonia = { version = "0.6.1", default-features = false, features = ["ogg", "vorbis", "wav", "adpcm"] }
 
 [dev-dependencies]
-engine-executable.workspace = true
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
+content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 
 [features]
 test-support = ["content-reader-core/test-support"]
@@ -21,7 +20,6 @@ test-support = ["content-reader-core/test-support"]
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

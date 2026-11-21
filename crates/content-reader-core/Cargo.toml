@@ -20,15 +20,17 @@ replay-identity.workspace = true
 replay-spool.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+synthetic-game = { workspace = true, optional = true }
 sha2.workspace = true
 zstd = "0.13"
 
 [dev-dependencies]
 engine-heap.workspace = true
 content-reader-image = { workspace = true, features = ["test-support"] }
+synthetic-game.workspace = true
 
 [features]
-test-support = ["content-reader-image/test-support", "layer-fixtures"]
+test-support = ["content-reader-image/test-support", "layer-fixtures", "dep:synthetic-game"]
 layer-fixtures = []
 
 [target.'cfg(windows)'.dependencies]

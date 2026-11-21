@@ -148,7 +148,7 @@ mod tests {
     use super::*;
     #[test]
     fn medal_content_keeps_order_repetitions_variables_and_all_modifier_domains() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         let mut medals = Medals::default();
         medals.read("synthetic", br"@a=0.2 unit_medals={ MOD={unit_modifiers={army_morale_factor=@a} leader_modifiers={army_attack_factor=0.1} ship_modifiers={naval_morale_factor=0.3} officer_xp=37 one_time_effect={add_manpower=12}} MOD={unit_modifiers={max_dig_in=4}}}", &KeyNames::default(), &|_| Some(true));
         assert_eq!(medals.definitions.len(), 2);

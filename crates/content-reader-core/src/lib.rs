@@ -76,6 +76,8 @@ pub mod tag_aliases;
 pub mod technology;
 pub mod technology_sharing;
 pub mod terrain;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_game;
 #[cfg(any(test, feature = "layer-fixtures"))]
 pub mod test_support;
 pub mod tokens;

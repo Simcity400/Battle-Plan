@@ -227,8 +227,7 @@ mod tests {
 
     #[test]
     fn names_register_first_and_bodies_read_last() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let a: &[u8] = b"@x = yes My_Check = { is_attacker = @x } other = { }";
         let b: &[u8] = b"MY_CHECK = { has_reserves = yes }";
         let triggers = read_files(&[("a.txt", a), ("b.txt", b)], &[("a.txt", a), ("b.txt", b)]);
@@ -254,8 +253,7 @@ mod tests {
 
     #[test]
     fn a_mismatch_leaves_the_file_out_of_step() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let top: &[u8] = b"first = { is_attacker = yes } later = { has_reserves = yes } flat = yes";
         let nested: &[u8] =
             b"first = { is_attacker = no } unregistered = { later = { } } flat = { frontage_full = yes }";
@@ -284,8 +282,7 @@ mod tests {
 
     #[test]
     fn an_unproven_name_pass_makes_misses_unproven() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let triggers = read_files(&[("a.txt", b"a = { } 5 b = { } c = { }")], &[]);
         assert!(matches!(triggers.lookup(b"A"), Lookup::Template(_)));
         assert!(matches!(triggers.lookup(b"5"), Lookup::Template(_)));
@@ -299,8 +296,7 @@ mod tests {
 
     #[test]
     fn an_unsettled_body_leaves_every_template_unproven_until_read_again() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let a: &[u8] = b"first = { is_attacker = yes } second = { OR = { x = { } } }";
         let b: &[u8] = b"FIRST = { has_reserves = yes }";
         let triggers = ScriptedTriggers::parse(&[("a.txt", a), ("b.txt", b)], &KeyNames::unknown());
@@ -314,8 +310,7 @@ mod tests {
 
     #[test]
     fn a_block_under_a_scripted_trigger_is_read_as_one_value() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let a: &[u8] =
             b"inner = { } outer = { inner = { is_attacker = yes } } after = { is_attacker = no }";
         let triggers = ScriptedTriggers::parse(&[("a.txt", a)], &KeyNames::default());
@@ -336,8 +331,7 @@ mod tests {
 
     #[test]
     fn description_read_retains_bindings_without_changing_consumption() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let text = b"target={FROM={custom_trigger_tooltip={tooltip=SYN_POS not_tooltip=SYN_NEG @limit=2 skill > @limit}}}";
         for retain in [false, true] {
             let mut database = ScriptedTriggers::default();

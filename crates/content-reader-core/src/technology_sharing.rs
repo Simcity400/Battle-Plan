@@ -149,8 +149,7 @@ mod tests {
 
     #[test]
     fn technology_sharing_names_raw_categories_and_repeated_available() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (groups, warnings) = parse(
             br#"
             @name=MOD_NAME

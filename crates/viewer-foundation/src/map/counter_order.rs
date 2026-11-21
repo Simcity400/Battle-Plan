@@ -628,11 +628,10 @@ mod tests {
 
     #[test]
     fn current_modded_parent_depth_resolves_equal_strength_before_later_fields() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let content = crate::map::test_support::equipment_from_documents(&[br"
             equipments = {
-                mod_root = { is_archetype = yes type = destroyer }
+                mod_root = { is_archetype = yes type = screen_ship }
                 mod_deep = { archetype = mod_root parent = mod_root }
             }
         "]);
@@ -664,10 +663,9 @@ mod tests {
 
     #[test]
     fn current_raw_score_wraps_and_equal_scores_use_the_signed_marker() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let content = crate::map::test_support::equipment_from_documents(&[br"
-            equipments = { mod_root = { is_archetype = yes type = destroyer } }
+            equipments = { mod_root = { is_archetype = yes type = screen_ship } }
         "]);
         let database = &content;
         let index = definition_index(database, b"mod_root");
@@ -728,13 +726,12 @@ mod tests {
 
     #[test]
     fn left_recursive_plane_classification_uses_unsigned_versions_without_marker_fallthrough() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let content = crate::map::test_support::equipment_from_documents(&[br"
             equipments = {
                 mod_plane = { is_archetype = yes type = fighter }
                 mod_mixed = { archetype = mod_plane type = armor }
-                mod_ship = { is_archetype = yes type = destroyer }
+                mod_ship = { is_archetype = yes type = screen_ship }
             }
         "]);
         let database = &content;
@@ -872,8 +869,7 @@ mod tests {
 
     #[test]
     fn null_and_real_definitions_keep_depth_and_left_plane_precedence() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let content = crate::map::test_support::equipment_from_documents(&[br"
             equipments = {
                 mod_plane = { is_archetype = yes type = fighter }

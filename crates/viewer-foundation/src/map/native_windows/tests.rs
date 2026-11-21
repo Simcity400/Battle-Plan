@@ -7,8 +7,7 @@ const STILL: Tick = Tick { time: 0.0, dt: 0.0 };
 
 #[test]
 fn inline_icons_of_localised_authored_texts_are_acquired() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let source = SYNTHETIC_NAVAL_GUI.replacen(
         "buttonType = { name = \"bg_btn\"",
         "instantTextboxType = { name = \"note\" font = \"fixture_mono\" text = \"NOTE_KEY\" }\n\
@@ -74,8 +73,7 @@ const MAX_RESOLUTION_NAVY: &str = r#"guiTypes = {
 
 #[test]
 fn the_asset_set_does_not_depend_on_the_gui_viewport() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let localisation = content_reader_localisation::localisation::Localisation::default();
     for source in [
         format!(
@@ -98,8 +96,7 @@ fn the_asset_set_does_not_depend_on_the_gui_viewport() {
 
 #[test]
 fn a_max_resolution_window_lays_out_under_the_viewers_viewport() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let viewport = crate::map::native_shader::draw::gui_viewport([1366, 768], 1.25);
     assert_eq!(viewport, [1092, 614]);
     let viewport = viewport.map(|value| value as i32);
@@ -122,8 +119,7 @@ fn a_max_resolution_window_lays_out_under_the_viewers_viewport() {
 
 #[test]
 fn intel_and_resource_icon_windows_load_their_authored_sprites() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut source = format!("{SYNTHETIC_NAVY_GUI}\n{SYNTHETIC_NAVAL_GUI}");
     for (window, sprite) in [
         (INTEL_CONTAINER_WINDOW, "GFX_intel_container"),

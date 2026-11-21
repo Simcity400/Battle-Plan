@@ -176,11 +176,10 @@ fn text_inputs(
 }
 
 #[test]
-#[ignore = "requires installed effects, DXC and GPU"]
+#[ignore = "requires the shader compiler and GPU"]
 fn compiled_parts_fan_animation_and_text_bake() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (_, mut library) = models::installed();
+    content_reader_core::test_game::enter();
+    let (_install, mut library) = models::effects();
     let circular = library
         .load(b"gfx/FX/circularprogressbar.shader", &[])
         .unwrap();

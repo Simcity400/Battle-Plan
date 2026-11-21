@@ -570,8 +570,7 @@ fn drawn_into(
 
 #[test]
 fn a_withheld_child_shows_again_when_a_later_write_sets_it() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut view = IntelView::default();
     let windows = gui::windows(GUI);
     let top = 308.0 + 14.0 + 5.0;
@@ -660,8 +659,7 @@ fn a_free_eye_hits_the_nearest_shown_container_in_its_own_layout() {
 
 #[test]
 fn entries_take_the_list_places_and_hover_by_their_own_children() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (hits, count, report) = drawn(&[EntryKind::Operation; 4]);
     assert_eq!(count, 1, "{report:?}");
     assert_eq!(hits.len(), 4);
@@ -681,8 +679,7 @@ fn entries_take_the_list_places_and_hover_by_their_own_children() {
 
 #[test]
 fn compressed_entries_overlap_and_the_later_one_wins() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (hits, _, report) = drawn(&[EntryKind::More; 5]);
     assert_eq!(hits.len(), 5, "{report:?}");
     let top = 308.0 + 14.0 + 5.0;
@@ -694,8 +691,7 @@ fn compressed_entries_overlap_and_the_later_one_wins() {
 
 #[test]
 fn both_operative_frames_test_alpha_and_transparent_pixels_leave_lower_hits() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut resources = gui::fixture();
     resources.physical = Some([2048, 1152]);
     resources.add_sprite("frame", [8, 8], 1);
@@ -889,7 +885,7 @@ fn the_client_buffer_draws_only_while_the_map_is_viewed_as_the_clients_country()
     let localisation = content_reader_localisation::localisation::Localisation::default();
     let shown = icons(&IntelAssets::test(defines(), Vec::new(), Vec::new(), 0), &raids, &frame, 2, &localisation, "english");
     assert_eq!(operations(&shown), 0);
-    assert!(shown.report.reasons.keys().any(|reason| reason.contains("the recording client's viewpoint is unknown")), "{:?}", shown.report);
+    assert!(shown.report.reasons.keys().any(|reason| reason.contains("LocalPlayer holds 0 rows")), "{:?}", shown.report);
 }
 
 #[test]

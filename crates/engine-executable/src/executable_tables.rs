@@ -7,6 +7,10 @@ pub mod numeric;
 pub mod pe;
 pub mod recorded;
 pub mod registries;
+#[cfg(any(test, feature = "test-support"))]
+pub mod synthetic;
+#[cfg(test)]
+mod synthetic_image;
 pub mod variables;
 
 pub use pe::PeImage;

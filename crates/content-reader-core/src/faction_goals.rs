@@ -200,8 +200,7 @@ mod tests {
     use crate::key_names::KeyNames;
     #[test]
     fn faction_goal_content_uses_declaration_identity_and_native_category_selection() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let read = faction_templates::parse_goal_file(br#"a_mod_goal={id=chosen name={localization_key=chosen_name P=TEXT} category=mod_term description=chosen_desc}"#, &KeyNames::default());
         assert!(read.unsettled.is_none(), "{:?}", read.unsettled);
         let mut catalog = Catalog::default();
@@ -222,7 +221,7 @@ mod tests {
     }
     #[test]
     fn faction_goal_content_merges_only_reached_fields_and_refuses_inline_identity_collisions() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         let mut catalog = Catalog::default();
         for bytes in [
             b"mod_goal={name=first description=kept category=long_term}".as_slice(),
@@ -271,7 +270,7 @@ mod progress_tests {
     use super::*;
     #[test]
     fn faction_goal_retains_ordered_progress_sections_reached_checks_flags_and_effects() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         let read=faction_templates::parse_goal_file(br#"mod_goal={ locked_goal=yes allowed={always=no} complete_effect={add_stability=0.1} ratio_progress={total_amount=7 completed_amount=var:mod_value progress_sections={a={min=-1 max=0.5 on_activate={add_stability=0.2}} b={min=0.5 max=1}}}}"#, &crate::key_names::KeyNames::default());
         assert!(read.unsettled.is_none(), "{:?}", read.unsettled);
         let mut catalog = Catalog::default();
@@ -320,8 +319,7 @@ mod group_tests {
     }
     #[test]
     fn faction_goal_native_standalone_and_inline_groups_retain_mod_variables_and_quotes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let stack = crate::test_support::Stack::new("faction-goal-groups");
         stack.write(
             &stack.base(),

@@ -138,8 +138,7 @@ mod tests {
     }
 
     fn definitions(sources: &[&str]) -> TerrainCosts {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut terrain = terrain(&[[0, 1, 2, 3]], 8);
         terrain.costs = palette_costs(&crate::movement::terrain::database(sources));
         terrain
@@ -243,8 +242,7 @@ mod tests {
 
     #[test]
     fn default_map_terrain_bitmap_is_read_as_the_game_reads_it() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let map = |terrain: &str| {
             crate::terrain::parse_default_map(
                 format!(

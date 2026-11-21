@@ -2581,40 +2581,4 @@ mod tests {
             .unwrap();
         assert!(construction.string(object).is_err());
     }
-
-    fn tables() -> super::super::Tables {
-        super::super::initialize_for_tests()
-            .expect("auxiliary-table checks require BATTLE_PLAN_GAME_DIR with the supported installation")
-    }
-
-    #[test]
-    fn every_part_verifies_on_the_supported_installation() {
-        let tables = tables();
-        let auxiliary = tables.auxiliary.as_ref().unwrap();
-        assert_eq!(auxiliary.withheld().count(), 0);
-        assert_eq!(auxiliary.equipment_categories.as_ref().unwrap().len(), 38);
-        assert_eq!(auxiliary.category_names.as_ref().unwrap().len(), 39);
-        assert_eq!(auxiliary.stat_metadata.as_ref().unwrap().len(), 78);
-        assert_eq!(auxiliary.ai_strategy_types.as_ref().unwrap().len(), 113);
-        assert_eq!(auxiliary.missions.as_ref().unwrap().len(), 9);
-        assert_eq!(auxiliary.execution_types.as_ref().unwrap().len(), 4);
-        assert_eq!(auxiliary.order_types.as_ref().unwrap().len(), 2);
-        assert_eq!(auxiliary.selectors.as_ref().unwrap().len(), 9);
-        assert_eq!(auxiliary.rules.as_ref().unwrap().len(), 28);
-        let prefix = auxiliary.air_detection_override_prefix.as_ref().unwrap();
-        assert!(!prefix.is_empty() && prefix.is_ascii());
-    }
-
-    #[test]
-    fn equipment_mission_masks_are_complete_and_distinct_from_ai_orders() {
-        let tables = tables();
-        let auxiliary = tables.auxiliary.as_ref().unwrap();
-        let missions = auxiliary.equipment_missions.as_ref().unwrap();
-        assert_eq!(missions.len(), 18);
-        assert_eq!(
-            missions.iter().fold(0, |mask, (_, bit)| mask | bit),
-            (1 << 18) - 1
-        );
-        assert_ne!(missions, auxiliary.missions.as_ref().unwrap());
-    }
 }

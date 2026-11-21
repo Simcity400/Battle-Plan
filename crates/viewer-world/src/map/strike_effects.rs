@@ -525,8 +525,7 @@ mod tests {
 
     #[test]
     fn content_declares_the_effect_entities_and_a_missing_one_is_named() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let descriptors = content_reader_core::mesh::parse_descriptors(
             br#"entity={name=nuke_entity state={name=attack event={time=0.5 particle=mist keep_particle=yes sound={soundeffect=blast}}}}"#,
             "gfx/synthetic.asset",

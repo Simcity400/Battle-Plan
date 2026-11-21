@@ -1,6 +1,4 @@
 
-#[cfg(test)]
-use std::path::PathBuf;
 use std::{cell::RefCell, collections::BTreeMap, collections::BTreeSet, io, sync::Arc};
 
 use content_reader_core::{ResolvedLayers, pdxshader};
@@ -259,34 +257,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "reads the installed game's shaders; set BATTLE_PLAN_GAME_DIR"]
-    fn installed_map_passes_point_sample_the_light_table() {
-        use content_reader_core::{
-            pdxshader::program, pdxshader::program::Filter, pdxshader::program::Stage,
-        };
-        let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
-        let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
-        let point = |sampler: &program::Sampler| {
-            [sampler.mag, sampler.min, sampler.mip]
-                .iter()
-                .all(|filter| *filter == Filter::Point)
-        };
-        let mut declared = 0;
-        for (pass, file) in passes(&layers).unwrap() {
-            let source = program::read(&layers, file.as_bytes()).unwrap();
-            for technique in &source.techniques {
-                let state = shader_pipeline::gpu::State::authored(&source, technique).unwrap();
-                for sampler in state.samplers.values() {
-                    if sampler.name == "LightDataMap" {
-                        declared += 1;
-                        assert!(point(sampler), "{pass} {}: {sampler:?}", technique.name);
-                    }
-                }
-            }
-        }
-        assert!(declared > 0);
-        let physical = super::super::mesh_shader::map_samplers();
-        assert!(point(&physical[&shader_pipeline::binding(9, Stage::Pixel)]));
+    fn mesh_pass_point_samples_the_light_table() {
+        use content_reader_core::pdxshader::program::{Filter, Stage};
+
+        let samplers = super::super::mesh_shader::map_samplers();
+        let light = &samplers[&shader_pipeline::binding(9, Stage::Pixel)];
+        assert_eq!([light.mag, light.min, light.mip], [Filter::Point; 3]);
     }
 
     fn audit_with(
@@ -318,8 +294,7 @@ mod tests {
 
     #[test]
     fn compatibility_policy3_shader_sources_keep_the_uncovered_read_note() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let layers = ResolvedLayers::from_folders_with_coverage_policy(&[], 3).unwrap();
         let files = [
             (
@@ -353,8 +328,7 @@ mod tests {
 
     #[test]
     fn recursive_shared_include_counts_all_passes_once_and_names_files() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let base = [
             ("root", "Includes = { \"a.fxh\" }"),
             ("gfx/FX/a.fxh", "Includes = { \"b.fxh\" }"),
@@ -380,8 +354,7 @@ mod tests {
 
     #[test]
     fn all_compiled_passes_report_changes_without_a_vanilla_only_gate() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let base = [
             ("root", "Includes = { \"shared.fxh\" }"),
             ("gfx/FX/shared.fxh", ""),
@@ -411,8 +384,7 @@ mod tests {
 
     #[test]
     fn removed_and_added_dependencies_and_hard_errors_are_not_silent() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let base = [
             ("root", "Includes = { \"old.fxh\" }"),
             ("gfx/FX/old.fxh", ""),

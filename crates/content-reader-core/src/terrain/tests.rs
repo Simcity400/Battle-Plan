@@ -15,8 +15,7 @@ fn category(definitions: &TerrainDefinitions, index: u8) -> Option<&[u8]> {
 
 #[test]
 fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let definitions = database(&[
         "categories={ ocean={ minimum_seazone_dominance=250 units={ attack=-0.1 } naval_range=1.25 custom_hull={ naval_range=0.5 units={ movement=-0.2 } } custom_hull={ naval_range=-0.2 units={ defence=0.3 } } } }",
     ]);
@@ -41,8 +40,7 @@ fn naval_terrain_keeps_common_and_ordered_class_modifier_operands() {
 
 #[test]
 fn category_colours_read_over_white() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let definitions = database(&[
         "categories={ bare={} forest={ color={ 89 199 85 } } pale={ color={ 0.5 0.25 1 0.5 } } }",
     ]);
@@ -63,8 +61,7 @@ fn category_colours_read_over_white() {
 
 #[test]
 fn water_reads_its_regions_naval_terrain_or_ocean() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let definitions = database(&["categories={ deep={} Ocean={} ocean={} }"]);
     assert_eq!(definitions.naval_category(Some("DEEP")), Some(0));
     assert_eq!(definitions.naval_category(Some("missing")), Some(1));
@@ -75,8 +72,7 @@ fn water_reads_its_regions_naval_terrain_or_ocean() {
 
 #[test]
 fn a_redeclared_category_appends_and_a_lookup_takes_the_first() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let definitions = database(&[
         "categories = { plains = { movement_cost = 1 } Plains = { movement_cost = 2 } }",
         "categories = { plains = { movement_cost = 3 } } terrain = { a = { type = PLAINS color = { 0 } } }",
@@ -95,8 +91,7 @@ fn a_redeclared_category_appends_and_a_lookup_takes_the_first() {
 
 #[test]
 fn a_type_sees_only_the_categories_read_before_it() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let definitions = database(&[
         "terrain = { early = { type = hills color = { 1 } } } \
          categories = { plains = { } } \
@@ -115,8 +110,7 @@ fn a_type_sees_only_the_categories_read_before_it() {
 
 #[test]
 fn entries_keep_their_fields_and_the_last_palette_writer_wins() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let definitions = database(&[
         "@snow = yes categories = { plains = { } desert = { } } \
          terrain = { desert = { type = plains color = { 11 } texture = 11 } \
@@ -140,8 +134,7 @@ fn entries_keep_their_fields_and_the_last_palette_writer_wins() {
 
 #[test]
 fn combat_widths_keep_their_value_past_a_failed_conversion() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let definitions = database(&[
         "@w = 42 categories={urban={combat_width=96 combat_support_width=32 combat_width=@w} \
           marsh={combat_width=0.5} bad={combat_support_width=wide} none={} \
@@ -175,8 +168,7 @@ fn combat_widths_keep_their_value_past_a_failed_conversion() {
 
 #[test]
 fn authored_cost_keeps_radix_prefixes_fraction_and_clamp() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let definitions = database(&[
         "categories={octal={movement_cost=010} hex={movement_cost=0x10} suffix={movement_cost=1junk.25} signed={movement_cost=1.-2} clamped={movement_cost=08} invalid={movement_cost=bad} omitted={}}",
     ]);
@@ -199,8 +191,7 @@ fn authored_cost_keeps_radix_prefixes_fraction_and_clamp() {
 
 #[test]
 fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     for (entry, message) in [
         ("plains", "key `plains` has no operator"),
         (
@@ -305,8 +296,7 @@ fn a_malformed_entry_is_skipped_and_named_and_unsupported_forms_are_refused() {
 
 #[test]
 fn default_map_names_its_bitmaps_and_tree_indices() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let map = parse_default_map(
         br#"definitions = "definition.csv"
             provinces = "provinces.bmp"
@@ -335,8 +325,7 @@ fn default_map_names_its_bitmaps_and_tree_indices() {
 
 #[test]
 fn a_default_map_without_a_required_name_is_refused() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let complete = br#"definitions = "d" provinces = "p" terrain = "t" rivers = "r"
          heightmap = "h" tree_definition = "td""#;
     assert!(parse_default_map(complete).unwrap().tree_indices.is_empty());
@@ -364,8 +353,7 @@ fn a_default_map_without_a_required_name_is_refused() {
 
 #[test]
 fn the_replay_classes_hold_for_terrain() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let definitions = database(&[
         "@w = 30 categories = { a = { \"combat_width\" = 10 COMBAT_WIDTH = @w } \
          b = { movement_cost = { combat_width = 20 } combat_support_width = 5 } }",
@@ -431,8 +419,7 @@ fn bitmap(width: i32, rows: &[&[u8]], dib: u32) -> Vec<u8> {
 
 #[test]
 fn the_world_normal_keeps_the_clients_texture_padding() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let bytes = bitmap(
         2,
         &[
@@ -465,8 +452,7 @@ fn the_world_normal_keeps_the_clients_texture_padding() {
 
 #[test]
 fn the_world_normal_loads_as_the_game_decodes_a_texture() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let shipped = bitmap(
         2,
         &[&[1, 2, 3, 4, 5, 6, 0, 0], &[7, 8, 9, 10, 11, 12, 0, 0]],

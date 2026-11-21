@@ -192,39 +192,14 @@ mod tests {
                 .into()
             }),
         };
-        metadata(
+        super::super::test_support::put_modifier_definitions(
             &mut frame,
-            &[
+            [
                 engine_executable::modifier_keys::NAVAL_SPEED_FACTOR,
                 engine_executable::modifier_keys::NAVY_WEATHER_PENALTY,
             ],
         );
         frame
-    }
-
-    fn metadata(frame: &mut DecodedFrame, keys: &[u32]) {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-        let mut definitions = Vec::new();
-        let mut tokens = Vec::new();
-        for key in engine_executable::modifier_keys::all()
-            .unwrap()
-            .filter(|key| keys.contains(&key.index))
-        {
-            definitions.push(replay_data::rows::ModifierDefinitionRow {
-                index: key.index,
-                token: key.index + 10_000,
-                ..Default::default()
-            });
-            tokens.push(LexicalTokenRow {
-                token: key.index + 10_000,
-                literal: key.name.as_bytes().to_vec(),
-            });
-        }
-        definitions.sort_by_key(|row| row.index);
-        tokens.sort_by_key(|row| row.token);
-        put(frame, TableRows::ModifierDefinitions(definitions));
-        put(frame, TableRows::LexicalTokens(tokens));
     }
 
     fn put(frame: &mut DecodedFrame, rows: TableRows) {

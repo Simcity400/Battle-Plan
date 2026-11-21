@@ -5,7 +5,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn organisation_gates_inherit_parent_local_bodies_and_filters_copy() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::test_game::enter();
     let db = catalog(br#"
       base={visible={always=yes} available={always=no} equipment_type={armor}}
       child={include=base}
@@ -33,8 +33,7 @@ fn organisation_gates_inherit_parent_local_bodies_and_filters_copy() {
 
 #[test]
 fn research_categories_and_trait_conditions_are_retained_and_inherited() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let db = catalog(br#"
       base={research_categories={cat_a cat_b}
           trait={token=gated available={always=no} visible={always=yes}}
@@ -105,8 +104,7 @@ fn catalog(input: &[u8]) -> Catalog {
 
 #[test]
 fn mio_trait_names_follow_includes_overrides_and_first_match() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let db = catalog(
         br#"
         base={trait={token=one name=BASE_ONE} trait={token=two name=BASE_TWO}
@@ -145,8 +143,7 @@ fn mio_trait_names_follow_includes_overrides_and_first_match() {
 
 #[test]
 fn mio_trait_include_pass_is_once_in_first_creation_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let db = catalog(
         br#"
         child={include=middle}
@@ -188,8 +185,7 @@ fn mio_trait_include_pass_is_once_in_first_creation_order() {
 
 #[test]
 fn a_later_file_cannot_redefine_an_organisation() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let mut seen = BTreeSet::new();
     let mut db = Catalog::default();
     for input in [
@@ -212,8 +208,7 @@ fn a_later_file_cannot_redefine_an_organisation() {
 
 #[test]
 fn mio_trait_name_candidates_preserve_recorded_case_and_country_fallback() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let db = catalog(b"custom={trait={token=first} trait={token=second name=explicit_name}}");
     let first = db.trait_definition("custom", "first").unwrap().unwrap();
     assert_eq!(
@@ -236,8 +231,7 @@ fn mio_trait_name_candidates_preserve_recorded_case_and_country_fallback() {
 
 #[test]
 fn mio_trait_readers_consume_names_modifiers_raw_lists_and_integer_points() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let db = catalog(
         br#"
         @name=FIRST
@@ -303,8 +297,7 @@ fn mio_trait_readers_consume_names_modifiers_raw_lists_and_integer_points() {
 
 #[test]
 fn mio_trait_bonuses_follow_duplicate_category_and_include_rules() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let db = catalog(br#"
         base={trait={token=one equipment_bonus={soft_attack=0.1 supply_consumption=-0.2}
             production_bonus={production_capacity_factor=0.3}
@@ -471,7 +464,7 @@ fn mio_trait_content_layers_replace_templates_and_keep_unread_suffix_named() {
 
 #[test]
 fn mio_tree_retains_native_positions_groups_and_initial_trait_inheritance() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::test_game::enter();
     let db = catalog(
         br#"
         base={initial_trait={name=INITIAL position={x=3 y=4}}
@@ -512,7 +505,7 @@ fn mio_tree_retains_native_positions_groups_and_initial_trait_inheritance() {
 }
 #[test]
 fn mio_tree_missing_anchors_return_zero_and_cycles_are_named() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::test_game::enter();
     let db = catalog(
         br#"m={trait={token=missing relative_position_id=absent position={x=9 y=8}}
         trait={token=outer relative_position_id=missing position={x=3 y=2}}
@@ -529,7 +522,7 @@ fn mio_tree_missing_anchors_return_zero_and_cycles_are_named() {
 
 #[test]
 fn modifier_inheritance_is_lazy_and_preserves_each_copy_boundary() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    crate::test_game::enter();
     let db = catalog(br#"
       base={trait={token=t organization_modifier={political_power_gain=0.4}}}
       child={include=base override_trait={token=t organization_modifier={political_power_gain=0}}}

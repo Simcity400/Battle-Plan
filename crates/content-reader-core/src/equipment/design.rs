@@ -541,7 +541,7 @@ mod tests {
     use super::*;
     #[test]
     fn industrial_content_retains_pool_replacements_threshold_resets_and_last_duplicate_level() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         let mut db = super::super::Database::default();
         db.read_file(br#"equipment_modules = { custom = {
             build_cost_resources = { alpha = 1 beta = 2 alpha = 0 }
@@ -578,7 +578,7 @@ mod tests {
     }
     #[test]
     fn design_upgrade_xp_retains_declared_currencies_linear_zero_and_native_stage_rounding() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         let mut db = super::super::Database::default();
         db.read_file(b"upgrades = { mixed = { cost = air } free = { cost = naval linear_cost = { cost_by_level = 0 cost_by_level_for_licensed_equipment = 1.23457 } } }", "common/units/equipment/upgrades/synthetic.txt", &crate::key_names::KeyNames::default());
         let rules = UpgradeXpRules {
@@ -663,8 +663,7 @@ mod tests {
     }
     #[test]
     fn design_content_keeps_module_and_upgrade_terms_including_duplicate_zeroes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("design content tests require BATTLE_PLAN_GAME_DIR");
+        crate::test_game::enter();
         let mut db = super::super::Database::default();
         for (path, text) in [
             (
@@ -694,7 +693,7 @@ mod tests {
 
     #[test]
     fn design_module_costs_keep_source_specific_rules_and_exact_xp_rounding() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         let mut db = super::super::Database::default();
         db.read_file(br#"equipment_modules = {
             old = { category = synthetic_category }

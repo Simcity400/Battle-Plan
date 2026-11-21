@@ -92,8 +92,7 @@ mod tests {
 
     #[test]
     fn sub_unit_category_lists_register_raw_values_without_definitions() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut units = unit_leader::SubUnits::default();
         units.read(
             b"@cat = Group_A SUB_UNIT_CATEGORIES = { @cat \"GROUP_B\" @inside = NeverDefined } \
@@ -137,8 +136,7 @@ mod tests {
 
     #[test]
     fn sub_unit_modifier_lists_use_native_string_conversion_and_register_no_definitions() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut units = unit_leader::SubUnits::default();
         units.read(b"@mod = Active_Mod SUB_UNIT_MODIFIERS = { @mod \"two\nlines\" @inside = Undefined } sub_unit_modifiers = { @inside }", "common/units/unit_modifiers/a.txt");
         assert_eq!(
@@ -157,8 +155,7 @@ mod tests {
 
     #[test]
     fn an_unread_sub_unit_suffix_remains_a_roster_gap() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut units = unit_leader::SubUnits::default();
         units.read(b"sub_unit_categories = { first } sub_units = { known = { } broken = { weights = { x @v = 1 } } later = { } }", "common/units/a.txt");
         assert!(units.categories().contains(b"first".as_slice()));
@@ -173,8 +170,7 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn effect_rosters_use_layer_replacement_and_equipment_aliases() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "content_reader_effect_names_{}_{:?}_{}",
             std::process::id(),

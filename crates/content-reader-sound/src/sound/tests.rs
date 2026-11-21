@@ -395,37 +395,3 @@ fn height_volume_clamps_altitude_and_interpolates() {
     assert_eq!(defines.height_volume(5000.0), 1.0);
     assert!((defines.height_volume(1050.0) - 0.6).abs() < 1e-6);
 }
-
-#[test]
-#[ignore = "reads the installation named by BATTLE_PLAN_GAME_DIR"]
-fn installed_sounds_resolve_and_decode() {
-    let game = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
-    let layers = ResolvedLayers::from_folders(&[(&game, &[])]).unwrap();
-    let catalog = Catalog::read(&layers).unwrap();
-    let mut decoded = 0;
-    let mut refused = Notes::default();
-    for effect in &catalog.effects {
-        for choice in &effect.choices {
-            let sound = &catalog.sounds[choice.sound];
-            match layers.read_uncovered(&sound.path) {
-                Ok(bytes) => match crate::wav::decode(&bytes) {
-                    Ok(_) => decoded += 1,
-                    Err(why) => refused.note(format!("{}: {why}", sound.path)),
-                },
-                Err(error) => refused.note(format!("{}: {error}", sound.path)),
-            }
-        }
-    }
-    eprintln!(
-        "{} files, {} sounds, {} effects, {} falloffs, {} categories; {decoded} decoded",
-        catalog.files.len(),
-        catalog.sounds.len(),
-        catalog.effects.len(),
-        catalog.falloffs.len(),
-        catalog.categories.len()
-    );
-    for line in catalog.notes.lines().iter().chain(&refused.lines()) {
-        eprintln!("  {line}");
-    }
-    assert!(decoded > 0);
-}

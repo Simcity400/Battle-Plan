@@ -483,8 +483,7 @@ mod tests {
 
     #[test]
     fn the_autonomy_colour_switch_defaults_to_off() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut colors = CountryColors::default();
         apply_autonomy_colors(&mut colors, b"autonomy_state={id=puppet} autonomy_state={id=union use_overlord_color=yes} autonomy_state={id=free use_overlord_color=no}", &KeyNames::default()).unwrap();
         assert!(!colors.use_overlord_color[b"puppet".as_slice()]);
@@ -501,8 +500,7 @@ mod tests {
 
     #[test]
     fn autonomy_colours_follow_the_database_file_roster() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let stack = crate::test_support::Stack::new("map_autonomy_roster");
         stack.write(
             &stack.base(),
@@ -528,8 +526,7 @@ mod tests {
 
     #[test]
     fn autonomy_replays_variables_and_keyword_kinds() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut colors = CountryColors::default();
         apply_autonomy_colors(&mut colors, br#"
             @flag="yes"

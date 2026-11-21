@@ -23,6 +23,7 @@ content-reader-core = { workspace = true, features = ["layer-fixtures"] }
 [target.'cfg(all())'.dev-dependencies]
 content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
+engine-executable = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

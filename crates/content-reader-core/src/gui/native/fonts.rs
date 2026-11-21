@@ -571,8 +571,7 @@ mod tests {
 
     #[test]
     fn a_font_skips_its_deprecated_keys_as_the_game_does() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let font = |text: &[u8]| -> FontFacts {
             let read = events(text);
             let Some(FontEvent::Font(font)) = read.into_iter().next() else {
@@ -600,8 +599,7 @@ mod tests {
 
     #[test]
     fn a_font_keeps_its_ordered_file_operations() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let read = events(
             b"bitmapfonts = { bitmapfont = { name = \"f\" path = \"a\" fontfiles = { \"b\" \"c\" } \
               path = \"d\" color = 0xff102030 border_color = 0x80000000 icons_add_height = yes \
@@ -625,8 +623,7 @@ mod tests {
 
     #[test]
     fn offset_components_land_on_the_font() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let font = |text: &str| {
             let read = events(
                 format!("bitmapfonts = {{ bitmapfont = {{ name = \"f\" {text} }} }}").as_bytes(),
@@ -660,8 +657,7 @@ mod tests {
 
     #[test]
     fn offset_components_reach_every_field_of_the_font() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let font = |before: &str, offsets: &[(usize, &str)], after: &str| {
             let last = offsets.iter().map(|(at, _)| (at - 0x30) / 4).max().unwrap();
             let mut components = vec!["-"; last + 1];
@@ -742,8 +738,7 @@ mod tests {
 
     #[test]
     fn overrides_and_fallbacks_follow_the_registry() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let fonts = Fonts::new(&events(
             b"bitmapfonts = { bitmapfont = { name = \"f\" path = \"one\" } \
               bitmapfont_override = { name = \"f\" fontfiles = { \"kr\" } languages = { \"l_korean\" } path = \"x\" } \
@@ -768,8 +763,7 @@ mod tests {
 
     #[test]
     fn glyphs_load_in_token_order() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let files: BTreeMap<&[u8], &[u8]> = BTreeMap::from([
             (
                 &b"a.fnt"[..],
@@ -814,8 +808,7 @@ mod tests {
 
     #[test]
     fn glyphs_keep_negative_ids_and_skip_trailing_pairs() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let fnt: &[u8] = b"info face=\"Monofonto\" size=-20\n\
             common lineHeight=24 base=20 scaleW=1024 scaleH=512 pages=1\n\
             char id=-1   x=530 y=150 width=9 height=24 xoffset=0 yoffset=0 xadvance=10 page=0 chnl=15\n\

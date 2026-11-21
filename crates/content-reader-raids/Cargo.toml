@@ -16,8 +16,7 @@ content-reader-core.workspace = true
 content-reader-country-names.workspace = true
 content-reader-division-names.workspace = true
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
-engine-executable.workspace = true
+content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 content-reader-division-names = { workspace = true, features = ["layer-fixtures"] }
 
 [features]

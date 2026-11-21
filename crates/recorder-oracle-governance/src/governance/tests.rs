@@ -179,8 +179,7 @@ fn active_ideas_report(actual: &[&[u8]], expected: &[&[u8]], tokens: &[&[u8]]) -
 
 #[test]
 fn active_ideas_use_recorded_canonical_spelling_across_mod_files() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "oracle_idea_case_{}_{:?}",
         std::process::id(),

@@ -325,8 +325,7 @@ mod tests {
 
     #[test]
     fn traits_resolve_file_variables_and_skip_structure() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let file = parse(
             b"@tier2 = 20 leader_traits = { army_regrouping_2 = { random = no sprite = 5 army_morale_factor = 0.08 \
               command_cap_increase = @tier2 ai_will_do = { factor = 1 } Command_Power = 1 command_power = bad } \
@@ -356,8 +355,7 @@ mod tests {
 
     #[test]
     fn traits_follow_the_file_reader_table_in_document_order() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let file = parse(
             b"LEADER_TRAITS = { early = { a = @late b = \"@top\" } \
               nested = { @inner = 0.5 c = @inner ai_will_do = { @weight = 2 factor = 1 } d = @weight } \
@@ -404,8 +402,7 @@ mod tests {
 
     #[test]
     fn out_of_step_forms_are_read_and_unsettled_ones_refuse() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let file = parse(
             b"@x = 1 leader_traits = { kept = { a = @x } taken = { @x = 2 b = @x } after = { c = 1 } }", &KeyNames::default(),
         );
@@ -447,8 +444,7 @@ mod tests {
 
     #[test]
     fn trait_keywords_fold_and_quoted_keys_are_modifier_names() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let file = parse(
             b"LEADER_TRAITS = { t = { Equipment_Bonus = { armor = { armor_value = 0.1 } } \
               \"random\" = 2 RANDOM = no \"leader_traits\" = 1 } } \"leader_traits\" = { u = { } }",
@@ -466,8 +462,7 @@ mod tests {
 
     #[test]
     fn the_replay_classes_hold_for_traits() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let file = parse(
             b"leader_traits = { t = { command_power = { army_morale_factor = 0.1 } after = 0.2 } }",
             &KeyNames::default(),
@@ -502,8 +497,7 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn a_trait_is_found_by_token_as_the_database_scans_it() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let root =
             std::env::temp_dir().join(format!("content-reader-traits-token-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);

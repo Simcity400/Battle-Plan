@@ -225,8 +225,7 @@ mod tests {
 
     #[test]
     fn policy_projection_keeps_first_groups_stats_and_definition() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut catalog = Catalog::default();
         catalog.read_file(
             b"synthetic={name=NAME equipment_bonus={z={soft_attack=1 soft_attack=9} a={defense=2}} production_bonus={z={production_cost_factor=3}} organization_modifier={custom_modifier_tooltip=TIP}} synthetic={name=LATE}",

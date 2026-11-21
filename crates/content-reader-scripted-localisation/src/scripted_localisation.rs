@@ -287,8 +287,7 @@ mod tests {
 
     #[test]
     fn unknown_name_warning_keeps_unsettled_kind() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let files = vec![(
             b"a = { name = Pick text = { random_list = { 1 = { localization_key = { bad = x } } } } }".to_vec(),
             "common/scripted_localisation/a.txt".to_owned(),
@@ -306,8 +305,7 @@ mod tests {
 
     #[test]
     fn random_lists_keep_weights_seeds_and_modifier_bodies() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/a.txt",
             r#"
@@ -356,8 +354,7 @@ mod tests {
 
     #[test]
     fn a_text_trigger_skips_a_later_limit() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/a.txt",
             "defined_text = { name = T text = { trigger = { if = { limit = { always = yes } limit = { @v = yes always = yes } always = @v } } localization_key = X } }",
@@ -371,8 +368,7 @@ mod tests {
 
     #[test]
     fn every_entry_of_the_file_loop_is_read_by_keyword() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/mod.txt",
             "defined_text = { name = GetTitle text = { trigger = { always = yes } localization_key = X } } \
@@ -390,8 +386,7 @@ mod tests {
 
     #[test]
     fn text_blocks_are_read_by_their_own_readers() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/mod.txt",
             "a = { name = A TEXT = { Unknown = { @one = Defined } } } \
@@ -407,8 +402,7 @@ mod tests {
 
     #[test]
     fn a_file_ending_in_a_definition_registers_the_empty_name() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/mod.txt",
             "a = { name = A } @x = 1",
@@ -418,8 +412,7 @@ mod tests {
 
     #[test]
     fn names_are_stored_as_read_string_into_stores_them() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = read(&[(
             "common/scripted_localisation/mod.txt",
             "a = { name = \"Two\nLines\" } @n = Named b = { name = @n } c = { name = { name = Inner } }",
@@ -430,8 +423,7 @@ mod tests {
 
     #[test]
     fn an_untraced_reader_leaves_the_rest_of_its_file_unknown() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = read(&[
             (
                 "common/scripted_localisation/a.txt",
@@ -450,8 +442,7 @@ mod tests {
 
     #[test]
     fn a_later_file_settles_the_names_it_defines() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = read(&[
             (
                 "common/scripted_localisation/a.txt",
@@ -475,8 +466,7 @@ mod tests {
 
     #[test]
     fn the_end_of_the_text_closes_the_entry() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let names = read(&[("common/scripted_localisation/mod.txt", "a = { name = Open ")]);
         assert_eq!(listed(&names), ["Open"]);
         assert!(names.warnings.is_empty(), "{:?}", names.warnings);

@@ -11,8 +11,7 @@ impl Database {
 
 #[test]
 fn name_readers_close_every_block_open_at_eof() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let source = br#"FIRST = { ordered = { 1 = { "First %d" } } }
         LAST = { ordered = { 1 = { "Last %d" } }
         # The final group brace is deliberately omitted.
@@ -52,8 +51,7 @@ fn name_readers_close_every_block_open_at_eof() {
 
 #[test]
 fn selection_uses_exact_ids_and_literal_unordered_names() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(
         br#"
         INF = {
@@ -93,8 +91,7 @@ fn selection_uses_exact_ids_and_literal_unordered_names() {
 
 #[test]
 fn repeated_groups_merge_entries_and_keep_omitted_fallback() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = parse(
         br#"
         INF = { ordered = { 1 = { "Old %d" } 2 = { "Second %d" } }
@@ -135,8 +132,7 @@ fn repeated_groups_merge_entries_and_keep_omitted_fallback() {
 
 #[test]
 fn missing_operands_do_not_invent_names_but_authored_empty_names_survive() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(
         br#"INF = { ordered = { 1 = { "" } 2 = {} }
                                    unordered = { a = {} b = { "" } } }"#,
@@ -154,8 +150,7 @@ fn missing_operands_do_not_invent_names_but_authored_empty_names_survive() {
 
 #[test]
 fn fallback_clamps_signed_ordinals_before_formatting() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(
         br#"INF = { fallback_name = "%d / %d" }"#,
         &KeyNames::default(),
@@ -177,8 +172,7 @@ fn fallback_clamps_signed_ordinals_before_formatting() {
 
 #[test]
 fn malformed_name_operands_are_reported() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     for input in [
         br#"INF = { ordered = { 0 = { "bad" } } }"#.as_slice(),
         br#"INF = { ordered = { -1 = { "bad" } } }"#,
@@ -198,8 +192,7 @@ fn malformed_name_operands_are_reported() {
 
 #[test]
 fn ship_unique_names_share_unordered_indices_and_prefix_only_authored_entries() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(
         br#"SHIP = {
         prefix = "HMS "
@@ -233,8 +226,7 @@ fn ship_unique_names_share_unordered_indices_and_prefix_only_authored_entries() 
 
 #[test]
 fn prefix_finalization_runs_on_each_declaration_and_preserves_absent_prefix() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = parse(
         br#"
         SHIP = { prefix = "HMS " unique = { "Gallant" } }
@@ -281,8 +273,7 @@ fn prefix_finalization_runs_on_each_declaration_and_preserves_absent_prefix() {
 
 #[test]
 fn group_names_compare_without_case() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut database = parse(
         b"GER_INF = { ordered = { 1 = { \"First %d\" } } }",
         &KeyNames::default(),
@@ -301,8 +292,7 @@ fn group_names_compare_without_case() {
 
 #[test]
 fn field_keys_compare_without_case() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut database = parse(b"G = { fallback_name = \"Old %d\" }", &KeyNames::default()).unwrap();
     database
         .applied(b"g = { FALLBACK_NAME = \"New %d\" ORDERED = { 2 = { \"Two\" } } }")
@@ -316,8 +306,7 @@ fn field_keys_compare_without_case() {
 
 #[test]
 fn every_field_keyword_compares_without_case() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(
         br#"G = { UNORDERED = { u = { "U" } } Unique = { "Q" } PREFIX = "P "
                   Ordered = { 1 = { "O" } } Fallback_Name = "F %d" }"#,
@@ -339,8 +328,7 @@ fn every_field_keyword_compares_without_case() {
 
 #[test]
 fn a_quoted_field_key_is_no_keyword() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = Database::default();
     let notes = names
         .applied(
@@ -364,8 +352,7 @@ fn a_quoted_field_key_is_no_keyword() {
 
 #[test]
 fn ordered_indices_take_the_decimal_prefix() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(
         br#"G = { ordered = { "1tail" = { "First" } 02x = { "Second" } 99999999999 = { "Max" } } }"#, &KeyNames::default(),
     )
@@ -401,8 +388,7 @@ fn ordered_indices_take_the_decimal_prefix() {
 
 #[test]
 fn a_file_ending_inside_a_comment_keeps_its_entries() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     for source in [
         br#"G = { ordered = { 1 = { "First" } # tail"#.as_slice(),
         br#"G = { ordered = { 1 = { "First"#,
@@ -416,8 +402,7 @@ fn a_file_ending_inside_a_comment_keeps_its_entries() {
 
 #[test]
 fn variables_hold_to_the_end_of_their_file_and_quoted_text_stays_literal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = Database::default();
     let notes = names
         .applied(
@@ -463,8 +448,7 @@ fn variables_hold_to_the_end_of_their_file_and_quoted_text_stays_literal() {
 
 #[test]
 fn unread_group_fields_define_as_their_readers_do() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = Database::default();
     names
         .applied(
@@ -489,8 +473,7 @@ fn unread_group_fields_define_as_their_readers_do() {
 
 #[test]
 fn a_can_use_key_without_an_operator_follows_the_stale_value() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = Database::default();
     let (_, refusal) = names.apply(
         br#"G = { can_use = { OR { always = yes } } unique = { "A" } }"#,
@@ -518,8 +501,7 @@ fn a_can_use_key_without_an_operator_follows_the_stale_value() {
 
 #[test]
 fn repeated_and_chained_definitions_follow_the_reader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = Database::default();
     let notes = names
         .applied(
@@ -566,8 +548,7 @@ fn repeated_and_chained_definitions_follow_the_reader() {
 
 #[test]
 fn unordered_entries_are_read_as_the_game_reads_them() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let source =
         br#"G = { unordered = { x = { "A" "B" } { "A" "B" "URL" } { "Alone" } y = { "C" } } }"#;
     let mut names = Database::default();
@@ -591,8 +572,7 @@ fn unordered_entries_are_read_as_the_game_reads_them() {
 
 #[test]
 fn unknown_group_fields_are_rejected_as_the_game_rejects_them() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = Database::default();
     let notes = names
         .applied(br#"G = { colour = "red" fallback_name = "F %d" }"#)
@@ -621,8 +601,7 @@ fn unknown_group_fields_are_rejected_as_the_game_rejects_them() {
 
 #[test]
 fn a_name_holding_a_line_feed_is_unreadable() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(
         b"G = { ordered = { 1 = { \"Line\nBreak\" } } }",
         &KeyNames::default(),
@@ -636,8 +615,7 @@ fn a_name_holding_a_line_feed_is_unreadable() {
 
 #[test]
 fn an_unsettled_file_refuses_every_group_its_rest_could_declare() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = parse(
         br#"SHIP = { prefix = "HMS " unique = { "Gallant" } }
             OTHER = { unique = { "Kept" } }
@@ -695,8 +673,7 @@ fn an_unsettled_file_refuses_every_group_its_rest_could_declare() {
 
 #[test]
 fn out_of_step_forms_are_read_as_the_game_reads_them() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     for (source, fallback, note) in [
         (
             br#"G = { fallback_name = "x" @n = "y" }"#.as_slice(),
@@ -755,8 +732,7 @@ fn out_of_step_forms_are_read_as_the_game_reads_them() {
 
 #[test]
 fn the_replay_classes_hold_for_name_groups() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = Database::default();
     let notes = names
         .applied(
@@ -805,8 +781,7 @@ fn the_replay_classes_hold_for_name_groups() {
 
 #[test]
 fn group_identity_follows_the_typed_tables() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = Database::default();
     let notes = names
         .applied(
@@ -842,8 +817,7 @@ fn group_identity_follows_the_typed_tables() {
 
 #[test]
 fn an_unexpected_type_keeps_the_type_the_group_had() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut names = Database::default();
     let notes = names
         .applied(
@@ -885,8 +859,7 @@ fn an_unexpected_type_keeps_the_type_the_group_had() {
 
 #[test]
 fn names_and_group_keys_end_at_their_first_nul() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(
         b"\"G\0tail\" = { unique = { \"Ab\0cd\" } }",
         &KeyNames::default(),
@@ -897,8 +870,7 @@ fn names_and_group_keys_end_at_their_first_nul() {
 
 #[test]
 fn a_name_that_is_not_utf8_refuses_only_the_lookups_that_select_it() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(
         b"G = { unique = { \"\xe9\" \"Fine\" } ordered = { 2 = { \"\xe8 %d\" } } fallback_name = \"F %d\" }\n\
           P = { prefix = \"\xe9\" unique = { \"Any\" } fallback_name = \"Plain %d\" }", &KeyNames::default(),
@@ -922,8 +894,7 @@ fn a_name_that_is_not_utf8_refuses_only_the_lookups_that_select_it() {
 
 #[test]
 fn an_empty_key_is_a_null_group_unless_one_is_declared_empty() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = parse(br#"G = { unique = { "N" } }"#, &KeyNames::default()).unwrap();
     assert_eq!(names.resolve("", 0, false), Err(Unresolved::NoGroup));
     let names = parse(br#""" = { unique = { "Empty" } }"#, &KeyNames::default()).unwrap();

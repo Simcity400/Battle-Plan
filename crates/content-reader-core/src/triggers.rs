@@ -36,22 +36,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_assignment_triggers_keep_their_reader_class_and_scalar_arguments() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    fn assignment_triggers_keep_their_reader_class_and_scalar_arguments() {
+        use crate::trigger_keys::Reader;
+        let rows = [
+            ("synthetic_region_assignment", 0x10, "0x25"),
+            ("synthetic_flag_assignment", 0x8, "yes"),
+            ("synthetic_tag_assignment", 0x4, "SYN"),
+        ];
+        crate::test_game::with(|game| {
+            rows.iter().fold(game, |game, &(name, mask, _)| {
+                game.trigger(name, mask, Reader::Assign, 0)
+            })
+        });
         let names = KeyNames::default();
-        for (name, token, mask, operand) in [
-            ("is_fighting_in_strategic_region", 0x2e4f, 0x10, "0x25"),
-            ("is_deployed", 0x432d, 0x8, "yes"),
-            ("has_volunteers", 0x2e39, 0x4, "SYN"),
-        ] {
-            assert_eq!(
-                crate::trigger_keys::registered_trigger(name.as_bytes()),
-                Some(token)
-            );
+        for (name, mask, operand) in rows {
+            let token = crate::trigger_keys::registered_trigger(name.as_bytes()).unwrap();
             assert_eq!(
                 crate::trigger_keys::trigger_class(token),
-                Some((mask, crate::trigger_keys::Reader::Assign))
+                Some((mask, Reader::Assign))
             );
             for operand in [operand.to_owned(), format!("\"{operand}\"")] {
                 let read = read(
@@ -73,8 +75,7 @@ mod tests {
 
     #[test]
     fn nested_collection_and_mtth_triggers_keep_content_names() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let names = KeyNames::default();
         let read = read(
             b"collection_size = { input = { operators = { limit = { \
@@ -102,8 +103,7 @@ mod tests {
 
     #[test]
     fn a_skipped_limit_defines_nothing() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let none = KeyNames::default();
         let read = read(
             b"if = { limit = { always = yes } limit = { @v = yes always = yes } always = @v }",
@@ -149,8 +149,12 @@ mod tests {
 
     #[test]
     fn a_body_class_reads_its_own_keys_first() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use crate::trigger_keys::Reader;
+        crate::test_game::with(|game| {
+            game.trigger_at(0x3C75, "naval_strength_comparison", 0, Reader::Body, 0x140459C80)
+                .trigger("has_opinion", 0, Reader::Own(0x1404540c0), 0x141446BF0)
+                .trigger("check_variable", 0, Reader::Body, 0x14045AC70)
+        });
         let names = KeyNames::default();
         let read = read(
             b"naval_strength_comparison = { other = ENG sub_unit_def_weights = { carrier = 0.5 } nothing = { x = 1 } } \
@@ -172,8 +176,7 @@ mod tests {
 
     #[test]
     fn a_body_keeps_each_key_operator_and_value() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let read = read(
             b"a > 2 b<2 OR = { has_tech = radar c = yes } flat = yes",
             &KeyNames::default(),

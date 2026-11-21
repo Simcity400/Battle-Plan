@@ -3,7 +3,7 @@ use super::*;
 
 #[test]
 fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}
@@ -198,7 +198,7 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
 
 #[test]
 fn a_new_land_product_lays_out_and_draws_again_only_the_column_whose_members_changed() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}
@@ -333,7 +333,7 @@ fn land_plates_against_fresh(
     frames: Vec<LandFrame>,
 ) -> Vec<(crate::map::counters::preparation::plan_probe::Counts, crate::map::counters::preparation::plan_probe::Counts)> {
     use crate::map::counters::preparation::plan_probe;
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let guis = layout_gui(
         format!(
             r#"guiTypes={{
@@ -445,7 +445,7 @@ fn grouping_re_forming_lays_out_only_the_re_formed_columns() {
 
 #[test]
 fn another_hour_s_layout_draws_again_only_the_plates_whose_stacks_changed() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}
@@ -680,7 +680,7 @@ fn synthetic_hour_with_history(
 
 #[test]
 fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     with_counter_inputs_fixture(
         action_gui(false),
         |_| {},
@@ -769,7 +769,7 @@ fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
 
 #[test]
 fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_changes() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let guis = layout_gui(br#"guiTypes={
         containerWindowType={name=unit_mapicon size={width=81 height=29}
             gridBoxType={name=units_box size={width=81 height=290}
@@ -1165,7 +1165,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
     };
     use replay_frame::frame::TableView;
     use viewer_foundation::map::province_map::ProvinceMap;
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let stack = content_reader_core::test_support::Stack::new("base-icon-lookups");
     let base = stack.base();
     stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");
@@ -1679,7 +1679,7 @@ fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_
 }
 
 fn with_base_windows(name: &str, run: impl FnOnce(CounterInputs<'_>)) {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let stack = content_reader_core::test_support::Stack::new(name);
     let base = stack.base();
     stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");

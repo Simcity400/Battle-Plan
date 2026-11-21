@@ -58,8 +58,7 @@ fn module_slot_rules_follow_skipped_duplicates_aliases_inheritance_and_generated
 
 #[test]
 fn category_names_invert_the_table_and_refuse_unknown_bits() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("equipment category checks require BATTLE_PLAN_GAME_DIR");
+    crate::test_game::enter();
     for &(name, bit) in engine_executable::executable_tables::get()
         .auxiliary
         .as_ref()
@@ -104,8 +103,7 @@ fn module_country_conditions_keep_final_limit_and_reset_on_redefinition() {
 }
 
 fn read(files: &[(&str, &str)]) -> Database {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("equipment reader checks require BATTLE_PLAN_GAME_DIR");
+    crate::test_game::enter();
     let mut database = Database::default();
     for (path, text) in files {
         database.read_file(text.as_bytes(), path, &KeyNames::default());
@@ -169,9 +167,12 @@ fn unreproduced_stat_fields_are_kept_silently_and_found_through_parents_and_arch
     assert_eq!(field("plain"), None);
 }
 
+fn cat(name: &str) -> u64 {
+    crate::test_game::category(name)
+}
+
 fn stat(name: &str) -> usize {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("equipment stat checks require BATTLE_PLAN_GAME_DIR");
+    crate::test_game::enter();
     stat_index(name.as_bytes()).unwrap()
 }
 
@@ -192,15 +193,14 @@ fn every_top_level_reader_consumes_its_own_block() {
     for skipped in ["hg_attack", "torpedo_attack", "sub_attack"] {
         assert_eq!(c.stats[stat(skipped)], 0, "{skipped}");
     }
-    assert_eq!(c.module_category, 1);
-    assert_eq!(database.category(c), 5);
+    assert_eq!(c.module_category, cat("convoy"));
+    assert_eq!(database.category(c), cat("convoy") | cat("armor"));
 }
 
 #[cfg(feature = "test-support")]
 #[test]
 fn the_loader_reads_its_three_directories_in_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+    crate::test_game::enter();
     use std::fs;
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_equipment_{}_{:?}",
@@ -274,7 +274,7 @@ fn duplicated_archetypes_generate_their_clones() {
         raider.archetype,
         Some(database.by_name[b"raider".as_slice()])
     );
-    assert_eq!(raider.category, 1);
+    assert_eq!(raider.category, cat("convoy"));
     assert_eq!(raider.stats[stat("lg_attack")], 300_000);
     assert_eq!(raider.stats[stat("hardness")], 50_000);
     let raider_1 = named(&database, "raider_1");
@@ -306,7 +306,7 @@ fn duplicated_archetypes_generate_their_clones() {
     let later = named(&database, "later");
     assert_eq!(later.parent, database.by_name[b"raider_1".as_slice()]);
     assert_eq!(later.stats[stat("lg_attack")], 300_000);
-    assert_eq!(database.category(later) & 1, 1);
+    assert_eq!(database.category(later) & cat("convoy"), cat("convoy"));
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn category_masks_fall_back_to_the_unsigned_decimal() {
          equipments = { x = { default_modules = { s = A t = b } } }",
     )]);
     let x = named(&database, "x");
-    assert_eq!(x.module_category, 1 | 4);
+    assert_eq!(x.module_category, 1 | cat("armor"));
     let database = read(&[(
         "m.txt",
         "equipment_modules = { m = { add_equipment_type = \" 1\" } }
@@ -381,11 +381,11 @@ fn slots_and_modules_are_tokens() {
     assert!(database.lost.is_none(), "{:?}", database.lost);
     let x = named(&database, "x");
     assert_eq!(x.default_modules.len(), 1);
-    assert_eq!(x.module_category, 1 << 14);
-    assert_eq!(named(&database, "y").module_category, 1 << 2);
+    assert_eq!(x.module_category, cat("cas"));
+    assert_eq!(named(&database, "y").module_category, cat("armor"));
     assert_eq!(named(&database, "z").stats[stat("lg_attack")], 0);
-    assert_eq!(database.module_category("99"), Some(1 << 2));
-    assert_eq!(database.module_category("A"), Some(1 << 5));
+    assert_eq!(database.module_category("99"), Some(cat("armor")));
+    assert_eq!(database.module_category("A"), Some(cat("infantry")));
     assert_eq!(database.module_category("missing"), None);
 }
 
@@ -815,12 +815,13 @@ fn category_masks_or_types_and_default_modules_then_normalize() {
         ),
     ]);
     let category = |name: &str| database.category(database.named(name).unwrap());
-    assert_eq!(category("large_plane_airframe"), 0x2000 | 0x8000);
-    assert_eq!(category("large_plane_airframe_2"), 0x400);
-    assert_eq!(category("large_plane_airframe_1"), 0x2000);
-    assert_eq!(category("large_plane_cas_airframe"), 0x4000 | 0x8000);
-    assert_eq!(category("carrier_hull"), 0x40 | 0x40_0000);
-    assert_eq!(category_mask("Air_Transport"), Some(0x10_0000));
+    let (bomber, naval) = (cat("strategic_bomber"), cat("naval_bomber"));
+    assert_eq!(category("large_plane_airframe"), bomber | naval);
+    assert_eq!(category("large_plane_airframe_2"), cat("fighter"));
+    assert_eq!(category("large_plane_airframe_1"), bomber);
+    assert_eq!(category("large_plane_cas_airframe"), cat("cas") | naval);
+    assert_eq!(category("carrier_hull"), cat("capital_ship") | cat("carrier"));
+    assert_eq!(category_mask("Air_Transport"), Some(cat("air_transport")));
 }
 
 #[cfg(feature = "test-support")]
@@ -918,38 +919,25 @@ fn keywords_fold_and_names_keep_their_case() {
     );
     assert_eq!(hull.visual_level, 2);
     assert_eq!(hull.default_modules, [(b"Main".to_vec(), b"Gun".to_vec())]);
-    assert_eq!(database.category(hull), 1 << 8);
+    assert_eq!(database.category(hull), cat("screen_ship"));
     let copy = database.named("hull_1").unwrap();
     assert_eq!(copy.archetype, database.get("hull"));
     assert_eq!(copy.module_slots, [b"Main".to_vec()]);
     let raider = database.named("raider").unwrap();
     assert!(raider.module_slots.is_empty() && raider.default_modules.is_empty());
-    assert_eq!(database.category(raider), 1);
+    assert_eq!(database.category(raider), cat("convoy"));
     assert_eq!(groups.expand(&["ships"]).unwrap(), [b"HULL".to_vec()]);
     assert!(database.group_admits(&[b"HULL".to_vec()], database.get("hull_1").unwrap()));
 }
 
 #[test]
 fn stat_metadata_covers_the_index_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("equipment metadata checks require BATTLE_PLAN_GAME_DIR");
+    crate::test_game::enter();
     assert_eq!(stat_metadata().len(), STAT_COUNT);
     for (index, &(keyword, label, _)) in stat_metadata().iter().enumerate() {
         assert_eq!(stat_index(keyword.as_bytes()), Some(index), "{keyword}");
         assert!(!label.is_empty(), "{keyword}");
     }
-    assert_eq!(
-        stat_metadata()[4],
-        ("soft_attack", "STAT_ARMY_SOFT_ATTACK", true)
-    );
-    assert_eq!(
-        stat_metadata()[11],
-        ("supply_consumption", "STAT_ARMY_SUPPLY_CONSUMPTION", false)
-    );
-    assert_eq!(
-        stat_metadata()[77],
-        ("build_cost_ic", "STAT_COMMON_BUILD_COST_IC", false)
-    );
 }
 
 #[test]

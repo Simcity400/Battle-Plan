@@ -2655,8 +2655,7 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
 
 #[test]
 fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_raw_gui_{}_{:?}",
         std::process::id(),
@@ -2802,33 +2801,24 @@ fn mods_mount_in_the_engines_dependency_then_path_order() {
 
 #[test]
 fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
-    let root = std::env::temp_dir().join(format!("hoi4_mod_order_{}", std::process::id()));
-    let write = |path: &str, text: &str| {
-        let path = root.join(path);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
-    };
-    write("game/hoi4.exe", "synthetic executable");
-    write("game/common/file.txt", "vanilla");
-    write(
-        "game/dlc/dlc_synthetic/content.dlc",
-        r#"name="Synthetic DLC" path="dlc/dlc_synthetic""#,
+    use synthetic_game::{Dlc, Installation, Mod};
+    let installed = Installation::new("mod-order")
+        .file("common/file.txt", "vanilla")
+        .dlc(Dlc::new("dlc_synthetic", "Synthetic DLC").file("common/file.txt", "DLC"))
+        .with_mod(
+            Mod::new("a_top", "Top")
+                .remote_id(42)
+                .depends_on("Base")
+                .file("common/file.txt", "top"),
+        )
+        .with_mod(Mod::new("b_base", "Base").file("common/file.txt", "base"))
+        .build();
+    let write = |path: &str, text: &str| fs::write(installed.user_dir.join(path), text).unwrap();
+    let (game_dir, user_dir, cache_dir) = (
+        installed.game_dir.clone(),
+        installed.user_dir.clone(),
+        installed.cache_dir.clone(),
     );
-    write("game/dlc/dlc_synthetic/common/file.txt", "DLC");
-    write("user/settings.txt", "language=l_english");
-    write(
-        "user/dlc_load.json",
-        r#"{"enabled_mods":["mod/a_top.mod","mod/b_base.mod"],"disabled_dlcs":[]}"#,
-    );
-    write(
-        "user/mod/a_top.mod",
-        r#"name="Top" remote_file_id=42 path="layers/top" dependencies={"Base"}"#,
-    );
-    write("user/mod/b_base.mod", r#"name="Base" path="layers/base""#);
-    write("user/layers/top/common/file.txt", "top");
-    write("user/layers/base/common/file.txt", "base");
-    let (game_dir, user_dir, cache_dir) =
-        (root.join("game"), root.join("user"), root.join("cache"));
     let gathered = gather(&GatherOptions {
         game_dir: game_dir.clone(),
         user_dir: user_dir.clone(),
@@ -2850,7 +2840,7 @@ fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
         .unwrap();
     let ids = identity.mods.iter().map(|layer| layer.id.as_str());
     assert_eq!(ids.collect::<Vec<_>>(), ["b_base.mod", "42"]);
-    write("user/dlc_load.json", "not JSON");
+    write("dlc_load.json", "not JSON");
     let options = ResolveOptions {
         game_dir,
         user_dir,
@@ -2860,7 +2850,7 @@ fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
     let layers = resolved.layers.layers.iter().map(|layer| layer.id.as_str());
     assert!(layers.collect::<Vec<_>>().ends_with(&["b_base.mod", "42"]));
     assert_eq!(resolved.layers.read("common/file.txt").unwrap(), b"top");
-    write("user/layers/base/common/file.txt", "changed");
+    write("layers/b_base/common/file.txt", "changed");
     let changed = resolve(&identity, &options).unwrap();
     assert_eq!(changed.layers.read("common/file.txt").unwrap(), b"top");
     let names: Vec<_> = changed
@@ -2884,7 +2874,6 @@ fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
         error.contains("Mod b_base.mod: content hash mismatch"),
         "{error}"
     );
-    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -3129,8 +3118,7 @@ fn mod_forms_the_engine_cannot_order_are_named() {
 
 #[test]
 fn bootstrap_files_open_by_their_literal_paths() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_bootstrap_case_{}_{:?}",
         std::process::id(),

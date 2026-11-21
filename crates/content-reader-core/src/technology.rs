@@ -1153,8 +1153,7 @@ mod tests {
 
     #[test]
     fn a_repeated_technology_is_its_own_template_and_a_name_finds_the_first() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (definitions, _) = super::parse_with_registry(
             b"technologies = { repeat = { parent = first enable_equipments = { one } } repeat = { parent = second } }",
             &units::Registry::default(),
@@ -1186,8 +1185,7 @@ mod tests {
 
     #[test]
     fn research_folders_keep_file_order_triggers_and_refuse_repeats_by_name() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (folders, notes) = parse_folders(
             b"technology_categories = { infantry_weapons }\ntechnology_folders = { infantry_folder = { ledger = army } armour_folder = { ledger = army available = { always = no } } nsb_armour_folder = { available = { always = yes } } infantry_folder = { ledger = navy } }",
             &KeyNames::default(),
@@ -1207,8 +1205,7 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn a_mod_adds_research_folders_after_the_base_game_and_cannot_redefine_one() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         struct TempRoot(std::path::PathBuf);
         impl Drop for TempRoot {
             fn drop(&mut self) {
@@ -1262,8 +1259,7 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn tokens_keep_database_order_replacement_and_refused_inventory_notes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         struct TempRoot(std::path::PathBuf);
         impl Drop for TempRoot {
             fn drop(&mut self) {
@@ -1359,8 +1355,7 @@ mod tests {
 
     #[test]
     fn completion_name_projection_uses_template_single_child_and_load_time_limits() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (links, display, _) = parse_with_registry(br#"technologies={plain={} renamed={parent=mod_parent} equipment={enable_equipments={mod_equipment}} forced={parent=mod_parent enable_equipments={mod_equipment} force_use_small_tech_layout=yes} conditional={enable_equipments={limit={always=yes} mod_equipment}}}"#, &units::Registry::default(), &KeyNames::default()).unwrap();
         let name = |key: &str| {
             display[key]
@@ -1406,8 +1401,7 @@ mod tests {
 
     #[test]
     fn invalid_parent_refuses_only_its_presentation_and_keeps_equipment_links() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let input = b"technologies={\
             before={enable_equipments={before_equipment}} \
             invalid={parent=\x80 enable_equipments={invalid_equipment}} \
@@ -1445,8 +1439,7 @@ mod tests {
 
     #[test]
     fn malformed_small_layout_boolean_keeps_the_last_value() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         for (values, expected) in [
             (&["invalid"][..], false),
             (&["yes", "invalid"][..], true),
@@ -1495,8 +1488,7 @@ mod tests {
 
     #[test]
     fn completion_name_deduplicates_authored_tokens_but_preserves_alias_children() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (_, display, _) = parse_with_registry(
             br#"technologies={same={enable_equipments={one ONE}} aliases={enable_equipments={one alias}}}"#,
             &units::Registry::default(), &KeyNames::default(),
@@ -1644,8 +1636,7 @@ mod tests {
 
     #[test]
     fn completion_name_limit_prefix_short_circuits_and_resets_between_fields() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let p = PresentationName {
             template: "template".into(),
             force_small: false,
@@ -1692,8 +1683,7 @@ mod tests {
 
     #[test]
     fn effect_bodies_follow_the_brace_guard_and_leading_limit() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let link = |body: &str| {
             let text = format!("technologies={{t={{{body}}}}}");
             parse_equipment(text.as_bytes(), &KeyNames::default())
@@ -1736,8 +1726,7 @@ mod tests {
 
     #[test]
     fn keywords_references_and_list_appends() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let links = parse_equipment(br#"@e=one TECHNOLOGIES={a={"enable_equipments"=wrong enable_equipments={@e} enable_equipments={ONE}} b={enable_equipments={one} enable_equipments={two}}}"#, &KeyNames::default()).unwrap();
         assert_eq!(links["a"].as_deref(), Some("one"));
         assert_eq!(links["b"], None);
@@ -1745,8 +1734,7 @@ mod tests {
 
     #[test]
     fn conditional_unlock_preserves_following_fields_and_names_unsafe_tails() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let links = parse_equipment(br#"technologies={a={enable_equipments={limit={always=yes} one} research_cost=1} b={enable_equipments={two}}}"#, &KeyNames::default()).unwrap();
         assert_eq!(links["a"], None);
         assert_eq!(links["b"].as_deref(), Some("two"));
@@ -1768,8 +1756,7 @@ mod tests {
 
     #[test]
     fn dynamic_reader_dispatch_uses_the_recorded_registry() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut registry = units::Registry::default();
         registry.units.insert(b"custom_unit".to_vec());
         registry.terrains.insert(b"custom_terrain".to_vec());
@@ -1790,8 +1777,7 @@ mod tests {
 
     #[test]
     fn modifier_registry_decides_unknown_block_recovery() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let input = b"technologies={t={category_leg_infantry={@lost=2} enable_equipments={one}}} lost=@lost";
         let mut names = KeyNames::default();
         let units = units::Registry::default();
@@ -1819,8 +1805,7 @@ mod tests {
 
     #[test]
     fn equipment_localisation_follows_only_an_unambiguous_authored_unlock() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let links = parse_equipment(
             br#"technologies = {
             @cost = 1
@@ -1846,8 +1831,7 @@ mod tests {
     }
     #[test]
     fn enablers_list_each_technology_once_with_its_parent_and_mark_scripts() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let parsed = parse_enablers(
             br#"technologies = {
             infantry_weapons1 = { enable_equipments = { infantry_equipment_1 } }
@@ -1913,8 +1897,7 @@ mod tests {
 
     #[test]
     fn native_enablers_keep_the_keyword_parent() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let stack = crate::test_support::Stack::new("technology_enabler_parent");
         stack.write(
             &stack.base(),
@@ -1982,8 +1965,7 @@ mod tests {
 
     #[test]
     fn enablers_resolve_file_variables_through_the_native_reader() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let stack = crate::test_support::Stack::new("technology_enablers_native");
         stack.write(
             &stack.base(),
@@ -2016,8 +1998,7 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn a_mod_technology_replaces_vanilla_under_the_lexer_fold() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_content_reader_enablers_{}_{:?}",
             std::process::id(),
@@ -2059,8 +2040,7 @@ mod tests {
     #[cfg(feature = "test-support")]
     #[test]
     fn a_technology_redefined_in_another_file_is_another_template() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_content_reader_enablers_case_{}_{:?}",
             std::process::id(),

@@ -273,7 +273,7 @@ pub fn build_with_naval(
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 #[cfg(test)]
 mod oracle;

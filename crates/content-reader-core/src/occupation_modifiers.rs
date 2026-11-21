@@ -270,7 +270,7 @@ mod tests {
     use super::*;
 
     fn initialize() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
     }
 
     #[test]

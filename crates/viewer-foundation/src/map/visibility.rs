@@ -731,8 +731,6 @@ pub(crate) mod tests {
 
     #[test]
     fn each_viewer_rebuilds_its_own_bytes_from_the_same_hour() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (frame, links, content) = fixture();
         assert_eq!(
             run(&frame, &links, 1, &content).unwrap(),
@@ -746,8 +744,6 @@ pub(crate) mod tests {
 
     #[test]
     fn an_attache_shares_province_fog_one_way_but_not_unit_intel() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, content) = fixture();
         set::<tables::RelationLinks>(
             &mut frame,
@@ -769,8 +765,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_war_vetoes_shared_intel_but_not_the_allied_rebuild() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, content) = fixture();
         set::<tables::FactionMembers>(
             &mut frame,
@@ -799,8 +793,6 @@ pub(crate) mod tests {
 
     #[test]
     fn families_need_no_war_census_but_relations_do() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, _) = fixture();
         set::<tables::FactionMembers>(
             &mut frame,
@@ -827,8 +819,6 @@ pub(crate) mod tests {
 
     #[test]
     fn reserved_faction_members_preserve_positive_families_and_unknown_links() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, _) = fixture();
         assert!(!links.contains_key(&0));
         set::<tables::FactionMembers>(
@@ -866,8 +856,6 @@ pub(crate) mod tests {
 
     #[test]
     fn reveal_skip_radar_and_sea_targets_follow_the_native_order() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, content) = fixture();
         let division = |reveal_skip| DivisionRow {
             id: 7,
@@ -896,8 +884,6 @@ pub(crate) mod tests {
 
     #[test]
     fn an_occupied_owned_state_adds_its_network_term_and_absence_adds_none() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, content) = fixture();
         set::<tables::States>(
             &mut frame,
@@ -928,8 +914,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_missing_input_is_named_instead_of_dropping_a_term() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (mut frame, links, mut content) = fixture();
         *frame.tables[TableId::RadarCoverage.index()] = TableView::Unavailable {
             reason: "read fault".into(),
@@ -945,8 +929,6 @@ pub(crate) mod tests {
 
     #[test]
     fn cutoffs_keep_strict_thresholds_odd_tail_and_invalid_fraction() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (frame, links, content) = fixture();
         let relations = Relations::read(&frame, &links).unwrap();
         let cutoffs = [50_000, -100_000, 100_000, 200_000, 999];

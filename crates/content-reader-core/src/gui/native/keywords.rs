@@ -114,23 +114,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn supported_static_keywords_keep_folded_identity() {
-        let tables = engine_executable::executable_tables::initialize_for_tests()
-            .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
-        let names = &tables.keywords.as_ref().unwrap().names;
-        assert_eq!(names.len(), 10_767);
-        assert!(names.iter().all(|(_, name)| name.is_ascii()));
-        assert_eq!(static_keyword(b"SpriteTypes"), Some("spritetypes"));
-        assert_eq!(static_keyword(b"SpriteTypes\0other"), Some("spritetypes"));
-        assert_eq!(static_keyword(b"texture_diffuse"), None);
-    }
-
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn words_are_classed_as_the_lexer_classes_them() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("set BATTLE_PLAN_GAME_DIR to the supported installation");
+        crate::test_game::enter();
         let dynamic = DynamicTokens::from_files([&b"Coal \"-x\" 3y { kept\n"[..], b"cut"]);
         let tokens = lex(b"SIZE \"size\" texture_diffuse 12 1.5.- coal -coal\n");
         let classes: Vec<Class> = tokens[..7]

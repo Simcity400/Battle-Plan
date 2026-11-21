@@ -166,8 +166,6 @@ mod tests {
 
     #[test]
     fn cancelled_read_stops_before_resolving_assets() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let layers = ResolvedLayers::from_folders(&[]).unwrap();
         let error = ProvinceAreas::read_cancellable(&layers, &AtomicBool::new(true)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
@@ -287,8 +285,6 @@ mod tests {
 
     #[test]
     fn modded_layers_resolve_the_authored_map_paths_and_extra_provinces_and_name_refusals() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "territory-map-fixture-{}-{}-{}",
             std::process::id(),
@@ -359,8 +355,10 @@ mod tests {
             b"unsupported bitmap form",
         )
         .unwrap();
-        let changed = ProvinceAreas::read(&layers).unwrap_err().to_string();
-        assert!(changed.contains("changed since verification"), "{changed}");
+        let changed = ProvinceAreas::read(&layers).unwrap_err();
+        assert_eq!(changed.kind(), io::ErrorKind::InvalidData);
+        let changed = changed.to_string();
+        assert!(changed.contains("content generation changed"), "{changed}");
         assert!(changed.contains("custom-territory.bmp"), "{changed}");
         let layers = ResolvedLayers::from_folders(&[
             (&base, &[]),

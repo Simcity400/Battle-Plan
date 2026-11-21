@@ -973,8 +973,7 @@ fn land_combat_classes_follow_the_saved_roster_of_each_participant() {
 
 #[test]
 fn divisions_compare_locations_strength_and_missing_rows_despite_membership_exclusions() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let membership = membership();
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     let owner = saved.countries.keys().next().unwrap().clone();

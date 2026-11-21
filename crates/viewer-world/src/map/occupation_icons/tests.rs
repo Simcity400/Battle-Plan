@@ -370,8 +370,7 @@ const GUI: &[u8] = br#"guiTypes = {
 
 #[test]
 fn occupation_percentages_draw_opaque_even_with_transparent_map_fill() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use viewer_foundation::map::test_support::gui;
     let resources = gui::fixture();
     let windows = gui::windows(GUI);
@@ -415,8 +414,7 @@ fn occupation_percentages_draw_opaque_even_with_transparent_map_fill() {
 
 #[test]
 fn occupation_grid_centres_admitted_badges_and_reuses_retained_windows() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use viewer_foundation::map::test_support::gui;
     let mut resources = gui::fixture();
     resources.physical = Some([400, 400]);
@@ -611,8 +609,7 @@ fn assert_same_entry(
 
 #[test]
 fn occupation_erased_and_outside_parents_hide_and_tick_retained_badge_rows() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut resources = viewer_foundation::map::test_support::gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = lifecycle_windows(
@@ -664,8 +661,7 @@ fn occupation_erased_and_outside_parents_hide_and_tick_retained_badge_rows() {
 
 #[test]
 fn occupation_parent_fade_preserves_badge_clocks_through_the_delayed_hide() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut resources = viewer_foundation::map::test_support::gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = lifecycle_windows(
@@ -713,8 +709,7 @@ fn occupation_parent_fade_preserves_badge_clocks_through_the_delayed_hide() {
 
 #[test]
 fn occupation_empty_badges_settle_before_the_same_parent_slot_is_reused() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut resources = viewer_foundation::map::test_support::gui::fixture();
     resources.physical = Some([400, 400]);
     let windows = lifecycle_windows(

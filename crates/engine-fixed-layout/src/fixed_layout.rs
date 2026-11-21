@@ -210,8 +210,19 @@ mod tests {
     use std::{cell::Cell, collections::BTreeMap};
 
     fn initialize_tables() {
-        crate::executable_tables::initialize_for_tests()
-            .expect("fixed-layout tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        static TABLES: std::sync::OnceLock<crate::executable_tables::Tables> =
+            std::sync::OnceLock::new();
+        let tables = TABLES.get_or_init(|| {
+            TOKEN_IDS
+                .iter()
+                .fold(synthetic_game::Executable::empty(), |game, &id| {
+                    game.keyword(id, &format!("synthetic_token_{id:x}"))
+                })
+                .modifiers((0..GAP).map(|index| format!("synthetic_modifier_{index:x}")))
+                .pinned()
+                .build()
+        });
+        crate::executable_tables::enter(Some(tables));
     }
 
     fn check(memory: &impl Memory, base: usize) -> Result<Report, &'static str> {

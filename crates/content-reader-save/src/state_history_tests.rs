@@ -7,8 +7,7 @@ struct Content(std::path::PathBuf);
 
 impl Content {
     fn new(history: &[(&str, &str)]) -> Self {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

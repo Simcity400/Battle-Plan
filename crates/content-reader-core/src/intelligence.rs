@@ -698,8 +698,7 @@ mod tests {
 
     #[test]
     fn operation_map_icon_is_separate_and_keeps_first_definition() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (definitions, _) = parse_operations(
             b"op = { name = NAME icon = CARD map_icon = MAP } OP = { name = WRONG map_icon = WRONG } other = { name = OTHER }",
             &KeyNames::default(),
@@ -715,8 +714,7 @@ mod tests {
 
     #[test]
     fn operation_phase_map_sprite_falls_back_to_its_icon_and_keeps_the_first_definition() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (definitions, _) = parse_operation_phases(
             b"steal = { icon = GFX_steal map_icon = GFX_steal_map outcome = { a = b } }
               STEAL = { icon = GFX_wrong }
@@ -749,8 +747,7 @@ mod tests {
 
     #[test]
     fn intelligence_operation_token_name_text_icon_and_duplicate_skip() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (definitions, warnings) = parse_operation_tokens(
             br#"
             @name=MOD_NAME
@@ -802,8 +799,7 @@ mod tests {
 
     #[test]
     fn intelligence_agency_upgrade_readers_and_identifier_name() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (branches, warnings) = parse_agency_upgrades(
             br#"
             branch={
@@ -844,8 +840,7 @@ mod tests {
 
     #[test]
     fn intelligence_token_upgrade_layers_first_global_pointer_and_replace_path() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_intelligence_domains_{}_{}_{}",
             std::process::id(),
@@ -944,8 +939,7 @@ mod tests {
 
     #[test]
     fn intelligence_operation_names_art_variables_and_duplicate_skip() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (operations, warnings) = parse_operations(
             br#"
             @sprite = mod_art
@@ -992,8 +986,7 @@ mod tests {
 
     #[test]
     fn intelligence_operation_named_unreached_array_refusal() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let why = parse_operations(
             b"custom={operation_target={target_array=a}}",
             &KeyNames::default(),
@@ -1006,8 +999,7 @@ mod tests {
 
     #[test]
     fn intelligence_operation_notes_keep_deferred_kind_and_public_parser_output() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let input = b"custom = { on_start = { free_operative = { operative = custom_name } } }";
         let mut notes = Vec::new();
         let parsed =
@@ -1025,8 +1017,7 @@ mod tests {
 
     #[test]
     fn intelligence_reused_layers_keep_replace_paths_and_fresh_names() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_intelligence_layers_{}_{}_{}",
             std::process::id(),
@@ -1089,88 +1080,4 @@ mod tests {
         std::fs::remove_dir_all(cleanup_root).unwrap();
     }
 
-    #[test]
-    #[ignore = "requires the installed game and Workshop corpus"]
-    fn intelligence_installed_content_readers() {
-        let game =
-            std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
-        let workshop = std::path::PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_WORKSHOP_DIR").or_else(|| std::env::var_os("HOI4_WORKSHOP_DIR")).expect("BATTLE_PLAN_WORKSHOP_DIR"),
-        );
-        let mut roots = vec![game.clone()];
-        let mut mods: Vec<_> = std::fs::read_dir(workshop)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| path.is_dir())
-            .collect();
-        mods.sort();
-        roots.extend(mods);
-        let mut files = 0;
-        let mut operations = 0;
-        let mut refusals = Vec::new();
-        println!("Inventorying base {}", game.display());
-        let vanilla = ResolvedLayers::from_test_common_folders(&[(&game, &[][..])]).unwrap();
-        for root in &roots {
-            let replacements = std::fs::read(root.join("descriptor.mod"))
-                .ok()
-                .map(|bytes| {
-                    crate::parser::parse(&bytes)
-                        .unwrap()
-                        .get_all(b"replace_path")
-                        .map(|value| value.read_str().unwrap().to_owned())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let replacement_refs: Vec<_> = replacements.iter().map(String::as_str).collect();
-            let layers = if root == &game {
-                vanilla.clone()
-            } else {
-                println!("Inventorying mod {}", root.display());
-                let mut roster = vanilla.layers.clone();
-                let additional =
-                    ResolvedLayers::from_test_common_folders(&[(root, &replacement_refs)]).unwrap();
-                for mut layer in additional.layers {
-                    layer.id = format!("test{}", roster.len());
-                    roster.push(layer);
-                }
-                ResolvedLayers::from_test_layers(roster).unwrap()
-            };
-            let names = layers.key_names().unwrap();
-            let Ok(entries) = std::fs::read_dir(root.join("common/operations")) else {
-                continue;
-            };
-            let mut paths: Vec<_> = entries
-                .map(|entry| entry.unwrap().path())
-                .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "txt"))
-                .collect();
-            paths.sort();
-            for path in paths {
-                files += 1;
-                let bytes = std::fs::read(&path).unwrap();
-                match parse_operations(&bytes, &names, &BTreeSet::new()) {
-                    Ok((definitions, warnings)) => {
-                        for warning in warnings {
-                            println!("NOTE {}: {warning}", path.display());
-                        }
-                        operations += definitions.len();
-                        println!("{}: {} definitions", path.display(), definitions.len());
-                    }
-                    Err(why) => refusals.push(format!("{}: {why}", path.display())),
-                }
-            }
-        }
-        println!(
-            "{} roots, {files} files, {operations} operations, {} refused files",
-            roots.len(),
-            refusals.len()
-        );
-        for refusal in &refusals {
-            println!("REFUSED {refusal}");
-        }
-        assert!(
-            refusals.is_empty(),
-            "reached content forms must be settled: {} refused files",
-            refusals.len()
-        );
-    }
 }

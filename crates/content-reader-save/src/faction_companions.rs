@@ -276,43 +276,6 @@ mod tests {
         );
     }
     #[test]
-    #[ignore = "read-only external save check; set BATTLE_PLAN_FACTION_SAVE to the unmodified text save"]
-    fn original_faction_save_retains_every_manpower_occurrence() {
-        let path = std::env::var_os("BATTLE_PLAN_FACTION_SAVE").or_else(|| std::env::var_os("HOI4_FACTION_SAVE")).expect("set BATTLE_PLAN_FACTION_SAVE");
-        let bytes = std::fs::read(path).unwrap();
-        let document = crate::SaveDocument::read(&bytes).unwrap();
-        let mut factions = 0;
-        let mut repeated = 0;
-        let mut amounts = 0;
-        for item in document
-            .items()
-            .iter()
-            .filter(|item| item.key.as_deref() == Some(b"faction"))
-        {
-            let fields = block(&item.value).unwrap();
-            let saved = crate::parse_faction(fields).unwrap();
-            let mut expected = Vec::new();
-            let mut wrappers = 0;
-            for pool in fields
-                .iter()
-                .filter(|item| item.key.as_deref() == Some(b"manpower_pool"))
-            {
-                expected.extend(
-                    crate::construction::manpower(std::slice::from_ref(pool), b"manpower_pool")
-                        .unwrap(),
-                );
-                wrappers += 1;
-            }
-            assert_eq!(saved.companions.manpower, expected, "faction {}", saved.id);
-            println!("faction {}: {wrappers} wrappers, {expected:?}", saved.id);
-            factions += 1;
-            repeated += usize::from(wrappers > 1);
-            amounts += expected.len();
-        }
-        assert!(factions > 0 && repeated > 0 && amounts > 0);
-        println!("factions={factions} repeated={repeated} positive_occurrences={amounts}");
-    }
-    #[test]
     fn advisor_slots_preserve_empty_owners_modifier_sources_signed_values_and_dates() {
         let doc=content_reader_core::parser::parse(br#"upgrades={slots={{owner=AAA advisor=synthetic spymaster_change_date=1936.1.2.3 modifier={name="Advisor" synthetic_modifier=-0.25} spymaster={name="Master" synthetic_modifier=0.5}} {modifier={name="Empty"} spymaster={name="Empty"}}}}"#).unwrap();
         let value = parse(&doc.items).unwrap();

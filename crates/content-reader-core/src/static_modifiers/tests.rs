@@ -3,8 +3,7 @@ use std::{fs, path::Path};
 
 #[test]
 fn descriptions_cache_lookup_precedence_absence_and_refusals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let descriptions = Descriptions::default();
     let mut names = KeyNames::default();
     names.effects.modifiers.insert(b"attack".to_vec());
@@ -43,8 +42,7 @@ fn descriptions_cache_lookup_precedence_absence_and_refusals() {
 
 #[test]
 fn description_registry_omits_unknown_values_and_refuses_uncertain_tokens() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let names = KeyNames::default();
     let registry = |key: &[u8]| modifiers::registered(key, Some(&names));
     let file = read_file_with_registry(
@@ -75,8 +73,7 @@ fn description_registry_omits_unknown_values_and_refuses_uncertain_tokens() {
 
 #[test]
 fn tooltip_identifiers_use_presence_precedence_and_rename_refusal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let names = ["custom_cold", "absent"];
     let resolve = |files: &[(&str, &str)]| {
         resolve_with(
@@ -141,8 +138,7 @@ fn blocks(files: &[(&str, &str)]) -> Blocks {
 
 #[test]
 fn full_blocks_keep_last_definition_hidden_values_and_custom_tooltips() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let read = blocks(&[
         (
             "common/modifiers/a.txt",
@@ -173,8 +169,7 @@ fn full_blocks_keep_last_definition_hidden_values_and_custom_tooltips() {
 
 #[test]
 fn full_blocks_refuse_stopped_files_until_a_later_definition_replaces_them() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let stopped = blocks(&[(
         "common/modifiers/a.txt",
         "weather_rain_light = { attack = 0.1 }
@@ -208,8 +203,7 @@ fn full_blocks_refuse_stopped_files_until_a_later_definition_replaces_them() {
 
 #[test]
 fn the_last_definition_and_the_last_value_win_and_absence_is_zero() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     assert_eq!(resolved(&[]), [Ok(0), Ok(0)]);
     let values = resolved(&[
         (
@@ -229,8 +223,7 @@ fn the_last_definition_and_the_last_value_win_and_absence_is_zero() {
 
 #[test]
 fn a_variable_reads_its_definitions_value() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     assert_eq!(
         first("@bonus = 0.5 screening_bonus = { sortie_efficiency = @bonus }"),
         Ok(50_000)
@@ -251,8 +244,7 @@ fn a_variable_reads_its_definitions_value() {
 
 #[test]
 fn a_modifier_key_is_found_whatever_its_case() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     assert_eq!(
         first("screening_bonus = { Sortie_Efficiency = 0.1 }"),
         Ok(10_000)
@@ -265,8 +257,7 @@ fn a_modifier_key_is_found_whatever_its_case() {
 
 #[test]
 fn a_value_that_does_not_convert_stores_zero() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     for text in ["yes", ".5", "@undefined", "[?x]"] {
         assert_eq!(
             first(&format!(
@@ -284,8 +275,7 @@ fn a_value_that_does_not_convert_stores_zero() {
 
 #[test]
 fn hidden_values_count_and_a_child_modifier_does_not() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     assert_eq!(
         first("screening_bonus = { hidden_modifier = { sortie_efficiency = 0.3 } }"),
         Ok(30_000)
@@ -298,8 +288,7 @@ fn hidden_values_count_and_a_child_modifier_does_not() {
 
 #[test]
 fn an_unfollowed_reading_or_a_rename_is_refused_by_file_modifier_and_key() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let values = resolved(&[(
         "common/modifiers/x.txt",
         "capital_screening_bonus = { fighter_sortie_efficiency = 0.2 }
@@ -348,8 +337,7 @@ fn an_unfollowed_reading_or_a_rename_is_refused_by_file_modifier_and_key() {
 
 #[test]
 fn values_convert_with_the_fixed5_reader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     for (text, raw) in [
         ("0", 0),
         ("1", 100_000),
@@ -380,8 +368,7 @@ fn write(root: &Path, files: &[(&str, &str)]) {
 
 #[test]
 fn static_modifier_relation_scopes_keep_weather_and_screening_blocks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_static_modifier_relation_scopes_{}_{:?}",
         std::process::id(),
@@ -429,8 +416,7 @@ fn static_modifier_relation_scopes_keep_weather_and_screening_blocks() {
 
 #[test]
 fn the_stack_is_read_without_nested_files_and_honours_replacement() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_static_modifiers_{}_{:?}",
         std::process::id(),

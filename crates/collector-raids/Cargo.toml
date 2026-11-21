@@ -49,6 +49,7 @@ collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-model-inputs = { workspace = true, features = ["default", "local_subunit_changes", "test-support"] }
 collector-raids = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
+engine-executable = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

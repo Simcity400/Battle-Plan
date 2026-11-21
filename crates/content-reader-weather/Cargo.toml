@@ -14,8 +14,7 @@ replay-data.workspace = true
 content-reader-core.workspace = true
 content-reader-regions.workspace = true
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
-engine-executable.workspace = true
+content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 
 [features]
 test-support = ["content-reader-core/test-support"]

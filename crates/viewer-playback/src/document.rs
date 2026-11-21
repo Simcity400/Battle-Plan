@@ -5611,43 +5611,47 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "read-only historical content load with dump GPU; requires BATTLE_PLAN_COMPAT_RECORDINGS, BATTLE_PLAN_GAME_DIR, BATTLE_PLAN_USER_DIR and BATTLE_PLAN_COMPAT_CACHE"]
+    #[ignore = "requires an authored game, user folder, and recording.battleplan in BATTLE_PLAN_VIEWER_TEST_FIXTURES/coverage-2 and coverage-3"]
     fn historical_coverage_document_load_keeps_uncovered_read_notes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        crate::render::probe_dump_device().unwrap();
-        let path = |name| PathBuf::from(std::env::var_os(name).expect(name));
-        let options = ResolveOptions {
-            game_dir: path("BATTLE_PLAN_GAME_DIR"),
-            user_dir: path("BATTLE_PLAN_USER_DIR"),
-            cache_dir: path("BATTLE_PLAN_COMPAT_CACHE"),
-        };
-        let mut policies = BTreeSet::new();
-        for path in std::env::var("BATTLE_PLAN_COMPAT_RECORDINGS").or_else(|_| std::env::var("HOI4_COMPAT_RECORDINGS")).unwrap().split(';') {
-            let replay = Arc::new(Replay::open(fs::read(path).unwrap()).unwrap());
-            let policy = replay.identity.coverage_policy;
-            let (branch, hour) = match policy {
-                2 => (1, 60827917),
-                3 => (2, 60827796),
-                _ => continue,
+        let fixtures = PathBuf::from(
+            std::env::var_os("BATTLE_PLAN_VIEWER_TEST_FIXTURES")
+                .expect("choose the authored viewer fixtures folder"),
+        );
+        let scratch = synthetic_game::Installation::new("historical-coverage").build();
+        for policy in [2, 3] {
+            let fixture = fixtures.join(format!("coverage-{policy}"));
+            let game_dir = fixture.join("game");
+            assert_eq!(
+                fs::read(game_dir.join("hoi4.exe")).unwrap(),
+                synthetic_game::DEFAULT_EXECUTABLE,
+                "the historical fixture uses the synthetic game's executable"
+            );
+            let options = ResolveOptions {
+                game_dir,
+                user_dir: fixture.join("user"),
+                cache_dir: scratch.cache_dir.join(policy.to_string()),
             };
+            let path = fixture.join("recording.battleplan");
+            let replay = Arc::new(Replay::open(fs::read(&path).unwrap()).unwrap());
+            assert_eq!(replay.identity.coverage_policy, policy);
+            let initial = replay.index.first().expect("the fixture records an hour");
             let source = dashboard_base::Source::from_replay(
                 dashboard_base::SourceKey {
-                    source_id: path.to_owned(),
-                    revision: dashboard_core::protocol::replay_revision(Path::new(path)).unwrap(),
+                    source_id: path.to_string_lossy().into_owned(),
+                    revision: dashboard_core::protocol::replay_revision(&path).unwrap(),
                 },
-                PathBuf::from(path),
+                path.clone(),
                 Arc::clone(&replay),
                 &std::sync::atomic::AtomicBool::new(false),
             )
             .unwrap();
             let document = Document::load_shared(
-                Path::new(path),
+                &path,
                 &options,
                 false,
                 &InitialHour {
-                    branch: Some(branch),
-                    hour: Some(hour),
+                    branch: Some(initial.branch),
+                    hour: Some(initial.first_hour),
                     hour_fraction: 0.0,
                 },
                 Arc::clone(&replay),
@@ -5676,8 +5680,6 @@ mod tests {
                     "policy {policy}: missing {family} uncovered-read note"
                 );
             }
-            policies.insert(policy);
         }
-        assert_eq!(policies, BTreeSet::from([2, 3]));
     }
 }

@@ -140,8 +140,7 @@ fn assert_batch_bits(a: &Batch, b: &Batch) {
 
 #[test]
 fn borrowed_naval_parts_keep_1200_frames_of_draw_bytes_and_carried_state() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let gui = native::read_at(GUI, VIEWPORT);
     let navy = gui.template("unit_counter_navy").unwrap();
     let wing = gui.template("wing").unwrap();

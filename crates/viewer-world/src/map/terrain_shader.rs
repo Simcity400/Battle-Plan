@@ -2161,17 +2161,61 @@ mod tests {
 
     #[test]
     fn a_cover_change_after_a_still_frame_binds_into_the_groups_it_replaces() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let game = std::path::PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap(),
+        use shader_pipeline::{Buffer, Compiled, Shader, VertexInput};
+
+        content_reader_core::test_game::enter();
+        let program = content_reader_core::pdxshader::program::read_with(b"terrain.shader", &|path| {
+            Some(if path == b"terrain.shader" {
+                b"Effect terrainunlit { }".to_vec()
+            } else {
+                Vec::new()
+            })
+        })
+        .unwrap();
+        let shader = |wgsl: &str| Shader {
+            wgsl: wgsl.into(),
+            independent_draws: false,
+            buffers: Vec::new(),
+            textures: Vec::new(),
+            samplers: Vec::new(),
+            sampling_pairs: Vec::new(),
+            inputs: Vec::new(),
+            clock: Default::default(),
+        };
+        let mut vertex = shader(r#"
+            struct Constants { values: vec4<f32> }
+            @group(0) @binding(0) var<uniform> frame: Constants;
+            @group(0) @binding(2) var<uniform> tile: Constants;
+            @vertex fn main(@location(0) xy: vec4<i32>, @location(1) height: vec2<i32>)
+                -> @builtin(position) vec4<f32> {
+                return frame.values + tile.values + vec4<f32>(vec2<f32>(xy.xy), f32(height.x), 1.0);
+            }
+        "#);
+        vertex.buffers = [0, 1]
+            .into_iter()
+            .map(|slot| Buffer {
+                binding: binding(slot, Stage::Vertex),
+                size: 16,
+                reads: std::iter::once(0..16).collect(),
+            })
+            .collect();
+        vertex.inputs = [(0, "POSITION", 4), (1, "TEXCOORD0", 2)]
+            .into_iter()
+            .map(|(location, semantic, components)| VertexInput {
+                kind: ScalarKind::Sint,
+                location,
+                semantic: semantic.into(),
+                components,
+            })
+            .collect();
+        let pixel = shader("@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }");
+        let effect = Effect::from_compiled(
+            Arc::new(program),
+            Vec::new(),
+            vec![Ok(Arc::new(Compiled { vertex, pixel }))],
         );
-        let layers = ResolvedLayers::from_folders(&[(game.as_path(), &[][..])]).unwrap();
         let map = [512, 256];
-        let effect = load(&layers, map, Decode::default()).unwrap();
-        let instance = gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
-        let (device, _queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let (_serial, device, _queue) = viewer_foundation::map::test_support::gpu::device();
         let arena = gpu::Arena::new(&device);
         let bytes = vec![200u8; (map[0] * map[1]) as usize];
         let mut terrain = Terrain::new(&device, &effect, &bytes, map, 1, &Workers::default()).unwrap();
@@ -2186,7 +2230,7 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let scene = vec![0u8; 4096];
+        let scene = [0u8; 16];
         let row = |z: u32| {
             Cover::Blocks((0..4).map(|x| Block { origin: [x * 2 * SIDE, z], step: 2, offset: 0.0, snap: [false; 4] }).collect())
         };
@@ -2207,7 +2251,9 @@ mod tests {
         let (south, north) = (row(0), row(2 * SIDE));
         let bound = prepare(&south);
         let kept = prepare(&south);
-        assert!(!bound.is_empty() && bound.iter().zip(&kept).all(|(a, b)| a.same_groups(b)));
+        assert!(!bound.is_empty());
+        assert_eq!(bound.len(), kept.len());
+        assert!(bound.iter().zip(&kept).all(|(a, b)| a.same_groups(b)));
         let moved = prepare(&north);
         assert_eq!(moved.len(), bound.len());
         assert!(
@@ -2229,8 +2275,7 @@ mod tests {
 
     #[test]
     fn coast_caps_lie_under_the_water_of_the_effect_drawn() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let program = |water: &str| {
             let text = format!("Code [[ static const float WATER_HEIGHT = {water}; ]]");
             Arc::new(
