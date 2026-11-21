@@ -155,7 +155,8 @@ fn log() -> Option<&'static Storage> {
     // SAFETY: native writers hold OBSERVATION.enter(); a test that appends on the draining thread
     // holds `test_lock` and drains after. The observer boundary's job is the sole drain,
     // and it finishes with this log before it installs the replacement; the capture gate keeps
-    // command-batch writers out through that sequence.
+    // command-batch writers out through that sequence. Teardown frees the log only once the hooks
+    // are removed and no writer is active.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
 
