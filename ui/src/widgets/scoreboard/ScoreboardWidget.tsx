@@ -1,4 +1,4 @@
-import { countryFromKey } from '../../dashboard/countryKey.ts';
+import { countryFromKey, countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { liveByColumn, liveKey, noValues } from '../../charts/live.ts';
@@ -142,7 +142,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     const params = scoreboardParams(track.branch.id, at, shown, top == null ? rankedCandidates(resolved, at, resolved.tags) : [], top, rank, descending);
     const request = { sourceId: track.source.id, revision: track.source.revision, product: 'scoreboard', params };
     return perfLog!.exactOnce(JSON.stringify(request), async () =>
-      validateScoreboardReply((await runtime.client.product(request, new AbortController().signal)).data, asked.length).rows.map(row => row.tag));
+      validateScoreboardReply((await runtime.client.product(request, new AbortController().signal)).data, asked.length).rows.map(row => countryKey(row.country)));
   } : undefined;
 
   const identityHour = useIdentityHour(runtime.client, track, followedHead && top != null ? NO_NAMES : named, runtime.clock, false,

@@ -185,7 +185,7 @@ export class PerfRecorder {
       let error: string | null = null;
       try {
         const exact = await work.readers?.get(placement + '/' + owner)?.(hour);
-        if (!exact || !rows.length) error = 'Displayed rows or exact read missing';
+        if (!exact || (!rows.length && exact.values.size)) error = 'Displayed rows or exact read missing';
         else if (exact.ranked && JSON.stringify(rows.map(r => r.row + ':' + r.key)) !== JSON.stringify([...exact.values.keys()])) error = 'Ranked row identities differ';
         else for (const row of rows) {
           const key = exact.ranked ? row.row + ':' + row.key : row.key;

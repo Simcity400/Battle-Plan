@@ -12,7 +12,7 @@ function coverageClock(clock: LaneClock, id: number) {
   return { get hour() { return clock.limited?.get(id) ?? clock.hour; } };
 }
 interface Route { id: number; seek: number; laneDue: number; lane: LaneClock; waiting: Map<Reading, number>; through: number; receivedThrough: number; stepHour?: number }
-interface Packet { route: number; stamp: number; panel: boolean; hour: number; apply: () => void }
+interface Packet { route: number; stamp: number; panel: boolean; hour: number; clock: number; apply: () => void }
 
 const covers = (group: CellGroup | undefined, at: number) =>
   group?.start != null && group.start <= at && group.through != null && group.through >= at;
@@ -59,7 +59,7 @@ export class DatedStore {
   }
 
   private applyThrough(hour: number, route: number) {
-    const due = this.packets.slice(this.first).filter(p => p.route === route && p.hour <= hour);
+    const due = this.packets.slice(this.first).filter(p => p.route === route && p.hour + p.clock <= hour);
     if (!due.length) return;
     this.discard(p => due.includes(p));
     for (const p of due) p.apply();
@@ -118,10 +118,7 @@ export class DatedStore {
 
   private clearRoute(branch: string, retainThrough?: number) {
     const route = this.routes.get(branch);
-    if (retainThrough !== undefined && route) {
-      const offset = [...this.members.get(branch) ?? []][0]?.offset ?? 0;
-      this.applyThrough(retainThrough - offset, route.id);
-    }
+    if (retainThrough !== undefined && route) this.applyThrough(retainThrough, route.id);
     for (const r of this.members.get(branch) ?? []) {
       for (const id of r.candidate?.cells ?? []) this.dependents.delete(id);
       const interval = retainThrough === undefined ? undefined : this.coverage(r.entry);
@@ -178,7 +175,7 @@ export class DatedStore {
       const { seek, panels } = item.batch;
       for (const p of panels) {
         if (!this.readings.has(p.id)) continue;
-        this.enqueue({ route, stamp: seek, panel, hour: p.hour - item.batch.clock, apply: () => {
+        this.enqueue({ route, stamp: seek, panel, hour: p.hour - item.batch.clock, clock: item.batch.clock, apply: () => {
           const r = this.reading(p.id, route);
           if (!r) return;
           r.offset = item.batch.clock;
@@ -210,7 +207,7 @@ export class DatedStore {
       const completed = item.batch.completed;
       const bound = this.byId.get(route);
       if (completed !== undefined && bound?.seek === seek) bound.receivedThrough = completed;
-      if (completed !== undefined) this.enqueue({ route, stamp: seek, panel, hour: completed - item.batch.clock, apply: () => {
+      if (completed !== undefined) this.enqueue({ route, stamp: seek, panel, hour: completed - item.batch.clock, clock: item.batch.clock, apply: () => {
         const stream = this.byId.get(route);
         if (stream) {
           stream.through = completed;
@@ -231,7 +228,7 @@ export class DatedStore {
         const bound = this.byId.get(route);
         if (bound) bound.laneDue = axis;
       }
-      this.enqueue({ route, stamp, panel, hour: axis, apply: () => {
+      this.enqueue({ route, stamp, panel, hour: axis, clock: message.clock, apply: () => {
         const stream = this.byId.get(route)!;
         if (reset) {
           stream.through = -Infinity;

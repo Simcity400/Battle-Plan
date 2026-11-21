@@ -535,8 +535,7 @@ test('a pause just ahead of the drawn hour keeps what already arrived for it, an
 });
 
 test('a pause on a track offset from the axis applies what arrived up to its hour on the track', () => {
-  let hour = 10;
-  const { store, add, deliver, frame } = dated(() => hour);
+  const { store, add, deliver } = dated(() => 0);
   const entry = add();
   store.bind('1', 9, 1);
   const clocked = (bytes: Uint8Array, at: number) => { new DataView(bytes.buffer, bytes.byteOffset).setInt32(at, 100, true); return bytes; };
@@ -549,10 +548,9 @@ test('a pause on a track offset from the axis applies what arrived up to its hou
     deliver(clocked(datedStep(at, at === 119 ? [{ id: group.follow, answer: one(1n, 7n) }] : at === 130 ? [{ id: group.follow, answer: one(1n, 9n) }] : [], 1), 20));
     deliver(clocked(completedStep(at), 12));
   }
-  hour = 18; frame();
   store.seek('1', 1, 120);
   const paused = store.coverage(entry);
-  assert.ok(paused && paused.start <= 120 && 120 <= paused.through, `the pause keeps the track hour it stops at: ${JSON.stringify(paused)}`);
+  assert.ok(paused && paused.start <= 120 && 120 <= paused.through, `the pause keeps the track hour it stops at, nothing drawn before it: ${JSON.stringify(paused)}`);
   assert.equal(store.group(entry, group.follow)?.get(0, 0), 7, 'the value that arrived for track hour 119, never the one for 130');
 });
 
