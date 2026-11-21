@@ -101,7 +101,10 @@ fn main() -> io::Result<()> {
     let mut host = Everything::new(facts, pace);
     host.blocks = started_after.unwrap_or_else(|| source.blocks_before(writer.segments()));
     if let Some(block) = stop_after.filter(|&block| block < host.blocks) {
-        return Err(io::Error::other(format!("Block {block} of capture {capture} is committed in {} already", out.display())));
+        return Err(io::Error::other(match started_after {
+            Some(first) => format!("Block {block} of capture {capture} comes before block {first}, the first this start writes"),
+            None => format!("Block {block} of capture {capture} is committed in {} already", out.display()),
+        }));
     }
     let taken = host.taken.clone();
     loop {
