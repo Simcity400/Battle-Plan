@@ -325,6 +325,14 @@ class Continuation(unittest.TestCase):
         (self.gitdir / "gitdir").write_text("../worktree/.git\n", encoding="utf-8")
         self.assertIsNone(dt.not_the_runner(self.git_command))
 
+    def test_a_hard_linked_copy_of_the_runner_is_not_its_own(self):
+        copy = self.worktree.parent / "copy"
+        copy.mkdir()
+        os.link(self.worktree / ".git", copy / ".git")
+        query = lambda *args: str(copy) if args == ("rev-parse", "--show-toplevel") else self.git_command(*args)
+        with mock.patch.object(dt, "WORKTREE", copy):
+            self.assertIn("copy of the runner", dt.not_the_runner(query))
+
     def test_a_checkout_lock_that_cannot_be_opened_releases_the_runner_lock(self):
         self.hold.side_effect = OSError("synthetic lock folder is unreadable")
         with self.assertRaises(OSError):

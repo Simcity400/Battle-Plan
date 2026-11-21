@@ -1056,7 +1056,7 @@ def not_the_runner(git_in_worktree):
     if not marked:
         return f"{WORKTREE} is not a runner install made: name another --ci-dir"
     try:
-        same = pointer.name == ".git" and os.path.samefile(pointer, WORKTREE / ".git")
+        same = pointer.name == ".git" and os.path.samefile(pointer.parent, WORKTREE)
     except OSError:
         same = False
     if not same:
