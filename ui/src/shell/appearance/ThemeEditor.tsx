@@ -50,15 +50,18 @@ const SEEDS: readonly ThemeRole[] = ['canvas', 'accent', 'glow'];
 const listed = (items: string[]) => items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items.at(-1)}` : items[0] ?? '';
 
 export default function ThemeEditor({ draft: initial, original, onDraft, onSave, onClose, onPreview, focusName, onFocused, escape }: {
-  draft: ThemeDraft; original: ThemeDraft; onDraft: (draft: ThemeDraft) => void; onSave: (draft: ThemeDraft) => ThemeSaveFailure | null; onClose: () => void; onPreview: (preview: ThemePreview | null) => void;
+  draft: ThemeDraft; original: ThemeDraft; onDraft: (draft: ThemeDraft, typing: boolean) => void; onSave: (draft: ThemeDraft) => ThemeSaveFailure | null; onClose: () => void; onPreview: (preview: ThemePreview | null) => void;
   focusName: boolean; onFocused: () => void; escape: MutableRefObject<((anchor: HTMLElement | null) => void) | null>;
 }) {
   const [draft, setDraft] = useState(initial);
-  useEffect(() => { onDraft(draft); }, [draft, onDraft]);
   const [error, setError] = useState<ThemeSaveFailure | null>(null);
   const [typos, setTypos] = useState<Partial<Record<string, string>>>({});
+  const [pending, setPending] = useState<readonly ThemeRole[]>([]);
+  const typing = pending.length > 0 || Object.keys(typos).length > 0;
+  useEffect(() => { onDraft(draft, typing); }, [draft, typing, onDraft]);
   const typo = (role: ThemeRole) => ({ fieldId: `theme-colour-${role}`, typed: typos[`${draft.mode}:${role}`],
-    onTyped: (text: string | null) => setTypos(previous => { const next = { ...previous }; if (text === null) delete next[`${draft.mode}:${role}`]; else next[`${draft.mode}:${role}`] = text; return next; }) });
+    onTyped: (text: string | null) => setTypos(previous => { const next = { ...previous }; if (text === null) delete next[`${draft.mode}:${role}`]; else next[`${draft.mode}:${role}`] = text; return next; }),
+    onPending: (on: boolean) => setPending(previous => previous.includes(role) === on ? previous : on ? [...previous, role] : previous.filter(item => item !== role)) });
   const [advanced, setAdvanced] = useState(original.id !== null);
   const [filter, setFilter] = useState('');
   const confirm = useConfirmPopover();
@@ -108,7 +111,7 @@ export default function ThemeEditor({ draft: initial, original, onDraft, onSave,
     });
   };
   const close = (anchor: HTMLElement | null) => {
-    if (!draftChanged(draft, original)) { onClose(); return; }
+    if (!typing && !draftChanged(draft, original)) { onClose(); return; }
     confirm.ask(anchor ?? closeButton.current, discardDraft(draft, original.id ? 'Your changes to this theme are lost; the saved theme stays as it was.' : 'This new theme and its colours are lost.'), onClose);
   };
   escape.current = close;

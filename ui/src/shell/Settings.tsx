@@ -159,7 +159,7 @@ export function SettingsNav({ section, icons, onBack, onSection, onTarget, disab
   </>;
 }
 
-export interface ThemeEditing { draft: ThemeDraft; original: ThemeDraft; session: number; focus?: boolean }
+export interface ThemeEditing { draft: ThemeDraft; original: ThemeDraft; session: number; focus?: boolean; typing?: boolean }
 
 export default function Settings({ section, target, onTargetShown, appearance, library, client, native, metadata, branch, folders, folderError, onFoldersRetry, onFoldersChange, onResetPages, themeEditing, onThemeEditing }: {
   section: SettingsSection; target: SettingsTarget | null; onTargetShown: () => void;
@@ -177,7 +177,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
   };
   const editTheme = (draft: ThemeDraft) => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (!themeEditing || !draftChanged(themeEditing.draft, themeEditing.original)) { startEditing(draft, opener); return; }
+    if (!themeEditing || (!themeEditing.typing && !draftChanged(themeEditing.draft, themeEditing.original))) { startEditing(draft, opener); return; }
     replace.ask(opener, discardDraft(themeEditing.draft, `The theme editor has unsaved changes. ${draft.id ? 'Editing' : 'Starting'} “${draft.name}” discards them.`), () => startEditing(draft, opener));
   };
   const closeEditor = () => {
@@ -186,7 +186,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
     editorOpener.current = null;
     requestAnimationFrame(() => (opener?.isConnected ? opener : page.current?.querySelector<HTMLElement>('#appearance-create-theme'))?.focus({ preventScroll: true }));
   };
-  const setDraft = useCallback((draft: ThemeDraft) => onThemeEditing(previous => previous && { ...previous, draft }), [onThemeEditing]);
+  const setDraft = useCallback((draft: ThemeDraft, typing: boolean) => onThemeEditing(previous => previous && { ...previous, draft, typing }), [onThemeEditing]);
   const editorFocused = useCallback(() => onThemeEditing(previous => previous?.focus ? { ...previous, focus: false } : previous), [onThemeEditing]);
   const editorEscape = useRef<((anchor: HTMLElement | null) => void) | null>(null);
   const details = settingsSections.find(item => item.id === section)!;

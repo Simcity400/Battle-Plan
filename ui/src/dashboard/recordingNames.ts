@@ -47,10 +47,10 @@ const qualifierOf = (qualifiers: ReadonlyMap<string, RecordingQualifier>, path: 
 
 export function distinguishingFolder(qualifiers: ReadonlyMap<string, RecordingQualifier>, path: string): string | null {
   const qualifier = qualifierOf(qualifiers, path);
-  return [qualifier?.folder, qualifier?.legacy && 'Older recording format'].filter(Boolean).join(' · ') || null;
+  return [qualifier?.folder, qualifier?.legacy && 'Older file type'].filter(Boolean).join(' · ') || null;
 }
 
 export function qualifiedRecordingName(qualifiers: ReadonlyMap<string, RecordingQualifier>, path: string): string {
   const qualifier = qualifierOf(qualifiers, path);
-  return `${recordingDisplayName(path)}${qualifier?.folder ? ` in ${qualifier.folder}` : ''}${qualifier?.legacy ? ', older recording format' : ''}`;
+  return `${recordingDisplayName(path)}${qualifier?.folder ? ` in ${qualifier.folder}` : ''}${qualifier?.legacy ? ', older file type' : ''}`;
 }

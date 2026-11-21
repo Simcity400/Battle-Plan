@@ -477,7 +477,9 @@ test('an imported theme is announced only once this device stores it with its se
   } finally { delete host.__appearanceHooks; await vite.close(); }
 });
 
-test('Save theme with a colour typed in a form it can’t read keeps the editor open and takes the user to that field', async () => {
+async function themeEditorFixture(check: (editor: {
+  field: (label: string) => Record<string, any>; button: (label: string) => Record<string, any>; saves: unknown[]; closed: () => number; focused: string[];
+}) => void) {
   const { createServer } = await import('vite');
   type Tree = { type?: unknown; props?: Record<string, any> };
   const nodes = (value: any): Tree[] => Array.isArray(value) ? value.flatMap(nodes)
@@ -494,7 +496,7 @@ test('Save theme with a colour typed in a form it can’t read keeps the editor 
     useEffect() { cursor++; }, useMemo: (make: () => unknown) => { cursor++; return make(); },
   };
   const host = globalThis as typeof globalThis & { __editorHooks?: typeof hooks };
-  const page = globalThis as { document?: unknown };
+  const page = globalThis as { document?: unknown; HTMLElement?: unknown };
   host.__editorHooks = hooks;
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
     plugins: [{ name: 'theme-editor-fixture', enforce: 'pre', transform(source, id) {
@@ -503,25 +505,42 @@ test('Save theme with a colour typed in a form it can’t read keeps the editor 
       if (name.endsWith('/components/Popover.tsx')) return 'export const usePopover = () => ({ openAt() {}, close() {} }); export const Popover = () => null;';
     } }] });
   const focused: string[] = [];
-  const frame = host.requestAnimationFrame;
+  const frame = host.requestAnimationFrame, element = page.HTMLElement;
   host.requestAnimationFrame = (run: FrameRequestCallback) => { run(0); return 0; };
-  page.document = { getElementById: (id: string) => ({ focus: () => focused.push(id) }) };
+  page.HTMLElement = class {};
+  page.document = { activeElement: null, getElementById: (id: string) => ({ focus: () => focused.push(id) }) };
   try {
     const { default: ThemeEditor } = await vite.ssrLoadModule('/ui/src/shell/appearance/ThemeEditor.tsx') as typeof import('./ThemeEditor');
     const draft = { id: null, name: 'Dusk', mode: 'dark' as const, variants: { dark: deriveColors({ canvas: '#14121b', accent: '#f2a65a' }) } };
     const saves: unknown[] = [];
-    const render = () => { cursor = 0; return nodes(ThemeEditor({ draft, original: draft, onDraft() {}, onSave: attempt => { saves.push(attempt); return null; }, onClose() {}, onPreview() {},
+    let closed = 0;
+    const render = () => { cursor = 0; return nodes(ThemeEditor({ draft, original: draft, onDraft() {}, onSave: attempt => { saves.push(attempt); return null; }, onClose() { closed++; }, onPreview() {},
       focusName: false, onFocused() {}, escape: { current: null } })); };
-    const field = (label: string) => render().find(node => node.props?.label === label)!.props!;
-    const save = () => render().find(node => node.type === 'button' && [node.props?.children].flat().includes('Save theme'))!.props!.onClick();
-    assert.equal(field('Canvas').fieldId, 'theme-colour-canvas');
-    field('Canvas').onTyped('#14121');
-    assert.equal(field('Canvas').typed, '#14121', 'the field keeps what was typed');
-    save();
-    assert.deepEqual(saves, [], 'the theme isn’t saved with the colour from before the typing');
-    assert.deepEqual(focused, ['theme-colour-canvas'], 'the field that needs correcting takes focus');
-    field('Canvas').onTyped(null);
-    save();
-    assert.equal(saves.length, 1, 'once corrected, the theme saves');
-  } finally { host.requestAnimationFrame = frame; delete page.document; delete host.__editorHooks; await vite.close(); }
-});
+    check({
+      field: label => render().find(node => node.props?.label === label)!.props!,
+      button: label => render().find(node => node.type === 'button' && ([node.props?.children].flat().includes(label) || node.props?.['aria-label'] === label))!.props!,
+      saves, closed: () => closed, focused,
+    });
+  } finally { host.requestAnimationFrame = frame; page.HTMLElement = element; delete page.document; delete host.__editorHooks; await vite.close(); }
+}
+
+test('Save theme with a colour typed in a form it can’t read keeps the editor open and takes the user to that field', () => themeEditorFixture(({ field, button, saves, focused }) => {
+  assert.equal(field('Canvas').fieldId, 'theme-colour-canvas');
+  field('Canvas').onTyped('#14121');
+  assert.equal(field('Canvas').typed, '#14121', 'the field keeps what was typed');
+  button('Save theme').onClick();
+  assert.deepEqual(saves, [], 'the theme isn’t saved with the colour from before the typing');
+  assert.deepEqual(focused, ['theme-colour-canvas'], 'the field that needs correcting takes focus');
+  field('Canvas').onTyped(null);
+  button('Save theme').onClick();
+  assert.equal(saves.length, 1, 'once corrected, the theme saves');
+}));
+
+test('a colour still being typed counts as an unsaved change when the editor is closed', () => themeEditorFixture(({ field, button, closed }) => {
+  field('Canvas').onPending(true);
+  button('Close theme editor').onClick({ currentTarget: null });
+  assert.equal(closed(), 0, 'closing asks before the typed colour is lost');
+  field('Canvas').onPending(false);
+  button('Close theme editor').onClick({ currentTarget: null });
+  assert.equal(closed(), 1, 'with nothing typed and nothing changed, the editor closes at once');
+}));

@@ -8,13 +8,14 @@ const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery
 const { RecordingNotice, PartialRecordingBadge, partialRecordingText, gapText, recordedHour } =
   await vite.ssrLoadModule('/ui/src/shell/recordingNotice.tsx').finally(() => vite.close()) as typeof import('./recordingNotice.tsx');
 
-test('partial recording has a persistent warning notice naming the hour after which nothing was saved, not its raw reason', () => {
+test('partial recording has a persistent warning notice naming the hour that couldn’t be recorded, not its raw reason', () => {
   const partial = { sessionId: '7', reason: 'collector allocation failed', failedHour: 1000 };
   const html = renderToStaticMarkup(createElement(RecordingNotice, { partial }));
   assert.match(html, /class="notice warning shell-recording-notice"/);
   assert.match(html, /role="status"/);
   assert.match(html, /role="status"><svg[^>]*>.*?<\/svg><span>/, 'the notice leads with the alert icon');
-  assert.ok(html.includes(`Partial recording · nothing after ${recordedHour(1000)} was saved`));
+  assert.ok(html.includes(`Partial recording · ${recordedHour(1000)} couldn’t be recorded`));
+  assert.doesNotMatch(html, /nothing after/, 'a later session or reload may have recorded more');
   assert.doesNotMatch(html, /collector allocation failed/, 'raw reasons live in Diagnostics');
   assert.doesNotMatch(html, /[Dd]ismiss|button/);
   assert.equal(partialRecordingText(partial), partialRecordingText({ ...partial, sessionId: '8' }));
@@ -25,13 +26,13 @@ test('recording list marker says partial and explains it in user terms before or
   const html = renderToStaticMarkup(createElement(PartialRecordingBadge, { partial }));
   assert.match(html, /class="pill warning"/);
   assert.match(html, />Partial<\/span>/);
-  assert.match(html, /data-tooltip="Partial recording · its end wasn’t saved"/);
+  assert.match(html, /data-tooltip="Partial recording · part of the recording couldn’t be saved"/);
   assert.equal(renderToStaticMarkup(createElement(PartialRecordingBadge, { partial: null })), '');
 });
 
 test('idle failure says partial without inventing an unrecorded hour; healthy replay has no notice', () => {
   const partial = { sessionId: '7', reason: 'collector allocation failed', failedHour: null };
-  assert.equal(partialRecordingText(partial), 'Partial recording · its end wasn’t saved');
+  assert.equal(partialRecordingText(partial), 'Partial recording · part of the recording couldn’t be saved');
   assert.equal(renderToStaticMarkup(createElement(RecordingNotice, { partial: null })), '');
   assert.equal(renderToStaticMarkup(createElement(RecordingNotice)), '');
 });
@@ -53,12 +54,12 @@ test('damage and partial status share one banner and one Damaged pill, with tech
   const partial = { sessionId: '7', reason: 'collector allocation failed', failedHour: null };
   const notice = renderToStaticMarkup(createElement(RecordingNotice, { damaged, partial }));
   assert.equal((notice.match(/shell-recording-notice/g) ?? []).length, 1);
-  assert.match(notice, /couldn’t be read · Partial recording · its end wasn’t saved/);
+  assert.match(notice, /couldn’t be read · Partial recording · part of the recording couldn’t be saved/);
   const badge = renderToStaticMarkup(createElement(PartialRecordingBadge, { damaged, partial }));
   assert.equal((badge.match(/class="pill warning"/g) ?? []).length, 1);
   assert.match(badge, />Damaged<\/span>/);
   assert.doesNotMatch(badge, /Branch 1 Countries|collector allocation failed/);
-  assert.match(badge, /Partial recording · its end wasn’t saved/);
+  assert.match(badge, /Partial recording · part of the recording couldn’t be saved/);
 });
 
 test('the recording notice names the recording without its file extension', () => {
@@ -66,7 +67,7 @@ test('the recording notice names the recording without its file extension', () =
   const markup = renderToStaticMarkup(createElement(RecordingNotice, { partial, path }));
   assert.match(markup, /<strong>Germany 1936–1941<\/strong>/);
   assert.doesNotMatch(markup, /\.battleplan/, 'no file extension, even in a tooltip');
-  assert.match(markup, /Partial recording · its end wasn’t saved/);
+  assert.match(markup, /Partial recording · part of the recording couldn’t be saved/);
 });
 
 test('a recording gap says what is missing and when, without its raw reason', () => {

@@ -1,6 +1,10 @@
 use crate::flags::{BackgroundPriority, FlagImage};
 use recorder::controller::{self, Waiting, WaitingCampaign, WaitingName, WaitingNames};
-use replay::{campaign::Replay, recorder_settings::RecorderSettings, recording_files};
+use replay::{
+    campaign::Replay,
+    recorder_settings::{self, RecorderSettings},
+    recording_files,
+};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -364,6 +368,7 @@ impl Library {
         changed: impl FnOnce() + Send + 'static,
     ) -> Recordings {
         let root = settings.effective_save_folder();
+        let made_when_needed = recorder_settings::same_path(&root, &recorder_settings::default_save_folder());
         let root = root.canonicalize().unwrap_or(root);
         let flag = |campaign: &str| {
             flags
@@ -603,7 +608,7 @@ impl Library {
             .collect();
         let unsaved = unsaved.into_iter().map(|(_, _, row)| row).collect();
         let mut saved = Vec::new();
-        let (files, unreadable) = saved_files(&root);
+        let (files, unreadable) = saved_files(&root, made_when_needed);
         for path in files {
             let Ok(metadata) = fs::metadata(&path) else {
                 continue;
@@ -689,7 +694,7 @@ fn recordings_in(folder: &Path, files: &mut Vec<PathBuf>) -> Option<std::io::Err
     failed
 }
 
-pub(crate) fn saved_files(root: &Path) -> (Vec<PathBuf>, Option<Unreadable>) {
+pub(crate) fn saved_files(root: &Path, made_when_needed: bool) -> (Vec<PathBuf>, Option<Unreadable>) {
     let mut files = Vec::new();
     let failure = |whole: bool, folder: &Path, error: std::io::Error| Unreadable {
         whole,
@@ -697,7 +702,9 @@ pub(crate) fn saved_files(root: &Path) -> (Vec<PathBuf>, Option<Unreadable>) {
     };
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return (files, None),
+        Err(error) if made_when_needed && error.kind() == std::io::ErrorKind::NotFound => {
+            return (files, None);
+        }
         Err(error) => return (files, Some(failure(true, root, error))),
     };
     let mut unreadable = None;
@@ -946,14 +953,20 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_recordings_folder_is_reported_and_a_missing_one_is_empty() {
+    fn an_unreadable_or_missing_chosen_folder_is_reported_and_a_default_not_made_yet_is_empty() {
         let root = scratch();
         let file = root.join("not a folder");
         write(&file, 1);
-        let (files, unreadable) = saved_files(&file);
+        let (files, unreadable) = saved_files(&file, true);
         assert!(files.is_empty());
         assert!(unreadable.is_some_and(|failure| failure.whole));
-        assert_eq!(saved_files(&root.join("missing")), (Vec::new(), None));
+        let missing = root.join("missing");
+        assert_eq!(saved_files(&missing, true), (Vec::new(), None));
+        let (files, unreadable) = saved_files(&missing, false);
+        assert!(files.is_empty());
+        let unreadable = unreadable.expect("a chosen folder that's gone is a failure, not an empty list");
+        assert!(unreadable.whole);
+        assert!(unreadable.detail.starts_with(&missing.display().to_string()));
         fs::remove_dir_all(root).unwrap();
     }
 

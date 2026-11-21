@@ -377,7 +377,7 @@ export default function App() {
     setRetry(value => value + 1);
   }
 
-  const themeUnsaved = !!themeEditing && JSON.stringify([themeEditing.draft.name, themeEditing.draft.variants]) !== JSON.stringify([themeEditing.original.name, themeEditing.original.variants]);
+  const themeUnsaved = !!themeEditing && (!!themeEditing.typing || JSON.stringify([themeEditing.draft.name, themeEditing.draft.variants]) !== JSON.stringify([themeEditing.original.name, themeEditing.original.variants]));
   const unsavedWork = layoutsUnsaved || themeUnsaved;
   useEffect(() => { void setUnsavedWork(unsavedWork).catch(() => {}); }, [unsavedWork]);
   useEffect(() => {

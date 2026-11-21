@@ -270,15 +270,26 @@ export function settingsQueue<T>(read: () => Promise<T>, show: (value: T) => voi
   };
 }
 
-export function followStatus<T, Stop>(listen: (show: (value: T) => void) => Promise<Stop>, read: () => Promise<T>, show: (value: T) => void) {
-  let published = 0;
-  const listening = listen(value => { published += 1; show(value); });
-  const first = listening.then(async () => {
-    const before = published;
-    const value = await read();
-    if (before === published) show(value);
-  });
-  return { listening, first };
+export function followStatus<T>(listen: (show: (value: T) => void) => Promise<() => void>, read: () => Promise<T>, show: (value: T) => void, failed: (cause: unknown) => void) {
+  let attempt = 0, listening: Promise<() => void> | null = null;
+  const stop = () => {
+    attempt += 1;
+    void listening?.then(unlisten => unlisten(), () => {});
+    listening = null;
+  };
+  const start = () => {
+    stop();
+    const own = attempt;
+    let published = 0;
+    listening = listen(value => { if (own !== attempt) return; published += 1; show(value); });
+    return listening.then(async () => {
+      const before = published;
+      const value = await read();
+      if (own === attempt && before === published) show(value);
+    }).catch((cause: unknown) => { if (own === attempt) failed(cause); });
+  };
+  const first = start();
+  return { first, retry: () => { void start(); }, stop };
 }
 
 export function recordsAutomatically(settings: RecorderSettings, campaign: string): boolean {

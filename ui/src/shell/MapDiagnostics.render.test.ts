@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { branchCoverage, historyLabels, missingTime } from './diagnosticsData.ts';
-import { formatDate, gameDate } from '../dashboard/calendar.ts';
+import { formatDate, formatTime, gameDate } from '../dashboard/calendar.ts';
 import type { ReplayMetadata } from './api';
 
 test('a branch’s gaps sit where they fall in its recorded time, and missing time reads in hours or days', () => {
@@ -43,7 +43,8 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     assert.doesNotMatch(lossy, /Complete/);
     const stopped = visible({ ...metadata, partial: { sessionId: 's1', reason: 'The game closed.', failedHour: branch.lastHour } });
     assert.match(stopped, /Stopped early/);
-    assert.match(stopped, /was saved: The game closed\./);
+    assert.ok(stopped.includes(`${formatDate(gameDate(branch.lastHour)!)} ${formatTime(gameDate(branch.lastHour)!.hour)} couldn’t be recorded: The game closed.`), 'the same words as the notice, naming only the hour that failed');
+    assert.match(visible({ ...metadata, partial: { sessionId: 's1', reason: 'The game closed.', failedHour: null } }), /Part of the recording couldn’t be saved: The game closed\./);
     const damaged = visible({ ...metadata, damaged: { parts: 0, firstHour: null, lastHour: null, reasons: ['Checksum mismatch'] } });
     assert.match(damaged, /Damaged/, 'a recording that failed its checksum is not called complete');
     assert.doesNotMatch(damaged, /Complete|Recorded throughout/);

@@ -268,7 +268,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
           <label className="sr-only" htmlFor={`${id}-year`}>Year</label>
           <input id={`${id}-year`} className="calendar-year" type="number" step="1" min={minimum?.year} max={maximum?.year}
             value={yearInput} aria-invalid={yearInvalid || undefined} aria-describedby={yearInvalid ? `${id}-year-hint` : undefined}
-            onFocus={hold} onChange={(event) => { hold(); setYearInput(event.currentTarget.value); }} onBlur={() => commitYear()}
+            onFocus={hold} onChange={(event) => { hold(); setYearInput(event.currentTarget.value); if (picked.current != null) { pick(null); onCancel?.(); } }} onBlur={() => commitYear()}
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitYear(true); } }} />
           <button type="button" className="calendar-arrow" aria-label="Next month" disabled={viewMonth >= lastMonth}
             onClick={() => { hold(); showMonth(viewMonth + 1); }}><Icon name="chevron-right" /></button>
@@ -307,7 +307,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
             <button type="button" className="text-button" data-tooltip="Select the first available date" onClick={() => choose(Math.max(min, HOUR_EPOCH))}>First date</button>
             <button type="button" className="text-button" data-tooltip="Select the last available date" onClick={() => choose(max)}>Last date</button>
           </div>
-          <button type="button" className="button primary small" disabled={!!onCommit && !armed} onClick={() => onCommit ? finish() : menu.close()}>{commitLabel ?? 'Done'}</button>
+          <button type="button" className="button primary small" disabled={(!!onCommit && !armed) || !yearAccepted(yearInput)} onClick={() => onCommit ? finish() : menu.close()}>{commitLabel ?? 'Done'}</button>
         </div>
         <span className="sr-only" aria-live={following ? 'off' : 'polite'}>{shownValue != null ? formatDateTime(shownValue) : 'Choose a date'}</span>
       </>}</PopoverBody>

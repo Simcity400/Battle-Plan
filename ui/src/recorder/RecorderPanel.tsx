@@ -453,6 +453,7 @@ export default function RecorderPanel() {
   const setError = (sentence: string, cause: unknown) => setFailure(actionFailure(sentence, errorMessage(cause)));
   const clearError = () => setFailure(null);
   const [statusFailure, setStatusFailure] = useState<string | null>(null);
+  const retryStatus = useRef<(() => void) | null>(null);
   const [, setMinute] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   const [panel] = useState(newId);
@@ -469,9 +470,10 @@ export default function RecorderPanel() {
     const loadSettings = () => {
       void queue.refresh().catch(cause => { if (active) setError('Couldn’t read the recorder settings.', cause); });
     };
-    const status = followStatus(api.onStatus, api.recorderStatus, value => { if (active) setSnapshot(value); });
+    const status = followStatus(api.onStatus, api.recorderStatus, value => { if (active) setSnapshot(value); },
+      cause => { if (active) setStatusFailure(errorMessage(cause)); });
+    retryStatus.current = status.retry;
     const listeners = [
-      status.listening,
       api.onAskStop(ask => {
         if (!active) return;
         setView('main');
@@ -481,7 +483,6 @@ export default function RecorderPanel() {
       }),
       api.onSettings(() => { if (active) loadSettings(); }),
     ];
-    void status.first.catch(cause => { if (active) setStatusFailure(errorMessage(cause)); });
     loadSettings();
     void (opened.current ??= api.panelOpened(panel)).then(({ askStop, compact: alone, quitting: quit, discarding: discard }) => {
       if (!active) return;
@@ -490,7 +491,7 @@ export default function RecorderPanel() {
       if (quit) setQuitting(true);
       if (discard) { discardStepped.current = false; setDiscarding(true); }
     }, () => { if (active) setCompact(false); });
-    return () => { active = false; for (const listener of listeners) void listener.then(stop => stop(), () => {}); };
+    return () => { active = false; status.stop(); for (const listener of listeners) void listener.then(stop => stop(), () => {}); };
   }, [queue, panel]);
 
   const listing = compact === false;
@@ -606,7 +607,7 @@ export default function RecorderPanel() {
 
   if (stage === 'pending') return <PanelPending root={root} failure={snapshot ? null : statusFailure} retry={() => {
     setStatusFailure(null);
-    void api.recorderStatus().then(value => setSnapshot(current => current ?? value), cause => setStatusFailure(errorMessage(cause)));
+    retryStatus.current?.();
   }} />;
   if (!snapshot || compact == null) return <div ref={root} className="recorder" />;
   const run = (sentence: string, work: () => Promise<unknown>) => {

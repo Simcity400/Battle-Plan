@@ -9,7 +9,7 @@ import { FailureLine } from '../components/FailureLine';
 import { SettingsBlock } from './SettingsBlock';
 import { useMapDiagnostics } from './diagnosticsSetting';
 import { branchCoverage, historyLabels, missingTime } from './diagnosticsData';
-import { damagedRecordingText } from './recordingNotice';
+import { damagedRecordingText, partialRecordingDetail } from './recordingNotice';
 
 const recordingFolder = (path: string) => path.replace(/[\\/][^\\/]*$/, '');
 
@@ -58,7 +58,7 @@ function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: Branc
     {metadata.damaged && <div className="settings-row"><span className="settings-row-text"><strong>Damaged or modified</strong>
       <small>{[damagedRecordingText(metadata.damaged), ...metadata.damaged.reasons].join(' · ')}</small></span></div>}
     {metadata.partial && <div className="settings-row"><span className="settings-row-text"><strong>Stopped early</strong>
-      <small>{metadata.partial.failedHour != null ? `Nothing after ${formatDateTime(metadata.partial.failedHour)} was saved: ` : 'The end of the recording wasn’t saved: '}{metadata.partial.reason}</small></span></div>}
+      <small>{`${partialRecordingDetail(metadata.partial).replace(/^p/, 'P')}: ${metadata.partial.reason}`}</small></span></div>}
     {branches.map(branch => {
       const coverage = branchCoverage(branch);
       return <div key={branch.id} className="settings-row diagnostics-coverage">

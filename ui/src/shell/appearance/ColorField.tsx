@@ -46,15 +46,20 @@ export function ColorPicker({ value, onChange, swatches }: { value: string; onCh
   </div>;
 }
 
-export default function ColorField({ label, value, onChange, swatches = [], help, fieldId, typed, onTyped }: {
+export default function ColorField({ label, value, onChange, swatches = [], help, fieldId, typed, onTyped, onPending }: {
   label: string; value: string; onChange: (value: string) => void; swatches?: readonly string[]; help?: string; fieldId?: string; typed?: string; onTyped?: (text: string | null) => void;
+  onPending?: (pending: boolean) => void;
 }) {
   const id = useId();
   const menu = usePopover('start');
   const [text, setText] = useState(typed ?? value);
   const [invalid, setInvalid] = useState(typed !== undefined);
-  useEffect(() => { setText(typed ?? value); setInvalid(typed !== undefined); }, [value, typed]);
+  const pending = useRef(onPending);
+  pending.current = onPending;
+  useEffect(() => { setText(typed ?? value); setInvalid(typed !== undefined); pending.current?.(false); }, [value, typed]);
+  useEffect(() => () => pending.current?.(false), []);
   const commit = () => {
+    pending.current?.(false);
     const next = colorInput(text);
     if (!next) { setInvalid(true); onTyped?.(text); return; }
     setInvalid(false);
@@ -69,7 +74,7 @@ export default function ColorField({ label, value, onChange, swatches = [], help
     <span className="color-field-label">{label}{help && <span className="folder-info" tabIndex={0} role="img" aria-label={`About ${label}`} data-tooltip={help}><Icon name="info" /></span>}</span>
     <input id={fieldId} className="color-hex" aria-label={`${label} hex value`} value={text} spellCheck={false} maxLength={9}
       aria-invalid={invalid || undefined} aria-describedby={invalid ? `${id}-hint` : undefined}
-      onChange={event => { setText(event.currentTarget.value); setInvalid(false); }} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } }} />
+      onChange={event => { const next = event.currentTarget.value; setText(next); setInvalid(false); pending.current?.(next !== (typed ?? value)); }} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } }} />
     {invalid && <div className="color-field-note" id={`${id}-hint`}><FailureLine message={HEX_HINT} /></div>}
     <Popover menu={menu} id={id} className="color-picker" aria-label={`${label} colour`}>
       <div className="ui-popover-heading"><strong>{label}</strong><div className="ui-popover-actions">

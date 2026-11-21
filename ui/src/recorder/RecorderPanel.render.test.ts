@@ -255,8 +255,8 @@ test('the recordings view lists what is not saved yet and what is saved, each wi
     assert.match(text(twins), /Germany 1936–1943 Old · 1936 – Jun 1941/, 'the folder that tells them apart leads the second line');
     assert.doesNotMatch(view, /recorder-item-folder/, 'a unique name carries no folder');
     const legacy = render({ recordings: { unsaved: [], saved: [saved, { ...saved, path: PATH.replace(/\.battleplan$/, '.hoi4replay') }] } });
-    assert.match(legacy, /aria-label="Germany 1936–1943, older recording format"/, 'the same name in the same folder: the older format says so');
-    assert.match(legacy, /class="recorder-item-folder"><bdi>Older recording format<\/bdi>/);
+    assert.match(legacy, /aria-label="Germany 1936–1943, older file type"/, 'the same name in the same folder: the older file type says so');
+    assert.match(legacy, /class="recorder-item-folder"><bdi>Older file type<\/bdi>/);
     const loading = render({ recordings: null });
     assert.equal(text(loading).trim(), 'Recordings Loading recordings… Open BattlePlan', 'one loading line, no bare headings');
     assert.match(loading, /class="recorder-loading" role="status"/);

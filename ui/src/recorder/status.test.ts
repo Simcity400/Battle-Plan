@@ -200,8 +200,8 @@ test('the status is read once its listener is in place, and a status published d
     let answer!: (value: string) => void;
     let reads = 0;
     const shown: string[] = [];
-    const status = followStatus<string, () => void>(handler => { publish = handler; return new Promise(resolve => { listening = resolve; }); },
-      () => { reads += 1; return new Promise(resolve => { answer = resolve; }); }, value => { shown.push(value); });
+    const status = followStatus<string>(handler => { publish = handler; return new Promise(resolve => { listening = resolve; }); },
+      () => { reads += 1; return new Promise(resolve => { answer = resolve; }); }, value => { shown.push(value); }, () => assert.fail('nothing failed'));
     await settle();
     assert.equal(reads, 0, 'nothing is read before the listener is in place');
     listening(() => {});
@@ -214,4 +214,34 @@ test('the status is read once its listener is in place, and a status published d
     publish('saved');
     assert.equal(shown.at(-1), 'saved', 'later statuses keep coming');
   }
+});
+
+test('trying the status again listens again before reading, and the attempt it replaces stops showing anything', async () => {
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const handlers: ((value: string) => void)[] = [];
+  const failures: unknown[] = [], shown: string[] = [];
+  let listens = 0, reads = 0, stopped = 0;
+  const status = followStatus<string>(handler => {
+    listens += 1;
+    if (listens === 1) return Promise.reject(new Error('no events'));
+    handlers.push(handler);
+    return Promise.resolve(() => { stopped += 1; });
+  }, async () => { reads += 1; if (reads === 1) throw new Error('no reply'); return `read ${reads}`; }, value => { shown.push(value); }, cause => { failures.push(cause); });
+  await status.first;
+  assert.deepEqual([listens, reads, failures.length], [1, 0, 1], 'a listener that couldn’t start is a failure, with nothing read');
+  status.retry();
+  await settle();
+  assert.deepEqual([listens, reads, failures.length, stopped], [2, 1, 2, 0], 'Try again listens again, then reads');
+  status.retry();
+  await settle();
+  assert.equal(stopped, 1, 'the listener from the attempt before is stopped');
+  assert.deepEqual([listens, reads, shown], [3, 2, ['read 2']]);
+  handlers[0]('stale');
+  handlers[1]('saved');
+  assert.deepEqual(shown, ['read 2', 'saved'], 'only the current listener shows statuses');
+  status.stop();
+  await settle();
+  assert.equal(stopped, 2);
+  handlers[1]('after closing');
+  assert.equal(shown.at(-1), 'saved');
 });

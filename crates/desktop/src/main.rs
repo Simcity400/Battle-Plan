@@ -219,6 +219,25 @@ impl UnsavedWork {
     fn update_refused(&self) -> Option<String> {
         self.kept().then(|| Self::UPDATE_REFUSED.to_owned())
     }
+
+    fn holds_close<E: std::fmt::Display>(&self, ask: impl FnOnce() -> Result<(), E>) -> bool {
+        if !self.kept() {
+            return false;
+        }
+        if let Err(error) = ask() {
+            eprintln!("Couldn’t ask about unsaved changes before closing, so BattlePlan stays open: {error}");
+        }
+        true
+    }
+
+    fn close_discarding<E>(&self, close: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
+        self.discarded.store(true, Ordering::Release);
+        let closed = close();
+        if closed.is_err() {
+            self.discarded.store(false, Ordering::Release);
+        }
+        closed
+    }
 }
 
 #[tauri::command]
@@ -228,15 +247,11 @@ fn set_unsaved_work(work: State<'_, UnsavedWork>, unsaved: bool) {
 
 #[tauri::command]
 fn close_discarding_unsaved_work(window: WebviewWindow, work: State<'_, UnsavedWork>) -> Result<(), String> {
-    work.discarded.store(true, Ordering::Release);
-    window.close().map_err(|error| format!("Couldn’t close BattlePlan: {error}"))
+    work.close_discarding(|| window.close()).map_err(|error| format!("Couldn’t close BattlePlan: {error}"))
 }
 
 fn ask_before_close(app: &tauri::AppHandle) -> bool {
-    if !app.state::<UnsavedWork>().kept() {
-        return false;
-    }
-    app.emit_to("main", "close-requested", ()).is_ok()
+    app.state::<UnsavedWork>().holds_close(|| app.emit_to("main", "close-requested", ()))
 }
 
 #[tauri::command]
@@ -493,6 +508,31 @@ mod tests {
         work.discarded.store(false, Ordering::Release);
         work.unsaved.store(false, Ordering::Release);
         assert_eq!(work.update_refused(), None, "saved work no longer holds the update");
+    }
+
+    #[test]
+    fn unsaved_work_holds_a_close_even_when_the_question_cannot_be_asked() {
+        let work = UnsavedWork::default();
+        assert!(!work.holds_close(|| -> Result<(), &'static str> { unreachable!() }), "nothing unsaved closes at once");
+        work.unsaved.store(true, Ordering::Release);
+        let mut asked = 0;
+        assert!(work.holds_close(|| -> Result<(), &'static str> {
+            asked += 1;
+            Ok(())
+        }));
+        assert_eq!(asked, 1);
+        assert!(work.holds_close(|| Err("no window")), "unsaved work is never closed silently");
+    }
+
+    #[test]
+    fn a_failed_discarding_close_leaves_the_work_guarded() {
+        let work = UnsavedWork::default();
+        work.unsaved.store(true, Ordering::Release);
+        assert_eq!(work.close_discarding(|| Err("no window")), Err("no window"));
+        assert!(work.kept(), "a close that failed doesn’t authorise a later close or update");
+        assert_eq!(work.update_refused().as_deref(), Some(UnsavedWork::UPDATE_REFUSED));
+        assert_eq!(work.close_discarding(|| Ok::<(), &str>(())), Ok(()));
+        assert!(!work.kept(), "the closing window isn’t asked again");
     }
 
     #[test]

@@ -316,7 +316,7 @@ mod tests {
     fn a_panic_in_the_map_ends_it_by_name_and_where_and_the_next_map_starts() {
         let at = line!() + 2;
         let failed = run("map (test)", |_: &Lost| -> Result<(), String> {
-            panic!("the picture's layer list is empty")
+            panic!("the picture’s layer list is empty")
         })
         .unwrap();
         assert_eq!(

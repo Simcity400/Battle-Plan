@@ -40,7 +40,8 @@ test('the catalogue lists display titles and kinds only, and refused models say 
   try {
     const pages = new catalogue.AircraftPages('fixture');
     pages.begin(0);
-    pages.accept(0, reply);
+    pages.accept(0, { ...reply, matching: 4, entries: [...reply.entries,
+      { name: 'odd_plane_entity', kind: 'entity', titles: ['Odd plane'], references: [], refusal: { kind: 'declaration', reason: 'its animation list does not parse' } }] });
     const markup = renderToStaticMarkup(createElement(module.AircraftCatalogueView, {
       pages, version: 1, scope: 'aircraft', onScope: () => {}, query: '', onQuery: () => {}, chosen: { name: 'ENG_fighter_equipment_1_entity', title: 'Spitfire' },
       status: { aircraft: 'ENG_fighter_equipment_1_entity', state: { kind: 'ready' } }, onChoose: () => {}, request: () => {}, retry: () => {},
@@ -54,6 +55,7 @@ test('the catalogue lists display titles and kinds only, and refused models say 
     assert.match(markup, /<span class="aircraft-row-title">Jet<small class="aircraft-badge">No animation/);
     assert.match(markup, /<button type="button" class="aircraft-row" disabled=""[^>]*><span class="aircraft-row-title">Ghost plane<\/span><small class="aircraft-row-refusal" data-detail="it names no pdxmesh">Can’t be flown: its 3D model is missing\.<\/small>/);
     assert.ok(!markup.replace(/<[^>]*>/g, '').includes('pdxmesh'), 'the raw engine reason is detail only');
+    assert.match(markup, /<span class="aircraft-row-title">Odd plane<\/span><small class="aircraft-row-refusal" data-detail="its animation list does not parse">Can’t be flown: BattlePlan can’t read this model\.<\/small>/);
     assert.match(markup, /Flying Spitfire/);
     assert.match(markup, /data-tooltip="1 with a missing 3D model" data-detail="1: no geometry to draw">1 model can’t be flown</);
     assert.match(markup, /data-detail="1 descriptor files do not parse even when closed">Some game files couldn’t be read, so this list may be incomplete\.</);

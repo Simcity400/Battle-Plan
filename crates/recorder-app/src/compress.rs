@@ -287,7 +287,7 @@ impl Jobs {
     }
 
     pub fn take_up(&self, root: &Path, settings: &RecorderSettings) {
-        for path in crate::recordings::saved_files(root).0 {
+        for path in crate::recordings::saved_files(root, true).0 {
             let partial = recompress::partial_path(&path);
             if !partial.exists() {
                 continue;

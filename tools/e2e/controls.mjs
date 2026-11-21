@@ -202,6 +202,13 @@ const CONTROL = {
   check: IN_MENU('input[type=checkbox]:not([role=switch])'),
 };
 const SAVING = `document.querySelector('.map-appearance[data-saving]')`;
+const RESET_CONFIRM = IN_MENU('.map-appearance .graphics-reset-confirm .is-danger');
+const MODS_INHERITED = `!document.querySelector(${JSON.stringify(IN_MENU('.map-mod-list[data-overridden]'))})`;
+const GRAPHICS_INHERITED = `!document.querySelector(${JSON.stringify(IN_MENU('.map-appearance .map-option-row[data-overridden]'))})`;
+const confirmReset = async (s, inherited) => {
+  const asking = `document.querySelector(${JSON.stringify(RESET_CONFIRM)})`;
+  if (await s.until(`${asking} || (${inherited})`, 2000) && await s.holds(asking)) await s.click(RESET_CONFIRM);
+};
 const MAP_EXPECTED = `[...document.querySelectorAll(${JSON.stringify(IN_MENU('[data-map-setting]'))})]
   .map(e => [e.getAttribute('data-map-setting'), e.getAttribute('data-map-value')]).filter(([setting, value]) => value !== 'null' || setting.startsWith('graphics.'))`;
 const shown = (selector, index) => `[...document.querySelectorAll(${JSON.stringify(selector)})].filter(e => e.getClientRects().length)[${index}]`;
@@ -214,7 +221,8 @@ const discover = s => s.app.evaluate(`(() => {
   const draft = e => !!e.closest('.map-appearance');
   const context = e => e.closest('[data-setting]')?.getAttribute('data-setting') ?? '';
   const overridden = e => !!e.closest('.map-option-row, .map-mod-list')?.hasAttribute('data-overridden');
-  all('input[role=switch]').forEach((e, i) => out.push({ kind: 'switch', index: i, label: label(e), context: context(e), draft: draft(e), overridden: overridden(e), disabled: e.disabled, state: e.checked }));
+  all('input[role=switch]').forEach((e, i) => out.push({ kind: 'switch', index: i, label: label(e), context: context(e), draft: draft(e), overridden: overridden(e), disabled: e.disabled, state: e.checked,
+    mod: !!e.closest('.map-mod-row') }));
   all('input[type=range]').forEach((e, i) => out.push({ kind: 'range', index: i, label: e.getAttribute('aria-label') || label(e), context: context(e), draft: draft(e), overridden: overridden(e),
     disabled: e.disabled, value: Number(e.value), max: Number(e.max), state: Number(e.value) }));
   all('.segmented').forEach((g, i) => { const b = [...g.querySelectorAll('button')]; const on = b.findIndex(x => x.getAttribute('aria-pressed') === 'true');
@@ -454,16 +462,16 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     if (await alreadyBack(label)) return;
     if (!c.draft || c.overridden || c.kind === 'select') return reverse();
     return set(label, async () => {
-      if (c.kind === 'check') {
+      if (c.mod) {
         await s.click(IN_MENU('.map-mods-inherit'));
-        if (await s.holds(`document.querySelector(${JSON.stringify(IN_MENU('.map-mods-confirm'))})`)) await s.click(IN_MENU('.map-mods-confirm .is-danger'));
+        await confirmReset(s, MODS_INHERITED);
         return;
       }
       const at = await s.app.evaluate(`(() => { const e = ${shown(CONTROL[c.kind], c.index)}?.closest('.map-option-row')?.querySelector('.map-option-inherit');
         if (!e) return null; e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
       if (!at) throw new Error('its row offers no way back to inheriting');
       await s.app.click(at.x, at.y);
-    }, { check: false });
+    }, { check: false, ...(c.mod ? { done: MODS_INHERITED } : {}) });
   };
   const revealed = async change => {
     if (cover.full) return;
@@ -582,7 +590,12 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     await reopenHere();
     await restore(`${name} back`, () => set(`${name} back`, () => s.click(CONTROL.check, { index: c.index }), { check: false }));
   } else if (c.kind === 'reset') {
-    await set(name, () => s.click(IN_MENU('.map-appearance button.map-menu-action'), { index: c.index }));
+    const button = IN_MENU('.map-appearance button.map-menu-action');
+    const inherited = await s.app.evaluate(`!!${shown(button, c.index)}?.classList.contains('map-mods-inherit')`) ? MODS_INHERITED : GRAPHICS_INHERITED;
+    await set(name, async () => {
+      await s.click(button, { index: c.index });
+      await confirmReset(s, inherited);
+    }, { done: inherited });
   } else if (c.kind === 'search') {
     const field = IN_MENU('input.map-mod-search');
     const rows = `[...document.querySelectorAll(${JSON.stringify(IN_MENU('.map-mod-row'))})].filter(e => e.getClientRects().length)`;

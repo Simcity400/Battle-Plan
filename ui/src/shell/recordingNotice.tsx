@@ -14,8 +14,12 @@ export function gapText(gap: Pick<RecordingGap, 'firstHour' | 'lastHour'>): stri
   return `Not recorded · ${hours(gap.firstHour, gap.lastHour)}`;
 }
 
+export function partialRecordingDetail(partial: PartialRecording): string {
+  return partial.failedHour === null ? 'part of the recording couldn’t be saved' : `${recordedHour(partial.failedHour)} couldn’t be recorded`;
+}
+
 export function partialRecordingText(partial: PartialRecording): string {
-  return `Partial recording · ${partial.failedHour === null ? 'its end wasn’t saved' : `nothing after ${recordedHour(partial.failedHour)} was saved`}`;
+  return `Partial recording · ${partialRecordingDetail(partial)}`;
 }
 
 export function damagedRecordingText(damaged: DamagedRecording): string {

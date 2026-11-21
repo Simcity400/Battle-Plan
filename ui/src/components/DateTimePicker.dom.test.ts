@@ -32,12 +32,13 @@ test('a live calendar edits the day it shows, and commits a pick only by its foo
     const refused = await act<State>('enterYear("5")');
     assert.deepEqual([refused.value, refused.invalid, refused.hint, refused.hintRole], ['5', 'true', hint, 'alert'],
       'a year outside the recording stays as typed, says which years it holds and is announced');
-    assert.equal(refused.go, true, 'a refused year leaves the pick on the month shown');
+    assert.deepEqual([refused.go, refused.cancelled], [false, 2], 'editing the year drops the pick, so Go to date can’t go to a day the year no longer shows');
+    assert.deepEqual((await act<State>('commit()')).committed.length, 2, 'Go to date does nothing while the year is refused');
     assert.equal((await act<State>('enterYear("")')).invalid, 'true', 'an empty year is not put back silently');
     const corrected = await act<State>('enterYear("1")');
     assert.deepEqual([corrected.value, corrected.invalid, corrected.hint], ['1', null, null]);
     assert.match(corrected.month!, / 1$/);
-    assert.deepEqual([corrected.go, corrected.cancelled], [false, 2], 'browsing to another year drops the earlier pick');
+    assert.deepEqual([corrected.go, corrected.cancelled], [false, 2], 'a corrected year has nothing picked yet');
     assert.equal((await act<State>('pickDay(1)')).go, true, 'a day picked in the month shown can be gone to');
     const browsed = await act<State>('browse("Previous")');
     assert.deepEqual([browsed.go, browsed.cancelled], [false, 3], 'browsing to another month drops the earlier pick');
