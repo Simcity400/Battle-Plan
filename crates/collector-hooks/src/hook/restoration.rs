@@ -172,6 +172,7 @@ impl Scratch {
             }
             self.references.push(hook as *mut Hook);
         }
+        // SAFETY: the pointers were exclusive references lent by this call.
         if self.references[start..]
             .iter()
             .all(|hook| !unsafe { &**hook }.is_enabled())
@@ -412,6 +413,9 @@ impl Scratch {
             threads,
             ..
         } = self;
+        // SAFETY: each pointer was an exclusive reference to a distinct hook
+        // lent to the collect pass; nothing else reaches those hooks until the
+        // report pass.
         let hooks = unsafe {
             std::slice::from_raw_parts_mut(references.as_mut_ptr().cast::<&mut Hook>(), references.len())
         };

@@ -754,9 +754,9 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The host authenticates the image and retains hooks and stores until"]
-    #[doc = " restoration and native callback quiescence are both proved."]
+    /// # Safety
+    /// The host authenticates the image and retains hooks and stores until
+    /// restoration and native callback quiescence are both proved.
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,

@@ -17,6 +17,7 @@ style = { level = "allow", priority = -1 }
 complexity = { level = "allow", priority = -1 }
 perf = { level = "allow", priority = -1 }
 dbg_macro = "warn"
+missing_safety_doc = "warn"
 todo = "warn"
 unimplemented = "warn"
 

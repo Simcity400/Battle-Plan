@@ -1508,6 +1508,7 @@ pub fn reserve(shared: &Shared, index: usize) -> Reserved<'_> {
 
 pub fn pop(shared: &Shared) -> Option<DecodeJob> {
     let index = shared.frames.pop_decode()?;
+    // SAFETY: popping the index hands its frame, and so its job, to this consumer.
     Some(std::mem::take(unsafe { shared.frames.job(index) }))
 }
 
@@ -1525,6 +1526,7 @@ pub struct Reserved<'a> {
 
 impl Reserved<'_> {
     pub fn job(&mut self) -> &mut DecodeJob {
+        // SAFETY: this reservation's caller holds the frame.
         unsafe { self.shared.frames.job(self.index) }
     }
 

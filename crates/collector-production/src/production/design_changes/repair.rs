@@ -213,7 +213,8 @@ pub(super) fn complete(
     ];
     Ok(())
 }
-#[doc = " Hooks and acquisition have stopped before their owner releases storage."]
+/// # Safety
+/// Hooks and acquisition have stopped before their owner releases storage.
 pub(super) unsafe fn release() {
     unsafe {
         MARKS.release();

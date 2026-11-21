@@ -192,6 +192,9 @@ pub(super) fn forwarded_pass(country: usize, run: impl FnOnce() -> usize) -> usi
     flight.returned();
     result
 }
+/// # Safety
+/// `base` identifies the authenticated executable in this process. The caller owns these sites
+/// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
 pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), String> {
     let mut hooks = Vec::new();
     let verify = |site: native::Site| verify_hook::<16>(base, site);
@@ -213,6 +216,9 @@ pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), String>
     }
     Ok((hooks, Vec::new()))
 }
+/// # Safety
+/// `base` identifies the authenticated executable in this process. The caller owns these sites
+/// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
 pub(super) unsafe fn forwarded_taps(base: usize) -> Result<Vec<Tap>, String> {
     let mut taps = Vec::new();
     for (index, site) in native::DELAYED_TAPS.into_iter().enumerate() {

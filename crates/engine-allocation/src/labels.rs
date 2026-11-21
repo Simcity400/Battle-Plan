@@ -308,6 +308,7 @@ mod on {
         counts: UnsafeCell<Counts>,
     }
 
+    // SAFETY: `counts` is reached only with `busy` held; `next` is set before it is listed.
     unsafe impl Sync for Slot {}
 
     impl Slot {
@@ -326,6 +327,7 @@ mod on {
         #[inline]
         fn with<R>(&self, work: impl FnOnce(&mut Counts) -> R) -> R {
             self.lock();
+            // SAFETY: `busy` is held.
             let result = work(unsafe { &mut *self.counts.get() });
             self.unlock();
             result
@@ -337,6 +339,7 @@ mod on {
     fn slots() -> impl Iterator<Item = &'static Slot> {
         let mut at = SLOTS.load(Ordering::Acquire).cast_const();
         std::iter::from_fn(move || {
+            // SAFETY: slots are never freed.
             let slot = unsafe { at.as_ref() }?;
             at = slot.next;
             Some(slot)
@@ -353,6 +356,7 @@ mod on {
 
         fn drain(&self) {
             for slot in slots() {
+                // SAFETY: `busy` is held, by this.
                 unsafe { &mut *slot.counts.get() }.flush();
             }
             let total = TOTAL.load(Ordering::Relaxed);
@@ -391,6 +395,7 @@ mod on {
         fn drop(&mut self) {
             let _ = LOCAL.try_with(|local| {
                 local.gone.set(true);
+                // SAFETY: slots are never freed.
                 if let Some(slot) = unsafe { local.slot.replace(std::ptr::null()).as_ref() } {
                     let peaked = slot.with(Counts::flush);
                     slot.owned.store(false, Ordering::Release);
@@ -435,12 +440,14 @@ mod on {
         let _gate = GATE.read().unwrap_or_else(PoisonError::into_inner);
         let mut head = SLOTS.load(Ordering::Relaxed);
         loop {
+            // SAFETY: not yet listed, so this thread's alone.
             unsafe { (*slot).next = head.cast_const() };
             match SLOTS.compare_exchange_weak(head, slot, Ordering::Release, Ordering::Relaxed) {
                 Ok(_) => break,
                 Err(now) => head = now,
             }
         }
+        // SAFETY: leaked, never freed.
         unsafe { &*slot }
     }
 
@@ -483,6 +490,7 @@ mod on {
             .try_with(|local| local.slot.get())
             .unwrap_or(std::ptr::null());
         let mut tally = Tally::default();
+        // SAFETY: slots are never freed.
         let (result, peaked) = match unsafe { slot.as_ref() } {
             Some(slot) => slot.with(|counts| {
                 let epoch = EPOCH.load(Ordering::Relaxed);
@@ -611,6 +619,7 @@ mod on {
         if good.is_null() {
             return;
         }
+        // SAFETY: only `measure_sizes` stores here, a function of this type.
         let good = unsafe { std::mem::transmute::<*mut (), fn(usize) -> usize>(good) };
         let alone = good(size);
         let tagged = good(size + tag);
@@ -626,6 +635,7 @@ mod on {
         if committed.is_null() {
             return None;
         }
+        // SAFETY: only `measure_allocator` stores here, a function of this type.
         unsafe { std::mem::transmute::<*mut (), fn() -> Option<usize>>(committed)() }
     }
 
@@ -854,6 +864,9 @@ mod on {
             .map(|outer| (outer, offset))
     }
 
+    /// # Safety
+    /// `base` is null or a fresh, writable block of at least `offset + size` bytes, aligned for
+    /// `u64`, with `offset` at least 8 and a multiple of 8.
     #[inline]
     unsafe fn tagged(
         tally: &mut Tally,
@@ -866,6 +879,7 @@ mod on {
             return base;
         }
         let label = label();
+        // SAFETY: the block holds `offset` bytes, at least 8 and a multiple of 8, before `size`.
         let pointer = unsafe { base.add(offset) };
         unsafe {
             pointer
@@ -879,8 +893,11 @@ mod on {
         pointer
     }
 
+    /// # Safety
+    /// `pointer` is a live block [`tagged`] returned.
     #[inline]
     unsafe fn tag(pointer: *mut u8) -> (u32, u32) {
+        // SAFETY: every block this allocator hands out is tagged just before it.
         let word = unsafe { pointer.sub(HEADER).cast::<u64>().read() };
         (word as u32, (word >> 32) as u32)
     }

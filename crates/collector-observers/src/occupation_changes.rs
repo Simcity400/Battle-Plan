@@ -100,8 +100,8 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The caller has verified this process's executable and owns installation and quiescence."]
+    /// # Safety
+    /// The caller has verified this process's executable and owns installation and quiescence.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "naval_tree_changes")

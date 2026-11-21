@@ -57,12 +57,12 @@ pub struct Tap {
     code: *mut c_void,
 }
 impl Tap {
-    #[doc = " Publishes and verifies only the complete native instructions this tap replaces."]
-    #[doc = " Adjacent taps may share untouched tails of their construction sentinels."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The caller must authenticate all 16 sentinel bytes before construction and satisfy"]
-    #[doc = " every requirement of [`Self::new`]. Other patches must not overlap the replaced span."]
+    /// Publishes and verifies only the complete native instructions this tap replaces.
+    /// Adjacent taps may share untouched tails of their construction sentinels.
+    ///
+    /// # Safety
+    /// The caller must authenticate all 16 sentinel bytes before construction and satisfy
+    /// every requirement of [`Self::new`]. Other patches must not overlap the replaced span.
     pub unsafe fn new_owned_span(
         site: usize,
         observer: unsafe extern "system-unwind" fn(&Registers, usize),
@@ -74,12 +74,14 @@ impl Tap {
         Ok(tap)
     }
 
-    #[doc = " # Safety"]
-    #[doc = " The caller authenticates the image/sentinel and excludes native return"]
-    #[doc = " PCs or incoming branches inside the complete overwritten span. The"]
-    #[doc = " native unwind state and handler scope at the five-byte return point must match the site."]
-    #[doc = " A lifecycle jump tail also requires its target to have that same native frame and handler state."]
-    #[doc = " Disable and quiesce every executable range before dropping this tap."]
+    /// # Safety
+    /// The caller authenticates the image/sentinel and excludes native return
+    /// PCs or incoming branches inside the complete overwritten span. The
+    /// native unwind state and handler scope at the five-byte return point must match the site.
+    /// A lifecycle jump tail also requires its target to have that same native frame and handler state.
+    /// Every call of `observer` with the site's registers and `tag` must meet the observer's own
+    /// preconditions, so any storage `tag` refers to stays valid until callbacks have quiesced.
+    /// Disable and quiesce every executable range before dropping this tap.
     pub unsafe fn new(
         site: usize,
         observer: unsafe extern "system-unwind" fn(&Registers, usize),

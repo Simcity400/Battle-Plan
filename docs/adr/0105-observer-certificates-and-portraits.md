@@ -10,8 +10,4 @@ Portrait capture defines its own snapshot instant. Before reading, it closes adm
 
 Pre-image slots have one writer before publication and remain immutable until all readers return. Record, array entry, and text reservations are independent, and an unsuccessful log still contributes demand. The store replaces its storage only with no capture reader and no logging writer. Capture end reopens the state, wakes waiters, and can grow the store between captures. The Windows wait and wake calls operate on the store's aligned atomic state, with a bounded wait to guard a missed wake. The capture guard ends the snapshot even on unwind, so callbacks may take the pre-image path independently of quiet revision reuse.
 
-## Safety contract
-
-`PreImages::grow` mutably borrows the current storage. The caller keeps the pre-image domain open and excludes both logging writers and capture readers while that borrow is live.
-
 [Mission writer observer](../../crates/collector/src/mission_changes.rs) · [Province order observer](../../crates/collector/src/province_unit_changes.rs) · [Radar snapshots](../../crates/collector/src/radar_changes.rs) · [Portrait capture](../../crates/collector/src/portrait_changes.rs)

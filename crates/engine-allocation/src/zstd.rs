@@ -46,6 +46,7 @@ impl Holder {
 const HEADER: usize = 16;
 
 unsafe extern "C" fn allocate(opaque: *mut c_void, size: usize) -> *mut c_void {
+    // SAFETY: `Holder::memory` passes a `&'static Holder`.
     let holder = unsafe { &*opaque.cast::<Holder>() };
     let _memory = labels::enter(holder.owner(), Kind::Zstd);
     let Some(layout) = size
@@ -71,6 +72,7 @@ unsafe extern "C" fn free(_: *mut c_void, address: *mut c_void) {
     if address.is_null() {
         return;
     }
+    // SAFETY: `allocate` made the block, its size written ahead of it.
     unsafe {
         let base = address.cast::<u8>().sub(HEADER);
         let size = base.cast::<usize>().read();
@@ -139,10 +141,12 @@ pub fn frame_size(stored: &[u8]) -> Option<usize> {
 
 pub struct Compressor(NonNull<ZSTD_CCtx>);
 
+// SAFETY: a zstd context may move between threads; it is used by one at a time.
 unsafe impl Send for Compressor {}
 
 impl Compressor {
     pub fn new(holder: &'static Holder, level: i32) -> io::Result<Self> {
+        // SAFETY: the holder's functions allocate and free through the global allocator.
         let context = unsafe { zstd_sys::ZSTD_createCCtx_advanced(holder.memory()) };
         let mut context = Self(NonNull::new(context).ok_or_else(crate::oom)?);
         context.set(ZSTD_cParameter::ZSTD_c_compressionLevel, level)?;
@@ -197,6 +201,8 @@ impl Compressor {
     }
 
     pub fn compress_append_prefixed(&mut self, prefix: &[u8], src: &[u8], out: &mut Vec<u8>) -> Result<usize, Error> {
+        // SAFETY: a live context; zstd keeps a reference to the prefix for the next frame only,
+        // which ends before this call returns.
         checked(unsafe { zstd_sys::ZSTD_CCtx_refPrefix(self.0.as_ptr(), prefix.as_ptr().cast(), prefix.len()) })?;
         self.compress_append(src, out)
     }
@@ -208,16 +214,19 @@ impl Compressor {
 
 impl Drop for Compressor {
     fn drop(&mut self) {
+        // SAFETY: the context is this one's alone.
         unsafe { zstd_sys::ZSTD_freeCCtx(self.0.as_ptr()) };
     }
 }
 
 pub struct Decompressor(NonNull<ZSTD_DCtx>);
 
+// SAFETY: a zstd context may move between threads; it is used by one at a time.
 unsafe impl Send for Decompressor {}
 
 impl Decompressor {
     pub fn new(holder: &'static Holder) -> io::Result<Self> {
+        // SAFETY: the holder's functions allocate and free through the global allocator.
         let context = unsafe { zstd_sys::ZSTD_createDCtx_advanced(holder.memory()) };
         Ok(Self(NonNull::new(context).ok_or_else(crate::oom)?))
     }
@@ -267,6 +276,7 @@ impl Decompressor {
         src: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<usize, Error> {
+        // SAFETY: a live context; zstd keeps a reference to the prefix, dropped below.
         checked(unsafe {
             zstd_sys::ZSTD_DCtx_refPrefix(self.0.as_ptr(), prefix.as_ptr().cast(), prefix.len())
         })?;
@@ -319,6 +329,7 @@ impl Decompressor {
 
 impl Drop for Decompressor {
     fn drop(&mut self) {
+        // SAFETY: the context is this one's alone.
         unsafe { zstd_sys::ZSTD_freeDCtx(self.0.as_ptr()) };
     }
 }

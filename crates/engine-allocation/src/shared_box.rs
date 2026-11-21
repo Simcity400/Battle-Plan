@@ -16,7 +16,11 @@ pub struct SharedBox<T> {
     _owns: PhantomData<Inner<T>>,
 }
 
+// SAFETY: owners on several threads share `&T`, which `T: Sync` allows, and whichever owner is
+// last drops `T` on its own thread, which `T: Send` allows.
 unsafe impl<T: Send + Sync> Send for SharedBox<T> {}
+// SAFETY: a shared `SharedBox<T>` yields only `&T` and new owners, which `T: Send + Sync` allow
+// on any thread.
 unsafe impl<T: Send + Sync> Sync for SharedBox<T> {}
 
 pub fn shared<T>(value: T) -> io::Result<SharedBox<T>> {
@@ -34,11 +38,13 @@ impl<T> SharedBox<T> {
     pub const BYTES: usize = std::mem::size_of::<Inner<T>>();
 
     fn inner(&self) -> &Inner<T> {
+        // SAFETY: the allocation lives while any owner does, and self is one.
         unsafe { self.inner.as_ref() }
     }
 
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {
         if this.inner().owners.load(Ordering::Acquire) == 1 {
+            // SAFETY: the only owner, borrowed mutably: no other reference exists or can be made.
             Some(unsafe { &mut this.inner.as_mut().value })
         } else {
             None
@@ -76,6 +82,7 @@ impl<T> Drop for SharedBox<T> {
             return;
         }
         fence(Ordering::Acquire);
+        // SAFETY: the last owner; `shared` made the allocation as a Box.
         drop(unsafe { Box::from_raw(self.inner.as_ptr()) });
     }
 }

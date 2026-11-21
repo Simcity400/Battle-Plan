@@ -67,6 +67,7 @@ fn join_from(
 
 #[derive(Clone, Copy)]
 struct Erased(*const Job<'static>);
+// SAFETY: the pointee is `Sync` and outlives its use (see `Erased`).
 unsafe impl Send for Erased {}
 
 #[derive(Default)]
@@ -136,6 +137,8 @@ impl SpoolHelper {
         job: &'a Job<'a>,
         own: impl FnOnce() -> R,
     ) -> R {
+        // SAFETY: erases the borrow of `job`; `Finish` below waits for the
+        // helper before this frame can return or unwind.
         let erased =
             Erased(unsafe { std::mem::transmute::<&'a Job<'a>, &'static Job<'static>>(job) });
         {
@@ -220,6 +223,7 @@ fn serve(
             state.running = true;
             drop(state);
             refresh();
+            // SAFETY: `join` keeps the job alive until `running` clears.
             let job = unsafe { &*job.0 };
             let panicked = catch_unwind(AssertUnwindSafe(job)).is_err();
             state = shared.lock();

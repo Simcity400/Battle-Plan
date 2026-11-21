@@ -95,10 +95,10 @@ pub fn per_call_ns(calls: usize, mut round: impl FnMut()) -> f64 {
     times.sort_by(f64::total_cmp);
     times[3]
 }
-#[doc = " Reserve the original test-thread stack before the harness starts."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " Call only from a test executable CRT initializer, before other threads run."]
+/// Reserve the original test-thread stack before the harness starts.
+///
+/// # Safety
+/// Call only from a test executable CRT initializer, before other threads run.
 pub unsafe extern "C" fn reserve_test_stack() {
     if std::env::var_os("RUST_MIN_STACK").is_none() {
         unsafe { std::env::set_var("RUST_MIN_STACK", "33554432") };

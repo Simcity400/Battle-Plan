@@ -60,8 +60,8 @@ pub(crate) fn prime() {
     presize();
     WATCHES.boundary(false);
 }
-#[doc = " # Safety"]
-#[doc = " The worker owns the Factions lease and is this domain's only capture."]
+/// # Safety
+/// The worker owns the Factions lease and is this domain's only capture.
 pub(crate) unsafe fn install_growth() {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
@@ -95,8 +95,8 @@ pub struct Hooks {
     hooks: Vec<OwnedHook>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " Attach owns the verified image and native patch publication lifetime."]
+    /// # Safety
+    /// Attach owns the verified image and native patch publication lifetime.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "faction_changes") {
@@ -202,6 +202,7 @@ impl Drop for Hooks {
     fn drop(&mut self) {
         #[cfg(test)]
         let _exclusive = tests::exclusive();
+        // SAFETY: runtime owns these hooks until restoration and flight drainage.
         unsafe { WATCHES.release() };
     }
 }
@@ -276,6 +277,7 @@ unsafe extern "system-unwind" fn progress(
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionGoals);
     count(10);
     let flight = ManuallyDrop::new(WATCHES.running());
+    // SAFETY: the native caller owns this goal through the CALL's return.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let address = first.checked_add(native::GOAL_PROGRESS - native::GOAL_PROGRESS_STATUS);
     let before = address.and_then(|at| engine_native::read::<i64>(&memory, at));

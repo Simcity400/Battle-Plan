@@ -273,6 +273,8 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
         .copied()
         .and_then(|id| Target::open(id, 7, 0, 19));
     let mut request = Some(());
+    // SAFETY: this job owns no foreign pointers and is collected before the
+    // pool/its captured barrier are dropped. There is only one collector.
     let submitted = unsafe { pool.submit(&mut request) };
     let Ok(ticket) = submitted else {
         let shutdown = pool.shutdown();

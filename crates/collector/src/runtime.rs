@@ -154,6 +154,7 @@ fn refuse_worker_sampler(config: Option<&str>) -> Result<(), &'static str> {
 }
 
 pub(crate) struct Event(HANDLE);
+// SAFETY: an event handle may be signalled, reset and waited on from any thread.
 unsafe impl Send for Event {}
 unsafe impl Sync for Event {}
 impl Event {
@@ -291,6 +292,8 @@ pub(crate) fn installation_message(message: impl Into<String>) -> &'static str {
     Box::leak(message.into_boxed_str())
 }
 
+/// # Safety
+/// Only the attach thread `DllMain` creates runs this, with `module` the collector's own handle.
 pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
     crate::private_heap::off_hold_path();
     let _bootstrap = crate::allocation::enter(crate::allocation::Phase::Bootstrap);
@@ -671,6 +674,7 @@ fn run(
     progress.step("attach_started", None);
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
+    // SAFETY: the game executable stays loaded for the life of the process.
     let image = unsafe { engine_sites::Image::module(base) }
         .map_err(|_| "game executable headers unreadable")?;
     let located = engine_sites::install(engine_sites::Located::locate(
@@ -1728,6 +1732,7 @@ fn run(
     }
     let unread = crate::capture_point::take_unread();
     if unread != 0 {
+        // SAFETY: no capture runs or can start.
         unsafe { sampling::record_lost(&shared, unread) };
         progress.step("unread_hours_lost", Some(u64::from(unread)));
     }
@@ -5065,6 +5070,7 @@ impl Drop for SizingThread {
 
 fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
     use std::os::windows::io::AsRawHandle;
+    // SAFETY: the handle stays open while the JoinHandle lives.
     let id =
         unsafe { windows_sys::Win32::System::Threading::GetThreadId(thread.as_raw_handle() as _) };
     (id != 0).then_some(id)

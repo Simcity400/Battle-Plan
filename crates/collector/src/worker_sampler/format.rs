@@ -40,6 +40,8 @@ pub(super) struct Header {
 impl Header {
     pub(super) fn current(interval_us: u32, qpc_hz: u64) -> Result<Self, String> {
         let mut module = ptr::null_mut();
+        // SAFETY: the address of this module's static names the collector image, which stays
+        // loaded while its own code runs here, so the unchanged reference count is enough.
         if unsafe {
             GetModuleHandleExW(
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
@@ -66,6 +68,8 @@ impl Header {
         }
         let image_size = u32::from_le_bytes(nt[80..84].try_into().unwrap());
         let timestamp = u32::from_le_bytes(nt[8..12].try_into().unwrap());
+        // SAFETY: the PE identity checked above declares this mapped span; later reads bound the debug
+        // directory and CodeView records within it.
         let image = unsafe { std::slice::from_raw_parts(base as *const u8, image_size as usize) };
         let directory = pe
             .checked_add(24 + 112 + 6 * 8)

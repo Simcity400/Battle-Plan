@@ -29,11 +29,11 @@ pub fn collect() {
 pub fn active() -> usize {
     WATCHES.active()
 }
-#[doc = " Free the crew certificate tables."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " Every owning and forwarding hook must be removed and drained, and the"]
-#[doc = " acquisition pool must be stopped so no notification or capture can run."]
+/// Free the crew certificate tables.
+///
+/// # Safety
+/// Every owning and forwarding hook must be removed and drained, and the
+/// acquisition pool must be stopped so no notification or capture can run.
 pub unsafe fn release() {
     unsafe { WATCHES.release() };
 }

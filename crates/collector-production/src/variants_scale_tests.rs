@@ -462,6 +462,7 @@ fn variants_walk_bench() {
     for countries in [440, 1_500, 5_000] {
         let variants = countries * 16;
         let space = space(countries, 16);
+        // SAFETY: the synthetic space is immutable and lives for the whole loop.
         let memory = engine_native::memory::CountedMemory::new(unsafe {
             engine_native::memory::LiveMemory::new()
         });

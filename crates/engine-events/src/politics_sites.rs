@@ -1032,8 +1032,9 @@ mod capture_tests {
 
 pub struct NativeOperands(crate::memory::LiveMemory);
 impl NativeOperands {
-    #[doc = " # Safety"]
-    #[doc = " The caller runs inside the observed game process; spans still use SEH."]
+    /// # Safety
+    /// As `LiveMemory::new`: the reads are of foreign game memory under the caller's consistency
+    /// protocol, or of immutable synthetic storage. SEH guards only against invalid addresses.
     #[inline(always)]
     pub unsafe fn new() -> Self {
         Self(unsafe { crate::memory::LiveMemory::new() })

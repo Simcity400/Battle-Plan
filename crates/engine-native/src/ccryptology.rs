@@ -470,6 +470,8 @@ mod tests {
         let (arena, state) =
             crate::cintelligence_agency::test_support::intel_arena(countries as usize, 3);
         let offset = arena.base();
+        // SAFETY: `intel_arena` finished building the arena every read points into, which stays
+        // allocated and immutable through both cases.
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
         let mut rows = vec![Row::default(); countries as usize * 3];
         for (label, gathered) in [("serial", false), ("batched", true)] {

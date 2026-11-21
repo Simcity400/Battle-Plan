@@ -214,6 +214,8 @@ pub fn boxed<T>(value: T) -> io::Result<Box<T>> {
     if pointer.is_null() {
         return Err(oom());
     }
+    // SAFETY: storage is aligned and writable for T (or dangling for a ZST).
+    // The value moves exactly once and Box owns the matching allocation.
     unsafe {
         pointer.write(value);
         Ok(Box::from_raw(pointer))

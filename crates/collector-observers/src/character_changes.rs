@@ -229,11 +229,11 @@ pub fn set_enabled(enabled: bool) {
     WATCHES.registry.set_enabled(enabled);
 }
 
-#[doc = " Free the watch tables."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " The hooks were never enabled, or were removed and drained after the last"]
-#[doc = " capture."]
+/// Free the watch tables.
+///
+/// # Safety
+/// The hooks were never enabled, or were removed and drained after the last
+/// capture.
 pub unsafe fn release() {
     unsafe { WATCHES.registry.release() };
 }

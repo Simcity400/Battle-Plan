@@ -136,13 +136,13 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction. A differing"]
-    #[doc = " sentinel leaves the family uninstalled; NavalProvinceCombats then reads every province."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction. A differing
+    /// sentinel leaves the family uninstalled; NavalProvinceCombats then reads every province.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if CARRY
@@ -185,6 +185,8 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        // SAFETY: like each Hook's relay, the bitmaps are dropped only once the hooks were
+        // never enabled, or were removed and drained after the last capture.
         unsafe { DOMAIN.provinces.release() };
     }
 }

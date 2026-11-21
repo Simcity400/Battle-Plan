@@ -64,12 +64,13 @@ pub struct Hooks<const N: usize> {
     domain: Domain<N>,
 }
 impl<const N: usize> Hooks<N> {
-    #[doc = " Locate every site and store every trampoline before publication."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The base must identify the authenticated executable in this process."]
-    #[doc = " The caller owns this family exclusively and must restore its hooks and"]
-    #[doc = " quiesce native calls before releasing code or unloading."]
+    /// Locate every site and store every trampoline before publication.
+    ///
+    /// # Safety
+    /// The base must identify the authenticated executable in this process.
+    /// The caller owns this family exclusively and must restore its hooks and
+    /// quiesce native calls before releasing code or unloading. `callbacks[i]` is the detour for
+    /// `sites[i]`, with that site's ABI and process lifetime.
     pub unsafe fn new(
         base: usize,
         sites: [Site; N],
@@ -80,12 +81,13 @@ impl<const N: usize> Hooks<N> {
         unsafe { Self::construct(base, sites, callbacks, domain, ready, None) }
     }
 
-    #[doc = " Bind the native flight counter and callback ranges before publication."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The base must identify the authenticated executable in this process."]
-    #[doc = " The caller owns this family exclusively and must restore its hooks and"]
-    #[doc = " quiesce native calls before releasing code or unloading."]
+    /// Bind the native flight counter and callback ranges before publication.
+    ///
+    /// # Safety
+    /// The base must identify the authenticated executable in this process.
+    /// The caller owns this family exclusively and must restore its hooks and
+    /// quiesce native calls before releasing code or unloading. `callbacks[i]` is the detour for
+    /// `sites[i]`, with that site's ABI and process lifetime, and `safety[i]` covers that callback.
     pub unsafe fn new_with_safety(
         base: usize,
         sites: [Site; N],
@@ -97,6 +99,11 @@ impl<const N: usize> Hooks<N> {
         unsafe { Self::construct(base, sites, callbacks, domain, ready, Some(safety)) }
     }
 
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
+    /// `callbacks[i]` is the detour for `sites[i]`, with that site's ABI and process lifetime, and
+    /// `safety[i]`, when given, is the flight counter and stub that cover that callback.
     #[allow(clippy::too_many_arguments)]
     unsafe fn construct(
         base: usize,

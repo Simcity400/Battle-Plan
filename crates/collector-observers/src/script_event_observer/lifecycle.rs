@@ -310,6 +310,10 @@ fn duration_result(
         field(memory, instance, engine_decisions::ctargeted_decision::DAYS)?,
     )))
 }
+/// # Safety
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the reads its site makes; one the original destroys
+/// is an identity only once it returns.
 unsafe fn remove(status: usize, definition: usize, flags: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
@@ -385,6 +389,9 @@ fn removal_edges(before: [u32; 3], after: [u32; 3]) -> Result<(u32, u32), &'stat
 unsafe extern "system-unwind" fn clear_cooldown(status: usize, definition: usize) -> usize {
     unsafe { remove(status, definition, 0, 2) }
 }
+/// # Safety
+/// `base` identifies the authenticated executable in this process. The caller owns these sites
+/// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
 pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), String> {
     let verify = |site: native::Site| verify_hook::<16>(base, site);
     let mut hooks = Vec::new();

@@ -201,14 +201,14 @@ pub struct Hooks {
     occupation: crate::occupation_changes::Hooks,
 }
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = " A differing sentinel leaves the family uninstalled; every tree is then"]
-    #[doc = " read afresh each hour."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    /// A differing sentinel leaves the family uninstalled; every tree is then
+    /// read afresh each hour.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "naval_tree_changes")
@@ -277,6 +277,10 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        // SAFETY: like each Hook's relay, the watch tables are dropped only
+        // once the hooks were never enabled, or were removed and drained
+        // after the last capture; so are the retreat-ban and trait watches
+        // they notify.
         unsafe {
             WATCHES.release();
             crate::retreat_ban_changes::release();

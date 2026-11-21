@@ -10,6 +10,10 @@ fn content_enabled(enabled: bool) {
     CONTENT_ENABLED.store(enabled, Ordering::Release);
     super::update_enabled();
 }
+/// # Safety
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn content(
     _writer: collector_certificates::content_changes::Writer,
     [a, b, c, d]: [usize; 4],
@@ -40,6 +44,10 @@ fn country_enabled(enabled: bool) {
         unobserved!();
     }
 }
+/// # Safety
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn country(
     [a, b, c, d]: [usize; 4],
     original: collector_observers::country_input_changes::DesignSourceOriginal,
@@ -252,6 +260,9 @@ unsafe extern "system-unwind" fn append(a: usize, b: usize, c: usize, d: usize, 
         unsafe { std::mem::transmute(ORIGINAL[4].load(Ordering::Acquire)) };
     unsafe { around::<4>(a, b, c, d, || original(a, b, c, d, e)) }
 }
+/// # Safety
+/// `original` invokes the matching native original with its ABI and the arguments it captured,
+/// and the receiver `a` stays valid for the reads `SITE` makes.
 unsafe fn around<const SITE: usize>(
     a: usize,
     _b: usize,
@@ -314,6 +325,9 @@ pub(super) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let callbacks = [
             callback::<0> as *const () as usize,

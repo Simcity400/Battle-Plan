@@ -23,8 +23,8 @@ fn failure(site: Option<usize>, reason: &str) -> String {
     format!("division_panel_changes [{sites}]: {reason}")
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The enclosing family owns the authenticated executable and patch lifetime."]
+    /// # Safety
+    /// The enclosing family owns the authenticated executable and patch lifetime.
     pub unsafe fn new(base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         let callbacks = [

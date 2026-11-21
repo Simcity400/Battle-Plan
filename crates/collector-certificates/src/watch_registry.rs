@@ -119,7 +119,11 @@ impl Table {
     }
 }
 
-#[doc = " Frees a table no notification or capture can reach any more."]
+/// Frees a table.
+///
+/// # Safety
+/// `table` is null or came from `Box::into_raw`, and no notification or capture can reach it any
+/// more.
 unsafe fn free(table: *mut Table) {
     if !table.is_null() {
         drop(unsafe { Box::from_raw(table) });
@@ -213,6 +217,14 @@ impl WatchRegistry {
 
     #[inline]
     fn table(&self) -> Option<&Table> {
+        // SAFETY: during capture only a retired table is freed (`collect`); teardown (`release`)
+        // frees the installed table once callbacks and acquisition readers have quiesced. A
+        // boundary swap parks the old table in `draining`, since a notification that entered
+        // after the quiet check may still hold its mark; `retire_drained` retires it only once a
+        // later quiet check sees none running.
+        // Worker growth retires the old table at once, which its exclusive lease allows because
+        // no notifier runs during the call. A `Notification` keeps its mark until it drops and
+        // counts as running until then, so neither path reclaims a table under a live guard.
         unsafe { self.table.load(SeqCst).as_ref() }
     }
 
@@ -506,6 +518,7 @@ impl WatchRegistry {
         self.retire_drained();
         if self.draining.load(SeqCst).is_null() && self.retired.load(SeqCst).is_null() {
             let next = self.offered.swap(ptr::null_mut(), SeqCst);
+            // SAFETY: an offered table is owned here once swapped out.
             if let Some(len) = unsafe { next.as_ref() }.map(|table| table.slots.len()) {
                 self.new_epoch();
                 let previous = self.table.swap(next, SeqCst);
@@ -533,16 +546,16 @@ impl WatchRegistry {
         Boundary::Unchanged
     }
 
-    #[doc = " Install prepared growth on a worker while preserving every registered"]
-    #[doc = " receiver's sequence and the quiet token. Retire the old allocation for"]
-    #[doc = " off-lease collection. This performs no allocation and touches no native"]
-    #[doc = " object. Marking registries keep their existing boundary protocol."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The caller holds the native world's quiescent acquisition lease and"]
-    #[doc = " exclusively owns this registry's capture/registration side. No notifier,"]
-    #[doc = " certificate query, boundary or release may run during the call. Status"]
-    #[doc = " readers, offers and collection of an earlier retired table may run."]
+    /// Install prepared growth on a worker while preserving every registered
+    /// receiver's sequence and the quiet token. Retire the old allocation for
+    /// off-lease collection. This performs no allocation and touches no native
+    /// object. Marking registries keep their existing boundary protocol.
+    ///
+    /// # Safety
+    /// The caller holds the native world's quiescent acquisition lease and
+    /// exclusively owns this registry's capture/registration side. No notifier,
+    /// certificate query, boundary or release may run during the call. Status
+    /// readers, offers and collection of an earlier retired table may run.
     pub unsafe fn install_growth_quiescent(&self) -> bool {
         if self.marking
             || !self.observing()
@@ -664,19 +677,21 @@ impl WatchRegistry {
         };
         self.requested.store(len, SeqCst);
         let previous = self.offered.swap(Box::into_raw(table), SeqCst);
+        // SAFETY: an offered table was never installed; the swap owns it.
         unsafe { free(previous) };
     }
 
     pub fn collect(&self) {
         let retired = self.retired.swap(ptr::null_mut(), SeqCst);
+        // SAFETY: only a drained table is retired, and the swap owns it.
         unsafe { free(retired) };
     }
 
-    #[doc = " Free every table."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " No notification or capture may run: the hooks are removed and"]
-    #[doc = " drained, and the acquisition pool has stopped."]
+    /// Free every table.
+    ///
+    /// # Safety
+    /// No notification or capture may run: the hooks are removed and
+    /// drained, and the acquisition pool has stopped.
     pub unsafe fn release(&self) {
         for table in [&self.table, &self.offered, &self.draining, &self.retired] {
             unsafe { free(table.swap(ptr::null_mut(), SeqCst)) };
@@ -719,6 +734,7 @@ impl WatchRegistry {
 
 impl Drop for WatchRegistry {
     fn drop(&mut self) {
+        // SAFETY: exclusive access; nothing else can reach the tables.
         unsafe { self.release() };
     }
 }

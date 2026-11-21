@@ -86,8 +86,8 @@ pub(super) fn invalidate() {
     }
 }
 
-#[doc = " # Safety"]
-#[doc = " The enclosing doctrine observer and acquisition worker are quiescent."]
+/// # Safety
+/// The enclosing doctrine observer and acquisition worker are quiescent.
 pub(super) unsafe fn release() {
     for marks in &MARKS {
         unsafe { marks.release() };

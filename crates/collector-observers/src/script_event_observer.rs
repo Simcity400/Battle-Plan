@@ -694,9 +694,9 @@ fn verify_hook<const N: usize>(
     Ok((code.address, original))
 }
 
-#[doc = " # Safety"]
-#[doc = " The host owns publication, restoration, native-flight and executable-range"]
-#[doc = " quiescence with the complete event-feed family."]
+/// # Safety
+/// The host owns publication, restoration, native-flight and executable-range
+/// quiescence with the complete event-feed family.
 pub unsafe fn hooks(
     _memory: &impl Memory,
     base: usize,
@@ -781,9 +781,9 @@ pub unsafe fn hooks(
 pub fn delayed_pass(country: usize, run: impl FnOnce() -> usize) -> usize {
     delayed::forwarded_pass(country, run)
 }
-#[doc = " # Safety"]
-#[doc = " The script-variable owner publishes/restores these selected cursor taps"]
-#[doc = " together with the pass entry and retains their ranges through quiescence."]
+/// # Safety
+/// The script-variable owner publishes/restores these selected cursor taps
+/// together with the pass entry and retains their ranges through quiescence.
 pub unsafe fn delayed_pass_taps(
     _memory: &impl Memory,
     base: usize,
@@ -813,10 +813,10 @@ pub fn take_selection_cause() -> Option<replay_data::event_feed_rows::EventFeedC
     SELECTION_CAUSE.take()
 }
 
-#[doc = " # Safety"]
-#[doc = " The politics family owns this function and forwards its selected final"]
-#[doc = " store through this tap, which only stages its witness for"]
-#[doc = " [`targeted_selection`]."]
+/// # Safety
+/// The politics family owns this function and forwards its selected final
+/// store through this tap, which only stages its witness for
+/// [`targeted_selection`].
 pub unsafe fn targeted_selection_tap(
     _memory: &impl Memory,
     base: usize,

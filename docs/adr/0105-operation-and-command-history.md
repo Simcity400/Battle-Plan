@@ -8,8 +8,4 @@ The spool merges sealed records by global order and stops at the first unpublish
 
 The command callback likewise has one nonwaiting writer and publishes immutable records. Accepted commands can arrive before the first hourly snapshot and while the game is paused. The command lanes grow from roster and burst demand. A packet without an emitted world cannot prove its coverage, although status still names the first refusal. The collector invalidates every interval a refusal could affect and charges its count to the latest world only once. Build-specific command classes are matched by verified name hashes and separated into ordinary categories and categories that can change the player roster or selected country.
 
-## Safety contract
-
-`operation_outcomes::release` requires disabled hooks, quiescent executable ranges and active calls, and a join of every worker holding a `Handoff` or log reference. The early guard retains storage if observation is still enabled or an active call remains.
-
 [Operation completions](../../crates/collector/src/operation_outcomes.rs) · [Player commands](../../crates/collector/src/player_commands.rs) · [Command class catalogue](../../crates/collector/src/player_commands/classes.rs)

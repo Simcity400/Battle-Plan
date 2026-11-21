@@ -589,6 +589,7 @@ fn read<T: engine_native::memory::Raw>(address: usize) -> Option<T> {
     engine_native::read::<T>(&memory(), address)
 }
 fn operand_memory() -> native::NativeOperands {
+    // SAFETY: callers below read only the supported synchronous native operands.
     unsafe { native::NativeOperands::new() }
 }
 #[inline(always)]
@@ -713,12 +714,12 @@ pub fn prepare() {
         resize(log.entries, log.key_stride);
     }
 }
-#[doc = " Release staging after disabled hooks and all callback/capture workers are"]
-#[doc = " quiescent. No published log reference may survive this call."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " The caller has disabled hooks, checked their executable ranges and ACTIVE,"]
-#[doc = " and joined all workers that can call drain/resize/status."]
+/// Release staging after disabled hooks and all callback/capture workers are
+/// quiescent. No published log reference may survive this call.
+///
+/// # Safety
+/// The caller has disabled hooks, checked their executable ranges and ACTIVE,
+/// and joined all workers that can call drain/resize/status.
 pub unsafe fn release() {
     if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
         COUNTERS[8].fetch_add(1, Ordering::Relaxed);
@@ -1609,6 +1610,9 @@ fn set_power_published(witness: SetPower, stored: i64) -> (i64, i64, i64) {
         witness.raw.wrapping_sub(witness.before),
     )
 }
+/// # Safety
+/// Only the power entry's detour calls this, on the native thread running the hooked call, with
+/// that call's five arguments.
 unsafe fn set_power(a: usize, b: usize, c: usize, d: usize, fifth: usize) -> usize {
     struct Frame(*mut Option<SetPower>);
     impl Drop for Frame {
@@ -2217,6 +2221,9 @@ unsafe extern "system-unwind" fn entry_body(
     }
     result
 }
+/// # Safety
+/// Only the entry stubs call this, on the native thread running the hooked call, with that call's
+/// arguments, its site index and the caller's return address.
 #[allow(clippy::too_many_arguments)]
 unsafe fn entry_forward(
     a: usize,
@@ -2451,6 +2458,10 @@ pub fn bench_upkeep_identity(record: usize) -> Identity {
     upkeep_identity(record)
 }
 
+/// # Safety
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn writer(
     timing: &crate::hook_timing::Span,
     original: NativeFunction,
@@ -2925,10 +2936,10 @@ pub struct Hooks {
     taps: Vec<Tap>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize, runtime_enabled: bool) -> Self {
         RUNTIME_ENABLED.store(runtime_enabled, Ordering::Relaxed);
         if !runtime_enabled {
@@ -2958,6 +2969,9 @@ impl Hooks {
             }
         })
     }
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     unsafe fn install(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let sites = entry_sites();
         let located = sites

@@ -182,6 +182,7 @@ impl FramePool {
             !base.is_null() && index < self.made.load(Ordering::Acquire),
             "frame slot {index} was never made"
         );
+        // SAFETY: a made segment holds `STEADY << segment` slots and is freed only on drop.
         unsafe { &*base.add(offset) }
     }
 
@@ -301,6 +302,7 @@ impl FramePool {
                     .compare_exchange(ptr::null_mut(), slots, Ordering::AcqRel, Ordering::Acquire)
                     .is_err()
                 {
+                    // SAFETY: the other caller's segment won; this one was never published.
                     drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(slots, len)) });
                 }
             }
@@ -381,6 +383,7 @@ impl FramePool {
         self.live.fetch_sub(1, Ordering::AcqRel);
         self.freed.fetch_add(1, Ordering::Relaxed);
         slot.state.store(VACANT, Ordering::Release);
+        // SAFETY: the frame was installed from a Box and its holder gives it up here.
         unsafe { Box::from_raw(frame) }
     }
 
@@ -440,10 +443,11 @@ impl FramePool {
 
     pub(crate) const STAGES: [FrameStage; 7] = STAGES;
 
-    #[doc = " The decode job of slot `index`."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The caller holds `index`: no other thread touches its job."]
+    /// The decode job of slot `index`.
+    ///
+    /// # Safety
+    /// The caller holds `index`: no other thread touches its job, and the caller makes no other
+    /// borrow of it while the returned one lives.
     #[allow(clippy::mut_from_ref, reason = "the holder of the index owns the job alone")]
     pub(crate) unsafe fn job(&self, index: usize) -> &mut DecodeJob {
         unsafe { &mut *self.slot(index).job.get() }
@@ -542,11 +546,13 @@ impl Drop for FramePool {
                 break;
             }
             let len = STEADY << segment;
+            // SAFETY: `vacant` leaked exactly this boxed slice.
             let mut slots = unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(base, len)) };
             let first = STEADY * ((1 << segment) - 1);
             for (offset, slot) in slots.iter_mut().enumerate() {
                 let frame = *slot.frame.get_mut();
                 if first + offset < made && !frame.is_null() {
+                    // SAFETY: an installed frame came from a Box and no holder remains.
                     unsafe { drop(Box::from_raw(frame)) };
                 }
             }

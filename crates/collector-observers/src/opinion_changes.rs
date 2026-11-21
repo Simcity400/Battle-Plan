@@ -38,11 +38,16 @@ static OFFERED_LEN: AtomicUsize = AtomicUsize::new(0);
 
 fn free(log: *mut Log) {
     if !log.is_null() {
+        // SAFETY: each pointer came from Box::into_raw and is owned here.
         drop(unsafe { Box::from_raw(log) });
     }
 }
 
 fn installed() -> Option<&'static Log> {
+    // SAFETY: a replaced log is freed only after a drain saw no writer
+    // running, and the consumer is the only drain. Teardown's `release` frees
+    // the installed log only once the hooks are drained and acquisition has
+    // stopped, so no borrow from here outlives either.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
 #[repr(align(64))]
@@ -357,13 +362,13 @@ pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = " Never fails: without every hook, refreshes read every status."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    /// Never fails: without every hook, refreshes read every status.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let hooks = if cfg!(feature = "opinion_changes") {
             unsafe { Self::install(base) }.unwrap_or_else(|reason| {
@@ -381,6 +386,9 @@ impl Hooks {
         Ok(Self { hooks })
     }
 
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     unsafe fn install(base: usize) -> Result<Vec<Hook>, &'static str> {
         let callbacks: [usize; SITES] = [
             recompute_opinion as *const () as usize,

@@ -469,6 +469,7 @@ impl engine_native::Memory for ProcessMemory<'_> {
 pub struct Event {
     pub handle: Handle,
 }
+// SAFETY: an event handle may be signalled, reset and waited on from any thread.
 unsafe impl Send for Event {}
 unsafe impl Sync for Event {}
 impl Event {

@@ -69,6 +69,10 @@ fn forwarded_site(site: usize) -> Option<Forward> {
         _ => None,
     }
 }
+/// # Safety
+/// The arguments are ones `SITE`'s published original accepts with its ABI, and every object they
+/// reach stays valid for the reads its site makes; one the original destroys is an identity only
+/// once it returns.
 #[inline]
 unsafe fn invoke<const SITE: usize>(args: [usize; 4]) -> usize {
     let original: Original = unsafe { std::mem::transmute(ORIGINAL[SITE].load(Ordering::Acquire)) };
@@ -96,6 +100,9 @@ unsafe fn invoke<const SITE: usize>(args: [usize; 4]) -> usize {
     unsafe { invoke_forwarder(receiver, Some(site), call, original) }
 }
 
+/// # Safety
+/// `receiver` is zero or a live function with the forwarder's signature and ABI, which accepts
+/// `site`, `call` and `original`; `original` is live and accepts the call's four arguments.
 unsafe fn invoke_forwarder(
     receiver: usize,
     site: Option<Forward>,
@@ -399,14 +406,14 @@ impl Hooks {
     fn world_inputs_enabled(&self, enabled: bool) -> bool {
         enabled && self.world_hooks == SITES
     }
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = " A differing sentinel leaves the family uninstalled. Existing polled"]
-    #[doc = " families read afresh; doctrine tables refuse without their writer coverage."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    /// A differing sentinel leaves the family uninstalled. Existing polled
+    /// families read afresh; doctrine tables refuse without their writer coverage.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();
@@ -531,6 +538,8 @@ impl Drop for Hooks {
         forwarder_enabled(false);
         POLICY_SCORE_OBSERVED.store(false, Ordering::SeqCst);
         navy_reset_enabled(false);
+        // SAFETY: like each Hook's relay, the domains hold no table; release
+        // only starts an epoch once the hooks were removed and drained.
         for watches in &WATCHES {
             unsafe { watches.release() };
         }
@@ -586,6 +595,10 @@ unsafe extern "system" fn reset_navy(
         dispatch_navy_reset(first, second, third, fourth, original, forward)
     })
 }
+/// # Safety
+/// `forward` is zero or a live function with the navy-reset forwarder's signature and ABI, and
+/// `original` is a live function with the hooked call's signature; each accepts the arguments
+/// given here.
 unsafe fn dispatch_navy_reset(
     first: usize,
     second: usize,

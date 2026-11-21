@@ -95,6 +95,8 @@ struct BlobVtbl {
 struct Com<V>(ptr::NonNull<*const V>);
 
 impl<V> Com<V> {
+    /// # Safety
+    /// `raw` is null or an interface pointer of `V`'s layout, whose reference this takes.
     unsafe fn from_raw(raw: *mut c_void) -> Option<Self> {
         ptr::NonNull::new(raw.cast()).map(Self)
     }
@@ -111,6 +113,7 @@ impl<V> Com<V> {
 
 impl<V> Drop for Com<V> {
     fn drop(&mut self) {
+        // SAFETY: every vtable here begins with IUnknown's; this holds one reference.
         unsafe {
             let unknown = &*(*self.0.as_ptr()).cast::<UnknownVtbl>();
             (unknown.release)(self.this());
@@ -119,6 +122,7 @@ impl<V> Drop for Com<V> {
 }
 
 fn blob_bytes(blob: &Com<BlobVtbl>) -> Vec<u8> {
+    // SAFETY: the blob owns `size` bytes at `pointer` while it lives.
     unsafe {
         let pointer = (blob.vtbl().pointer)(blob.this()).cast::<u8>();
         let size = (blob.vtbl().size)(blob.this());
@@ -137,6 +141,7 @@ pub(crate) struct Library {
 impl Library {
     pub(crate) fn load(path: &Path) -> Result<Self, String> {
         let file = wide(path);
+        // SAFETY: a NUL-terminated path; the module is never freed once it serves.
         let module: HMODULE = unsafe { LoadLibraryExW(file.as_ptr(), ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH) };
         if module.is_null() {
             return Err(format!("dxcompiler.dll did not load: {}", std::io::Error::last_os_error()));

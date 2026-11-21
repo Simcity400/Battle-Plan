@@ -24,13 +24,4 @@ Worker-only output is loaned with the variant census. Run `boundary` before disp
 
 Tests isolate process-static observer state in child runs and use barriers to put native writers and callbacks in controlled orders. The scale fixture places guarded and slice readers over the same synthetic address space. Its golden digests cover the fields common to both row formats. The later explicit model choice is checked against its fixture bytes. The schedule tests compare exact outcomes and owned values for staged and direct captures.
 
-## Safety contracts
-
-- `design_changes::Hooks::new` requires a verified executable identity and exclusive ownership of its sites. Its owner remains live until patch restoration and callback quiescence are proved. Only then can `Hooks::drop` clear its capture buffers and invoke `repair::release`, which also requires acquisition to have stopped.
-- `design_changes::Captured::capture_partitioned` lends snapshot parts that borrow the drain batch and its retained cache. The supplied operation must return every part or drop it and wait for all users before it returns or unwinds. `snapshots::speculative::Part::read` opens live memory only while the hourly original is parked.
-- `design_changes::diagnostics::sites` dereferences a linked diagnostic site only because published nodes have process-static storage and are never removed or freed.
-- `design_changes::forward::Forwarder` uses process-static receivers. Its callbacks may neither panic, enter registration again, block nor change hook availability. Reset can withdraw capability on a callback while retaining the terminal phase for an active invocation. Validate the live capability each time. A native pointer is borrowed only for that invocation and conveys no longer lifetime.
-- `design_template_changes::Hooks::drop` releases the dirty tracker after patch restoration and after both template callbacks and acquisition workers have quiesced.
-- `variants_walk_bench` supplies guarded memory reads from immutable synthetic storage held alive for the whole loop.
-
 [Design observer](../../crates/collector-production/src/production/design_changes.rs) · [Forwarding](../../crates/collector-production/src/production/design_changes/forward.rs) · [Writer claims](../../crates/collector-production/src/production/design_changes/writers.rs) · [Repair](../../crates/collector-production/src/production/design_changes/repair.rs) · [Read witnesses](../../crates/collector-production/src/production/design_changes/witness.rs) · [Design context](../../crates/collector-production/src/production/design_context.rs)

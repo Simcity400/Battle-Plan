@@ -122,6 +122,10 @@ unsafe extern "system" fn state_reload(editor: usize, b: usize, c: usize, d: usi
 unsafe extern "system" fn straits_reload(map: usize, b: usize, c: usize, d: usize) -> usize {
     unsafe { reload(&STRAITS_RELOAD_ORIGINAL, map, b, c, d) }
 }
+/// # Safety
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the reads its site makes; one the
+/// original destroys is an identity only once it returns.
 unsafe fn reload(original: &AtomicUsize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldLifetime);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
@@ -168,10 +172,10 @@ pub struct Hooks {
     straits_reload: Hook,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(
         _memory: &impl Memory,
         base: usize,

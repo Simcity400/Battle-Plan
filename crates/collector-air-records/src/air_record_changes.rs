@@ -100,6 +100,8 @@ impl Touched {
         let recorded = self.observing.load(Ordering::SeqCst)
             && !self.closed.load(Ordering::SeqCst)
             && !crate::world_lifetime::invalidating()
+            // SAFETY: a set is freed only once every callback that could have loaded it has
+            // drained: a take replaces it with the gate closed, teardown with the hooks quiescent.
             && unsafe { self.set.load(Ordering::SeqCst).as_ref() }
                 .is_some_and(|set| set.insert(holder));
         if !recorded {
@@ -120,6 +122,9 @@ impl Touched {
             return Ok(false);
         }
         let result = (|| {
+            // SAFETY: the gate is closed and every callback that could have loaded this set before
+            // the close has drained; a later one sees `closed`, or loads the replacement once the
+            // gate reopens.
             if let Some(set) = unsafe { self.set.load(Ordering::SeqCst).as_ref() } {
                 let claimed = set.claimed.swap(0, Ordering::Relaxed).min(set.claims.len());
                 engine_allocation::reserve(out, claimed)
@@ -134,6 +139,9 @@ impl Touched {
                 }
             }
             if let Some(next) = offered.take() {
+                // SAFETY: the gate is closed and every callback that could have loaded the old set
+                // before the close has drained; a later one sees `closed`, or loads the new set once
+                // the gate reopens.
                 unsafe { self.replace(Some(next)) };
             }
             Ok(())
@@ -149,10 +157,13 @@ impl Touched {
         self.slots.load(Ordering::SeqCst)
     }
 
-    #[doc = " Publishes `next`, or no set, and frees the set it replaces."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " Nothing may hold the replaced set: no lease spans the call and no hook can start one."]
+    /// Publishes `next`, or no set, and frees the set it replaces.
+    ///
+    /// # Safety
+    /// No callback can still access the replaced set. Hook quiescence guarantees that at setup and
+    /// teardown; during capture the closed gate does, since every lease taken before it closed has
+    /// drained and a callback that takes one later sees `closed`, or loads the new set once the
+    /// gate reopens.
     unsafe fn replace(&self, next: Option<Box<Set>>) {
         self.slots.store(
             next.as_ref().map_or(0, |set| set.slots.len()),
@@ -161,6 +172,7 @@ impl Touched {
         let next = next.map_or(std::ptr::null_mut(), Box::into_raw);
         let previous = self.set.swap(next, Ordering::SeqCst);
         if !previous.is_null() {
+            // SAFETY: published by `Box::into_raw`; the caller guarantees nothing holds it.
             drop(unsafe { Box::from_raw(previous) });
         }
     }
@@ -537,12 +549,12 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    #[doc = " The runtime's build gate admitted this family before construction."]
-    #[doc = ""]
-    #[doc = " # Safety"]
-    #[doc = " The memory source and base must identify the authenticated executable in"]
-    #[doc = " this process. The caller owns this family exclusively and must restore"]
-    #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
+    /// The runtime's build gate admitted this family before construction.
+    ///
+    /// # Safety
+    /// The memory source and base must identify the authenticated executable in
+    /// this process. The caller owns this family exclusively and must restore
+    /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "air_record_changes") {
@@ -556,6 +568,7 @@ impl Hooks {
                     )
                 })?;
             let set = Set::new(0).ok_or("air record touched-holder allocation failed")?;
+            // SAFETY: no hook is installed yet, so nothing holds the previous set.
             unsafe { TOUCHED.replace(Some(set)) };
             let hook = unsafe {
                 Hook::new(code.0, update_record as *const () as usize, code.1)
@@ -591,6 +604,8 @@ impl Hooks {
 
 impl Drop for Hooks {
     fn drop(&mut self) {
+        // SAFETY: like each Hook's relay, the set is dropped only once the
+        // hooks were never enabled, or were removed and drained.
         unsafe { TOUCHED.replace(None) };
         if let Ok(mut store) = STORE.lock() {
             *store = None;

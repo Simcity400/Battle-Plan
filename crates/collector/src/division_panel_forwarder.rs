@@ -15,6 +15,9 @@ fn enabled(availability: Availability) {
         design_changes::availability_is_current,
     );
 }
+/// # Safety
+/// `receiver` is an opaque identity in every phase: this handler uses it only as a registry key,
+/// so any value, zero included, meets the contract.
 unsafe fn receive(writer: Writer, receiver: usize, phase: Phase) {
     let every = !matches!(
         writer,

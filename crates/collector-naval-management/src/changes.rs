@@ -205,6 +205,8 @@ unsafe extern "system-unwind" fn changed(registers: &Registers, tag: usize) {
         let Some(address) = receiver.checked_add(write.offset) else {
             return;
         };
+        // SAFETY: the pinned native store is about to access this live object. Copies remain
+        // guarded; an unreadable comparison invalidates the hold rather than hiding the write.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let same = match write.bytes {
             1 => engine_native::read::<u8>(&memory, address).map(|old| old == value as u8),
@@ -249,10 +251,10 @@ pub struct Hooks {
     methods: Vec<Hook>,
 }
 impl Hooks {
-    #[doc = " # Safety"]
-    #[doc = " The caller owns these sites in the authenticated executable and restores and quiesces"]
-    #[doc = " every executable range before releasing them. Each descriptor identifies a complete"]
-    #[doc = " stack-independent instruction span with no incoming interior branch or native return PC."]
+    /// # Safety
+    /// The caller owns these sites in the authenticated executable and restores and quiesces
+    /// every executable range before releasing them. Each descriptor identifies a complete
+    /// stack-independent instruction span with no incoming interior branch or native return PC.
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,

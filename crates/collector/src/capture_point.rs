@@ -231,10 +231,10 @@ fn unread(full: bool) {
     PENDING.store(true, Ordering::Release);
 }
 
-#[doc = " Reads the hour now. False when the capture was not admitted: then nothing was read."]
-#[doc = ""]
-#[doc = " # Safety"]
-#[doc = " As [`sampling::capture`]."]
+/// Reads the hour now. False when the capture was not admitted: then nothing was read.
+///
+/// # Safety
+/// As [`sampling::capture`].
 unsafe fn read(placement: Placement, full: bool) -> bool {
     #[cfg(test)]
     if let Some(admitted) = tests::read(placement, full) {
@@ -260,6 +260,10 @@ fn held(full: bool) -> Held {
     }
     let _images = crate::portrait_changes::PreImagesCapture::begin();
     let world = world();
+    // SAFETY: a game thread that stays in its callback (the hourly update's entry or return, or the
+    // outermost command batch's return) for the whole read, with no other capture and no other
+    // observed command batch running. On an unproven publication a batch that entered before the
+    // hook was published is not counted; that mode accepts the gap.
     if !unsafe { read(Placement::Held, full) } {
         return Held::Refused;
     }
@@ -275,6 +279,7 @@ fn hurry() {
     sampling::hurry();
     let thread = THREAD.load(Ordering::SeqCst);
     if thread != 0 {
+        // SAFETY: `Thread::stop` joins, closing the handle, only once no waiter is counted.
         unsafe { SetThreadPriority(thread as _, THREAD_PRIORITY_ABOVE_NORMAL) };
         if CONFINED.swap(false, Ordering::SeqCst) {
             crate::frame_priority::select_away(thread as _, None);
@@ -414,6 +419,9 @@ fn capture_beside(away: &mut crate::frame_priority::AwayFromGame, full: bool) {
     }
     let _images = crate::portrait_changes::PreImagesCapture::begin();
     let world = world();
+    // SAFETY: the gate holds every command-batch writer until this capture has ended; portrait
+    // writers proceed, and the portrait reader validates the live bytes it reads against the
+    // pre-images `_images` keeps for this read.
     let admitted = unsafe { read(Placement::Beside(game), full) };
     CONFINED.store(false, Ordering::SeqCst);
     away.follow(None);

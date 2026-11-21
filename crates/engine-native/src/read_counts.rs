@@ -79,6 +79,11 @@ impl<M> CountedMemory<M> {
     fn add_counts(&self, counts: ReadCounts) {
         #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
         {
+            // SAFETY: on this target, pinned std stores const/no-Drop COUNTS
+            // in fixed native TLS until thread/module exit. Private !Send/!Sync
+            // handle stays on that thread; collector quiescence ends all uses
+            // before DLL unload. No destructor destroys the Cell; resets only
+            // replace its contents. This short shared borrow permits nesting.
             counts.add_to(unsafe { self.1.as_ref() });
         }
         #[cfg(not(all(windows, target_env = "msvc", target_arch = "x86_64")))]

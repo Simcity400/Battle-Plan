@@ -523,9 +523,10 @@ pub fn reset_admitted() {
         log.reset_admitted();
     }
 }
-#[doc = " # Safety"]
-#[doc = " Hooks are disabled; executable ranges/ACTIVE have quiesced and every worker"]
-#[doc = " holding a Handoff or log reference is joined. A premature release retains it."]
+/// # Safety
+/// Hooks are disabled; executable ranges/ACTIVE have quiesced and every worker
+/// holding a Handoff or log reference is joined. The early return retains the storage only while
+/// observation is still enabled or a call is active; it cannot see a worker's reference.
 pub unsafe fn release() {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
@@ -1048,6 +1049,9 @@ pub struct Hooks {
     entry: Option<Hook>,
 }
 impl Hooks {
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize, runtime_enabled: bool) -> Self {
         #[cfg(test)]
         let _exclusive = tests::exclusive();
@@ -1068,6 +1072,9 @@ impl Hooks {
             Self { entry: None }
         })
     }
+    /// # Safety
+    /// `base` identifies the authenticated executable in this process. The caller owns these sites
+    /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     unsafe fn install(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let (at, original) =
             crate::located_hook(base, native::COMPLETION_RVA).map_err(|cause| {
