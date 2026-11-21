@@ -36,10 +36,11 @@ fn park(batch: &mut acquisition::Batch<'_>, request: acquisition::Job) -> Pendin
 fn a_slow_loan_dropped_by_an_unwinding_capture_leaves_the_doctrine_observer_store_alive() {
     let shared = Shared::new(0, 0, 1);
     let bound = collector_observers::doctrine_changes::bound_context();
-    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let stores = unsafe { lend_slow_stores(&shared) };
-        let lent = stores.doctrines.as_deref().map(|store| store as *const _ as usize);
-        assert_eq!(lent, Some(bound));
+    let stores = unsafe { lend_slow_stores(&shared) };
+    let lent = stores.doctrines.as_deref().map(|store| store as *const _ as usize);
+    assert_eq!(lent, Some(bound));
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _stores = stores;
         panic!("slow capture unwinds with its stores on loan");
     }));
     assert!(unwound.is_err());

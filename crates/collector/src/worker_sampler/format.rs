@@ -58,7 +58,9 @@ impl Header {
         // buffer, and a range that cannot be read withholds the header.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let copy = |offset: usize, len: usize| {
-            let mut bytes = vec![0; len];
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(len).ok()?;
+            bytes.resize(len, 0);
             engine_native::read_slice(&memory, base.checked_add(offset)?, &mut bytes)
                 .then_some(bytes)
         };
@@ -85,10 +87,13 @@ impl Header {
         let directory = &nt[24 + 112 + 6 * 8..];
         let rva = u32::from_le_bytes(directory[..4].try_into().unwrap()) as usize;
         let size = u32::from_le_bytes(directory[4..8].try_into().unwrap()) as usize;
-        let debug =
-            within(rva, size).ok_or("worker_sampler collector debug directory out of bounds")?;
+        if rva.checked_add(size).is_none_or(|end| end > image_size as usize) {
+            return Err("worker_sampler collector debug directory out of bounds".into());
+        }
         let mut identity = None;
-        for entry in debug.chunks_exact(28) {
+        for index in 0..size / 28 {
+            let entry = within(rva + 28 * index, 28)
+                .ok_or("worker_sampler collector debug directory unreadable")?;
             if u32::from_le_bytes(entry[12..16].try_into().unwrap()) != 2 {
                 continue;
             }

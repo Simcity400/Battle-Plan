@@ -731,7 +731,7 @@ mod revision_tests {
         assert_eq!(image.header[..], bytes[..16]);
         assert_eq!(image.entries().len(), 1);
         assert_eq!(image.entries()[0].head[..], bytes[ENTRY..ENTRY + 16]);
-        assert_eq!(image.identity(&image.entries()[0]).unwrap(), b"x.dds");
+        assert_eq!(image.identity(0).unwrap(), b"x.dds");
         assert!(store.image(ARRAY + 8).is_none());
         store.end(true);
         assert!(store.image(ARRAY).is_none());

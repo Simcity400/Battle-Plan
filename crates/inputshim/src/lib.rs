@@ -231,10 +231,19 @@ unsafe fn imports() -> Option<Vec<Slot>> {
             if imported >> 63 == 0 {
                 let start = (imported as usize).checked_add(2)?;
                 let available = size.checked_sub(start)?.min(name.len());
-                bytes(start, size, &mut name[..available])?;
-                let found = name[..available]
-                    .iter()
-                    .position(|&byte| byte == 0)
+                let mut read = 0;
+                let mut length = None;
+                while length.is_none() && read < available {
+                    let address = (base as usize).wrapping_add(start + read);
+                    let chunk = (0x1000 - address % 0x1000).min(available - read);
+                    bytes(start + read, size, &mut name[read..read + chunk])?;
+                    length = name[read..read + chunk]
+                        .iter()
+                        .position(|&byte| byte == 0)
+                        .map(|end| read + end);
+                    read += chunk;
+                }
+                let found = length
                     .and_then(|length| names.iter().position(|&wanted| wanted == &name[..length]));
                 if let Some(hook) = found {
                     let address = table.checked_add(index)?;

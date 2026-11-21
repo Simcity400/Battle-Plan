@@ -21,6 +21,15 @@ pub struct OwnedImage {
     pointer_base: u64,
 }
 
+const PAGE: usize = 0x1000;
+
+fn zeroed(len: usize) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).ok()?;
+    bytes.resize(len, 0);
+    Some(bytes)
+}
+
 fn malformed() -> Withheld {
     Withheld::new("executable image", "malformed PE headers")
 }
@@ -60,7 +69,7 @@ fn header(read: impl Fn(usize, usize) -> Option<Vec<u8>>) -> Verified<Header> {
 impl<'a> Image<'a> {
     pub fn live(base: usize, copy: &'a dyn Fn(usize, &mut [u8]) -> bool) -> Verified<Self> {
         let read = |offset: usize, len: usize| {
-            let mut bytes = vec![0; len];
+            let mut bytes = zeroed(len)?;
             copy(base.checked_add(offset)?, &mut bytes).then_some(bytes)
         };
         let header = header(read)?;
@@ -135,7 +144,7 @@ impl<'a> Image<'a> {
         let Some(copy) = self.live else {
             return section.bytes.get(start..end).map(Cow::Borrowed);
         };
-        let mut bytes = vec![0; len];
+        let mut bytes = zeroed(len)?;
         let address = self.base.checked_add(section.rva as usize)?.checked_add(start)?;
         copy(address, &mut bytes).then_some(Cow::Owned(bytes))
     }
@@ -178,14 +187,24 @@ impl<'a> Image<'a> {
     pub(crate) fn cstring(&self, rva: u32) -> Option<Cow<'a, [u8]>> {
         let s = self.containing(rva)?;
         let start = (rva - s.rva) as usize;
-        let tail = self.read(s, start, (s.size as usize - start).min(1024))?;
-        let end = tail.iter().position(|&b| b == 0)?;
-        Some(match tail {
-            Cow::Borrowed(bytes) => Cow::Borrowed(&bytes[..end]),
-            Cow::Owned(mut bytes) => {
-                bytes.truncate(end);
-                Cow::Owned(bytes)
+        let limit = (s.size as usize - start).min(1024);
+        if self.live.is_none() {
+            let tail = s.bytes.get(start..start + limit)?;
+            let end = tail.iter().position(|&b| b == 0)?;
+            return Some(Cow::Borrowed(&tail[..end]));
+        }
+        let mut name = Vec::new();
+        while name.len() < limit {
+            let at = start + name.len();
+            let address = self.base.checked_add(s.rva as usize)?.checked_add(at)?;
+            let chunk = (PAGE - address % PAGE).min(limit - name.len());
+            let bytes = self.read(s, at, chunk)?;
+            if let Some(end) = bytes.iter().position(|&b| b == 0) {
+                name.extend_from_slice(&bytes[..end]);
+                return Some(Cow::Owned(name));
             }
-        })
+            name.extend_from_slice(&bytes);
+        }
+        None
     }
 }

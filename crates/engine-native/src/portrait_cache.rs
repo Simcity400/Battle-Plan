@@ -1,6 +1,5 @@
 use std::{
     marker::PhantomData,
-    ptr,
     sync::{
         OnceLock,
         atomic::{Ordering, fence},
@@ -65,11 +64,12 @@ impl<'a> HolderImage<'a> {
         self.entries
     }
 
-    pub fn identity(&self, entry: &EntryImage) -> Result<&'a [u8], &'static str> {
-        if !self.entries.as_ptr_range().contains(&ptr::from_ref(entry)) {
-            return Err("character portrait pre-image entry from another holder");
-        }
-        let [start, len] = entry.text;
+    pub fn identity(&self, index: usize) -> Result<&'a [u8], &'static str> {
+        let [start, len] = self
+            .entries
+            .get(index)
+            .ok_or("character portrait pre-image entry outside its holder")?
+            .text;
         if start.checked_add(len).is_none_or(|end| end > self.text_len) {
             return Err("character portrait pre-image outside its text");
         }

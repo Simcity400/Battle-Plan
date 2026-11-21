@@ -18,8 +18,8 @@ use windows_sys::Win32::{
         Diagnostics::{
             Debug::{
                 CONTEXT, CONTEXT_CONTROL_AMD64, FlushInstructionCache, GetThreadContext,
-                IMAGE_RUNTIME_FUNCTION_ENTRY, IMAGE_RUNTIME_FUNCTION_ENTRY_0, RtlAddFunctionTable,
-                RtlDeleteFunctionTable,
+                IMAGE_RUNTIME_FUNCTION_ENTRY, IMAGE_RUNTIME_FUNCTION_ENTRY_0, ReadProcessMemory,
+                RtlAddFunctionTable, RtlDeleteFunctionTable,
             },
             ToolHelp::*,
         },
@@ -1069,9 +1069,6 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
         | PAGE_EXECUTE_WRITECOPY;
     let mut at = sp.checked_next_multiple_of(WORD)?;
     let mut allocation = None;
-    // SAFETY: each read copies a committed, readable stack range into the local buffer, and a
-    // range that cannot be copied leaves the scan unproved.
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut bytes = [0_u8; 512 * WORD];
     let mut buffer = [0_usize; 512];
     loop {
@@ -1102,7 +1099,19 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
                 return None;
             }
             let copied = &mut bytes[..count * WORD];
-            if !engine_native::Memory::copy(&memory, at, copied) {
+            let mut read = 0;
+            // SAFETY: the system copies the range into this function's own buffer and reports a
+            // range it cannot read instead of raising an exception while other threads are held.
+            let ok = unsafe {
+                ReadProcessMemory(
+                    GetCurrentProcess(),
+                    at as *const c_void,
+                    copied.as_mut_ptr().cast(),
+                    copied.len(),
+                    &mut read,
+                )
+            };
+            if ok == 0 || read != copied.len() {
                 return None;
             }
             for (word, chunk) in buffer.iter_mut().zip(copied.chunks_exact(WORD)) {

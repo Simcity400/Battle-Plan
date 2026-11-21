@@ -306,7 +306,7 @@ pub fn capture_presentation(
                 row.portrait_text.clear();
                 row.portrait_text_len = 0;
                 for (index, entry) in image.entries().iter().enumerate() {
-                    let text = image.identity(entry)?;
+                    let text = image.identity(index)?;
                     let start = row.portrait_text_len;
                     crate::allocation::resize(&mut row.portrait_text, start + text.len(), 0)
                         .map_err(|_| "commander text allocation failed")?;

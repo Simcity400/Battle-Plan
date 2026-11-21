@@ -1683,7 +1683,7 @@ unsafe fn lend_slow_stores(shared: &Shared) -> crate::extended::SlowStores {
                 .take(),
             advisors: (*shared.advisor_store.get()).take(),
             local_subunits: (*shared.local_subunit_store.get()).take(),
-            doctrine_bytes: 0,
+            doctrine_bytes: None,
             doctrines: Some(shared.doctrine_store.clone()),
         }
     }
@@ -4908,8 +4908,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
                 unsafe { *shared.local_subunit_store.get() = Some(store) };
             }
-            if stores.doctrines.is_some() {
-                let bytes = stores.doctrine_bytes;
+            if let Some(bytes) = stores.doctrine_bytes {
                 let previous = shared.doctrine_store_bytes.swap(bytes, Ordering::Relaxed);
                 shared
                     .pool_bytes
