@@ -1,6 +1,6 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
-import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef } from 'react';
-import type { CSSProperties, HTMLAttributes, KeyboardEvent, ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, HTMLAttributes, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import { Segmented } from '../../components/Segmented';
@@ -34,26 +34,22 @@ import { perfLog } from '../../shell/perf';
 import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
-import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, observedAt, projectCountries,
-  projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName,
+import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip,
+  observedAt, projectCountries, projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName, shownCard,
   validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import type { PlaybackController } from '../../dashboard/playback';
 import ProjectDetails from './ProjectDetails';
+import ProjectWindow from './ProjectWindow';
+import { Scientist } from './projectParts';
 import './specialProjects.css';
-import type { ProjectPresentation, SpecialProjectsReply } from '../../generated/dashboard';
+import type { SpecialProjectsReply } from '../../generated/dashboard';
 
 const PROJECTS_UNRECORDED = 'Projects were not recorded.';
 
-const ProjectTile = ({ icon }: { icon: string | null }) =>
-  <span className="blueprint-tile">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
-
-function Scientist({ reply, info }: { reply: SpecialProjectsReply; info: ProjectPresentation }) {
-  const person = reply.people[info.scientist];
-  if (!person.name) return <span className="special-project-scientist is-unassigned">{scientistName(reply, info)}</span>;
-  return <span className="special-project-scientist">{person.portrait ? <img src={person.portrait} alt="" /> : <ArtFallback icon="helmet" />}<span>{person.name}</span></span>;
-}
+const ProjectTile = ({ icon, onClick }: { icon: string | null; onClick?: (event: MouseEvent<HTMLElement>) => void }) =>
+  <span className={onClick ? 'blueprint-tile is-open' : 'blueprint-tile'} onClick={onClick}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
 
 const Section = ({ label, count, children }: { label: string; count: number; children: ReactNode }) =>
   <><p className="special-project-section">{label}<span>{usNumber.format(count)}</span></p>{children}</>;
@@ -62,7 +58,9 @@ type ItemProps = (card: ProjectCard) => HTMLAttributes<HTMLElement>;
 
 type HourNow = () => number;
 
-function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps; feed: PanelFeed | null }) {
+function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps;
+  open: (card: ProjectCard, event: MouseEvent<HTMLElement>) => void;
+  feed: PanelFeed | null }) {
   const list = useRef<HTMLDivElement>(null);
   const valueId = useId();
   const exactRead = feed?.exactRead;
@@ -80,21 +78,21 @@ function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackControll
         const { run, info } = card;
         return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
           style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties} {...item(card)}>
-          <ProjectTile icon={info.icon} />
-          <strong className="special-project-name">{info.name}</strong>
+          <ProjectTile icon={info.icon} onClick={event => open(card, event)} />
+          <strong className="special-project-name is-open" onClick={event => open(card, event)}>{info.name}</strong>
           <span className="special-project-who">
             {run.state === 'paused' && <b className="special-project-state is-paused">Paused</b>}
             {run.state === 'unknown' && <b className="special-project-state">State unknown</b>}
             <Scientist reply={reply} info={info} /></span>
           <span className="special-project-progress" aria-hidden="true"><span /></span>
           <strong className="special-project-percent" id={`${valueId}-${card.project.id}-progress`} data-paint="progress">{run.progress}%</strong>
-          <small className="special-project-iterations" id={`${valueId}-${card.project.id}-iterations`} data-paint="iterations">{iterationCount(run.iterations)}</small>
+          <small className="special-project-iterations" id={`${valueId}-${card.project.id}-iterations`} data-paint="iterations">{iterationMark(run.iterations)}</small>
         </div>;
       })}</Section> : <p data-panel-label="none" className="special-project-none">No projects in progress.</p>}
       {completed.length + earlier.length > 0 && <Section label="Completed" count={completed.length + earlier.length}>
-        {completed.map(card => <div key={card.project.id} className="special-project-row" {...item(card)}>
-          <ProjectTile icon={card.info.icon} />
-          <strong className="special-project-name" data-panel-label={card.project.id}>{card.info.name}</strong>
+        {completed.map(card => <div key={card.project.id} className="special-project-row special-project-done" {...item(card)}>
+          <ProjectTile icon={card.info.icon} onClick={event => open(card, event)} />
+          <strong className="special-project-name is-open" data-panel-label={card.project.id} onClick={event => open(card, event)}>{card.info.name}</strong>
           <span className="special-project-who"><Scientist reply={reply} info={card.info} /></span>
           <span className="special-project-when">{dayLabel(card.run.completion!.hour)}</span>
         </div>)}
@@ -104,7 +102,7 @@ function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackControll
             <span className="special-project-who">Already complete when first recorded</span>
             <svg className="special-project-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></summary>
           <div className="special-project-earlier-grid">{earlier.map(card => <div key={card.project.id} className="special-project-earlier-item" {...item(card)}>
-            <ProjectTile icon={card.info.icon} /><span>{card.info.name}</span></div>)}</div>
+            <ProjectTile icon={card.info.icon} onClick={event => open(card, event)} /><span className="is-open" onClick={event => open(card, event)}>{card.info.name}</span></div>)}</div>
         </details>}
       </Section>}
     </div>
@@ -179,6 +177,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   }) ?? [], [data, labelHour, resolved.memberships]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
+  const [opened, setOpened] = useState<{ tag: string; id: string; x: number; y: number } | null>(null);
   const bounded = useProducts<SpecialProjectsReply>(runtime.client, requests.map(r => ({ ...r, params: { ...r.params, hour: at } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
   const notes = view === 'history' ? bounded.data : currentData;
   const baseWarnings = useMemo(() => [...(notes?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [notes, groups.data]);
@@ -219,13 +218,17 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
       const run = runAt(card.project.runs, now());
       return run ? { ...card, run, info: reply.presentations[run.presentation] } : card;
     };
-    const show = (x: number, y: number) => showTooltip(owner, fitTooltip([projectTooltip(reply, atNow())], viewport), x, y);
+    const show = (x: number, y: number, target: EventTarget | null) => showTooltip(owner, fitTooltip([target instanceof Element && target.closest('.special-project-iterations')
+      ? iterationTooltip(reply, atNow()) : projectTooltip(reply, atNow())], viewport), x, y);
     return { tabIndex: 0, role: 'group', 'aria-label': tooltipText(projectTooltip(reply, card)),
-      onPointerMove: event => show(event.clientX, event.clientY), onPointerLeave: () => hideTooltip(owner),
-      onFocus: event => { const box = event.currentTarget.getBoundingClientRect(); show(box.right, box.top); }, onBlur: () => hideTooltip(owner),
+      onPointerMove: event => show(event.clientX, event.clientY, event.target), onPointerLeave: () => hideTooltip(owner),
+      onFocus: event => { const box = event.currentTarget.getBoundingClientRect(); show(box.right, box.top, null); }, onBlur: () => hideTooltip(owner),
       onContextMenu: event => { event.preventDefault(); openMenu(atNow(), event.clientX, event.clientY); },
       onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
-        if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey || event.key === 'Enter') {
+        if (event.key === 'Enter') {
+          event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); setOpened({ tag: reply.tag, id: card.project.id, x: box.left + 48, y: box.bottom });
+        }
+        else if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
           event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); openMenu(atNow(), box.left, box.bottom);
         }
       } };
@@ -251,10 +254,17 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     const reply = data.find(reply => resolved.match.matches(reply.tag, at));
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
     else {
+      const feed = panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime);
+      const observed = observedAt(reply, at);
       const details = <ProjectDetails runtime={runtime} widget={widget} tag={reply.tag} active={active} onWarnings={reportWarnings} />;
-      body = observedAt(reply, at) ? <><CurrentList clock={runtime.clock} feed={panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime)}
-        reply={reply} at={at} item={item(reply)} />{details}</>
-        : <><WidgetState kind="unavailable" message="Projects were not recorded at this time." />{details}</>;
+      const shown = opened?.tag === reply.tag ? opened : null;
+      const popup = shown && <ProjectWindow key={shown.id} runtime={runtime} widget={widget} tag={reply.tag} active={active} reply={reply} feed={feed}
+        card={observed ? shownCard(reply, at, shown.id) : null} anchor={shown}
+        missing={observed ? 'This project is not in progress or completed at this time.' : 'Projects were not recorded at this time.'}
+        onClose={() => setOpened(null)} onWarnings={reportWarnings} />;
+      body = observed ? <><CurrentList clock={runtime.clock} feed={feed} reply={reply} at={at} item={item(reply)}
+        open={(card, event) => setOpened({ tag: reply.tag, id: card.project.id, x: event.clientX, y: event.clientY })} />{details}{popup}</>
+        : <><WidgetState kind="unavailable" message="Projects were not recorded at this time." />{details}{popup}</>;
     }
   } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown
     ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />

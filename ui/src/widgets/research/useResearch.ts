@@ -54,7 +54,7 @@ export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, act
   useDrawnPanel(root, runtime.clock, feed && hoverHour !== null ? { ...feed, fixed: hoverHour - offset } : feed, active);
   const latest = { get current() { const read = now.current(), hour = now.shownAt(); return read && hour !== null ? { ...read, hour } : undefined; } };
   const data = useMemo<ResearchSlotsAt | undefined>(() => now.data && fallback !== null ? { ...now.data, hour: fallback } : undefined, [now.data, fallback]);
-  return { ...now, root: attach, data, latest, hourNow: () => headHour() ?? fallback ?? 0 };
+  return { ...now, root: attach, data, latest, feed, hourNow: () => headHour() ?? fallback ?? 0 };
 }
 
 export function useResearchChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {

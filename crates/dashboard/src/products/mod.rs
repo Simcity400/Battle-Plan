@@ -48,6 +48,7 @@ pub mod stockpile;
 pub mod styles;
 pub mod subjects;
 pub mod technology_artwork;
+pub mod technology_effects;
 pub mod territory;
 pub mod factions;
 pub mod experience;
@@ -160,6 +161,7 @@ pub const AT_HOUR: &[at_hour::Entry] = &[
     at_hour::local_entry::<wars::contributions::WarContributions>(),
     at_hour::local_entry::<special_projects::details::SpecialProjectDetailsAt>(),
     at_hour::local_entry::<special_projects::details::SpecialProjectEffectsAt>(),
+    at_hour::local_entry::<technology_effects::TechnologyEffectsAt>(),
     at_hour::local_entry::<air_superiority::AirSuperiorityAt>(),
     at_hour::local_entry::<equipment_losses::EquipmentLossHead>(),
     at_hour::local_entry::<army_losses::ArmyLosses>(),

@@ -107,7 +107,6 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
     const values = detailTexts(reply);
     if (reply.scientists) values.set('Scientists', String(reply.scientists.length));
     if (reply.programs) values.set('Facility assignments', String(reply.programs.length));
-    if (reply.projects) values.set('Project rewards and variables', String(reply.projects.length));
     return values;
   }, { owns: field => !field.closest(effectsLayer), extendInline }),
   'doctrine-mastery': recordView(validateDoctrineMastery, masteryStructure, (reply, values) => {

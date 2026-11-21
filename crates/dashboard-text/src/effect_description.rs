@@ -1313,6 +1313,23 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 }
 
+pub fn technology_description(token: &str, context: &Context<'_, '_>, country: u32) -> Description {
+    let mut renderer = Renderer {
+        context,
+        graph: Rc::new(RefCell::new(EventScopes::new(vec![
+            crate::scripted_text::EventScope::of(EventObject::Country(country)),
+        ]))),
+        evaluator: OnceCell::new(),
+        out: Description::default(),
+        scripted_stack: Vec::new(),
+    };
+    match renderer.bound_technology_effect(token, Scopes::of(Scope::Country(country))) {
+        Ok(text) => renderer.out.text = text,
+        Err(why) => renderer.refuse("technology effects", why),
+    }
+    renderer.out
+}
+
 pub fn project_output_description(
     output: &content_reader_core::special_projects::Output,
     context: &Context<'_, '_>,

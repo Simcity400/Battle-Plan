@@ -1,5 +1,6 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { CountryGroupReply, CountryIdentityRun, HourSpan, MembershipRun, ProjectDate, ProjectEpisode, ProjectPresentation, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
+import type { CountryGroupReply, CountryIdentityRun, HourSpan, MembershipRun, ProjectDate, ProjectEpisode, ProjectPresentation, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectRun,
+  SpecialProjectsReply } from '../../generated/dashboard';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout.ts';
 import { withoutHours } from '../../charts/timeline/runState.ts';
 import { clipToSpans, runAt, spansCovered } from '../../charts/series.ts';
@@ -107,7 +108,29 @@ export const scientistName = (data: SpecialProjectsReply, info: ProjectPresentat
 };
 export const iterationCount = (iterations: number | null) =>
   iterations === null ? 'Iterations unknown' : `${usNumber.format(iterations)} ${iterations === 1 ? 'iteration' : 'iterations'}`;
+export const iterationMark = (iterations: number | null) => iterations === null ? '—' : `×${usNumber.format(iterations)}`;
 export interface ProjectCard { project: ProjectEpisode; run: SpecialProjectRun; info: ProjectPresentation }
+
+export function iterationTooltip(data: SpecialProjectsReply, card: ProjectCard): TooltipContent {
+  const { iterations } = card.run;
+  const text = iterations === null ? null : data.iterationTexts[iterations] ?? null;
+  return { title: 'Iterations', subtitle: card.info.name,
+    rows: [{ label: 'Prototype iterations', value: iterations === null ? 'Not recorded' : usNumber.format(iterations) }], ...(text ? { description: text } : {}) };
+}
+
+export function shownCard(data: SpecialProjectsReply, hour: number, id: string): ProjectCard | null {
+  const { running, completed, earlier } = currentProjects(data, hour);
+  return running.find(card => card.project.id === id) ?? completed.find(card => card.project.id === id) ?? earlier.find(card => card.project.id === id) ?? null;
+}
+
+export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard): ProjectRuntimeDetails | string {
+  if (!details.projects) return 'Project rewards and output were not read at this time.';
+  const [local] = card.project.id.split(':');
+  const same = details.projects.filter(project => String(project.id) === local);
+  const named = same.length > 1 ? same.filter(project => project.label.name === card.info.name) : same;
+  if (named.length === 1) return named[0];
+  return named.length ? 'Several recorded projects match this one, so its rewards and output are withheld.' : 'Project rewards and output were not recorded for this project at this time.';
+}
 
 const shownRuns = (project: ProjectEpisode, hour: number, membership?: readonly HourSpan[]) => {
   const shown = membership ? clipToSpans(project.runs, membership) : project.runs;
@@ -157,7 +180,7 @@ export function projectStructure(reply: SpecialProjectsReply, hour: number) {
 
 export function runningValues(project: ProjectEpisode, hour: number): { progress: string; fill: number; iterations: string } | null {
   const run = runAt(project.runs, hour);
-  return run ? { progress: `${run.progress}%`, fill: Math.max(0, run.progress) / 100, iterations: iterationCount(run.iterations) } : null;
+  return run ? { progress: `${run.progress}%`, fill: Math.max(0, run.progress) / 100, iterations: iterationMark(run.iterations) } : null;
 }
 
 export const earlierBound = (cards: readonly ProjectCard[]) => cards.reduce((bound, card) => Math.max(bound, card.run.completion!.hour), -Infinity);

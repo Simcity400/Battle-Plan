@@ -3,9 +3,9 @@ import { panelStructure, panelValues } from '../../draw/panels/views.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
-import type { CountryGroupReply, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
+import type { CountryGroupReply, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -379,8 +379,8 @@ test('Current renders again only when a section, order, name, scientist, state o
 test('a running card paints its progress, bar and iterations at the hour, and nothing where the hour holds no run', () => {
   const data = projects();
   const beta = data.projects[2];
-  assert.deepEqual(runningValues(beta, 149), { progress: '0%', fill: 0, iterations: '0 iterations' });
-  assert.deepEqual(runningValues(beta, 180), { progress: '30%', fill: 0.3, iterations: '1 iteration' });
+  assert.deepEqual(runningValues(beta, 149), { progress: '0%', fill: 0, iterations: '×0' });
+  assert.deepEqual(runningValues(beta, 180), { progress: '30%', fill: 0.3, iterations: '×1' });
   assert.equal(runningValues(beta, 100), null);
   const backwards = { ...beta, runs: [{ ...beta.runs[0], progress: -20 }] };
   assert.equal(runningValues(backwards, 130)?.fill, 0, 'a negative prototype progress draws an empty bar, its percent as recorded');
@@ -400,4 +400,29 @@ test('History following the head keeps bars past the shown hour for the chart to
   assert.notEqual(historyKey(data, 119), historyKey(data, 120), 'a project starting renders');
   assert.deepEqual(projectHistory(data, 160, undefined, -Infinity, true).lanes.find(lane => lane.id === 'done')!.spans.map(span => [span.lastHour, span.positive, span.endLabel]),
     [[159, true, '✓']]);
+});
+
+test('the iteration mark names its count only, and its tooltip says what the count is', () => {
+  const data=fixture();
+  const card=currentProjects(data,120).running[0];
+  assert.equal(iterationMark(2), '×2');
+  assert.equal(iterationMark(null), '—');
+  const tip=iterationTooltip(data,card);
+  assert.equal(tip.title, 'Iterations');
+  assert.equal(tip.rows[0].value, '2');
+  assert.equal(tip.description, 'Mod iterations: 2');
+  assert.equal(iterationTooltip(data,{...card,run:{...card.run,iterations:null}}).rows[0].value, 'Not recorded');
+});
+
+test('a project window finds its runtime project by local id and withholds an ambiguous match', () => {
+  const data=fixture(); data.projects[0].id='3:100:0';
+  const card=shownCard(data,120,'3:100:0')!;
+  assert.equal(shownCard(data,120,'4:100:0'), null);
+  const runtime=(owner:number,id:number,name:string|null):ProjectRuntimeDetails=>({owner,id,label:{token:'mod_project',name},readHour:120,pendingKnown:true,pending:null,seed:null,variables:null,choices:null});
+  const details=(projects:ProjectRuntimeDetails[]|null):SpecialProjectDetails=>({hour:120,scientists:null,programs:null,breakthroughs:null,projects,unavailable:[],warnings:[]});
+  assert.deepEqual(runtimeProject(details([runtime(9,4,'Other'),runtime(9,3,'Mod project name')]),card), runtime(9,3,'Mod project name'));
+  assert.equal((runtimeProject(details([runtime(9,3,'Other'),runtime(10,3,'Mod project name')]),card) as ProjectRuntimeDetails).owner, 10);
+  assert.match(runtimeProject(details([runtime(9,3,'Mod project name'),runtime(10,3,'Mod project name')]),card) as string, /withheld/);
+  assert.match(runtimeProject(details([]),card) as string, /not recorded/);
+  assert.match(runtimeProject(details(null),card) as string, /not read/);
 });

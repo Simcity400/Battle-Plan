@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent, MouseEvent } from 'react';
 import ArtFallback from '../../components/ArtFallback';
 import { Icon } from '../../components/Icons';
 import ListSkeleton from '../../components/Skeleton';
@@ -16,6 +17,7 @@ import { historyTokens, useResearchReply, useResearchSlots } from '../research/u
 import { useTechnologyArtwork } from '../research/useTechnologyArtwork';
 import { activeSlots } from './activeResearchData';
 import type { ActiveSlot } from './activeResearchData';
+import ResearchWindow from './ResearchWindow';
 import './activeResearch.css';
 
 const NO_WARNINGS: string[] = [];
@@ -38,11 +40,21 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
   const untip = useCallback(() => hideTooltip(owner), [owner]);
   useEffect(() => untip, [untip]);
+  const [opened, setOpened] = useState<{ tag: string; token: string; databaseIndex: number | null; x: number; y: number } | null>(null);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (now.read === 'off') return <div className="dash-empty" role="status">This time is outside the recording.</div>;
   const failure = history.error ?? now.error;
   if (failure && (!data || !reply)) return <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />;
   if (!data || !reply) return <ListSkeleton label="Loading research..." />;
+  const describe = (token: string, databaseIndex: number | null) => {
+    const art = researchArt(artwork, token, databaseIndex);
+    const placed = data.technologyFolders.find(item => item.token === token && (item.databaseIndex == null || databaseIndex === null || item.databaseIndex === databaseIndex));
+    const folder = placed?.folder ? data.folders.find(item => item.key === placed.folder) : undefined;
+    return { token, name: contentTitle(art?.name, token, 'Technology name unavailable'), icon: artwork.get(token)?.icon ?? undefined, description: art?.description ?? null,
+      folder: folder ? contentTitle(folder.name, folder.key, 'Folder name unavailable') : null };
+  };
+  const open = (token: string, databaseIndex: number | null, x: number, y: number) => { untip(); setOpened({ tag, token, databaseIndex, x, y }); };
+  const researching = rows.filter((item): item is Extract<ActiveSlot, { kind: 'researching' }> => item.kind === 'researching');
   const row = (item: ActiveSlot) => {
     const key = `slot:${item.slot.index}`;
     if (item.kind === 'unavailable') return <div key={key} className="active-row is-quiet" role="status" title={item.reason}>
@@ -55,6 +67,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     const databaseIndex = entry?.databaseIndex ?? null;
     const art = researchArt(artwork, token, databaseIndex);
     const name = contentTitle(art?.name, token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
+    const click = (event: MouseEvent<HTMLElement>) => open(token, databaseIndex, event.clientX, event.clientY);
     const content = (): TooltipContent => {
       const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index) ?? item.read;
       const full = data.history.slots.find(held => held.index === slot.index) ?? slot;
@@ -67,17 +80,30 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     };
     return <div key={key} className="active-row" data-research-slot={slot.index} tabIndex={0} aria-label={`${name}, researching`}
       onPointerMove={event => showTooltip(owner, content(), event.clientX, event.clientY, key)} onPointerLeave={untip}
-      onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); showTooltip(owner, content(), box.right, box.top, key); }} onBlur={untip}>
-      <span className="active-row-art">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>
-      <span className="active-row-name">{name}</span>
+      onFocus={event => { const box = event.currentTarget.getBoundingClientRect(); showTooltip(owner, content(), box.right, box.top, key); }} onBlur={untip}
+      onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault(); const box = event.currentTarget.getBoundingClientRect(); open(token, databaseIndex, box.left + 40, box.bottom);
+      }}>
+      <span className="active-row-art is-open" onClick={click}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>
+      <span className="active-row-name is-open" onClick={click}>{name}</span>
       <ProgressMeter value={numbers.fraction} state="live" label={`${name} progress`} />
       <span className="active-row-percent" data-paint="percent">{numbers.percent}</span>
       <span className="active-row-days" data-paint="days">{numbers.days}</span>
     </div>;
   };
+  const shown = opened?.tag === tag ? opened : null;
+  const popup = shown && <ResearchWindow key={`${shown.token}:${shown.databaseIndex}`} runtime={runtime} widget={widget} track={track} tag={tag} data={data} reply={reply}
+    item={researching.find(item => item.token === shown.token && (item.entry?.databaseIndex ?? null) === shown.databaseIndex) ?? researching.find(item => item.token === shown.token) ?? null}
+    shown={describe(shown.token, shown.databaseIndex)} feed={now.feed} active={active} anchor={shown} onClose={() => setOpened(null)} />;
+  const idle = rows.filter(item => item.kind === 'idle').length;
   return <section className="active-research" aria-label="Active research" ref={now.root}>
     {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}
-    <div className="active-rows">{rows.map(row)}</div>
+    <div className="active-rows">
+      {rows.length > 0 && <p className="active-section">Researching<span>{researching.length}</span>{idle > 0 && <span className="is-idle">{idle} idle</span>}</p>}
+      {rows.map(row)}
+    </div>
     {!rows.length && <p>{reply.missing ?? `No research slots recorded at ${researchDate(reply.hour)}.`}</p>}
+    {popup}
   </section>;
 }
