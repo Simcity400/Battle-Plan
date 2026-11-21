@@ -247,7 +247,10 @@ fn labels(snapshot: &Value) -> BTreeMap<(String, String, String), u64> {
 }
 
 fn parse(args: &[OsString], var: impl Fn(&str) -> Option<OsString>) -> io::Result<Request> {
-    if var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| var("HOI4_VIEWER_PROFILE")).is_some() {
+    if var("BATTLE_PLAN_VIEWER_PROFILE")
+        .or_else(|| var("HOI4_VIEWER_PROFILE"))
+        .is_some()
+    {
         return Err(invalid("--playback-cost requires unprofiled playback"));
     }
     let mut translated = Vec::new();
@@ -862,7 +865,13 @@ mod lean_tests {
         assert!(parse(&timed, none).is_ok(), "a run that is not lean times its GPU passes");
         let unwindowed: Vec<_> = args(&[]).into_iter().filter(|arg| arg != "--windowed").collect();
         assert!(parse(&unwindowed, none).err().is_some_and(|why| why.to_string().contains("--windowed")));
-        for name in ["BATTLE_PLAN_VIEWER_GPU_PASSES", "BATTLE_PLAN_EXTRA_MAPS", "BATTLE_PLAN_HOVER_FAMILY", "BATTLE_PLAN_VIEWER_PROFILE"] {
+        for name in [
+            "BATTLE_PLAN_VIEWER_GPU_PASSES",
+            "BATTLE_PLAN_EXTRA_MAPS",
+            "BATTLE_PLAN_HOVER_FAMILY",
+            "BATTLE_PLAN_VIEWER_PROFILE",
+            "HOI4_VIEWER_PROFILE",
+        ] {
             let set = |given: &str| (given == name).then(|| OsString::from("1"));
             assert!(refusal(&[], set).is_some(), "{name}");
             let empty = |given: &str| (given == name).then(OsString::new);
