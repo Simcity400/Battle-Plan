@@ -366,6 +366,27 @@ test('a stepped panel covers each completed step until its next reading arrives'
   assert.equal(followed.snapshot(1)?.through, 122, 'inspection stops at the completed step on the panel clock');
 });
 
+test('a product waiting for its table is covered only through the hour before it waited, whatever later steps complete', () => {
+  let hour = 12;
+  const { store, add, deliver, frame } = dated(() => hour);
+  const entry = add();
+  store.bind('1', 9, 1);
+  const packet = datedPanel(entry.id, 10, 'held');
+  packet[33] = 1;
+  deliver(packet);
+  deliver(completedStep(22));
+  const waiting = datedPanel(entry.id, 34);
+  waiting[32] = 5;
+  deliver(waiting);
+  deliver(completedStep(34));
+  deliver(completedStep(58));
+  deliver(datedPanel(entry.id, 82, 'changed'));
+  hour = 58; frame();
+  assert.deepEqual(store.coverage(entry), { start: 10, through: 33 });
+  hour = 82; frame();
+  assert.deepEqual(store.coverage(entry), { start: 82, through: 82 });
+});
+
 test('page seeks admit their own packets immediately and a native reset supersedes its queued future', () => {
   let head = 10;
   const { store, add, deliver, frame } = dated(() => head);

@@ -7,7 +7,7 @@ use playhead::{
 use replay_columnar::unit::{BLOCK, reader};
 use replay_data::Hour;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -17,7 +17,7 @@ const HELD_SETS: usize = 4;
 pub struct Pool {
     pub(super) pages: Arc<WorldPages>,
     free: Mutex<Vec<Placed>>,
-    warming: Mutex<HashSet<(usize, usize)>>,
+    warming: Mutex<HashMap<(usize, usize), Vec<dashboard_follow::panel::Wake>>>,
     unplaceable: Mutex<HashSet<(usize, usize)>>,
 }
 
@@ -72,16 +72,23 @@ impl Pool {
         if let Some(lane) = free.iter_mut().filter(|placed| placed.run == run).flat_map(|placed| placed.lanes.iter_mut()).filter(|lane| near(lane)).max_by_key(|lane| lane.head()) {
             return Warm::Read(place(lane, hour).and_then(|()| read(lane)));
         }
+        let mut wide: Vec<usize> = free.iter().filter(|placed| placed.run == run).flat_map(|placed| &placed.lanes)
+            .filter(|lane| lane.table() == table).flat_map(|lane| lane.requested().iter().copied()).chain(columns.iter().copied()).collect();
+        wide.sort_unstable();
+        wide.dedup();
         drop(free);
         let mut warming = self.warming.lock().unwrap_or_else(PoisonError::into_inner);
-        if warming.insert((run, table)) {
-            let (pool, columns) = (Arc::clone(self), columns.to_vec());
+        if let Some(waiting) = warming.get_mut(&(run, table)) {
+            if let Some(wake) = wake { waiting.push(wake); }
+        } else {
+            warming.insert((run, table), wake.into_iter().collect());
+            let (pool, columns) = (Arc::clone(self), wide);
             let spawned = std::thread::Builder::new().name("product lane".into()).spawn(move || {
                 let mut taken = Taken { pool: Arc::clone(&pool), placed: Some(Placed { run, at: None, lanes: Vec::new() }) };
                 if taken.lane(table, &columns, hour).is_err() { pool.unplaceable.lock().unwrap_or_else(PoisonError::into_inner).insert((run, table)); }
                 drop(taken);
-                pool.warming.lock().unwrap_or_else(PoisonError::into_inner).remove(&(run, table));
-                if let Some(wake) = wake { wake(); }
+                let waiting = pool.warming.lock().unwrap_or_else(PoisonError::into_inner).remove(&(run, table)).unwrap_or_default();
+                for wake in waiting { wake(); }
             });
             if spawned.is_err() {
                 warming.remove(&(run, table));
@@ -103,8 +110,7 @@ impl Drop for Taken {
                     match held.lanes.iter().position(|kept| kept.table() == lane.table()) {
                         None => held.lanes.push(lane),
                         Some(at) if lane.requested().iter().all(|column| held.lanes[at].requested().contains(column)) => {}
-                        Some(at) if held.lanes[at].requested().iter().all(|column| lane.requested().contains(column)) => held.lanes[at] = lane,
-                        Some(_) => {}
+                        Some(at) => held.lanes[at] = lane,
                     }
                 }
             }

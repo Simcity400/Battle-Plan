@@ -7,17 +7,17 @@ const SURFACE = new Set<ToWorker['type']>(['surface', 'table', 'dateFace', 'race
   'racePointer', 'inspectRace', 'detach', 'closeRace']);
 const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'structureLead', 'followFailure']);
 const WEIGHT: Partial<Record<ToWorker['type'], number>> = { table: 4, race: 2 };
-const TABLE = 1_000;
 
 export class DrawLanes {
-  private readonly owner = new Map<number, { lane: number; weight: number }>();
+  private readonly owner = new Map<number, { lane: number; weight: number; table: boolean }>();
   private readonly lanes: readonly DrawLane[];
   private readonly emit: (message: FromWorker) => void;
   private readonly load: number[];
+  private readonly tables: number[];
   private audit?: { waiting: number; records: DrawSample[]; done: boolean };
 
   constructor(lanes: readonly DrawLane[], emit: (message: FromWorker) => void) {
-    this.lanes = lanes; this.emit = emit; this.load = lanes.map(() => 0);
+    this.lanes = lanes; this.emit = emit; this.load = lanes.map(() => 0); this.tables = lanes.map(() => 0);
   }
 
   get count() { return this.lanes.length; }
@@ -30,12 +30,18 @@ export class DrawLanes {
         if (message.type !== 'surface' && message.type !== 'table' && message.type !== 'dateFace' && message.type !== 'race') {
           this.lanes[0]!.postMessage(message, transfer); return;
         }
-        const weight = (WEIGHT[message.type] ?? 1) + (message.type === 'table' ? TABLE : 0);
-        const least = message.type === 'table' ? this.load : this.load.map(load => load % TABLE);
-        held = { lane: least.indexOf(Math.min(...least)), weight };
-        this.owner.set(message.id, held); this.load[held.lane]! += held.weight;
+        const table = message.type === 'table';
+        let lane = 0;
+        for (let at = 1; at < this.lanes.length; at++) {
+          const fewer = table && this.tables[at]! !== this.tables[lane]! ? this.tables[at]! < this.tables[lane]! : this.load[at]! < this.load[lane]!;
+          if (fewer) lane = at;
+        }
+        held = { lane, weight: WEIGHT[message.type] ?? 1, table };
+        this.owner.set(message.id, held); this.load[lane]! += held.weight; if (table) this.tables[lane]!++;
       }
-      if (message.type === 'detach' || message.type === 'closeRace') { this.owner.delete(message.id); this.load[held.lane]! -= held.weight; }
+      if (message.type === 'detach' || message.type === 'closeRace') {
+        this.owner.delete(message.id); this.load[held.lane]! -= held.weight; if (held.table) this.tables[held.lane]!--;
+      }
       this.lanes[held.lane]!.postMessage(message, transfer);
       return;
     }

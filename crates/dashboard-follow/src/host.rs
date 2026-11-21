@@ -137,7 +137,7 @@ struct Panels {
     products: BTreeMap<u32, StepProduct>,
     due: BTreeSet<(Hour, u32)>,
     stream: Option<(u64, u32, u64, Option<usize>)>,
-    resend: bool,
+    resend: Option<Hour>,
     pace: Option<(bool, f64)>,
     rows: Option<Arc<dyn PanelRows>>,
     push: Option<Arc<Push>>,
@@ -380,14 +380,14 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
             let mut delivered = Vec::new();
             let mut held_over = Vec::new();
             let mut pending = Vec::new();
-            let mut changed = Vec::new();
             let stream = (step.epoch(), page_seek, step.restep(), step.piece());
             if panels.stream.replace(stream) != Some(stream) || step.reset() {
                 let Panels { due, products, resend, .. } = &mut *panels;
                 due.clear();
                 due.extend(products.keys().map(|&id| (step.last(), id)));
-                *resend = true;
-            } else if std::mem::take(&mut panels.resend) {
+                *resend = Some(step.last());
+            } else if panels.resend.is_some_and(|reset| step.last() > reset) {
+                panels.resend = None;
                 let Panels { due, products, .. } = &mut *panels;
                 due.clear();
                 due.extend(products.keys().map(|&id| (step.last(), id)));
@@ -423,10 +423,8 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 delivered.push(id);
                 if let Some((kind, body)) = change {
                     batch.changed(id, step.last(), kind, body);
-                    changed.push(id);
                 } else if joining {
                     batch.changed(id, step.last(), panel::dated::STANDS, &[]);
-                    changed.push(id);
                 }
                 product.joined = true;
                 if let Some(next) = product.next { panels.due.insert((next, id)); }
@@ -435,14 +433,14 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 if let Some(product) = panels.products.get_mut(&id) { product.resend = true; }
                 panels.due.insert((step.last().saturating_add(1), id));
             }
-            let through = confirmed(&mut batch, &panels.products, &pending, &changed, step.last());
+            for &id in &pending { batch.changed(id, step.last(), panel::dated::WAITING, &[]); }
             for id in pending {
                 if let Some(product) = panels.products.get_mut(&id) { product.resend = true; }
                 panels.due.insert((step.last(), id));
             }
             let reads = active.lock().unwrap_or_else(PoisonError::into_inner);
             if reads.current(step.epoch(), page_seek) && get(&owner).epoch() == step.epoch() {
-                push.offer_kind(PANEL, batch.finish(through));
+                push.offer_kind(PANEL, batch.finish(Some(step.last())));
                 for id in delivered { if let Some(product) = panels.products.get_mut(&id) { product.wire.commit(); } }
             } else {
                 for id in delivered {
@@ -590,14 +588,6 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
     }
 }
 
-fn confirmed(batch: &mut panel::dated::ProductBatch, products: &BTreeMap<u32, StepProduct>, pending: &[u32], changed: &[u32], hour: Hour) -> Option<Hour> {
-    if pending.is_empty() { return Some(hour); }
-    for (&id, product) in products {
-        if product.joined && !pending.contains(&id) && !changed.contains(&id) { batch.changed(id, hour, panel::dated::STANDS, &[]); }
-    }
-    None
-}
-
 impl<E: Send + Sync + 'static> Drop for PlayheadHost<E> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -611,24 +601,6 @@ impl<E: Send + Sync + 'static> Drop for PlayheadHost<E> {
         }
         self.playhead().retire(self.reader);
     }
-}
-
-#[cfg(test)]
-#[test]
-fn a_step_confirms_no_hour_for_a_product_still_waiting_for_its_table() {
-    let product = |id, joined| StepProduct {
-        id, lanes: Vec::new(), seed: None, last: None, next: None, joined, wire: Default::default(), cells: Vec::new(), host: None, followed: None, input: None, resend: false,
-        read: Arc::new(|_, _, _, _| panel::ProductRead { value: Arc::new(Ok(Value::Null)), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }),
-    };
-    let products: BTreeMap<u32, StepProduct> = [(1, product(1, true)), (2, product(2, true)), (3, product(3, true)), (4, product(4, false))].into();
-    let mut whole = panel::dated::ProductBatch::new((0, 1, 0));
-    assert_eq!(confirmed(&mut whole, &products, &[], &[], 124), Some(124), "every product read through the hour");
-    let mut batch = panel::dated::ProductBatch::new((0, 1, 0));
-    batch.changed(3, 124, panel::dated::STANDS, &[]);
-    assert_eq!(confirmed(&mut batch, &products, &[2], &[3], 124), None, "no blanket completion while one waits");
-    let bytes = batch.finish(None);
-    let stands: Vec<(u32, Hour, u8)> = panel::dated::records(&bytes).unwrap().iter().map(|r| (r.id, r.hour, r.kind)).collect();
-    assert_eq!(stands, [(3, 124, panel::dated::STANDS), (1, 124, panel::dated::STANDS)], "the others stand at the hour; the waiting one and one not yet joined do not");
 }
 
 #[cfg(test)]

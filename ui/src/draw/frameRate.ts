@@ -20,8 +20,7 @@ export class PresentationRate {
 }
 
 export function shownAt(at: number, began: number, interval: number) {
-  if (!(interval > 0)) return began;
-  return at + interval * (1 + Math.max(0, Math.floor((began - at) / interval)));
+  return interval > 0 && began < at + interval ? at + interval : began;
 }
 
 export class DisplayRate {

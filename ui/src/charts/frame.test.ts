@@ -89,7 +89,7 @@ test('a frame is drawn for the first display it can reach, the next vsync after 
   assert.equal(rate.interval, 5, 'a faster display shortens the lead at its first frame');
   assert.equal(shownAt(100, 100, 10), 110, 'begun at its vsync');
   assert.equal(shownAt(100, 109.9, 10), 110, 'begun late within the interval');
-  assert.equal(shownAt(100, 110, 10), 120, 'begun after the next vsync passed');
+  assert.equal(shownAt(100, 110, 10), 110, 'begun after the vsync it expected: the clock as its work begins');
   assert.equal(shownAt(100, 95, 10), 110, 'a clock read before the frame time');
 });
 

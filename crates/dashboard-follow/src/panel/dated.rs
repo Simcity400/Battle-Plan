@@ -3,13 +3,14 @@ use replay_data::Hour;
 use std::{collections::BTreeMap, io};
 
 pub const MAGIC: &[u8; 4] = b"PNL2";
-const VERSION: u16 = 5;
+const VERSION: u16 = 6;
 const HEAD: usize = 24;
 const PANEL_HEAD: usize = 16;
 pub const REFUSED: u8 = 0;
 pub const DATA: u8 = 1;
 pub const STANDS: u8 = 3;
 pub const COMPLETED: u8 = 4;
+pub const WAITING: u8 = 5;
 
 pub struct ProductBatch {
     bytes: Vec<u8>,
@@ -150,6 +151,7 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
         .ok_or_else(|| crate::invalid("Panel messages belong to different routes or seeks"))?;
     let mut readings = BTreeMap::new();
     let mut stands = BTreeMap::new();
+    let mut waits = BTreeMap::new();
     let mut completed = None;
     let mut count = 0;
     for r in records(older)?.into_iter().chain(records(newer)?) {
@@ -157,12 +159,13 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
         match r.kind {
             DATA | REFUSED => { stands.remove(&r.id); readings.insert(r.id, r); }
             STANDS => { stands.insert(r.id, r); }
+            WAITING => { waits.entry(r.id).or_insert(r); }
             COMPLETED => completed = Some(r),
             _ => return Err(crate::invalid("Unknown dated panel kind")),
         }
     }
-    let kept = readings.len() + stands.len() + usize::from(completed.is_some());
+    let kept = waits.len() + readings.len() + stands.len() + usize::from(completed.is_some());
     let mut out = head(kept, clock(newer), stamp);
-    for r in readings.into_values().chain(stands.into_values()).chain(completed) { out.extend_from_slice(r.bytes); }
+    for r in waits.into_values().chain(readings.into_values()).chain(stands.into_values()).chain(completed) { out.extend_from_slice(r.bytes); }
     Ok((out, (count - kept) as u32))
 }
