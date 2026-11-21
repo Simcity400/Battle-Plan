@@ -789,6 +789,9 @@ impl PowerLedger {
             } else if sole {
                 self.steady.remove(&holder);
             }
+            if pending.daily.get(&holder) == Some(&raw) {
+                pending.daily.remove(&holder);
+            }
             for mut part in held {
                 let key = part.key();
                 match remaining.get(&part.ordinal) {

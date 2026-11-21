@@ -103,8 +103,8 @@ const CANCELLED: i32 = 122;
 const STALE_ZERO: i32 = 123;
 const MATCHED: i32 = 124;
 const DAILY_GONE: i32 = 125;
-const PAIRED: i32 = 126;
-const TOTAL_KEPT: i32 = 127;
+const PAIRED: i32 = 144;
+const TOTAL_KEPT: i32 = 145;
 const NO_CHANGES: i32 = 26;
 
 fn put_daily(store: &mut Store, hour: i32, row: &CountryPowerDailyRow) {
@@ -275,12 +275,12 @@ fn edit(store: &mut Store, hour: i32) {
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
         }
         PAIRED => {
-            put_daily(store, hour, &daily(120, 3 * Q, Q / 2 + Q / 10, 126));
-            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 0, PowerDailyCostKind::Relation, Q / 2, 126), TEXTS).unwrap();
-            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 1, PowerDailyCostKind::MioResearch, Q / 10, 126), TEXTS).unwrap();
+            put_daily(store, hour, &daily(144, 3 * Q, Q / 2 + Q / 10, 144));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(144, 0, PowerDailyCostKind::Relation, Q / 2, 144), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(144, 1, PowerDailyCostKind::MioResearch, Q / 10, 144), TEXTS).unwrap();
         }
         TOTAL_KEPT => {
-            put_daily(store, hour, &daily(120, 3 * Q, Q / 2 + Q / 10, 126));
+            put_daily(store, hour, &daily(144, 3 * Q, Q / 2 + Q / 10, 144));
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
         }
         _ => {}
@@ -529,8 +529,9 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     let (gone, _) = through(0..=DAILY_GONE);
     assert_eq!((cell::<Part>(&gone, TableId::PowerDayParts, relation, "spent"), covered(&gone)), (Some(Q / 2), Some(false)), "a deletion keeps a survivor in the part it was published in, uncovered while no daily application confirms the batch");
     let mismatch = |store: &Store| cell::<Coverage>(store, TableId::PowerSpendCoverage, 10, "daily_mismatch");
+    assert_eq!(mismatch(&gone), Some(i64::from(Coverage::STEADY_MISMATCH)), "and the daily row leaving with it confirms nothing");
     let (batch, _) = through(0..=PAIRED);
-    assert_eq!(mismatch(&batch), Some(0));
+    assert_eq!((mismatch(&batch), covered(&batch)), (Some(0), Some(true)));
     let (kept, _) = through(0..=TOTAL_KEPT);
     assert_eq!(mismatch(&kept), Some(i64::from(Coverage::STEADY_MISMATCH)), "a deletion whose remaining costs miss the total read that hour is a mismatch");
     assert_eq!(covered(&kept), Some(false), "and its unchanged survivor is no longer covered");
