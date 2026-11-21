@@ -86,6 +86,22 @@ fn events_past_their_part_are_refused_by_name() {
     assert!(refused.to_string().contains("past its part"), "{refused}");
 }
 
+#[test]
+fn a_mark_past_its_part_is_refused_by_name() {
+    for stream in [crate::unit::READ, crate::unit::TOUCHED] {
+        let (bytes, entry) = part_in(stream, 1, &[0, 2, 2], &[4, 3]);
+        let part = fetch(&bytes, &entry, 5, &[], None).unwrap();
+        let (mut touched, mut read) = (Vec::new(), Vec::new());
+        let refused = part.marks(0, 10, &mut touched, &mut read).unwrap_err();
+        assert!(refused.to_string().contains("past its part"), "the mark at hour 7 lies past hour 5, the part's last: {refused}");
+        let (bytes, entry) = part_in(stream, 1, &[0, 2, 2], &[4, 1]);
+        let part = fetch(&bytes, &entry, 5, &[], None).unwrap();
+        let (mut touched, mut read) = (Vec::new(), Vec::new());
+        part.marks(0, 10, &mut touched, &mut read).unwrap();
+        assert_eq!([touched, read].concat(), [(4, 0), (5, 0)], "a mark at the part's last hour reads");
+    }
+}
+
 fn written(script: impl Fn(u32, &mut crate::store::TableChanges<'_>)) -> (Vec<u8>, crate::unit::BlockPage, Vec<TableState>) {
     use crate::{
         store::Store,

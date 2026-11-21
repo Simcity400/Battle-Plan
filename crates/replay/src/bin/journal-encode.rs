@@ -1,5 +1,5 @@
 use replay::{
-    campaign::live::{LiveWriter, Progress},
+    campaign::live::Progress,
     columnar_file::Settings,
     columnar_journal::Source,
     encode_report::{self, Everything},
@@ -89,7 +89,8 @@ fn main() -> io::Result<()> {
     if memory {
         encode_report::sample_memory()?;
     }
-    let mut writer = LiveWriter::open(out, &state, "journal-encode", capture, settings, Vec::new())?;
+    let encoded_as = encode_report::encoder_source(times.is_some(), start.as_ref().map(|start| start.block));
+    let mut writer = encode_report::open_encoded(out, &state, capture, settings, &encoded_as)?;
     writer.time(timed);
     if (times.is_some() || start.is_some()) && !cfg!(feature = "multiplied") {
         return Err(io::Error::other("--times and --start need a build with the feature replay/multiplied"));

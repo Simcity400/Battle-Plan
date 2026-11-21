@@ -6,6 +6,8 @@ use crate::{
         live::{self, Admit, Applied, Asked, Committed, Host, LiveWriter},
         session_facts_for,
     },
+    columnar_file::Settings,
+    columnar_frames::{Open, Recording},
     columnar_journal::{Journal, Record, Source},
 };
 use replay_data::identity::{Identity, SessionStart};
@@ -28,6 +30,36 @@ pub fn journal_start(directory: &Path, capture: u32) -> io::Result<(Vec<u8>, Ses
         )),
         _ => Err(io::Error::other(format!("{}'s journal does not begin with its capture's start", directory.display()))),
     }
+}
+
+const ENCODER: &str = "journal-encode";
+
+pub fn encoder_source(multiplied: bool, start: Option<u32>) -> String {
+    let mut source = ENCODER.to_owned();
+    if multiplied {
+        source.push_str(" --times");
+    }
+    if let Some(block) = start {
+        source.push_str(&format!(" --start={block}"));
+    }
+    source
+}
+
+pub fn open_encoded(out: &Path, state: &Path, capture: u32, settings: Settings, source: &str) -> io::Result<LiveWriter> {
+    let cursors = match std::fs::metadata(out) {
+        Ok(_) => Recording::open_path_as(out, Open::Newest)?.records()?.cursors,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    let encoder = |held: &str| held.strip_prefix(ENCODER).is_some_and(|rest| rest.is_empty() || rest.starts_with(' '));
+    if let Some(other) = cursors.iter().find(|cursor| cursor.capture == capture && cursor.source != source && encoder(&cursor.source)) {
+        return Err(io::Error::other(format!(
+            "{} holds capture {capture} encoded as `{}`, whose blocks a run encoding as `{source}` does not follow on from: encode into a new file",
+            out.display(),
+            other.source
+        )));
+    }
+    LiveWriter::open(out, state, source, capture, settings, Vec::new())
 }
 
 pub fn session_facts_file(directory: &Path, campaign: &[u8]) -> Option<PathBuf> {

@@ -947,7 +947,13 @@ impl Part {
             let mut hour = u32::from(tracks.next[index]);
             let mut at = tracks.at[index] as usize;
             let track = raw.get(..tracks.end[index] as usize).ok_or_else(|| invalid("A track passes its stream"))?;
-            while hour <= u32::from(to) {
+            loop {
+                if hour > u32::from(self.last) {
+                    return Err(invalid("A unit track marks an hour past its part"));
+                }
+                if hour > u32::from(to) {
+                    break;
+                }
                 if hour >= u32::from(from) {
                     out.push((hour as u16, tracks.slot[index]));
                 }
