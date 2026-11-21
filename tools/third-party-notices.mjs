@@ -2,11 +2,14 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
 const RULE = "=".repeat(78);
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 export async function thirdPartyNotices(folder, components) {
-  const present = (await readdir(folder, { withFileTypes: true })).filter((entry) => entry.isFile()).map((entry) => entry.name);
+  const entries = await readdir(folder, { withFileTypes: true });
+  const present = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
   const listed = components.flatMap((component) => component.files);
   const problems = [
+    ...entries.filter((entry) => !entry.isFile()).map((entry) => `LICENSES/${entry.name} is not a file; notices sit directly in LICENSES.`),
     ...listed.filter((name, index) => listed.indexOf(name) !== index).map((name) => `${name} is listed twice.`),
     ...listed.filter((name) => !present.includes(name)).map((name) => `${name} is listed but not in LICENSES.`),
     ...present.filter((name) => !listed.includes(name)).map((name) => `LICENSES/${name} is in no component of tools/shipped.json's notices.`),
@@ -16,7 +19,12 @@ export async function thirdPartyNotices(folder, components) {
   for (const [index, component] of components.entries()) {
     const texts = [];
     for (const name of component.files) {
-      const text = await readFile(path.join(folder, name), "utf8");
+      let text;
+      try {
+        text = UTF8.decode(await readFile(path.join(folder, name)));
+      } catch {
+        throw new Error(`LICENSES/${name} is not UTF-8, so its text could not be carried verbatim.`);
+      }
       texts.push(`--- ${name} ---\n\n${text.endsWith("\n") ? text : `${text}\n`}`);
     }
     sections.push(`${RULE}\n${index + 1}. ${component.name}\n\n${component.use}\n${RULE}\n\n${texts.join("\n")}`);

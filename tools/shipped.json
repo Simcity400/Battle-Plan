@@ -9,7 +9,7 @@
     "components": [
       {
         "name": "Microsoft DirectX Shader Compiler",
-        "use": "dxcompiler.dll and dxil.dll, shipped unmodified.",
+        "use": "Compiles the map's shaders. dxcompiler.dll and dxil.dll, shipped unmodified.",
         "files": ["DirectXShaderCompiler-LICENSE-MS.txt", "DirectXShaderCompiler-LICENSE-MIT.txt", "DirectXShaderCompiler-LICENSE-LLVM.txt"]
       },
       {

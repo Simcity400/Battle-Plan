@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -25,15 +25,21 @@ test('every LICENSES file is in the combined notices once, verbatim, under its c
   assert.match(combined, /This software is based in part on the work of the Independent JPEG Group\./);
 });
 
-test('a notice missing from the manifest, or listed without its file, stops packaging by name', async (t) => {
+test('a notice missing from the manifest, listed without its file, nested or not UTF-8 stops packaging by name', async (t) => {
   const folder = await mkdtemp(path.join(tmpdir(), 'notices-'));
   t.after(() => rm(folder, { recursive: true, force: true }));
   await writeFile(path.join(folder, 'a.txt'), 'A licence');
   await writeFile(path.join(folder, 'new.txt'), 'Unlisted');
+  await mkdir(path.join(folder, 'vendor'));
+  await writeFile(path.join(folder, 'vendor', 'LICENSE'), 'Nested');
   await assert.rejects(thirdPartyNotices(folder, [{ name: 'A', use: 'Uses.', files: ['a.txt', 'gone.txt'] }]), (error) => {
+    assert.match(error.message, /LICENSES\/vendor is not a file/);
     assert.match(error.message, /gone\.txt is listed but not in LICENSES/);
     assert.match(error.message, /LICENSES\/new\.txt is in no component/);
     return true;
   });
+  await rm(path.join(folder, 'vendor'), { recursive: true });
   assert.match(await thirdPartyNotices(folder, [{ name: 'A', use: 'Uses.', files: ['a.txt', 'new.txt'] }]), /--- new\.txt ---\n\nUnlisted\n$/);
+  await writeFile(path.join(folder, 'new.txt'), Buffer.from('Copyright \xa9', 'latin1'));
+  await assert.rejects(thirdPartyNotices(folder, [{ name: 'A', use: 'Uses.', files: ['a.txt', 'new.txt'] }]), /LICENSES\/new\.txt is not UTF-8/);
 });

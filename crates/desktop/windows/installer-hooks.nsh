@@ -177,6 +177,34 @@ FunctionEnd
   ${EndIf}
 !macroend
 
+!macro HOI_REMOVE_LICENSES
+  Delete "$INSTDIR\LICENSES\DirectXShaderCompiler-LICENSE-LLVM.txt"
+  Delete "$INSTDIR\LICENSES\DirectXShaderCompiler-LICENSE-MIT.txt"
+  Delete "$INSTDIR\LICENSES\DirectXShaderCompiler-LICENSE-MS.txt"
+  Delete "$INSTDIR\LICENSES\Fontsource-cascadia-code-LICENSE.txt"
+  Delete "$INSTDIR\LICENSES\Fontsource-inter-LICENSE.txt"
+  Delete "$INSTDIR\LICENSES\Fontsource-roboto-LICENSE.txt"
+  Delete "$INSTDIR\LICENSES\Fontsource-roboto-condensed-LICENSE.txt"
+  Delete "$INSTDIR\LICENSES\Fontsource-source-serif-4-LICENSE.txt"
+  Delete "$INSTDIR\LICENSES\IJG-libjpeg-README.txt"
+  Delete "$INSTDIR\LICENSES\Lucide-LICENSE.txt"
+  Delete "$INSTDIR\LICENSES\PhysFS-LICENSE.txt"
+  Delete "$INSTDIR\LICENSES\README.md"
+  Delete "$INSTDIR\LICENSES\SDL-LICENSE.txt"
+  Delete "$INSTDIR\LICENSES\byteorder-lite-LICENSE-MIT.txt"
+  Delete "$INSTDIR\LICENSES\eframe-LICENSE-APACHE.txt"
+  Delete "$INSTDIR\LICENSES\eframe-LICENSE-MIT.txt"
+  Delete "$INSTDIR\LICENSES\image-LICENSE-MIT.txt"
+  Delete "$INSTDIR\LICENSES\libpng-LICENSE.txt"
+  Delete "$INSTDIR\LICENSES\moxcms-LICENSE-BSD.txt"
+  Delete "$INSTDIR\LICENSES\pxfm-LICENSE-BSD.txt"
+  Delete "$INSTDIR\LICENSES\tao-LICENSE-APACHE.txt"
+  Delete "$INSTDIR\LICENSES\tao-LICENSE.spdx"
+  Delete "$INSTDIR\LICENSES\winit-LICENSE-APACHE.txt"
+  Delete "$INSTDIR\LICENSES\xxhash-BSD-2-Clause.txt"
+  RMDir "$INSTDIR\LICENSES"
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   !insertmacro HOI_TAKE_GUARD
   StrCpy $HoiClosing 1
@@ -190,7 +218,7 @@ FunctionEnd
 !macro NSIS_HOOK_POSTINSTALL
   Delete "$INSTDIR\viewer.exe"
   RMDir /r "$INSTDIR\shader-tools"
-  RMDir /r "$INSTDIR\LICENSES"
+  !insertmacro HOI_REMOVE_LICENSES
   ${If} $UpdateMode <> 1
   ${AndIf} $NoShortcutMode <> 1
     CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
@@ -233,7 +261,7 @@ FunctionEnd
   ${AndIf} $HoiStateFile != ""
     WriteINIStr "$HoiStateFile" "closed" "app" "1"
   ${EndIf}
-  RMDir /r "$INSTDIR\LICENSES"
+  !insertmacro HOI_REMOVE_LICENSES
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

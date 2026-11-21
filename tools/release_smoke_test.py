@@ -63,8 +63,11 @@ class ReleaseSmoke(unittest.TestCase):
         installed = self.tree(*FIVE, "LICENSE", "LICENSES/SDL-LICENSE.txt")
         self.assertEqual(rs.layout_problems(installed, FIVE, NOTICES), [
             "THIRD-PARTY-NOTICES.txt is not in the install folder",
-            "LICENSES/SDL-LICENSE.txt is installed but not shipped",
+            "the old LICENSES folder is installed",
         ])
+        (installed / "LICENSES" / "SDL-LICENSE.txt").unlink()
+        self.tree("THIRD-PARTY-NOTICES.txt")
+        self.assertEqual(rs.layout_problems(installed, FIVE, NOTICES), ["the old LICENSES folder is installed"])
 
     def test_an_old_viewer_or_compiler_executable_or_a_missing_or_moved_dll_is_named(self):
         installed = self.tree("replay-desktop.exe", "battle-plan-recorder.exe", "collector.dll", "viewer.exe",

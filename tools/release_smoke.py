@@ -54,11 +54,13 @@ def layout_problems(installed, expected, notices):
         relative = path.relative_to(installed)
         if not path.is_file() or relative.parts[0] in NSIS_INTERNAL or relative.parts[0].startswith("$"):
             continue
-        if path.suffix.lower() in (".exe", ".dll") or relative.parts[0] == "LICENSES":
+        if path.suffix.lower() in (".exe", ".dll"):
             found.append(relative.as_posix())
         present.append(relative.as_posix())
     problems = [f"{name} is not in the install folder" for name in [*expected, *notices] if name not in present]
     problems += [f"{name} is installed but not shipped" for name in found if name not in expected]
+    if (installed / "LICENSES").exists():
+        problems.append("the old LICENSES folder is installed")
     return problems
 
 
