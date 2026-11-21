@@ -398,12 +398,13 @@ fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a
         let mut source = Multiplied::open(&folder.journal(), 0, Factors { factor: vec![1; tables], in_phase: vec![false; tables] }, None).unwrap();
         source.start(writer.segments()).unwrap();
         host.blocks = source.blocks_before(writer.segments());
+        let first_hours = source.hours_before(writer.segments());
         let mut blocks = Vec::new();
         loop {
             let progress = writer.advance(&mut source, host, &|| true).unwrap();
             if std::mem::take(&mut host.committed) && blocks.last().is_none_or(|&(held, _)| held != host.blocks) {
-                blocks.push((host.blocks, host.hours));
-                if stopped_after(until, host.blocks, host.hours) {
+                blocks.push((host.blocks, first_hours + host.hours));
+                if stopped_after(until, host.blocks, first_hours + host.hours) {
                     return blocks;
                 }
             }
@@ -427,7 +428,7 @@ fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a
     let mut first = Everything::new(None, None);
     assert_eq!(encode(&mut first, Some(0)), [(1, 300)], "--stop-after=0 stops at the short block");
     let mut resumed = Everything::new(None, None);
-    assert_eq!(encode(&mut resumed, Some(1)), [(2, 720)], "a resumed encoder counts on from the blocks its capture committed");
+    assert_eq!(encode(&mut resumed, Some(1)), [(2, 1_020)], "a resumed encoder counts on from the blocks and hours its capture committed");
     assert_eq!(saved(&folder.recording()).directories().unwrap().iter().map(|run| run.blocks()).sum::<u32>(), 2);
 }
 

@@ -89,7 +89,8 @@ fn main() -> io::Result<()> {
     if memory {
         encode_report::sample_memory()?;
     }
-    let encoded_as = encode_report::encoder_source(times.is_some(), start.as_ref().map(|start| start.block));
+    let multiplied = times.as_ref().is_some_and(|times| times.factor.iter().any(|&factor| factor > 1));
+    let encoded_as = encode_report::encoder_source(multiplied, start.as_ref().map(|start| start.block));
     let mut writer = encode_report::open_encoded(out, &state, capture, settings, &encoded_as)?;
     writer.time(timed);
     if (times.is_some() || start.is_some()) && !cfg!(feature = "multiplied") {
@@ -99,7 +100,7 @@ fn main() -> io::Result<()> {
     let factors = times.unwrap_or_else(|| Factors { factor: vec![1; tables], in_phase: vec![false; tables] });
     let started_after = start.as_ref().map(|start| u64::from(start.block) + 1);
     let mut source = Multiplied::open(Path::new(directory), capture, factors, start)?;
-    let first_hours = u64::from(writer.segments()).saturating_sub(1) * 720;
+    let first_hours = source.hours_before(writer.segments());
     source.start(writer.segments())?;
     eprintln!("{}", json!({ "in_phase": source.in_phase(), "journal_schema_digest_is_a_prefix": source.exact_schema, "taken_up_at_segment": writer.segments(),
         "build": { "memory_labels": engine_allocation::labels::ENABLED, "multiplied": cfg!(feature = "multiplied"), "keep_journal": cfg!(feature = "keep-journal") } }));

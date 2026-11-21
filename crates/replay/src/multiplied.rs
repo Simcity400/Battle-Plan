@@ -1044,6 +1044,10 @@ impl Multiplied {
         self.segment_hours.iter().filter(|&&(held, hours)| held < segment && hours > 0).count() as u64
     }
 
+    pub fn hours_before(&self, segment: u32) -> u64 {
+        self.segment_hours.iter().filter(|&&(held, _)| held < segment).map(|&(_, hours)| hours).sum()
+    }
+
     pub fn in_phase(&self) -> Vec<String> {
         (0..self.factors.factor.len())
             .filter(|&table| self.factors.factor[table] > 1 && self.factors.in_phase[table])
