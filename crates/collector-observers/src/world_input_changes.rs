@@ -70,8 +70,8 @@ fn forwarded_site(site: usize) -> Option<Forward> {
     }
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and `SITE`'s published original.
+/// The arguments are ones `SITE`'s published original accepts with its ABI, and every object they
+/// reach stays valid for the call, as when a hooked call's detour passes them.
 #[inline]
 unsafe fn invoke<const SITE: usize>(args: [usize; 4]) -> usize {
     let original: Original = unsafe { std::mem::transmute(ORIGINAL[SITE].load(Ordering::Acquire)) };

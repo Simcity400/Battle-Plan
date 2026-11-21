@@ -311,8 +311,8 @@ fn duration_result(
     )))
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and the index of its published original.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn remove(status: usize, definition: usize, flags: usize, index: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();

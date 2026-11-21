@@ -100,8 +100,8 @@ impl Touched {
         let recorded = self.observing.load(Ordering::SeqCst)
             && !self.closed.load(Ordering::SeqCst)
             && !crate::world_lifetime::invalidating()
-            // SAFETY: a published set is replaced only by an exclusive take,
-            // which no lease spans, and freed only after that replacement.
+            // SAFETY: a set is freed only once every callback that could have loaded it has
+            // drained: a take replaces it with the gate closed, teardown with the hooks quiescent.
             && unsafe { self.set.load(Ordering::SeqCst).as_ref() }
                 .is_some_and(|set| set.insert(holder));
         if !recorded {
@@ -122,8 +122,9 @@ impl Touched {
             return Ok(false);
         }
         let result = (|| {
-            // SAFETY: the gate is closed: every lease taken before it closed has drained, and a
-            // callback that takes one now sees `closed` and never loads the set.
+            // SAFETY: the gate is closed and every callback that could have loaded this set before
+            // the close has drained; a later one sees `closed`, or loads the replacement once the
+            // gate reopens.
             if let Some(set) = unsafe { self.set.load(Ordering::SeqCst).as_ref() } {
                 let claimed = set.claimed.swap(0, Ordering::Relaxed).min(set.claims.len());
                 engine_allocation::reserve(out, claimed)
@@ -138,8 +139,9 @@ impl Touched {
                 }
             }
             if let Some(next) = offered.take() {
-                // SAFETY: the gate is closed: every lease taken before it closed has drained, and a
-            // callback that takes one now sees `closed` and never loads the set.
+                // SAFETY: the gate is closed and every callback that could have loaded the old set
+                // before the close has drained; a later one sees `closed`, or loads the new set once
+                // the gate reopens.
                 unsafe { self.replace(Some(next)) };
             }
             Ok(())

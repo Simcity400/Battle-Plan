@@ -450,8 +450,8 @@ impl Drop for HistoryChange<'_> {
     }
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn history_change(history: usize, target: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::LogisticsBalance);
     let _guard = Guard::enter();
@@ -582,8 +582,8 @@ impl CellBinding<'_> {
     }
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked balance write,
-/// with that call's arguments and its call site's offset.
+/// The arguments are ones the hooked balance write's original accepts, with `offset` that call
+/// site's, and every object they reach stays valid for the call.
 unsafe fn write(record: usize, balance: i64, archetype: u32, stack: usize, offset: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::LogisticsBalance);
     let _guard = Guard::enter();

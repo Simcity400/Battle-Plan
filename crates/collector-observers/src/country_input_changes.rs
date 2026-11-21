@@ -41,8 +41,8 @@ fn design_source_availability(enabled: bool) {
     }
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn design_source_invoke(args: [usize; 4], original: DesignSourceOriginal) -> usize {
     let receiver = DESIGN_SOURCES.load(Ordering::Acquire);
     if let Some(receiver) = unsafe { receiver.as_ref() } {

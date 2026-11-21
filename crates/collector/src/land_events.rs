@@ -1122,8 +1122,8 @@ unsafe extern "system-unwind" fn leader_tap(side: usize, caller: usize, target: 
     result
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: usize) -> usize {
     let original: unsafe extern "system-unwind" fn(usize) -> usize =
         unsafe { std::mem::transmute(target) };

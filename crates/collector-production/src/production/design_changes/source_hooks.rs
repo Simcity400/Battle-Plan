@@ -11,8 +11,8 @@ fn content_enabled(enabled: bool) {
     super::update_enabled();
 }
 /// # Safety
-/// Only the forwarding family's detour calls this, on the native thread running the hooked call,
-/// with that call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn content(
     _writer: collector_certificates::content_changes::Writer,
     [a, b, c, d]: [usize; 4],
@@ -44,8 +44,8 @@ fn country_enabled(enabled: bool) {
     }
 }
 /// # Safety
-/// Only the forwarding family's detour calls this, on the native thread running the hooked call,
-/// with that call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn country(
     [a, b, c, d]: [usize; 4],
     original: collector_observers::country_input_changes::DesignSourceOriginal,
@@ -259,8 +259,8 @@ unsafe extern "system-unwind" fn append(a: usize, b: usize, c: usize, d: usize, 
     unsafe { around::<4>(a, b, c, d, || original(a, b, c, d, e)) }
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn around<const SITE: usize>(
     a: usize,
     _b: usize,

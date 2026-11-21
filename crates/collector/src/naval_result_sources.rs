@@ -467,8 +467,8 @@ unsafe extern "system-unwind" fn merge(result: usize, combat: usize) -> usize {
     unsafe { result_call(1, result, combat) }
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its site, whose original is published.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn result_call(site: usize, result: usize, combat: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::NavalResultSources);
     let call = Call::enter(site);

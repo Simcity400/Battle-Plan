@@ -2634,8 +2634,8 @@ unsafe extern "system-unwind" fn delete(
 }
 
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its site, whose original is published.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn returned_at(site: SiteId, reserves: usize, pool: usize) {
     let _call = Call::enter(site);
     let original: unsafe extern "system-unwind" fn(usize, usize) =
@@ -2920,8 +2920,8 @@ fn transfer_before(
 }
 
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its site, whose original is published.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn transfer_roster(
     site: SiteId,
     country: usize,
@@ -2974,8 +2974,8 @@ unsafe extern "system-unwind" fn exile_transfer(country: usize, army: usize) -> 
 }
 
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its site, whose original is published.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn pool_scale(site: SiteId, receiver: usize, factor: usize, cause: native::Cause) {
     let _call = Call::enter(site);
     let original: unsafe extern "system-unwind" fn(usize, usize) =

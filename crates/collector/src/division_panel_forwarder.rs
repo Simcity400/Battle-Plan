@@ -16,9 +16,8 @@ fn enabled(availability: Availability) {
     );
 }
 /// # Safety
-/// Only the design forwarder calls this, on the native thread running `writer`, with that call's
-/// receiver or zero. It may read the receiver only in `Phase::Before`; after the call a destroyed
-/// receiver's address is an identity only.
+/// `receiver` is the object the forwarded notification concerns, or zero. It is read only in
+/// `Phase::Before`, while it is valid; afterwards a destroyed object's address is an identity only.
 unsafe fn receive(writer: Writer, receiver: usize, phase: Phase) {
     let every = !matches!(
         writer,

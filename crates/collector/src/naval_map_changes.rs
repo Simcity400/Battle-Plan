@@ -153,8 +153,8 @@ fn reset_forwarder_enabled(enabled: bool) {
     observation_enabled();
 }
 /// # Safety
-/// Only the forwarding family's detour calls this, on the native thread running the hooked call,
-/// with that call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn forwarded_reset(a: usize, b: usize, c: usize, d: usize, original: usize) -> usize {
     let _mine = MINES.notify(life_key(a));
     let _accident = ACCIDENTS.notify(a);
@@ -290,8 +290,8 @@ pub(crate) fn patch_sites() -> Vec<(&'static str, Rva)> {
 }
 
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and the index of its published original.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn original(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let native: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[index].load(Ordering::Acquire)) };
@@ -325,8 +325,8 @@ fn event_slice(index: usize, navy: usize, second: usize) -> Option<usize> {
 }
 
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and the index of its published original.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn changed(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     let _running = MINES.running();
@@ -339,8 +339,8 @@ unsafe fn changed(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize
     timing.original(|| unsafe { original(index, a, b, c, d) })
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and the index of its published original.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn lifecycle(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     let navy = lifecycle_receiver(index, a);
@@ -350,8 +350,8 @@ unsafe fn lifecycle(index: usize, a: usize, b: usize, c: usize, d: usize) -> usi
     timing.original(|| unsafe { original(index, a, b, c, d) })
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and the index of its published original.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn ledger(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     LEDGER_CALLS[index].fetch_add(1, Ordering::Relaxed);
@@ -366,8 +366,8 @@ fn ledger_write(ledgers: &WatchRegistry, navy: usize, write: impl FnOnce() -> us
     write()
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and the index of its published original.
+/// The arguments are ones the selected site's published original accepts with its ABI, and
+/// every object they reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn reports(index: usize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::MissionChanges);
     let _mark = ACCIDENTS.notify(a);

@@ -930,8 +930,8 @@ impl Hooks {
 }
 
 /// # Safety
-/// Only the forwarding family's detour calls this, on the native thread running the hooked call,
-/// with that call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn forwarded(
     site: collector_observers::world_input_changes::Forward,
     call: collector_observers::world_input_changes::ForwardCall,
@@ -1051,8 +1051,8 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
 }
 
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and `SITE`'s published original.
+/// The arguments are ones `SITE`'s published original accepts with its ABI, and every object they
+/// reach stays valid for the call, as when a hooked call's detour passes them.
 unsafe fn callback<const SITE: usize>(
     first: usize,
     second: usize,
@@ -1068,8 +1068,8 @@ unsafe fn callback<const SITE: usize>(
 }
 
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn around<const SITE: usize>(
     args: [usize; 4],
     original: collector_observers::world_input_changes::Original,
@@ -1077,8 +1077,8 @@ unsafe fn around<const SITE: usize>(
     unsafe { around_with_identities::<SITE>(args, original, None) }
 }
 /// # Safety
-/// Only this family's detours call this, on the native thread running the hooked call, with that
-/// call's arguments and its original.
+/// The original passed here is a live function with the hooked function's ABI that accepts these
+/// arguments, and every object they reach stays valid for the call.
 unsafe fn around_with_identities<const SITE: usize>(
     [first, second, third, fourth]: [usize; 4],
     original: collector_observers::world_input_changes::Original,

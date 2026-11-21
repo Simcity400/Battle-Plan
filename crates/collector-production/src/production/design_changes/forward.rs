@@ -199,10 +199,10 @@ impl Forwarding {
         }
     }
     /// # Safety
-    /// Only a design writer's detour calls this, on the native thread running the hooked call.
-    /// `variant` is that call's receiver, or zero for a writer that names none. The receiver may read
-    /// it only while the native call runs; once the call returns, a writer such as `Destroy` may
-    /// have freed it, so the terminal phase may use the address as an identity only.
+    /// `variant` is the object the notification concerns: a writer's receiver, either operand of a
+    /// move, or zero when it names none. It must stay valid for whatever the registered handler
+    /// reads in `Phase::Before`; after the native call it is an identity only, since a writer such
+    /// as `Destroy` may have freed it.
     unsafe fn begin(&self, writer: Writer, variant: usize) -> Option<Invocation<'_>> {
         if self.receiver.load(Ordering::SeqCst).is_null() {
             return None;
@@ -235,7 +235,8 @@ pub(super) struct Invocation<'a> {
 }
 impl Invocation<'_> {
     /// # Safety
-    /// The hooked original returned normally, on the native thread that began this invocation.
+    /// Delivers the successful terminal phase (`Phase::After`) to the registered handler, for which
+    /// the object is an identity only, as [`Forwarding::begin`] says.
     pub(super) unsafe fn finish(mut self) {
         self.completed = true;
         unsafe { (self.receiver.call)(self.writer, self.variant, Phase::After) };
