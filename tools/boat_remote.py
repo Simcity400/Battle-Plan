@@ -81,6 +81,26 @@ def prune_image():
     usage = shutil.disk_usage(ROOT)
     print(f'Pruned the image to what a check reads: {usage.used / 1024 ** 3:.1f} GiB used', flush=True)
 
+def clear_targets():
+    """Removes every build output and compile cache, so an image refresh keeps only what the current tree builds."""
+    for path in (ROOT / 'target', TEST_TARGET, SCCACHE_HOME / 'cache', SCCACHE_HOME / 'cache-test'):
+        shutil.rmtree(path, ignore_errors=True)
+        if path.exists():
+            raise RuntimeError(f'Could not remove {path}')
+    (ROOT / 'target').mkdir()
+
+def provenance():
+    commands = [['rustc', '-vV'], ['cargo', 'xwin', '--version'], ['clang-cl', '--version'], ['lld-link', '--version'], ['node', '--version'], ['cargo', 'xwin', 'env', '--target', TARGET]]
+    text = ''
+    for command in commands:
+        result = subprocess.run(command, cwd=SRC, capture_output=True, text=True, check=True)
+        text += '$ ' + ' '.join(command) + '\n' + result.stdout + result.stderr + '\n'
+    text += (ROOT / 'xwin' / 'xwin' / 'DONE').read_text()
+    (ROOT / 'toolchain.txt').write_text(text)
+    print(text)
+
+IMAGE_STEPS = {'clear': clear_targets, 'prune': prune_image, 'provenance': provenance}
+
 EMBEDS_UI = {'replay-desktop', 'recorder-app'}
 
 def embeds_ui(args):
@@ -367,17 +387,17 @@ mode = sys.argv[1]
 if mode == 'checkpoint':
     checkpoint()
     print('Cache metadata checkpoint saved')
-elif mode == 'prune':
-    prune_image()
-elif mode == 'provenance':
-    commands = [['rustc', '-vV'], ['cargo', 'xwin', '--version'], ['clang-cl', '--version'], ['lld-link', '--version'], ['node', '--version'], ['cargo', 'xwin', 'env', '--target', TARGET]]
-    text = ''
-    for command in commands:
-        result = subprocess.run(command, cwd=SRC, capture_output=True, text=True, check=True)
-        text += '$ ' + ' '.join(command) + '\n' + result.stdout + result.stderr + '\n'
-    text += (ROOT / 'xwin' / 'xwin' / 'DONE').read_text()
-    (ROOT / 'toolchain.txt').write_text(text)
-    print(text)
+elif mode in IMAGE_STEPS:
+    job = sys.argv[3] if len(sys.argv) > 3 else None
+    if job:
+        leave(job, 'started', {'pid': os.getpid(), 'start': process_start(os.getpid()), 'boot': boot_id()})
+    outcome = {'exit': 1}
+    try:
+        IMAGE_STEPS[mode]()
+        outcome['exit'] = 0
+    finally:
+        if job:
+            leave(job, 'outcome', outcome)
 elif mode == 'acquire':
     token = sys.argv[2]
     try:

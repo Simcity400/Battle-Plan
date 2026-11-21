@@ -1,6 +1,6 @@
 # 1001. Coordinate remote builds by claim, content and cache identity
 
-Boat clones a warmed image with the UI, checks, common release binaries and frequently selected tests. Warm test selections as sent because a workspace test invocation can resolve a different feature graph from a single package. Keep check metadata, release outputs and tests in separate targets and key reusable objects by the inputs Cargo reads, including build script and applicable dev dependencies. Release and test caches remain separate so tests cannot evict the warmed release objects. Incremental test binaries remain in the dedicated target because the compile cache does not retain those binaries.
+Boat clones an image warmed with the UI and a whole-workspace check (ADR 0007). Release and test builds start cold on each VM and fill its compile caches. Keep check metadata, release outputs and tests in separate targets and key reusable objects by the inputs Cargo reads, including build script and applicable dev dependencies. Release and test caches remain separate so tests cannot evict release objects. Incremental test binaries remain in the dedicated target because the compile cache does not retain those binaries.
 
 Another helper's run invalidates the recorded target tree while its input-keyed cache entries remain usable. A checkout with ordinary compile failures can still warm the image with completed units. A failed infrastructure step cannot publish it. Tests exercise resume and hydration with an injected clock advanced by fake pauses.
 

@@ -22,9 +22,9 @@ x86_64-pc-windows-msvc. Cargo's exit code passes through (101 for compile errors
 exit 75 means Boat failed: run it again, never locally.
 
 `snapshot`, from a clean worktree at the head of the branch the image serves, re-saves SNAPSHOT
-from a VM of its own (cloned from SNAPSHOT, or from BASE_SNAPSHOT) that checked that tree whole
-(WARM) and then kept only what a check reads, so clones fit a default machine; release and test
-builds start cold on each VM. Worth running again once the branch has changed crates many others
+from a VM of its own (cloned from SNAPSHOT, or from BASE_SNAPSHOT) that cleared its build outputs,
+checked that tree whole (WARM) and then kept only what a check reads, so clones fit a default
+machine; release and test builds start cold on each VM. Worth running again once the branch has changed crates many others
 depend on, its dependencies or its features. The VM stops at the end of its idle tail.
 
 `build` downloads the named exe/dll/pdb outputs, checks their SHA-256 and records them with the
@@ -1320,6 +1320,9 @@ def make_snapshot(state, worktree, revision):
         wait_ready(vmid)
         install_runner(state, vmid)
         manifest = source_manifest(worktree)
+        status, _ = remote(vmid, "clear", token)
+        if status:
+            raise Failure(f"Could not clear the build outputs on {vmid} ({status}); {SNAPSHOT} was not saved")
         for index, (mode, args) in enumerate(WARM):
             status, old = quick(vmid, "acquire", token)
             if status:

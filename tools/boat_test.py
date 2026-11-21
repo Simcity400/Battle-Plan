@@ -120,7 +120,7 @@ class FakeBoat:
             return self.cargo_exit, "j"
         if mode in {"build", "test"}:
             return self.cargo_exit, "j"
-        if mode in {"ui", "provenance", "prune"}:
+        if mode in {"ui", "provenance", "prune", "clear"}:
             return int(mode in self.failing), "j"
         raise AssertionError(f"unexpected remote call {mode} {args}")
 
@@ -1123,9 +1123,9 @@ class Run(Harness):
         self.assertEqual(bt.main(["snapshot"]), 0)
         news = [call for call in fake.calls if call[0] == "new"]
         self.assertEqual([call[call.index("--from") + 1] for call in news], ["image", "base"])
-        steps = [call for call in fake.remote_calls if len(call) > 2 and call[1] in {"ui", "check", "test", "build", "provenance", "prune"}]
-        self.assertEqual([call[1] for call in steps], ["ui", "check", "provenance", "prune"])
-        self.assertEqual([call[3:4] == ("--sync",) for call in steps], [True, False, False, False])
+        steps = [call for call in fake.remote_calls if len(call) > 2 and call[1] in {"clear", "ui", "check", "test", "build", "provenance", "prune"}]
+        self.assertEqual([call[1] for call in steps], ["clear", "ui", "check", "provenance", "prune"])
+        self.assertEqual([call[3:4] == ("--sync",) for call in steps], [False, True, False, False, False])
         self.assertEqual(fake.calls[-2][0:3], ("snapshot", "n", "image"))
         self.assertEqual(fake.ttl_calls("n")[-1], bt.IDLE_SECONDS)
         fake = self.use(FakeBoat([]))
