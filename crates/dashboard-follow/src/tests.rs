@@ -1384,10 +1384,11 @@ fn a_product_waiting_at_a_step_stays_unconfirmed_from_that_hour_through_merges()
         "a wait after the kept reading is kept after it");
     let mut reset = dated::ProductBatch::new((0, 3, 9));
     reset.after_reset();
-    reset.changed(7, 106, dated::DATA, b"y");
-    let reset = reset.finish(Some(106));
-    let (merged, _) = dated::merge(&merged, &reset).unwrap();
-    assert_eq!(merged, reset, "a message after a native reset supersedes everything queued before it");
+    reset.changed(8, 10, dated::DATA, b"y");
+    let (merged, _) = dated::merge(&merged, &reset.finish(Some(10))).unwrap();
+    let rows = dated::records(&merged).unwrap();
+    assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::DATA, 82), (8, dated::DATA, 10), (0, dated::COMPLETED, 10)],
+        "after a native reset every product is read again, so a queued wait is dropped and every queued reading kept");
     let (merged, _) = dated::merge(&step(10, &[(7, dated::STANDS)]), &step(20, &[(7, dated::WAITING)])).unwrap();
     let (merged, _) = dated::merge(&merged, &step(30, &[(7, dated::DATA)])).unwrap();
     let rows = dated::records(&merged).unwrap();

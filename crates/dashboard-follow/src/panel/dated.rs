@@ -171,12 +171,9 @@ pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
     let stamp = stamp(older).filter(|s| Some(*s) == self::stamp(newer) && clock(older) == clock(newer))
         .ok_or_else(|| crate::invalid("Panel messages belong to different routes or seeks"))?;
     let flags = older[6] | newer[6];
-    if newer[6] & AFTER_RESET != 0 {
-        let superseded = records(older)?.len() as u32;
-        records(newer)?;
-        return Ok((newer.to_vec(), superseded));
-    }
+    let reset = newer[6] & AFTER_RESET != 0;
     let (older, newer) = (records(older)?, records(newer)?);
+    let older: Vec<Record<'_>> = older.into_iter().filter(|r| !(reset && r.kind == WAITING)).collect();
     let mut products: BTreeMap<u32, Kept<'_>> = BTreeMap::new();
     let mut completed = None;
     let mut count = 0;
