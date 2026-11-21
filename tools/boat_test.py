@@ -120,7 +120,7 @@ class FakeBoat:
             return self.cargo_exit, "j"
         if mode in {"build", "test"}:
             return self.cargo_exit, "j"
-        if mode in {"ui", "provenance"}:
+        if mode in {"ui", "provenance", "prune"}:
             return int(mode in self.failing), "j"
         raise AssertionError(f"unexpected remote call {mode} {args}")
 
@@ -287,27 +287,6 @@ class Plan(unittest.TestCase):
                 self.assertEqual(bt.member_features(self.root, ["build", "--release", *args]), ["build", "--release", *expected])
         with self.assertRaises(bt.Failure):
             bt.member_features(self.root, ["build", "--release", "-p", "solo", "-p", "pair", "--features", "solo/x"])
-
-
-class FrequentTests(unittest.TestCase):
-    def test_the_successful_test_builds_of_the_window_come_most_frequent_first_as_sent(self):
-        now = time.mktime(time.strptime("2026-11-12T16:00:00", "%Y-%m-%dT%H:%M:%S"))
-        lines = [
-            {"time": "2026-11-12T15:00:00+1100", "mode": "test", "exit": 0, "args": ["test", "--no-run", "-p", "b", "--lib"]},
-            {"time": "2026-11-12T15:01:00+1100", "mode": "test", "exit": 0, "args": ["test", "--no-run", "-p", "a", "--bin", "a"]},
-            {"time": "2026-11-12T15:02:00+1100", "mode": "test", "exit": 0, "args": ["test", "--no-run", "-p", "a", "--bin", "a"]},
-            {"time": "2026-11-12T15:03:00+1100", "mode": "test", "exit": 101, "args": ["test", "--no-run", "-p", "c", "--lib"]},
-            {"time": "2026-11-12T15:04:00+1100", "mode": "check", "exit": 0, "args": ["check", "-p", "d"]},
-            {"time": "2026-11-10T15:00:00+1100", "mode": "test", "exit": 0, "args": ["test", "--no-run", "-p", "e", "--lib"]},
-        ]
-        with tempfile.TemporaryDirectory() as temp:
-            log = Path(temp) / "timings.jsonl"
-            log.write_text("\n".join(json.dumps(line) for line in lines) + "\nnot json\n", encoding="utf-8")
-            self.assertEqual(bt.frequent_tests(log, now), [
-                ("test", ["--warm", "--", "test", "--no-run", "--no-fail-fast", "-p", "a", "--bin", "a"]),
-                ("test", ["--warm", "--", "test", "--no-run", "--no-fail-fast", "-p", "b", "--lib"]),
-            ])
-            self.assertEqual(bt.frequent_tests(Path(temp) / "missing.jsonl", now), [])
 
 
 class Parse(unittest.TestCase):
@@ -1144,9 +1123,9 @@ class Run(Harness):
         self.assertEqual(bt.main(["snapshot"]), 0)
         news = [call for call in fake.calls if call[0] == "new"]
         self.assertEqual([call[call.index("--from") + 1] for call in news], ["image", "base"])
-        steps = [call for call in fake.remote_calls if len(call) > 2 and call[1] in {"ui", "check", "test", "build", "provenance"}]
-        self.assertEqual([call[1] for call in steps], [mode for mode, _ in bt.WARM] + ["provenance"])
-        self.assertEqual([call[3:4] == ("--sync",) for call in steps], [True] + [False] * len(bt.WARM))
+        steps = [call for call in fake.remote_calls if len(call) > 2 and call[1] in {"ui", "check", "test", "build", "provenance", "prune"}]
+        self.assertEqual([call[1] for call in steps], ["ui", "check", "provenance", "prune"])
+        self.assertEqual([call[3:4] == ("--sync",) for call in steps], [True, False, False, False])
         self.assertEqual(fake.calls[-2][0:3], ("snapshot", "n", "image"))
         self.assertEqual(fake.ttl_calls("n")[-1], bt.IDLE_SECONDS)
         fake = self.use(FakeBoat([]))

@@ -64,6 +64,23 @@ def prune_incremental():
     note = f'; {len(failed)} paths could not be removed' if failed else ''
     print(f'Pruned incremental caches: disk {usage.used * 100 // usage.total}% -> {after.used * 100 // after.total}%{note}', file=sys.stderr, flush=True)
 
+def prune_image():
+    """Leaves what a warm check reads: the dev profile's outputs without their incremental sessions; release and test
+    builds and the compile caches go, so the image stays small enough to hydrate quickly on a default machine."""
+    target = ROOT / 'target'
+    gone = [TEST_TARGET, SCCACHE_HOME / 'cache', SCCACHE_HOME / 'cache-test']
+    for folder, keep in ((target, {'debug', TARGET}), (target / TARGET, {'debug'})):
+        gone += [path for path in folder.glob('*') if path.is_dir() and not path.is_symlink() and path.name not in keep]
+    gone += [target / 'debug' / 'incremental', target / TARGET / 'debug' / 'incremental']
+    for path in gone:
+        shutil.rmtree(path, ignore_errors=True)
+    left = [str(path) for path in gone if path.exists()]
+    if left:
+        raise RuntimeError(f'Could not remove {left}')
+    checkpoint()
+    usage = shutil.disk_usage(ROOT)
+    print(f'Pruned the image to what a check reads: {usage.used / 1024 ** 3:.1f} GiB used', flush=True)
+
 EMBEDS_UI = {'replay-desktop', 'recorder-app'}
 
 def embeds_ui(args):
@@ -350,6 +367,8 @@ mode = sys.argv[1]
 if mode == 'checkpoint':
     checkpoint()
     print('Cache metadata checkpoint saved')
+elif mode == 'prune':
+    prune_image()
 elif mode == 'provenance':
     commands = [['rustc', '-vV'], ['cargo', 'xwin', '--version'], ['clang-cl', '--version'], ['lld-link', '--version'], ['node', '--version'], ['cargo', 'xwin', 'env', '--target', TARGET]]
     text = ''
@@ -434,11 +453,10 @@ elif mode in {'check', 'build', 'test', 'ui'}:
     source = None
     if args[:1] == ['--sync']:
         source, args = args[1], args[2:]
-    wanted, pdb, warm = set(), False, False
+    wanted, pdb = set(), False
     if mode == 'test':
         options, args = args[:args.index('--')], args[args.index('--') + 1:]
         pdb = '--pdb' in options
-        warm = '--warm' in options
         wanted = {option.split('=', 1)[1] for option in options if option.startswith('--bin-exe=')}
         os.environ['CARGO_TARGET_DIR'] = str(TEST_TARGET)
         SCCACHE_ENV.update(SCCACHE_DIR=str(SCCACHE_HOME / 'cache-test'), SCCACHE_CACHE_SIZE='8G')
@@ -532,7 +550,7 @@ elif mode in {'check', 'build', 'test', 'ui'}:
                             if path.exists():
                                 artifacts.append(str(path))
                 result.wait()
-                if result.returncode == 0 and not warm:
+                if result.returncode == 0:
                     if mode == 'test':
                         listing = subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps', '--offline'], cwd=SRC, capture_output=True, text=True, check=True)
                         packages = {package['id']: package for package in json.loads(listing.stdout)['packages']}
