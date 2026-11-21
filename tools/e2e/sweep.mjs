@@ -407,9 +407,9 @@ async function playbackInputs() {
     observer.observe(document.querySelector('.dash-grid-scroll'), { subtree: true, childList: true, attributes: true,
       attributeFilter: ['hidden','style','data-fixed-hour','data-placement'] });
     addEventListener('scroll', scan, true); scan();
-    __e2e.inputMark = (kind, notApplicable = null) => actions.push({ kind,
+    __e2e.inputMark = (kind, notApplicable = null, at = null) => actions.push({ kind,
       ...(notApplicable ? { notApplicable } : {}),
-      at: performance.timeOrigin + performance.now() });
+      at: at ?? performance.timeOrigin + performance.now() });
     __e2e.setPinWidget = widget => {
       const action = actions.at(-1);
       if (action?.kind === 'pin') action.pinWidget = widget;
@@ -417,7 +417,7 @@ async function playbackInputs() {
     __e2e.endInputs = () => { observer.disconnect(); removeEventListener('scroll', scan, true);
       return { actions, visibility, to: performance.timeOrigin + performance.now() }; };
   })()`);
-  const mark = (kind, notApplicable = null) => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)}, ${JSON.stringify(notApplicable)})`);
+  const mark = (kind, notApplicable = null, at = null) => app.evaluate(`__e2e.inputMark(${JSON.stringify(kind)}, ${JSON.stringify(notApplicable)}, ${JSON.stringify(at)})`);
   const unsettled = `(() => {
     const grid = document.querySelector('.dash-grid-scroll'), viewport = grid.getBoundingClientRect();
     const visible = node => {
@@ -494,27 +494,36 @@ async function playbackInputs() {
   const article = 'article.dash-widget';
   const config = article + ' [data-widget-settings]', time = '.widget-settings-menu:popover-open [aria-label="Time"] button';
   let pinApplied = false, pinWidget = null;
-  if (await s.holds(`document.querySelector(${JSON.stringify(config)})`)) {
-    await s.click(config);
-    if (await s.until(`document.querySelector('${time}')`)) {
-      const pinned = await s.app.evaluate(`!![...document.querySelectorAll('${time}')].find(button => button.textContent.trim() === 'Pinned')`);
-      if (pinned) {
-        await mark('pin');
-        await s.click(time, { text: 'Pinned' }); await s.until(`document.querySelector('${article}[data-fixed-hour]')`); await s.frames(4);
-        pinWidget = await app.evaluate(`document.querySelector('${article}[data-fixed-hour]')?.dataset.widget ?? null`);
-        await app.evaluate(`__e2e.setPinWidget(${JSON.stringify(pinWidget)})`);
-        pinApplied = true;
-      } else await mark('pin', 'no widget offers a pinnable time setting');
-    } else {
-      await mark('pin', 'no widget offers a pinnable time setting');
+  const settings = await app.evaluate(`(() => {
+    for (const node of document.querySelectorAll('[data-e2e-settings]')) node.removeAttribute('data-e2e-settings');
+    let count = 0;
+    for (const node of document.querySelectorAll(${JSON.stringify(config)})) {
+      const box = node.getBoundingClientRect();
+      if (box.width && box.height && box.bottom > 0 && box.top < innerHeight) node.setAttribute('data-e2e-settings', String(count++));
+    }
+    return count;
+  })()`);
+  for (let index = 0; index < settings && !pinApplied; index++) {
+    const button = `[data-e2e-settings="${index}"]`;
+    const at = await s.locate(button);
+    if (!at) continue;
+    await app.click(at.x, at.y);
+    const pinned = await s.until(`[...document.querySelectorAll('${time}')].some(button => button.textContent.trim() === 'Pinned')`);
+    if (pinned) {
+      await mark('pin');
+      await s.click(time, { text: 'Pinned' }); await s.until(`document.querySelector('${article}[data-fixed-hour]')`); await s.frames(4);
+      pinWidget = await app.evaluate(`document.querySelector('${article}[data-fixed-hour]')?.dataset.widget ?? null`);
+      await app.evaluate(`__e2e.setPinWidget(${JSON.stringify(pinWidget)})`);
+      pinApplied = true;
     }
     await s.escape();
-  } else await mark('pin', 'no widget offers a pinnable time setting');
+  }
+  if (!pinApplied) await mark('pin', 'no widget offers a pinnable time setting');
   await s.click('button.header-play[aria-label="Play"]');
   await mark('speed'); await setSpeed(168); await s.frames(5);
   const candidates = await s.app.evaluate(`(() => {
     for (const node of document.querySelectorAll('[data-e2e-scroll]')) node.removeAttribute('data-e2e-scroll');
-    const scrolls = node => node.scrollHeight - node.clientHeight - node.scrollTop > 2 && /(auto|scroll)/.test(getComputedStyle(node).overflowY);
+    const scrolls = node => node.scrollHeight - node.clientHeight > 2 && /(auto|scroll)/.test(getComputedStyle(node).overflowY);
     let count = 0;
     for (const node of document.querySelectorAll('.dash-widget *')) {
       if (!scrolls(node)) continue;
@@ -524,18 +533,21 @@ async function playbackInputs() {
       while (hit && hit !== node && !scrolls(hit)) hit = hit.parentElement;
       if (hit !== node) continue;
       node.setAttribute('data-e2e-scroll', String(count++));
+      node.setAttribute('data-e2e-wheel', node.scrollHeight - node.clientHeight - node.scrollTop > 2 ? '250' : '-250');
     }
     return count;
   })()`);
   if (candidates) {
-    await mark('scroll');
     let scrolled = false;
     for (let candidate = 0; candidate < candidates && !scrolled; candidate++) {
       const target = `[data-e2e-scroll="${candidate}"]`;
-      const point = await s.need(target);
-      const before = await app.evaluate(`document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0`);
-      await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: 250 });
-      scrolled = await s.until(`(document.querySelector(${JSON.stringify(target)})?.scrollTop ?? 0) > ${before}`, 2_000);
+      const point = await s.locate(target);
+      if (!point) continue;
+      const [before, wheel, at] = await app.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(target)});
+        return [node?.scrollTop ?? 0, Number(node?.dataset.e2eWheel ?? 250), performance.timeOrigin + performance.now()]; })()`);
+      await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: wheel });
+      scrolled = await s.until(`(document.querySelector(${JSON.stringify(target)})?.scrollTop ?? ${before}) !== ${before}`, 2_000);
+      if (scrolled) await mark('scroll', null, at);
     }
     if (!scrolled) throw new Error(`None of ${candidates} scrollable widget areas moved under the wheel`);
   } else await mark('scroll', 'nothing to scroll');
