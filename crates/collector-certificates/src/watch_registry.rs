@@ -217,8 +217,9 @@ impl WatchRegistry {
 
     #[inline]
     fn table(&self) -> Option<&Table> {
-        // SAFETY: a table is freed only after a boundary replaced it and saw
-        // no notification running; captures run only after the boundary.
+        // SAFETY: a table is replaced only by a capture boundary or by a worker's exclusive
+        // growth (`install_growth_quiescent`), and freed only once a later collection saw no
+        // notification running. No borrow of the table may span either replacement.
         unsafe { self.table.load(SeqCst).as_ref() }
     }
 

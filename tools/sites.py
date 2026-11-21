@@ -1128,12 +1128,12 @@ def emit(spec, version):
 BUILDS = {"c184": "1.19.5.0", "0bdb": "1.19.4.2", "f584": "1.19.4.1"}
 EXPECTED_WITHHELD = {
     "f584": {
-        0xc4a420: "requisition_hq_from_army: its code really changed in 1.19.4.2",
-        0x19c9a20: "add_hq_manpower: reached only through requisition_hq_from_army",
-        0x29b6ce0: "OPTION_COMMAND_VTABLE_RVA: 1.19.4.2 added a virtual to its base class",
-        0x11e59f0: "set_garrison_priority: reached only through a command vtable whose shape changed",
-        0xe29230: "mio_queue_remove: reached only through a command vtable whose shape changed",
-        0xf23420: "repair dockyard setting: reached only through a command vtable whose shape changed",
+        "template_mutations::requisition_hq_from_army": "its code really changed in 1.19.4.2",
+        "template_mutations::add_hq_manpower": "reached only through requisition_hq_from_army",
+        "script_event_sites::OPTION_COMMAND_VTABLE_RVA": "1.19.4.2 added a virtual to its base class",
+        "template_mutations::set_garrison_priority": "reached only through a command vtable whose shape changed",
+        "world_input_mutations::mio_queue_remove": "reached only through a command vtable whose shape changed",
+        "changes::sites::repair dockyard setting": "reached only through a command vtable whose shape changed",
     },
 }
 PINNED = os.path.join(os.path.dirname(DATA), "..", "pinned")
@@ -1223,6 +1223,10 @@ def verify(spec, images, reference, written, promoted_from=None):
     for rva in sorted(source - spec_keys):
         print("FAIL key %#x is not generated; run tools/sites.py generate" % rva)
         failed = True
+    for b, expected_names in EXPECTED_WITHHELD.items():
+        for name in sorted(set(expected_names) - set(names.values())):
+            print("FAIL %s expects %s withheld, but no key has that name" % (BUILDS.get(b, b), name))
+            failed = True
     checked_builds = {b for b in BUILDS if digest(exe(b)) in layout_checked()}
     if reference not in checked_builds:
         print("FAIL the reference build %s is not in engine_sites::LAYOUT_CHECKED" % BUILDS[reference])
@@ -1236,7 +1240,7 @@ def verify(spec, images, reference, written, promoted_from=None):
         else:
             expected_at = addresses(b)
         for checked in ((True, False) if b in checked_builds else (False,)):
-            expected = set() if checked else set(EXPECTED_WITHHELD.get(b, ())) | unwitnessed
+            expected = set() if checked else {rva for rva, name in names.items() if name in EXPECTED_WITHHELD.get(b, ())} | unwitnessed
             reasons, wrong, withheld = report(images[b], spec, expected_at, checked)
             print("%s (%s), layouts %s:" % (BUILDS[b], b, "checked" if checked else "by witnesses"))
             for k, n in sorted(reasons.items()):

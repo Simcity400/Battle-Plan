@@ -4963,7 +4963,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 gated_request,
                 gated_failure.is_none() && gated_projects_failure.is_none(),
             );
-            // SAFETY: the Gated job has joined; no worker retains this store.
+            // SAFETY: the GatedProjects job owned the store; it has been collected and its request
+            // handed the store back through `restore_projects`, so no worker retains it.
             unsafe { return_slice_store(shared, crate::slicing::PROJECTS, project_store) };
             let (character_inputs_request, character_inputs_report) =
                 collected!(character_inputs_pending, CharacterInputs);

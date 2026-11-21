@@ -226,6 +226,27 @@ const AFTER: Rva = Rva(0x54);
                 sites.verify(spec, images, "new", written=False)
                 self.assertEqual(seen, {"new image": None, "old image": {}, "other image": recorded["other"]})
 
+    def test_expected_refusals_follow_their_site_names_to_any_position(self):
+        with tempfile.TemporaryDirectory() as root:
+            executables = {}
+            for build in ("new", "old"):
+                executables[build] = Path(root, build + ".exe")
+                executables[build].write_bytes(build.encode())
+            spec = {"keys": [{"rva": 0x28, "name": "sites::Changed", "kind": "code"}], "vtables": []}
+            withheld = {"new image": set(), "old image": {0x28}}
+            builds = {"new": "2.0", "old": "1.0"}
+            with (patch.object(sites, "BUILDS", builds), patch.object(sites, "addresses", return_value={}),
+                  patch.object(sites, "report", side_effect=lambda image, *_: ({}, [], withheld[image])),
+                  patch.object(sites, "source_keys", return_value={0x28: ("sites::Changed", "", 1)}),
+                  patch.object(sites, "exe", side_effect=lambda build: str(executables[build])),
+                  patch.object(sites, "layout_checked", return_value={sites.digest(str(executables["new"]))}),
+                  patch("sys.stdout", io.StringIO())):
+                images = {"new": "new image", "old": "old image"}
+                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {"sites::Changed": "its code changed"}}):
+                    self.assertFalse(sites.verify(spec, images, "new", written=False))
+                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {"sites::Gone": "renamed away"}}):
+                    self.assertTrue(sites.verify(spec, images, "new", written=False))
+
     def test_a_missing_or_truncated_generated_locator_is_refused_rather_than_renaming_sites(self):
         with tempfile.TemporaryDirectory() as root:
             for output in (Path(root, "missing.rs"), Path(root, "empty.rs")):
