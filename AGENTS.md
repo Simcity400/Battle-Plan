@@ -32,9 +32,8 @@ Use these words for these things.
 
 ## The game
 
-- Match the game's behaviour exactly. Never capture or compute more harshly than the game does.
+- Recorded facts and numbers match the game exactly, never harsher or guessed. Map visuals may differ for experience or speed: record each in an ADR, and ask when unclear.
 - The collector only reads game memory: never call game functions, and copy what you need before the game moves on.
-- Never show missing data as zero, and never fill a gap with a guess.
 - Keep the game out of the repo: no installed content, addresses, decompiler names, or copied game code, shaders, scripts or text. Name offsets for what they are. `tools/check-citations.py` fails addresses, offsets and decompiler names.
 - Read game data from the user's installation at run time. Installed content are read-only.
 - A recording carries every game fact it needs (definitions, localisation, executable tables, map layout), so playback never takes facts from the installed game. Art comes from the current installation, labelled as current; missing art is a named placeholder.
@@ -48,7 +47,7 @@ The most common defect here is a change that works on the tested path and is mis
 
 - **Format ends.** A recording-format change touches the collector, the recorder, the replay reader and writer, the query layer, the viewer, the dashboard and the UI together, in one PR. No upgrader: proven older formats play, new data missing, changed tables and damage withheld; others are refused by name.
 - **Entry points.** A stat reachable from one dashboard widget is usually also wanted in the map viewer, other widgets, the tray app and the command-line recorder. Fixing one is not fixing the feature.
-- **Missing data.** Every new reading has a "not recorded" state, and every consumer shows it as missing, never as zero or blank.
+- **Missing data.** Every reading has a "not recorded" state, and every consumer shows it as missing, never as zero, blank or a guess. Only a map visual may stand in, noted in debug output.
 - **Mods and versions.** Check vanilla against a mod stack and different DLC sets. Every new read has a named refusal for the unsupported content it cannot handle.
 
 ## How it works
@@ -82,7 +81,7 @@ All Rust is in `crates/`; names group by prefix.
 
 ## Verifying
 
-- Run `python tools/check_changed.py` once, when the work is done, not as you go. It checks only what your changes touch: the changed crates on Boat, the UI, and the repo checks. Work that passed needs no second check. If you are going to build anyway, skip it.
+- Run `python tools/check_changed.py` once, when the work is done, not as you go. It checks only what your changes touch. Work that passed needs no second check. If you are going to build anyway, skip it.
 - Test behaviour that can break: format readers and writers, recovery, parsing of game and mod files, and the logic a bug fix changed. Leave out what the types already guarantee and tests that mirror the implementation.
 - Extend before you add: put the case in an existing test where one fits. Test at the lowest layer that fails on `main`, not again in a wrapper.
 - A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.
@@ -110,7 +109,7 @@ All Rust is in `crates/`; names group by prefix.
 ## Documentation
 
 - Don't write READMEs or other docs. When a change makes existing doc text wrong, fix or delete that text.
-- Plans, research notes and scratch files stay outside the worktree. Never commit them.
+- Plans, research notes and scratch files stay outside the worktree.
 - This file has a size budget. After editing it, run `python tools/check-agent-context.py --write`. `check_changed.py` fails growth against `main`, so cut text before adding it.
 
 ## Running the game
