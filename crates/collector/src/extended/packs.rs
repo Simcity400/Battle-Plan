@@ -1611,8 +1611,9 @@ pub(crate) struct NavalMissionLoan {
 
 #[derive(Default)]
 pub(crate) struct SlowStores {
-    pub(crate) doctrine_bytes: u64,
-    pub(crate) doctrines: Option<Box<std::sync::Mutex<collector_slow_tables::doctrines::Store>>>,
+    pub(crate) doctrine_bytes: Option<u64>,
+    pub(crate) doctrines:
+        Option<engine_allocation::SharedBox<std::sync::Mutex<collector_slow_tables::doctrines::Store>>>,
     pub(crate) available: Option<Box<crate::slicing::SliceFingerprints>>,
     pub(crate) advisors: Option<Box<hired_advisors::AdvisorStore>>,
     pub(crate) local_subunits: Option<Box<model_inputs::LocalStore>>,
@@ -2088,7 +2089,10 @@ impl SlowPacks {
             ),
             &mut ticks,
         );
-        stores.doctrine_bytes = self.country_tactic_unlocks.doctrine_store_bytes() as u64;
+        stores.doctrine_bytes = self
+            .country_tactic_unlocks
+            .doctrine_store_bytes()
+            .map(|bytes| bytes as u64);
         scatter(
             &model_inputs::TABLES,
             self.model_inputs.capture_carried(

@@ -1131,11 +1131,7 @@ fn hourly_portrait_holder_preserves_entry_order_and_requires_whole_character_cap
     header[..8].copy_from_slice(&0x1800_u64.to_le_bytes());
     header[8..12].copy_from_slice(&1_u32.to_le_bytes());
     header[12..].copy_from_slice(&1_u32.to_le_bytes());
-    let image = HolderImage {
-        header,
-        entries: logged,
-        text: b"c.dds",
-    };
+    let image = HolderImage::new(header, logged, b"c.dds");
     test_images::set(FIRST + PORTRAIT_DATA, Some(image));
     let result = walk_all(&memory(&bytes), &mut rows, &mut entries);
     test_images::set(0, None);

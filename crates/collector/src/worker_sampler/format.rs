@@ -54,7 +54,17 @@ impl Header {
             return Err("worker_sampler cannot locate collector image".into());
         }
         let base = module as usize;
-        let dos = unsafe { std::slice::from_raw_parts(base as *const u8, 64) };
+        // SAFETY: every read below copies a bounded range of the collector image into an owned
+        // buffer, and a range that cannot be read withholds the header.
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let copy = |offset: usize, len: usize| {
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(len).ok()?;
+            bytes.resize(len, 0);
+            engine_native::read_slice(&memory, base.checked_add(offset)?, &mut bytes)
+                .then_some(bytes)
+        };
+        let dos = copy(0, 64).ok_or("worker_sampler collector DOS header unreadable")?;
         if &dos[..2] != b"MZ" {
             return Err("worker_sampler collector DOS header invalid".into());
         }
@@ -62,34 +72,42 @@ impl Header {
         if !(64..=1024 * 1024).contains(&pe) {
             return Err("worker_sampler collector PE offset invalid".into());
         }
-        let nt = unsafe { std::slice::from_raw_parts((base + pe) as *const u8, 264) };
+        let nt = copy(pe, 84).ok_or("worker_sampler collector PE64 header unreadable")?;
         if &nt[..4] != b"PE\0\0" || u16::from_le_bytes(nt[24..26].try_into().unwrap()) != 0x20b {
             return Err("worker_sampler collector PE64 header invalid".into());
         }
         let image_size = u32::from_le_bytes(nt[80..84].try_into().unwrap());
         let timestamp = u32::from_le_bytes(nt[8..12].try_into().unwrap());
-        // SAFETY: the PE identity checked above declares this mapped span; later reads bound the debug
-        // directory and CodeView records within it.
-        let image = unsafe { std::slice::from_raw_parts(base as *const u8, image_size as usize) };
-        let directory = pe
-            .checked_add(24 + 112 + 6 * 8)
-            .and_then(|offset| image.get(offset..offset + 8))
+        let within = |start: usize, len: usize| {
+            start
+                .checked_add(len)
+                .filter(|&end| end <= image_size as usize)
+                .and_then(|_| copy(start, len))
+        };
+        let directories = within(pe + 24 + 108, 4)
+            .map(|count| u32::from_le_bytes(count[..].try_into().unwrap()))
+            .ok_or("worker_sampler collector data directories unreadable")?;
+        let optional = u16::from_le_bytes(nt[20..22].try_into().unwrap()) as usize;
+        if directories < 7 || optional < 112 + 7 * 8 {
+            return Err("worker_sampler collector debug directory missing".into());
+        }
+        let directory = within(pe + 24 + 112 + 6 * 8, 8)
             .ok_or("worker_sampler collector debug directory missing")?;
         let rva = u32::from_le_bytes(directory[..4].try_into().unwrap()) as usize;
-        let size = u32::from_le_bytes(directory[4..].try_into().unwrap()) as usize;
-        let debug = rva
-            .checked_add(size)
-            .and_then(|end| image.get(rva..end))
-            .ok_or("worker_sampler collector debug directory out of bounds")?;
+        let size = u32::from_le_bytes(directory[4..8].try_into().unwrap()) as usize;
+        if rva.checked_add(size).is_none_or(|end| end > image_size as usize) {
+            return Err("worker_sampler collector debug directory out of bounds".into());
+        }
         let mut identity = None;
-        for entry in debug.chunks_exact(28) {
+        for index in 0..size / 28 {
+            let entry = within(rva + 28 * index, 28)
+                .ok_or("worker_sampler collector debug directory unreadable")?;
             if u32::from_le_bytes(entry[12..16].try_into().unwrap()) != 2 {
                 continue;
             }
             let len = u32::from_le_bytes(entry[16..20].try_into().unwrap()) as usize;
             let start = u32::from_le_bytes(entry[20..24].try_into().unwrap()) as usize;
-            let Some(codeview) = start.checked_add(len).and_then(|end| image.get(start..end))
-            else {
+            let Some(codeview) = within(start, len) else {
                 continue;
             };
             if codeview.len() < 25 || &codeview[..4] != b"RSDS" {

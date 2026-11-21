@@ -2225,7 +2225,7 @@ fn the_slow_job_stores_travel_with_it_and_always_return() {
         seen.scan(&mut available, 9, Some(0));
         available.finish_scan();
         let stores = SlowStores {
-            doctrine_bytes: 0,
+            doctrine_bytes: None,
             doctrines: None,
             available: Some(available),
             advisors: None,

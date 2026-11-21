@@ -94,6 +94,7 @@ enum Reason {
     Retargeted,
     Dependent,
     Unwitnessed,
+    Unreadable,
     Layout(u16),
 }
 
@@ -111,6 +112,7 @@ impl Reason {
             }
             Self::Dependent => "an operand reaches a function or global that is withheld".into(),
             Self::Unwitnessed => "no constructor witnesses its class layout on this build".into(),
+            Self::Unreadable => "part of the running image could not be read".into(),
             Self::Layout(vtable) => format!(
                 "struct layouts are unverified on this build: the constructor of {} changed",
                 vtable_name(vtable)
@@ -160,6 +162,7 @@ fn slice<'a>(table: &'a [u32], (start, count): (u32, u32)) -> &'a [u32] {
 impl Located {
     pub fn locate(image: &Image<'_>, layout_checked: bool) -> Self {
         let started = Instant::now();
+        image.begin();
         let pdata = pdata(image);
         let ends: HashMap<u32, u32> = pdata.iter().copied().collect();
         let mut functions: Vec<Result<u32, Reason>> = vec![Err(Reason::Unreached); FUNCTIONS.len()];
@@ -177,7 +180,7 @@ impl Located {
             for &index in candidates {
                 let f = &FUNCTIONS[index as usize];
                 let mask = slice(&MASKS, f.masks);
-                if head(bytes, mask) == f.head && fingerprint(bytes, mask) == f.hash {
+                if head(&bytes, mask) == f.head && fingerprint(&bytes, mask) == f.hash {
                     let hit = &mut hits[index as usize];
                     hit.0 = begin;
                     hit.1 += 1;
@@ -246,7 +249,7 @@ impl Located {
                             continue;
                         }
                         let Some(bytes) = image.bytes(target, f.len as usize) else { continue };
-                        if fingerprint(bytes, slice(&MASKS, f.masks)) != f.hash {
+                        if fingerprint(&bytes, slice(&MASKS, f.masks)) != f.hash {
                             continue;
                         }
                         match found {
@@ -276,7 +279,7 @@ impl Located {
                             && (!f.pdata || ends.get(&target) == Some(&(target + f.len)))
                             && image
                                 .bytes(target, f.len as usize)
-                                .is_some_and(|bytes| fingerprint(bytes, slice(&MASKS, f.masks)) == f.hash)
+                                .is_some_and(|bytes| fingerprint(&bytes, slice(&MASKS, f.masks)) == f.hash)
                     })
                 });
                 if elsewhere {
@@ -374,14 +377,23 @@ impl Located {
                 let verified = (function.len + tail - offset).min(ORIGINAL as u32) as usize;
                 let mut original = [0; ORIGINAL];
                 if let Some(bytes) = image.bytes(start + offset, verified) {
-                    original[..verified].copy_from_slice(bytes);
+                    original[..verified].copy_from_slice(&bytes);
                     (original, verified as u8)
                 } else {
                     ([0; ORIGINAL], 0)
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
 
+        let (mut functions, mut data, mut originals) = (functions, data, originals);
+        if image.unreadable() {
+            functions.fill(Err(Reason::Unreadable));
+            vtables.fill(Err(Reason::Unreadable));
+            data.fill(Err(Reason::Unreadable));
+            by_live.clear();
+            originals.fill(([0; ORIGINAL], 0));
+            layout = Err(Reason::Unreadable);
+        }
         let mut located = Self {
             base: image.base,
             identity: None,
@@ -622,7 +634,7 @@ fn rtti(image: &Image<'_>) -> Vec<Result<u32, Reason>> {
         }
         let (Some(descriptor), Some(offset)) = (image.u32(at + 12), image.u32(at + 4)) else { continue };
         let Some(name) = image.cstring(descriptor + 16) else { continue };
-        if let Some(&index) = want.get(&(fingerprint(name, &[]), offset)) {
+        if let Some(&index) = want.get(&(fingerprint(&name, &[]), offset)) {
             locators.insert(at, index);
         }
     }

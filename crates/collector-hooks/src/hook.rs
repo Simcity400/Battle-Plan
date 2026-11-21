@@ -18,8 +18,8 @@ use windows_sys::Win32::{
         Diagnostics::{
             Debug::{
                 CONTEXT, CONTEXT_CONTROL_AMD64, FlushInstructionCache, GetThreadContext,
-                IMAGE_RUNTIME_FUNCTION_ENTRY, IMAGE_RUNTIME_FUNCTION_ENTRY_0, RtlAddFunctionTable,
-                RtlDeleteFunctionTable,
+                IMAGE_RUNTIME_FUNCTION_ENTRY, IMAGE_RUNTIME_FUNCTION_ENTRY_0, ReadProcessMemory,
+                RtlAddFunctionTable, RtlDeleteFunctionTable,
             },
             ToolHelp::*,
         },
@@ -1069,6 +1069,7 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
         | PAGE_EXECUTE_WRITECOPY;
     let mut at = sp.checked_next_multiple_of(WORD)?;
     let mut allocation = None;
+    let mut bytes = [0_u8; 512 * WORD];
     let mut buffer = [0_usize; 512];
     loop {
         let mut region: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
@@ -1097,10 +1098,24 @@ fn live_stack_holds(sp: usize, mut holds: impl FnMut(&[usize]) -> bool) -> Optio
             if count == 0 {
                 return None;
             }
-            for (index, word) in buffer[..count].iter_mut().enumerate() {
-                // SAFETY: committed, readable memory of a suspended thread's stack; nothing frees
-                // it while that thread is held. A word may be uninitialized there (#20).
-                *word = unsafe { ptr::read_volatile((at as *const usize).add(index)) };
+            let copied = &mut bytes[..count * WORD];
+            let mut read = 0;
+            // SAFETY: the system copies the range into this function's own buffer and reports a
+            // range it cannot read instead of raising an exception while other threads are held.
+            let ok = unsafe {
+                ReadProcessMemory(
+                    GetCurrentProcess(),
+                    at as *const c_void,
+                    copied.as_mut_ptr().cast(),
+                    copied.len(),
+                    &mut read,
+                )
+            };
+            if ok == 0 || read != copied.len() {
+                return None;
+            }
+            for (word, chunk) in buffer.iter_mut().zip(copied.chunks_exact(WORD)) {
+                *word = <[u8; WORD]>::try_from(chunk).map_or(0, usize::from_ne_bytes);
             }
             if holds(&buffer[..count]) {
                 return Some(true);

@@ -316,7 +316,7 @@ impl Default for Projection {
     }
 }
 pub struct Frame {
-    pub store_bytes: usize,
+    pub store_bytes: Option<usize>,
     pending_heap: usize,
     pending: Pending,
     projection: Option<a::SharedBox<SharedProjection>>,
@@ -327,7 +327,7 @@ pub struct Frame {
 impl Default for Frame {
     fn default() -> Self {
         Self {
-            store_bytes: 0,
+            store_bytes: None,
             pending_heap: 0,
             pending: Pending::default(),
             projection: None,
@@ -354,6 +354,7 @@ impl Frame {
                 * std::mem::size_of::<Action<DoctrineEquipmentBonusRow>>()
     }
     pub fn reset(&mut self) {
+        self.store_bytes = None;
         self.projection = None;
         self.rows = None;
         self.counts = [0; N];
@@ -642,7 +643,7 @@ impl Store {
             self.grants.rows.len(),
             self.equipment.rows.len(),
         ];
-        frame.store_bytes = self.allocated_bytes();
+        frame.store_bytes = Some(self.allocated_bytes());
         self.failed = false;
         Ok(())
     }

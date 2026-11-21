@@ -179,7 +179,7 @@ enum Log {
 // SAFETY: a slot is written only by the writer that reserved it, before its record is
 // published; published slots are only read until the next capture begins, after every reader
 // of this one returned; the storage is replaced only while no writer logs and no capture reads.
-// `image` still borrows the whole text buffer while writers fill other slots (#21).
+// `image` borrows only a published record's entries and their text ranges.
 unsafe impl Sync for PreImages {}
 
 impl PreImages {
@@ -470,13 +470,16 @@ impl engine_native::portrait_cache::PreImages for PreImages {
                 let storage = unsafe { &*self.storage.get() };
                 let entries: *const [UnsafeCell<EntryImage>] =
                     &storage.entries[first..first + count];
-                let text: *const [UnsafeCell<u8>] = &storage.text[..];
-                let (entries, text) =
-                    unsafe { (&*(entries as *const [EntryImage]), &*(text as *const [u8])) };
-                Ok(HolderImage {
-                    header,
-                    entries,
-                    text,
+                let entries = unsafe { &*(entries as *const [EntryImage]) };
+                // SAFETY: the record's writer filled each of its entries' text ranges before
+                // publishing it, and they stay unchanged until the next capture begins.
+                Ok(unsafe {
+                    HolderImage::published(
+                        header,
+                        entries,
+                        UnsafeCell::raw_get(storage.text.as_ptr()).cast_const(),
+                        storage.text.len(),
+                    )
                 })
             }
         })
@@ -726,9 +729,9 @@ mod revision_tests {
         assert_eq!(store.log(ARRAY, &after), Log::Logged);
         let image = store.image(ARRAY).unwrap().unwrap();
         assert_eq!(image.header[..], bytes[..16]);
-        assert_eq!(image.entries.len(), 1);
-        assert_eq!(image.entries[0].head[..], bytes[ENTRY..ENTRY + 16]);
-        assert_eq!(image.identity(&image.entries[0]).unwrap(), b"x.dds");
+        assert_eq!(image.entries().len(), 1);
+        assert_eq!(image.entries()[0].head[..], bytes[ENTRY..ENTRY + 16]);
+        assert_eq!(image.identity(0).unwrap(), b"x.dds");
         assert!(store.image(ARRAY + 8).is_none());
         store.end(true);
         assert!(store.image(ARRAY).is_none());

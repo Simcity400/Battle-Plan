@@ -111,7 +111,7 @@ impl Captured {
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
     }
-    pub fn doctrine_store_bytes(&mut self) -> usize {
+    pub fn doctrine_store_bytes(&mut self) -> Option<usize> {
         self.doctrines
             .get_mut()
             .expect("exclusive doctrine frame")

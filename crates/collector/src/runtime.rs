@@ -674,9 +674,10 @@ fn run(
     progress.step("attach_started", None);
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     let memory = unsafe { LiveMemory::new() };
-    // SAFETY: the game executable stays loaded for the life of the process.
-    let image = unsafe { engine_sites::Image::module(base) }
-        .map_err(|_| "game executable headers unreadable")?;
+    let copy =
+        |address: usize, bytes: &mut [u8]| engine_native::Memory::copy(&memory, address, bytes);
+    let image =
+        engine_sites::Image::live(base, &copy).map_err(|_| "game executable headers unreadable")?;
     let located = engine_sites::install(engine_sites::Located::locate(
         &image,
         engine_sites::layout_checked(&exe.sha256),
@@ -690,9 +691,9 @@ fn run(
             sites.functions_found,
             sites.functions,
             match (sites.layout_checked, sites.layout_verified) {
-                (true, _) => "checked",
+                (true, true) => "checked",
                 (false, true) => "witnessed",
-                (false, false) => "unverified",
+                (_, false) => "unverified",
             },
             sites.elapsed.as_micros(),
         ),

@@ -776,7 +776,7 @@ pub struct Shared {
     advisor_store_bytes: AtomicU64,
     local_subunit_store: UnsafeCell<Option<Box<extended::model_inputs::LocalStore>>>,
     local_subunit_store_bytes: AtomicU64,
-    doctrine_store: UnsafeCell<Option<Box<Mutex<collector_slow_tables::doctrines::Store>>>>,
+    doctrine_store: engine_allocation::SharedBox<Mutex<collector_slow_tables::doctrines::Store>>,
     doctrine_store_bytes: AtomicU64,
     counter_store: UnsafeCell<Option<Box<extended::country_counters::CounterStore>>>,
     counter_store_bytes: AtomicU64,
@@ -849,17 +849,13 @@ impl Shared {
     }
 
     fn bind_doctrine_observer(&self) {
-        // SAFETY: `with_sizing` binds the stable store and all three handlers before any hook is
-        // published. Shared owns this box, which loans move without moving, through hook restoration
-        // and native callback quiescence, so every registered handler's context stays valid until
-        // the callbacks drain. A capture that unwinds while the box is on loan drops it early
-        // (#130).
+        // SAFETY: `with_sizing` binds the store and all three handlers before any hook is
+        // published. Shared keeps one owner of the store for its whole life, and a slow request
+        // only holds another, so no request dropped on any path frees it; Shared itself is dropped
+        // only after hook restoration and native callback quiescence.
         unsafe {
-            let doctrines = (*self.doctrine_store.get())
-                .as_deref()
-                .expect("attach made the doctrine store");
             collector_observers::doctrine_changes::bind(
-                (doctrines as *const Mutex<collector_slow_tables::doctrines::Store>) as usize,
+                engine_allocation::SharedBox::as_ptr(&self.doctrine_store) as usize,
                 collector_slow_tables::doctrines::observe,
             );
             collector_observers::doctrine_changes::bind_cost_consumption(
@@ -971,7 +967,7 @@ impl Shared {
             cfg!(feature = "local_subunit_changes"),
             extended::model_inputs::LocalStore::default,
         )?;
-        let doctrine_store = engine_allocation::boxed(Mutex::new(
+        let doctrine_store = engine_allocation::shared(Mutex::new(
             collector_slow_tables::doctrines::Store::default(),
         ))?;
         let counter_store = store(
@@ -1131,7 +1127,7 @@ impl Shared {
             advisor_store_bytes: AtomicU64::new(0),
             local_subunit_store: UnsafeCell::new(local_subunit_store),
             local_subunit_store_bytes: AtomicU64::new(0),
-            doctrine_store: UnsafeCell::new(Some(doctrine_store)),
+            doctrine_store,
             doctrine_store_bytes: AtomicU64::new(0),
             counter_store: UnsafeCell::new(counter_store),
             counter_store_bytes: AtomicU64::new(0),
@@ -1674,6 +1670,23 @@ unsafe fn take_slice_store(
     unsafe { &mut *shared.slice_fingerprints[family].get() }
         .take()
         .expect("sliced family store returned by the previous callback")
+}
+
+/// Lend the slow job its stores for this hour.
+///
+/// # Safety
+/// Captures only, and the previous capture's slow job returned its stores.
+unsafe fn lend_slow_stores(shared: &Shared) -> crate::extended::SlowStores {
+    unsafe {
+        crate::extended::SlowStores {
+            available: (*shared.slice_fingerprints[crate::slicing::AVAILABLE_ADVISORS].get())
+                .take(),
+            advisors: (*shared.advisor_store.get()).take(),
+            local_subunits: (*shared.local_subunit_store.get()).take(),
+            doctrine_bytes: None,
+            doctrines: Some(shared.doctrine_store.clone()),
+        }
+    }
 }
 
 /// Return a store [`take_slice_store`] lent.
@@ -2723,17 +2736,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     });
                     (pending, slack)
                 });
-            let slow_stores = unsafe {
-                crate::extended::SlowStores {
-                    available: (*shared.slice_fingerprints[crate::slicing::AVAILABLE_ADVISORS]
-                        .get())
-                    .take(),
-                    advisors: (*shared.advisor_store.get()).take(),
-                    local_subunits: (*shared.local_subunit_store.get()).take(),
-                    doctrine_bytes: 0,
-                    doctrines: (*shared.doctrine_store.get()).take(),
-                }
-            };
+            let slow_stores = unsafe { lend_slow_stores(shared) };
             let slow_pending = queue!(acquisition::Job::Slow(frame.extended.take_slow_request(
                 &country_snapshot,
                 shared.base,
@@ -4905,14 +4908,11 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
                 unsafe { *shared.local_subunit_store.get() = Some(store) };
             }
-            if let Some(store) = stores.doctrines {
-                let bytes = stores.doctrine_bytes;
+            if let Some(bytes) = stores.doctrine_bytes {
                 let previous = shared.doctrine_store_bytes.swap(bytes, Ordering::Relaxed);
                 shared
                     .pool_bytes
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
-                // SAFETY: the existing Slow job has joined and returned its loan.
-                unsafe { *shared.doctrine_store.get() = Some(store) };
             }
             if let Some(pending) = war_overview_pending {
                 let (war_overview_request, _, war_overview_failure) =
