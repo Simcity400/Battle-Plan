@@ -113,6 +113,8 @@ class Job:
     keyed: tuple
     report: str
     not_run: tuple
+    shards: int
+    warm: tuple
     definition: str
 
 
@@ -155,6 +157,7 @@ def load_pipeline(text):
             heavy=table.get("heavy", False), unset=tuple(table.get("unset", ())), environment=tuple(table.get("environment", ())),
             widen=tuple(table.get("widen", ())), keyed=tuple(table.get("keyed", ())),
             report=table.get("report", ""), not_run=tuple(table.get("not-run", {}).items()),
+            shards=table.get("shards", 0), warm=tuple(table.get("warm", ())),
             definition=json.dumps([table, data["toolchain"].get(table["toolchain"]), data.get("group", {}).get(table.get("group"))], sort_keys=True))
         problems = [f"tier {job.tier!r}"] if job.tier not in tiers else []
         problems += [f"kind {job.kind!r}"] if job.kind not in KINDS else []
@@ -163,6 +166,9 @@ def load_pipeline(text):
         problems += [f"group {job.group!r}"] if job.group not in data.get("group", {}) else []
         problems += ["name, used twice"] if job.name in {known.name for known in jobs} else []
         problems += ["report, which not-run reads"] if job.not_run and not job.report else []
+        problems += [f"shards {job.shards!r}, a positive count for a crates job"] if job.shards and (
+            job.kind != "crates" or not isinstance(job.shards, int) or job.shards < 1) else []
+        problems += ["warm, a command for a crates job with shards"] if job.warm and not job.shards else []
         if problems:
             raise SystemExit(f"tools/ci.toml: job {job.name}: unknown or missing {', '.join(problems)}")
         jobs.append(job)
@@ -274,6 +280,51 @@ def closure(crates, name):
     return seen
 
 
+def crate_weights(crates, sizes):
+    """Each crate's weight: the bytes of Rust source its folder owns (`sizes` maps path -> bytes),
+    at least 1, the measure of what compiling it costs."""
+    owner = crate_owner(crates)
+    weights = dict.fromkeys(crates, 1)
+    for path, size in sizes.items():
+        name = owner(path) if path.endswith(".rs") else None
+        if name:
+            weights[name] += size
+    return weights
+
+
+def shard_cost(crates, names, weights):
+    """What building and testing `names` on one runner costs: each crate's test build, and the
+    library of each crate it or its workspace dependencies need, once."""
+    libraries = set(names).union(*(closure(crates, name) for name in names))
+    return sum(weights[name] for name in names) + sum(weights[name] for name in libraries)
+
+
+def shard_count(crates, names, weights, most):
+    """How many runners share `names`: as many of the job's `most` as their part of the whole
+    workspace's cost, so the workspace takes them all and one crate takes one."""
+    whole = shard_cost(crates, list(crates), weights)
+    wanted = -(-most * shard_cost(crates, names, weights) // whole) if whole else 1
+    return max(1, min(most, len(names), wanted))
+
+
+def shard_crates(crates, names, weights, count):
+    """`names` split into `count` sorted lists, greedily: the costliest crate first, each to the
+    runner it adds least to the busiest of, so a crate joins the runner already building its
+    dependencies. Pure and ordered, so `changes` and each runner agree without being told."""
+    def own(name):
+        return weights[name] + sum(weights[dep] for dep in closure(crates, name))
+
+    loads, built, shards = [0] * count, [set() for _ in range(count)], [[] for _ in range(count)]
+    for name in sorted(names, key=lambda name: (-own(name), name)):
+        needs = {name} | closure(crates, name)
+        added = [weights[name] + sum(weights[dep] for dep in needs - built[at]) for at in range(count)]
+        at = min(range(count), key=lambda at: (loads[at] + added[at], at))
+        loads[at] += added[at]
+        built[at] |= needs
+        shards[at].append(name)
+    return [sorted(shard) for shard in shards]
+
+
 @dataclass
 class Context:
     """What a run decides from: the files as they are (path -> (blob, tracked)), the paths changed
@@ -294,6 +345,7 @@ class Context:
     definitions: dict | None = None
     own: dict | None = None
     hosted: bool = False
+    everything: bool = False
 
 
 @dataclass
@@ -304,6 +356,8 @@ class Decision:
     keys: dict = field(default_factory=dict)
     arguments: list = field(default_factory=list)
     whole: bool = False
+    crates: list = field(default_factory=list)
+    beyond: list = field(default_factory=list)
 
 
 def file_entries(tree, paths):
@@ -400,6 +454,9 @@ def decide_crates(job, ctx, toolchain):
     selected = set(crates) if wide else changed | {crate.name for crate in crates.values() if crate.deps & changed}
     if not selected:
         return Decision(job, "skipped", "no crate changed since the base")
+    beyond = [] if wide or not ctx.everything else sorted(set(crates) - selected)
+    if ctx.everything and not wide:
+        selected, wide = set(crates), True
     if wide and not job.workspace and not ctx.hosted:
         return Decision(job, "deferred", "a workspace-wide change; a later tier runs the workspace")
     if job.limit is not None and len(selected) > job.limit and not job.workspace and not ctx.hosted:
@@ -415,12 +472,12 @@ def decide_crates(job, ctx, toolchain):
             for name in selected}
     records = {name: ctx.passed(key) for name, key in keys.items()}
     todo = sorted(name for name in selected if not records[name])
-    scope = f"{len(selected)} crates" + (" (workspace-wide)" if wide else "")
+    scope = f"{len(selected)} crates" + (f" (workspace-wide; {len(beyond)} beyond a pull request's scope)" if beyond else " (workspace-wide)" if wide else "")
     if not todo:
         return Decision(job, "reused", f"{scope} {reused_detail(records.values())}")
     detail = scope + (f", {len(selected) - len(todo)} reused" if len(todo) < len(selected) else "")
     arguments = ["--workspace"] if wide else [arg for name in todo for arg in ("-p", name)]
-    return Decision(job, "run", detail, {name: keys[name] for name in todo}, arguments)
+    return Decision(job, "run", detail, {name: keys[name] for name in todo}, arguments, crates=todo, beyond=beyond)
 
 
 def expand(command, values, batch=None):
@@ -740,14 +797,19 @@ def finished_every_test(log_text, sorted_report):
     return int(summaries[-1][0]) == passed + len(failures) + sum(sum(binaries.values()) for binaries in held.values())
 
 
-def failure_report(sorted_report):
+def failure_report(sorted_report, beyond=()):
     """The lines naming what a run's sorted failures were: each unnamed failure with the start of
-    its output, then the counts each rule held back."""
+    its output, marked when its crate is `beyond` the scope a pull request tests, then the counts
+    each rule held back."""
     passed, failures, held = sorted_report
     lines = [f"{passed} passed, {len(failures)} failed"]
+    outside = [test for test, _ in failures if test.split(" ", 1)[0].split("::", 1)[0] in beyond]
+    if outside:
+        lines.append(f"{len(outside)} of the failures are in crates beyond a pull request's scope (the changed crates and their"
+                     " direct dependents): only this run tests them")
     for test, output in failures:
         shown = output.splitlines()
-        lines += [f"--- FAIL {test}", *shown[:SHOWN_LINES]]
+        lines += [f"--- FAIL {test}" + (" (beyond a pull request's scope)" if test in outside else ""), *shown[:SHOWN_LINES]]
         lines += [f"    ({len(shown) - SHOWN_LINES} more lines)"] if len(shown) > SHOWN_LINES else []
     for reason, binaries in held.items():
         lines.append(f"not run here: {reason}: {sum(binaries.values())} tests, in "
@@ -832,7 +894,7 @@ class Runner:
                 found = sorted_failures(report.read_text(encoding="utf-8", errors="replace"), job.not_run)
                 if found is not None:
                     complete = finished_every_test(log.read_text(encoding="utf-8", errors="replace"), found)
-                    lines = failure_report(found) + ([] if complete else ["nextest's summary does not show every selected test run"])
+                    lines = failure_report(found, set(decision.beyond)) + ([] if complete else ["nextest's summary does not show every selected test run"])
                     failures_file(log).write_text("\n".join(lines) + "\n", encoding="utf-8")
                     if code == NEXTEST_TESTS_FAILED and complete and not found[1] and found[2]:
                         code = 0
@@ -1267,7 +1329,7 @@ def plan(tier, base_ref, gates, exact=False):
     order = list(pipeline.tiers)
     crates = crates_from_manifests(ROOT) if any(job.kind == "crates" and order.index(job.tier) <= order.index(tier) for job in pipeline.jobs) else {}
     ctx = Context(tree, changed, base, head, toolchains, crates, passed, pipeline, missing, False, definitions_at(base),
-                  hosted=gates or HOSTED)
+                  hosted=gates or HOSTED, everything=(gates or HOSTED) and tier != "check")
     decisions = [decide(job, ctx, tier) for job in pipeline.jobs]
     if not ratchet_base(base):
         decisions = [Decision(d.job, "not run", f"no commit to ratchet against: {base} is not one and HEAD has no parent")
@@ -1301,17 +1363,57 @@ def unplanned_outcomes(planned, decisions):
     return failures
 
 
+def committed_sizes():
+    """path -> bytes of each file HEAD commits, the same on every runner whatever its line endings."""
+    sizes = {}
+    for line in z(git("ls-tree", "-r", "-l", "-z", "HEAD")):
+        meta, path = line.split("\t", 1)
+        size = meta.split()[3]
+        if size.isdigit():
+            sizes[path] = int(size)
+    return sizes
+
+
+def shards(decision, crates, sizes):
+    """The crate lists a sharded job's runners take, None for an empty one, or [None] for a job
+    that is not sharded."""
+    if not decision.job.shards or not decision.crates:
+        return [None]
+    weights = crate_weights(crates, sizes)
+    count = shard_count(crates, decision.crates, weights, decision.job.shards)
+    return [shard or None for shard in shard_crates(crates, decision.crates, weights, count)]
+
+
+def matrix_legs(pipeline, decisions, crates, sizes):
+    """The workflow's matrix: one leg per group for its unsharded jobs, and one per runner of each
+    sharded job, numbered within the job's shards."""
+    needs = lambda group: {f"needs_{need}": True for need in pipeline.groups[group].get("setup", [])}
+    groups, legs = {}, []
+    for decision in decisions:
+        if decision.state != "run":
+            continue
+        split = shards(decision, crates, sizes)
+        if split == [None]:
+            groups.setdefault(decision.job.group, []).append(decision.job.name)
+            continue
+        for at, shard in enumerate(split, 1):
+            if shard:
+                legs.append(dict(group=decision.job.group, name=f"{decision.job.name} {at}/{len(split)}", jobs=decision.job.name,
+                                 shard=f"{at}/{len(split)}", **needs(decision.job.group)))
+    return [dict(group=group, name=group, jobs=" ".join(names), shard="", **needs(group))
+            for group, names in groups.items()] + legs
+
+
 def changes(args):
     """The workflow's `changes` job: each job's gate, and the matrix of the groups with work."""
     pipeline, values, decisions = plan(args.tier, args.base, gates=True, exact=args.exact_base)
-    groups = {}
     for decision in decisions:
         print(f"  {decision.state:8} {decision.job.name:22} {decision.job.group:8} {decision.detail}")
-        if decision.state == "run":
-            groups.setdefault(decision.job.group, []).append(decision.job.name)
-    matrix = [dict(group=group, jobs=" ".join(names), **{f"needs_{need}": True for need in pipeline.groups[group].get("setup", [])})
-              for group, names in groups.items()]
-    print(f"groups with work: {', '.join(groups) or 'none'}")
+    sharded = any(d.state == "run" and d.job.shards for d in decisions)
+    matrix = matrix_legs(pipeline, decisions, crates_from_manifests(ROOT) if sharded else {}, committed_sizes() if sharded else {})
+    for leg in matrix:
+        print(f"leg {leg['name']}: {leg['jobs']}")
+    print(f"legs: {len(matrix) or 'none'}")
     unplanned = [decision.job.name for decision in decisions if decision.state == "not run"]
     if unplanned:
         print(f"could not plan: {', '.join(unplanned)}")
@@ -1320,13 +1422,37 @@ def changes(args):
         with open(args.github_output, "a", encoding="utf-8") as out:
             out.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")
             out.write(f"any={'true' if matrix else 'false'}\n")
+            warmed = [d.job.name for d in decisions if d.state == "run" and d.job.warm]
+            out.write(f"warm={json.dumps(warmed, separators=(',', ':'))}\n")
             out.write(f"base={git('merge-base', 'HEAD', args.base, check=False).strip() if not args.exact_base else args.base}\n")
     return 0
 
 
+def take_shard(decisions, shard, crates, sizes):
+    """The decisions with the one planned sharded job cut to runner `at` of `count`'s crates, and
+    the outcomes failing the leg when this runner would split the job otherwise than `changes`."""
+    try:
+        at, count = (int(part) for part in shard.split("/"))
+    except ValueError:
+        return decisions, [Outcome(shard, "fail", "a shard is AT/COUNT")]
+    sharded = [d for d in decisions if d.state == "run" and d.job.shards]
+    if len(sharded) != 1:
+        return decisions, [Outcome(shard, "fail", f"shard {shard} names {len(sharded)} sharded jobs to run, not one")]
+    decision = sharded[0]
+    split = shards(decision, crates, sizes)
+    if len(split) != count or not 1 <= at <= count or not split[at - 1]:
+        return decisions, [Outcome(decision.job.name, "fail", f"planned as shard {shard}, but this runner splits the job into {len(split)}")]
+    mine = split[at - 1]
+    cut = Decision(decision.job, "run", f"shard {shard}: {len(mine)} of {decision.detail}",
+                   {name: decision.keys[name] for name in mine}, [arg for name in mine for arg in ("-p", name)], crates=mine,
+                   beyond=decision.beyond)
+    return [cut if d is decision else d for d in decisions], []
+
+
 def job_group(args):
-    """The workflow's matrix job: runs one group's jobs that `changes` gated in, Rust jobs one
-    after another (they share a target folder) and the rest in parallel."""
+    """The workflow's matrix job: runs one group's jobs that `changes` gated in, or one runner's
+    share of a sharded job, Rust jobs one after another (they share a target folder) and the rest
+    in parallel."""
     pipeline, values, decisions = plan(args.tier, args.base, gates=False, exact=args.exact_base)
     if args.group not in pipeline.groups:
         sys.exit(f"tools/ci.toml has no group {args.group!r}")
@@ -1334,11 +1460,15 @@ def job_group(args):
     wrong = [d.job.name for d in decisions if d.job.name in planned and d.job.group != args.group]
     if wrong:
         sys.exit(f"planned jobs outside group {args.group}: {', '.join(wrong)}")
+    outcomes = unplanned_outcomes(planned, decisions)
+    if args.shard:
+        decisions, refused = take_shard([d for d in decisions if d.job.name in planned], args.shard,
+                                        crates_from_manifests(ROOT), committed_sizes())
+        outcomes += refused
     mine = [decision for decision in decisions if decision.job.name in planned and decision.state == "run"]
     store = Store(store_root())
     folder = store.run_folder(git("rev-parse", "HEAD").strip())
     runner = Runner(folder, values)
-    outcomes = unplanned_outcomes(planned, decisions)
     serial = [d for d in mine if d.state == "run" and d.job.kind == "crates"]
     parallel = [d for d in mine if d.state == "run" and d.job.kind != "crates"]
     pool = ThreadPoolExecutor(max_workers=max(1, len(parallel) + 1))
@@ -1366,6 +1496,62 @@ def job_group(args):
     return EXIT[state]
 
 
+BUILT_FROM = "ci-built-from"
+SETTLED = 946684800
+
+
+def newer_paths(changed):
+    """The paths a restored target folder must see as newer than itself: each changed path, added,
+    modified or deleted, and every folder above one, so a build script watching a folder notices
+    a file added to or removed from it."""
+    newer = set()
+    for path in changed:
+        parts = path.split("/")
+        newer.update("/".join(parts[:end]) for end in range(1, len(parts) + 1))
+    return newer
+
+
+def set_times(target, now=None):
+    """Sets every tracked file's and folder's time so Cargo's freshness check, which compares
+    times, sees in a target folder restored from a cache exactly the files that differ from the
+    commit it was built from (named in the folder's BUILT_FROM file): those are now, the rest a
+    fixed old time older than any build. Without that commit every file is now, so every
+    workspace crate rebuilds; third-party crates are keyed by version, not time, and stay."""
+    now = time.time() if now is None else now
+    built_from = None
+    try:
+        built_from = (Path(target) / BUILT_FROM).read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    known = bool(built_from) and git("cat-file", "-t", built_from, check=False).strip() == "commit"
+    tracked = z(git("ls-files", "-z"))
+    newer = newer_paths(z(git("diff", "--name-only", "--no-renames", "-z", built_from, "HEAD"))) if known else None
+    folders = {"/".join(path.split("/")[:end]) for path in tracked for end in range(1, path.count("/") + 1)}
+    for path in [*tracked, *sorted(folders, key=lambda folder: -folder.count("/"))]:
+        stamp = now if newer is None or path in newer else SETTLED
+        try:
+            os.utime(ROOT / path, (stamp, stamp))
+        except OSError:
+            pass
+    print(f"file times: {len(newer) if known else 'every'} paths newer than the target folder"
+          + (f" (built from {built_from[:10]})" if known else " (it names no commit this clone has)"), flush=True)
+
+
+def warm(name, target):
+    """Runs a job's `warm` command, which builds every unit its runners may reuse, then names HEAD
+    in the target folder as the commit it was built from. A unit that fails to build is simply
+    absent, so the folder is named whatever the command's exit code."""
+    job = next((job for job in load_pipeline(PIPELINE.read_text(encoding="utf-8")).jobs if job.name == name), None)
+    if job is None or not job.warm:
+        sys.exit(f"tools/ci.toml has no job {name!r} with a warm command")
+    started = time.monotonic()
+    code = subprocess.run(job.warm, cwd=ROOT, stdin=subprocess.DEVNULL).returncode
+    print(f"warmed {name} in {time.monotonic() - started:.0f}s, exit {code}", flush=True)
+    Path(target).mkdir(parents=True, exist_ok=True)
+    (Path(target) / BUILT_FROM).write_text(git("rev-parse", "HEAD").strip() + "\n", encoding="utf-8")
+    return 0
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -1378,6 +1564,8 @@ def main(argv=None):
         command.add_argument("--base", default=base, metavar="REF", help="default: the upstream for check, HEAD~1 for main")
         command.add_argument("--dry-run", action="store_true", help="print what would run, reuse or skip")
         command.add_argument("--no-status", action="store_true", help="don't post the commit status")
+    timing = commands.add_parser("times", help="set file times for a target folder restored from a cache")
+    timing.add_argument("--target", required=True)
     gating = commands.add_parser("changes", help="the workflow's gates and job matrix")
     gating.add_argument("--tier", default="check")
     gating.add_argument("--base", required=True, metavar="REF")
@@ -1389,7 +1577,15 @@ def main(argv=None):
     grouped.add_argument("--jobs", required=True, help="the job names `changes` planned for this group, space-separated")
     grouped.add_argument("--base", required=True, metavar="REF")
     grouped.add_argument("--exact-base", action="store_true", help="compare with the base itself, not the merge base")
+    grouped.add_argument("--shard", default="", metavar="AT/COUNT", help="run this runner's share of the one sharded job planned")
+    warming = commands.add_parser("warm", help="build what a sharded job's target folder cache keeps, and name HEAD in it")
+    warming.add_argument("--job", required=True)
+    warming.add_argument("--target", required=True)
     args = parser.parse_args(argv)
+    if args.command == "times":
+        return set_times(args.target) or 0
+    if args.command == "warm":
+        return warm(args.job, args.target)
     if args.command == "changes":
         return changes(args)
     if args.command == "job":

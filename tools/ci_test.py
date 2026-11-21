@@ -617,6 +617,85 @@ class ReviewOfFourteen(unittest.TestCase):
         self.assertNotIn("matrix.os", workflow)
 
 
+class Sharding(unittest.TestCase):
+    WORKSPACE = crates(hub=[], mid=["hub"], app=["mid", "hub"], tool=["hub"], leaf=[], other=["leaf"])
+    WEIGHTS = {"hub": 50, "mid": 20, "app": 40, "tool": 10, "leaf": 30, "other": 5}
+
+    def sharded(self, changed, tier="check", shards=2):
+        pipeline = PIPELINE.replace('limit = 3\nheavy = true\n', f'limit = 3\nheavy = true\nshards = {shards}\n')
+        tree = {f"crates/{name}/src/lib.rs": (name, True) for name in self.WORKSPACE}
+        ctx = context(changed, tree=tree, workspace=self.WORKSPACE)
+        ctx.pipeline = ci.load_pipeline(pipeline)
+        ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
+        ctx.hosted, ctx.everything = True, tier != "check"
+        sizes = {f"crates/{name}/src/lib.rs": weight for name, weight in self.WEIGHTS.items()}
+        return ctx, [ci.decide(job, ctx, tier) for job in ctx.pipeline.jobs], sizes
+
+    def test_every_crate_runs_once_and_a_dependent_joins_the_runner_building_its_dependencies(self):
+        weights = ci.crate_weights(self.WORKSPACE, {f"crates/{n}/src/lib.rs": w for n, w in self.WEIGHTS.items()})
+        split = ci.shard_crates(self.WORKSPACE, sorted(self.WORKSPACE), weights, 2)
+        self.assertEqual(sorted(name for shard in split for name in shard), sorted(self.WORKSPACE))
+        self.assertEqual(split, ci.shard_crates(self.WORKSPACE, list(reversed(sorted(self.WORKSPACE))), weights, 2))
+        clusters = crates(hub=[], app=["hub"], leaf=[], other=["leaf"])
+        weights = {"hub": 50, "app": 10, "leaf": 50, "other": 10}
+        self.assertEqual(sorted(ci.shard_crates(clusters, sorted(clusters), weights, 2)), [["app", "hub"], ["leaf", "other"]])
+
+    def test_the_workspace_takes_every_runner_and_one_crate_takes_one(self):
+        weights = ci.crate_weights(self.WORKSPACE, {f"crates/{n}/src/lib.rs": w for n, w in self.WEIGHTS.items()})
+        self.assertEqual(ci.shard_count(self.WORKSPACE, sorted(self.WORKSPACE), weights, 4), 4)
+        self.assertEqual(ci.shard_count(self.WORKSPACE, ["other"], weights, 4), 1)
+
+    def test_changes_and_each_runner_split_a_job_alike(self):
+        ctx, decisions, sizes = self.sharded(["crates/hub/src/lib.rs"])
+        legs = ci.matrix_legs(ctx.pipeline, decisions, ctx.crates, sizes)
+        tests = [leg for leg in legs if leg["jobs"] == "test"]
+        self.assertEqual([leg["shard"] for leg in tests], ["1/2", "2/2"])
+        self.assertTrue(all(leg["needs_python"] for leg in legs))
+        self.assertIn("clippy", next(leg for leg in legs if leg["shard"] == "")["jobs"].split())
+        taken = []
+        for leg in tests:
+            cut, refused = ci.take_shard([d for d in decisions if d.job.name == "test"], leg["shard"], ctx.crates, sizes)
+            self.assertEqual(refused, [])
+            taken += cut[0].arguments[1::2]
+        self.assertEqual(sorted(taken), ["app", "hub", "mid", "tool"])
+
+    def test_a_runner_that_would_split_otherwise_fails_its_leg(self):
+        ctx, decisions, sizes = self.sharded(["crates/hub/src/lib.rs"])
+        mine = [d for d in decisions if d.job.name == "test"]
+        for shard in ("3/3", "1/1", "x"):
+            _, refused = ci.take_shard(mine, shard, ctx.crates, sizes)
+            self.assertEqual([o.state for o in refused], ["fail"], shard)
+
+    def test_main_tests_the_workspace_and_names_what_lies_beyond_a_pull_requests_scope(self):
+        _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"], tier="main")
+        decision = next(d for d in decisions if d.job.name == "test")
+        self.assertEqual(decision.arguments, ["--workspace"])
+        self.assertEqual(decision.beyond, ["app", "hub", "mid", "tool"])
+        self.assertIn("4 beyond a pull request's scope", decision.detail)
+        _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"])
+        self.assertEqual(next(d for d in decisions if d.job.name == "test").arguments, ["-p", "leaf", "-p", "other"])
+        _, decisions, _ = self.sharded(["docs/x.md"], tier="main")
+        self.assertEqual(next(d for d in decisions if d.job.name == "test").state, "skipped")
+
+    def test_a_failure_beyond_a_pull_requests_scope_says_so(self):
+        lines = ci.failure_report((3, [("app t::one", "boom"), ("leaf::bin/x t::two", "bang")], {}), {"app"})
+        self.assertIn("--- FAIL app t::one (beyond a pull request's scope)", lines)
+        self.assertIn("--- FAIL leaf::bin/x t::two", lines)
+        self.assertTrue(any(line.startswith("1 of the failures") for line in lines))
+
+    def test_only_a_crates_job_shards_and_only_a_sharded_job_warms(self):
+        with self.assertRaises(SystemExit):
+            ci.load_pipeline(PIPELINE.replace('command = ["scan"]\n', 'command = ["scan"]\nshards = 2\n'))
+        with self.assertRaises(SystemExit):
+            ci.load_pipeline(PIPELINE.replace('limit = 3\n', 'limit = 3\nwarm = ["cargo"]\n'))
+
+
+class RestoredTarget(unittest.TestCase):
+    def test_a_changed_path_and_every_folder_above_it_are_newer(self):
+        self.assertEqual(ci.newer_paths(["crates/a/src/gone.rs", "Cargo.lock"]),
+                         {"crates", "crates/a", "crates/a/src", "crates/a/src/gone.rs", "Cargo.lock"})
+
+
 class Pipeline(unittest.TestCase):
     def test_the_pipeline_loads_and_runs_every_repo_check(self):
         pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))

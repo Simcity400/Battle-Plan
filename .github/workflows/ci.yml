@@ -26,6 +26,7 @@ jobs:
       base: ${{ steps.plan.outputs.base }}
       tier: ${{ steps.tier.outputs.tier }}
       exact: ${{ steps.tier.outputs.exact }}
+      warm: ${{ steps.plan.outputs.warm }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -60,7 +61,7 @@ jobs:
   run:
     needs: changes
     if: needs.changes.outputs.any == 'true'
-    name: ${{ matrix.group }}
+    name: ${{ matrix.name }}
     runs-on: ${{ fromJSON('{"repo":"ubuntu-24.04","ui":"ubuntu-24.04","tools":"windows-latest","browser":"windows-latest","rust":"windows-latest"}')[matrix.group] }}
     strategy:
       fail-fast: false
@@ -93,10 +94,19 @@ jobs:
       - if: matrix.needs_rust || matrix.needs_toolchain
         run: rustup toolchain install
       - if: matrix.needs_rust
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        uses: actions/cache/restore@v6
         with:
-          workspaces: '. -> .cargo-target'
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            .cargo-target
+          key: rust-${{ matrix.jobs }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: |
+            rust-${{ matrix.jobs }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+            rust-${{ matrix.jobs }}-
+      - if: matrix.needs_rust
+        run: python tools/ci.py times --target .cargo-target
       - if: matrix.needs_rust
         uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
@@ -108,13 +118,59 @@ jobs:
           EXACT: ${{ needs.changes.outputs.exact }}
           GROUP: ${{ matrix.group }}
           JOBS: ${{ matrix.jobs }}
-        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --jobs "$JOBS" --base "$BASE" $EXACT
+          SHARD: ${{ matrix.shard }}
+        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --jobs "$JOBS" --base "$BASE" $EXACT ${SHARD:+--shard "$SHARD"}
       - if: failure() && matrix.needs_rust
         uses: actions/upload-artifact@v7
         with:
-          name: rust-test-junit
+          name: junit-${{ strategy.job-index }}
           path: target/nextest/hosted/junit.xml
           if-no-files-found: ignore
+
+  rust-cache:
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.warm != '[]'
+    name: cache ${{ matrix.job }}
+    runs-on: windows-latest
+    timeout-minutes: 300
+    concurrency:
+      group: rust-cache-${{ matrix.job }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJSON(needs.changes.outputs.warm) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: rustup toolchain install
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            .cargo-target
+          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+      - run: python tools/ci.py times --target .cargo-target
+      - shell: bash
+        env:
+          JOB: ${{ matrix.job }}
+        run: python tools/ci.py warm --job "$JOB" --target .cargo-target
+      - uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            .cargo-target
+          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
 
   check:
     needs: [changes, run]
