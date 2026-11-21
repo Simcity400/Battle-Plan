@@ -14,10 +14,6 @@
   <a href="https://github.com/Simcity400/battle-plan/issues">Issues</a>
 </p>
 
-<p align="center">
-  <img src="./.github/readme/hero.webp" width="100%" alt="Battle Plan's campaign map in July 1941: Italian and German divisions on the North African front near Tripoli, with 3D unit models, a fleet offshore and a division tooltip showing organisation, strength and supply" />
-</p>
-
 Battle Plan records your Hearts of Iron IV campaign while you play, then replays it in a Windows desktop app. Scrub to any hour, follow the front on a map drawn the way the game draws it, and dig into a campaign's military, economic and political history in a dashboard you arrange yourself.
 
 ## What you get
@@ -29,27 +25,6 @@ Battle Plan records your Hearts of Iron IV campaign while you play, then replays
 - **Mods first.** A recording remembers the exact DLC and mod list it was made with, and playback uses it.
 - **Read-only.** The recorder only reads the game. It never pauses, saves or controls it.
 - **Open.** MIT licensed.
-
-<table>
-  <tr>
-    <td width="50%"><img src="./.github/readme/map-europe.webp" alt="The strategic map of Europe in 1941, with the Abruzzo state window open and a terrain tooltip listing combat modifiers for hills" /></td>
-    <td width="50%"><img src="./.github/readme/map-italy.webp" alt="Italy up close in July 1941, seen from New Zealand's point of view, with a province tooltip showing terrain, owner, rain and temperature" /></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Open any state, just like in the game.</sub></td>
-    <td align="center"><sub>Watch from any country's point of view, with live weather.</sub></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="./.github/readme/dashboard-overview.webp" alt="The Overview dashboard with an embedded world map, an event feed, a scoreboard of factories and army sizes, and the game score" /></td>
-    <td width="50%"><img src="./.github/readme/dashboard-diplomacy.webp" alt="The Diplomacy dashboard with faction membership over time, subjects of the United Kingdom, and a wars timeline" /></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>An overview that's yours to rearrange.</sub></td>
-    <td align="center"><sub>Factions, subjects and wars over the whole campaign.</sub></td>
-  </tr>
-</table>
-
-<sub>Screenshots show Battle Plan drawing the map and art from the player's own Hearts of Iron IV installation. The repository contains none of the game's files.</sub>
 
 ## Install
 
