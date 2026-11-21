@@ -511,7 +511,9 @@ impl Hooks {
     /// # Safety
     /// The memory source and base identify the authenticated executable in
     /// this process. The caller owns these sites exclusively and must restore
-    /// them and wait for [`active`] to drain before releasing code.
+    /// them, wait for [`active`] to drain, and confirm that no thread is still
+    /// executing in the hooks' code ranges before releasing code: a thread can
+    /// be in a relay before it counts itself in [`active`].
     pub unsafe fn new(
         _memory: &impl Memory,
         base: usize,

@@ -313,7 +313,9 @@ def token_operation(node):
     unit, pattern, cast = node, node.text == b"let", False
     while unit is not None and unit.type not in (";", ","):
         text = unit.text
-        if pattern:
+        if text == b"let":
+            pattern = True
+        elif pattern:
             pattern = text != b"="
         elif cast and (text in TYPE_TOKENS or unit.type in ("identifier", "primitive_type")):
             pass
