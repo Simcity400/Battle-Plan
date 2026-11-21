@@ -1983,7 +1983,7 @@ impl Stepper {
             Region::Piece(piece) => Some(piece),
             Region::Gap { .. } => None,
         };
-        let step = Step { epoch: self.epoch, first: newest + 1, last: newest, piece, ..Step::default() };
+        let step = Step { epoch: self.epoch, first: newest + 1, last: newest, piece, restep: self.restep, ..Step::default() };
         hook(&step, &Lanes { slots: &self.slots });
     }
 

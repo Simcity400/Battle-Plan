@@ -146,26 +146,56 @@ pub fn records(bytes: &[u8]) -> io::Result<Vec<Record<'_>>> {
     Ok(out)
 }
 
+#[derive(Default)]
+struct Kept<'a> {
+    before: Option<Record<'a>>,
+    reading: Option<Record<'a>>,
+    stands: Option<Record<'a>>,
+    after: Option<Record<'a>>,
+    late: Option<Record<'a>>,
+}
+
+impl<'a> Kept<'a> {
+    fn into_records(self) -> impl Iterator<Item = Record<'a>> {
+        [self.before, self.reading, self.stands, self.after, self.late].into_iter().flatten()
+    }
+}
+
 pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
+    let newer_bytes = newer;
     let stamp = stamp(older).filter(|s| Some(*s) == self::stamp(newer) && clock(older) == clock(newer))
         .ok_or_else(|| crate::invalid("Panel messages belong to different routes or seeks"))?;
-    let mut readings = BTreeMap::new();
-    let mut stands = BTreeMap::new();
-    let mut waits = BTreeMap::new();
+    let (older, newer) = (records(older)?, records(newer)?);
+    let latest = |records: &[Record<'_>]| records.iter().map(|r| r.hour).max();
+    if let (Some(before), Some(after)) = (latest(&older), latest(&newer)) && after < before {
+        return Err(crate::invalid("A panel message after a reset is not merged into one before it"));
+    }
+    let mut products: BTreeMap<u32, Kept<'_>> = BTreeMap::new();
     let mut completed = None;
     let mut count = 0;
-    for r in records(older)?.into_iter().chain(records(newer)?) {
+    for r in older.into_iter().chain(newer) {
         count += 1;
+        if r.kind == COMPLETED { completed = Some(r); continue; }
+        let kept = products.entry(r.id).or_default();
         match r.kind {
-            DATA | REFUSED => { stands.remove(&r.id); readings.insert(r.id, r); }
-            STANDS => { stands.insert(r.id, r); }
-            WAITING => { waits.entry(r.id).or_insert(r); }
-            COMPLETED => completed = Some(r),
+            DATA | REFUSED => {
+                if kept.reading.is_some() { kept.before = kept.before.take().or(kept.after.take()); }
+                kept.reading = Some(r);
+                kept.stands = None;
+                kept.after = None;
+            }
+            STANDS => {
+                if kept.after.is_none() { kept.stands = Some(r); } else { kept.late = Some(r); }
+            }
+            WAITING => {
+                if kept.reading.is_none() && kept.stands.is_none() { kept.before.get_or_insert(r); } else if kept.late.is_none() { kept.after.get_or_insert(r); }
+            }
             _ => return Err(crate::invalid("Unknown dated panel kind")),
         }
     }
-    let kept = waits.len() + readings.len() + stands.len() + usize::from(completed.is_some());
-    let mut out = head(kept, clock(newer), stamp);
-    for r in waits.into_values().chain(readings.into_values()).chain(stands.into_values()).chain(completed) { out.extend_from_slice(r.bytes); }
+    let records: Vec<Record<'_>> = products.into_values().flat_map(Kept::into_records).chain(completed).collect();
+    let mut out = head(records.len(), clock(&newer_bytes), stamp);
+    for r in &records { out.extend_from_slice(r.bytes); }
+    let kept = records.len();
     Ok((out, (count - kept) as u32))
 }

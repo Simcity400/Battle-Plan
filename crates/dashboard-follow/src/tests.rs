@@ -1378,6 +1378,11 @@ fn a_product_waiting_at_a_step_stays_unconfirmed_from_that_hour_through_merges()
     let (merged, _) = dated::merge(&merged, &step(82, &[(7, dated::DATA)])).unwrap();
     let rows = dated::records(&merged).unwrap();
     assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::WAITING, 34), (7, dated::DATA, 82), (0, dated::COMPLETED, 82)]);
+    let (merged, _) = dated::merge(&merged, &step(106, &[(7, dated::WAITING)])).unwrap();
+    let rows = dated::records(&merged).unwrap();
+    assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::WAITING, 34), (7, dated::DATA, 82), (7, dated::WAITING, 106), (0, dated::COMPLETED, 106)],
+        "a wait after the kept reading is kept after it");
+    assert!(dated::merge(&merged, &step(10, &[(7, dated::DATA)])).is_err(), "a message after a reset is not merged into one before it");
 }
 
 #[test]

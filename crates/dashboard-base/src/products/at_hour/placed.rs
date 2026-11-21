@@ -79,7 +79,7 @@ impl Pool {
         drop(free);
         let mut warming = self.warming.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(waiting) = warming.get_mut(&(run, table)) {
-            if let Some(wake) = wake { waiting.push(wake); }
+            if let Some(wake) = wake && !waiting.iter().any(|held| Arc::ptr_eq(held, &wake)) { waiting.push(wake); }
         } else {
             warming.insert((run, table), wake.into_iter().collect());
             let (pool, columns) = (Arc::clone(self), wide);
@@ -109,7 +109,7 @@ impl Drop for Taken {
                 for lane in placed.lanes {
                     match held.lanes.iter().position(|kept| kept.table() == lane.table()) {
                         None => held.lanes.push(lane),
-                        Some(at) if lane.requested().iter().all(|column| held.lanes[at].requested().contains(column)) => {}
+                        Some(at) if lane.requested().iter().all(|column| held.lanes[at].requested().contains(column)) && held.lanes[at].head() == lane.head() => {}
                         Some(at) => held.lanes[at] = lane,
                     }
                 }

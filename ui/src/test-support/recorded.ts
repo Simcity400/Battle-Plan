@@ -7,7 +7,7 @@ import { isCellsId } from '../dashboard/follow/liveCells.ts';
 import { busy, busyPreparing } from '../shell/busy.ts';
 
 export const RECORDED_KIND = 'battle-plan recorded replies';
-export const RECORDED_VERSION = 3;
+export const RECORDED_VERSION = 4;
 
 export interface RecordedHeader { kind: string; version: number; formatDigest: string; format: string[]; app: { revision: string }; recordedAt: string }
 export interface RecordedBox { x: number; y: number; width: number; height: number }
@@ -81,8 +81,9 @@ export function messageHour(bytes: Uint8Array): number | null {
   const magic = view.getUint32(0, true);
   if (magic === DATED_FOLLOW && bytes.byteLength >= 24) return view.getInt32(8, true);
   if (magic !== DATED_PANEL) return null;
-  const { panels } = parseDatedPanels(bytes);
-  return panels.length ? Math.max(...panels.map(panel => panel.hour)) : null;
+  const { panels, completed } = parseDatedPanels(bytes);
+  const hours = [...panels.map(panel => panel.hour), ...completed === undefined ? [] : [completed]];
+  return hours.length ? Math.max(...hours) : null;
 }
 
 export function remapMessage(bytes: Uint8Array, idOf: (recorded: number) => number | undefined): Uint8Array | null {
@@ -96,7 +97,8 @@ export function remapMessage(bytes: Uint8Array, idOf: (recorded: number) => numb
   const kept: [number, number, number][] = [];
   for (let at = 24, count = view.getUint32(countAt, true), answer = 0; answer < count; answer++) {
     const end = panel ? at + ((16 + view.getUint32(at + 12, true) + 7) & ~7) : at + 16 + view.getUint32(at + 8, true);
-    const id = mapped(view.getUint32(at, true));
+    const recorded = view.getUint32(at, true);
+    const id = panel && recorded === 0 ? 0 : mapped(recorded);
     if (id !== undefined) kept.push([at, end, id]);
     at = end;
   }
