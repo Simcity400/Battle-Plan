@@ -652,7 +652,8 @@ class RunFailed(RuntimeError):
 
 
 def write_open_groups(folder, groups):
-    (folder / OPEN_GROUPS).write_text(json.dumps({"open": groups}), encoding="utf-8")
+    (folder / (OPEN_GROUPS + ".tmp")).write_text(json.dumps({"open": groups}), encoding="utf-8")
+    os.replace(folder / (OPEN_GROUPS + ".tmp"), folder / OPEN_GROUPS)
 
 
 def close_open_groups(folder, commit, publishing, description):

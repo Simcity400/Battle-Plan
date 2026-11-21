@@ -133,6 +133,24 @@ class Continuation(unittest.TestCase):
         self.assertEqual(self.report.call_args, mock.call("PASSED", ["synthetic report"]))
         self.assertEqual(len((self.reports / "history.tsv").read_text().splitlines()), 1)
 
+    def test_an_interrupted_open_groups_write_still_closes_the_groups_listed_before(self):
+        folder = self.reports / "run"
+        folder.mkdir()
+        dt.write_open_groups(folder, ["checks", "rust"])
+
+        def stopped(path, *args, **kwargs):
+            path.write_bytes(b"")
+            raise OSError("stopped mid-write")
+
+        with mock.patch.object(Path, "write_text", stopped), self.assertRaises(OSError):
+            dt.write_open_groups(folder, ["rust"])
+        publishing = mock.Mock()
+        dt.close_open_groups(folder, self.commit, publishing, "unfinished")
+        self.assertEqual(publishing.status.call_args_list, [
+            mock.call(self.commit, f"{dt.STATUS}/checks", "error", "unfinished"),
+            mock.call(self.commit, f"{dt.STATUS}/rust", "error", "unfinished"),
+        ])
+
     def test_running_is_written_before_fetch_and_replaced_by_the_final_report(self):
         latest = self.reports / "latest.md"
         latest.write_text("yesterday's result", encoding="utf-8")
