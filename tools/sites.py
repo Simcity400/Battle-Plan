@@ -1239,13 +1239,13 @@ def verify(spec, images, reference, written, promoted_from=None):
     for b, entries in EXPECTED_WITHHELD.items():
         expected_withheld[b] = set()
         for rva, (name, _) in sorted(entries.items()):
-            at = moved.get(rva) if promoted_from else rva
-            if at is None or names.get(at) != name:
-                print("FAIL %s expects %s withheld at %#x, but %s; after a promotion, key it at its new position"
-                      % (BUILDS.get(b, b), name, rva, "the key there is %s" % names[at] if at in names else "no key is there"))
+            if names.get(rva) != name:
+                print("FAIL %s expects %s withheld at %#x, but %s; key it at its address in the reference build %s"
+                      % (BUILDS.get(b, b), name, rva, "the key there is %s" % names[rva] if rva in names
+                         else "no key is there", BUILDS[reference]))
                 failed = True
             else:
-                expected_withheld[b].add(at)
+                expected_withheld[b].add(rva)
     checked_builds = {b for b in BUILDS if digest(exe(b)) in layout_checked()}
     if reference not in checked_builds:
         print("FAIL the reference build %s is not in engine_sites::LAYOUT_CHECKED" % BUILDS[reference])

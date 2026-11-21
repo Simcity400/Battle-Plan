@@ -228,7 +228,7 @@ const AFTER: Rva = Rva(0x54);
                 sites.verify(spec, images, "new", written=False)
                 self.assertEqual(seen, {"new image": None, "old image": {}, "other image": recorded["other"]})
 
-    def test_expected_refusals_name_one_key_and_follow_it_through_a_promotion(self):
+    def test_expected_refusals_name_one_key_in_the_new_reference_through_a_promotion(self):
         with tempfile.TemporaryDirectory() as root:
             executables = {}
             for build in ("new", "old"):
@@ -254,8 +254,11 @@ const AFTER: Rva = Rva(0x54);
                 with patch.object(sites, "EXPECTED_WITHHELD", {"old": {0x28: ("sites::Gone", "renamed away")}}):
                     self.assertTrue(sites.verify(spec, images, "new", written=False))
                 moved.update({0x10: 0x28, 0x18: 0x30})
-                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {0x10: ("sites::Shared", "its code changed")}}):
+                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {0x28: ("sites::Shared", "its code changed")}}):
                     self.assertFalse(sites.verify(spec, images, "new", written=False, promoted_from="old"))
+                    self.assertFalse(sites.verify(spec, images, "new", written=False))
+                with patch.object(sites, "EXPECTED_WITHHELD", {"old": {0x10: ("sites::Shared", "its code changed")}}):
+                    self.assertTrue(sites.verify(spec, images, "new", written=False, promoted_from="old"))
 
     def test_a_missing_or_truncated_generated_locator_is_refused_rather_than_renaming_sites(self):
         with tempfile.TemporaryDirectory() as root:

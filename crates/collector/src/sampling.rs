@@ -1609,8 +1609,10 @@ impl Shared {
     }
 
     /// # Safety
-    /// Captures only: the capture gate keeps command-batch writers out of the roster `memory` reads.
-/// Portrait writers may still run, so a portrait read here would need the capture's pre-images.
+    /// Captures only: the capture gate keeps observed command-batch writers out of the roster
+    /// `memory` reads; after an unproven hook publication, a batch already running then is not
+    /// observed. Portrait writers may still run, so a portrait read here would need the capture's
+    /// pre-images.
     unsafe fn sample_roster(
         &self,
         memory: &impl engine_native::Memory,
@@ -2291,7 +2293,7 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
             boundary_request.market_clock = Some(clock.with_campaign_id(campaign_epoch));
             boundary_request.market_refresh = force_full;
             // SAFETY: the capture's write boundary holds through the boundary job: the game is held,
-            // or command-batch writers wait at the capture gate, and the batch drains the job before
+            // or observed command-batch writers wait at the capture gate, and the batch drains the job before
             // the capture ends and the gate reopens.
             let boundary_pending =
                 unsafe { submit_observer_boundary(shared, &mut batch, boundary_request) };
