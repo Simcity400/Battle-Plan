@@ -852,7 +852,8 @@ impl Shared {
         // SAFETY: `with_sizing` binds the stable store and all three handlers before any hook is
         // published. Shared owns this box, which loans move without moving, through hook restoration
         // and native callback quiescence, so every registered handler's context stays valid until
-        // the callbacks drain.
+        // the callbacks drain. A capture that unwinds while the box is on loan drops it early
+        // (#130).
         unsafe {
             let doctrines = (*self.doctrine_store.get())
                 .as_deref()
