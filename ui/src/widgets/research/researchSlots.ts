@@ -4,15 +4,8 @@ import type { ResearchSlotNow } from '../../generated/dashboard';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
 
 export function slotsStructure(reply: ResearchSlotsReply): string {
-  const restrictions = (rows: ResearchSlotsReply['grants']['grants'][number]['technologies']) => rows.map(r => [r.token, r.databaseIndex]);
   return JSON.stringify([reply.missing, reply.slots.map(slot => [slot.index, slot.state.token, slot.state.entryFirstObservedHour,
-    slot.progress?.baseDaysRaw != null, slot.state.details?.remainingDays != null, BigInt(slot.state.bankedDaysRaw) > 0n]),
-  reply.grants.unavailable, reply.grants.grants.map(grant => [grant.kind, grant.ordinal, grant.id, grant.token, restrictions(grant.technologies), restrictions(grant.categories)])]);
-}
-
-export function grantCounts(grant: ResearchSlotsReply['grants']['grants'][number]): string {
-  const plural = (n: number, noun: string) => n + ' ' + noun + (n === 1 ? '' : 's');
-  return plural(grant.uses, 'use') + ' remaining' + (grant.activeClaims === null ? '' : ' · ' + plural(grant.activeClaims, 'active claim'));
+    slot.progress?.baseDaysRaw != null, slot.state.details?.remainingDays != null, BigInt(slot.state.bankedDaysRaw) > 0n])]);
 }
 
 export interface SlotNumbers {
@@ -43,7 +36,6 @@ export function slotNumbers(read: ResearchSlotNow, hour: number, progress?: numb
 
 export function slotValues(reply: ResearchSlotsReply, hour: number, progress?: (slot: number) => number | undefined): Map<string, string> {
   const values = new Map([['date', researchDate(hour)]]);
-  reply.grants.grants.forEach((grant, index) => values.set('grant:' + index + ':counts', grantCounts(grant)));
   for (const read of reply.slots) {
     const numbers = slotNumbers(read, hour, progress?.(read.index));
     for (const field of ['percent', 'days', 'saved'] as const) values.set(read.index + ':' + field, numbers[field]);

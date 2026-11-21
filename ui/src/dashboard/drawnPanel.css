@@ -5,15 +5,15 @@
 [data-worker-panel] .special-project-progress > i { opacity: 0; }
 [data-ink-content] [data-paint]:not([data-prose]) { font-variant-numeric: tabular-nums; }
 
-:is(.active-card-foot, .research-now-cell) > [data-paint="percent"]::after {
+.research-now-cell > [data-paint="percent"]::after {
   content: "100%" / "";
   display: block;
   visibility: hidden;
   height: 0;
   overflow: hidden;
 }
-.research-now-cell > .is-progress, .active-card-days, .special-project-now-left { text-align: end; }
-.active-card-days, .active-card-days > [data-paint], .doctrine-mastery-values dd,
+.research-now-cell > .is-progress, .special-project-now-left { text-align: end; }
+.doctrine-mastery-values dd,
 .research-now-cell.is-idle small { flex: 1; }
 .project-value-widths { display: grid; visibility: hidden; height: 0; overflow: hidden; }
 .project-value-widths > *, .special-project-now-left > [data-paint] { align-self: stretch; }

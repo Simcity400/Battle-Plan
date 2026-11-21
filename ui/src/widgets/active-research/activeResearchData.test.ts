@@ -20,7 +20,7 @@ const open = [{ firstHour: day(0), lastHour: day(100) }];
 const reply = (hour: number, slots: ResearchSlotNow[], missing: string | null = null): ResearchSlotsAt => ({
   tag: 'MOD', hour, readHour: missing ? null : day(96), missing, slots, warnings: [], grants: { nextId: 0, grants: [], unavailable: null } });
 
-test('each open slot says what it researches, whether it is ahead of time, and its painted numbers count down from the read', () => {
+test('each open slot says what it researches, and its painted numbers count down from the read', () => {
   const history: ResearchHistory = { coverage: open, slots: [
     { index: 0, availability: open, entries: [active], states: [], progress: [] },
     { index: 1, availability: open, entries: [], states: [], progress: [] },
@@ -37,9 +37,7 @@ test('each open slot says what it researches, whether it is ahead of time, and i
   const [first, second] = slots;
   assert.ok(first.kind === 'researching' && second.kind === 'researching');
   assert.equal(first.entry?.token, 'radar');
-  assert.equal(first.aheadOf, 1945);
   assert.equal(second.entry, null, 'a technology no assignment joins is shown without a history to open');
-  assert.equal(second.aheadOf, null, 'its year has passed');
   assert.deepEqual(slotNumbers(radar, day(100)), { fraction: 0.62, percent: '62%', left: 36, days: '36 days left', saved: '' }, 'the estimate counts down from its read');
   assert.equal(slotNumbers(idle, day(100)).saved, '12 days saved');
   assert.equal(slotNumbers(sonar, day(100)).fraction, null, 'no progress is guessed for it');
@@ -59,20 +57,6 @@ test('the drawn card uses the dated slot identity, progress and countdown', () =
   assert.equal(later.get('0:percent'), '63%');
   assert.equal(later.get('0:days'), '1 day left');
   assert.equal(later.get('0:bar'), '0.625');
-});
-
-test('spending an existing research grant changes its painted counts without replacing the row', () => {
-  const before = reply(day(1), []);
-  before.grants.grants.push({ id: 3, ordinal: 0, kind: 'speed', token: 'grant', name: null, uses: 2, activeClaims: 1,
-    speedBonusRaw: '25000', aheadReductionRaw: null, costReductionRaw: null, technologies: [], categories: [] });
-  const after = structuredClone(before);
-  after.grants.grants[0]!.uses--;
-  assert.equal(slotsStructure(before), slotsStructure(after));
-  assert.equal(slotValues(after, day(2)).get('grant:0:counts'), '1 use remaining · 1 active claim');
-  const group = { token: 'air', name: 'Air', databaseIndex: 3 };
-  before.grants.grants[0]!.categories = [group];
-  after.grants.grants[0]!.categories = [{ databaseIndex: 3, name: 'Air', token: 'air' }];
-  assert.equal(slotsStructure(before), slotsStructure(after), 'binary and exact reads can order the same fields differently');
 });
 
 test('at an hour without a read, slots open at the last read are unavailable rather than guessed', () => {
