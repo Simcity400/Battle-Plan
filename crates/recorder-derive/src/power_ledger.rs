@@ -664,6 +664,18 @@ impl PowerLedger {
                 continue;
             }
             let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
+            if publication.deleted_only {
+                for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
+                    let ordinal = if matched {
+                        let first = First { site: cost.site, hour: day_hour, read: at, country: raw, epoch, sequence: u64::from(cost.ordinal) };
+                        self.item(own, pending, holder, ItemId::cost(cost), first)?
+                    } else {
+                        Total::GAINS
+                    };
+                    produced.insert(part_key(holder, POLITICAL, ordinal));
+                }
+                continue;
+            }
             let seen = pending.costs.entry(holder).or_default();
             for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
                 seen.unmatched |= !matched;

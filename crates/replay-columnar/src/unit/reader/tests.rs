@@ -338,7 +338,7 @@ fn an_event_code_past_its_track_width_is_refused_by_the_event_walk_as_by_the_rea
 
 #[test]
 fn a_reserved_event_code_is_refused_by_the_event_walk_as_by_the_reader() {
-    let (bytes, entry) = part_of(1, &[0, 2, 2], &[0, 5]);
+    let (bytes, entry) = part_of(1, &[0, 2, 2], &[0, 7]);
     let part = fetch(&bytes, &entry, BLOCK as u16 - 1, &[0], None).unwrap();
     let refused = part.tracks(0, false, |_, _, _| {}).unwrap_err();
     assert!(refused.to_string().contains("reserved"), "{refused}");

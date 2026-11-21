@@ -104,7 +104,7 @@ fn edit(store: &mut Store, hour: i32) {
     } else {
         complete(store, TableId::PoliticsCaptureCoverage);
         for country in [1, 2] {
-            let since_hour = if hour >= RESTORED { hour - 1 } else { 0 };
+            let since_hour = if hour >= SHORTER { hour - 1 } else { 0 };
             let witness = Streams { country, epoch: 1, since_hour, through_hour: hour, streams: Streams::ALL_STREAMS, ..Default::default() };
             testing::put(store, TableId::PoliticsCaptureCoverage, &witness, TEXTS).unwrap();
         }
@@ -354,6 +354,12 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     let (wider, _) = through(0..=WIDER);
     assert_eq!(keys(&wider, TableId::PowerDayParts), [idea, relation, organisation]);
     let (shorter, _) = through(0..=SHORTER);
+    let covered = |store: &Store| {
+        let view = store.view(TableId::PowerDayParts.index());
+        view.bool(column::<Part>("covered"), view.slot(relation).expect("a row"))
+    };
+    assert_eq!(covered(&wider), Some(true));
+    assert_eq!(covered(&shorter), Some(true), "a deletion leaves the surviving cost's proven coverage as it was");
     assert_eq!(keys(&shorter, TableId::PowerDayParts), [idea, relation], "the withdrawn cost is no longer today's, and the idea paid today stays");
     assert_eq!(cell::<Part>(&shorter, TableId::PowerDayParts, idea, "spent"), Some(2 * Q));
     let (emptied, _) = through(0..=EMPTIED);
