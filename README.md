@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="./crates/desktop/icons/icon.svg" width="80" height="80" alt="Battle Plan logo" />
+  <img src="./crates/desktop/icons/icon.svg" width="80" height="80" alt="BattlePlan logo" />
 </p>
 
-<h1 align="center">Battle Plan</h1>
+<h1 align="center">BattlePlan</h1>
 
 <p align="center">Record your Hearts of Iron IV campaigns. Replay every hour of the war.</p>
 
@@ -14,7 +14,7 @@
   <a href="https://github.com/Simcity400/Battle-Plan/issues">Issues</a>
 </p>
 
-Battle Plan records your Hearts of Iron IV campaign while you play, then replays it in a Windows desktop app. Scrub to any hour, follow the front on a map drawn the way the game draws it, and dig into a campaign's military, economic and political history in a dashboard you arrange yourself.
+BattlePlan records your Hearts of Iron IV campaign while you play, then replays it in a Windows desktop app. Scrub to any hour, follow the front on a map drawn the way the game draws it, and dig into a campaign's military, economic and political history in a dashboard you arrange yourself.
 
 ## What you get
 
@@ -28,10 +28,10 @@ Battle Plan records your Hearts of Iron IV campaign while you play, then replays
 
 ## Install
 
-[Download Battle Plan](https://github.com/Simcity400/Battle-Plan/releases) for Windows. Installers appear there once the first build is published; until then, [build from source](#build-from-source). One installer gives you two apps:
+[Download BattlePlan](https://github.com/Simcity400/Battle-Plan/releases) for Windows. Installers appear there once the first build is published; until then, [build from source](#build-from-source). One installer gives you two apps:
 
-- **Battle Plan**: the replay app, with the campaign map and the dashboard.
-- **Battle Plan Recorder**: a small tray app that records while you play.
+- **BattlePlan**: the replay app, with the campaign map and the dashboard.
+- **BattlePlan Recorder**: a small tray app that records while you play.
 
 You need:
 
@@ -48,7 +48,7 @@ flowchart LR
     game["Hearts of Iron IV<br/>(your game)"] -->|reads memory, every game hour| collector["collector.dll"]
     collector --> spool["Recoverable spool"]
     spool -->|written as hours arrive| file[".battleplan recording"]
-    file --> app["Battle Plan app"]
+    file --> app["BattlePlan app"]
     app --> map["Campaign map"]
     app --> dash["Dashboard"]
 ```
@@ -61,7 +61,7 @@ flowchart LR
 
 ## Record a campaign
 
-### With Battle Plan Recorder
+### With BattlePlan Recorder
 
 The replay app starts it for you. You can also run `battle-plan-recorder.exe` on its own, or have it start with Windows.
 
@@ -149,8 +149,8 @@ cargo build --release -p recorder -p collector   # command-line recorder and col
 
 ## License
 
-Battle Plan is free software under the [MIT License](LICENSE).
+BattlePlan is free software under the [MIT License](LICENSE).
 
 This software is based in part on the work of the Independent JPEG Group. It uses the Rust `image` library for several texture formats and includes a modified Rust adaptation of PhysicsFS in the archive reader. The refresh icon is from Lucide. Third-party notices are in [LICENSES](LICENSES/); the installed app carries them combined in `THIRD-PARTY-NOTICES.txt`.
 
-Battle Plan is an unofficial project and is not affiliated with or endorsed by Paradox Interactive. Hearts of Iron IV is a trademark of Paradox Interactive AB. The repository contains no data, assets or code from the game; at run time, the app reads what it needs from your own installation.
+BattlePlan is an unofficial project and is not affiliated with or endorsed by Paradox Interactive. Hearts of Iron IV is a trademark of Paradox Interactive AB. The repository contains no data, assets or code from the game; at run time, the app reads what it needs from your own installation.
