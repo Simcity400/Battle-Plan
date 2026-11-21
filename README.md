@@ -18,10 +18,9 @@ BattlePlan records your Hearts of Iron IV campaign while you play, then replays 
 
 ## What you get
 
-- **The whole war, hour by hour.** Rewind, pause or fast-forward through every recorded hour. The map and the dashboard follow one clock.
+- **The whole war, hour by hour.** Rewind, pause or fast-forward through every recorded hour.
 - **The game's map, redrawn.** Units, fronts, battles, weather, day and night, and over a dozen map modes, from any country's point of view and with its fog of war.
 - **A dashboard you build.** Charts, races, tables, timelines and breakdowns for armies, economies, research, diplomacy and more. Tooltips and drill-downs show the detail behind each value.
-- **Honest data.** Anything the recording missed shows as missing, never as zero. A load or an unexplained jump in time starts a new branch rather than invented history.
 - **Mods first.** A recording remembers the exact DLC and mod list it was made with, and playback uses it.
 - **Read-only.** The recorder only reads the game. It never pauses, saves or controls it.
 - **Open.** MIT licensed.
@@ -37,7 +36,6 @@ You need:
 
 - Windows, with Microsoft Edge WebView2.
 - Hearts of Iron IV. An unrecognised game version shows a warning, and any part that can't verify itself on that version is left out by name.
-- A graphics card for the map. Software rendering works, with a notice.
 
 Updates arrive in the app. Choose the **stable** or **nightly** channel in **Settings**, and a badge shows when a new version is ready to download.
 
@@ -144,8 +142,6 @@ npm.cmd run dev          # run the desktop app
 npm.cmd run build:desktop  # release build
 cargo build --release -p recorder -p collector   # command-line recorder and collector.dll
 ```
-
-`AGENTS.md` describes how the code is laid out and how changes are checked.
 
 ## License
 
