@@ -46,8 +46,7 @@ fn flag_damage_summary_includes_naval_bomber_weapon_before_box_categories() {
 
 #[test]
 fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let loc: Localisation = [
         ("total_damage_dealt", "T $NUM$ $RATIO$;"),
         ("damage_dealt_light_guns", "L $NUM$ $RATIO$;"),
@@ -132,8 +131,7 @@ fn flag_damage_summary_uses_native_sections_and_sorted_source_types() {
 
 #[test]
 fn flag_damage_summary_keeps_blank_null_type_and_empty_localisation_rows() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let loc: Localisation = [
         ("total_damage_dealt", "TOTAL $NUM$;"),
         ("damage_dealt_by_box", "BOX;"),

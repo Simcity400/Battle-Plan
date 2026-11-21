@@ -647,8 +647,7 @@ mod tests {
 
     #[test]
     fn operative_portrait_setter_uses_its_own_fallback_and_recovers_after_withheld() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let windows = gui::windows(br#"guiTypes = {
             containerWindowType = { name = operative_map_icon_entry size = { width = 68 height = 48 }
                 iconType = { name = portrait spriteType = GFX_even }

@@ -389,8 +389,7 @@ mod tests {
 
     #[test]
     fn withheld_dynamic_hovers_keep_no_authored_seed_and_count_once_per_control() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = native::read(
             b"guiTypes={containerWindowType={name=countrystateview containerWindowType={name=moved iconType={name=shared_slot_count pdx_tooltip=AUTHORED}} instantTextboxType={name=manpower} instantTextboxType={name=state_name}}}",
         );

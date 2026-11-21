@@ -438,8 +438,7 @@ fn recorded_air_hover_reaches_the_air_icon_binding() {
 }
 #[test]
 fn organisation_uses_default_leader_and_recorded_hq_terms() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use engine_executable::modifier_keys::{NAVY_ORG, NAVY_ORG_FACTOR};
     use replay_data::{rows::NavalShipModifierSource, rows::NavalShipModifierTerm};
     let mut row = NavalCombatShipRow {
         live_ship: 1,
@@ -450,7 +449,7 @@ fn organisation_uses_default_leader_and_recorded_hq_terms() {
         NavalShipModifierSource {
             scope: 9,
             terms: vec![NavalShipModifierTerm {
-                key: 0x47,
+                key: NAVY_ORG_FACTOR,
                 raw: 50_000,
                 ..Default::default()
             }],
@@ -460,7 +459,7 @@ fn organisation_uses_default_leader_and_recorded_hq_terms() {
             scope: 14,
             index: 0,
             terms: vec![NavalShipModifierTerm {
-                key: 0x47,
+                key: NAVY_ORG_FACTOR,
                 raw: 10_000,
                 ..Default::default()
             }],
@@ -469,7 +468,7 @@ fn organisation_uses_default_leader_and_recorded_hq_terms() {
         NavalShipModifierSource {
             scope: 31,
             terms: vec![NavalShipModifierTerm {
-                key: 0x46,
+                key: NAVY_ORG,
                 raw: 200_000,
                 ..Default::default()
             }],

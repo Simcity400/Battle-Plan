@@ -360,8 +360,7 @@ mod tests {
 
     #[test]
     fn native_raid_draw_and_hover_follow_the_map_anchor() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -416,8 +415,7 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlap_tracks_paint_order_after_camera_move() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -508,8 +506,7 @@ mod tests {
 
     #[test]
     fn raid_tooltip_regression_overlapping_buildings_keep_the_hovered_targets_native_state() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use super::super::test_support::{frame, put, registered_command_power};
         use content_reader_localisation::localisation::Localisation;
         use replay_data::rows::Recorded;
@@ -704,8 +701,7 @@ mod tests {
 
     #[test]
     fn missing_native_raid_controls_are_named_and_counted_for_each_owner() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(
             br#"guiTypes = { containerWindowType = {
@@ -761,8 +757,7 @@ mod tests {
 
     #[test]
     fn groups_standing_at_one_province_keep_their_own_windows() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -807,8 +802,7 @@ mod tests {
 
     #[test]
     fn a_reused_raid_window_keeps_an_undeclared_glyph_and_withholds_an_undecided_one() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(DRAW_GUI);
         let context = Context {
@@ -871,8 +865,7 @@ mod tests {
 
     #[test]
     fn native_raid_bindings_find_nested_inherited_controls() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = draw_resources();
         let windows = gui::windows(br#"guiTypes = { containerWindowType = {
           name = raid_map_icon size = { width = 100 height = 80 }
@@ -898,22 +891,34 @@ mod tests {
             tooltip: None,
         };
         let controls = controls(root).unwrap();
+        let frame = |instance: &Instance| {
+            let layout = instance.layout(root, &resources, None).unwrap().unwrap();
+            let part = layout
+                .parts
+                .iter()
+                .find(|part| part.path == controls.frame.path)
+                .unwrap();
+            let native_gui::PartKind::Sprite { uv, offsets, .. } = &part.kind else {
+                panic!("frame is a sprite");
+            };
+            (offsets[0] / uv[2]).round() as i32
+        };
         update(&mut instance, root, &icon, FrameState::Own, controls, &resources).unwrap();
         assert_eq!(
             instance.control(root, controls.frame).unwrap().enabled,
             Some(false)
         );
-        assert_eq!(instance.control(root, controls.frame).unwrap().frame, Some(1));
+        assert_eq!(frame(&instance), 0);
         update(&mut instance, root, &icon, FrameState::Hovered, controls, &resources).unwrap();
-        assert_eq!(instance.control(root, controls.frame).unwrap().frame, Some(3));
+        assert_eq!(frame(&instance), 2);
         update(&mut instance, root, &icon, FrameState::Own, controls, &resources).unwrap();
         let layout = instance.layout(root, &resources, None).unwrap().unwrap();
-        let frame = layout
+        let frame_part = layout
             .parts
             .iter()
             .find(|part| part.path == controls.frame.path)
             .unwrap();
-        let native_gui::PartKind::Sprite { geometry, .. } = &frame.kind else {
+        let native_gui::PartKind::Sprite { geometry, .. } = &frame_part.kind else {
             panic!("frame is a sprite");
         };
         assert_eq!(&geometry.rect[..2], &[0., 0.]);
@@ -932,7 +937,7 @@ mod tests {
             &resources,
         )
         .unwrap();
-        assert_eq!(instance.control(root, controls.frame).unwrap().frame, Some(2));
+        assert_eq!(frame(&instance), 1);
         assert_eq!(instance.control(root, controls.frame).unwrap().enabled, Some(false));
         let layout = instance.layout(root, &resources, None).unwrap().unwrap();
         assert!(

@@ -43,8 +43,7 @@ fn accumulator(entries: &[(u32, i64)]) -> ProvinceWeatherModifiers {
 
 #[test]
 fn a_land_province_shows_its_category_then_its_local_effects() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content_reader_core::terrain::parse_definitions(
         b"categories={forest={movement_cost=1.5 supply_flow_penalty_factor=0.08}}",
     )

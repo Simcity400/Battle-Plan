@@ -5,8 +5,7 @@ use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn naval_terrain_shares_the_resolved_land_definitions() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let root = std::env::temp_dir().join(format!("hoi4_shared_terrain_{}", std::process::id()));
     let folder = root.join("common/terrain");
     std::fs::create_dir_all(&folder).unwrap();
@@ -140,8 +139,7 @@ fn naval_terrain_prefix_includes_minimum_and_class_before_weather() {
 
 #[test]
 fn naval_terrain_extra_fields_follow_native_category_reader() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let root = std::env::temp_dir().join(format!("hoi4_naval_terrain_{}", std::process::id()));
     let path = root.join("common/terrain");
     std::fs::create_dir_all(&path).unwrap();

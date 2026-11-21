@@ -375,8 +375,7 @@ fn adapter_requires_dense_witness_only_for_a_side_that_uses_its_air() {
 
 #[test]
 fn relation_scopes_preserve_zero_sortie_carrier_air_defender_positioning_and_aa() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use replay_data::{
         rows::AirWingRow, rows::NavalCombatAirBaseWingHandlesRow, rows::NavalCombatAirEfficiency,
         rows::NavalCombatAirEfficiencyModifier, rows::NavalShipModifierSource,

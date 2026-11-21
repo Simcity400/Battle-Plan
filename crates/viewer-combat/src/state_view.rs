@@ -289,8 +289,7 @@ mod tests {
 
     #[test]
     fn withheld_controls_hide_wherever_a_mod_nests_them_and_count_once() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = native::read(
             b"guiTypes={containerWindowType={name=countrystateview containerWindowType={name=moved gridBoxType={name=state_shared_slot_building_entries}} instantTextboxType={name=state_name} containerWindowType={name=province_info_window iconType={name=province_building_entries} iconType={name=province_custom_icon_building_entries}}}}",
         );

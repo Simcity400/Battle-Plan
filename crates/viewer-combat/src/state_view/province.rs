@@ -380,8 +380,7 @@ mod tests {
 
     #[test]
     fn custom_icons_are_the_containers_children_named_by_present_static_modifiers() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = native::read(
             b"guiTypes={containerWindowType={name=countrystateview containerWindowType={name=province_info_window containerWindowType={name=custom_icon_container iconType={name=flooded_icon} iconType={name=the_great_wall_icon}}}}}",
         );
