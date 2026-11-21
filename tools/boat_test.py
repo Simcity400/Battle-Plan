@@ -736,6 +736,19 @@ class Acquire(Harness):
         self.assertTrue(self.state.cooling("b", time.time()))
         self.assertEqual([call[1:] for call in fake.remote_calls if call[1] == "release"], [("release", "t")])
 
+    def test_a_woken_vm_passed_by_keeps_its_wake_lead(self):
+        fake = self.use(FakeBoat([vm("a"), vm("b")]))
+        self.state.update("a", woken=time.time() - 30, used=0)
+        self.state.update("b", used=1)
+        fake.acquire_status["a"] = 127
+        record = {}
+        vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", record)
+        lease.end()
+        lock.close()
+        self.assertEqual(vmid, "b")
+        self.assertGreaterEqual(record["passed_over"][0]["woken"], 30)
+        self.assertNotIn("woken", record)
+
     def test_a_claim_step_that_fails_or_answers_garbage_passes_the_vm_by(self):
         fake = self.use(FakeBoat([vm("a"), vm("b"), vm("c")]))
         for index, vmid in enumerate("abc"):
@@ -763,10 +776,19 @@ class Acquire(Harness):
     def test_an_image_whose_clones_cannot_build_is_cloned_three_times_at_most(self):
         fake = self.use(FakeBoat([]))
         fake.acquire_status["n"] = bt.BROKEN_TOOLCHAIN
-        with mock.patch.object(bt.time, "sleep") as sleep, self.assertRaisesRegex(bt.Failure, "three attempts"):
+        with mock.patch.object(bt.time, "sleep") as sleep, mock.patch.object(bt.time, "time", lambda: 1000.0), self.assertRaisesRegex(bt.Failure, "three attempts"):
             bt.acquire(self.state, "lane", "large", "t", {})
         self.assertEqual(sum(call[0] == "new" for call in fake.calls), 3)
         self.assertEqual(len(sleep.call_args_list), 2)
+
+    def test_a_clone_its_wake_made_counts_like_one_the_run_made(self):
+        fake = self.use(FakeBoat([]))
+        fake.acquire_status["n"] = bt.BROKEN_TOOLCHAIN
+        with mock.patch.object(bt.time, "sleep"), mock.patch.object(bt.time, "time", lambda: 1000.0):
+            self.assertEqual(bt.wake(self.state, "lane", "large"), ("n", "cloned"))
+            with self.assertRaisesRegex(bt.Failure, "three attempts"):
+                bt.acquire(self.state, "lane", "large", "t", {})
+        self.assertEqual(sum(call[0] == "new" for call in fake.calls), 3)
 
     def test_quarantined_vms_do_not_use_up_the_attempts(self):
         fake = self.use(FakeBoat([vm(vmid) for vmid in "abcd"]))
@@ -854,6 +876,11 @@ class Wake(Harness):
         self.assertFalse(self.state.run_active("lane"))
         self.assertEqual(list(self.state.lanes.glob("lane.running-*")), [])
 
+    def test_a_run_takes_its_marker_from_a_check_holding_it_for_a_moment(self):
+        held = bt.Lock(self.state.lanes / "lane.running-t")
+        with mock.patch.object(bt.time, "sleep", lambda seconds: held.close()) :
+            self.state.running("lane", "t").close()
+
     def test_leaves_alone_a_vm_that_already_runs_or_starts(self):
         for state in ("idle", "starting"):
             fake = self.use(FakeBoat([vm("a", state), vm("b", "stopped")]))
@@ -882,6 +909,36 @@ class Wake(Harness):
             del os.environ["BOAT_STATE_DIR"]
         self.assertEqual([call[1] for call in fake.calls if call[0] == "resume"], ["a"])
         self.assertFalse((self.state.logs / "timings.jsonl").exists())
+
+
+class RemoteToolchain(unittest.TestCase):
+    """The claim's Cargo probe, from boat_remote.py's own definitions."""
+
+    def setUp(self):
+        text = (bt.TOOLS / "boat_remote.py").read_text(encoding="utf-8")
+        self.remote = {"__name__": "boat_remote_definitions"}
+        with mock.patch.dict(sys.modules, {"fcntl": types.ModuleType("fcntl")}):
+            exec(compile(text.split("\nmode = sys.argv[1]\n")[0], "boat_remote.py", "exec"), self.remote)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        (Path(self.temp.name) / "toolchains" / "1.96.0-x86_64-unknown-linux-gnu").mkdir(parents=True)
+
+    def probe(self, channel, returncode=0, stderr=""):
+        with mock.patch.dict(os.environ, {"RUSTUP_HOME": self.temp.name}), mock.patch.object(subprocess, "run", return_value=types.SimpleNamespace(returncode=returncode, stdout="", stderr=stderr)) as run:
+            return self.remote["toolchain_fault"](channel), [call.kwargs["env"]["RUSTUP_TOOLCHAIN"] for call in run.call_args_list]
+
+    def test_an_installed_toolchain_whose_cargo_fails_is_named_and_one_the_vm_lacks_is_rustups(self):
+        missing = "error: 'cargo' is not installed for the toolchain '1.96.0-x86_64-unknown-linux-gnu'."
+        self.assertEqual(self.probe("1.96.0", 1, missing), (missing, ["1.96.0"]))
+        self.assertEqual(self.probe("1.96.0-x86_64-unknown-linux-gnu", 1, missing), (missing, ["1.96.0-x86_64-unknown-linux-gnu"]))
+        self.assertEqual(self.probe("1.96.0", 1), ("exit 1", ["1.96.0"]))
+        self.assertEqual(self.probe("1.96.0"), (None, ["1.96.0"]))
+        self.assertEqual(self.probe("1.97.0", 1), (None, []))
+        self.assertEqual(self.probe("", 1), (None, []))
+
+    def test_an_exec_reply_without_output_reads_as_empty(self):
+        with mock.patch.object(bt, "boat", return_value=(OK, [{"exitCode": 0, "stdout": None}])):
+            self.assertEqual(bt.quick("a", "acquire", "t"), (0, ""))
 
 
 class Run(Harness):
@@ -917,6 +974,9 @@ class Run(Harness):
         self.assertEqual(set(record["phases"]), {"allocate", "sync", "run"})
         self.assertEqual(fake.ttl_calls("a")[-1], bt.IDLE_SECONDS)
         self.state.lock("a").close()
+        fake.remote_calls.clear()
+        self.assertEqual(bt.main(["ui"]), 0)
+        self.assertEqual([len(call) for call in fake.remote_calls if call[1] == "acquire"], [3])
 
     def test_a_failed_sync_is_a_boat_failure_whose_job_released_the_claim(self):
         fake = self.use(FakeBoat([vm("a")]))

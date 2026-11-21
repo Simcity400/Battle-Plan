@@ -355,7 +355,7 @@ def quick(vmid, *args):
         raise Failure(f"Boat exec on {vmid} returned no exit code ({result.returncode}): {(result.stderr or result.stdout).strip()[:300]}")
     if event["exitCode"] and event.get("stderr"):
         say(event["stderr"].rstrip())
-    return event["exitCode"], event.get("stdout", "")
+    return event["exitCode"], event.get("stdout") or ""
 
 
 def git(worktree, *args):
@@ -389,7 +389,7 @@ class State:
 
     def running(self, lane, token):
         """Held by each run of a worktree from allocation to its end, so a late wake of the worktree starts nothing."""
-        return Lock(self.lanes / f"{lane}.running-{token}")
+        return Lock(self.lanes / f"{lane}.running-{token}", wait=True)
 
     def run_active(self, lane):
         """Whether a run of the worktree holds its marker; removes those runs that ended left."""
@@ -830,7 +830,7 @@ def toolchain_channel(worktree):
 def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), channel=""):
     """Claims a VM locally and remotely; returns (vmid, lock, lease, remote source manifest).
 
-    Three VMs that fail to get ready or to initialize end the run; quarantined and busy pool VMs are passed by without counting.
+    Three VMs that fail to get ready or to initialize end the run; quarantined and busy VMs that served before are passed by without counting.
     """
     passed, attempts = set(), 0
     while attempts < 3:
@@ -838,7 +838,9 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), chan
         record.update(vm=vmid, vm_type=vm.get("type"), vm_state=vm.get("state"), created=created)
         for field in ("resumed", "woken", "ready_seconds"):
             record.pop(field, None)
-        woken = state.entry(vmid).get("woken")
+        entry = state.entry(vmid)
+        fresh = created or "used" not in entry
+        woken = entry.get("woken")
         if woken:
             state.update(vmid, woken=None)
             if not created and vm.get("state") != "stopped" and time.time() - woken < LEASE_SECONDS:
@@ -873,7 +875,7 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), chan
                         if not isinstance(tree, dict):
                             raise ValueError(f"the claim answered {manifest[:100]!r}, not the VM's source manifest")
                         return vmid, lock, lease, tree
-                except (Failure, ValueError) as error:
+                except (Failure, ValueError, TypeError) as error:
                     status, manifest = None, str(error)
                 finally:
                     readiness["claim"] = round(time.monotonic() - started - record["ready_seconds"], 2)
@@ -890,12 +892,12 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), chan
                         say(f"{vmid}: could not release its claim ({error}); the next acquire takes it over")
                     reason, outcome = f"{vmid}: initialization failed ({manifest[:300] if status is None else status}); see the remote output above", "cool"
             passed.add(vmid)
-            record.setdefault("passed_over", []).append({"vm": vmid, "reason": reason, "readiness": readiness})
+            record.setdefault("passed_over", []).append({"vm": vmid, "reason": reason, "readiness": readiness, **({"woken": record["woken"]} if "woken" in record else {})})
             if outcome == "cool":
                 state.cool(vmid, reason)
             elif outcome == "quarantine":
                 state.quarantine(vmid)
-            attempts += outcome in {"cool", "pass"} or created
+            attempts += outcome in {"cool", "pass"} or fresh
             say(f"{reason}; {'quarantined' if outcome == 'quarantine' else 'passing it by'}")
         except BaseException:
             if lease:
@@ -1502,7 +1504,7 @@ def run(argv):
         plan = Plan(worktree, manifest, cargo) if mode != "ui" else None
         rebuilds = (lambda vmid: plan.rebuilds(state.entry(vmid))) if plan else (lambda vmid: (0, 0))
         active = state.running(lane, token)
-        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record, rebuilds, toolchain_channel(worktree))
+        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record, rebuilds, toolchain_channel(worktree) if mode != "ui" else "")
         record["rebuilds"] = rebuilds(vmid)
         claimed = True
         enter("sync")
@@ -1558,7 +1560,10 @@ def run(argv):
             remove_stage(state, stage)
         if active:
             active.close()
-            (state.lanes / f"{lane}.running-{token}").unlink(missing_ok=True)
+            try:
+                (state.lanes / f"{lane}.running-{token}").unlink(missing_ok=True)
+            except OSError:
+                pass
         enter("done")
         elapsed = time.monotonic() - started
         record.update(time=time.strftime("%Y-%m-%dT%H:%M:%S%z"), seconds=round(elapsed, 2), cargo_exit=cargo_exit)

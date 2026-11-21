@@ -188,7 +188,8 @@ def toolchain_fault(channel):
     """Why the installed toolchain of `channel`, the incoming tree's, does not run Cargo, or None; a toolchain the VM lacks is rustup's to install."""
     if not channel:
         return None
-    if not (Path(os.environ.get('RUSTUP_HOME', '/usr/local/rustup')) / 'toolchains' / f'{channel}-{HOST}').is_dir():
+    name = channel if channel.endswith('-' + HOST) else f'{channel}-{HOST}'
+    if not (Path(os.environ.get('RUSTUP_HOME', '/usr/local/rustup')) / 'toolchains' / name).is_dir():
         return None
     try:
         result = subprocess.run(['cargo', '--version'], cwd=ROOT, env={**os.environ, 'RUSTUP_TOOLCHAIN': channel, 'RUSTUP_AUTO_INSTALL': '0'}, capture_output=True, text=True, timeout=60)
