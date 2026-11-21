@@ -7,11 +7,11 @@
 <p align="center">Record your Hearts of Iron IV campaigns. Replay every hour of the war.</p>
 
 <p align="center">
-  <a href="https://github.com/Simcity400/battle-plan/releases"><strong>Download</strong></a> ·
+  <a href="https://github.com/Simcity400/Battle-Plan/releases"><strong>Download</strong></a> ·
   <a href="#record-a-campaign">Record</a> ·
   <a href="#watch-a-replay">Watch</a> ·
   <a href="#mods">Mods</a> ·
-  <a href="https://github.com/Simcity400/battle-plan/issues">Issues</a>
+  <a href="https://github.com/Simcity400/Battle-Plan/issues">Issues</a>
 </p>
 
 Battle Plan records your Hearts of Iron IV campaign while you play, then replays it in a Windows desktop app. Scrub to any hour, follow the front on a map drawn the way the game draws it, and dig into a campaign's military, economic and political history in a dashboard you arrange yourself.
@@ -28,7 +28,7 @@ Battle Plan records your Hearts of Iron IV campaign while you play, then replays
 
 ## Install
 
-[Download Battle Plan](https://github.com/Simcity400/battle-plan/releases) for Windows. Installers appear there once the first build is published; until then, [build from source](#build-from-source). One installer gives you two apps:
+[Download Battle Plan](https://github.com/Simcity400/Battle-Plan/releases) for Windows. Installers appear there once the first build is published; until then, [build from source](#build-from-source). One installer gives you two apps:
 
 - **Battle Plan**: the replay app, with the campaign map and the dashboard.
 - **Battle Plan Recorder**: a small tray app that records while you play.
