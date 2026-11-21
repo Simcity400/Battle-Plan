@@ -152,7 +152,8 @@ pub fn collect() {
 }
 
 fn log() -> Option<&'static Storage> {
-    // SAFETY: writers hold OBSERVATION.enter(). The observer boundary's job is the sole drain,
+    // SAFETY: native writers hold OBSERVATION.enter(); a test that appends on the draining thread
+    // holds `test_lock` and drains after. The observer boundary's job is the sole drain,
     // and it finishes with this log before it installs the replacement; the capture gate keeps
     // command-batch writers out through that sequence.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }

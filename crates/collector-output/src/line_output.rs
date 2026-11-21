@@ -131,9 +131,11 @@ pub fn collect() {
 }
 
 fn log() -> Option<&'static Storage> {
-    // SAFETY: writers hold Call. The observer boundary's job is the sole drain, and it finishes with
-    // this log before it installs the replacement; the capture gate keeps command-batch writers out
-    // through that sequence, and detach drains every callback before releasing storage.
+    // SAFETY: a native writer counts itself in `ACTIVE` from the hook's entry until after its
+    // append, and an unsettled call holds the log through `native_retention_required`; tests write
+    // under `test_lock`. The observer boundary's job is the sole drain, and it installs a
+    // replacement only with neither held; the capture gate keeps command-batch writers out through
+    // that sequence, and detach drains every callback before releasing storage.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
 

@@ -44,8 +44,10 @@ fn free(log: *mut Log) {
 }
 
 fn installed() -> Option<&'static Log> {
-    // SAFETY: a log is freed only after a drain replaced it and saw no
-    // writer running, and the consumer is the only drain.
+    // SAFETY: a replaced log is freed only after a drain saw no writer
+    // running, and the consumer is the only drain. Teardown's `release` frees
+    // the installed log only once the hooks are drained and acquisition has
+    // stopped, so no borrow from here outlives either.
     unsafe { LOG.load(Ordering::SeqCst).as_ref() }
 }
 #[repr(align(64))]
