@@ -780,15 +780,24 @@ impl PowerLedger {
             let total: i128 = costs.iter().map(|cost| i128::from(cost.cost_raw)).sum();
             let applied = daily.as_ref().filter(|daily| daily.pp_sequence == Some(sequence) && costs.iter().all(|cost| cost.epoch == daily.epoch));
             let reconciles = applied.is_some_and(|daily| daily.pp_cost_raw.is_some_and(|cost| i128::from(cost) == total));
-            if applied.is_some() && !reconciles {
+            let exact = |part: &Part| remaining.get(&part.ordinal).is_some_and(|&(sum, payments, _)| part.payments == payments && matches!(part.spent, Recorded::Value(spent) if i128::from(spent) == sum));
+            if held.iter().all(exact) {
+                continue;
+            }
+            if !reconciles {
                 self.steady.insert(holder);
-            } else if reconciles && sole {
+            } else if sole {
                 self.steady.remove(&holder);
             }
             for mut part in held {
                 let key = part.key();
                 match remaining.get(&part.ordinal) {
-                    Some(&(sum, payments, _)) if part.payments == payments && matches!(part.spent, Recorded::Value(spent) if i128::from(spent) == sum) => {}
+                    _ if exact(&part) => {
+                        if part.covered && !reconciles {
+                            part.covered = false;
+                            pending.parts.insert(key, part);
+                        }
+                    }
                     Some(&(sum, payments, first)) if sole => {
                         part.spent = i64::try_from(sum).map_or(Recorded::NotRecorded, Recorded::Value);
                         part.payments = payments;

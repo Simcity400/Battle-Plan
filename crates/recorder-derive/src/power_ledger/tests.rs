@@ -499,6 +499,7 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     let (unreconciled, _) = through(0..=SAME_ITEM_UNRECONCILED);
     assert_eq!(cell::<Part>(&unreconciled, TableId::PowerDayParts, relation, "spent"), Some(Q / 2));
     assert_eq!(covered(&unreconciled), Some(false), "a survivor whose batch no longer matches the day's total is not covered");
+    assert_eq!(cell::<Coverage>(&unreconciled, TableId::PowerSpendCoverage, 10, "daily_mismatch"), Some(i64::from(Coverage::STEADY_MISMATCH)), "and its holder's costs are named as not adding up until a daily application confirms them");
     let holders = |store: &Store| keys(store, TableId::PowerDayParts).into_iter().map(|key| (key >> 40) as u32).filter(|&holder| holder == NONE || holder == 30).collect::<std::collections::BTreeSet<_>>();
     let (unlinked, _) = through(0..=UNLINKED);
     assert_eq!(holders(&unlinked), [NONE].into());
@@ -526,12 +527,13 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     let (paid, _) = through(0..=MATCHED);
     assert_eq!((cell::<Part>(&paid, TableId::PowerDayParts, relation, "spent"), covered(&paid)), (Some(Q / 2), Some(true)));
     let (gone, _) = through(0..=DAILY_GONE);
-    assert_eq!((cell::<Part>(&gone, TableId::PowerDayParts, relation, "spent"), covered(&gone)), (Some(Q / 2), Some(true)), "a deletion keeps a survivor in the part it was published in, whatever the daily row reads now");
+    assert_eq!((cell::<Part>(&gone, TableId::PowerDayParts, relation, "spent"), covered(&gone)), (Some(Q / 2), Some(false)), "a deletion keeps a survivor in the part it was published in, uncovered while no daily application confirms the batch");
     let mismatch = |store: &Store| cell::<Coverage>(store, TableId::PowerSpendCoverage, 10, "daily_mismatch");
     let (batch, _) = through(0..=PAIRED);
     assert_eq!(mismatch(&batch), Some(0));
     let (kept, _) = through(0..=TOTAL_KEPT);
     assert_eq!(mismatch(&kept), Some(i64::from(Coverage::STEADY_MISMATCH)), "a deletion whose remaining costs miss the total read that hour is a mismatch");
+    assert_eq!(covered(&kept), Some(false), "and its unchanged survivor is no longer covered");
 }
 
 #[test]

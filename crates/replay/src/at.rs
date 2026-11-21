@@ -123,7 +123,7 @@ fn read_tables(recording: &Recording, reads: &[Read<'_>]) -> io::Result<Vec<Read
         .iter()
         .map(|read| {
             let index = read.table.index();
-            let recorded = recording.columns()[index].min(crate::native_columns::columns(read.table.schema())?.len());
+            let recorded = recording.columns()[index].min(read.table.schema().len());
             let columns = crate::cells::read_columns(recording, recorded, index, read.columns);
             Ok((read.table, columns, recording.withheld_reason(index).map(str::to_owned), recording.predates(index).is_some()))
         })
