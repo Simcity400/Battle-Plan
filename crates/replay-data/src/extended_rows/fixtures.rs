@@ -7075,7 +7075,7 @@ fn strategic_action_codec_measures_incremental_payload_bytes() {
         ..base.clone()
     };
     let baseline_bytes = round_trip(&baseline);
-    assert_eq!(baseline_bytes, 69 + 5 + 5 + 5 + 1 + 9);
+    assert_eq!(baseline_bytes, 69 + 5 + 5 + 5 + 1 + 9 + 5);
     assert!(baseline.delta(Some(&baseline)).unwrap().is_none());
     for (tick, expected) in [
         (0, 15),

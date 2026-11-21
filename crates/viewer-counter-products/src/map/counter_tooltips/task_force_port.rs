@@ -227,7 +227,7 @@ mod tests {
     }
 
     fn with_context(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>)) {
-        let loc: Localisation = [
+        let mut loc: Localisation = [
             ("SHIP_ENGAGEMENT_MAP_ICON".into(), "engagement".into()),
             (
                 "SHIP_ENGAGEMENT_BUTTON_HOLD_FIRE_DESC".into(),
@@ -247,6 +247,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
+        loc.language = "english".into();
         super::super::task_force::tests::with_test_context(
             frame,
             &loc,

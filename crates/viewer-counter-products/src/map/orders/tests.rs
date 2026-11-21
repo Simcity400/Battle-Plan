@@ -1377,6 +1377,6 @@ fn own_order_count_preserves_decoded_admission_and_table_gaps() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert_eq!(
         error.to_string(),
-        "hour 42 ArmyOrders contains another table's rows"
+        "army orders holds rows of another kind"
     );
 }

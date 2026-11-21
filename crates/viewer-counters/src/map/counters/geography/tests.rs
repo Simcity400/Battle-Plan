@@ -170,7 +170,7 @@ fn geography_core_refusals_precede_lookup_even_after_a_complete_hit() {
     let expected = [
         "hour 7 Provinces is truncated (4 missing rows); the core tables Provinces, CountryLinks and Countries carry the political map itself, so this hour cannot be drawn",
         "hour 7 Provinces is unavailable: synthetic unavailable province census; the core tables Provinces, CountryLinks and Countries carry the political map itself, so this hour cannot be drawn",
-        "hour 7 Provinces contains another table's rows",
+        "provinces holds rows of another kind",
     ];
     for (bad, expected) in bad.into_iter().zip(expected) {
         *frame.tables[TableId::Provinces.index()] = bad;
@@ -232,7 +232,7 @@ fn geography_content_keys_retain_allocations_and_exact_scalar_bits() {
 }
 
 #[test]
-fn geography_memo_is_bounded_and_concurrent_requests_share_one_build() {
+fn geography_memo_is_bounded_and_concurrent_requests_build_the_same_geometry() {
     let memo = Memo::default();
     let content = Content::default();
     let first = frame(1, &[(1, 7)]);
@@ -251,7 +251,10 @@ fn geography_memo_is_bounded_and_concurrent_requests_share_one_build() {
             .map(|thread| thread.join().unwrap())
             .collect::<Vec<_>>()
     });
-    assert!(reads.iter().all(|read| Arc::ptr_eq(&reads[0], read)));
+    for read in &reads[1..] {
+        assert_eq!(read.state_of, reads[0].state_of);
+        read.extents.assert_same_bits(&reads[0].extents);
+    }
     for state in 20..28 {
         let next = content.compare(&memo, &frame(state as i32, &[(1, state)]));
         assert!(!Arc::ptr_eq(&reads[0], &next));

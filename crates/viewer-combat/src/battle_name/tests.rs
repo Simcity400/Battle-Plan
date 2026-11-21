@@ -64,7 +64,7 @@ fn the_victory_point_tag_is_the_state_owners_original_tag() {
         vp_tag(&frame, 7, &states, true)
             .unwrap()
             .unwrap_err()
-            .contains("CountryAppearance is incomplete this hour")
+            .contains("country appearance is incomplete this hour")
     );
     *frame.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(vec![
@@ -99,7 +99,7 @@ fn the_victory_point_tag_is_the_state_owners_original_tag() {
         vp_tag(&frame, 0, &states, true)
             .unwrap()
             .unwrap_err()
-            .contains("ReservedCountryNaming")
+            .contains("reserved country naming")
     );
     *frame.tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
@@ -121,7 +121,7 @@ fn the_victory_point_tag_is_the_state_owners_original_tag() {
         vp_tag(&frame, 7, &states, true)
             .unwrap()
             .unwrap_err()
-            .contains("CountryAppearance.original_tag not recorded")
+            .contains("original tag of country appearance not recorded")
     );
     *frame.tables[TableId::Countries.index()] = TableView::Unavailable {
         reason: "unrelated positive roster".into(),

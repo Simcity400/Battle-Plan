@@ -40,6 +40,8 @@ pub(crate) fn before_spool_publication() {
     }
 }
 fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     static CALLS: AtomicUsize = AtomicUsize::new(0);
     let run = std::env::temp_dir().join(format!(
         "hoi4-collector-allocation-{}-{}",

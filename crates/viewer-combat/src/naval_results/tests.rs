@@ -190,7 +190,7 @@ fn country_groups_coalesce_aliases_and_use_viewer_count_and_canonical_order() {
         order
             .counts([(999, 1)])
             .unwrap_err()
-            .contains("CountryLinks")
+            .contains("country links")
     );
 }
 

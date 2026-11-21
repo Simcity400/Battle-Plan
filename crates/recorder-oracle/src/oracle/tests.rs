@@ -405,7 +405,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
                 .iter()
                 .any(|subject| subject == "DivisionMovement arrival estimates")
     }));
-    assert_eq!(report.scalar_checks, 22);
+    assert_eq!(report.scalar_checks, 23);
     for (fuel, days, differences) in [
         (Some(&b"604.80001"[..]), Some(30), 1),
         (None, Some(30), 1),
@@ -5382,7 +5382,7 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
     let mut report = Report::default();
     compare_division_movement(&frame, &saved, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.scalar_checks, 9);
+    assert_eq!(report.scalar_checks, 10);
     assert!(report.limitations.iter().any(|(reason, subjects)| {
         reason.contains("strategic-action")
             && subjects

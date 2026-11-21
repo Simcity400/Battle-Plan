@@ -61,6 +61,7 @@ fn distinct_nonnegative_ship_slots_resolve_order_before_the_address_tie() {
     let mut first = NavalCombatShipRow {
         state: 2,
         battle_slot: 1,
+        live_ship: 1,
         ..Default::default()
     };
     let mut second = NavalCombatShipRow {

@@ -493,7 +493,7 @@ mod tests {
     use viewer_foundation::map::test_support::{test_frame, test_put};
 
     fn loc() -> Localisation {
-        [
+        let mut loc = [
             ("COARSE_COUNTER_UNKNOWN_UNITS", "unknown"),
             ("COARSE_COUNTER_KNOWN_UNITS", "partly known"),
             (
@@ -509,7 +509,9 @@ mod tests {
         ]
         .into_iter()
         .map(|(key, text)| (key.into(), text.into()))
-        .collect()
+        .collect::<Localisation>();
+        loc.language = "english".into();
+        loc
     }
 
     fn with_context(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>)) {

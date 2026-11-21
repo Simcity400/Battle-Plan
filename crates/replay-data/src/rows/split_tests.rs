@@ -1138,7 +1138,7 @@ mod extended_rows_map_presentation_fresh_railway_eta_tests {
             .into(),
             ..previous.clone()
         };
-        assert_eq!(RailwayGunCounterInputRow::SCHEMA.len(), 30);
+        assert_eq!(RailwayGunCounterInputRow::SCHEMA.len(), 32);
         assert_eq!(TableId::RailwayGunCounterInputs.mask_width(), 4);
         let mut bytes = Vec::new();
         row.encode_fields(&mut bytes).unwrap();

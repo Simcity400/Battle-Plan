@@ -639,15 +639,16 @@ if os.name == "nt":
     ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
 
     def spawn(command, **popen):
-        """Starts `command` suspended, puts it in a job object below normal priority that every
-        process it starts joins and that ends them all when it closes, then lets it run; returns
-        (process, job). A command that cannot be placed in its job is ended and refused."""
+        """Starts `command` suspended at below normal priority, which the processes it starts
+        inherit, puts it in a job object that every process it starts joins and that ends them all
+        when it closes, then lets it run; returns (process, job). The job sets no priority class
+        limit: under one, Windows ignores a thread raising its own priority, which tests check. A
+        command that cannot be placed in its job is ended and refused."""
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             raise ctypes.WinError(ctypes.get_last_error())
         limits = _ExtendedLimits()
-        limits.BasicLimitInformation.LimitFlags = 0x20 | 0x800 | 0x2000
-        limits.BasicLimitInformation.PriorityClass = BELOW_NORMAL
+        limits.BasicLimitInformation.LimitFlags = 0x800 | 0x2000
         if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
             error = ctypes.WinError(ctypes.get_last_error())
             kernel32.CloseHandle(job)

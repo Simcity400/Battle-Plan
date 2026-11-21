@@ -53,8 +53,8 @@ fn every_packet_host_is_hourly_never_carried_and_readable_at_the_stamped_format(
         let change = host.last_change();
         let (kind, format) = match host {
             TableId::DivisionMovement => (
-                ChangeKind::Layout,
-                replay_data::rows::compatibility::STORED_ONCE_FORMAT,
+                ChangeKind::AppendedOnly,
+                replay_data::rows::compatibility::CAPTURE_ADDITIONS_FORMAT,
             ),
             TableId::CountryCounterInputs | TableId::DivisionTemplateIcons => {
                 (ChangeKind::AppendedOnly, EXPERIENCE_FORMAT)

@@ -303,7 +303,7 @@ fn historical_or_refused_physical_roster_keeps_own_plan_with_named_gap() {
             selected
                 .refused
                 .keys()
-                .all(|key| key.contains("country_array"))
+                .all(|key| key.contains("country array of reserved country naming"))
         );
     }
 }

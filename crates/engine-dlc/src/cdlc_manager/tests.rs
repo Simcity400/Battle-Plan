@@ -625,7 +625,7 @@ fn search_path_rejects_overflow_and_reads_until_native_terminator_or_fault() {
     assert_eq!(
         observe_search_path(&memory, usize::MAX, &mut []),
         Outcome::Unavailable {
-            reason: "search path root address overflow"
+            reason: "search path root address withheld"
         }
     );
     assert_eq!(

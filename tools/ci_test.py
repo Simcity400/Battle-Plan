@@ -406,6 +406,28 @@ class Waking(unittest.TestCase):
         self.assertIsNone(ci.boat_arguments(["cargo", "clippy"]))
 
 
+@unittest.skipUnless(os.name == "nt", "job objects are Windows'")
+class Spawning(unittest.TestCase):
+    def test_a_command_starts_below_normal_and_may_raise_its_own_thread(self):
+        import subprocess
+        child = (
+            "import ctypes\n"
+            "k = ctypes.WinDLL('kernel32')\n"
+            "k.GetCurrentThread.restype = k.GetCurrentProcess.restype = ctypes.c_void_p\n"
+            "k.SetThreadPriority.argtypes = [ctypes.c_void_p, ctypes.c_int]\n"
+            "k.GetThreadPriority.argtypes = k.GetPriorityClass.argtypes = [ctypes.c_void_p]\n"
+            "assert k.SetThreadPriority(k.GetCurrentThread(), 2)\n"
+            "print(hex(k.GetPriorityClass(k.GetCurrentProcess())), k.GetThreadPriority(k.GetCurrentThread()))\n"
+        )
+        process, job = ci.spawn([sys.executable, "-c", child], stdout=subprocess.PIPE, text=True)
+        try:
+            output, _ = process.communicate(timeout=60)
+        finally:
+            ci.close(job)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(output.split(), [hex(ci.BELOW_NORMAL), "2"])
+
+
 class Superseding(unittest.TestCase):
     def test_a_newer_run_on_the_branch_supersedes_an_older_one(self):
         import tempfile

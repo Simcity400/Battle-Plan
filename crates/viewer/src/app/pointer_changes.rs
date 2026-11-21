@@ -30,7 +30,7 @@ mod tests {
         let at = egui::pos2(40., 40.);
         let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::CTRL };
         let mut seen = None;
-        let _ = ctx.run_ui(
+        let mut output = ctx.run_ui(
             egui::RawInput {
                 events: vec![
                     egui::Event::ModifiersChanged(egui::Modifiers::CTRL),
@@ -43,6 +43,7 @@ mod tests {
             },
             |ui| seen = Some(ui.input(|input| (input.modifiers, changes(input)))),
         );
+        output.textures_delta.clear();
         let (frame, (changes, modifiers)) = seen.unwrap();
         assert!(!frame.ctrl, "the frame ends with Ctrl up");
         assert_eq!(changes, vec![(at, None), (at, Some((egui::PointerButton::Primary, true))), (at, Some((egui::PointerButton::Primary, false)))]);

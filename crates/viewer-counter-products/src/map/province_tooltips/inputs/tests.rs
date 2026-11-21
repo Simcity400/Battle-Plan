@@ -321,11 +321,11 @@ fn demand_local_country_names_keep_aliases_overlords_reserved_zero_and_refusals(
         let names = Names::new(&frame, &loc);
         assert_eq!(
             names.name(1),
-            Err("Politics is incomplete this hour".into())
+            Err("politics is incomplete this hour".into())
         );
         assert_eq!(
             names.tag(1, "absent"),
-            Err("Politics is incomplete this hour".into())
+            Err("politics is incomplete this hour".into())
         );
         assert_eq!(names.name(0), Ok("Zero".into()));
     }
