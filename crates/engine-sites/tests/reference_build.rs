@@ -32,6 +32,14 @@ fn reference_build_verifies_every_key() {
     assert_eq!(live.moved().collect::<Vec<_>>(), checked.moved().collect::<Vec<_>>());
     assert_eq!(live.summary().keys_verified, summary.keys);
 
+    let hole = base + 0x1000;
+    let holed = |address: usize, out: &mut [u8]| {
+        address.checked_add(out.len()).is_some_and(|end| end <= hole || address >= hole + 0x1000) && copy(address, out)
+    };
+    let partial = Located::locate(&Image::live(base, &holed).unwrap(), true);
+    assert_eq!(partial.summary().keys_verified, 0);
+    assert_eq!(partial.withheld().count(), summary.keys);
+
     let witnessed = Located::locate(&owned.image(base), false);
     let withheld: Vec<_> = witnessed.withheld().map(|(_, w)| w.to_string()).collect();
     let other: Vec<_> = withheld

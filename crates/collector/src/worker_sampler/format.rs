@@ -84,6 +84,9 @@ impl Header {
                 .filter(|&end| end <= image_size as usize)
                 .and_then(|_| copy(start, len))
         };
+        if pe + 24 + 112 + 7 * 8 > image_size as usize {
+            return Err("worker_sampler collector debug directory missing".into());
+        }
         let directory = &nt[24 + 112 + 6 * 8..];
         let rva = u32::from_le_bytes(directory[..4].try_into().unwrap()) as usize;
         let size = u32::from_le_bytes(directory[4..8].try_into().unwrap()) as usize;

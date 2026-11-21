@@ -1,10 +1,11 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, cell::Cell};
 
 use crate::{Verified, Withheld};
 
 pub struct Image<'a> {
     sections: Vec<Section<'a>>,
     live: Option<&'a dyn Fn(usize, &mut [u8]) -> bool>,
+    unreadable: Cell<bool>,
     pointer_base: u64,
     pub(crate) base: usize,
 }
@@ -51,6 +52,7 @@ fn header(read: impl Fn(usize, usize) -> Option<Vec<u8>>) -> Verified<Header> {
     let image_base = read(pe + 24 + 24, 8)
         .map(|b| u64::from_le_bytes(b.try_into().unwrap_or([0; 8])))
         .ok_or_else(malformed)?;
+    let image_size = u64::from(u32_at(pe + 24 + 56).ok_or_else(malformed)?);
     let table = pe + 24 + optional;
     let mut sections = Vec::with_capacity(count);
     for index in 0..count {
@@ -58,6 +60,9 @@ fn header(read: impl Fn(usize, usize) -> Option<Vec<u8>>) -> Verified<Header> {
         let word = |at: usize| u32::from_le_bytes([row[at], row[at + 1], row[at + 2], row[at + 3]]);
         let mut name = [0; 8];
         name.copy_from_slice(&row[..8]);
+        if u64::from(word(12)) + u64::from(word(8)) > image_size {
+            return Err(malformed());
+        }
         sections.push((name, word(12), word(8), word(20), word(16)));
     }
     Ok(Header {
@@ -86,6 +91,7 @@ impl<'a> Image<'a> {
         Ok(Self {
             sections,
             live: Some(copy),
+            unreadable: Cell::new(false),
             pointer_base: base as u64,
             base,
         })
@@ -125,6 +131,7 @@ impl OwnedImage {
                 })
                 .collect(),
             live: None,
+            unreadable: Cell::new(false),
             pointer_base: self.pointer_base,
             base,
         }
@@ -144,9 +151,16 @@ impl<'a> Image<'a> {
         let Some(copy) = self.live else {
             return section.bytes.get(start..end).map(Cow::Borrowed);
         };
-        let mut bytes = zeroed(len)?;
-        let address = self.base.checked_add(section.rva as usize)?.checked_add(start)?;
-        copy(address, &mut bytes).then_some(Cow::Owned(bytes))
+        let copied = self
+            .base
+            .checked_add(section.rva as usize)
+            .and_then(|address| address.checked_add(start))
+            .zip(zeroed(len))
+            .and_then(|(address, mut bytes)| copy(address, &mut bytes).then_some(bytes));
+        if copied.is_none() {
+            self.unreadable.set(true);
+        }
+        copied.map(Cow::Owned)
     }
 
     pub(crate) fn section(&self, name: &[u8]) -> Option<(u32, Cow<'a, [u8]>)> {
@@ -180,6 +194,10 @@ impl<'a> Image<'a> {
         u32::try_from(value.checked_sub(self.pointer_base)?).ok()
     }
 
+    pub(crate) fn unreadable(&self) -> bool {
+        self.unreadable.get()
+    }
+
     pub(crate) fn pointer_base(&self) -> u64 {
         self.pointer_base
     }
@@ -199,11 +217,16 @@ impl<'a> Image<'a> {
             let address = self.base.checked_add(s.rva as usize)?.checked_add(at)?;
             let chunk = (PAGE - address % PAGE).min(limit - name.len());
             let bytes = self.read(s, at, chunk)?;
-            if let Some(end) = bytes.iter().position(|&b| b == 0) {
-                name.extend_from_slice(&bytes[..end]);
+            let end = bytes.iter().position(|&b| b == 0);
+            let kept = &bytes[..end.unwrap_or(bytes.len())];
+            if name.try_reserve(kept.len()).is_err() {
+                self.unreadable.set(true);
+                return None;
+            }
+            name.extend_from_slice(kept);
+            if end.is_some() {
                 return Some(Cow::Owned(name));
             }
-            name.extend_from_slice(&bytes);
         }
         None
     }

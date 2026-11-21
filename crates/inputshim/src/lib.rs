@@ -212,7 +212,8 @@ unsafe fn imports() -> Option<Vec<Slot>> {
         return None;
     }
     let mut slots = Vec::new();
-    let mut name = vec![0; longest + 1];
+    let mut buffer = [0_u8; 32];
+    let name = buffer.get_mut(..longest + 1)?;
     for descriptor in (directory..end).step_by(20) {
         let lookup = u32_at(descriptor)? as usize;
         let table = u32_at(descriptor + 16)? as usize;
@@ -242,6 +243,9 @@ unsafe fn imports() -> Option<Vec<Slot>> {
                         .position(|&byte| byte == 0)
                         .map(|end| read + end);
                     read += chunk;
+                }
+                if length.is_none() && available < name.len() {
+                    return None;
                 }
                 let found = length
                     .and_then(|length| names.iter().position(|&wanted| wanted == &name[..length]));

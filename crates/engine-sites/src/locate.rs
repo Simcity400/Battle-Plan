@@ -112,7 +112,7 @@ impl Reason {
             }
             Self::Dependent => "an operand reaches a function or global that is withheld".into(),
             Self::Unwitnessed => "no constructor witnesses its class layout on this build".into(),
-            Self::Unreadable => "code that could be it is unreadable in the running image".into(),
+            Self::Unreadable => "part of the running image could not be read".into(),
             Self::Layout(vtable) => format!(
                 "struct layouts are unverified on this build: the constructor of {} changed",
                 vtable_name(vtable)
@@ -173,15 +173,9 @@ impl Located {
             }
         }
         let mut hits: Vec<(u32, u32)> = vec![(0, 0); FUNCTIONS.len()];
-        let mut unreadable = vec![false; FUNCTIONS.len()];
         for &(begin, end) in &pdata {
             let Some(candidates) = wanted.get(&(end - begin)) else { continue };
-            let Some(bytes) = image.bytes(begin, (end - begin) as usize) else {
-                for &index in candidates {
-                    unreadable[index as usize] = true;
-                }
-                continue;
-            };
+            let Some(bytes) = image.bytes(begin, (end - begin) as usize) else { continue };
             for &index in candidates {
                 let f = &FUNCTIONS[index as usize];
                 let mask = slice(&MASKS, f.masks);
@@ -195,7 +189,6 @@ impl Located {
         for (index, f) in FUNCTIONS.iter().enumerate() {
             if f.root {
                 functions[index] = match hits[index] {
-                    _ if unreadable[index] => Err(Reason::Unreadable),
                     (start, 1) => Ok(start),
                     (_, 0) => Err(Reason::Changed),
                     _ => Err(Reason::Ambiguous),
@@ -249,16 +242,12 @@ impl Located {
                     }
                     let mut found = None;
                     let mut disagree = false;
-                    let mut unread = false;
                     for edge in &EDGES[f.edges.0 as usize..(f.edges.0 + f.edges.1) as usize] {
                         let Some(target) = follow(edge, &functions) else { continue };
                         if f.pdata && ends.get(&target) != Some(&(target + f.len)) {
                             continue;
                         }
-                        let Some(bytes) = image.bytes(target, f.len as usize) else {
-                            unread = true;
-                            continue;
-                        };
+                        let Some(bytes) = image.bytes(target, f.len as usize) else { continue };
                         if fingerprint(&bytes, slice(&MASKS, f.masks)) != f.hash {
                             continue;
                         }
@@ -270,8 +259,6 @@ impl Located {
                     }
                     if disagree {
                         functions[index] = Err(Reason::Disagree);
-                    } else if unread {
-                        functions[index] = Err(Reason::Unreadable);
                     } else if let Some(target) = found {
                         functions[index] = Ok(target);
                         changed = true;
@@ -291,7 +278,7 @@ impl Located {
                             && (!f.pdata || ends.get(&target) == Some(&(target + f.len)))
                             && image
                                 .bytes(target, f.len as usize)
-                                .is_none_or(|bytes| fingerprint(&bytes, slice(&MASKS, f.masks)) == f.hash)
+                                .is_some_and(|bytes| fingerprint(&bytes, slice(&MASKS, f.masks)) == f.hash)
                     })
                 });
                 if elsewhere {
@@ -395,8 +382,21 @@ impl Located {
                     ([0; ORIGINAL], 0)
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
 
+        let (functions, vtables, data, by_live, originals, layout) = if image.unreadable() {
+            let withheld = Err(Reason::Unreadable);
+            (
+                vec![withheld; FUNCTIONS.len()],
+                vec![withheld; VTABLES.len()],
+                vec![withheld; DATA.len()],
+                Vec::new(),
+                vec![([0; ORIGINAL], 0); originals.len()],
+                Err(Reason::Unreadable),
+            )
+        } else {
+            (functions, vtables, data, by_live, originals, layout)
+        };
         let mut located = Self {
             base: image.base,
             identity: None,

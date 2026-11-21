@@ -2089,7 +2089,10 @@ impl SlowPacks {
             ),
             &mut ticks,
         );
-        stores.doctrine_bytes = Some(self.country_tactic_unlocks.doctrine_store_bytes() as u64);
+        stores.doctrine_bytes = self
+            .country_tactic_unlocks
+            .doctrine_store_bytes()
+            .map(|bytes| bytes as u64);
         scatter(
             &model_inputs::TABLES,
             self.model_inputs.capture_carried(
