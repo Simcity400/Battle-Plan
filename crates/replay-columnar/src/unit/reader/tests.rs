@@ -55,6 +55,9 @@ fn an_event_running_into_the_next_track_is_refused_by_name() {
     let (bytes, entry) = part_of(2, &[0, 2, 2, 1, 2, 2], &[0, 0x82, 1, 2]);
     let refused = advanced(&bytes, &entry).unwrap_err();
     assert!(refused.to_string().contains("damaged"), "{refused}");
+    let part = fetch(&bytes, &entry, BLOCK as u16 - 1, &[0], None).unwrap();
+    let walked = part.tracks(0, false, |_, _, _| {}).unwrap_err();
+    assert!(walked.to_string().contains("ends inside a number"), "the event walk reads no byte of the next track: {walked}");
 }
 
 #[test]

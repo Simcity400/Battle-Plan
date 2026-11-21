@@ -1371,22 +1371,23 @@ impl Part {
             let mut gap = tracks.gap.get(index).copied().unwrap_or(0);
             let mut cursor = tracks.at[index] as usize;
             let end = tracks.end[index] as usize;
+            let track = raw.get(..end).ok_or_else(|| invalid("A track passes its stream"))?;
             let mut last = 0_i64;
             loop {
                 if list {
                     let start = cursor;
-                    let form = *raw.get(cursor).ok_or_else(|| invalid("A list track ends before its form"))?;
-                    lists::skip(raw, &mut cursor, false)?;
+                    let form = *track.get(cursor).ok_or_else(|| invalid("A list track ends before its form"))?;
+                    lists::skip(track, &mut cursor, false)?;
                     if form == lists::POOLED {
                         let mut index = start + 1;
-                        let (place, length) = *opened.pool.get(get_varint(raw, &mut index)? as usize).ok_or_else(|| invalid("An event names no pooled literal"))?;
+                        let (place, length) = *opened.pool.get(get_varint(track, &mut index)? as usize).ok_or_else(|| invalid("An event names no pooled literal"))?;
                         events.push((hour, Event::List(lists::LITERAL, &raw[place as usize..(place + length) as usize])));
                     } else {
-                        events.push((hour, Event::List(form, &raw[start + 1..cursor])));
+                        events.push((hour, Event::List(form, &track[start + 1..cursor])));
                     }
                 } else {
-                    let code = get_code(raw, &mut cursor)?;
-                    let repeats = if opened.model == RUNS { get_varint(raw, &mut cursor)?.min(u64::from(BLOCK)) } else { 0 };
+                    let code = get_code(track, &mut cursor)?;
+                    let repeats = if opened.model == RUNS { get_varint(track, &mut cursor)?.min(u64::from(BLOCK)) } else { 0 };
                     for repeat in 0..=repeats {
                         if repeat > 0 {
                             hour = hour.wrapping_add(gap);
@@ -1418,7 +1419,7 @@ impl Part {
                 if cursor >= end {
                     break;
                 }
-                gap = get_varint(raw, &mut cursor)?.min(u64::from(BLOCK)) as u16;
+                gap = get_varint(track, &mut cursor)?.min(u64::from(BLOCK)) as u16;
                 hour = hour.wrapping_add(gap);
             }
             each(tracks.slot[index], born.then(|| tracks.born[index]), &events);
