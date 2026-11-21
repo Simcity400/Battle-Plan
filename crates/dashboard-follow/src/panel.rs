@@ -16,12 +16,20 @@ pub use playhead::Declared;
 pub struct ProductStep<'a> {
     pub step: &'a playhead::Step,
     pub lanes: &'a playhead::Lanes<'a>,
+    pub held: Option<&'a [bool]>,
+}
+
+impl ProductStep<'_> {
+    pub fn lanes_table(&self, table: usize) -> bool {
+        self.held.is_none_or(|held| held.get(table).copied().unwrap_or(false))
+    }
 }
 
 pub struct ProductRead {
     pub value: Arc<PanelData>,
     pub rows: u64,
     pub fresh: bool,
+    pub pending: bool,
     pub live: Option<Arc<Live>>,
     pub lanes: Vec<Declared>,
 }

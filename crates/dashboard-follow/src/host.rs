@@ -195,7 +195,7 @@ impl StepProduct {
         let Some((registered, head)) = self.seed.take() else { return };
         if epoch != registered || token.load(Ordering::Acquire) { return; }
         let (clock, route, seek) = stamp;
-        let change = self.read_at(seek, epoch, head, true, token, None);
+        let change = self.read_at(seek, epoch, head, true, token, None).flatten();
         let reads = reads.lock().unwrap_or_else(PoisonError::into_inner);
         if reads.current(epoch, seek) && !token.load(Ordering::Acquire) && current_epoch() == epoch
             && let Some((kind, body)) = change {
@@ -204,17 +204,20 @@ impl StepProduct {
         }
     }
 
-    fn read_at(&mut self, page_seek: u32, epoch: u64, hour: Hour, reset: bool, cancelled: &AtomicBool, step: Option<panel::ProductStep<'_>>) -> Option<(u8, &[u8])> {
+    fn read_at(&mut self, page_seek: u32, epoch: u64, hour: Hour, reset: bool, cancelled: &AtomicBool, step: Option<panel::ProductStep<'_>>) -> Option<Option<(u8, &[u8])>> {
         let seed = reset || self.last.is_none_or(|(e, g, h)| e != epoch || g != page_seek || h > hour);
         let send = seed || std::mem::take(&mut self.resend);
+        let held = self.host.as_ref().map(|host| host.held.clone());
+        let step = step.map(|step| panel::ProductStep { held: held.as_deref(), ..step });
         let read = catch_unwind(AssertUnwindSafe(|| (self.read)(hour, send, cancelled, step)))
             .unwrap_or_else(|p| panel::ProductRead { value: Arc::new(Err(format!("Panel read at hour {hour} failed: {}", panicked(&*p)))),
-                rows: 0, fresh: true, live: None, lanes: Vec::new() });
+                rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() });
+        self.read_lanes(&read.lanes);
+        if read.pending { return None; }
         self.last = Some((epoch, page_seek, hour));
         self.next = hour.checked_add(1);
-        self.read_lanes(&read.lanes);
         let value = self.follow_cells(&read.value, read.live.as_deref(), hour, send, read.fresh);
-        self.wire.update(send, &value)
+        Some(self.wire.update(send, &value))
     }
 
     fn read_lanes(&mut self, read: &[Declared]) {
@@ -400,7 +403,7 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 if !product.joined && let Some((epoch, g, mut h)) = product.last && (epoch, g) == (step.epoch(), page_seek) && !step.reset() {
                     while h.saturating_add(quantum) < step.first() {
                         h += quantum;
-                        let (kind, body) = product.read_at(page_seek, epoch, h, false, &cancelled, None).unwrap_or((panel::dated::STANDS, &[]));
+                        let (kind, body) = product.read_at(page_seek, epoch, h, false, &cancelled, None).flatten().unwrap_or((panel::dated::STANDS, &[]));
                         let reads = active.lock().unwrap_or_else(PoisonError::into_inner);
                         if !reads.current(epoch, page_seek) || !current() { break; }
                         push.offer_kind(PANEL, panel::dated::encoded(clock, route, page_seek, id, h, kind, body));
@@ -409,7 +412,10 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 }
                 if !current() { held_over.push(id); continue; }
                 let joining = !product.joined;
-                let change = product.read_at(page_seek, step.epoch(), step.last(), step.reset(), &cancelled, Some(panel::ProductStep { step, lanes }));
+                let Some(change) = product.read_at(page_seek, step.epoch(), step.last(), step.reset(), &cancelled, Some(panel::ProductStep { step, lanes, held: None })) else {
+                    held_over.push(id);
+                    continue;
+                };
                 if !current() { held_over.push(id); continue; }
                 delivered.push(id);
                 if let Some((kind, body)) = change {
@@ -603,7 +609,7 @@ fn a_retired_product_read_cannot_publish_its_seed() {
         read: Arc::new(move |_, _, _, _| {
             started.send(()).unwrap();
             wait_release.lock().unwrap().recv().unwrap();
-            panel::ProductRead { value: Arc::new(Ok(Value::Null)), rows: 0, fresh: true, live: None, lanes: Vec::new() }
+            panel::ProductRead { value: Arc::new(Ok(Value::Null)), rows: 0, fresh: true, pending: false, live: None, lanes: Vec::new() }
         }),
     };
     let push = Push::default();

@@ -639,6 +639,8 @@ fn incremental_reads_include_cells_outside_the_staged_joins() {
 struct Stepped {
     hour: i32,
     fresh: bool,
+    pending: bool,
+    waited: bool,
     value: Arc<PanelData>,
     lanes: Vec<Declared>,
 }
@@ -646,16 +648,20 @@ struct Stepped {
 fn stepped(pages: &Arc<dyn Pages>, exact: &dashboard_follow::panel::AtHour, every: i32, join: i32, skip: usize) -> Vec<Stepped> {
     let (send, played) = std::sync::mpsc::channel();
     let advance = exact.advance.clone();
-    let (mut due, mut first) = (0, true);
+    let (mut due, mut first, mut seeded) = (0, true, false);
     let hook: playhead::Hook = Box::new(move |step, lanes| {
-        let read = (step.last() >= join).then(|| due += 1).filter(|_| (due - 1) % skip == 0).map(|()| {
-            let read = advance(step.last(), first || step.reset(), &AtomicBool::new(false), Some(dashboard_follow::panel::ProductStep { step, lanes }));
-            first = false;
-            Stepped { hour: step.last(), fresh: read.fresh, value: read.value, lanes: read.lanes }
+        let read = (step.last() >= join).then(|| due += 1).filter(|_| first || (due - 1) % skip == 0).map(|()| {
+            let token = AtomicBool::new(false);
+            let mut read = advance(step.last(), first || step.reset(), &token, Some(dashboard_follow::panel::ProductStep { step, lanes, held: None }));
+            let waited = !seeded && read.pending;
+            if waited { read = advance(step.last(), true, &token, None); }
+            seeded = true;
+            first = read.pending;
+            Stepped { hour: step.last(), fresh: read.fresh, pending: read.pending, waited, value: read.value, lanes: read.lanes }
         });
         let _ = send.send((step.last(), read));
     });
-    let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 100, ring: 3, speed: f64::from(every), rate: 1.0, ..playhead::Settings::default() };
+    let settings = playhead::Settings { step_threads: 1, fetch_threads: 1, ahead: 1, ring: 3, speed: f64::from(every), rate: 1.0, ..playhead::Settings::default() };
     let playhead = playhead::Playhead::new(Arc::clone(pages), playhead::Timeline::whole(&**pages).unwrap(), settings, Some(hook)).unwrap();
     let mut declared = BTreeMap::<usize, Declared>::new();
     let reader = playhead.declare(declared.values().cloned().collect(), None).unwrap();
@@ -693,7 +699,10 @@ fn a_followed_product_reads_its_tables_at_each_step_from_the_playheads_lanes() {
     for (every, join, skip) in cases {
         let panel = exact_panel::<Power>(&source, &load(), &json!({ "panel": "test-power", "branchId": "1", "country": "GER" })).unwrap();
         let exact = panel.exact().unwrap();
-        let reads = stepped(&pages, exact, every, join, skip);
+        let stepped = stepped(&pages, exact, every, join, skip);
+        assert!(stepped[0].waited || (every, join, skip) != cases[0], "a table its step has no lane for, and no placed lane near, waits for one, never read cold beside the step");
+        assert!(stepped.iter().skip(1).all(|read| !read.waited));
+        let reads: Vec<&Stepped> = stepped.iter().filter(|read| !read.pending).collect();
         assert!(reads.len() > 2, "steps of {every} hours from {join}, every {skip}");
         let first: Vec<usize> = reads[0].lanes.iter().map(|lane| lane.table).collect();
         assert!([TableId::Countries, TableId::CountryLinks].iter().all(|table| first.contains(&table.index())), "a product's lanes are the tables its reads take: {first:?}");
@@ -706,7 +715,7 @@ fn a_followed_product_reads_its_tables_at_each_step_from_the_playheads_lanes() {
     for (every, join, skip) in cases {
         let panel = exact_panel::<Planned>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
         let exact = panel.exact().unwrap();
-        for read in stepped(&pages, exact, every, join, skip) {
+        for read in stepped(&pages, exact, every, join, skip).into_iter().filter(|read| !read.pending) {
             assert_eq!(streamed(&read.value, read.fresh), streamed(&(exact.cold)(read.hour, &token), read.fresh), "planned, steps of {every} hours from {join}, every {skip}: hour {}", read.hour);
         }
     }
@@ -791,7 +800,7 @@ fn a_table_read_in_part_is_the_rows_its_hour_read_on_every_path() {
         assert_eq!(said(&(exact.cold)(hour, &token).unwrap()), recorded(hour), "an exact read at hour {hour}");
     }
     for every in [1, 3] {
-        for read in stepped(&pages, exact, every, FIRST, 1) {
+        for read in stepped(&pages, exact, every, FIRST, 1).into_iter().filter(|read| !read.pending) {
             assert_eq!(said(read.value.as_ref().as_ref().unwrap()), recorded(read.hour), "steps of {every} hours: hour {}", read.hour);
         }
     }

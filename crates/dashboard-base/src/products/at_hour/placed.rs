@@ -7,6 +7,7 @@ use playhead::{
 use replay_columnar::unit::{BLOCK, reader};
 use replay_data::Hour;
 use std::{
+    collections::HashSet,
     io,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -16,6 +17,14 @@ const HELD_SETS: usize = 4;
 pub struct Pool {
     pub(super) pages: Arc<WorldPages>,
     free: Mutex<Vec<Placed>>,
+    warming: Mutex<HashSet<(usize, usize)>>,
+    unplaceable: Mutex<HashSet<(usize, usize)>>,
+}
+
+pub(super) enum Warm<T> {
+    Read(io::Result<T>),
+    Warming,
+    Cold,
 }
 
 struct Placed {
@@ -38,7 +47,7 @@ impl Pool {
         if let Some(pool) = &held.0 {
             return Ok(Arc::clone(pool));
         }
-        let pool = Arc::new(Self { pages: WorldPages::shared(source.replay_ref().recording())?, free: Mutex::default() });
+        let pool = Arc::new(Self { pages: WorldPages::shared(source.replay_ref().recording())?, free: Mutex::default(), warming: Mutex::default(), unplaceable: Mutex::default() });
         held.0 = Some(Arc::clone(&pool));
         Ok(pool)
     }
@@ -54,13 +63,49 @@ impl Pool {
     }
 }
 
+impl Pool {
+    pub(super) fn warm<T>(self: &Arc<Self>, run: usize, table: usize, columns: &[usize], hour: Hour, read: impl FnOnce(&Lane) -> io::Result<T>) -> Warm<T> {
+        if self.unplaceable.lock().unwrap_or_else(PoisonError::into_inner).contains(&(run, table)) { return Warm::Cold; }
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        let near = |lane: &Lane| lane.table() == table && columns.iter().all(|column| lane.requested().contains(column))
+            && lane.head().is_some_and(|head| head <= hour && hour - head <= BLOCK as Hour);
+        if let Some(lane) = free.iter_mut().filter(|placed| placed.run == run).flat_map(|placed| placed.lanes.iter_mut()).filter(|lane| near(lane)).max_by_key(|lane| lane.head()) {
+            return Warm::Read(place(lane, hour).and_then(|()| read(lane)));
+        }
+        drop(free);
+        let mut warming = self.warming.lock().unwrap_or_else(PoisonError::into_inner);
+        if warming.insert((run, table)) {
+            let (pool, columns) = (Arc::clone(self), columns.to_vec());
+            let spawned = std::thread::Builder::new().name("product lane".into()).spawn(move || {
+                let mut taken = Taken { pool: Arc::clone(&pool), placed: Some(Placed { run, at: None, lanes: Vec::new() }) };
+                if taken.lane(table, &columns, hour).is_err() { pool.unplaceable.lock().unwrap_or_else(PoisonError::into_inner).insert((run, table)); }
+                drop(taken);
+                pool.warming.lock().unwrap_or_else(PoisonError::into_inner).remove(&(run, table));
+            });
+            if spawned.is_err() {
+                warming.remove(&(run, table));
+                return Warm::Cold;
+            }
+        }
+        Warm::Warming
+    }
+
+}
+
 impl Drop for Taken {
     fn drop(&mut self) {
         let Some(placed) = self.placed.take() else { return };
         let mut free = self.pool.free.lock().unwrap_or_else(PoisonError::into_inner);
-        if !free.iter().any(|held| held.run == placed.run && held.at == placed.at) {
-            free.push(placed);
-            if free.len() > HELD_SETS { free.remove(0); }
+        match free.iter_mut().find(|held| held.run == placed.run && held.at == placed.at) {
+            Some(held) => {
+                for lane in placed.lanes {
+                    if !held.lanes.iter().any(|kept| kept.table() == lane.table()) { held.lanes.push(lane); }
+                }
+            }
+            None => {
+                free.push(placed);
+                if free.len() > HELD_SETS { free.remove(0); }
+            }
         }
     }
 }
