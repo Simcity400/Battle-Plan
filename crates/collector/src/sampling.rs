@@ -3587,7 +3587,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                 handling = Some((step, handled));
                 match step {
                     EarlyStep::Presentation => {
-                        // SAFETY: readiness proved publication; no preparation wait here.
+                        // SAFETY: the batch owns the ready tickets and this callback holds the live-read
+                        // lease; each is a published result or a parked rejection, and neither waits.
                         unsafe { presentation.advance(shared, &mut batch) };
                     }
                     EarlyStep::Roots => {
@@ -4610,8 +4611,8 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     EarlyStep::Orders => {
                         let (orders, parts) = order_joins.take().expect("ready order producers");
                         stitch_pending = Some(out_of_line(|| {
-                            // SAFETY: the callback still owns the live boundary;
-                            // every part published before this slot-order merge.
+                            // SAFETY: the callback still owns the live boundary, and the batch owns
+                            // every part's ticket: each is published or a parked rejection.
                             let orders =
                                 unsafe { collect_orders(shared, &mut batch, orders, parts) };
                             queue!(acquisition::Job::OrdersStitch(orders))
@@ -6022,14 +6023,16 @@ impl PresentationPending {
             if !advance {
                 break;
             }
-            // SAFETY: publication is proved above; the same boundary is held.
+            // SAFETY: readiness is proved above, a published result or a parked rejection, and
+            // the same boundary is held.
             unsafe { self.advance(shared, batch) };
         }
     }
 
-    /// Collect only published producers, dispatching their consumer immediately.
+    /// Collect only ready producers, dispatching their consumer immediately.
     /// # Safety
-    /// As `wait_for`; `ready` must hold.
+    /// As `wait_for`; `ready` must hold, so each producer's ticket is a published result or a parked
+    /// rejection that the batch owns.
     #[inline(never)]
     unsafe fn advance(&mut self, shared: &Shared, batch: &mut acquisition::Batch<'_>) {
         assert!(self.ready(batch), "presentation producer published");
@@ -6079,7 +6082,8 @@ impl PresentationPending {
         batch: &mut acquisition::Batch<'_>,
         pending: PendingAcquisition,
     ) {
-        // SAFETY: this published preparation belongs to the callback's batch.
+        // SAFETY: this preparation's ticket belongs to the callback's batch and the lease is held;
+        // it is published, or parked after a rejection.
         let (mut request, report) = unsafe {
             collect_acquisition(
                 shared,

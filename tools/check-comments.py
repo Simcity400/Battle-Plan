@@ -290,6 +290,9 @@ def unsafe_operation(node):
     return node.type == "call_expression" or any(unsafe_operation(child) for child in node.children)
 
 
+DEREFERENCE_AFTER = {b"=", b"(", b",", b";", b"{", b"&", b"!", b"*", b"=>", b"return", b"mut"}
+
+
 def unsafe_tokens(node):
     """Whether macro tokens at `node` sit in an `unsafe { ... }` token tree."""
     tree = node.parent
@@ -305,7 +308,9 @@ def token_operation(node):
     right after a name, up to the `;` or `,` that ends it."""
     unit = node
     while unit is not None and unit.type not in (";", ","):
-        if unit.text == b"*":
+        previous = unit.prev_sibling
+        statement_start = previous is None or previous.type in ("line_comment", "block_comment")
+        if unit.text == b"*" and (statement_start or previous.text in DEREFERENCE_AFTER):
             return True
         if unit.type == "token_tree" and unit.text.startswith(b"(") and unit.prev_sibling is not None                 and unit.prev_sibling.type in ("identifier", "metavariable", ">"):
             return True

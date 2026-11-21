@@ -298,6 +298,12 @@ macro_rules! writer {
         unsafe {
             // SAFETY: refused, copying a parameter is safe even inside an unsafe block.
             let site = $site;
+            // SAFETY: refused, a pointer cast is neither a dereference nor a call.
+            let address = $site as *const () as usize;
+            // SAFETY: refused, a multiplication is not a dereference.
+            let scaled = $site * 2;
+            // SAFETY: kept, the slot points at a live word.
+            *$args = 0;
             // SAFETY: kept, the site's detour runs on the native thread with that call's arguments.
             invoke(site, $args)
         }
@@ -346,6 +352,8 @@ fn total(cells: &[*const u32]) -> std::io::Result<u32> {
             b"// SAFETY: refused, the empty vector is safe; the unsafe call is the next argument.",
             b"// SAFETY: refused, reading a local is safe even inside an unsafe block.",
             b"// SAFETY: refused, copying a parameter is safe even inside an unsafe block.",
+            b"// SAFETY: refused, a pointer cast is neither a dereference nor a call.",
+            b"// SAFETY: refused, a multiplication is not a dereference.",
             b"// SAFETY: refused, a comparison is safe; the unsafe read is the next field.",
         ])
 
