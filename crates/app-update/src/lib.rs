@@ -14,7 +14,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 
-const RELEASES: Option<&str> = option_env!("battle-plan_RELEASES");
+const RELEASES: Option<&str> = option_env!("BATTLE_PLAN_RELEASES");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const STATE_EVENT: &str = "app-update-state";
 const FIRST_CHECK: Duration = Duration::from_secs(15);

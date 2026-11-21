@@ -1,0 +1,141 @@
+name: Release candidate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/release-candidate.yml
+      - tools/release.py
+      - tools/release_smoke.py
+      - tools/desktop.mjs
+      - tools/shipped.json
+  workflow_call:
+    inputs:
+      channel:
+        description: stable or preview; nightly candidates are built for each commit of main
+        type: string
+        required: true
+      commit:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+    secrets:
+      LEAK_GATE_TERMS:
+        required: true
+
+concurrency:
+  group: candidate-${{ inputs.channel || 'nightly' }}-${{ inputs.commit || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64 installer
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 240
+    env:
+      CHANNEL: ${{ inputs.channel || 'nightly' }}
+      PROFILE: ${{ inputs.channel == 'stable' && 'release-lto' || 'release' }}
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install the Rust toolchain
+        run: rustup toolchain install
+
+      - name: Reuse the build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> .cargo-target"
+          shared-key: candidate-${{ env.PROFILE }}
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Name the version
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ -n "$VERSION" ]]; then
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          else
+            python tools/release.py version --channel "$CHANNEL" --sha HEAD --github-output
+          fi
+
+      - name: Stamp the version into both apps
+        run: python tools/release.py stamp "${{ steps.version.outputs.version }}"
+
+      - name: Install UI dependencies
+        run: npm ci
+
+      - name: Build the installer
+        shell: pwsh
+        env:
+          FEED: ${{ (inputs.channel || 'nightly') != 'preview' && format('https://github.com/{0}/releases', github.repository) || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:FEED) { $env:BATTLE_PLAN_RELEASES = $env:FEED }
+          $userHome = $env:USERPROFILE
+          $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $userHome '.cargo' }
+          $rustupHome = if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { Join-Path $userHome '.rustup' }
+          $maps = @(
+            "$userHome=/home", "$cargoHome=/cargo", "$rustupHome=/rustup",
+            "$env:GITHUB_WORKSPACE=/battle-plan", "$(Join-Path $env:GITHUB_WORKSPACE '.cargo-target')=/target")
+          $flags = @($maps | ForEach-Object { "--remap-path-prefix=$_" }) + '-Clink-arg=/PDBALTPATH:%_PDB%'
+          $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]0x1F
+          npm run build:desktop -- -- --profile $env:PROFILE
+          if ($LASTEXITCODE -ne 0) { throw "The installer build failed (exit $LASTEXITCODE)." }
+
+      - name: Collect the candidate
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          shopt -s nullglob
+          built=(".cargo-target/$PROFILE/bundle/nsis/"*"_${VERSION}_x64-setup.exe")
+          if [[ ${#built[@]} -ne 1 ]]; then
+            echo "::error::Expected one installer for $VERSION, found ${#built[@]}."
+            exit 1
+          fi
+          rm -rf dist && mkdir dist
+          cp "${built[0]}" "dist/battle-plan-${VERSION}-x64-setup.exe"
+          python tools/release.py candidate --installer "dist/battle-plan-${VERSION}-x64-setup.exe" --channel "$CHANNEL" \
+            --version "$VERSION" --commit "$(git rev-parse HEAD)" --output dist/candidate.json
+
+      - name: Check for leaks
+        env:
+          LEAK_GATE_TERMS: ${{ secrets.LEAK_GATE_TERMS }}
+        run: python tools/leak-gate.py dist ui/dist
+
+      - name: Smoke the installed layout
+        run: python tools/release_smoke.py --installer dist/battle-plan-*-x64-setup.exe --out "$RUNNER_TEMP/release-smoke" --layout-only
+
+      - name: Keep the candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-${{ env.CHANNEL }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: ${{ env.CHANNEL == 'nightly' && 30 || 7 }}
