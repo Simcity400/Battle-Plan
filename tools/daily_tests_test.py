@@ -18,9 +18,10 @@ CI_DIR = os.path.abspath("runner")
 
 
 def setUpModule():
-    patch = mock.patch.dict(os.environ, {"BATTLE_PLAN_CI": CI_DIR})
+    patch = mock.patch.dict(os.environ, {"BATTLE_PLAN_CI": CI_DIR, "BATTLE_PLAN_CAPTURES": "", "HOI4_CAPTURES": ""})
     patch.start()
     unittest.addModuleCleanup(patch.stop)
+    dt.configure(CI_DIR)
 
 
 class FakeGitHub:
@@ -68,6 +69,63 @@ class GameDir(unittest.TestCase):
                 dt.parse([command])
 
 
+class Install(unittest.TestCase):
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.root, self.ci, game = root, root / "runner folder", root / "game"
+        game.mkdir()
+        (game / "hoi4.exe").touch()
+        self.owner, self.commands, self.task = None, [], None
+        self.addCleanup(dt.configure, CI_DIR)
+        self.enterContext(mock.patch.dict(os.environ, {"USERDOMAIN": "domain", "USERNAME": "user"}))
+        self.enterContext(mock.patch.object(dt.subprocess, "run", side_effect=self.command))
+        self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+        self.enterContext(mock.patch.object(sys, "argv", [
+            "daily_tests.py", "install", "--ci-dir", str(self.ci), "--game-dir", str(game),
+        ]))
+
+    def command(self, command, **kwargs):
+        self.commands.append(command)
+        stdout = ""
+        if command[0] == "schtasks":
+            self.task = Path(command[command.index("/XML") + 1]).read_text(encoding="utf-16")
+        elif command[3:5] == ["worktree", "add"]:
+            self.runner_script(Path(command[6]))
+        elif command[3:] == ["rev-parse", "--show-toplevel"]:
+            stdout = self.owner
+        elif command[3:] == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
+            stdout = str(self.root / "clone" / ".git")
+        return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+    def runner_script(self, worktree):
+        (worktree / "tools").mkdir(parents=True)
+        (worktree / "tools" / "daily_tests.py").touch()
+
+    def test_the_task_runs_the_runner_in_its_folder_with_its_folder(self):
+        self.assertEqual(dt.main(), 0)
+        worktree = self.ci / "main"
+        self.assertIn(["git", "-C", str(dt.ROOT), "worktree", "add", "--detach", str(worktree), "origin/main"], self.commands)
+        self.assertIn(f"<WorkingDirectory>{worktree}</WorkingDirectory>", self.task)
+        self.assertIn(f'run --ci-dir "{self.ci}"', self.task)
+        self.assertEqual((dt.E2E_APP, dt.REPORTS), (self.ci / "e2e-app", self.ci / "captures" / "ci"))
+
+    def test_an_existing_runner_of_this_clone_moves_to_main_before_the_task_is_registered(self):
+        worktree = self.ci / "main"
+        self.runner_script(worktree)
+        self.owner = str(worktree)
+        self.assertEqual(dt.main(), 0)
+        checkout = ["git", "-C", str(worktree), "checkout", "--quiet", "--detach", "--force", "origin/main"]
+        self.assertLess(self.commands.index(checkout), [command[0] for command in self.commands].index("schtasks"))
+
+    def test_a_runner_folder_that_is_not_its_own_worktree_is_refused(self):
+        self.runner_script(self.ci / "main")
+        self.owner = str(self.root)
+        with self.assertRaises(SystemExit):
+            dt.main()
+        self.assertFalse(any("checkout" in command for command in self.commands))
+        self.assertIsNone(self.task)
+
+
 class Continuation(unittest.TestCase):
     def setUp(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -97,6 +155,8 @@ class Continuation(unittest.TestCase):
         self.args = dt.parse(["run", "--game-dir", str(self.worktree / "game")])
 
     def git_command(self, *args):
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(self.worktree)
         return "synthetic commit" if args[0] == "log" else self.commit
 
     def complete(self, command, log, environment, seconds):
@@ -138,6 +198,7 @@ class Continuation(unittest.TestCase):
         self.assertIsNone(environment)
         self.assertEqual(log.name, "runner.log")
         self.assertEqual(self.git.call_args_list, [
+            mock.call("rev-parse", "--show-toplevel"),
             mock.call("fetch", "--quiet", "origin", "main"),
             mock.call("checkout", "--quiet", "--detach", "--force", "origin/main"),
             mock.call("rev-parse", "HEAD"),
@@ -180,6 +241,15 @@ class Continuation(unittest.TestCase):
             mock.call(self.commit, f"{dt.STATUS}/checks", "error", "unfinished"),
             mock.call(self.commit, f"{dt.STATUS}/rust", "error", "unfinished"),
         ])
+
+    def test_a_runner_folder_git_places_in_another_checkout_is_refused_before_fetching(self):
+        enclosing = str(self.worktree.parent)
+        self.git.side_effect = lambda *args: (
+            enclosing if args == ("rev-parse", "--show-toplevel") else self.git_command(*args)
+        )
+        self.assertNotEqual(dt.run(self.args), 0)
+        self.assertEqual(self.git.call_args_list, [mock.call("rev-parse", "--show-toplevel")])
+        self.step.assert_not_called()
 
     def test_running_is_written_before_fetch_and_replaced_by_the_final_report(self):
         latest = self.reports / "latest.md"
