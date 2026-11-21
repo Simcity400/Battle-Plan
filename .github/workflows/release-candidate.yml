@@ -10,6 +10,24 @@ on:
       - tools/release_smoke.py
       - tools/desktop.mjs
       - tools/shipped.json
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: The candidate's channel
+        type: choice
+        default: nightly
+        options:
+          - nightly
+          - stable
+          - preview
+      commit:
+        description: The commit to build; by default the branch's head
+        type: string
+        default: ""
+      version:
+        description: Stable only, for a larger step than the next patch
+        type: string
+        default: ""
   workflow_call:
     inputs:
       channel:
@@ -20,14 +38,15 @@ on:
         type: string
         required: true
       version:
+        description: Stable only, the version the release resolved
         type: string
-        required: true
+        default: ""
     secrets:
       LEAK_GATE_TERMS:
         required: true
 
 concurrency:
-  group: candidate-${{ inputs.channel || 'nightly' }}-${{ inputs.commit || github.ref }}
+  group: candidate-${{ github.event_name == 'pull_request' && github.ref || format('{0}-{1}', inputs.channel || 'nightly', inputs.commit || github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -79,11 +98,11 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          if [[ -n "$VERSION" ]]; then
-            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          else
-            python tools/release.py version --channel "$CHANNEL" --sha HEAD --github-output
+          if [[ -n "$VERSION" && "$CHANNEL" != stable ]]; then
+            echo "::error::Only a stable candidate takes a version; the others take their commit's."
+            exit 1
           fi
+          python tools/release.py version --channel "$CHANNEL" --sha HEAD ${VERSION:+--version "$VERSION"} --github-output
 
       - name: Stamp the version into both apps
         run: python tools/release.py stamp "${{ steps.version.outputs.version }}"
@@ -110,6 +129,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "The installer build failed (exit $LASTEXITCODE)." }
 
       - name: Collect the candidate
+        id: collect
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -123,6 +143,9 @@ jobs:
           cp "${built[0]}" "dist/battle-plan-${VERSION}-x64-setup.exe"
           python tools/release.py candidate --installer "dist/battle-plan-${VERSION}-x64-setup.exe" --channel "$CHANNEL" \
             --version "$VERSION" --commit "$(git rev-parse HEAD)" --output dist/candidate.json
+          name="candidate-${CHANNEL}-$(git rev-parse HEAD)"
+          if [[ "$CHANNEL" == stable ]]; then name="${name}-${VERSION}"; fi
+          echo "artifact=$name" >> "$GITHUB_OUTPUT"
 
       - name: Check for leaks
         env:
@@ -135,7 +158,7 @@ jobs:
       - name: Keep the candidate
         uses: actions/upload-artifact@v7
         with:
-          name: candidate-${{ env.CHANNEL }}
+          name: ${{ steps.collect.outputs.artifact }}
           path: dist/
           if-no-files-found: error
           retention-days: ${{ env.CHANNEL == 'nightly' && 30 || 7 }}

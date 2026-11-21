@@ -7,7 +7,7 @@ release candidate per commit (.github/workflows/release-candidate.yml). The rele
   version   --channel stable|nightly|preview [--sha SHA] [--version V] [--github-output]
   stamp     VERSION
   candidate --installer FILE --channel C --version V --commit SHA --output FILE
-  resolve   --channel C [--sha SHA] [--version V] [--scheduled] [--github-output]
+  resolve   --channel C [--sha SHA] [--version V] [--scheduled] [--draft] [--prepare] [--github-output]
   publish   --channel C --candidate DIR [--draft] [--public-key FILE]
   finalize  --version V
   verify    --installer FILE --signature FILE --version V [--public-key FILE]
@@ -22,7 +22,8 @@ a pull request. The version is compiled in, so a candidate belongs to one channe
 `resolve` decides whether a release is due and from what. A nightly is due when main has changed
 since the nightly feed's commit and main's CI is green on it, unless PAUSE_NIGHTLY is true. A stable
 takes the commit the nightly feed offers unless `--sha` names one. A preview, a draft with no feed,
-takes main's head or `--sha`. `publish --draft` is the dry run: everything goes to a new draft
+takes main's head or `--sha`. `resolve --prepare` builds a stable candidate ahead, so its release
+only promotes. `publish --draft` is the dry run: everything goes to a new draft
 release, its own latest.json included, and the channel's feed is left alone. `--public-key` stands
 in for the apps' key in a draft only.
 
@@ -70,6 +71,7 @@ INSTALLER = "battle-plan-{version}-x64-setup.exe"
 CANDIDATE_WORKFLOW = "release-candidate.yml"
 SIGNED = re.compile(r"Signed installer SHA-256: ([0-9a-f]{64})\.")
 SETTLED = ("success", "skipped", "neutral")
+RELEASE_VERSION = re.compile(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?")
 
 
 class Refused(Exception):
@@ -542,68 +544,100 @@ def candidate(args):
     return 0
 
 
+def artifact_name(channel, commit, version=None):
+    """The name of a candidate's artifact: its channel and commit, and, for stable, its version."""
+    return f"candidate-{channel}-{commit}" + (f"-{version}" if channel == "stable" else "")
+
+
+def find_candidate(repo, name):
+    """The id of the successful run that keeps the artifact `name`, or None and why there is none."""
+    found = json.loads(run(["gh", "api", f"repos/{repo}/actions/artifacts?name={name}&per_page=20"]).stdout)["artifacts"]
+    if not found:
+        return None, f"no candidate {name} was built"
+    live = [artifact for artifact in found if not artifact["expired"]]
+    if not live:
+        return None, f"its candidate {name} has expired; run the Release candidate workflow for the commit again"
+    built = max(live, key=lambda artifact: artifact["created_at"])["workflow_run"]["id"]
+    state = json.loads(run(["gh", "api", f"repos/{repo}/actions/runs/{built}"]).stdout)
+    if state["status"] != "completed":
+        return None, f"the run that builds {name} is still going"
+    if state["conclusion"] != "success":
+        return None, f"the run that built {name} ended {state['conclusion']}"
+    return built, None
+
+
 def ci_state(repo, commit):
-    """Main's CI on `commit`: the id of the successful run that built its candidate, once every
-    check on the commit has settled green; else None and why not."""
-    runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/workflows/{CANDIDATE_WORKFLOW}/runs"
-                           f"?head_sha={commit}&event=push&per_page=20"]).stdout)["workflow_runs"]
-    if not runs:
-        return None, "no release candidate was built for it"
-    latest = max(runs, key=lambda found: (found["run_number"], found["run_attempt"]))
-    if latest["status"] != "completed":
-        return None, "its release candidate is still building"
-    if latest["conclusion"] != "success":
-        return None, f"its release candidate run ended {latest['conclusion']}"
-    checks = run(["gh", "api", "--paginate", f"repos/{repo}/commits/{commit}/check-runs?per_page=100",
-                  "--jq", ".check_runs[] | [.name, .status, (.conclusion // \"\")] | @tsv"]).stdout.splitlines()
-    for line in checks:
-        name, status, conclusion = (line.split("\t") + ["", ""])[:3]
-        if status != "completed":
-            return None, f"its check {name} is still running"
-        if conclusion not in SETTLED:
-            return None, f"its check {name} ended {conclusion}"
-    return latest["id"], None
+    """Why main's CI is not green on `commit`, or None once every workflow its push started has
+    settled green. Scheduled and dispatched runs, this release's own among them, are not main's CI."""
+    runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/runs?head_sha={commit}&event=push&per_page=100"]).stdout)["workflow_runs"]
+    latest = {}
+    for found in runs:
+        known = latest.get(found["workflow_id"])
+        if known is None or (found["run_number"], found["run_attempt"]) > (known["run_number"], known["run_attempt"]):
+            latest[found["workflow_id"]] = found
+    for found in latest.values():
+        if found["status"] != "completed":
+            return f"its {found['name']} run is still going"
+        if found["conclusion"] not in SETTLED:
+            return f"its {found['name']} run ended {found['conclusion']}"
+    return None
 
 
 def resolve(args):
-    """Whether a release of the channel is due, from which commit, and where its candidate is."""
+    """Whether a release of the channel is due, from which commit, and which artifact holds its
+    candidate. A stable candidate can be prepared ahead (`--prepare`), so its release only promotes."""
     repo = repository()
     git("fetch", "--quiet", "origin", "main")
-    found = {"due": "false", "channel": args.channel, "commit": "", "version": "", "candidate_run": "", "build": "false"}
+    found = {"due": "false", "commit": "", "version": "", "artifact": "", "candidate_run": "", "build": "false",
+             "publish": "false"}
+
+    def not_yet(why):
+        if not args.scheduled:
+            raise Refused(why)
+        say(f"No release yet: {why}.")
+        outputs(found, args.github_output)
+        return 0
+
     if args.channel == "nightly":
         if args.scheduled and os.environ.get("PAUSE_NIGHTLY", "").strip().lower() in ("1", "true", "yes"):
             say("Nightlies are paused (PAUSE_NIGHTLY).")
             return outputs(found, args.github_output) or 0
         commit = on_main(args.sha or "origin/main", "nightly")
         feed = read_feed(repo, "nightly")
-        if feed and run(["git", "merge-base", "--is-ancestor", commit, feed["commit"]], check=False).returncode == 0:
+        if not args.draft and feed and run(["git", "merge-base", "--is-ancestor", commit, feed["commit"]], check=False).returncode == 0:
             say(f"Main has not changed since the nightly of {feed['commit'][:12]}.")
             return outputs(found, args.github_output) or 0
-        candidate_run, why = ci_state(repo, commit)
-        if candidate_run is None:
-            if args.scheduled:
-                say(f"No nightly of {commit[:12]} yet: {why}.")
-                return outputs(found, args.github_output) or 0
-            raise Refused(f"{commit[:12]} has no green release candidate: {why}.")
-        found.update(due="true", commit=commit, candidate_run=str(candidate_run))
+        if why := ci_state(repo, commit):
+            return not_yet(f"{commit[:12]}'s CI is not green: {why}")
+        name = artifact_name("nightly", commit)
+        built, why = find_candidate(repo, name)
+        if built is None:
+            return not_yet(f"{commit[:12]} has no candidate: {why}")
+        found.update(due="true", commit=commit, artifact=name, candidate_run=str(built), publish="true")
     elif args.channel == "stable":
         if not args.sha:
             feed = read_feed(repo, "nightly")
             if not feed:
                 raise Refused("No nightly feed is published, so name the stable release's commit.")
         commit = on_main(args.sha or feed["commit"], "stable")
-        candidate_run, why = ci_state(repo, commit)
-        if candidate_run is None:
-            raise Refused(f"{commit[:12]} has not passed main's CI: {why}.")
+        if why := ci_state(repo, commit):
+            raise Refused(f"{commit[:12]}'s CI is not green: {why}.")
         resolved = commit_version("stable", commit, args.version or None)
         newest = newest_release(repo, "stable")
         if not (newest == resolved and released(repo, f"v{resolved}")):
             refuse_older(resolved, newest, "the newest stable release")
-        found.update(due="true", commit=commit, version=resolved, build="true")
+        name = artifact_name("stable", commit, resolved)
+        built, _ = find_candidate(repo, name)
+        if built and args.prepare:
+            say(f"The stable candidate {resolved} of {commit[:12]} is already prepared.")
+            return outputs(found, args.github_output) or 0
+        found.update(due="true", commit=commit, version=resolved, artifact=name, candidate_run=str(built or ""),
+                     build="false" if built else "true", publish="false" if args.prepare else "true")
     else:
         commit = on_main(args.sha or "origin/main", "preview")
-        found.update(due="true", commit=commit, version=commit_version("preview", commit), build="true")
-    say(f"A {args.channel} release of {commit[:12]} is due.")
+        found.update(due="true", commit=commit, version=commit_version("preview", commit),
+                     artifact=artifact_name("preview", commit), build="true", publish="true")
+    say(f"A {args.channel} {'candidate' if args.prepare else 'release'} of {commit[:12]} is due.")
     outputs(found, args.github_output)
     return 0
 
@@ -639,20 +673,22 @@ def preflight(draft, public_key):
 
 
 def release_order(repo, channel, version, commit, tag, draft):
-    """The channel's feed, and the release of `tag` when this version is already published from
-    this commit. It refuses a version not newer than the feed's or the channel's newest release
-    (that release itself excepted, when it is being taken up again), a commit not after the feed's,
-    and a tag on another commit."""
+    """The channel's feed, the release of `tag` when this version is already published from this
+    commit, and whether its feed already offers it. It refuses a version not newer than the feed's
+    or the channel's newest release (that release itself excepted, when it is being taken up
+    again), a commit not after the feed's, and a tag on another commit."""
     on_main(commit, channel)
     feed = read_feed(repo, channel) if channel in PUBLISHED else None
     previous = feed["commit"] if feed else ""
     if previous == commit and not draft:
-        raise Refused(f"The {channel} feed already offers {commit[:12]}.")
+        if feed["version"] == version:
+            return feed, release_by_tag(repo, tag), True
+        raise Refused(f"The {channel} feed already offers {commit[:12]}, as {feed['version']}.")
     if previous and run(["git", "merge-base", "--is-ancestor", previous, commit], check=False).returncode != 0:
         raise Refused(f"The {channel} feed was built from {previous}, which {commit[:12]} does not contain.")
     refuse_older(version, feed and feed["version"], f"which the {channel} feed offers")
     if draft:
-        return feed, None
+        return feed, None, False
     tagged = tag_commit(repo, tag)
     if tagged and tagged != commit:
         raise Refused(f"The tag {tag} already names {tagged[:12]}, not {commit[:12]}.")
@@ -662,7 +698,7 @@ def release_order(repo, channel, version, commit, tag, draft):
         refuse_older(version, newest, f"the newest {channel} release")
     if existing:
         say(f"{tag} is already published from {commit[:12]}; its feed is what remains.")
-    return feed, existing
+    return feed, existing, False
 
 
 def taken_up(repo, tag, existing, chosen, dist, authenticode):
@@ -711,7 +747,10 @@ def publish(args):
             raise Refused(f"The candidate is for {chosen['channel']}, not {channel}.")
         if chosen["feed"] != feed_url(channel, repo):
             raise Refused(f"The candidate's apps read the feed at {chosen['feed']}, not {feed_url(channel, repo)}.")
-        shipped = dist / chosen["installer"]["name"]
+        if not RELEASE_VERSION.fullmatch(version) or chosen["installer"]["name"] != INSTALLER.format(version=version):
+            raise Refused(f"The candidate's installer is named {chosen['installer']['name']!r}, not "
+                          f"{INSTALLER.format(version=version)!r} for its version {version!r}.")
+        shipped = dist / INSTALLER.format(version=version)
         shutil.copy2(folder / shipped.name, shipped)
         if sha256(shipped) != chosen["installer"]["sha256"]:
             raise Refused(f"{shipped.name} is not the installer main's CI built and checked.")
@@ -721,7 +760,12 @@ def publish(args):
     stamp_now = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d-%H%M%S")
     tag = f"dry-run-{version}-{stamp_now}" if args.draft else f"v{version}"
     with clock.step("Release order"):
-        feed, existing = release_order(repo, channel, version, commit, tag, draft)
+        feed, existing, offered = release_order(repo, channel, version, commit, tag, draft)
+    if offered:
+        with clock.step("Feed check"):
+            feed_check(repo, channel, version)
+        say(f"The {channel} feed already offers {version}, published from {commit[:12]}.")
+        return 0
     if existing:
         with clock.step("Published installer"):
             shipped, signature = taken_up(repo, tag, existing, chosen, dist, authenticode)
@@ -780,10 +824,7 @@ def publish(args):
             page = verify_published(repo, feed_release, args.draft, [work / "latest.json"])
         if not args.draft:
             with clock.step("Feed check"):
-                offered, newest = read_feed(repo, channel), newest_release(repo, channel)
-                if not offered or offered["version"] != version or newest != version:
-                    raise Refused(f"The {channel} feed offers {offered and offered['version']}, and its newest release is "
-                                  f"{newest}, not both {version}.")
+                feed_check(repo, channel, version)
     shutil.rmtree(work, ignore_errors=True)
     lines = [f"{step}: {seconds} s" for step, seconds in clock.steps]
     lines.append(f"{'Drafted' if draft else 'Published'} {version} in {clock.total()} s: {page}")
@@ -794,28 +835,41 @@ def publish(args):
     return 0
 
 
+def feed_check(repo, channel, version):
+    offered, newest = read_feed(repo, channel), newest_release(repo, channel)
+    if not offered or offered["version"] != version or newest != version:
+        raise Refused(f"The {channel} feed offers {offered and offered['version']}, and its newest release is "
+                      f"{newest}, not both {version}.")
+
+
 def finalize(args):
     """After a stable release, main's workspace version becomes it, through a pull request merged at
-    once, because main takes changes only through pull requests."""
+    once, because main takes changes only through pull requests. A merge made with the workflow's
+    token starts no workflow, so it then asks main's CI for the commit's candidate."""
     repo = repository()
     git("fetch", "--quiet", "origin", "main")
-    if workspace_version(git("show", "origin/main:Cargo.toml")) == args.version:
-        say(f"Main's workspace version is already {args.version}.")
+    current = workspace_version(git("show", "origin/main:Cargo.toml"))
+    if precedence(current) >= precedence(args.version):
+        say(f"Main's workspace version is {current}, which {args.version} does not follow.")
         return 0
     branch = f"release/v{args.version}-workspace-version"
-    git("switch", "--quiet", "--force-create", branch, "origin/main")
-    stamp(ROOT, args.version)
-    git("-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
-        "commit", "--quiet", "--all", "--message", f"Release: v{args.version} is the workspace version")
-    git("push", "--quiet", "--force", "origin", f"HEAD:refs/heads/{branch}")
-    pull = run(["gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch,
-                "--title", f"Release: v{args.version} is the workspace version",
-                "--body", f"v{args.version} is released, so the nightlies now preview the version after it."]).stdout.strip()
+    pull = run(["gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url",
+                "--jq", ".[0].url // empty"]).stdout.strip()
+    if not pull:
+        git("switch", "--quiet", "--force-create", branch, "origin/main")
+        stamp(ROOT, args.version)
+        git("-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+            "commit", "--quiet", "--all", "--message", f"Release: v{args.version} is the workspace version")
+        git("push", "--quiet", "--force", "origin", f"HEAD:refs/heads/{branch}")
+        pull = run(["gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch,
+                    "--title", f"Release: v{args.version} is the workspace version",
+                    "--body", f"v{args.version} is released, so the nightlies now preview the version after it."]).stdout.strip()
     merged = run(["gh", "pr", "merge", pull, "--repo", repo, "--merge", "--delete-branch"], check=False)
     if merged.returncode != 0:
         say(f"::warning::{pull} could not be merged ({merged.stderr.strip()}); merge it to finish v{args.version}.")
         return 1
-    say(f"Main's workspace version is now {args.version}: {pull}.")
+    run(["gh", "workflow", "run", CANDIDATE_WORKFLOW, "--repo", repo, "--ref", "main"])
+    say(f"Main's workspace version is now {args.version}: {pull}. Its candidate is building.")
     return 0
 
 
@@ -855,6 +909,8 @@ def main():
     command.add_argument("--sha", default="")
     command.add_argument("--version", default="")
     command.add_argument("--scheduled", action="store_true")
+    command.add_argument("--draft", action="store_true")
+    command.add_argument("--prepare", action="store_true")
     command.add_argument("--github-output", action="store_true")
     command.set_defaults(handler=resolve)
     command = commands.add_parser("publish")

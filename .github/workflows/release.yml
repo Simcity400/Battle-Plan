@@ -25,6 +25,10 @@ on:
         description: Dry run; publish to a new draft release and leave the channel's feed alone
         type: boolean
         default: false
+      prepare:
+        description: Stable only; build the candidate now, so the release later only promotes it
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ inputs.channel || 'nightly' }}
@@ -46,8 +50,10 @@ jobs:
       due: ${{ steps.resolve.outputs.due }}
       commit: ${{ steps.resolve.outputs.commit }}
       version: ${{ steps.resolve.outputs.version }}
+      artifact: ${{ steps.resolve.outputs.artifact }}
       candidate_run: ${{ steps.resolve.outputs.candidate_run }}
       build: ${{ steps.resolve.outputs.build }}
+      publish: ${{ steps.resolve.outputs.publish }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -68,8 +74,11 @@ jobs:
           CHANNEL: ${{ inputs.channel || 'nightly' }}
           SHA: ${{ inputs.sha }}
           VERSION: ${{ inputs.version }}
-          SCHEDULED: ${{ github.event_name == 'schedule' && '--scheduled' || '' }}
-        run: python tools/release.py resolve --channel "$CHANNEL" --sha "$SHA" --version "$VERSION" $SCHEDULED --github-output
+          FLAGS: >-
+            ${{ github.event_name == 'schedule' && '--scheduled' || '' }}
+            ${{ inputs.draft && '--draft' || '' }}
+            ${{ inputs.prepare && '--prepare' || '' }}
+        run: python tools/release.py resolve --channel "$CHANNEL" --sha "$SHA" --version "$VERSION" $FLAGS --github-output
 
   build:
     name: Build
@@ -79,14 +88,14 @@ jobs:
     with:
       channel: ${{ inputs.channel }}
       commit: ${{ needs.resolve.outputs.commit }}
-      version: ${{ needs.resolve.outputs.version }}
+      version: ${{ inputs.channel == 'stable' && needs.resolve.outputs.version || '' }}
     secrets:
       LEAK_GATE_TERMS: ${{ secrets.LEAK_GATE_TERMS }}
 
   publish:
     name: Publish
     needs: [resolve, build]
-    if: always() && needs.resolve.outputs.due == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    if: always() && needs.resolve.outputs.publish == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: windows-latest
     timeout-minutes: 30
     environment: ${{ inputs.channel == 'stable' && 'release-stable' || 'release' }}
@@ -121,7 +130,7 @@ jobs:
       - name: Take the candidate
         uses: actions/download-artifact@v8
         with:
-          name: candidate-${{ inputs.channel || 'nightly' }}
+          name: ${{ needs.resolve.outputs.artifact }}
           path: candidate
           run-id: ${{ needs.resolve.outputs.candidate_run || github.run_id }}
           github-token: ${{ github.token }}
@@ -151,6 +160,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7

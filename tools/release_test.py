@@ -118,11 +118,18 @@ class ReleaseOrder(unittest.TestCase):
 
     def test_a_release_whose_feed_failed_is_taken_up_unless_a_newer_one_is_out(self):
         published = {"tag_name": "v1.4.3"}
-        self.assertEqual(self.order("b" * 40, published, newest="1.4.3"), (None, published))
+        self.assertEqual(self.order("b" * 40, published, newest="1.4.3"), (None, published, False))
         with self.assertRaisesRegex(release.Refused, "1.4.3 is not newer than 1.4.4"):
             self.order("b" * 40, published, newest="1.4.4")
         with self.assertRaisesRegex(release.Refused, "1.4.3 is not newer than 1.4.3"):
             self.order(None, None, newest="1.4.3")
+
+    def test_a_feed_that_already_offers_this_release_is_done_and_another_version_of_it_refused(self):
+        published = {"tag_name": "v1.4.3"}
+        offered = {"commit": "b" * 40, "version": "1.4.3"}
+        self.assertEqual(self.order("b" * 40, published, feed=offered), (offered, published, True))
+        with self.assertRaisesRegex(release.Refused, "already offers bbbbbbbbbbbb, as 1.4.2"):
+            self.order("b" * 40, published, feed={"commit": "b" * 40, "version": "1.4.2"})
 
     def test_a_tag_on_another_commit_is_refused(self):
         with self.assertRaisesRegex(release.Refused, "already names aaaaaaaaaaaa"):
@@ -155,51 +162,86 @@ def answers(*replies):
 
 class MainCi(unittest.TestCase):
     def runs(self, *found):
-        return json.dumps({"workflow_runs": [dict(zip(("id", "run_number", "run_attempt", "status", "conclusion"), run))
-                                             for run in found]})
+        keys = ("workflow_id", "name", "run_number", "run_attempt", "status", "conclusion")
+        return json.dumps({"workflow_runs": [dict(zip(keys, run)) for run in found]})
 
-    def test_a_commit_is_green_once_its_candidate_built_and_every_check_settled_green(self):
-        built = self.runs((7, 3, 1, "completed", "failure"), (9, 4, 2, "completed", "success"))
-        settled = "Windows x64 installer\tcompleted\tsuccess\ncomments\tcompleted\tskipped"
-        with mock.patch.object(release, "run", answers(built, settled)):
-            self.assertEqual(release.ci_state("owner/repo", "b" * 40), (9, None))
+    def test_main_is_green_once_the_latest_run_of_each_workflow_its_push_started_settled_green(self):
+        settled = self.runs((1, "Release candidate", 3, 1, "completed", "failure"),
+                            (1, "Release candidate", 3, 2, "completed", "success"),
+                            (2, "Comments", 8, 1, "completed", "skipped"))
+        with mock.patch.object(release, "run", answers(settled)):
+            self.assertIsNone(release.ci_state("owner/repo", "b" * 40))
+        with mock.patch.object(release, "run", answers(self.runs())):
+            self.assertIsNone(release.ci_state("owner/repo", "b" * 40))
+        with mock.patch.object(release, "run", answers(self.runs((2, "Comments", 8, 1, "in_progress", None)))):
+            self.assertIn("Comments run is still going", release.ci_state("owner/repo", "b" * 40))
+        with mock.patch.object(release, "run", answers(self.runs((1, "Release candidate", 4, 1, "completed", "failure")))):
+            self.assertIn("Release candidate run ended failure", release.ci_state("owner/repo", "b" * 40))
 
-    def test_a_commit_is_not_green_while_anything_is_missing_running_or_red(self):
+    def test_a_candidate_is_the_kept_artifact_of_a_successful_run(self):
+        def artifacts(*found):
+            return json.dumps({"artifacts": [{"expired": expired, "created_at": created, "workflow_run": {"id": run}}
+                                             for expired, created, run in found]})
+
+        done = json.dumps({"status": "completed", "conclusion": "success"})
         cases = [
-            ((self.runs(),), "no release candidate was built"),
-            ((self.runs((9, 4, 1, "in_progress", None)),), "still building"),
-            ((self.runs((9, 4, 1, "completed", "failure")),), "ended failure"),
-            ((self.runs((9, 4, 1, "completed", "success")), "lint\tin_progress\t"), "check lint is still running"),
-            ((self.runs((9, 4, 1, "completed", "success")), "lint\tcompleted\tfailure"), "check lint ended failure"),
+            ((artifacts(),), (None, "no candidate")),
+            ((artifacts((True, "2026-11-20", 7)),), (None, "has expired")),
+            ((artifacts((False, "2026-11-20", 7), (False, "2026-11-21", 9)), done), (9, None)),
+            ((artifacts((False, "2026-11-21", 9)), json.dumps({"status": "in_progress", "conclusion": None})),
+             (None, "still going")),
+            ((artifacts((False, "2026-11-21", 9)), json.dumps({"status": "completed", "conclusion": "failure"})),
+             (None, "ended failure")),
         ]
-        for replies, why in cases:
+        for replies, (built, why) in cases:
             with mock.patch.object(release, "run", answers(*replies)):
-                found, reason = release.ci_state("owner/repo", "b" * 40)
-            self.assertIsNone(found)
-            self.assertIn(why, reason)
+                found, reason = release.find_candidate("owner/repo", "candidate-nightly-" + "b" * 40)
+            self.assertEqual(found, built)
+            if why:
+                self.assertIn(why, reason)
 
 
 class Resolve(unittest.TestCase):
-    def resolve(self, **changes):
-        args = argparse.Namespace(channel="nightly", sha="", version="", scheduled=True, github_output=False)
+    def resolve(self, draft=False, **changes):
+        args = argparse.Namespace(channel="nightly", sha="", version="", scheduled=True, draft=draft, prepare=False,
+                                  github_output=False)
         settings = dict(repository=mock.Mock(return_value="owner/repo"), git=mock.Mock(return_value=""),
                         on_main=mock.Mock(return_value="b" * 40),
                         read_feed=mock.Mock(return_value={"commit": "a" * 40, "version": "1.4.3-nightly.20261121.900"}),
                         run=mock.Mock(return_value=mock.Mock(returncode=1)),
-                        ci_state=mock.Mock(return_value=(None, "its release candidate is still building")),
+                        ci_state=mock.Mock(return_value=None),
+                        find_candidate=mock.Mock(return_value=(None, "the run that builds it is still going")),
                         outputs=mock.Mock())
         settings.update(changes)
         with mock.patch.multiple(release, **settings):
             release.resolve(args)
             return release.outputs.call_args[0][0]
 
-    def test_a_scheduled_nightly_is_due_only_when_main_moved_and_its_ci_is_green(self):
+    def test_a_scheduled_nightly_is_due_only_when_main_moved_its_ci_is_green_and_its_candidate_is_kept(self):
+        built = mock.Mock(return_value=(9, None))
         self.assertEqual(self.resolve()["due"], "false")
-        self.assertEqual(self.resolve(run=mock.Mock(return_value=mock.Mock(returncode=0)))["due"], "false")
+        self.assertEqual(self.resolve(ci_state=mock.Mock(return_value="its Comments run is still going"),
+                                      find_candidate=built)["due"], "false")
+        unchanged = mock.Mock(return_value=mock.Mock(returncode=0))
+        self.assertEqual(self.resolve(run=unchanged, find_candidate=built)["due"], "false")
+        self.assertEqual(self.resolve(draft=True, run=unchanged, find_candidate=built)["due"], "true")
         with mock.patch.dict(os.environ, {"PAUSE_NIGHTLY": "true"}):
-            self.assertEqual(self.resolve(ci_state=mock.Mock(return_value=(9, None)))["due"], "false")
-        due = self.resolve(ci_state=mock.Mock(return_value=(9, None)))
-        self.assertEqual((due["due"], due["commit"], due["candidate_run"], due["build"]), ("true", "b" * 40, "9", "false"))
+            self.assertEqual(self.resolve(find_candidate=built)["due"], "false")
+        due = self.resolve(find_candidate=built)
+        self.assertEqual((due["due"], due["commit"], due["artifact"], due["candidate_run"], due["build"]),
+                         ("true", "b" * 40, "candidate-nightly-" + "b" * 40, "9", "false"))
+
+
+class Finalize(unittest.TestCase):
+    def test_an_older_release_never_sets_mains_workspace_version_back(self):
+        main = '[workspace.package]\nversion = "1.4.4"\n'
+        for released in ("1.4.3", "1.4.4"):
+            with mock.patch.multiple(release, repository=mock.Mock(return_value="owner/repo"),
+                                     git=mock.Mock(side_effect=lambda *args: main if args[0] == "show" else ""),
+                                     run=mock.DEFAULT, stamp=mock.DEFAULT):
+                self.assertEqual(release.finalize(argparse.Namespace(version=released)), 0)
+                release.run.assert_not_called()
+                release.stamp.assert_not_called()
 
 
 class TakenUp(unittest.TestCase):
