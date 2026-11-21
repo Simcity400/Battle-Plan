@@ -1,23 +1,27 @@
 """Test `main` once a day on this machine (Python 3.11+, Windows).
 
-    python tools/daily_tests.py install --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file> [--at 03:00]
-    python tools/daily_tests.py run --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file>
+    python tools/daily_tests.py install --ci-dir <runner folder> --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file> [--at 03:00]
+    python tools/daily_tests.py run --ci-dir <runner folder> --game-dir <the game folder> --fixture <recording folder> --recorded-replies <file>
 
-`install` makes the runner's own worktree of origin/main and registers the Windows task that runs
-it daily at `--at`, or as soon as it can after a missed start. `run` moves that worktree to the
-newest origin/main and holds TESTS_RUNNING while it runs, in GROUPS, the repository checks, the UI
+`--ci-dir` (or BATTLE_PLAN_CI) names the runner's own folder: its worktree is main there, the
+acceptance app is built into e2e-app and the reports and locks are kept in reports. `install`
+makes that worktree of origin/main in an empty or new folder and marks it RUNNER_MARK in the
+worktree's own git folder, or moves a marked worktree of this clone to origin/main, and registers
+the Windows task that runs it daily at `--at`, or as soon as it can after a missed start. Both
+refuse, before touching it, a worktree that is not marked or that git does not see as its own. `run` moves that worktree to the newest
+origin/main and holds TESTS_RUNNING while it runs, in GROUPS, the repository checks, the UI
 typecheck and tests, every Rust test and the acceptance suite (tools/e2e/suite.py: the release
 app, built on Boat, on a copy of the `--fixture` recording). RUST_BUILD says where the Rust tests
 compile: "boat" builds them on Boat and runs them here (tools/boat.py test); "local" runs nextest
 here, without incremental compilation, and once the build finishes removes from its Cargo target
 whatever that build neither produced nor used, so the target holds one build. Either runs only
 with DISK_FLOOR free, removing the runner's own Cargo target first when that brings it there.
-Rust tests are counted passed, failed, skipped or missing (tools/ci_results.py). `--recorded-replies` names the replies the acceptance sweep
-recorded (`--record-replies`) from the `--fixture` recording, which the browser tests replay
-(BATTLE_PLAN_RECORDED_REPLIES). Its report goes to captures\\ci: latest.md, rewritten
-as each group ends, a folder per run with each step's log, kept 30 days, and history.tsv, kept
-whole. The acceptance suite's report is e2e/e2e.md in the run's folder; its visual baseline and
-last work stay in E2E_STATE.
+Rust tests are counted passed, failed, skipped or missing (tools/ci_results.py).
+`--recorded-replies` names the replies the acceptance sweep recorded (`--record-replies`) from the
+`--fixture` recording, which the browser tests replay (BATTLE_PLAN_RECORDED_REPLIES). Its report
+goes to reports: latest.md, rewritten as each group ends, a folder per run with each step's
+log, kept 30 days, and history.tsv, kept whole. The acceptance suite's report is e2e/e2e.md in
+the run's folder; its visual baseline and last work stay in E2E_STATE.
 
 On GitHub, through tools/ci_results.py, each group's result is the commit status
 `STATUS/<group>` on the tested commit as the group ends, the whole run's is `STATUS`, and one
@@ -45,13 +49,9 @@ from xml.sax.saxutils import escape
 import ci_results
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKTREE = Path(r"ci\main")
-CAPTURES = Path(os.environ.get("BATTLE_PLAN_CAPTURES", os.environ.get("HOI4_CAPTURES", ROOT / "captures")))
-REPORTS = CAPTURES / "ci"
-MARKER = REPORTS / "TESTS_RUNNING"
+WORKTREE = REPORTS = MARKER = E2E_APP = E2E_STATE = None
+RUNNER_MARK = "daily-tests-runner"
 TASK = "Battle Plan daily tests"
-E2E_APP = Path(r"ci\e2e-app")
-E2E_STATE = REPORTS / "e2e"
 DEADLINE = datetime.timedelta(hours=18)
 GIT_TIMEOUT = 600
 CLEANUP = 120
@@ -179,15 +179,6 @@ def hold_checkout():
     """The checked-out runner's hold on the worktree for its life, or None while another holds it:
     a runner whose parent died must not see the next run move its checkout."""
     return lock_runner(CHECKOUT_LOCK)
-
-
-def checkout_free():
-    """Whether no checked-out runner holds the worktree."""
-    held = lock_runner(CHECKOUT_LOCK)
-    if held is None:
-        return False
-    os.close(held)
-    return True
 
 
 def duration(seconds):
@@ -856,10 +847,19 @@ def report_unfinished(unfinished, publishing):
 def run(args):
     if args.continue_run is not None:
         return run_checked_out(args)
+    refused = not_the_runner(git)
+    if refused:
+        print(refused, file=sys.stderr)
+        return 2
     lock = lock_runner()
     if lock is None:
         return 0
-    if not checkout_free():
+    try:
+        held = hold_checkout()
+    except OSError:
+        os.close(lock)
+        raise
+    if held is None:
         os.close(lock)
         return 0
     deadline = time.monotonic() + DEADLINE.total_seconds()
@@ -869,14 +869,17 @@ def run(args):
     earlier = []
     try:
         try:
-            unfinished = unfinished_run()
-            if unfinished:
-                earlier = report_unfinished(unfinished, publishing)
-            write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n")
-            write_report("RUNNING", [f"Started {started:%Y-%m-%d %H:%M}. Earlier runs: history.tsv."])
-            git("fetch", "--quiet", "origin", "main")
-            git("checkout", "--quiet", "--detach", "--force", "origin/main")
-            commit = git("rev-parse", "HEAD")
+            try:
+                unfinished = unfinished_run()
+                if unfinished:
+                    earlier = report_unfinished(unfinished, publishing)
+                write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n")
+                write_report("RUNNING", [f"Started {started:%Y-%m-%d %H:%M}. Earlier runs: history.tsv."])
+                git("fetch", "--quiet", "origin", "main")
+                git("checkout", "--quiet", "--detach", "--force", "origin/main")
+                commit = git("rev-parse", "HEAD")
+            finally:
+                os.close(held)
             folder = run_folder(started, commit)
             write_marker(f"{os.getpid()} {started:%Y-%m-%d %H:%M} {folder.name}\n")
             publishing.status(commit, STATUS, "pending", f"running since {started:%Y-%m-%d %H:%M}")
@@ -885,7 +888,7 @@ def run(args):
                 sys.executable, str(WORKTREE / "tools" / "daily_tests.py"), "run",
                 "--game-dir", args.game_dir, *fixtures(args),
                 "--continue-run", commit, started.isoformat(),
-                str(deadline - REPORT_MARGIN), str(folder),
+                str(deadline - REPORT_MARGIN), str(folder), "--ci-dir", args.ci_dir,
             ]
             remaining = deadline - time.monotonic()
             if remaining <= REPORT_MARGIN:
@@ -996,19 +999,24 @@ def install(args):
     if not (Path(args.game_dir) / "hoi4.exe").is_file():
         sys.exit(f"{args.game_dir} holds no hoi4.exe")
     at = datetime.datetime.strptime(args.at, "%H:%M").time()
-    if not WORKTREE.exists():
-        subprocess.run(["git", "-C", str(ROOT), "fetch", "--quiet", "origin", "main"], check=True)
-        subprocess.run(
-            ["git", "-C", str(ROOT), "worktree", "add", "--detach", str(WORKTREE), "origin/main"],
-            check=True,
-        )
+    if WORKTREE.exists():
+        refresh_runner()
+    elif WORKTREE.parent.exists() and any(WORKTREE.parent.iterdir()):
+        sys.exit(f"{WORKTREE.parent} holds an earlier runner's files: remove it or name another --ci-dir")
+    else:
+        git_at(ROOT, "fetch", "--quiet", "origin", "main")
+        git_at(ROOT, "worktree", "add", "--detach", str(WORKTREE), "origin/main")
+        mark = Path(git_at(WORKTREE, "rev-parse", "--absolute-git-dir")) / RUNNER_MARK
+        mark.write_text(f"{ROOT}\n", encoding="utf-8")
     script = WORKTREE / "tools" / "daily_tests.py"
     if not script.is_file():
         sys.exit(f"{script} is missing: the runner must be on origin/main first")
     start = datetime.datetime.combine(datetime.date.today(), at)
     if start <= datetime.datetime.now():
         start += datetime.timedelta(days=1)
-    arguments = subprocess.list2cmdline([str(script), "run", "--game-dir", args.game_dir, *fixtures(args)])
+    arguments = subprocess.list2cmdline([
+        str(script), "run", "--ci-dir", args.ci_dir, "--game-dir", args.game_dir, *fixtures(args),
+    ])
     xml = TASK_XML.format(
         start=start.isoformat(timespec="seconds"),
         user=escape(f"{os.environ['USERDOMAIN']}\\{os.environ['USERNAME']}"),
@@ -1026,6 +1034,63 @@ def install(args):
     return 0
 
 
+def git_at(folder, *args):
+    return subprocess.run(
+        ["git", "-C", str(folder), *args], check=True, capture_output=True, encoding="utf-8"
+    ).stdout.strip()
+
+
+def not_the_runner(git_in_worktree):
+    """Why WORKTREE must not be moved, or None: git sees it as its own worktree, that worktree's own
+    git folder carries install's RUNNER_MARK, which removing the worktree removes with it, and the
+    git folder points back at WORKTREE, so a copy of the runner elsewhere is not taken for it."""
+    try:
+        owner = Path(git_in_worktree("rev-parse", "--show-toplevel")).resolve()
+        if owner != WORKTREE.resolve():
+            return f"{WORKTREE} is not a git worktree of its own: install a runner in another --ci-dir"
+        private = Path(git_in_worktree("rev-parse", "--absolute-git-dir"))
+        marked = (private / RUNNER_MARK).is_file()
+        pointer = private / (private / "gitdir").read_text(encoding="utf-8").strip()
+    except (OSError, RuntimeError, subprocess.CalledProcessError):
+        return f"{WORKTREE} is not a runner install made: name another --ci-dir"
+    if not marked:
+        return f"{WORKTREE} is not a runner install made: name another --ci-dir"
+    try:
+        same = pointer.name == ".git" and os.path.samefile(pointer.parent, WORKTREE)
+    except OSError:
+        same = False
+    if not same:
+        return f"{WORKTREE} is a copy of the runner at {pointer.parent}: name that runner's --ci-dir"
+    return None
+
+
+def refresh_runner():
+    """Moves a marked runner's worktree of this clone to origin/main, holding both locks, so the
+    task never starts a runner too old for its arguments; exits saying why it cannot."""
+    def common(folder):
+        return Path(git_at(folder, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+
+    refused = not_the_runner(lambda *args: git_at(WORKTREE, *args))
+    if refused is None and common(WORKTREE) != common(ROOT):
+        refused = f"{WORKTREE} is a worktree of another clone: install from that clone or name another --ci-dir"
+    if refused:
+        sys.exit(refused)
+    lock = lock_runner()
+    if lock is None:
+        sys.exit(f"a run holds {WORKTREE}: install again when it ends")
+    try:
+        held = hold_checkout()
+        if held is None:
+            sys.exit(f"a run holds {WORKTREE}: install again when it ends")
+        try:
+            git_at(ROOT, "fetch", "--quiet", "origin", "main")
+            git_at(WORKTREE, "checkout", "--quiet", "--detach", "--force", "origin/main")
+        finally:
+            os.close(held)
+    finally:
+        os.close(lock)
+
+
 def fixtures(args):
     """The fixture arguments a run passes on: to the checked-out runner, and in the task."""
     return [
@@ -1038,8 +1103,10 @@ def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     game_dir = os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")) or None
+    ci_dir = os.environ.get("BATTLE_PLAN_CI") or None
     for name in ("install", "run"):
         command = commands.add_parser(name)
+        command.add_argument("--ci-dir", type=os.path.abspath, default=ci_dir, required=ci_dir is None)
         command.add_argument(
             "--game-dir", type=os.path.abspath, default=game_dir, required=game_dir is None
         )
@@ -1054,8 +1121,18 @@ def parse(argv):
     return parser.parse_args(argv)
 
 
+def configure(ci_dir):
+    """Points the runner at its own folder: the worktree in main, the acceptance app in e2e-app,
+    and the reports and locks in reports, so every run of one worktree shares its locks."""
+    global WORKTREE, E2E_APP, REPORTS, MARKER, E2E_STATE
+    ci = Path(ci_dir)
+    WORKTREE, E2E_APP, REPORTS = ci / "main", ci / "e2e-app", ci / "reports"
+    MARKER, E2E_STATE = REPORTS / "TESTS_RUNNING", REPORTS / "e2e"
+
+
 def main():
     args = parse(sys.argv[1:])
+    configure(args.ci_dir)
     return install(args) if args.command == "install" else run(args)
 
 

@@ -14,6 +14,15 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import daily_tests as dt
 
+CI_DIR = os.path.abspath("runner")
+
+
+def setUpModule():
+    patch = mock.patch.dict(os.environ, {"BATTLE_PLAN_CI": CI_DIR})
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
+    dt.configure(CI_DIR)
+
 
 class FakeGitHub:
     """Records what would be published; never calls GitHub."""
@@ -40,6 +49,11 @@ class GameDir(unittest.TestCase):
                         self.assertEqual(dt.parse([command, "--game-dir", "game"]).game_dir, given)
                 with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game"}):
                     self.assertEqual(dt.parse(["run"]).game_dir, given)
+                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": ""}):
+                    for command in ("install", "run"):
+                        self.assertEqual(dt.parse([command, "--ci-dir", "ci"]).ci_dir, os.path.join(os.getcwd(), "ci"))
+                with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": "ci"}):
+                    self.assertEqual(dt.parse(["run"]).ci_dir, os.path.join(os.getcwd(), "ci"))
             finally:
                 os.chdir(previous)
 
@@ -47,6 +61,115 @@ class GameDir(unittest.TestCase):
         with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": ""}), \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             dt.parse(["run"])
+
+    def test_an_empty_variable_names_no_runner_folder(self):
+        for command in ("install", "run"):
+            with mock.patch.dict(os.environ, {"BATTLE_PLAN_GAME_DIR": "game", "BATTLE_PLAN_CI": ""}), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                dt.parse([command])
+
+
+class Install(unittest.TestCase):
+    def setUp(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.root, self.ci, game = root, root / "runner folder", root / "game"
+        game.mkdir()
+        (game / "hoi4.exe").touch()
+        self.owner, self.commands, self.task = None, [], None
+        self.gitdir, self.commons = root / "clone" / ".git" / "worktrees" / "main", {}
+        self.addCleanup(dt.configure, CI_DIR)
+        self.enterContext(mock.patch.dict(os.environ, {"USERDOMAIN": "domain", "USERNAME": "user"}))
+        self.enterContext(mock.patch.object(dt.subprocess, "run", side_effect=self.command))
+        self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+        self.enterContext(mock.patch.object(sys, "argv", [
+            "daily_tests.py", "install", "--ci-dir", str(self.ci), "--game-dir", str(game),
+        ]))
+
+    def command(self, command, **kwargs):
+        self.commands.append(command)
+        stdout = ""
+        if command[0] == "schtasks":
+            self.task = Path(command[command.index("/XML") + 1]).read_text(encoding="utf-16")
+        elif command[3:5] == ["worktree", "add"]:
+            self.runner_script(Path(command[6]))
+            self.gitdir.mkdir(parents=True)
+        elif command[3:] == ["rev-parse", "--show-toplevel"]:
+            stdout = self.owner
+        elif command[3:] == ["rev-parse", "--absolute-git-dir"]:
+            stdout = str(self.gitdir)
+        elif command[3:] == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
+            stdout = self.commons.get(command[2], str(self.root / "clone" / ".git"))
+        elif command[3] == "checkout":
+            held = dt.hold_checkout()
+            self.free_during_checkout = held is not None
+            if held is not None:
+                os.close(held)
+        return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+    def runner_script(self, worktree):
+        (worktree / "tools").mkdir(parents=True)
+        (worktree / "tools" / "daily_tests.py").touch()
+
+    def installed_runner(self):
+        worktree = self.ci / "main"
+        self.runner_script(worktree)
+        (worktree / ".git").write_text(f"gitdir: {self.gitdir}\n", encoding="utf-8")
+        self.gitdir.mkdir(parents=True)
+        (self.gitdir / dt.RUNNER_MARK).touch()
+        (self.gitdir / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
+        self.owner = str(worktree)
+        return worktree
+
+    def refused(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            dt.main()
+        self.assertFalse(any("checkout" in command for command in self.commands))
+        self.assertIsNone(self.task)
+
+    def test_the_task_runs_the_runner_in_its_folder_with_its_folder(self):
+        self.assertEqual(dt.main(), 0)
+        worktree = self.ci / "main"
+        self.assertIn(["git", "-C", str(dt.ROOT), "worktree", "add", "--detach", str(worktree), "origin/main"], self.commands)
+        self.assertTrue((self.gitdir / dt.RUNNER_MARK).is_file())
+        self.assertIn(f"<WorkingDirectory>{worktree}</WorkingDirectory>", self.task)
+        self.assertIn(f'run --ci-dir "{self.ci}"', self.task)
+        self.assertEqual((dt.E2E_APP, dt.REPORTS), (self.ci / "e2e-app", self.ci / "reports"))
+
+    def test_an_installed_runner_of_this_clone_moves_to_main_before_the_task_is_registered(self):
+        worktree = self.installed_runner()
+        self.assertEqual(dt.main(), 0)
+        checkout = ["git", "-C", str(worktree), "checkout", "--quiet", "--detach", "--force", "origin/main"]
+        self.assertLess(self.commands.index(checkout), [command[0] for command in self.commands].index("schtasks"))
+        self.assertFalse(self.free_during_checkout)
+
+    def test_a_new_runner_is_made_only_in_an_empty_folder(self):
+        (self.ci / "reports").mkdir(parents=True)
+        (self.ci / "reports" / "TESTS_RUNNING").write_text("4242 2026-11-20 03:00\n", encoding="utf-8")
+        self.refused()
+        self.assertFalse(any("worktree" in command for command in self.commands))
+
+    def test_a_runner_of_another_clone_is_refused(self):
+        worktree = self.installed_runner()
+        self.commons[str(worktree)] = str(self.root / "other" / ".git")
+        self.refused()
+
+    def test_a_folder_install_did_not_make_is_refused_even_when_it_is_a_worktree(self):
+        self.runner_script(self.ci / "main")
+        self.gitdir.mkdir(parents=True)
+        self.owner = str(self.ci / "main")
+        self.refused()
+
+    def test_a_marked_folder_git_places_in_another_checkout_is_refused(self):
+        self.installed_runner()
+        self.owner = str(self.root)
+        self.refused()
+
+    def test_a_runner_whose_checkout_is_held_is_not_moved(self):
+        self.installed_runner()
+        dt.configure(self.ci)
+        held = dt.hold_checkout()
+        self.addCleanup(os.close, held)
+        self.refused()
 
 
 class Continuation(unittest.TestCase):
@@ -60,8 +183,12 @@ class Continuation(unittest.TestCase):
         self.enterContext(mock.patch.multiple(
             dt, WORKTREE=self.worktree, REPORTS=self.reports, MARKER=self.marker,
         ))
+        self.gitdir = root / "gitdir"
+        self.gitdir.mkdir()
+        (self.gitdir / dt.RUNNER_MARK).touch()
+        (self.worktree / ".git").write_text(f"gitdir: {self.gitdir}\n", encoding="utf-8")
+        (self.gitdir / "gitdir").write_text(f"{self.worktree / '.git'}\n", encoding="utf-8")
         self.lock = self.enterContext(mock.patch.object(dt, "lock_runner", return_value=41))
-        self.free = self.enterContext(mock.patch.object(dt, "checkout_free", return_value=True))
         self.hold = self.enterContext(mock.patch.object(dt, "hold_checkout", return_value=43))
         self.close = self.enterContext(mock.patch.object(dt.os, "close"))
         self.git = self.enterContext(mock.patch.object(dt, "git", side_effect=self.git_command))
@@ -78,11 +205,15 @@ class Continuation(unittest.TestCase):
         self.args = dt.parse(["run", "--game-dir", str(self.worktree / "game")])
 
     def git_command(self, *args):
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(self.worktree)
+        if args == ("rev-parse", "--absolute-git-dir"):
+            return str(self.gitdir)
         return "synthetic commit" if args[0] == "log" else self.commit
 
     def complete(self, command, log, environment, seconds):
         self.assertTrue(self.marker.is_file())
-        self.close.assert_not_called()
+        self.assertNotIn(mock.call(41), self.close.call_args_list)
         child = dt.parse(command[2:])
         folder = Path(child.continue_run[3])
         (folder / "result.json").write_text(json.dumps({
@@ -103,7 +234,7 @@ class Continuation(unittest.TestCase):
     def test_the_parent_runs_the_checked_out_script_once_and_keeps_exclusion_until_reporting(self):
         def record(*args):
             self.assertTrue(self.marker.is_file())
-            self.close.assert_not_called()
+            self.assertNotIn(mock.call(41), self.close.call_args_list)
             return self.record_history(*args)
 
         self.history.side_effect = record
@@ -115,15 +246,18 @@ class Continuation(unittest.TestCase):
             "--game-dir", self.args.game_dir, "--continue-run",
         ])
         self.assertEqual(command[6], self.commit)
+        self.assertEqual(command[-2:], ["--ci-dir", CI_DIR])
         self.assertIsNone(environment)
         self.assertEqual(log.name, "runner.log")
         self.assertEqual(self.git.call_args_list, [
+            mock.call("rev-parse", "--show-toplevel"),
+            mock.call("rev-parse", "--absolute-git-dir"),
             mock.call("fetch", "--quiet", "origin", "main"),
             mock.call("checkout", "--quiet", "--detach", "--force", "origin/main"),
             mock.call("rev-parse", "HEAD"),
         ])
         self.lock.assert_called_once_with()
-        self.close.assert_called_once_with(41)
+        self.assertEqual(self.close.call_args_list, [mock.call(43), mock.call(41)])
         self.assertEqual(self.mark.call_count, 2)
         self.assertTrue(self.mark.call_args.args[0].endswith(f"{self.step.call_args.args[1].parent.name}\n"))
         self.assertFalse(self.marker.exists())
@@ -160,6 +294,66 @@ class Continuation(unittest.TestCase):
             mock.call(self.commit, f"{dt.STATUS}/checks", "error", "unfinished"),
             mock.call(self.commit, f"{dt.STATUS}/rust", "error", "unfinished"),
         ])
+
+    def test_a_runner_folder_git_places_in_another_checkout_is_refused_before_locking_or_publishing(self):
+        enclosing = str(self.worktree.parent)
+        self.git.side_effect = lambda *args: (
+            enclosing if args == ("rev-parse", "--show-toplevel") else self.git_command(*args)
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dt.run(self.args), 2)
+        self.assertEqual(self.git.call_args_list, [mock.call("rev-parse", "--show-toplevel")])
+        self.lock.assert_not_called()
+        self.assertEqual((self.github.statuses, self.github.tracked), ([], []))
+
+    def test_a_worktree_install_did_not_mark_is_refused_before_locking(self):
+        (self.gitdir / dt.RUNNER_MARK).unlink()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dt.run(self.args), 2)
+        self.assertEqual(self.git.call_args_list, [
+            mock.call("rev-parse", "--show-toplevel"), mock.call("rev-parse", "--absolute-git-dir"),
+        ])
+        self.lock.assert_not_called()
+
+    def test_a_copy_of_the_runner_is_refused_before_locking(self):
+        (self.gitdir / "gitdir").write_text(f"{self.worktree.parent / 'original' / '.git'}\n", encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(dt.run(self.args), 2)
+        self.lock.assert_not_called()
+
+    def test_a_runner_whose_git_folder_points_back_relatively_is_its_own(self):
+        (self.gitdir / "gitdir").write_text("../worktree/.git\n", encoding="utf-8")
+        self.assertIsNone(dt.not_the_runner(self.git_command))
+
+    def test_a_hard_linked_copy_of_the_runner_is_not_its_own(self):
+        copy = self.worktree.parent / "copy"
+        copy.mkdir()
+        os.link(self.worktree / ".git", copy / ".git")
+        query = lambda *args: str(copy) if args == ("rev-parse", "--show-toplevel") else self.git_command(*args)
+        with mock.patch.object(dt, "WORKTREE", copy):
+            self.assertIn("copy of the runner", dt.not_the_runner(query))
+
+    def test_a_checkout_lock_that_cannot_be_opened_releases_the_runner_lock(self):
+        self.hold.side_effect = OSError("synthetic lock folder is unreadable")
+        with self.assertRaises(OSError):
+            dt.run(self.args)
+        self.assertEqual(self.close.call_args_list, [mock.call(41)])
+
+    def test_the_parent_holds_the_checkout_until_it_has_moved_it_and_frees_it_for_the_child(self):
+        seen = {}
+
+        def git_command(*args):
+            if args[0] == "checkout":
+                seen["checkout"] = mock.call(43) in self.close.call_args_list
+            return self.git_command(*args)
+
+        def complete(*args):
+            seen["child"] = mock.call(43) in self.close.call_args_list
+            return self.complete(*args)
+
+        self.git.side_effect, self.step.side_effect = git_command, complete
+        self.assertEqual(dt.run(self.args), 0)
+        self.assertEqual(seen, {"checkout": False, "child": True})
 
     def test_running_is_written_before_fetch_and_replaced_by_the_final_report(self):
         latest = self.reports / "latest.md"
@@ -308,7 +502,7 @@ class Continuation(unittest.TestCase):
         self.assertEqual((folder / "report.md").read_text(), report)
         prune.assert_called_once_with(self.history.call_args.args[0])
         self.assertFalse(self.marker.exists())
-        self.close.assert_called_once_with(41)
+        self.assertEqual(self.close.call_args_list, [mock.call(43), mock.call(41)])
 
     def test_a_latest_report_failure_still_writes_the_run_report_and_prunes(self):
         def write_report(heading, lines):
