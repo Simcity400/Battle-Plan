@@ -918,6 +918,18 @@ class Wake(Harness):
         fake.refused.add("a")
         self.assertEqual(bt.wake(self.state, "lane", "large"), ("b", "resuming"))
 
+    def test_a_refused_extend_wakes_the_next_vm(self):
+        fake = self.use(FakeBoat([vm("a"), vm("b", "stopped")]))
+        extend = fake.boat
+
+        def boat(*args, **kwargs):
+            if args[0] == "extend" and args[1] == "a":
+                raise bt.Failure("Boat extend failed (1): refused")
+            return extend(*args, **kwargs)
+
+        bt.boat = boat
+        self.assertEqual(bt.wake(self.state, "lane", "large"), ("b", "resuming"))
+
     def test_leaves_alone_a_vm_that_already_runs_or_starts(self):
         for state in ("idle", "starting"):
             fake = self.use(FakeBoat([vm("a", state), vm("b", "stopped")]))
@@ -997,23 +1009,25 @@ class RemoteToolchain(unittest.TestCase):
 
     def test_an_installed_toolchain_whose_cargo_fails_is_named_and_one_the_vm_lacks_is_rustups(self):
         missing = "error: 'cargo' is not installed for the toolchain '1.96.0-x86_64-unknown-linux-gnu'."
-        self.assertEqual(self.probe("1.96.0", 1, missing), (missing, ["1.96.0"]))
-        self.assertEqual(self.probe("1.96.0-x86_64-unknown-linux-gnu", 1, missing), (missing, ["1.96.0-x86_64-unknown-linux-gnu"]))
-        self.assertEqual(self.probe("1.96.0", 1), ("exit 1", ["1.96.0"]))
-        self.assertEqual(self.probe("1.96.0"), (None, ["1.96.0"]))
-        self.assertEqual(self.probe("1.97.0", 1), (None, []))
-        self.assertEqual(self.probe("", 1), (None, []))
+        broken = bt.BROKEN_TOOLCHAIN
+        self.assertEqual(self.probe("1.96.0", 1, missing), ((broken, missing), ["1.96.0"]))
+        self.assertEqual(self.probe("1.96.0-x86_64-unknown-linux-gnu", 1, missing), ((broken, missing), ["1.96.0-x86_64-unknown-linux-gnu"]))
+        self.assertEqual(self.probe("1.96.0", 1), ((broken, "exit 1"), ["1.96.0"]))
+        self.assertEqual(self.probe("1.96.0"), ((None, None), ["1.96.0"]))
+        self.assertEqual(self.probe("1.97.0", 1), ((None, None), []))
+        self.assertEqual(self.probe("", 1), ((None, None), []))
 
     def test_a_linked_toolchain_is_probed_and_a_launch_that_fails_for_now_quarantines_nothing(self):
         (Path(self.temp.name) / "toolchains" / "local-ci").mkdir()
-        self.assertEqual(self.probe("local-ci", 1, "broken"), ("broken", ["local-ci"]))
-        self.assertEqual(self.probe("1.96.0", raises=BlockingIOError(11, "Resource temporarily unavailable")), (None, ["1.96.0"]))
-        self.assertEqual(self.probe("1.96.0", raises=subprocess.TimeoutExpired("cargo", 60)), (None, ["1.96.0"]))
-        self.assertIn("FileNotFoundError", self.probe("1.96.0", raises=FileNotFoundError(2, "No such file", "cargo"))[0])
-        self.assertIn("PermissionError", self.probe("1.96.0", raises=PermissionError(13, "Permission denied", "cargo"))[0])
-        self.assertIn("Exec format error", self.probe("1.96.0", raises=OSError(8, "Exec format error", "cargo"))[0])
-        self.assertEqual(self.probe("1.96.0", raises=OSError(12, "Cannot allocate memory")), (None, ["1.96.0"]))
-        self.assertEqual(self.probe("1.96.0", -9), (None, ["1.96.0"]))
+        broken, unproven = bt.BROKEN_TOOLCHAIN, self.remote["UNPROVEN_TOOLCHAIN"]
+        self.assertEqual(self.probe("local-ci", 1, "broken"), ((broken, "broken"), ["local-ci"]))
+        for error in (FileNotFoundError(2, "No such file", "cargo"), PermissionError(13, "Permission denied", "cargo"), OSError(8, "Exec format error", "cargo")):
+            self.assertEqual(self.probe("1.96.0", raises=error)[0], (broken, repr(error)))
+        for error in (BlockingIOError(11, "Resource temporarily unavailable"), OSError(12, "Cannot allocate memory")):
+            self.assertEqual(self.probe("1.96.0", raises=error)[0], (unproven, repr(error)))
+        self.assertEqual(self.probe("1.96.0", raises=subprocess.TimeoutExpired("cargo", 60))[0][0], unproven)
+        self.assertEqual(self.probe("1.96.0", -11), ((unproven, "cargo --version was killed by signal 11"), ["1.96.0"]))
+        self.assertNotIn(unproven, {bt.BROKEN_TOOLCHAIN, bt.REMOTE_CLAIMED, 0})
 
     def test_an_exec_reply_without_output_reads_as_empty(self):
         with mock.patch.object(bt, "boat", return_value=(OK, [{"exitCode": 0, "stdout": None}])):

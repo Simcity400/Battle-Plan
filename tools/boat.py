@@ -788,7 +788,11 @@ def wake(state, lane, size, rebuilds=lambda vmid: (0, 0), begun=None):
                 continue
             vm = states[vmid]
             if vm["state"] != "stopped":
-                boat("extend", vmid, "--ttl", str(LEASE_SECONDS), retry=False)
+                try:
+                    boat("extend", vmid, "--ttl", str(LEASE_SECONDS), retry=False)
+                except Failure as error:
+                    say(f"{error}; passing it by")
+                    continue
                 return vmid, vm["state"]
             grow = resume_type(vm.get("type"), size)
             try:
