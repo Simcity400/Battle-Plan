@@ -217,9 +217,11 @@ impl WatchRegistry {
 
     #[inline]
     fn table(&self) -> Option<&Table> {
-        // SAFETY: a table is replaced only by a capture boundary or by a worker's exclusive
-        // growth (`install_growth_quiescent`), and freed only once a later collection saw no
-        // notification running. No borrow of the table may span either replacement.
+        // SAFETY: only a retired table is freed (`collect`). A boundary swap parks the old table in
+        // `draining`, since a notification that entered after the quiet check may still hold its
+        // mark; `retire_drained` retires it only once a later quiet check sees none running.
+        // Worker growth retires the old table at once, which its exclusive lease allows because
+        // no notifier runs during the call. A borrow must not outlive the call that made it.
         unsafe { self.table.load(SeqCst).as_ref() }
     }
 

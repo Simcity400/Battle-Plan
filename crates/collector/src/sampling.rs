@@ -2154,7 +2154,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
 }
 
 /// # Safety
-/// As [`acquire`], with `memory` reading the live game.
+/// Every frame index in `dispatch` names a live frame this capture holds exclusively, taken with
+/// [`Shared::take_frame`], and `memory` stays valid for every read, the workers' included, until
+/// this returns. Reading the live game, the requirements of [`acquire`] apply as well.
 unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: impl Memory) {
     let Dispatch {
         world_generation,
