@@ -97,6 +97,10 @@ const SHARED_DELETED: i32 = 106;
 const REPUBLISHED: i32 = 107;
 const OTHER_PUBLISHED: i32 = 108;
 const UNSHARED_DELETED: i32 = 109;
+const UNMATCHED: i32 = 120;
+const MATCHED_DELETED: i32 = 121;
+const CANCELLED: i32 = 122;
+const STALE_ZERO: i32 = 123;
 const NO_CHANGES: i32 = 26;
 
 fn edit(store: &mut Store, hour: i32) {
@@ -234,6 +238,24 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 4, canonical_slot: 40 }, TEXTS).unwrap();
             testing::remove(store, TableId::CountryPowerDailyCosts, 3 << 32 | 1).unwrap();
             testing::put(store, TableId::CountryPowerDaily, &CountryPowerDailyRow { country: 3, ..daily(96, 3 * Q, Q / 2, 8) }, TEXTS).unwrap();
+        }
+        UNMATCHED => {
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 0, PowerDailyCostKind::Relation, Q / 2, 120), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 1, PowerDailyCostKind::MioResearch, Q / 10, 120), TEXTS).unwrap();
+        }
+        MATCHED_DELETED => {
+            testing::put(store, TableId::CountryPowerDaily, &daily(120, 3 * Q, Q / 2, 120), TEXTS).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+        }
+        CANCELLED => {
+            testing::put(store, TableId::CountryPowerDaily, &daily(120, 3 * Q, 0, 121), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 0, PowerDailyCostKind::Relation, Q / 4, 121), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 1, PowerDailyCostKind::MioResearch, -Q / 4, 121), TEXTS).unwrap();
+        }
+        STALE_ZERO => {
+            store.status(TableId::CountryPowerDaily.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
         }
         _ => {}
     }
@@ -465,6 +487,16 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     assert_eq!(shared(&other, 0), Some(Q / 4));
     let (unshared, _) = through(0..=UNSHARED_DELETED);
     assert_eq!(shared(&unshared, 0), Some(Q / 4), "a deletion leaves a part another application published as it was");
+    let gains = part_key(10, POLITICAL, Total::GAINS);
+    let (unmatched, _) = through(0..=UNMATCHED);
+    assert_eq!(cell::<Part>(&unmatched, TableId::PowerDayParts, gains, "payments"), Some(2));
+    let (matched, _) = through(0..=MATCHED_DELETED);
+    assert!(keys(&matched, TableId::PowerDayParts).contains(&gains), "a deletion keeps the survivor of an application it held unmatched");
+    assert_eq!((cell::<Part>(&matched, TableId::PowerDayParts, gains, "payments"), cell::<Part>(&matched, TableId::PowerDayParts, gains, "spent")), (Some(1), Some(Q / 2)));
+    let open = |store: &Store| keys(store, TableId::PowerDayParts).into_iter().filter(|&key| (key >> 40) as u32 == 10).count();
+    let (cancelled, _) = through(0..=CANCELLED);
+    let (stale, _) = through(0..=STALE_ZERO);
+    assert_eq!(open(&stale), open(&cancelled), "a daily zero read while the daily table is unavailable confirms no empty batch");
 }
 
 #[test]

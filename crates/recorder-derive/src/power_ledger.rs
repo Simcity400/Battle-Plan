@@ -691,6 +691,7 @@ impl PowerLedger {
             && let Some(daily) = &daily
             && midnight(daily.day_hour) == today
             && daily.pp_cost_raw == Some(0)
+            && inputs::daily_complete(hour)
             && let Some(sequence) = daily.pp_sequence
             && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
         {
@@ -705,7 +706,10 @@ impl PowerLedger {
             applications.entry((cost.epoch, cost.day_hour, cost.pp_sequence)).or_default().push(cost);
         }
         for ((epoch, day_hour, sequence), costs) in applications {
-            let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
+            let mut matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
+            if publication.deleted_only {
+                matched &= !Self::held_part(own, pending, part_key(holder, POLITICAL, Total::GAINS), today)?.is_some_and(|part| part.sequence == Some(sequence));
+            }
             if publication.deleted_only && !(sole && midnight(day_hour) == today && self.opened(own, pending, holder, today, sequence)?) {
                 if !sole && midnight(day_hour) == today {
                     self.unchanged(own, pending, holder, today, sequence, matched, &costs, &mut produced)?;
