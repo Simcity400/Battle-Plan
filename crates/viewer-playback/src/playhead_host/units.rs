@@ -1,12 +1,9 @@
 
 use playhead::{
-    Piece, Timeline,
-    pages::{Pages, Run, Span, WorldPages},
+    Timeline,
+    pages::{Pages, Span, WorldPages},
 };
-use replay::{
-    campaign::{Replay, timelines},
-    columnar_frames::Recording,
-};
+use replay::{campaign::Replay, columnar_frames::Recording};
 use replay_columnar::state::Kind;
 use replay_data::{BranchId, rows::TableId};
 use std::{
@@ -72,11 +69,7 @@ pub fn of(replay: &Replay, branch: BranchId) -> io::Result<Units> {
     let recording = replay.recording();
     let name = name(recording);
     let read = shared(&name, || read(recording.selecting(&TableId::ALL)?))?;
-    let cut = cut(read.pages.runs(), &read.branches, &pieces);
-    if cut.is_empty() {
-        return Err(io::Error::other(format!("Branch {branch} holds no readable hour of the recording")));
-    }
-    let timeline = Timeline::new(&*read.pages, cut).map_err(|error| io::Error::new(error.kind(), format!("Branch {branch} of the recording: {error}")))?;
+    let timeline = Timeline::branch(&*read.pages, &read.branches, branch, &pieces)?;
     Ok(Units { name, pages: read.pages, timeline, kinds: read.kinds })
 }
 
@@ -89,27 +82,12 @@ pub fn at_path(path: &Path, branch: Option<BranchId>) -> io::Result<(Units, Bran
     Ok((of(&replay, branch)?, branch))
 }
 
-fn cut(runs: &[Run], branches: &[BranchId], pieces: &[timelines::Piece]) -> Vec<Piece> {
-    let mut cut = Vec::new();
-    for piece in pieces {
-        let from = cut.len();
-        for (run, (held, &branch)) in runs.iter().zip(branches).enumerate() {
-            let (first, last) = (piece.first_hour.max(held.first_hour), piece.last_hour.min(held.last_hour()));
-            if branch == piece.segment && first <= last {
-                cut.push(Piece { run, first, last });
-            }
-        }
-        cut[from..].sort_unstable_by_key(|piece| piece.first);
-    }
-    cut
-}
-
 pub fn branch_playing(replay: &Replay, pages: &dyn Pages, timeline: &Timeline) -> Option<BranchId> {
     let branches = run_branches(replay.recording());
     if branches.len() != pages.runs().len() {
         return None;
     }
-    replay.branches.iter().map(|start| start.id).find(|&branch| cut(pages.runs(), &branches, &replay.pieces(branch)) == timeline.pieces())
+    replay.branches.iter().map(|start| start.id).find(|&branch| Timeline::branch(pages, &branches, branch, &replay.pieces(branch)).is_ok_and(|held| held.pieces() == timeline.pieces()))
 }
 
 fn run_branches(recording: &Recording) -> Vec<BranchId> {
@@ -118,13 +96,9 @@ fn run_branches(recording: &Recording) -> Vec<BranchId> {
 
 fn read(recording: Recording) -> io::Result<Read> {
     let opened = WorldPages::over(recording, Span::Whole)?;
-    let branches: Arc<[BranchId]> = run_branches(opened.recording()).into();
+    let branches: Arc<[BranchId]> = opened.branches().into();
     let kinds = Arc::new(opened.schema().to_vec());
-    let pages: Arc<dyn Pages> = Arc::new(opened);
-    if branches.len() != pages.runs().len() {
-        return Err(io::Error::other(format!("The recording's pages read {} runs of {} readable", pages.runs().len(), branches.len())));
-    }
-    Ok(Read { pages, kinds, branches })
+    Ok(Read { pages: Arc::new(opened), kinds, branches })
 }
 
 pub fn name(recording: &Recording) -> String {

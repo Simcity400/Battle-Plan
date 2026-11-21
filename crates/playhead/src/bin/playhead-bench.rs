@@ -4,16 +4,18 @@
 use playhead::{
     Consumer, Declared, Piece, Playhead, Rebuild, Report, Settings, State, Step, Timeline,
     changes::Changes,
-    lane::{Held, Lane},
-    pages::{Pages, Run, Span, WorldPages},
+    check::{self, differ, game, held_kinds, lane, samples, step_to},
+    lane::{Held, Lane, log},
+    pages::{Pages, Span, WorldPages},
 };
+use replay::campaign::Replay;
 use replay_columnar::{
     manifest::Status,
     state::Kind,
     store::{TableState, Value},
     unit::{BLOCK, reader},
 };
-use replay_data::{Hour, rows::TableId};
+use replay_data::{BranchId, Hour, rows::TableId};
 use serde_json::json;
 use std::{
     collections::HashMap,
@@ -27,7 +29,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "playhead-bench <open|check|time|seek|play|join> <recording> [--run=N | --from=<game hour> --hours=N] [--tables=Name,...] [--select=<file>] [--step=24] [--columns=all|numeric] [--untimed] [--each] [--samples=40] [--threads=4] \
+const USAGE: &str = "playhead-bench <open|check|time|seek|play|join> <recording> [--branch=N (open, play, join) | --run=N | --from=<game hour> --hours=N] [--tables=Name,...] [--select=<file>] [--step=24] [--columns=all|numeric] [--untimed] [--each] [--samples=40] [--threads=4] \
     [--speed=1440] [--hz=60] [--step-threads=1] [--fetch-threads=1] [--ahead=4] [--ring=3] [--check] [--seconds=S] [--flat] [--seek=<frames>] [--seeks=40] [--mirror=all|none] [--second=Table,...] [--second-every=30] [--churn=N] [--churn-new=Table,...] [--join=Table,...] [--trials=12]";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -53,6 +55,7 @@ struct Options {
     passing: bool,
     second: Option<Vec<String>>,
     second_every: u64,
+    branch: Option<BranchId>,
     run: Option<usize>,
     from: Option<Hour>,
     hours: u32,
@@ -64,38 +67,45 @@ struct Options {
     trials: usize,
 }
 
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            tables: None,
+            select: None,
+            step: 24,
+            numeric: false,
+            samples: 40,
+            threads: 4,
+            timed: true,
+            each: false,
+            settings: Settings::default(),
+            check: false,
+            seconds: None,
+            flat: false,
+            seek_every: None,
+            seeks: 40,
+            mirror: true,
+            passing: false,
+            second: None,
+            second_every: 30,
+            branch: None,
+            run: None,
+            from: None,
+            hours: u32::MAX,
+            pieces: Vec::new(),
+            window: (0, 0),
+            churn: None,
+            churn_new: Vec::new(),
+            join: None,
+            trials: 12,
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [command, recording, rest @ ..] = args.as_slice() else { return Err(invalid(USAGE)) };
-    let mut options = Options {
-        tables: None,
-        select: None,
-        step: 24,
-        numeric: false,
-        samples: 40,
-        threads: 4,
-        timed: true,
-        each: false,
-        settings: Settings::default(),
-        check: false,
-        seconds: None,
-        flat: false,
-        seek_every: None,
-        seeks: 40,
-        mirror: true,
-        passing: false,
-        second: None,
-        second_every: 30,
-        run: None,
-        from: None,
-        hours: u32::MAX,
-        pieces: Vec::new(),
-        window: (0, 0),
-        churn: None,
-        churn_new: Vec::new(),
-        join: None,
-        trials: 12,
-    };
+    let mut options = Options::default();
     for option in rest {
         match option.as_str() {
             "--untimed" => options.timed = false,
@@ -125,6 +135,7 @@ fn main() -> io::Result<()> {
                     "--mirror" if value == "none" || value == "all" => options.mirror = value == "all",
                     "--second" => options.second = Some(value.split(',').map(str::to_owned).collect()),
                     "--second-every" => options.second_every = number()?.max(1.0) as u64,
+                    "--branch" => options.branch = Some(check::branch_id(value)?),
                     "--run" => options.run = Some(number()? as usize),
                     "--from" => options.from = Some(number()? as Hour),
                     "--hours" => options.hours = number()?.max(1.0) as u32,
@@ -143,10 +154,16 @@ fn main() -> io::Result<()> {
         (None, None) => Span::Whole,
         (Some(_), Some(_)) => return Err(invalid("--run and --from each name what is read: give one")),
     };
-    let pages = Arc::new(WorldPages::open(Path::new(recording), span)?);
-    let opened = pages.opened();
-    options.pieces = pages.pieces().to_vec();
-    let piece = options.pieces[0];
+    if options.branch.is_some() && !matches!(command.as_str(), "open" | "play" | "join") {
+        return Err(invalid(format!("--branch picks the timeline open, play and join use; {command} reads the first run's own span: give --run or --from instead")));
+    }
+    let started = Instant::now();
+    let replay = Replay::open_timelines(Path::new(recording))?;
+    let pages = Arc::new(WorldPages::over(replay.recording().selecting(&TableId::ALL)?, span)?);
+    let mut opened = pages.opened();
+    opened.ns = started.elapsed().as_nanos() as u64;
+    options.pieces = check::played(&replay, &pages, span, options.branch)?.pieces().to_vec();
+    let piece = pages.pieces()[0];
     let first_hour = pages.runs()[0].first_hour;
     options.window = ((piece.first - first_hour) as u32, (piece.last - first_hour) as u32);
     let run = &pages.runs()[0];
@@ -229,87 +246,7 @@ fn read_selection(pages: &WorldPages, path: &str, numeric: bool) -> io::Result<V
     Ok(declared)
 }
 
-fn game(run: &Run, hour: u32) -> Hour {
-    run.first_hour + hour as Hour
-}
-
-fn held_kinds(pages: &dyn Pages, table: usize) -> &[Kind] {
-    let kinds = pages.kinds(table).expect("a schema table");
-    &kinds[..pages.held(table).min(kinds.len())]
-}
-
-fn lane(pages: &Arc<dyn Pages>, table: usize, columns: &[usize]) -> io::Result<Lane> {
-    Lane::new(Arc::clone(pages), 0, table, columns, true)
-}
-
-fn step_to(lane: &mut Lane, run: &Run, to: u32, changes: &mut Changes, mut each: impl FnMut(&Lane, &Changes)) -> io::Result<()> {
-    loop {
-        lane.fetch_through(game(run, to))?;
-        let before = lane.head();
-        let head = lane.step(game(run, to), changes)?;
-        each(lane, changes);
-        if head >= game(run, to) {
-            return Ok(());
-        }
-        if Some(head) == before {
-            return Err(invalid(format!("Table {} stalls at hour {head}", name(lane.table()))));
-        }
-    }
-}
-
-fn samples(run: &Run, table: usize, count: usize, (start, end): (u32, u32)) -> Vec<u32> {
-    let hours = end + 1;
-    let restored: Vec<u32> = run.pages.iter().enumerate().filter(|(_, page)| page.tables[table].restore.is_some()).map(|(index, _)| (index as u32 + 1) * BLOCK - 1).collect();
-    let mut chosen = Vec::new();
-    for (at, &end) in restored.iter().enumerate() {
-        if end + 1 < hours {
-            chosen.push(end + 1);
-        }
-        if let Some(&following) = restored.get(at + 1) {
-            chosen.push(following - 1);
-        }
-    }
-    let wanted = count * 2 / 3;
-    if chosen.len() > wanted && wanted > 0 {
-        let every = chosen.len() as f64 / wanted as f64;
-        chosen = (0..wanted).map(|at| chosen[(at as f64 * every) as usize]).collect();
-    }
-    let mut seed = 0x9e37_79b9_7f4a_7c15_u64 ^ table as u64;
-    chosen.retain(|&hour| hour > start && hour <= end);
-    while chosen.len() < count && end > start {
-        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
-        chosen.push(start + 1 + ((seed >> 33) % u64::from(end - start)) as u32);
-    }
-    chosen.sort_unstable();
-    chosen.dedup();
-    chosen
-}
-
 static UNNAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn differ(a: &TableState, b: &TableState, columns: &[usize], first: &mut Option<String>) -> u64 {
-    let mut differing = 0;
-    let slots = a.slots().max(b.slots());
-    for slot in 0..slots {
-        let (live_a, live_b) = (a.live().get(slot), b.live().get(slot));
-        if live_a != live_b || a.key(slot) != b.key(slot) {
-            differing += 1;
-            first.get_or_insert_with(|| format!("slot {slot}: live {live_a} {live_b}, key {:?} {:?}", a.key(slot), b.key(slot)));
-            continue;
-        }
-        if !live_a {
-            continue;
-        }
-        for &column in columns {
-            let (held_a, held_b) = (a.column(column).map(|held| held.held(slot)), b.column(column).map(|held| held.held(slot)));
-            if a.value(column, slot) != b.value(column, slot) || held_a != held_b {
-                differing += 1;
-                first.get_or_insert_with(|| format!("slot {slot} column {column}: {:?} {:?}", a.value(column, slot), b.value(column, slot)));
-            }
-        }
-    }
-    differing
-}
 
 enum Column {
     Numbers { text: bool, values: Vec<u64>, state: Vec<u8> },
@@ -615,6 +552,7 @@ fn check(pages: &Arc<dyn Pages>, tables: &[usize], options: &Options) -> io::Res
     }
     let passed = ["a_differing", "b_differing", "b_refused", "c_differing", "d_differing"].iter().all(|key| sum(key) == 0);
     summary.insert("passed".into(), json!(passed));
+    summary.insert("log_tables".into(), json!(lines.iter().filter(|line| line["log"] == true).count()));
     summary.insert("texts_unnamed".into(), json!(UNNAMED.load(Ordering::Relaxed)));
     summary.insert("seconds".into(), json!(started.elapsed().as_secs_f64()));
     println!("{}", serde_json::Value::Object(summary));
@@ -622,6 +560,9 @@ fn check(pages: &Arc<dyn Pages>, tables: &[usize], options: &Options) -> io::Res
 }
 
 fn check_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::Result<serde_json::Value> {
+    if log::is_log(&**pages, table)? {
+        return check_log_table(pages, table, options);
+    }
     let run = &pages.runs()[0];
     let kinds = pages.kinds(table).expect("a schema table");
     let all: Vec<usize> = (0..kinds.len()).collect();
@@ -629,20 +570,14 @@ fn check_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::R
     let mut full = lane(pages, table, &all)?;
     let mut third = lane(pages, table, &thirds)?;
     let mut none = lane(pages, table, &[])?;
-    let (start, end) = options.window;
+    let (start, _) = options.window;
     for lane in [&mut full, &mut third, &mut none] {
         lane.seek(game(run, start))?;
     }
     let mut changes = Changes::default();
     let mut mirror = Mirror::rebuild(&full, kinds, &all);
     let sampled = samples(run, table, options.samples, options.window);
-    let mut targets: Vec<u32> = (1..).map(|at| start + at * options.step).take_while(|&hour| hour <= end).collect();
-    targets.extend(run.pages.iter().enumerate().map(|(index, page)| index as u32 * BLOCK + u32::from(page.hours) - 1));
-    targets.extend(sampled.iter().copied());
-    targets.push(end);
-    targets.retain(|&hour| hour > start && hour <= end);
-    targets.sort_unstable();
-    targets.dedup();
+    let targets = check::targets(run, options.step, &sampled, options.window);
     let (mut steps, mut block_ends, mut a, mut b, mut seeks, mut c, mut d, mut renumbers) = (0_u64, 0_u64, 0_u64, 0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
     let mut first: Option<String> = None;
     let mut scratch = Changes::default();
@@ -661,8 +596,7 @@ fn check_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::R
                 d += 1;
             }
         }
-        let block = (target / BLOCK) as usize;
-        if target + 1 == block as u32 * BLOCK + u32::from(run.pages[block].hours) {
+        if let Some(block) = check::block_end(run, target) {
             block_ends += 1;
             let (rebuilt, _) = reader::rebuild(pages.extents(0), &run.pages, held_kinds(&**pages, table), table, block, run.first_hour)?;
             a += differ(full.cells(), &rebuilt, &all, &mut first);
@@ -691,18 +625,35 @@ fn check_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::R
     }))
 }
 
+fn check_log_table(pages: &Arc<dyn Pages>, table: usize, options: &Options) -> io::Result<serde_json::Value> {
+    let checked = check::log_table(pages, table, options.window, options.step, options.samples)?;
+    Ok(json!({
+        "table": name(table), "log": true, "steps": checked.steps, "block_ends": checked.block_ends, "a_differing": checked.a, "b_steps": checked.steps, "b_differing": checked.b,
+        "b_refused": checked.refused, "c_seeks": checked.seeks, "c_differing": checked.c, "d_differing": checked.d, "renumbers": 0, "appended": checked.appended, "forgotten": checked.forgotten,
+        "read_rows": checked.read_rows, "narrow_rows": checked.narrow_rows, "first_difference": checked.first,
+    }))
+}
+
 fn row_cells(cells: &TableState, columns: &[usize], slot: u32) -> Vec<String> {
     columns.iter().map(|&column| format!("{:?}", cells.value(column, slot))).collect()
 }
 
 fn check_passing(pages: &Arc<dyn Pages>, tables: &[usize], options: &Options) -> io::Result<()> {
     let started = Instant::now();
-    let lines = each_table(tables, options.threads, |table| check_passing_table(pages, table, options))?;
+    let mut held = Vec::new();
+    for &table in tables {
+        if log::is_log(&**pages, table)? {
+            println!("{}", json!({ "table": name(table), "skipped": "a log: every row it appends passes once, in its steps' appended rows, which check without --passing compares against the reader" }));
+        } else {
+            held.push(table);
+        }
+    }
+    let lines = each_table(&held, options.threads, |table| check_passing_table(pages, table, options))?;
     let sum = |key: &str| lines.iter().map(|line| line[key].as_u64().unwrap_or(0)).sum::<u64>();
     let passed = sum("differing") == 0 && sum("order") == 0;
     println!(
         "{}",
-        json!({ "summary": true, "passing": true, "step": options.step, "tables": lines.len(), "steps": sum("steps"), "passing_rows": sum("passing_rows"),
+        json!({ "summary": true, "passing": true, "step": options.step, "tables": lines.len(), "skipped_logs": tables.len() - held.len(), "steps": sum("steps"), "passing_rows": sum("passing_rows"),
             "differing": sum("differing"), "order": sum("order"), "passed": passed, "seconds": started.elapsed().as_secs_f64() })
     );
     Ok(())

@@ -5,7 +5,7 @@ use replay_columnar::{
     state::Kind,
     unit::{BLOCK, BlockPage, reader::Extents},
 };
-use replay_data::Hour;
+use replay_data::{BranchId, Hour};
 use std::{io, path::Path, time::Instant};
 
 #[cfg(test)]
@@ -74,6 +74,7 @@ pub struct Opened {
 pub struct WorldPages {
     recording: Recording,
     runs: Vec<Run>,
+    branches: Vec<BranchId>,
     pieces: Vec<Piece>,
     kinds: Vec<Vec<Kind>>,
     opened: Opened,
@@ -105,7 +106,7 @@ impl WorldPages {
                 vec![run.ok_or_else(|| invalid(format!("No readable run of the recording holds game hour {from}")))?]
             }
         };
-        let (mut runs, mut pieces) = (Vec::new(), Vec::new());
+        let (mut runs, mut branches, mut pieces) = (Vec::new(), Vec::new(), Vec::new());
         for index in wanted {
             let held = recording.run(index)?;
             let (first_hour, blocks) = (held.first_hour, held.pages() as u32);
@@ -118,6 +119,7 @@ impl WorldPages {
             let run = Run::new(first_hour + (from_block * BLOCK) as Hour, pages)?;
             pieces.push(Piece { run: runs.len(), first, last: to });
             runs.push(run);
+            branches.push(held.branch);
         }
         let mut opened = Opened { ns: 0, ..Opened::default() };
         for page in runs.iter().flat_map(|run| &run.pages) {
@@ -129,11 +131,15 @@ impl WorldPages {
             }
         }
         opened.ns = started.elapsed().as_nanos() as u64;
-        Ok(Self { recording, runs, pieces, kinds, opened })
+        Ok(Self { recording, runs, branches, pieces, kinds, opened })
     }
 
     pub fn pieces(&self) -> &[Piece] {
         &self.pieces
+    }
+
+    pub fn branches(&self) -> &[BranchId] {
+        &self.branches
     }
 
     pub fn opened(&self) -> Opened {

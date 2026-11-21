@@ -12,8 +12,9 @@ use crate::{
     state::{Flight, Rebuild, State},
     step::{Built, Fetching, Rebuilt, Seeking, Step},
 };
+use replay::campaign::timelines;
 use replay_columnar::unit::{BLOCK, reader};
-use replay_data::Hour;
+use replay_data::{BranchId, Hour};
 use std::{
     cmp::Ordering as Order,
     collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque},
@@ -100,6 +101,24 @@ impl Timeline {
     pub fn whole(pages: &dyn Pages) -> io::Result<Self> {
         let pieces = pages.runs().iter().enumerate().map(|(run, held)| Piece { run, first: held.first_hour, last: held.last_hour() }).collect();
         Self::new(pages, pieces)
+    }
+
+    pub fn branch(pages: &dyn Pages, branches: &[BranchId], branch: BranchId, pieces: &[timelines::Piece]) -> io::Result<Self> {
+        let mut cut = Vec::new();
+        for piece in pieces {
+            let from = cut.len();
+            for (run, (held, &segment)) in pages.runs().iter().zip(branches).enumerate() {
+                let (first, last) = (piece.first_hour.max(held.first_hour), piece.last_hour.min(held.last_hour()));
+                if segment == piece.segment && first <= last {
+                    cut.push(Piece { run, first, last });
+                }
+            }
+            cut[from..].sort_unstable_by_key(|piece| piece.first);
+        }
+        if cut.is_empty() {
+            return Err(io::Error::other(format!("Branch {branch} holds no readable hour of the recording")));
+        }
+        Self::new(pages, cut).map_err(|error| io::Error::new(error.kind(), format!("Branch {branch} of the recording: {error}")))
     }
 
     pub fn pieces(&self) -> &[Piece] {

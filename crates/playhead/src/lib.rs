@@ -3,6 +3,8 @@ pub mod boundary;
 mod budget;
 pub use budget::{ByteBudget, Charge};
 pub mod changes;
+#[cfg(any(test, feature = "bench"))]
+pub mod check;
 mod clock;
 pub mod lane;
 pub mod pages;
