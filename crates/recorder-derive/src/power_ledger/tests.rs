@@ -151,8 +151,11 @@ fn edit(store: &mut Store, hour: i32) {
         complete(store, TableId::CountryLinks);
     }
     if hour == DEFERRED {
-        store.status(TableId::CountryPowerDaily.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
-    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | 433 | CONTRADICTED) {
+        store.status(TableId::CountryPowerDailyCosts.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+    } else if hour == DEFERRED + 1 {
+        complete(store, TableId::CountryPowerDailyCosts);
+    }
+    if matches!(hour, GROWN | SHRUNK | OVERNIGHT | CONTRADICTED) {
         complete(store, TableId::CountryPowerDaily);
     }
     if hour == NO_CAPTURE {
@@ -716,7 +719,7 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
     let (deferred, _) = through(0..=DEFERRED);
     for ordinal in [0, 1] {
         let unknown = |store: &Store| spend(store, 50, POLITICAL, ordinal, "day_unknown");
-        assert_eq!(unknown(&deferred).zip(unknown(&waiting)).map(|(after, before)| after - before), Some(1), "a day that closes while its reconciliation waits for the daily rows settles as unknown");
+        assert_eq!(unknown(&deferred).zip(unknown(&waiting)).map(|(after, before)| after - before), Some(1), "a day that closes while its reconciliation waits for the cost rows settles as unknown");
     }
     let (swapped, _) = through(0..=SWAPPED);
     let part = |holder: u32, ordinal: u32| cell::<Part>(&swapped, TableId::PowerDayParts, part_key(holder, POLITICAL, ordinal), "spent");

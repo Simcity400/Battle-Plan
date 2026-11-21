@@ -565,22 +565,6 @@ impl PowerLedger {
         Ok(())
     }
 
-    fn defer_held(&self, own: &Rows<'_>, pending: &mut Pending) -> io::Result<()> {
-        for (&holder, (day, keys)) in self.parts.iter().filter(|(holder, _)| **holder != NONE) {
-            for &key in keys {
-                if let Some(part) = Self::held_part(own, pending, key, *day)?
-                    && part.cost_ordinal.is_some()
-                    && let Some(sequence) = part.sequence
-                {
-                    for &raw in self.aliases.get(&holder).map_or(&[][..], Vec::as_slice) {
-                        pending.recovered.insert((raw, sequence));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn reconcile(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, before: &HashMap<u32, Vec<u32>>, moved: &HashSet<u32>) -> io::Result<()> {
         let today = midnight(hour.hour);
         let mut holders: Vec<(u32, i32)> = self.parts.iter().filter(|(holder, _)| **holder != NONE).map(|(&holder, (day, _))| (holder, *day)).collect();
@@ -1447,14 +1431,13 @@ impl Writer for PowerLedger {
         }
         let witnesses = inputs::witnesses(hour);
         let mut pending = Pending::default();
-        if self.recover && inputs::daily_complete(hour) {
+        if self.recover && inputs::costs_complete(hour) {
             let before = if before.is_empty() { self.aliases.clone() } else { before };
             let moved: HashSet<u32> = moves.iter().map(|moved| moved.raw).collect();
             self.reconcile(hour, out, witnesses.as_ref(), &mut pending, &before, &moved)?;
             self.recover = false;
         } else if self.recover {
             self.withhold_ended(out, &mut pending, midnight(at))?;
-            self.defer_held(out, &mut pending)?;
         }
         self.roll(hour, &mut pending, out)?;
         self.changes(hour, out, witnesses.as_ref(), &mut pending)?;
