@@ -494,30 +494,42 @@ async function playbackInputs() {
   const article = 'article.dash-widget';
   const config = article + ' [data-widget-settings]', time = '.widget-settings-menu:popover-open [aria-label="Time"] button';
   let pinApplied = false, pinWidget = null;
-  const settings = await app.evaluate(`(() => {
+  const { owners, maps } = await app.evaluate(`(() => {
     for (const node of document.querySelectorAll('[data-e2e-settings]')) node.removeAttribute('data-e2e-settings');
-    let count = 0;
+    const view = document.querySelector('.dash-grid-scroll')?.getBoundingClientRect();
+    const inside = box => box.width && box.height && view && box.top >= view.top && box.bottom <= view.bottom && box.left >= view.left && box.right <= view.right;
+    const owners = [];
+    let maps = 0;
     for (const node of document.querySelectorAll(${JSON.stringify(config)})) {
-      const box = node.getBoundingClientRect();
-      if (box.width && box.height && box.bottom > 0 && box.top < innerHeight) node.setAttribute('data-e2e-settings', String(count++));
+      const owner = node.closest('article.dash-widget');
+      if (!owner || !inside(node.getBoundingClientRect())) continue;
+      if (owner.classList.contains('kind-map')) { maps++; continue; }
+      node.setAttribute('data-e2e-settings', String(owners.length));
+      owners.push(owner.dataset.widget ?? null);
     }
-    return count;
+    return { owners, maps };
   })()`);
-  for (let index = 0; index < settings && !pinApplied; index++) {
-    const button = `[data-e2e-settings="${index}"]`;
-    const at = await s.locate(button);
+  let unread = 0;
+  for (let index = 0; index < owners.length && !pinApplied; index++) {
+    const at = await s.locate(`[data-e2e-settings="${index}"]`);
     if (!at) continue;
     await app.click(at.x, at.y);
+    if (!await s.until("document.querySelector('.widget-settings-menu:popover-open')")) { unread++; await s.escape(); continue; }
     const pinned = await s.until(`[...document.querySelectorAll('${time}')].some(button => button.textContent.trim() === 'Pinned')`);
     if (pinned) {
+      const owner = `${article}[data-widget=${JSON.stringify(owners[index])}]`;
       await mark('pin');
-      await s.click(time, { text: 'Pinned' }); await s.until(`document.querySelector('${article}[data-fixed-hour]')`); await s.frames(4);
-      pinWidget = await app.evaluate(`document.querySelector('${article}[data-fixed-hour]')?.dataset.widget ?? null`);
+      await s.click(time, { text: 'Pinned' });
+      if (!await s.until(`document.querySelector(${JSON.stringify(owner + '[data-fixed-hour]')})`))
+        throw new Error(`Pinning widget ${owners[index]} did not fix its hour`);
+      await s.frames(4);
+      pinWidget = owners[index];
       await app.evaluate(`__e2e.setPinWidget(${JSON.stringify(pinWidget)})`);
       pinApplied = true;
     }
     await s.escape();
   }
+  if (!pinApplied && (unread || maps)) throw new Error(`Pin was not exercised: ${unread} settings menus did not open and ${maps} map widgets keep their time setting elsewhere`);
   if (!pinApplied) await mark('pin', 'no widget offers a pinnable time setting');
   await s.click('button.header-play[aria-label="Play"]');
   await mark('speed'); await setSpeed(168); await s.frames(5);
@@ -533,7 +545,6 @@ async function playbackInputs() {
       while (hit && hit !== node && !scrolls(hit)) hit = hit.parentElement;
       if (hit !== node) continue;
       node.setAttribute('data-e2e-scroll', String(count++));
-      node.setAttribute('data-e2e-wheel', node.scrollHeight - node.clientHeight - node.scrollTop > 2 ? '250' : '-250');
     }
     return count;
   })()`);
@@ -544,9 +555,10 @@ async function playbackInputs() {
       const point = await s.locate(target);
       if (!point) continue;
       const [before, wheel, at] = await app.evaluate(`(() => { const node = document.querySelector(${JSON.stringify(target)});
-        return [node?.scrollTop ?? 0, Number(node?.dataset.e2eWheel ?? 250), performance.timeOrigin + performance.now()]; })()`);
+        const down = node ? node.scrollHeight - node.clientHeight - node.scrollTop > 2 : true;
+        return [node?.scrollTop ?? 0, down ? 250 : -250, performance.timeOrigin + performance.now()]; })()`);
       await app.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: 0, deltaY: wheel });
-      scrolled = await s.until(`(document.querySelector(${JSON.stringify(target)})?.scrollTop ?? ${before}) !== ${before}`, 2_000);
+      scrolled = await s.until(`((document.querySelector(${JSON.stringify(target)})?.scrollTop ?? ${before}) - ${before}) * ${Math.sign(wheel)} > 0`, 2_000);
       if (scrolled) await mark('scroll', null, at);
     }
     if (!scrolled) throw new Error(`None of ${candidates} scrollable widget areas moved under the wheel`);
