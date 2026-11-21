@@ -128,8 +128,12 @@ class Addresses(unittest.TestCase):
 
 class Terms(unittest.TestCase):
     def test_overlapping_terms_count_one_match(self):
-        matcher = gate.Matcher(["foo", "foobar"], [], [])
-        self.assertEqual(matcher.scan_bytes("a.txt", b"x FOOBAR x"), [("term", 1)])
+        for terms in (["foo", "foobar"], ["FOOBAR", "foo"]):
+            self.assertEqual(gate.Matcher(terms, [], []).scan_bytes("a.txt", b"x FOOBAR x"), [("term", 1)])
+
+    def test_a_term_inside_a_noreply_address_does_not_make_it_an_address(self):
+        matcher = gate.Matcher(["nor"], [], [])
+        self.assertEqual(matcher.scan_bytes("a.txt", at("noreply", "github.com").encode()), [("term", 1)])
 
 
 if __name__ == "__main__":

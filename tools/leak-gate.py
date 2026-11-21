@@ -104,7 +104,8 @@ def literal(strings):
     forms = set()
     for value in strings:
         forms |= {value, value.replace("\\", "/"), value.replace("/", "\\")}
-    return b"|".join(sorted({re.escape(form.encode("utf-8").lower()) for form in forms}))
+    lowered = {form.encode("utf-8").lower() for form in forms}
+    return b"|".join(re.escape(form) for form in sorted(lowered, key=lambda form: (-len(form), form)))
 
 
 def load_allow(path=ALLOW):
