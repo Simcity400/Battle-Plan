@@ -25,6 +25,7 @@ type Judgements = HashMap<(String, u32, u32), (Result<bool, String>, dashboard_t
 struct Judged {
     at: Option<(replay_data::BranchId, replay_data::Hour)>,
     decisions: Judgements,
+    carried: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

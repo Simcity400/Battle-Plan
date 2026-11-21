@@ -242,7 +242,7 @@ mod reply {
         let start = at(500);
         let (_, read) = inputs::capture(&start, || inputs::fields(&start, TableId::ScriptFlags, &["value"]));
         let content = content();
-        *content.judged.lock().unwrap() = super::super::Judged { at: Some((start.branch, 500)), decisions: [(("law".to_owned(), 1, 2), (Ok(true), read))].into() };
+        *content.judged.lock().unwrap() = super::super::Judged { at: Some((start.branch, 500)), decisions: [(("law".to_owned(), 1, 2), (Ok(true), read))].into(), carried: false };
         let edit = |table, fields: &[&str]| {
             let mut edits = Edits::default();
             edits.tables.insert(table, [(7u128, if fields.is_empty() { u64::MAX } else { field_mask(table, fields) })].into());
@@ -250,8 +250,15 @@ mod reply {
         };
         let judged = || content.judged.lock().unwrap().at.map(|(_, hour)| hour);
 
+        assert!(!states::law_stands(&content, &at(500), &edit(TableId::ScriptVariables, &["seed"])), "laws judged afresh at the hour may differ from those the reply shows");
+        assert!(states::law_stands(&content, &at(500), &edit(TableId::StateGarrisons, &["garrison_required"])), "an edit to the states alone leaves the laws as they were");
         assert!(states::judged_through(&content, &at(524), Some(500), &edit(TableId::ScriptVariables, &["seed"])), "a table no trigger read");
         assert_eq!(judged(), Some(524), "and the laws now stand at the new hour");
+        assert!(states::law_stands(&content, &at(524), &edit(TableId::ScriptVariables, &["seed"])), "carried through the edit, the shown laws stand");
+        content.world.lock().unwrap().ends = true;
+        assert!(states::law_stands(&content, &at(524), &Edits::default()), "a relation that ends, the laws carried through the hours");
+        assert!(!states::law_stands(&content, &at(548), &Edits::default()), "a relation that ends, the laws not carried to this hour");
+        content.world.lock().unwrap().ends = false;
         assert!(states::judged_through(&content, &at(524), Some(500), &Edits::default()), "asked again within the hour");
         assert!(!states::judged_through(&content, &at(572), Some(548), &Edits::default()), "an hour the laws were not judged through");
         assert_eq!(judged(), Some(524));

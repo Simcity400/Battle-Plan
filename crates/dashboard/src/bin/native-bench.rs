@@ -148,9 +148,8 @@ fn main() -> io::Result<()> {
     let span = q.timeline.stretches.iter().find(|s| s.first <= start && start + 3600 + QUANTUM <= s.last)
         .ok_or_else(|| io::Error::other("no continuous recording for 3,600 hours from where the acceptance suite plays"))?;
     let pages = Arc::new(WorldPages::open(&path, Span::Run(span.run as usize))?);
-    let reach = start + 3600 + QUANTUM;
-    let end = reach - (reach - pages.pieces()[0].first + 1).rem_euclid(QUANTUM);
-    let first = end - 3600;
+    let first = start + (pages.pieces()[0].first - 1 - start).rem_euclid(QUANTUM);
+    let end = first + 3600;
     let last = if hourly { first + QUANTUM } else { end };
     let reads = [TableId::Countries, TableId::Projects, TableId::ProjectHistory, TableId::ProductionLines].map(at_hour::Read::all);
     let census = at_hour::frame(&q, first, &reads, "country census")?;

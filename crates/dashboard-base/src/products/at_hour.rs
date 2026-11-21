@@ -27,7 +27,7 @@ use ts_rs::TS;
 
 mod incremental;
 mod placed;
-pub use incremental::Edits;
+pub use incremental::{Edits, Held};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Keys {
@@ -145,7 +145,7 @@ pub trait AtHour: 'static {
 
     fn clock_dependent(_plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> bool { Self::CLOCK_DEPENDENT }
 
-    fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Value) -> io::Result<bool> {
+    fn advance(_frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, _edits: &Edits, _live: &Live, _data: &mut Held<'_>) -> io::Result<bool> {
         Ok(false)
     }
 
@@ -392,7 +392,7 @@ where P::Params: Sync, P::Context: Sync {
 
 pub fn product_panel(advance: dashboard_follow::panel::ProductReader, cold: dashboard_follow::panel::ExactReader) -> Box<dyn Panel> {
     let current = advance.clone();
-    let read = Arc::new(move |hour, cancelled: &AtomicBool| current(hour, false, cancelled, None).value.as_ref().clone());
+    let read = Arc::new(move |hour, cancelled: &AtomicBool| current(hour, true, cancelled, None).value.as_ref().clone());
     Box::new(dashboard_follow::panel::AtHour { read, cold, advance })
 }
 

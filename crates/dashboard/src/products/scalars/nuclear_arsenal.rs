@@ -137,7 +137,7 @@ impl AtHour for NuclearArsenal {
         super::branch(&params.branch_id)
     }
 
-    fn advance(frame: &DecodedFrame, _: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, _: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         if !edits.only_columns(TableId::Nukes, u64::MAX) { return Ok(false); }
         let rows = frame.complete::<tables::Nukes>()?;
         let mut last = None;

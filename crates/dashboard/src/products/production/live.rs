@@ -191,7 +191,7 @@ impl AtHour for ProductionLinesAt {
         }
     }
 
-    fn advance(_frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut serde_json::Value) -> io::Result<bool> {
+    fn advance(_frame: &DecodedFrame, params: &Self::Params, _at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, _data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         if !edits.replaced.is_empty() { return Ok(false); }
         for (&table, rows) in &edits.tables {
             let mask = match table {

@@ -34,6 +34,15 @@ struct PowerReply {
 
 crate::reply_warnings!(PowerReply);
 
+fn streamed(data: &PanelData, fresh: bool) -> PanelData {
+    data.clone().map(|mut reply| {
+        for group in reply["live"]["groups"].as_array_mut().into_iter().flatten() {
+            if !fresh && let Some(group) = group.as_object_mut() { group.remove("values"); }
+        }
+        reply
+    })
+}
+
 fn column(table: TableId, name: &str) -> usize {
     dashboard_declare::field(table, name).unwrap()
 }
@@ -394,7 +403,7 @@ fn a_followed_reply_reads_each_table_under_the_projection_its_final_plan_asks() 
     let token = false.into();
     for hour in (FIRST..=LAST).chain([FIRST, ITA_LEAVES - 1, LAST]) {
         let read = (reader.advance)(hour, hour == FIRST, &token, None);
-        assert_eq!(*read.value, (reader.cold)(hour, &token), "hour {hour}");
+        assert_eq!(streamed(&read.value, read.fresh), streamed(&(reader.cold)(hour, &token), read.fresh), "hour {hour}");
         let value = read.value.as_ref().as_ref().unwrap();
         if hour < ITA_LEAVES {
             assert_eq!(value["hour"], hour, "a widened projection's power and hour, never the narrow one's defaults");
@@ -466,7 +475,7 @@ fn a_reply_that_reads_the_hour_plans_its_stages_again_at_each_hour() {
     let token = false.into();
     for hour in FIRST..ITA_LEAVES {
         let read = (reader.advance)(hour, hour == FIRST, &token, None);
-        assert_eq!(*read.value, (reader.cold)(hour, &token), "hour {hour}: the links from hour {CLOCKED_FROM}, no table having changed");
+        assert_eq!(streamed(&read.value, read.fresh), streamed(&(reader.cold)(hour, &token), read.fresh), "hour {hour}: the links from hour {CLOCKED_FROM}, no table having changed");
     }
 }
 
@@ -535,7 +544,7 @@ fn a_table_the_final_plan_drops_is_released_never_read_again_and_again() {
     let token = false.into();
     for hour in FIRST..=FIRST + 2 {
         let read = (reader.advance)(hour, hour == FIRST, &token, None);
-        assert_eq!(*read.value, (reader.cold)(hour, &token), "hour {hour}");
+        assert_eq!(streamed(&read.value, read.fresh), streamed(&(reader.cold)(hour, &token), read.fresh), "hour {hour}");
         assert_eq!(read.value.as_ref().as_ref().unwrap()["coal"], false, "hour {hour}: coal left the final plan");
     }
 }
@@ -586,13 +595,23 @@ fn a_reply_made_again_the_same_keeps_the_data_it_made() {
     let reader = panel.exact().unwrap();
     let token = false.into();
     let first = (reader.advance)(FIRST, true, &token, None);
+    assert!(first.fresh);
     assert_eq!(*first.value, (reader.cold)(FIRST, &token));
+    let mut kept = first.value.clone();
     for hour in FIRST + 1..ITA_LEAVES {
         let read = (reader.advance)(hour, false, &token, None);
-        assert_eq!(*read.value, (reader.cold)(hour, &token), "hour {hour}: the same tags, their power current");
+        assert!(Arc::ptr_eq(&read.value, &kept), "hour {hour}: the same tags, the data kept");
+        assert!(!read.fresh, "hour {hour}: the kept data's values are another hour's");
+        assert_eq!(streamed(&read.value, false), streamed(&(reader.cold)(hour, &token), false), "hour {hour}: the same tags");
+        let whole = (reader.advance)(hour, true, &token, None);
+        assert!(whole.fresh);
+        assert_eq!(*whole.value, (reader.cold)(hour, &token), "hour {hour}: asked again at the same hour, its power current");
+        kept = whole.value;
     }
+    assert_eq!((reader.read)(ITA_LEAVES - 1, &token), (reader.cold)(ITA_LEAVES - 1, &token), "a complete read is current");
     let left = (reader.advance)(ITA_LEAVES, false, &token, None);
     assert!(!Arc::ptr_eq(&left.value, &first.value));
+    assert!(left.fresh);
     assert_eq!(*left.value, (reader.cold)(ITA_LEAVES, &token), "another reply: its data made again, current");
     let sought = (reader.advance)(FIRST + 3, true, &token, None);
     assert_eq!(*sought.value, (reader.cold)(FIRST + 3, &token), "a seed is made whole");
@@ -608,8 +627,9 @@ fn incremental_reads_include_cells_outside_the_staged_joins() {
     assert!(Arc::ptr_eq(&reader.advance, &other.exact().unwrap().advance));
     let token = false.into();
     for hour in (FIRST..=LAST).chain([FIRST, ITA_LEAVES, LAST]) {
-        let value = (reader.advance)(hour, hour == FIRST, &token, None).value;
-        assert_eq!(*value, (reader.cold)(hour, &token), "hour {hour}");
+        let read = (reader.advance)(hour, hour == FIRST, &token, None);
+        let value = read.value;
+        assert_eq!(streamed(&value, read.fresh), streamed(&(reader.cold)(hour, &token), read.fresh), "hour {hour}");
         let again = (other.exact().unwrap().advance)(hour, hour == FIRST, &token, None);
         assert!(Arc::ptr_eq(&again.value, &value));
         assert_eq!(again.rows, 0);
@@ -618,6 +638,7 @@ fn incremental_reads_include_cells_outside_the_staged_joins() {
 
 struct Stepped {
     hour: i32,
+    fresh: bool,
     value: Arc<PanelData>,
     lanes: Vec<Declared>,
 }
@@ -630,7 +651,7 @@ fn stepped(pages: &Arc<dyn Pages>, exact: &dashboard_follow::panel::AtHour, ever
         let read = (step.last() >= join).then(|| due += 1).filter(|_| (due - 1) % skip == 0).map(|()| {
             let read = advance(step.last(), first || step.reset(), &AtomicBool::new(false), Some(dashboard_follow::panel::ProductStep { step, lanes }));
             first = false;
-            Stepped { hour: step.last(), value: read.value, lanes: read.lanes }
+            Stepped { hour: step.last(), fresh: read.fresh, value: read.value, lanes: read.lanes }
         });
         let _ = send.send((step.last(), read));
     });
@@ -678,7 +699,7 @@ fn a_followed_product_reads_its_tables_at_each_step_from_the_playheads_lanes() {
         assert!([TableId::Countries, TableId::CountryLinks].iter().all(|table| first.contains(&table.index())), "a product's lanes are the tables its reads take: {first:?}");
         assert!(reads[0].lanes.iter().all(|lane| lane.keyed));
         for read in &reads {
-            assert_eq!(*read.value, (exact.cold)(read.hour, &token), "steps of {every} hours from {join}, every {skip}: hour {}", read.hour);
+            assert_eq!(streamed(&read.value, read.fresh), streamed(&(exact.cold)(read.hour, &token), read.fresh), "steps of {every} hours from {join}, every {skip}: hour {}", read.hour);
         }
         assert!(reads.iter().all(|read| read.lanes.iter().any(|lane| lane.table == TableId::CountryResources.index())), "a live cell no stage reads is read from a lane of its table");
     }
@@ -686,7 +707,7 @@ fn a_followed_product_reads_its_tables_at_each_step_from_the_playheads_lanes() {
         let panel = exact_panel::<Planned>(&source, &load(), &json!({ "branchId": "1" })).unwrap();
         let exact = panel.exact().unwrap();
         for read in stepped(&pages, exact, every, join, skip) {
-            assert_eq!(*read.value, (exact.cold)(read.hour, &token), "planned, steps of {every} hours from {join}, every {skip}: hour {}", read.hour);
+            assert_eq!(streamed(&read.value, read.fresh), streamed(&(exact.cold)(read.hour, &token), read.fresh), "planned, steps of {every} hours from {join}, every {skip}: hour {}", read.hour);
         }
     }
 }

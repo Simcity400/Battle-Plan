@@ -213,7 +213,7 @@ impl AtHour for AgencyComparison {
         stage == 1 && edits.fields(TableId::AgencyUpgradeLevels, u64::MAX)
     }
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         let table = TableId::IntelligenceAgencies;
         if !edits.only_columns(table, dashboard_base::products::at_hour::field_mask(table, &["defense_raw", "active_count", "unknown_f0"])) { return Ok(false); }
         let rows = frame.complete::<tables::IntelligenceAgencies>()?;

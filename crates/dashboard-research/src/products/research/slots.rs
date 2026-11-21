@@ -136,7 +136,7 @@ impl AtHour for ResearchSlots {
         }
     }
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &dashboard_base::products::at_hour::Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
         if !edits.replaced.is_empty() || !data["missing"].is_null() { return Ok(false); }
         let table = TableId::ResearchInputs;
         let moving = dashboard_base::products::at_hour::field_mask(table, &["progress_raw", "banked_days_raw", "applied_days_raw"]);

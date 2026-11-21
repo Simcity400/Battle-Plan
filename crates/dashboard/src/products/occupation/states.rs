@@ -358,7 +358,15 @@ pub(super) fn judged_through(content: &Content, held: &DecodedFrame, since: Opti
         return false;
     }
     judged.at = Some((held.branch, held.hour));
+    judged.carried = true;
     true
+}
+
+pub(super) fn law_stands(content: &Content, held: &DecodedFrame, edits: &Edits) -> bool {
+    let clocked = { let world = content.world.lock().unwrap_or_else(|error| error.into_inner()); world.ends || world.undeclared };
+    if !clocked && !world_moved(edits) { return true; }
+    let judged = content.judged.lock().unwrap_or_else(|error| error.into_inner());
+    judged.carried && judged.at == Some((held.branch, held.hour))
 }
 
 fn eligibility(frame: &DecodedFrame, content: &Content) -> (Judgements, WorldReads) {
@@ -390,13 +398,13 @@ fn world_missing(params: &OccupiedStatesParams, held: &DecodedFrame, content: &C
     let before = world.clone();
     world.add(&read);
     if missing.is_empty() && *world == before {
-        *content.judged.lock().unwrap_or_else(|error| error.into_inner()) = Judged { at: Some((held.branch, held.hour)), decisions: decided };
+        *content.judged.lock().unwrap_or_else(|error| error.into_inner()) = Judged { at: Some((held.branch, held.hour)), decisions: decided, carried: false };
     }
     missing
 }
 
 fn judge_none(held: &DecodedFrame, content: &Content) {
-    *content.judged.lock().unwrap_or_else(|error| error.into_inner()) = Judged { at: Some((held.branch, held.hour)), decisions: Judgements::default() };
+    *content.judged.lock().unwrap_or_else(|error| error.into_inner()) = Judged { at: Some((held.branch, held.hour)), decisions: Judgements::default(), carried: false };
 }
 
 fn world_planned(plan: &[(Vec<Read>, i32)]) -> bool {
@@ -763,10 +771,8 @@ impl AtHour for OccupiedStates {
         }
     }
 
-    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
-        if !data["missing"].is_null() || !structure_holds(frame, edits) { return Ok(false); }
-        if world_moved(edits) && at.context.judged.lock().unwrap_or_else(|error| error.into_inner()).at != Some((frame.branch, frame.hour)) { return Ok(false); }
-        Ok(true)
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>, edits: &Edits, _live: &dashboard_follow::live::Live, data: &mut dashboard_base::products::at_hour::Held<'_>) -> io::Result<bool> {
+        Ok(data["missing"].is_null() && structure_holds(frame, edits) && law_stands(at.context, frame, edits))
     }
 
     fn clock_dependent(plan: &[(Vec<Read>, i32)], content: &Self::Context) -> bool {

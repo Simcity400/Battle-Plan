@@ -334,6 +334,36 @@ struct Stream {
     sampled: Option<BTreeSet<TableId>>,
 }
 
+pub struct Held<'a>(&'a mut Arc<PanelData>);
+
+impl std::ops::Deref for Held<'_> {
+    type Target = Value;
+    fn deref(&self) -> &Value {
+        static NONE: Value = Value::Null;
+        self.0.as_ref().as_ref().unwrap_or(&NONE)
+    }
+}
+
+impl std::ops::DerefMut for Held<'_> {
+    fn deref_mut(&mut self) -> &mut Value {
+        let data = Arc::make_mut(self.0);
+        if data.is_err() { *data = Ok(Value::Null); }
+        match data { Ok(value) => value, Err(_) => unreachable!("made a value above") }
+    }
+}
+
+fn current_values<P: AtHour>(state: &mut Stream, input: &mut Input<'_>) -> io::Result<Arc<PanelData>> {
+    if state.values_at != Some(input.hour) && state.data.is_ok() {
+        if !state.live.is_empty() {
+            state.extra.advance::<P>(input)?;
+            let live = state.extra.values(&state.live, &mut state.frame);
+            if let Ok(Value::Object(data)) = Arc::make_mut(&mut state.data) { data.insert("live".into(), live); }
+        }
+        state.values_at = Some(input.hour);
+    }
+    Ok(state.data.clone())
+}
+
 fn sampling<T>(frame: &DecodedFrame, sampled: &mut Option<BTreeSet<TableId>>, compute: impl FnOnce() -> T) -> T {
     let (value, views) = replay_frame::frame::view_reads::samples(compute);
     let tables = sampled.get_or_insert_with(BTreeSet::new);
@@ -359,15 +389,18 @@ where P::Context: Sync, P::Params: Sync {
     identity_edges.sort_unstable();
     identity_edges.dedup();
     let stream = Mutex::new(None::<Stream>);
-    Arc::new(move |hour, reset, cancelled, step| {
+    Arc::new(move |hour, values, cancelled, step| {
         let mut held = stream.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut count = 0;
         let result = engine_executable::executable_tables::scope(executable, || -> io::Result<_> {
-            if let Some(state) = held.as_ref().filter(|s| s.frame.hour == hour) { return Ok(state.data.clone()); }
-            if let Some(state) = held.as_mut() { state.values_at = None; }
             let run = timeline.at(hour).ok_or_else(|| dashboard_core::refused(format!("{} hour is not recorded", P::TITLE)))?.run;
+            let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
+            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: step.filter(|s| s.step.last() == hour), placed: None };
+            if let Some(state) = held.as_mut().filter(|s| s.frame.hour == hour && s.run == run) {
+                return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
+            }
             let owner = holder::<P>(&holders, &params, hour)?;
-            let seed = reset || held.as_ref().is_none_or(|s| s.run != run || hour < s.frame.hour);
+            let seed = held.as_ref().is_none_or(|s| s.run != run || hour < s.frame.hour);
             if seed {
                 *held = Some(Stream { tables: HashMap::new(), extra: Supplemental::default(), values_at: None, plans: Vec::new(), frame: Box::new(empty(timeline.id, hour)), run, identity_through: hour, live: Arc::default(), data: Arc::new(Err(String::new())), reply: None, sampled: None });
             }
@@ -381,8 +414,6 @@ where P::Context: Sync, P::Params: Sync {
             let mut edits = Edits::default();
             let mut selected = BTreeSet::new();
             let at = ReadsAt { holders: &holders, context: &*context, run, hour, since: (!seed).then_some(previous_hour) };
-            let read_run = pool.pages.run_of(run).ok_or_else(|| dashboard_core::refused(format!("{} hour is in a run the recording cannot read", P::TITLE)))?;
-            let mut input = Input { pool: &pool, run: read_run, hour, mode: capture_mode(&pool.pages)?, count: &mut count, step: step.filter(|s| s.step.last() == hour), placed: None };
             let mut tried: HashMap<TableId, Vec<u64>> = HashMap::new();
             let clocked = hour != previous_hour && P::clock_dependent(&state.plans, &context);
             loop {
@@ -429,15 +460,15 @@ where P::Context: Sync, P::Params: Sync {
             if !identity_changed && selected.iter().all(|table| matches!(state.frame.tables[table.index()].held(), TableView::Complete(_))) {
                 let changed = !edits.tables.is_empty() || !edits.replaced.is_empty();
                 if !changed && !P::clock_dependent(&state.plans, &context) {
-                    return Ok(state.data.clone());
+                    return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
                 }
                 if state.data.is_ok() {
-                    let kept = (Arc::strong_count(&state.data) > 1).then(|| state.data.clone());
-                    if let Ok(data) = Arc::make_mut(&mut state.data) && P::advance(&state.frame, &params, &at, &edits, &state.live, data)? {
+                    let kept = state.data.clone();
+                    if P::advance(&state.frame, &params, &at, &edits, &state.live, &mut Held(&mut state.data))? {
                         state.reply = None;
-                        return Ok(state.data.clone());
+                        return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
                     }
-                    if let Some(kept) = kept { state.data = kept; }
+                    state.data = kept;
                 }
             }
             let mut own = OwnRefusals::default();
@@ -446,7 +477,7 @@ where P::Context: Sync, P::Params: Sync {
             let live = cells.finish();
             if !seed && state.data.is_ok() && *state.live == live
                 && state.reply.as_ref().and_then(|last| last.downcast_ref::<P::Reply>()).is_some_and(|last| *last == reply) {
-                return Ok(state.data.clone());
+                return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
             }
             state.live = Arc::new(live);
             let projected = |table: TableId| P::projection(&params, table, &state.plans, &context);
