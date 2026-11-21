@@ -34,6 +34,18 @@ test('a table weighs more than a panel, so two tables draw on different lanes', 
   assert.deepEqual(types(1), ['surface', 'table', 'detach', 'table'], 'a detached table frees its weight');
 });
 
+test('a table drawn again after panels filled the lanes goes to a lane drawing no table', () => {
+  const { draw, sent } = lanes(2);
+  const panel = (id: number) => ({ type: 'surface', id, owner: 1, width: 1, height: 1, dpr: 1, model: {} } as unknown as ToWorker);
+  draw.post(table(1)); draw.post(table(2));
+  for (let id = 3; id <= 12; id++) draw.post(panel(id));
+  draw.post({ type: 'detach', id: 2 });
+  for (let id = 13; id <= 16; id++) draw.post(panel(id));
+  draw.post(table(17));
+  const tablesOn = (lane: number) => sent[lane]!.filter(message => message.type === 'table').map(message => (message as { id: number }).id);
+  assert.deepEqual([tablesOn(0).includes(17), tablesOn(1).includes(17)], [!tablesOn(0).includes(1), !tablesOn(1).includes(1)]);
+});
+
 test('follows, the clock and options reach every lane; a follow inspection the first alone', () => {
   const { draw, types } = lanes(3);
   draw.post({ type: 'add', id: 9, branch: 'b' });

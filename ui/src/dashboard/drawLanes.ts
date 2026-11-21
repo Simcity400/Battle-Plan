@@ -7,6 +7,7 @@ const SURFACE = new Set<ToWorker['type']>(['surface', 'table', 'dateFace', 'race
   'racePointer', 'inspectRace', 'detach', 'closeRace']);
 const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'structureLead', 'followFailure']);
 const WEIGHT: Partial<Record<ToWorker['type'], number>> = { table: 4, race: 2 };
+const TABLE = 1_000;
 
 export class DrawLanes {
   private readonly owner = new Map<number, { lane: number; weight: number }>();
@@ -29,7 +30,9 @@ export class DrawLanes {
         if (message.type !== 'surface' && message.type !== 'table' && message.type !== 'dateFace' && message.type !== 'race') {
           this.lanes[0]!.postMessage(message, transfer); return;
         }
-        held = { lane: this.load.indexOf(Math.min(...this.load)), weight: WEIGHT[message.type] ?? 1 };
+        const weight = (WEIGHT[message.type] ?? 1) + (message.type === 'table' ? TABLE : 0);
+        const least = message.type === 'table' ? this.load : this.load.map(load => load % TABLE);
+        held = { lane: least.indexOf(Math.min(...least)), weight };
         this.owner.set(message.id, held); this.load[held.lane]! += held.weight;
       }
       if (message.type === 'detach' || message.type === 'closeRace') { this.owner.delete(message.id); this.load[held.lane]! -= held.weight; }
