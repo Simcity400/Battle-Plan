@@ -290,6 +290,29 @@ def unsafe_operation(node):
     return node.type == "call_expression" or any(unsafe_operation(child) for child in node.children)
 
 
+def unsafe_tokens(node):
+    """Whether macro tokens at `node` sit in an `unsafe { ... }` token tree."""
+    tree = node.parent
+    while tree is not None and tree.type in ("token_tree", "token_repetition"):
+        if braces(tree) and tree.prev_sibling is not None and tree.prev_sibling.text == b"unsafe":
+            return True
+        tree = tree.parent
+    return False
+
+
+def token_operation(node):
+    """Whether the macro statement starting at `node` dereferences or calls: a `*` or a `(` group
+    right after a name, up to the `;` or `,` that ends it."""
+    unit = node
+    while unit is not None and unit.type not in (";", ","):
+        if unit.text == b"*":
+            return True
+        if unit.type == "token_tree" and unit.text.startswith(b"(") and unit.prev_sibling is not None                 and unit.prev_sibling.type in ("identifier", "metavariable", ">"):
+            return True
+        unit = unit.next_sibling
+    return False
+
+
 def unsafe_site(node):
     if node.type == "." and node.parent.type == "field_expression":
         call = node.parent.parent
@@ -297,7 +320,7 @@ def unsafe_site(node):
             call = call.parent
         if call is not None and call.type == "call_expression":
             arguments = call.child_by_field_name("arguments")
-            return arguments is not None and has_unsafe(arguments)
+            return arguments is not None and has_unsafe(arguments) or inside_unsafe(call)
     if node.type in NOT_UNSAFE_SITES:
         return False
     if node.type == "impl_item":
@@ -310,6 +333,8 @@ def unsafe_site(node):
         item, qualified = token_item(node)
         if item is not None:
             return item == "impl" and qualified
+        if unsafe_tokens(node) and token_operation(node):
+            return True
     unit, generics, in_type = node, 0, False
     while unit is not None and unit.type != ";" and (unit.type != "," or generics):
         if has_unsafe(unit):

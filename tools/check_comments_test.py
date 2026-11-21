@@ -293,6 +293,23 @@ unsafe extern "system" fn window_proc(hwnd: usize, message: u32, lparam: isize) 
     }
     0
 }
+macro_rules! writer {
+    ($site:expr, $args:expr) => {
+        unsafe {
+            // SAFETY: refused, copying a parameter is safe even inside an unsafe block.
+            let site = $site;
+            // SAFETY: kept, the site's detour runs on the native thread with that call's arguments.
+            invoke(site, $args)
+        }
+    };
+}
+fn handler(pointers: *const Pointers) {
+    let record = unsafe {
+        pointers
+            // SAFETY: kept, the dispatcher passes its live exception pointers.
+            .as_ref()
+    };
+}
 macro_rules! fetch {
     ($p:expr) => {{
         // SAFETY: kept, `$p` points at a live byte.
@@ -328,6 +345,7 @@ fn total(cells: &[*const u32]) -> std::io::Result<u32> {
             b"// SAFETY: refused, a safe function's body is not this comment's code.",
             b"// SAFETY: refused, the empty vector is safe; the unsafe call is the next argument.",
             b"// SAFETY: refused, reading a local is safe even inside an unsafe block.",
+            b"// SAFETY: refused, copying a parameter is safe even inside an unsafe block.",
             b"// SAFETY: refused, a comparison is safe; the unsafe read is the next field.",
         ])
 

@@ -5871,7 +5871,8 @@ unsafe fn finish_acquisition(
 /// # Safety
 /// `batch` owns `pending`'s uncollected ticket, whether [`submit_acquisition`] made it or the batch
 /// adopted a worker's child ticket, and the callback still holds the live-read lease. An accepted
-/// ticket joins its published completion; a rejected one runs its parked request inline.
+/// ticket joins its published completion; a rejected one completes its parked request here without
+/// a worker, as a failure for most jobs, or run inline where the request is eligible.
 unsafe fn finish_acquisition_into(
     shared: &Shared,
     batch: &mut acquisition::Batch<'_>,
@@ -6068,8 +6069,9 @@ impl PresentationPending {
     }
 
     /// # Safety
-    /// `pending` is this hour's published preparation on the callback's `batch`, and the callback
-    /// holds the live-read lease until the batch drains.
+    /// `pending` is this hour's preparation on the callback's `batch`, either published or parked
+    /// after a rejection (which completes as a failure), and the callback holds the live-read lease
+    /// until the batch drains.
     #[inline(never)]
     unsafe fn dispatch_ranges(
         &mut self,
@@ -6160,7 +6162,7 @@ impl PresentationPending {
             };
             out_of_line(|| {
                 // SAFETY: the batch owns each range's ticket and the callback holds the live-read
-                // lease; a published range is collected here, a parked one runs inline.
+                // lease; a published range is collected here, a parked one completes as a failure.
                 let (mut part, report) = unsafe {
                     collect_acquisition(
                         shared,
