@@ -157,6 +157,84 @@ mod reply {
     }
 
     #[test]
+    fn moving_garrison_numbers_keep_the_structure_only_while_what_it_shows_of_them_holds() {
+        use crate::products::at_hour::Edits;
+        use replay_data::rows::GarrisonEquipment;
+        fn held(frame: &mut DecodedFrame, table: TableId) -> &mut TableRows {
+            match &mut *frame.tables[table.index()] { TableView::Complete(rows) => rows, _ => unreachable!() }
+        }
+        let garrison = 1u128 << 32 | 10;
+        let assigned = [1u128 << 64 | 10 << 32, 1u128 << 64 | 10 << 32 | 1];
+        let edits = |before: &DecodedFrame, tables: &[(TableId, &[u128], &[&str])]| {
+            let mut edits = Edits::default();
+            for &(table, keys, fields) in tables {
+                edits.previous.insert(table, before.tables[table.index()].clone());
+                let mask = crate::products::at_hour::field_mask(table, fields);
+                edits.tables.insert(table, keys.iter().map(|&key| (key, mask)).collect());
+            }
+            edits
+        };
+        let moved = |change: &dyn Fn(&mut DecodedFrame)| {
+            let mut frame = frame();
+            change(&mut frame);
+            frame
+        };
+        let all: [(TableId, &[u128], &[&str]); 3] = [
+            (TableId::StateGarrisons, &[garrison], &["garrison_required", "equipment"]),
+            (TableId::StateAssignedManpower, &assigned, &["amount"]),
+            (TableId::GarrisonStrengths, &[garrison], &["strength"]),
+        ];
+        let reply = |frame: &DecodedFrame| serde_json::to_value(states::reply(frame, &content(), &Cells::default()).unwrap()).unwrap();
+        let token = |equipment_token| GarrisonEquipment { equipment_token, archetype_token: 2, allocated_raw: 5, ..Default::default() };
+
+        let numbers = moved(&|frame| {
+            let TableRows::StateGarrisons(rows) = held(frame, TableId::StateGarrisons) else { unreachable!() };
+            rows[0].garrison_required = 1;
+            let TableRows::StateAssignedManpower(rows) = held(frame, TableId::StateAssignedManpower) else { unreachable!() };
+            (rows[0].amount, rows[1].amount) = (7, -5);
+            let TableRows::GarrisonStrengths(rows) = held(frame, TableId::GarrisonStrengths) else { unreachable!() };
+            rows[0].strength = Recorded::Value(1);
+        });
+        assert!(states::structure_holds(&numbers, &edits(&frame(), &all)), "every number moved, none crossed what the row shows");
+        assert_eq!(reply(&numbers), reply(&frame()), "and a full read agrees");
+        assert!(!states::structure_holds(&numbers, &edits(&frame(), &[(TableId::StateGarrisons, &[garrison], &["garrison_required", "serialized_flag"])])), "a column the structure reads");
+
+        let with_equipment = |tokens: &[u32]| moved(&|frame| {
+            let TableRows::StateGarrisons(rows) = held(frame, TableId::StateGarrisons) else { unreachable!() };
+            rows[0].equipment = Recorded::Value(GarrisonEquipmentInputs { rows: tokens.iter().map(|&t| token(t)).collect(), failure: None });
+        });
+        let equipment = &all[..1];
+        let mut counted = with_equipment(&[3, 4]);
+        let TableRows::StateGarrisons(rows) = held(&mut counted, TableId::StateGarrisons) else { unreachable!() };
+        rows[0].equipment = Recorded::Value(GarrisonEquipmentInputs { rows: vec![GarrisonEquipment { allocated_raw: 9, ..token(3) }, token(4)], failure: None });
+        assert!(states::structure_holds(&counted, &edits(&with_equipment(&[3, 4]), equipment)), "equipment counts moved, its tokens held");
+        assert!(!states::structure_holds(&with_equipment(&[3, 5]), &edits(&with_equipment(&[3, 4]), equipment)), "a new equipment token needs its definition");
+
+        for (why, after, tables) in [
+            ("the garrison requirement crossed zero", moved(&|frame| {
+                let TableRows::StateGarrisons(rows) = held(frame, TableId::StateGarrisons) else { unreachable!() };
+                rows[0].garrison_required = -1;
+            }), &all[..1]),
+            ("the assigned total reached zero", moved(&|frame| {
+                let TableRows::StateAssignedManpower(rows) = held(frame, TableId::StateAssignedManpower) else { unreachable!() };
+                (rows[0].amount, rows[1].amount) = (5, -5);
+            }), &all[1..2]),
+            ("the strength stopped being recorded", moved(&|frame| {
+                let TableRows::GarrisonStrengths(rows) = held(frame, TableId::GarrisonStrengths) else { unreachable!() };
+                rows[0].strength = Recorded::NotRecorded;
+            }), &all[2..]),
+        ] {
+            assert!(!states::structure_holds(&after, &edits(&frame(), tables)), "{why}");
+        }
+        let mut inserted = edits(&frame(), &all[..1]);
+        inserted.tables.get_mut(&TableId::StateGarrisons).unwrap().insert(garrison, u64::MAX);
+        assert!(!states::structure_holds(&frame(), &inserted), "a row came or went");
+        let mut replaced = edits(&frame(), &all[..1]);
+        replaced.replaced.insert(TableId::StateGarrisons);
+        assert!(!states::structure_holds(&frame(), &replaced), "a table read again whole");
+    }
+
+    #[test]
     fn occupied_states_not_recorded_at_the_hour_say_why_and_show_no_state() {
         let mut frame = frame();
         *frame.tables[TableId::StateResistance.index()] = TableView::Unavailable { reason: "the read failed".into() };

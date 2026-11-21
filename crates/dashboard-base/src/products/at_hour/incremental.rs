@@ -433,10 +433,18 @@ where P::Context: Sync, P::Params: Sync {
                     }
                     return Ok(state.data.clone());
                 }
-                if state.extra.reads.is_empty() && state.data.is_ok() {
+                if state.data.is_ok() {
                     let kept = (Arc::strong_count(&state.data) > 1).then(|| state.data.clone());
                     if let Ok(data) = Arc::make_mut(&mut state.data) && P::advance(&state.frame, &params, &at, &edits, &state.live, data)? {
-                        if let Some(encoding) = &mut state.encoding { encoding.patch(data, &state.live, &edits)?; }
+                        let mut refreshed = false;
+                        if !state.extra.reads.is_empty() {
+                            state.extra.advance::<P>(&mut input)?;
+                            let fresh = state.extra.values(&state.live, &mut state.frame);
+                            refreshed = data["live"] != fresh;
+                            if refreshed { data["live"] = fresh; }
+                        }
+                        if refreshed { state.encoding = P::ENCODE_LIVE_CELLS.then(|| super::encoding::Encoding::new(data)).transpose()?; }
+                        else if let Some(encoding) = &mut state.encoding { encoding.patch(data, &state.live, &edits)?; }
                         state.reply = None;
                         return Ok(state.data.clone());
                     }

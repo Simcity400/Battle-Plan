@@ -7,14 +7,15 @@ use crate::{
     catalogue::Refusals,
     products::{
         LoadContext,
-        at_hour::{At, AtHour, Keys, Owner, Read, ReadsAt},
+        at_hour::{At, AtHour, Edits, Keys, Owner, Read, ReadsAt, field_mask},
         intelligence::{Tags, branch, missing},
     },
 };
 use dashboard_follow::live::{Cells, Source as Cell};
 use dashboard_text::metadata::recorded_rows;
 use replay_data::rows::{
-    CountryLinkRow, GarrisonEquipment, GarrisonStrengthRow, OccupationSettingsRow, Recorded, StateGarrisonRow, StateResistanceRow, StateRow, TableId, tables,
+    CountryLinkRow, GarrisonEquipment, GarrisonEquipmentInputs, GarrisonStrengthRow, OccupationSettingsRow, Recorded, StateAssignedManpowerRow, StateGarrisonRow, StateResistanceRow, StateRow, TableId,
+    tables,
 };
 use replay_frame::frame::{DecodedFrame, HourFrame};
 use serde::{Deserialize, Serialize};
@@ -569,6 +570,75 @@ pub(super) fn reply(frame: &DecodedFrame, content: &Content, live: &Cells) -> io
     Ok(reply)
 }
 
+const MOVING: [(TableId, &[&str]); 3] = [
+    (TableId::StateGarrisons, &["garrison_required", "equipment"]),
+    (TableId::StateAssignedManpower, &["amount"]),
+    (TableId::GarrisonStrengths, &["strength"]),
+];
+
+fn moving_only(edits: &Edits) -> bool {
+    edits.replaced.is_empty() && edits.tables.iter().all(|(table, rows)| {
+        MOVING.iter().find(|(moving, _)| moving == table).is_some_and(|&(table, fields)| {
+            let mask = field_mask(table, fields);
+            rows.values().all(|changed| changed & !mask == 0)
+        })
+    })
+}
+
+fn find<R>(rows: &[R], key: u128, key_of: impl Fn(&R) -> u128) -> Option<&R> {
+    rows.binary_search_by_key(&key, &key_of).ok().map(|at| &rows[at]).or_else(|| rows.iter().find(|row| key_of(row) == key))
+}
+
+fn same_tokens(before: &Recorded<GarrisonEquipmentInputs>, after: &Recorded<GarrisonEquipmentInputs>) -> bool {
+    match (before, after) {
+        (Recorded::NotRecorded, Recorded::NotRecorded) => true,
+        (Recorded::Value(before), Recorded::Value(after)) => before.failure == after.failure && before.rows.len() == after.rows.len()
+            && before.rows.iter().zip(&after.rows).all(|(a, b)| (a.equipment_token, a.archetype_token) == (b.equipment_token, b.archetype_token)),
+        _ => false,
+    }
+}
+
+pub(super) fn structure_holds(frame: &DecodedFrame, edits: &Edits) -> bool {
+    if !moving_only(edits) { return false; }
+    let before = |table: TableId| match edits.previous.get(&table).map(|view| view.held()) {
+        Some(replay_frame::frame::TableView::Complete(rows)) => Some(rows),
+        _ => None,
+    };
+    if let Some(changed) = edits.tables.get(&TableId::StateGarrisons) {
+        let (Some(old), Ok(new)) = (before(TableId::StateGarrisons).and_then(|rows| rows.rows::<tables::StateGarrisons>()), frame.complete::<tables::StateGarrisons>()) else { return false };
+        let key_of = |row: &StateGarrisonRow| u128::from(row.controller) << 32 | u128::from(row.state);
+        for &key in changed.keys() {
+            let (Some(a), Some(b)) = (find(old, key, key_of), find(new, key, key_of)) else { return false };
+            if a.garrison_required.signum() != b.garrison_required.signum() || !same_tokens(&a.equipment, &b.equipment) { return false; }
+        }
+    }
+    if let Some(changed) = edits.tables.get(&TableId::GarrisonStrengths) {
+        let (Some(old), Ok(new)) = (before(TableId::GarrisonStrengths).and_then(|rows| rows.rows::<tables::GarrisonStrengths>()), frame.complete::<tables::GarrisonStrengths>()) else { return false };
+        let key_of = |row: &GarrisonStrengthRow| GarrisonStrengthRow::key_of(row.controller, row.state);
+        for &key in changed.keys() {
+            let (Some(a), Some(b)) = (find(old, key, key_of), find(new, key, key_of)) else { return false };
+            if (a.strength == Recorded::NotRecorded) != (b.strength == Recorded::NotRecorded) { return false; }
+        }
+    }
+    if let Some(changed) = edits.tables.get(&TableId::StateAssignedManpower) {
+        let (Some(old), Ok(new), Ok(links)) = (before(TableId::StateAssignedManpower).and_then(|rows| rows.rows::<tables::StateAssignedManpower>()),
+            frame.complete::<tables::StateAssignedManpower>(), frame.complete::<tables::CountryLinks>()) else { return false };
+        let touched: BTreeSet<u32> = changed.keys().map(|&key| (key >> 32) as u32).collect();
+        let shown = |rows: &[StateAssignedManpowerRow]| {
+            let mut totals = BTreeMap::<Key, i32>::new();
+            for row in rows.iter().filter(|row| touched.contains(&row.state)) {
+                if let (Some(controller), Some(occupied)) = (slot(links, row.controller), slot(links, row.occupied)) {
+                    let total = totals.entry((controller, occupied, row.state)).or_default();
+                    *total = total.wrapping_add(row.amount);
+                }
+            }
+            totals.into_iter().map(|(key, total)| (key, total != 0)).collect::<Vec<_>>()
+        };
+        if shown(old) != shown(new) { return false; }
+    }
+    true
+}
+
 impl AtHour for OccupiedStates {
     const KEY: &'static str = "occupied-states";
     const TITLE: &'static str = "Occupied states";
@@ -626,6 +696,24 @@ impl AtHour for OccupiedStates {
             fields |= world.fields.get(&table).copied().unwrap_or(0);
         }
         Some((0..table.field_count()).filter(|&field| fields >> field & 1 != 0).collect())
+    }
+
+    fn compares_previous(table: TableId) -> bool {
+        MOVING.iter().any(|(moving, _)| *moving == table)
+    }
+
+    fn plan_changes(stage: usize, edits: &Edits) -> bool {
+        match stage {
+            0 => false,
+            1 => !edits.tables.is_empty() || !edits.replaced.is_empty(),
+            _ => !moving_only(edits),
+        }
+    }
+
+    fn advance(frame: &DecodedFrame, _params: &Self::Params, _at: &At<'_, Self::Context>, edits: &Edits, live: &dashboard_follow::live::Live, data: &mut serde_json::Value) -> io::Result<bool> {
+        if !data["missing"].is_null() || !structure_holds(frame, edits) { return Ok(false); }
+        live.patch(frame, &edits.tables, data);
+        Ok(true)
     }
 
     fn clock_dependent(plan: &[(Vec<Read>, i32)], content: &Self::Context) -> bool {
