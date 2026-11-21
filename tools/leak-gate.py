@@ -3,7 +3,7 @@
 The one leak scanner: release artifacts use the artifact walk below; the repository's commit and
 pull-request checks add git front ends over the same core, `Matcher.scan_bytes`.
 
-It looks, in bytes, UTF-8 and UTF-16, case-insensitively, for these kinds:
+It looks, in bytes, UTF-8 and UTF-16, case-insensitively and for each kind on its own, for these kinds:
 - term: the private terms (names, home folders, private paths, private hosts), never kept in this
   repository. In order: the environment variable LEAK_GATE_TERMS (a JSON list, from the CI secret
   of that name); else `[leak] terms` in the dev config at BATTLE_PLAN_DEV_CONFIG, or at
@@ -35,20 +35,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOW = ROOT / "tools" / "leak-gate.allow"
-EMAIL = (rb"[A-Za-z0-9._%+-]{2,}@[A-Za-z0-9-]{2,}(?:\.[A-Za-z0-9-]+)*\.(?:com|org|net|io|dev|edu|gov|info|biz|me|co|uk|de|fr|"
-         rb"au|ca|us|eu|ru|jp|cn|nl|se|no|fi|ch|at|be|it|es|pl|cz|br|in|nz|app|xyz|ai|gg|sh|cc)(?![A-Za-z0-9-])")
-NOREPLY = re.compile(rb"@users\.noreply\.github\.com$|^noreply@github\.com$", re.IGNORECASE)
+LOCAL = b"abcdefghijklmnopqrstuvwxyz0123456789._%+-"
+EMAIL = re.compile(rb"@(?<=[a-z0-9._%+-]{2}@)[a-z0-9-]{2,}(?:\.[a-z0-9-]+)*\.(?:com|org|net|io|dev|edu|gov|info|biz|me|co|uk|de|fr|"
+                   rb"au|ca|us|eu|ru|jp|cn|nl|se|no|fi|ch|at|be|it|es|pl|cz|br|in|nz|app|xyz|ai|gg|sh|cc)(?![a-z0-9-])")
+NOREPLY = re.compile(rb"@users\.noreply\.github\.com$|^noreply@github\.com$")
+USER_TAIL = rb"[\\/]+users[\\/]+[^\\/\x00\s\"']+"
 RULES = {
-    "user-path": [rb"[A-Za-z]:[\\/]+Users[\\/]+[^\\/\x00\s\"']+", rb"[\\/]+c[\\/]+Users[\\/]+[^\\/\x00\s\"']+"],
-    "steam-path": [rb"SteamLibrary"],
-    "email": [EMAIL],
-    "github-token": [rb"gh[pousr]_[A-Za-z0-9]{30,}", rb"github_pat_[A-Za-z0-9_]{30,}"],
-    "private-key": [rb"-----BEGIN[A-Z ]*PRIVATE KEY-----"],
-    "aws-key": [rb"AKIA[0-9A-Z]{16}"],
-    "slack-token": [rb"xox[abprs]-[A-Za-z0-9-]{10,}"],
+    "user-path": [rb":(?<=[a-z]:)" + USER_TAIL, rb"c(?<=[\\/]c)" + USER_TAIL],
+    "steam-path": [rb"steamlibrary"],
+    "github-token": [rb"gh[pousr]_[a-z0-9]{30,}", rb"github_pat_[a-z0-9_]{30,}"],
+    "private-key": [rb"-----begin[a-z ]*private key-----"],
+    "aws-key": [rb"akia[0-9a-z]{16}"],
+    "slack-token": [rb"xox[abprs]-[a-z0-9-]{10,}"],
     "secret-key": [rb"encrypted secret key",
-                   re.escape(base64.b64encode(b"untrusted comment: rsign encrypted secret key")[:40]),
-                   re.escape(base64.b64encode(b"untrusted comment: minisign encrypted secret key")[:40])],
+                   *(re.escape(base64.b64encode(b"untrusted comment: %s encrypted secret key" % tool)[:40].lower())
+                     for tool in (b"rsign", b"minisign"))],
 }
 NEVER_EXEMPT = {"term", "updater-key", "github-token", "private-key", "aws-key", "slack-token", "secret-key"}
 OPENED = {"Nsis", "zip", "7z", "Cab", "Rar", "gzip", "tar", "xz"}
@@ -103,7 +104,7 @@ def literal(strings):
     forms = set()
     for value in strings:
         forms |= {value, value.replace("\\", "/"), value.replace("/", "\\")}
-    return [re.escape(form.encode("utf-8")) for form in sorted(forms)]
+    return sorted({re.escape(form.encode("utf-8").lower()) for form in forms})
 
 
 def load_allow(path=ALLOW):
@@ -129,9 +130,7 @@ class Matcher:
         rules = {"term": literal(terms), **RULES}
         if key_forms:
             rules["updater-key"] = literal(key_forms)
-        self.kinds = list(rules)
-        self.compiled = re.compile(b"|".join(b"(?P<k%d>%s)" % (index, b"|".join(rules[kind]))
-                                             for index, kind in enumerate(self.kinds)), re.IGNORECASE)
+        self.patterns = [(kind, re.compile(pattern)) for kind, patterns in rules.items() for pattern in patterns]
         self.allow = allow
 
     def exempt(self, name, kind):
@@ -145,18 +144,29 @@ class Matcher:
             counts["pdb"] = 1
         if lowered.endswith((".js.map", ".css.map")):
             counts["source-map"] = 1
-        views = [data]
-        for offset in (0, 1):
-            chunk = data[offset:len(data) - ((len(data) - offset) % 2)]
-            if chunk:
-                views.append(chunk.decode("utf-16-le", errors="replace").encode("latin-1", errors="replace"))
+        data = data.lower()
+        views = [data, *(data[offset:len(data) - ((len(data) - offset) % 2)].decode("utf-16-le", errors="replace")
+                         .encode("latin-1", errors="replace") for offset in (0, 1))]
         for view in views:
-            for match in self.compiled.finditer(view):
-                kind = self.kinds[int(match.lastgroup[1:])]
-                if kind == "email" and NOREPLY.search(match.group(0)):
-                    continue
-                counts[kind] = counts.get(kind, 0) + 1
+            for kind, pattern in self.patterns:
+                if found := len(pattern.findall(view)):
+                    counts[kind] = counts.get(kind, 0) + found
+            if found := addresses(view):
+                counts["email"] = counts.get("email", 0) + found
         return [(kind, count) for kind, count in counts.items() if not self.exempt(name, kind)]
+
+
+def addresses(view):
+    """The email addresses in `view`, as a lone search for them would count them, less GitHub noreply ones."""
+    count = end = 0
+    for match in EMAIL.finditer(view):
+        at = match.start()
+        local = view[max(end, at - 8):at]
+        local = local[len(local.rstrip(LOCAL)):]
+        if len(local) >= 2:
+            end = match.end()
+            count += not NOREPLY.search(local + view[at:end])
+    return count
 
 
 
