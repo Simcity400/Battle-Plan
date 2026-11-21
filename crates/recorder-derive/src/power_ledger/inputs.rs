@@ -180,6 +180,13 @@ pub(super) fn daily(hour: &Hour<'_>, raw: u32) -> io::Result<Option<CountryPower
     keyed(&hour.table(TableId::CountryPowerDaily), u128::from(raw))
 }
 
+pub(super) fn fresh_daily(hour: &Hour<'_>, raw: u32) -> io::Result<Option<CountryPowerDailyRow>> {
+    if !daily_complete(hour) || hour.table(TableId::CountryPowerDaily).sampled_at() != Some(hour.hour) {
+        return Ok(None);
+    }
+    daily(hour, raw)
+}
+
 pub(super) struct Publication {
     pub country: u32,
     pub costs: Vec<CountryPowerDailyCostRow>,

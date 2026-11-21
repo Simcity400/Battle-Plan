@@ -391,15 +391,6 @@ impl PowerLedger {
         Ok(inputs::keyed::<Part>(&own.table(TableId::PowerDayParts), key)?.filter(|part| part.day == day))
     }
 
-    fn opened(&self, own: &Rows<'_>, pending: &Pending, holder: u32, today: i32, sequence: u64) -> io::Result<bool> {
-        for &key in self.parts.get(&holder).map_or(&[][..], |(_, keys)| keys.as_slice()) {
-            if Self::held_part(own, pending, key, today)?.is_some_and(|part| part.cost_ordinal.is_some() && part.sequence == Some(sequence)) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     fn open_part(&mut self, pending: &mut Pending, part: Part) {
         let key = part.key();
         let open = self.parts.entry(part.holder).or_insert((part.day, Vec::new()));
@@ -431,25 +422,6 @@ impl PowerLedger {
             }
         }
         Ok(None)
-    }
-
-    #[allow(clippy::too_many_arguments, reason = "an application's identity and the parts it keeps are read together")]
-    fn unchanged(&self, own: &Rows<'_>, pending: &Pending, holder: u32, today: i32, sequence: u64, matched: bool, costs: &[&CountryPowerDailyCostRow], produced: &mut HashSet<u128>) -> io::Result<()> {
-        let mut items: BTreeMap<u32, (i128, i64)> = BTreeMap::new();
-        for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
-            let ordinal = if matched { self.known_item(own, pending, holder, &ItemId::cost(cost))? } else { Some(Total::GAINS) };
-            let Some(ordinal) = ordinal else { continue };
-            let entry = items.entry(ordinal).or_default();
-            entry.0 += i128::from(cost.cost_raw);
-            entry.1 += 1;
-        }
-        for (ordinal, (sum, payments)) in items {
-            let key = part_key(holder, POLITICAL, ordinal);
-            if Self::held_part(own, pending, key, today)?.is_some_and(|part| part.sequence == Some(sequence) && part.payments == payments && matches!(part.spent, Recorded::Value(spent) if i128::from(spent) == sum)) {
-                produced.insert(key);
-            }
-        }
-        Ok(())
     }
 
     fn item(&mut self, own: &Rows<'_>, pending: &mut Pending, holder: u32, id: ItemId, first: First) -> io::Result<u32> {
@@ -680,48 +652,27 @@ impl PowerLedger {
     }
 
     fn publish(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, run_first: i32, publication: &inputs::Publication) -> io::Result<()> {
+        if publication.deleted_only {
+            return self.delete(hour, own, witnesses, pending, publication);
+        }
         let at = hour.hour;
         let raw = publication.country;
         let holder = self.slot(raw);
         let daily = inputs::daily(hour, raw)?;
         let today = midnight(at);
         let sole = self.sole(holder, raw);
-        let mut replaced: HashSet<u64> = publication.costs.iter().filter(|cost| midnight(cost.day_hour) == today).map(|cost| cost.pp_sequence).collect();
-        if publication.costs.is_empty()
-            && let Some(daily) = &daily
-            && midnight(daily.day_hour) == today
-            && daily.pp_cost_raw == Some(0)
-            && inputs::daily_complete(hour)
-            && let Some(sequence) = daily.pp_sequence
-            && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
-        {
-            replaced.insert(sequence);
-            if sole {
-                self.steady.remove(&holder);
-            }
-        }
+        let replaced: HashSet<u64> = publication.costs.iter().filter(|cost| midnight(cost.day_hour) == today).map(|cost| cost.pp_sequence).collect();
         let mut produced = HashSet::new();
         let mut applications: BTreeMap<(u64, i32, u64), Vec<&CountryPowerDailyCostRow>> = BTreeMap::new();
         for cost in &publication.costs {
             applications.entry((cost.epoch, cost.day_hour, cost.pp_sequence)).or_default().push(cost);
         }
         for ((epoch, day_hour, sequence), costs) in applications {
-            let mut matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
-            if publication.deleted_only {
-                matched &= !Self::held_part(own, pending, part_key(holder, POLITICAL, Total::GAINS), today)?.is_some_and(|part| part.sequence == Some(sequence));
-            }
-            if publication.deleted_only && !(sole && midnight(day_hour) == today && self.opened(own, pending, holder, today, sequence)?) {
-                if !sole && midnight(day_hour) == today {
-                    self.unchanged(own, pending, holder, today, sequence, matched, &costs, &mut produced)?;
-                }
-                continue;
-            }
-            if !publication.deleted_only {
-                let seen = pending.costs.entry(holder).or_default();
-                for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
-                    seen.unmatched |= !matched;
-                    seen.negative |= matched && cost.cost_raw < 0;
-                }
+            let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
+            let seen = pending.costs.entry(holder).or_default();
+            for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
+                seen.unmatched |= !matched;
+                seen.negative |= matched && cost.cost_raw < 0;
             }
             if matched {
                 let sum: i128 = costs.iter().map(|cost| i128::from(cost.cost_raw)).sum();
@@ -755,9 +706,6 @@ impl PowerLedger {
             for (ordinal, (sum, payments, first)) in items {
                 let key = part_key(holder, POLITICAL, ordinal);
                 let held = if opens { Self::held_part(own, pending, key, day)? } else { None };
-                if publication.deleted_only && held.as_ref().is_none_or(|held| held.sequence != Some(sequence)) {
-                    continue;
-                }
                 let part = Part {
                     holder,
                     currency: POLITICAL,
@@ -765,10 +713,7 @@ impl PowerLedger {
                     day,
                     spent: i64::try_from(sum).map_or(Recorded::NotRecorded, Recorded::Value),
                     payments,
-                    covered: match &held {
-                        Some(held) if publication.deleted_only => held.covered && !self.steady.contains(&holder),
-                        held => covered && held.as_ref().is_none_or(|held| held.covered),
-                    },
+                    covered: covered && held.as_ref().is_none_or(|held| held.covered),
                     sequence: Some(sequence),
                     cost_ordinal: Some(first),
                     read: held.as_ref().map_or(at, |held| held.read),
@@ -783,6 +728,84 @@ impl PowerLedger {
         }
         if !replaced.is_empty() && holder != NONE {
             self.withdraw(own, pending, holder, today, &replaced, &produced, sole)?;
+        }
+        Ok(())
+    }
+
+    fn delete(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, publication: &inputs::Publication) -> io::Result<()> {
+        let at = hour.hour;
+        let raw = publication.country;
+        let holder = self.slot(raw);
+        if holder == NONE {
+            return Ok(());
+        }
+        let today = midnight(at);
+        let sole = self.sole(holder, raw);
+        let daily = inputs::fresh_daily(hour, raw)?.filter(|daily| midnight(daily.day_hour) == today);
+        let mut survivors: BTreeMap<u64, Vec<&CountryPowerDailyCostRow>> = BTreeMap::new();
+        for cost in publication.costs.iter().filter(|cost| midnight(cost.day_hour) == today) {
+            survivors.entry(cost.pp_sequence).or_default().push(cost);
+        }
+        if publication.costs.is_empty()
+            && let Some(daily) = &daily
+            && daily.pp_cost_raw == Some(0)
+            && let Some(sequence) = daily.pp_sequence
+            && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
+        {
+            survivors.insert(sequence, Vec::new());
+            if sole {
+                self.steady.remove(&holder);
+            }
+        }
+        let open = self.parts.get(&holder).map_or_else(Vec::new, |(_, keys)| keys.clone());
+        for (sequence, costs) in survivors {
+            let mut held = Vec::new();
+            for &key in &open {
+                if let Some(part) = Self::held_part(own, pending, key, today)?
+                    && part.cost_ordinal.is_some()
+                    && part.sequence == Some(sequence)
+                {
+                    held.push(part);
+                }
+            }
+            let unmatched = held.iter().any(|part| part.ordinal == Total::GAINS);
+            let mut remaining: BTreeMap<u32, (i128, i64, u32)> = BTreeMap::new();
+            for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
+                let ordinal = if unmatched { Some(Total::GAINS) } else { self.known_item(own, pending, holder, &ItemId::cost(cost))? };
+                if let Some(ordinal) = ordinal {
+                    let entry = remaining.entry(ordinal).or_insert((0, 0, cost.ordinal));
+                    entry.0 += i128::from(cost.cost_raw);
+                    entry.1 += 1;
+                    entry.2 = entry.2.min(cost.ordinal);
+                }
+            }
+            let total: i128 = costs.iter().map(|cost| i128::from(cost.cost_raw)).sum();
+            let reconciles = daily.as_ref().is_some_and(|daily| daily.pp_sequence == Some(sequence) && costs.iter().all(|cost| cost.epoch == daily.epoch) && daily.pp_cost_raw.is_some_and(|cost| i128::from(cost) == total));
+            for mut part in held {
+                let key = part.key();
+                match remaining.get(&part.ordinal) {
+                    Some(&(sum, payments, _)) if part.payments == payments && matches!(part.spent, Recorded::Value(spent) if i128::from(spent) == sum) => {}
+                    Some(&(sum, payments, first)) if sole => {
+                        part.spent = i64::try_from(sum).map_or(Recorded::NotRecorded, Recorded::Value);
+                        part.payments = payments;
+                        part.cost_ordinal = Some(first);
+                        part.covered &= reconciles;
+                        pending.parts.insert(key, part);
+                    }
+                    None if sole => {
+                        if let Some((_, open)) = self.parts.get_mut(&holder) {
+                            open.retain(|held| *held != key);
+                        }
+                        pending.parts.remove(&key);
+                        pending.withdrawn.push(key);
+                    }
+                    _ => {
+                        part.covered = false;
+                        part.spent = Recorded::NotRecorded;
+                        pending.parts.insert(key, part);
+                    }
+                }
+            }
         }
         Ok(())
     }
