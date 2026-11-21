@@ -3308,8 +3308,7 @@ mod tests {
 
     #[test]
     fn columns_keep_the_native_grid_origin_and_viewport_item_offsets() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let document = native::read(
             br#"guiTypes={
                 containerWindowType={name=unit_mapicon size={width=76 height=31}
@@ -3345,8 +3344,7 @@ mod tests {
 
     #[test]
     fn unsupported_column_parent_terms_refuse_every_affected_plate_by_name() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = gui::fixture();
         for fields in [
             "show_animation_type=linear",

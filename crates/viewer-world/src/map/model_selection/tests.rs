@@ -151,8 +151,7 @@ fn equipment(handle: u64, amount_raw: i64, ordinal: u32) -> DivisionEquipmentRow
 
 #[test]
 fn an_unnamed_candidate_refuses_the_pair_instead_of_ranking_the_next() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     let template = content
         .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &sources(&[]))
@@ -176,8 +175,7 @@ fn an_unnamed_candidate_refuses_the_pair_instead_of_ranking_the_next() {
 
 #[test]
 fn without_a_category_the_representative_largest_need_filters_by_quantity_then_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     let template = content
         .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &sources(&[]))
@@ -207,8 +205,8 @@ fn without_a_category_the_representative_largest_need_filters_by_quantity_then_o
 
 #[test]
 fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
+    let category = content_reader_core::test_game::category;
     let content = content();
     let template = content
         .template(&row((3, 0), &[(2, 0, 1), (1, 0, 2)]), &sources(&[]))
@@ -221,12 +219,12 @@ fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
     ];
     let refs = &rows[..];
     let pair = content
-        .select_pair(&template, Some(1 << 2), &[20], refs, Variants::new(&variants[..]), &names())
+        .select_pair(&template, Some(category("armor")), &[20], refs, Variants::new(&variants[..]), &names())
         .unwrap()
         .unwrap();
     assert_eq!((pair.variant.id, pair.subunit.key.as_str()), (30, "armor"));
     let pair = content
-        .select_pair(&template, Some(1 << 5), &[], refs, Variants::new(&variants[..]), &names())
+        .select_pair(&template, Some(category("infantry")), &[], refs, Variants::new(&variants[..]), &names())
         .unwrap()
         .unwrap();
     assert_eq!(pair.subunit.key, "infantry");
@@ -235,7 +233,7 @@ fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
         content
             .select_pair(
                 &template,
-                Some(1 << 5),
+                Some(category("infantry")),
                 &[],
                 &missing,
                 Variants::new(&variants[..]),
@@ -247,27 +245,25 @@ fn a_category_scores_the_stored_groups_and_skips_excluded_variants() {
 
 #[test]
 fn country_override_requires_exact_category_and_signed_positive_origin() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     let subunit = content.subunit("armor").unwrap();
     let mut variant = VariantDefinitionRow {
         origin_link: u32::MAX,
         creator_link: 7,
-        classifier_flags: 4,
+        classifier_flags: content_reader_core::test_game::category("armor"),
         ..Default::default()
     };
     assert_eq!(variant_country(&variant, subunit, 9), 7);
     variant.origin_link = 8;
     assert_eq!(variant_country(&variant, subunit, 9), 8);
-    variant.classifier_flags |= 32;
+    variant.classifier_flags |= 0x20;
     assert_eq!(variant_country(&variant, subunit, 9), 9);
 }
 
 #[test]
 fn a_local_representatives_recorded_need_selects_its_equipment_without_rescoring() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let content = content();
     let local = sources(&[((7, 1), vec![(5, 200_000)])]);
     let template = content
@@ -292,8 +288,8 @@ fn a_local_representatives_recorded_need_selects_its_equipment_without_rescoring
 
 #[test]
 fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
+    let armor = content_reader_core::test_game::category("armor");
     let content = content();
     let source = sources(&[]);
     let template = content
@@ -332,7 +328,7 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
             rows.insert(0, equipment(99, 0, 9));
         }
         let refs = &rows[..];
-        let category = (frame.is_multiple_of(3)).then_some(1 << 2);
+        let category = frame.is_multiple_of(3).then_some(armor);
         let excluded: &[u64] = if frame.is_multiple_of(4) { &[20] } else { &[] };
         let template = if frame.is_multiple_of(13) {
             &null
@@ -376,7 +372,7 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
         content
             .select_pair_profiled(
                 &template,
-                Some(1 << 2),
+                Some(armor),
                 &[40],
                 refs,
                 Variants::new(&variants[..]),
@@ -413,8 +409,8 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
 fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_demand() {
     use replay_data::rows::{TableId, TableRows};
     use replay_frame::frame::{DecodedFrame, SharedView, TableView};
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("supported installation metadata");
+    content_reader_core::test_game::enter();
+    let armor = content_reader_core::test_game::category("armor");
     let mut content = content();
     let mut held = DecodedFrame {
         branch: 1,
@@ -521,7 +517,7 @@ fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_dema
                 rows.insert(0, equipment(99, 0, 0));
             }
             let refs = &rows[..];
-            let category = (query.is_multiple_of(3)).then_some(1 << 2);
+            let category = query.is_multiple_of(3).then_some(armor);
             let excluded: &[u64] = if query.is_multiple_of(4) {
                 &[20, 40]
             } else {

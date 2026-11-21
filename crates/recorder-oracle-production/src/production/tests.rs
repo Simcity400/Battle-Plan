@@ -1671,8 +1671,7 @@ fn variant_archetypes_follow_the_content_equipment_types() {
 
 #[test]
 fn duplicated_archetype_variants_of_the_live_save_match_the_content() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (equipment, _) = content_reader_core::equipment::fixture::load(&[
         (
             "common/units/equipment/plane_airframes.txt",

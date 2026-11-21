@@ -318,8 +318,9 @@ pub fn with_content_files<T>(
     extra_files: &[(&str, &str)],
     read: impl FnOnce(&content_reader_core::ResolvedLayers) -> io::Result<T>,
 ) -> io::Result<T> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    if !engine_executable::executable_tables::is_initialized() {
+        content_reader_core::test_game::enter();
+    }
     struct Content(std::path::PathBuf);
     impl Drop for Content {
         fn drop(&mut self) {

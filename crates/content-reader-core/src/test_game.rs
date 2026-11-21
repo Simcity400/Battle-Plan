@@ -82,7 +82,7 @@ const EQUIPMENT_CATEGORIES: &[&str] = &[
     "infantry", "support", "armor", "convoy", "artillery", "anti_tank", "anti_air", "motorized",
     "mechanized", "fighter", "cas", "naval_bomber", "tactical_bomber", "strategic_bomber",
     "air_transport", "capital_ship", "screen_ship", "submarine", "carrier", "support_ship",
-    "train", "scout_plane", "maritime_patrol_plane", "rocket", "flame",
+    "train", "scout_plane", "maritime_patrol_plane", "rocket", "flame", "land_cruiser",
 ];
 
 const PINNED_CATEGORIES: &[(&str, u64)] = &[
@@ -218,6 +218,33 @@ pub fn tables() -> Tables {
 
 pub fn enter() -> Tables {
     let tables = tables();
+    executable_tables::enter(Some(tables));
+    tables
+}
+
+pub fn enter_viewer() -> Tables {
+    use crate::scope::ScopeKind::{Character, Combat, Country};
+    use crate::trigger_keys::Reader;
+
+    static TABLES: OnceLock<Tables> = OnceLock::new();
+    let tables = *TABLES.get_or_init(|| {
+        executable()
+            .trigger(
+                "tag",
+                Combat.bit() | Country.bit() | Character.bit(),
+                Reader::Assign,
+                0,
+            )
+            .trigger("armor", Combat.bit(), Reader::Assign, 0)
+            .trigger(
+                "custom_override_tooltip",
+                0,
+                Reader::Own(0x141446060),
+                0x141446C20,
+            )
+            .trigger("synthetic_unported_trigger", 0, Reader::Assign, 0)
+            .build()
+    });
     executable_tables::enter(Some(tables));
     tables
 }

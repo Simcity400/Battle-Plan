@@ -307,8 +307,7 @@ fn names_keep_the_camera_side_margin() {
 
 #[test]
 fn static_names_are_built_once_and_chunked_under_the_buffer_limit() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let placements = many_names(30);
     let (chunks, names) = static_names(&placements, u64::MAX);
     assert_eq!(chunks.len(), 1);

@@ -3092,8 +3092,7 @@ mod tests {
             Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput, gpu,
         };
         use viewer_foundation::map::gpu_contract::{buffer, read_texture};
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
         let program = content_reader_core::pdxshader::program::read_with(b"slices.shader", &|path| {
             Some(if path == b"slices.shader" {

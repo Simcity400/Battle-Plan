@@ -1604,8 +1604,7 @@ fn dictionary_missing_entry_is_explicit_and_literal_bytes_are_preserved() {
 
 #[test]
 fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let saved = saved_pack(b"countries={} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
     let row = replay_data::rows::BuildingRow {
         location: 7,
@@ -1690,8 +1689,7 @@ fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
 
 #[test]
 fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let saved = saved_pack(b"countries={GER={production={general_lines={building={id={id=4 type=59} cost=1 priority=0 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}}}}} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
     let names = BTreeMap::from([
         (11, b"factory\0tail".as_slice()),
@@ -2045,8 +2043,7 @@ fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_base
 
 #[test]
 fn resolved_base_resources_compare_repeated_initial_blocks_and_native_ordinals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut content = saved::BaseResources::default();
     content.add_state_history(&history_fixture(b"state={id=949 resources={steel=0 oil=-2147483648.9} history={resources={steel=999 aluminium=888}} resources={} resources={aluminium=10.000}}"))
         .unwrap();

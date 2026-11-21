@@ -1712,7 +1712,7 @@ mod tests {
     }
 
     fn loc() -> Localisation {
-        [
+        let mut loc: Localisation = [
             ("CURRENT_ORGANIZATION", "org $CUR|0$/$MAX|0$"),
             ("UNIT_AVERAGE_ORG", "avg org $VALUE|%0$"),
             ("UNIT_AVERAGE_STR", "str $VALUE|%0$"),
@@ -1736,7 +1736,9 @@ mod tests {
         ]
         .into_iter()
         .map(|(key, value)| (key.into(), value.into()))
-        .collect()
+        .collect();
+        loc.language = "english".into();
+        loc
     }
 
     fn frame(named: bool) -> DecodedFrame {
@@ -2002,8 +2004,7 @@ mod tests {
 
     #[test]
     fn status_cached_name_is_authoritative_even_when_combat_has_a_name() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut frame = frame(true);
         put(
             &mut frame,
@@ -2131,8 +2132,7 @@ mod tests {
 
     #[test]
     fn supply_line_uses_grace_and_known_stack_average_and_refuses_historical_gaps() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let vision = Vision::sharing(1, []);
         let mut frame = frame(true);
         let mut status = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
@@ -2186,8 +2186,7 @@ mod tests {
 
     #[test]
     fn single_tooltip_orders_native_lines_without_a_date_or_unrecorded_name() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let vision = Vision::sharing(1, []);
         let named = tooltip(&frame(true), &[1], false, false, &vision);
         assert_eq!(
@@ -2218,7 +2217,7 @@ mod tests {
                 .map(|(_, &count)| count),
             Some(1)
         );
-        let reason = "counter division name: DivisionStatus.naming not recorded";
+        let reason = "counter division name: naming of division status not recorded";
         assert_diagnostics(
             || {
                 viewer_foundation::diagnostics_panel::tooltip_warning_lines(&unnamed.refused)
@@ -2233,8 +2232,7 @@ mod tests {
 
     #[test]
     fn full_two_template_stack_sorts_headers_and_coarse_counter_bypasses_detail() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let frame = frame(false);
         let vision = Vision::sharing(1, []);
         let detailed = tooltip(&frame, &[1, 2], false, false, &vision);
@@ -2270,8 +2268,7 @@ mod tests {
 
     #[test]
     fn invalid_orders_child_does_not_change_normal_or_coarse_hovers() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut frame = frame(true);
         let vision = Vision::sharing(1, []);
         let expected = [
@@ -2658,8 +2655,7 @@ mod tests {
 
     #[test]
     fn missing_unit_intel_preserves_movement_with_one_eligibility_gap() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let frame = frame(true);
         let vision = Vision::sharing(2, []).with_truncated_unit_intel([]);
         let detailed = tooltip(&frame, &[1], false, false, &vision);
@@ -2733,8 +2729,7 @@ mod tests {
 
     #[test]
     fn only_hidden_foreign_stacks_suppress_the_arrival_line() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let frame = frame(true);
         for ours in [1, 2] {
             let vision = Vision::sharing(ours, [1]);
@@ -2990,12 +2985,13 @@ mod tests {
 
     #[test]
     fn division_arrival_words_the_estimate_of_the_stored_route() {
+        use crate::map::division_eta::test_support::neutral_land_movement;
         use content_reader_core::{
             movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
         };
         use viewer_foundation::movement_timing::{
             Etas, LandSpeedContent, MovementContent, arrival as movement_timing_arrival,
-            test_support::{neutral_status, neutral_world},
+            test_support::neutral_status,
         };
         let land = ProvinceTerrain { flags: 1, index: 1 };
         let content = MovementContent {
@@ -3057,7 +3053,7 @@ mod tests {
         for template in &mut neutral_templates {
             template.speed_keys = Recorded::Value(Some(Vec::new()));
         }
-        neutral_world(&mut frame, 11);
+        neutral_land_movement(&mut frame, 11, 3);
         put(
             &mut frame,
             TableRows::DivisionTemplateIcons(neutral_templates),
@@ -3287,8 +3283,7 @@ mod tests {
 
     #[test]
     fn ordinary_authored_fallback_follows_the_class_zero_and_thirteen_handler_result() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use replay_data::{rows::ArmyIconInputRow, rows::RailwayGunCounterInputRow};
         use std::cell::Cell;
         use viewer_foundation::map::counter_hovers::land::CounterControl as Control;

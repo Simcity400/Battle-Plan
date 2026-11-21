@@ -375,8 +375,7 @@ fn actor_bits(player: &entity_animation::Player, rig: &Rig) -> String {
 
 #[test]
 fn late_mesh_admission_binds_events_without_changing_existing_actor_identities() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("synthetic animation tables");
+    content_reader_core::test_game::enter();
     for label in ["unit models", "map buildings", "general animation"] {
         for install in [false, true] {
             let mut library = ModelLibrary::default();
@@ -479,8 +478,7 @@ fn late_mesh_admission_binds_events_without_changing_existing_actor_identities()
 
 #[test]
 fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("synthetic animation tables");
+    content_reader_core::test_game::enter();
     let mut library = ModelLibrary::default();
     for slot in 0..6 {
         append_rig(&mut library, slot);

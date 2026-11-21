@@ -1343,8 +1343,7 @@ mod tests {
         use super::super::models::ModelPass;
         use content_reader_core::mesh;
         use viewer_foundation::map::camera::{Free, Lens, Pose};
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("supported executable metadata");
+        content_reader_core::test_game::enter();
         let rigs: Vec<_> = (0..9)
             .map(|index| {
                 Arc::new(Rig {

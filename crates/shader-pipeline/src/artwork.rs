@@ -776,8 +776,7 @@ mod tests {
     #[test]
     #[ignore = "requires DXC and a GPU; synthetic content only"]
     fn batched_targets_match_independent_draws_and_reuse_uploaded_texels() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let scratch = crate::Scratch::new().unwrap();
         let root = &scratch.0;
         std::fs::create_dir_all(root.join("gfx/FX")).unwrap();
@@ -880,8 +879,7 @@ Effect Up { VertexShader=V PixelShader=P }
 
     #[test]
     fn sprite_inputs_are_read_once_per_resolved_stack_and_keep_reporting_reads() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let scratch = crate::Scratch::new().unwrap();
         let root = &scratch.0;
         std::fs::create_dir_all(root.join("gfx/FX")).unwrap();

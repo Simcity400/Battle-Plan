@@ -84,8 +84,7 @@ fn building_tokens_fold_like_the_lexer_and_refuse_ambiguity() {
 
 #[test]
 fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let buildings = content_reader_core::buildings::parse(
         b"buildings={
             Dock={naval_headquarter=yes} dock={show_on_map=1}
@@ -164,8 +163,7 @@ fn a_type_sharing_its_lexer_token_with_an_ordinary_type_is_refused() {
 
 #[test]
 fn a_bucket_a_repeated_declaration_reaches_refuses_before_the_fallback() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let buildings = content_reader_core::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=SHARED}
@@ -250,8 +248,7 @@ fn building(location: u32, building_type: u32, ordinal: u32, level: i16) -> Buil
 
 #[test]
 fn repeated_icon_templates_are_refused_by_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let buildings = content_reader_core::buildings::parse(
         b"buildings={
             hq={naval_headquarter=yes} later_hq={naval_headquarter=yes}
@@ -323,8 +320,7 @@ fn repeated_icon_templates_are_refused_by_name() {
 
 #[test]
 fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let buildings = content_reader_core::buildings::parse(
         b"buildings={
             port={is_port=yes spawn_point=Port_Spawn}
@@ -375,8 +371,7 @@ fn icons_anchor_only_at_buckets_their_kind_redirects_into() {
 
 #[test]
 fn icons_anchor_only_at_records_the_loader_admits() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use content_reader_core::{
         map::CountryColors, map::MapData, map::ProvinceDefinition, map::ProvinceKind, mesh::Roster,
     };
@@ -493,8 +488,7 @@ fn base_prohibition_lists_keep_raw_zero_and_nonzero_country_aliases() {
 
 #[test]
 fn cached_base_joins_equal_fresh_hour_derivations() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use replay_data::rows::{AirBaseRow, ProvinceRow, TableRows};
     use viewer_foundation::map::test_support::{test_frame, test_put};
     super::super::tests::with_counter_inputs_fixture(
@@ -636,8 +630,7 @@ fn memoized_building_tokens_equal_a_fresh_build_hour_by_hour() {
 
 #[test]
 fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_none_is_drawn() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use crate::map::counters::preparation::plan_probe;
     use building_facts::{AIR_BASE, ICON_KINDS, IconAnchor, RADAR, SiteIcon};
     use replay_data::rows::{TableId, TableRows};

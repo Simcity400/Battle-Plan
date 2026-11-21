@@ -136,8 +136,7 @@ const WIDE: u32 = 600;
 const SEA: u32 = 14;
 
 fn assets() -> MapBuildingAssets {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let types = buildings::parse(TYPES, &content_reader_core::key_names::KeyNames::default()).unwrap();
     let site = |state, province: u32| BuildingPosition {
         state,

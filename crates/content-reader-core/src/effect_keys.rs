@@ -219,10 +219,10 @@ pub fn shape(names: Option<&KeyNames>, field: &Field<'_>) -> Shape<()> {
 pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> synthetic_game::Executable {
     let mut game = game;
     for (index, &(name, keys, class)) in key_readers::SYNTHETIC_EFFECTS.iter().enumerate() {
-        let class = if class == 0 {
-            0x2_0000_0000 + index as u64 * 0x10
-        } else {
-            class
+        let class = match (name, class) {
+            ("add_unit_bonus", _) => 0x1427F9180,
+            (_, 0) => 0x2_0000_0000 + index as u64 * 0x10,
+            _ => class,
         };
         let value = key_readers::SYNTHETIC_VALUES
             .iter()
@@ -242,10 +242,17 @@ pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> syntheti
         };
     }
     for (index, &(name, value, keys)) in value_readers::SYNTHETIC_EFFECTS.iter().enumerate() {
-        game = game.effect(name, value, keys, 0x3_0000_0000 + index as u64 * 0x10);
+        let class = match name {
+            "country_event" => 0x1427E9F80,
+            "custom_effect_tooltip" => 0x142A31FE8,
+            "operative_leader_event" => 0x1427BD720,
+            "remove_unit_leader_role" => 0x1427E9838,
+            _ => 0x3_0000_0000 + index as u64 * 0x10,
+        };
+        game = game.effect(name, value, keys, class);
     }
-    for (index, name) in ["hidden_effect", "effect_tooltip"].into_iter().enumerate() {
-        game = game.effect(name, READ_SCRIPT, READ_EFFECT, 0x4_0000_0000 + index as u64 * 0x10);
+    for (name, class) in [("hidden_effect", 0x142A31D78), ("effect_tooltip", 0x142A31E48)] {
+        game = game.effect(name, READ_SCRIPT, READ_EFFECT, class);
     }
     for (index, name) in [
         "add_political_power",
@@ -260,7 +267,12 @@ pub(crate) fn synthetic_vocabulary(game: synthetic_game::Executable) -> syntheti
     .into_iter()
     .enumerate()
     {
-        game = game.effect(name, READ_VALUE, 0, 0x5_0000_0000 + index as u64 * 0x10);
+        let class = match name {
+            "add_political_power" => 0x1427E5B28,
+            "add_stability" => 0x1427EC728,
+            _ => 0x5_0000_0000 + index as u64 * 0x10,
+        };
+        game = game.effect(name, READ_VALUE, 0, class);
     }
     for (index, name) in ["free_operative", "ai_message"].into_iter().enumerate() {
         let unsupported = 0x6_0000_0000 + index as u64 * 0x10;

@@ -420,8 +420,7 @@ fn names(
 
 #[test]
 fn names_and_fallback_demands_keep_fixed_roster_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    crate::map::test_game::enter();
     for (step, expected) in [
         (
             0,
@@ -467,8 +466,7 @@ fn names_and_fallback_demands_keep_fixed_roster_order() {
 
 #[test]
 fn naval_name_pass_multihour_world_owner_limits_and_every_record_match_direct() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    crate::map::test_game::enter();
     let mut saw_success = false;
     let mut saw_refusal = false;
     let mut saw_tag = false;
@@ -606,8 +604,7 @@ fn naval_name_pass_multihour_world_owner_limits_and_every_record_match_direct() 
 
 #[test]
 fn repeated_generated_winner_keeps_each_bake_refusal_and_never_tries_a_later_hull() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    crate::map::test_game::enter();
     let (frame, assets) = fixture(0);
     assets.library.write().unwrap().index.remove("pool_a");
     assets
