@@ -229,6 +229,8 @@ pub fn with(change: impl FnOnce(Executable) -> Executable) -> Tables {
 }
 
 pub fn category(name: &str) -> u64 {
-    enter();
+    if !executable_tables::is_initialized() {
+        enter();
+    }
     crate::equipment::category_mask(name).expect("a synthetic equipment category")
 }

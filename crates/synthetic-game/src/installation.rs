@@ -53,7 +53,7 @@ impl Installation {
         Self {
             name: name.to_owned(),
             game: Vec::new(),
-            executable: b"synthetic executable".to_vec(),
+            executable: crate::DEFAULT_EXECUTABLE.to_vec(),
             language: "l_english".to_owned(),
             dlcs: Vec::new(),
             mods: Vec::new(),
@@ -98,13 +98,28 @@ impl Installation {
 
     pub fn build(self) -> Built {
         static BUILT: AtomicU32 = AtomicU32::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "synthetic-game-{}-{}-{}",
-            self.name,
-            std::process::id(),
-            BUILT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !self.name.is_empty()
+                && self
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+            "a synthetic installation name is a plain word: {}",
+            self.name
+        );
+        let root = loop {
+            let root = std::env::temp_dir().join(format!(
+                "synthetic-game-{}-{}-{}",
+                self.name,
+                std::process::id(),
+                BUILT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&root) {
+                Ok(()) => break root,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("synthetic installation folder {}: {error}", root.display()),
+            }
+        };
         let built = Built {
             game_dir: root.join("game"),
             user_dir: root.join("user"),
@@ -135,6 +150,13 @@ impl Installation {
         }
         let mut enabled_mods = Vec::new();
         for layer in &self.mods {
+            assert!(
+                Path::new(&layer.folder)
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_))),
+                "a synthetic mod folder is one name: {}",
+                layer.folder
+            );
             let descriptor = format!("mod/{}.mod", layer.folder);
             let mut text = format!("name=\"{}\" path=\"layers/{}\"", layer.name, layer.folder);
             if let Some(id) = layer.remote_id {
@@ -149,6 +171,8 @@ impl Installation {
                 write!(text, " replace_path=\"{path}\"").expect("writing to a String cannot fail");
             }
             write(user, &descriptor, text.as_bytes());
+            std::fs::create_dir_all(user.join("layers").join(&layer.folder))
+                .expect("synthetic mod folder");
             for (path, contents) in &layer.files {
                 write(user, &format!("layers/{}/{path}", layer.folder), contents);
             }
@@ -184,6 +208,12 @@ fn quoted(text: &str) -> String {
 }
 
 fn write(base: &Path, path: &str, contents: &[u8]) {
+    assert!(
+        Path::new(path)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "a synthetic game path stays inside its folder: {path}"
+    );
     let path = base.join(path);
     std::fs::create_dir_all(path.parent().expect("a file in the synthetic game has a folder"))
         .expect("synthetic game folder");

@@ -172,6 +172,7 @@ fn remaining_scalar_forms_no_longer_defer() {
         ("add_breakthrough_progress", "value"),
         ("create_ship", "name"),
     ] {
+        assert!(crate::effect_keys::registered(effect.as_bytes()).is_some(), "{effect}");
         let text = format!("body = {{ {effect} = {{ {key} = 1 }} }}");
         let result = read(text.as_bytes(), &KeyNames::default());
         assert!(result.unsettled.is_none(), "{effect}: {result:?}");

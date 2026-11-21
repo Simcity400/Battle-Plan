@@ -172,6 +172,7 @@ mod tests {
             ("synthetic_target_type", 0x140454870, 0x1405972d0, "type"),
             ("synthetic_scorer", 0x14049F250, 0x1404A0950, "var"),
             ("synthetic_array_scorer", 0x14049F6A0, 0x1404A0990, "array"),
+            ("synthetic_supply", 0x14049FAF0, 0x1404A09E0, "type"),
             ("synthetic_random", 0x1404A0390, 0x1404A0A40, "min"),
             ("synthetic_preparation", 0x140454290, 0x1405972d0, "state"),
             ("synthetic_modifier_scope", 0x140454140, 0x140457B50, "modifier"),

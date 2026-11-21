@@ -1602,6 +1602,9 @@ pub mod fixture {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     pub fn load(files: &[(&str, &str)]) -> (Database, Groups) {
+        if !engine_executable::executable_tables::is_initialized() {
+            crate::test_game::enter();
+        }
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
             "hoi4_content_reader_equipment_fixture_{}_{}",

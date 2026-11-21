@@ -42,6 +42,7 @@ impl Part {
 }
 
 pub struct Executable {
+    identity: ExecutableIdentity,
     version: String,
     keywords: BTreeMap<u32, &'static str>,
     modifiers: Vec<&'static str>,
@@ -65,6 +66,7 @@ fn leak(text: &str) -> &'static str {
 impl Executable {
     pub fn empty() -> Self {
         Self {
+            identity: ExecutableIdentity::of(crate::DEFAULT_EXECUTABLE),
             version: "synthetic".to_owned(),
             keywords: BTreeMap::new(),
             modifiers: Vec::new(),
@@ -100,6 +102,11 @@ impl Executable {
             folding: Vec::new(),
             withheld: BTreeMap::new(),
         }
+    }
+
+    pub fn executable(mut self, bytes: &[u8]) -> Self {
+        self.identity = ExecutableIdentity::of(bytes);
+        self
     }
 
     pub fn version(mut self, text: &str) -> Self {
@@ -311,10 +318,7 @@ impl Executable {
         let folding = FoldingTable::from_pairs(self.folding.iter().copied())
             .expect("synthetic folding pairs are folded points and letters");
         Parts {
-            identity: ExecutableIdentity {
-                size: 0,
-                sha256: *b"synthetic game executable tables",
-            },
+            identity: self.identity.clone(),
             version: present(withheld(Part::Version), || self.version.clone()),
             keywords: present(withheld(Part::Keywords), || {
                 synthetic::keyword_table(

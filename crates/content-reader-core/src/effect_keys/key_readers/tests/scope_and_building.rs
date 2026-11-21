@@ -93,6 +93,7 @@ fn reached_effect_readers_remove_the_named_deferrals() {
         "construct_building_in_random_province",
         "damage_units",
     ] {
+        assert!(crate::effect_keys::registered(effect.as_bytes()).is_some(), "{effect}");
         let text = format!("body = {{ {effect} = {{ }} }}");
         no_deferred(&read(text.as_bytes(), &KeyNames::default()));
     }

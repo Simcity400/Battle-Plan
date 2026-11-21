@@ -1417,7 +1417,7 @@ pub(super) const SYNTHETIC_EFFECTS: &[(&str, u64, u64)] = &[
     ("kill_operative", OPERATIVE_VALUE, OPERATIVE_COUNTRY_KEYS),
     ("turn_operative", OPERATIVE_VALUE, OPERATIVE_COUNTRY_KEYS),
     ("add_resistance_target", RESISTANCE_VALUE, RESISTANCE_KEYS),
-    ("force_enable_resistance", RESISTANCE_VALUE, RESISTANCE_KEYS),
+    ("force_enable_resistance", RESISTANCE_VALUE, REMOVE_RESISTANCE_KEYS),
     ("swap_country_leader_traits", SWAP_COUNTRY_TRAITS, 0),
 ];
 

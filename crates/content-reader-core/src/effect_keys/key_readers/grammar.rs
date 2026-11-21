@@ -2004,4 +2004,8 @@ pub(in crate::effect_keys) const SYNTHETIC_EFFECTS: &[(&str, u64, u64)] = &[
     ("clear_division_template_cap", SET_DIVISION_TEMPLATE_CAP_KEYS, 0),
     ("random_army_leader", RANDOM_UNIT_LEADER_KEYS, 0),
     ("every_army_leader", EVERY_UNIT_LEADER_KEYS, 0),
+    ("resize_temp_array", RESIZE_ARRAY_KEYS, 0),
+    ("remove_power_balance_modifier", ADD_POWER_BALANCE_MODIFIER_KEYS, 0),
+    ("remove_targeted_decision", ACTIVATE_TARGETED_DECISION_KEYS, 0),
+    ("remove_relation_modifier", ADD_RELATION_MODIFIER_KEYS, 0),
 ];

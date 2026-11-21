@@ -6,7 +6,11 @@ use crate::parser::{
 
 #[test]
 fn class_metadata_covers_the_reader_registry_and_aliases() {
-    crate::test_game::enter();
+    let (first, second) = (0x7_0000_0010, 0x7_0000_0020);
+    crate::test_game::with(|game| {
+        game.effect("synthetic_class_first", READ_VALUE, 0, first)
+            .effect("synthetic_class_second", READ_VALUE, 0, second)
+    });
     assert!(
         classes::CLASS_IDENTITIES
             .windows(2)
@@ -21,12 +25,15 @@ fn class_metadata_covers_the_reader_registry_and_aliases() {
         assert!(!name.is_empty());
         assert_ne!(vtable, 0);
     }
+    assert_eq!(native_class(b"SYNTHETIC_CLASS_FIRST").unwrap().vtable, first);
+    assert_eq!(native_class(b"synthetic_class_second").unwrap().vtable, second);
     assert_eq!(
-        native_class(b"SET_CHARACTER_FLAG"),
-        native_class(b"set_character_flag")
+        class(registered(b"synthetic_class_first").unwrap()),
+        class(registered(b"synthetic_class_second").unwrap())
     );
-    assert_eq!(native_class(b"else_if"), native_class(b"if"));
-    assert_eq!(native_class(b"else"), native_class(b"if"));
+    let conditional = native_class(b"if").unwrap();
+    assert_eq!(native_class(b"else_if"), Some(conditional));
+    assert_eq!(native_class(b"else"), Some(conditional));
     assert_eq!(native_class(b"synthetic_unknown"), None);
 }
 

@@ -455,14 +455,8 @@ fn links_read_their_names_as_read_string_stores_them() {
 }
 
 #[cfg(feature = "test-support")]
-fn entered_fixture(files: &[(&str, &str)]) -> (Database, Groups) {
-    crate::test_game::enter();
-    fixture::load(files)
-}
-
-#[cfg(feature = "test-support")]
 fn load_one(text: &str) -> Database {
-    let (database, _) = entered_fixture(&[("common/units/equipment/a.txt", text)]);
+    let (database, _) = fixture::load(&[("common/units/equipment/a.txt", text)]);
     assert!(database.lost.is_none(), "{:?}", database.lost);
     database
 }
@@ -470,7 +464,7 @@ fn load_one(text: &str) -> Database {
 #[cfg(feature = "test-support")]
 #[test]
 fn duplicate_archetypes_copy_every_level_of_their_source() {
-    let (database, _) = entered_fixture(&[
+    let (database, _) = fixture::load(&[
         (
             "common/units/equipment/modules/parts.txt",
             "equipment_modules = { spinner = { add_equipment_type = rocket } }",
@@ -801,7 +795,7 @@ fn an_equipment_alias_with_token_zero_refuses_the_database_by_name() {
 #[cfg(feature = "test-support")]
 #[test]
 fn category_masks_or_types_and_default_modules_then_normalize() {
-    let (database, _) = entered_fixture(&[
+    let (database, _) = fixture::load(&[
         (
             "common/units/equipment/modules/m.txt",
             "equipment_modules = { engine_1 = { add_equipment_type = { naval_bomber } } }",
@@ -833,7 +827,7 @@ fn category_masks_or_types_and_default_modules_then_normalize() {
 #[cfg(feature = "test-support")]
 #[test]
 fn groups_expand_and_admit_by_name_family_or_category() {
-    let (database, groups) = entered_fixture(&[
+    let (database, groups) = fixture::load(&[
         (
             "common/units/equipment/modules/m.txt",
             "equipment_modules = { Gun_1 = { } }",
@@ -900,7 +894,7 @@ fn groups_expand_and_admit_by_name_family_or_category() {
 #[cfg(feature = "test-support")]
 #[test]
 fn keywords_fold_and_names_keep_their_case() {
-    let (database, groups) = entered_fixture(&[
+    let (database, groups) = fixture::load(&[
         (
             "common/units/equipment/a.txt",
             "Equipments = {
