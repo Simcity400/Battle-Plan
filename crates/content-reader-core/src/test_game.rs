@@ -87,6 +87,7 @@ const EQUIPMENT_CATEGORIES: &[&str] = &[
 
 const PINNED_CATEGORIES: &[(&str, u64)] = &[
     ("convoy", 0x1),
+    ("armor", 0x4),
     ("capital_ship", 0x40),
     ("submarine", 0x80),
     ("screen_ship", 0x100),
@@ -163,9 +164,10 @@ pub fn executable() -> Executable {
         .words(EQUIPMENT_CATEGORIES.iter().copied())
         .words(AI_STRATEGIES.iter().map(|&(name, _)| name))
         .words(["build_intel_network", "balanced", "front"]);
+    let pinned = PINNED_CATEGORIES.iter().fold(0, |bits, &(_, mask)| bits | mask);
     let mut free = (0..64)
         .map(|bit| 1_u64 << bit)
-        .filter(|bit| bit & RESERVED_CATEGORY_BITS == 0);
+        .filter(|bit| bit & (RESERVED_CATEGORY_BITS | pinned) == 0);
     let categories: Vec<_> = EQUIPMENT_CATEGORIES
         .iter()
         .map(|&name| {

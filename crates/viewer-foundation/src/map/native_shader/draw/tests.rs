@@ -54,8 +54,7 @@ use gui::PartKind;
 
 #[test]
 fn a_recordless_animated_technique_draws_the_plain_sprite() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
         texture: 7,
@@ -115,8 +114,7 @@ fn a_recordless_animated_technique_draws_the_plain_sprite() {
 
 #[test]
 fn each_draw_submits_its_native_records_and_topology() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use eframe::wgpu::PrimitiveTopology::{TriangleList, TriangleStrip};
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
@@ -210,8 +208,7 @@ fn each_draw_submits_its_native_records_and_topology() {
 
 #[test]
 fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let sheets = Sheets(sprites::SpriteSheet {
         name: "fixture".into(),
         texture: 7,
@@ -404,8 +401,7 @@ fn each_draw_carries_its_native_allocation_and_the_bytes_it_writes() {
 
 #[test]
 fn bound_portrait_texture_keeps_the_icons_mask_sampler() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let sheets = Sheets(sprites::SpriteSheet {
         name: "mask".into(),
         texture: 7,

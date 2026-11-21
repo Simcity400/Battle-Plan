@@ -69,8 +69,7 @@ const POINT: Option<[f32; 2]> = Some([2.0, 3.0]);
 
 #[test]
 fn naval_tooltip_width_uses_authored_fallback_and_counts_missing_or_wrong_types() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use {crate::map::test_support::gui::fixture, crate::map::test_support::gui::fixture_with};
     let read = content_reader_core::gui::native::read;
     let fallback = fixture_with(read(

@@ -2959,8 +2959,7 @@ mod tests {
 
     #[test]
     fn counter_sheet_uses_the_native_texture_decoder_and_client_setting() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_native_texture_{}",
             std::process::id()
@@ -3018,8 +3017,7 @@ mod tests {
 
     #[test]
     fn layer_keys_stay_distinct_and_ordered_past_62500_icons() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         assert_ne!(layer(5, 62_500, 0), layer(6, 0, 0));
         assert!(layer(5, 62_500, 0) < layer(6, 0, 0));
         assert!(layer(5, u32::MAX, CHILD_SLOTS - 1) < layer(6, 0, 0));

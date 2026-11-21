@@ -1315,8 +1315,7 @@ mod tests {
 
     #[test]
     fn combat_handles_keep_their_high_bits_in_pool_ownership() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let context = Context {
@@ -1376,8 +1375,7 @@ mod tests {
 
     #[test]
     fn replacement_keeps_the_clock_and_membership_and_cannot_create_a_first_frame() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let mut context = Context {
@@ -1404,8 +1402,7 @@ mod tests {
 
     #[test]
     fn registry_identity_rebuilds_even_when_the_template_bytes_match() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let first = windows(GUI);
         let second = windows(GUI);
@@ -1427,8 +1424,7 @@ mod tests {
 
     #[test]
     fn native_draws_nothing_diagnostics_keep_the_part_and_reason() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut resources = fixture();
         let mut sprite = resources.sprite(b"GFX_even").unwrap();
         sprite.texture = [0; 2];
@@ -1451,8 +1447,7 @@ mod tests {
 
     #[test]
     fn shared_region_linger_retains_slot_then_final_sweep_stops_requests_and_running() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use super::super::province_schedule::Schedule;
         for selected in [false, true] {
             let resources = fixture();
@@ -1574,8 +1569,7 @@ mod tests {
 
     #[test]
     fn a_pool_keeps_each_window_that_stood_still_and_writes_again_only_those_that_changed() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owner = |id, screen, dirty| Owner { id, screen, dirty };
@@ -1691,8 +1685,7 @@ mod tests {
 
     #[test]
     fn a_quiet_frame_moves_slots_as_a_drawn_frame_and_the_next_drawn_frame_shows_the_same_windows() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owner = |id, screen, dirty| Owner { id, screen, dirty };
@@ -1740,8 +1733,7 @@ mod tests {
 
     #[test]
     fn a_settled_pool_asks_for_no_frame_until_something_it_shows_or_holds_changes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owner = |id, screen, dirty| Owner { id, screen, dirty };
@@ -1775,8 +1767,7 @@ mod tests {
 
     #[test]
     fn a_pool_window_s_layout_reads_no_screen_point() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let root = windows.gui_type(b"test_icon").expect("the fixture's window");
@@ -1801,8 +1792,7 @@ mod tests {
 
     #[test]
     fn a_recorded_pool_writes_again_only_the_owners_whose_values_changed() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owners = [
@@ -1857,8 +1847,7 @@ mod tests {
 
     #[test]
     fn a_growing_pool_keeps_the_windows_that_stood_still() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let windows = windows(GUI);
         let owner = |id: u32| Owner {

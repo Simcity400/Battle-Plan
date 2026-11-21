@@ -7437,8 +7437,7 @@ pub(crate) mod tests {
 
     #[test]
     fn task_force_children_outside_the_plate_keep_its_priority_and_block_unknown_hit_forms() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use {
             viewer_foundation::map::counter_hovers::task_force::Control,
             viewer_foundation::map::counter_hovers::task_force::Hover,

@@ -4022,8 +4022,7 @@ mod retained_work_tests {
     use crate::map::test_support::gui::fixture;
 
     fn template() -> native::Gui {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         native::read(
             br#"guiTypes={containerWindowType={name=root size={width=100 height=50}
             iconType={name=icon spriteType=GFX_animated}
@@ -4583,8 +4582,7 @@ mod traversal_tests {
 
     #[test]
     fn retained_routes_keep_parts_children_and_copied_templates_in_order() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = native::read(
             br#"guiTypes={containerWindowType={name=root
             background={name=back}
@@ -4691,8 +4689,7 @@ mod clock_pruning_tests {
 
     #[test]
     fn windows_without_drawable_clocks_do_not_resolve_sprites_in_the_clock_phase() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let fixture = fixture();
         let resources = Metadata {
             fixture: &fixture,
@@ -4727,8 +4724,7 @@ mod clock_pruning_tests {
 
     #[test]
     fn an_idle_window_s_tick_stamps_its_clock_alone_and_lays_out_as_a_full_tick() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let fixture = fixture();
         let resources = Metadata {
             fixture: &fixture,
@@ -4796,8 +4792,7 @@ mod clock_pruning_tests {
 
     #[test]
     fn copied_templates_resolve_their_own_drawable_clock_kinds() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = fixture();
         let gui = native::read(
             br#"guiTypes={containerWindowType={name=root size={width=100 height=50}
@@ -4837,8 +4832,7 @@ mod clock_pruning_tests {
 
     #[test]
     fn pruned_clocks_and_borrowed_metadata_equal_a_full_drawable_tick() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut fixture = fixture();
         let mut pulse = fixture.sprite(b"GFX_cornered").unwrap();
         if let SpriteKind::CorneredTile { looping, rate, .. } = &mut pulse.kind {
@@ -4938,8 +4932,7 @@ mod disabled_icon_tests {
 
     #[test]
     fn an_icon_the_code_disables_draws_its_disable_technique() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let fixture = fixture();
         let gui = native::read(
             br#"guiTypes={containerWindowType={name=root size={width=100 height=50}
@@ -4969,8 +4962,7 @@ mod disabled_icon_tests {
 
     #[test]
     fn settled_transitions_show_a_window_at_its_settled_place() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         const GUI: &[u8] = br#"guiTypes={
             containerWindowType={name=root position={x=-160 y=0} size={width=160 height=90}
                 fade_type=linear fade_time=150
@@ -4992,8 +4984,7 @@ mod disabled_icon_tests {
 
     #[test]
     fn a_settled_step_completes_a_pending_hide() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         const GUI: &[u8] = br#"guiTypes={
             containerWindowType={name=root position={x=0 y=0} size={width=160 height=90}
                 show_position={x=10 y=5} show_animation_type=linear show_animation_time=150

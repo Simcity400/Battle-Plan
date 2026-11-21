@@ -212,7 +212,7 @@ fn bits(chances: &viewer_audio::Chances) -> Vec<Option<u64>> {
 
 #[test]
 fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let content = fixture_content();
     let memo = Memo::new(8);
     let base = frame(3);
@@ -346,7 +346,7 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
 
 #[test]
 fn music_inputs_missing_country_counts_and_known_null_targets_match_original() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let mut frame = frame(3);
     frame.tables[TableId::CountryCounterInputs.index()] =
         TableView::Complete(TableRows::CountryCounterInputs(Vec::new())).into();
@@ -377,7 +377,7 @@ fn music_inputs_missing_country_counts_and_known_null_targets_match_original() {
 
 #[test]
 fn music_inputs_unknown_keys_eviction_and_contended_memo_recompute_without_waiting() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let frame = frame(2);
     let content = fixture_content();
     let reference = original(&frame, &content, 1);
@@ -425,7 +425,7 @@ fn music_inputs_unknown_keys_eviction_and_contended_memo_recompute_without_waiti
 
 #[test]
 fn music_inputs_size_from_five_thousand_countries_and_do_not_cap_authored_songs() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let frame = frame(5000);
     let mut content = fixture_content();
     let music = &mut Arc::get_mut(&mut content).unwrap().music;
@@ -441,7 +441,7 @@ fn music_inputs_size_from_five_thousand_countries_and_do_not_cap_authored_songs(
 
 #[test]
 fn music_inputs_recheck_has_war_end_hours_and_unresolved_unrelated_endpoints() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let mut music = Music::default();
     for (index, body) in [
         "base=1 modifier={has_war=yes factor=2}",
@@ -556,7 +556,7 @@ fn music_inputs_recheck_has_war_end_hours_and_unresolved_unrelated_endpoints() {
 
 #[test]
 fn music_inputs_recheck_hour_boundaries_and_refused_table_availability() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let content = fixture_content();
     let memo = Memo::new(8);
     let base = frame(3);
@@ -698,7 +698,7 @@ fn music_outcomes_keep_f64_scaling_and_leave_refused_songs_unknown_in_order() {
 
 #[test]
 fn map_products_music_matches_the_pre_extraction_synchronous_evaluator() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let content = fixture_content();
     let memo = map_products::music_inputs::Memo::new();
     for countries in [2, 1500, 5000] {
@@ -720,7 +720,7 @@ fn map_products_music_matches_the_pre_extraction_synchronous_evaluator() {
 
 #[test]
 fn map_products_music_by_identity_reads_again_only_what_a_replaced_table_holds() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let content = fixture_content();
     let memo = map_products::music_inputs::Memo::by_identity();
     let mut kept = None;

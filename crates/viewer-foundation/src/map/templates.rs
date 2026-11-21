@@ -384,8 +384,7 @@ mod tests {
 
     #[test]
     fn vertical_counter_strip_preserves_frame_pixels_and_geometry() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root = std::env::temp_dir().join(format!("hoi4_type_vertical_{}", std::process::id()));
         std::fs::create_dir_all(root.join("gfx")).unwrap();
         let mut bytes = test_tga_rgba8(12, 60);
@@ -433,8 +432,7 @@ mod tests {
 
     #[test]
     fn counter_atlas_counts_kinds_with_geometry_it_cannot_draw() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let layers = ResolvedLayers::from_folders(&[]).unwrap();
         let sprites = SpriteSet::new(&[("interface/test.gfx".into(),
             content_reader_core::gui::native::sprites::read_sprites(b"spriteTypes={corneredTileSpriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga size={x=12 y=30} borderSize={x=1 y=1}}}"))]);
@@ -474,8 +472,7 @@ mod tests {
 
     #[test]
     fn atlas_refusals_group_by_reason_with_bounded_examples() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root =
             std::env::temp_dir().join(format!("hoi4_counter_type_refusals_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -502,8 +499,7 @@ mod tests {
 
     #[test]
     fn sixteen_bit_counter_icon_is_counted_without_copying_as_rgba8() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root =
             std::env::temp_dir().join(format!("hoi4_counter_type_565_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -544,8 +540,7 @@ mod tests {
 
     #[test]
     fn counter_type_atlas_keeps_icons_under_force_pow2_textures() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_type_native_texture_{}",
             std::process::id()
@@ -580,8 +575,7 @@ mod tests {
 
     #[test]
     fn counter_type_atlas_uses_loaded_block_extent_for_frame_geometry() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_type_block_extent_{}",
             std::process::id()
@@ -639,8 +633,7 @@ mod tests {
 
     #[test]
     fn counter_type_atlas_accepts_authored_sizes_and_keeps_fractional_strips() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root =
             std::env::temp_dir().join(format!("hoi4_type_atlas_sizes_{}", std::process::id()));
         std::fs::create_dir_all(root.join("gfx")).unwrap();
@@ -781,8 +774,7 @@ mod tests {
 
     #[test]
     fn a_refused_custom_icon_is_selected_and_withheld() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let sprites = SpriteSet::new(&[(
             "interface/counters.gfx".to_owned(),
             content_reader_core::gui::native::sprites::read_sprites(

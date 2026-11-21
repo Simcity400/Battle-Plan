@@ -34,8 +34,9 @@ impl MovementFixture {
     }
 }
 pub fn assets() -> MovementFixture {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    if !engine_executable::executable_tables::is_initialized() {
+        content_reader_core::test_game::enter();
+    }
     let mut assets = unnamed_assets();
     let facts = &mut assets.trigger_content;
     let ideologies = facts.ideologies.get_or_insert_with(Default::default);

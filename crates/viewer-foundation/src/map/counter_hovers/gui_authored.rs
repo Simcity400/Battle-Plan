@@ -136,8 +136,7 @@ mod tests {
 
     #[test]
     fn authored_disabled_hashes_fall_back_independently_to_each_normal_field() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let parsed = element(
             "pdx_tooltip = TITLE pdx_tooltip_delayed = BODY pdx_disabled_tooltip = DISABLED",
         );
@@ -161,8 +160,7 @@ mod tests {
 
     #[test]
     fn empty_context_tree_keeps_callback_and_occupied_bound_text_overrides_normal_keys() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let empty = element("context_aware_tooltip = { } ");
         assert!(empty.common.bound_tooltip.is_empty());
         assert!(Authored::read(&empty, false).is_none());

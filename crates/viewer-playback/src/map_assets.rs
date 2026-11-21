@@ -251,8 +251,7 @@ mod tests {
 
     #[test]
     fn a_mods_world_normal_map_is_drawn() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "hoi4_world_normal_{}_{:?}",
             std::process::id(),
