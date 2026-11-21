@@ -102,8 +102,7 @@ mod tests {
 
     #[test]
     fn port_binder_excludes_unbound_supply_marker_counts_and_wrong_authored_kind() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = w
@@ -128,8 +127,7 @@ mod tests {
 
     #[test]
     fn spotting_binder_uses_nested_lookups_and_descendants_inherit_generic_handler() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = native::read(
             br#"guiTypes = { containerWindowType = {
             name = w
@@ -196,8 +194,7 @@ mod tests {
 
     #[test]
     fn port_child_can_hover_when_its_clipped_plate_is_empty() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use native_gui::lifecycle::Instance;
         use viewer_foundation::map::test_support::{Fixture, VIEWPORT};
         let gui = native::read(br#"guiTypes = { containerWindowType = {

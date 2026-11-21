@@ -337,13 +337,22 @@ mod tests {
 
     #[test]
     fn idle_explicit_target_times_the_searched_route_at_the_edge_speed() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use {dashboard_text::triggers::World, viewer_foundation::map::movement_reads::Cells};
-        let (assets, mut frame) = (
-            viewer_foundation::map::movement_reads::test_support::path_assets(),
-            viewer_foundation::map::movement_reads::test_support::positive_frame(),
-        );
+        use content_reader_core::province_graph::ProvinceGraph;
+        use content_reader_unit_path::unit_path::MoveGraph;
+        use dashboard_text::triggers::World;
+        use replay_data::rows::DivisionTemplateIconRow;
+        use viewer_foundation::map::movement_reads::{
+            Cells,
+            test_support::{positive_frame, unnamed_assets},
+        };
+
+        let mut assets = unnamed_assets();
+        assets.geometry.land = [3, 4].into();
+        let mut graph = ProvinceGraph::default();
+        graph.edges.insert(3, vec![(4, Some(50_000))]);
+        graph.edges.insert(4, vec![(3, Some(50_000))]);
+        assets.moves = Ok(MoveGraph::new(&graph, &assets.geometry));
+        let mut frame = positive_frame();
         let mut content = content(1);
         content.map = MovementMap::from_parts(&[
             (
@@ -362,7 +371,15 @@ mod tests {
             regions: Default::default(),
             ..Default::default()
         });
-        viewer_foundation::movement_timing::test_support::neutral_world(&mut frame, 11);
+        super::super::test_support::neutral_land_movement(&mut frame, 11, 3);
+        put(
+            &mut frame,
+            TableRows::DivisionTemplateIcons(vec![DivisionTemplateIconRow {
+                template: 0,
+                speed_keys: Recorded::Value(Some(Vec::new())),
+                ..Default::default()
+            }]),
+        );
         put(
             &mut frame,
             TableRows::Divisions(vec![DivisionRow {
@@ -609,8 +626,7 @@ mod tests {
 
     #[test]
     fn row_indexes_refuse_duplicate_aliases_slots_and_directed_edges() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        synthetic_game::enter();
         let content = content(0);
         let mut frame = country_frame();
         put(

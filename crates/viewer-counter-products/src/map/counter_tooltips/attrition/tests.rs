@@ -1,7 +1,8 @@
 use super::*;
+use crate::map::division_eta::test_support::put_modifier_definitions;
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
-    rows::CountryRow, rows::LexicalTokenRow, rows::ModifierDefinitionRow, rows::MovementDefines,
+    rows::CountryRow, rows::LexicalTokenRow, rows::MovementDefines,
     rows::ProvinceRow, rows::Recorded, rows::SimulationFeatureRow, rows::StateFlagRow,
     rows::TableId, rows::TableRows, rows::WeatherProvinceRow,
 };
@@ -129,34 +130,16 @@ fn frame(province: u32, path_total: u32, path: Vec<u32>) -> DecodedFrame {
             ..Default::default()
         }]),
     );
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-    let mut keys = engine_executable::modifier_keys::all()
-        .unwrap()
-        .collect::<Vec<_>>();
-    keys.sort_unstable_by_key(|key| key.index);
-    put(
+    use engine_executable::modifier_keys::{
+        ATTRITION, HEAT_ATTRITION, UNIT_UPKEEP_ATTRITION_FACTOR, WINTER_ATTRITION,
+    };
+    put_modifier_definitions(
         &mut frame,
-        TableRows::ModifierDefinitions(
-            keys.iter()
-                .map(|key| ModifierDefinitionRow {
-                    index: key.index,
-                    token: key.index + 1,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    put(
-        &mut frame,
-        TableRows::LexicalTokens(
-            keys.iter()
-                .map(|key| LexicalTokenRow {
-                    token: key.index + 1,
-                    literal: key.name.as_bytes().to_vec(),
-                })
-                .collect(),
-        ),
+        replay_derive::fixed_layout::MOVEMENT
+            .keys
+            .iter()
+            .copied()
+            .chain([ATTRITION, HEAT_ATTRITION, WINTER_ATTRITION, UNIT_UPKEEP_ATTRITION_FACTOR]),
     );
     frame
 }
@@ -282,10 +265,12 @@ fn composition(frame: &mut DecodedFrame, unreadable: u8) {
 
 fn rendered_with_sub_units(frame: &DecodedFrame) -> Tooltip {
     let mut units = content_reader_core::unit_leader::SubUnits::default();
-    units.read(
-        b"sub_units={ marine={special_forces=yes type=infantry} infantry={type=infantry} }",
-        "common/units/test.txt",
-    );
+    engine_executable::executable_tables::scope(Some(content_reader_core::test_game::tables()), || {
+        units.read(
+            b"sub_units={ marine={special_forces=yes type=infantry} infantry={type=infantry} }",
+            "common/units/test.txt",
+        );
+    });
     let content = Content {
         sub_units: Ok(std::sync::Arc::new(units)),
         ..content()
@@ -445,13 +430,13 @@ fn the_supply_line_follows_the_recorded_supply_and_days() {
         "{:?}",
         unreadable.refused
     );
+    status(&mut frame).supply_ratio = Some(10_000);
     status(&mut frame).out_of_supply_days = Recorded::Value(Some(0));
     assert!(!refused(&rendered(&frame), "attrition supply"));
     status(&mut frame).out_of_supply_days = Recorded::Value(Some(15));
     status(&mut frame).supply_ratio_exact = Recorded::Value(None);
     status(&mut frame).supply_grace_exact = Recorded::Value(None);
     assert!(refused(&rendered(&frame), "attrition supply"));
-    status(&mut frame).supply_ratio = Some(10_000);
     status(&mut frame).out_of_supply_days = Recorded::Value(None);
     assert!(refused(&rendered(&frame), "attrition supply"));
 }

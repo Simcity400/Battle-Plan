@@ -322,8 +322,7 @@ mod tests {
 
     #[test]
     fn counter_action_land_child_loads_its_authored_sprite() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let windows = NativeWindows::read(
             br#"guiTypes={containerWindowType={name=unit_counter_navy}
                 containerWindowType={name=naval_combat_mapicon}
@@ -339,8 +338,7 @@ mod tests {
 
     #[test]
     fn counter_action_centred_child_keeps_the_land_layout() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = native::read(
             br#"guiTypes={containerWindowType={name=unit_counter
             iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions
@@ -355,8 +353,7 @@ mod tests {
 
     #[test]
     fn counter_layout_refusals_are_independent_and_do_not_abort_loading() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let source = br#"guiTypes={
             containerWindowType={name=unit_counter size={width=76 height=24}}
             containerWindowType={name=unit_counter_railway_gun size={width=100% height=24}}
@@ -381,8 +378,7 @@ mod tests {
 
     #[test]
     fn counter_templates_use_the_native_registry_and_accept_eof() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let guis = native::Guis::new(vec![
             (
                 MAPICONS_GUI.into(),
@@ -432,8 +428,7 @@ mod tests {
 
     #[test]
     fn counter_lookup_keeps_native_kind_and_window_local_depth() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let guis = native::Guis::new(vec![(
             MAPICONS_GUI.into(),
             native::read(
@@ -469,8 +464,7 @@ mod tests {
 
     #[test]
     fn counter_text_grid_and_ability_lookups_are_window_local() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let guis = native::Guis::new(vec![(
             MAPICONS_GUI.into(),
             native::read(
@@ -522,8 +516,7 @@ mod tests {
 
     #[test]
     fn counter_button_lookup_rejects_icon_and_checkbox_arrays() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         for kind in ["iconType", "checkboxType"] {
             let guis = native::read(format!(
                 "guiTypes={{containerWindowType={{name=test {kind}={{name=count_bg spriteType=GFX_wrong}}}}}}"
@@ -544,8 +537,7 @@ mod tests {
 
     #[test]
     fn unported_counter_button_draw_forms_are_refused_by_name() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         for (field, name) in [
             ("centerPosition=yes", "centerPosition"),
             ("rotation=1", "rotation"),
