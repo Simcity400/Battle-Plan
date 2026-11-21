@@ -753,11 +753,9 @@ impl PowerLedger {
             && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
         {
             survivors.insert(sequence, Vec::new());
-            if sole {
-                self.steady.remove(&holder);
-            }
         }
         let open = self.parts.get(&holder).map_or_else(Vec::new, |(_, keys)| keys.clone());
+        let mut withdrawn = HashSet::new();
         for (sequence, costs) in survivors {
             let mut held = Vec::new();
             for &key in &open {
@@ -780,7 +778,13 @@ impl PowerLedger {
                 }
             }
             let total: i128 = costs.iter().map(|cost| i128::from(cost.cost_raw)).sum();
-            let reconciles = daily.as_ref().is_some_and(|daily| daily.pp_sequence == Some(sequence) && costs.iter().all(|cost| cost.epoch == daily.epoch) && daily.pp_cost_raw.is_some_and(|cost| i128::from(cost) == total));
+            let applied = daily.as_ref().filter(|daily| daily.pp_sequence == Some(sequence) && costs.iter().all(|cost| cost.epoch == daily.epoch));
+            let reconciles = applied.is_some_and(|daily| daily.pp_cost_raw.is_some_and(|cost| i128::from(cost) == total));
+            if applied.is_some() && !reconciles {
+                self.steady.insert(holder);
+            } else if reconciles && sole {
+                self.steady.remove(&holder);
+            }
             for mut part in held {
                 let key = part.key();
                 match remaining.get(&part.ordinal) {
@@ -793,9 +797,7 @@ impl PowerLedger {
                         pending.parts.insert(key, part);
                     }
                     None if sole => {
-                        if let Some((_, open)) = self.parts.get_mut(&holder) {
-                            open.retain(|held| *held != key);
-                        }
+                        withdrawn.insert(key);
                         pending.parts.remove(&key);
                         pending.withdrawn.push(key);
                     }
@@ -806,6 +808,11 @@ impl PowerLedger {
                     }
                 }
             }
+        }
+        if !withdrawn.is_empty()
+            && let Some((_, open)) = self.parts.get_mut(&holder)
+        {
+            open.retain(|key| !withdrawn.contains(key));
         }
         Ok(())
     }
@@ -823,7 +830,8 @@ impl PowerLedger {
         }
         if sole {
             if let Some((_, open)) = self.parts.get_mut(&holder) {
-                open.retain(|key| dropped.iter().all(|part| part.key() != *key));
+                let gone: HashSet<u128> = dropped.iter().map(Part::key).collect();
+                open.retain(|key| !gone.contains(key));
             }
             for part in dropped {
                 pending.parts.remove(&part.key());

@@ -103,6 +103,8 @@ const CANCELLED: i32 = 122;
 const STALE_ZERO: i32 = 123;
 const MATCHED: i32 = 124;
 const DAILY_GONE: i32 = 125;
+const PAIRED: i32 = 126;
+const TOTAL_KEPT: i32 = 127;
 const NO_CHANGES: i32 = 26;
 
 fn put_daily(store: &mut Store, hour: i32, row: &CountryPowerDailyRow) {
@@ -270,6 +272,15 @@ fn edit(store: &mut Store, hour: i32) {
         }
         DAILY_GONE => {
             testing::remove(store, TableId::CountryPowerDaily, 1).unwrap();
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+        }
+        PAIRED => {
+            put_daily(store, hour, &daily(120, 3 * Q, Q / 2 + Q / 10, 126));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 0, PowerDailyCostKind::Relation, Q / 2, 126), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(120, 1, PowerDailyCostKind::MioResearch, Q / 10, 126), TEXTS).unwrap();
+        }
+        TOTAL_KEPT => {
+            put_daily(store, hour, &daily(120, 3 * Q, Q / 2 + Q / 10, 126));
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
         }
         _ => {}
@@ -516,6 +527,11 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     assert_eq!((cell::<Part>(&paid, TableId::PowerDayParts, relation, "spent"), covered(&paid)), (Some(Q / 2), Some(true)));
     let (gone, _) = through(0..=DAILY_GONE);
     assert_eq!((cell::<Part>(&gone, TableId::PowerDayParts, relation, "spent"), covered(&gone)), (Some(Q / 2), Some(true)), "a deletion keeps a survivor in the part it was published in, whatever the daily row reads now");
+    let mismatch = |store: &Store| cell::<Coverage>(store, TableId::PowerSpendCoverage, 10, "daily_mismatch");
+    let (batch, _) = through(0..=PAIRED);
+    assert_eq!(mismatch(&batch), Some(0));
+    let (kept, _) = through(0..=TOTAL_KEPT);
+    assert_eq!(mismatch(&kept), Some(i64::from(Coverage::STEADY_MISMATCH)), "a deletion whose remaining costs miss the total read that hour is a mismatch");
 }
 
 #[test]
