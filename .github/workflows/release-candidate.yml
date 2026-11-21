@@ -92,7 +92,6 @@ jobs:
         with:
           workspaces: ". -> .cargo-target"
           shared-key: candidate-${{ env.PROFILE }}
-          cache-workspace-crates: true
           save-if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
       - name: Name the version
