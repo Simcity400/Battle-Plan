@@ -87,6 +87,8 @@ const LATER_DAY: i32 = 73;
 const CLOSED_DELETED: i32 = 97;
 const SAME_ITEM: i32 = 98;
 const SAME_ITEM_DROPPED: i32 = 99;
+const SAME_ITEM_RESTORED: i32 = 100;
+const SAME_ITEM_UNRECONCILED: i32 = 101;
 const NO_CHANGES: i32 = 26;
 
 fn edit(store: &mut Store, hour: i32) {
@@ -106,7 +108,7 @@ fn edit(store: &mut Store, hour: i32) {
     } else {
         complete(store, TableId::PoliticsCaptureCoverage);
         for country in [1, 2] {
-            let since_hour = if hour >= SHORTER { hour - 1 } else { 0 };
+            let since_hour = if hour >= SAME_ITEM { SAME_ITEM - 2 } else if hour >= SHORTER { hour - 1 } else { 0 };
             let witness = Streams { country, epoch: 1, since_hour, through_hour: hour, streams: Streams::ALL_STREAMS, ..Default::default() };
             testing::put(store, TableId::PoliticsCaptureCoverage, &witness, TEXTS).unwrap();
         }
@@ -183,6 +185,11 @@ fn edit(store: &mut Store, hour: i32) {
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
             testing::put(store, TableId::CountryPowerDaily, &daily(96, 3 * Q, Q / 2, 99), TEXTS).unwrap();
         }
+        SAME_ITEM_RESTORED => {
+            testing::put(store, TableId::CountryPowerDaily, &daily(96, 3 * Q, Q / 2 + Q / 4, 99), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(96, 1, PowerDailyCostKind::Relation, Q / 4, 99), TEXTS).unwrap();
+        }
+        SAME_ITEM_UNRECONCILED => testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap(),
         _ => {}
     }
 }
@@ -393,7 +400,12 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     assert_eq!((cell::<Part>(&paired, TableId::PowerDayParts, relation, "spent"), cell::<Part>(&paired, TableId::PowerDayParts, relation, "payments")), (Some(Q / 2 + Q / 4), Some(2)));
     let (dropped, _) = through(0..=SAME_ITEM_DROPPED);
     assert_eq!((cell::<Part>(&dropped, TableId::PowerDayParts, relation, "spent"), cell::<Part>(&dropped, TableId::PowerDayParts, relation, "payments")), (Some(Q / 2), Some(1)), "a deleted row of a shared item leaves the item what its remaining rows pay");
-    assert_eq!(covered(&dropped), covered(&paired), "and keeps the coverage it proved");
+    assert_eq!((covered(&paired), covered(&dropped)), (Some(true), Some(true)), "and keeps the coverage it proved while its batch reconciles");
+    let (restored, _) = through(0..=SAME_ITEM_RESTORED);
+    assert_eq!(covered(&restored), Some(true));
+    let (unreconciled, _) = through(0..=SAME_ITEM_UNRECONCILED);
+    assert_eq!(cell::<Part>(&unreconciled, TableId::PowerDayParts, relation, "spent"), Some(Q / 2));
+    assert_eq!(covered(&unreconciled), Some(false), "a survivor whose batch no longer matches the day's total is not covered");
 }
 
 #[test]

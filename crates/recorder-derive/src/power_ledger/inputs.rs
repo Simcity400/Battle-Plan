@@ -214,7 +214,7 @@ pub(super) fn publications(hour: &Hour<'_>) -> io::Result<Logged<Publication>> {
 
 pub(super) fn holds_no_costs(hour: &Hour<'_>, country: u32) -> io::Result<bool> {
     let table = TableId::CountryPowerDailyCosts;
-    Ok(hour.complete(table) && keyed::<CountryPowerDailyCostRow>(&hour.table(table), u128::from(country) << 32)?.is_none())
+    Ok(hour.complete(table) && hour.table(table).slot(u128::from(country) << 32).is_none())
 }
 
 pub(super) fn input_reason(hour: &Hour<'_>) -> Option<String> {
