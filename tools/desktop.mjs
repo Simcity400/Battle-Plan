@@ -148,7 +148,10 @@ try {
     resources[`${STAGE}/${SHIPPED.notices.file}`] = SHIPPED.notices.file;
     const signCommand = { cmd: "powershell", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
       "../../tools/sign-release.ps1", "%1"] };
+    const desktop = metadata.packages.find((member) => path.relative(path.join(root, "crates", "desktop"), path.dirname(member.manifest_path)) === "");
+    if (!desktop) throw new Error("Cargo metadata names no package in crates/desktop.");
     config = { build: { beforeBuildCommand: null }, bundle: { resources,
+      ...(desktop.version.includes("-nightly.") ? { icon: ["icons/nightly.ico", "icons/nightly.png"] } : {}),
       ...(updaterArtifacts ? { createUpdaterArtifacts: true } : {}),
       ...(authenticode ? { windows: { signCommand } } : {}) } };
   }

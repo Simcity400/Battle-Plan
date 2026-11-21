@@ -15,6 +15,6 @@
   },
   "bundle": {
     "active": false,
-    "icon": ["../desktop/icons/icon.ico", "../desktop/icons/icon.png"]
+    "icon": ["icons/icon.ico", "icons/icon.png"]
   }
 }
