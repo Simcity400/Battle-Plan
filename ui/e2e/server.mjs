@@ -51,6 +51,7 @@ export async function startUI(ui, config, output) {
     await writeJSON(path.join(output, 'native-inputs.json'), nativeInputs);
     process.env.APPDATA = path.join(root, 'appdata'); process.env.LOCALAPPDATA = path.join(root, 'localappdata');
     server = await createServer({ configFile: false, root: path.join(ui.root, 'ui'), mode: 'parity', cacheDir: path.join(root, 'vite'),
+      optimizeDeps: { noDiscovery: true, include: ['react-dom/client', 'react-grid-layout'] },
       plugins: [react(), browserBridge(root, path.dirname(config.recording), config.gameDir, config.userDir)], clearScreen: false, logLevel: 'warn',
       server: { host: '127.0.0.1', port: 0, strictPort: true, fs: { allow: [ui.root, repository] } } });
     await server.listen();
