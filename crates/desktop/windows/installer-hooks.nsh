@@ -189,7 +189,6 @@ FunctionEnd
   Delete "$INSTDIR\LICENSES\IJG-libjpeg-README.txt"
   Delete "$INSTDIR\LICENSES\Lucide-LICENSE.txt"
   Delete "$INSTDIR\LICENSES\PhysFS-LICENSE.txt"
-  Delete "$INSTDIR\LICENSES\README.md"
   Delete "$INSTDIR\LICENSES\SDL-LICENSE.txt"
   Delete "$INSTDIR\LICENSES\byteorder-lite-LICENSE-MIT.txt"
   Delete "$INSTDIR\LICENSES\eframe-LICENSE-APACHE.txt"

@@ -40,6 +40,8 @@ test('a notice missing from the manifest, listed without its file, nested or not
   });
   await rm(path.join(folder, 'vendor'), { recursive: true });
   assert.match(await thirdPartyNotices(folder, [{ name: 'A', use: 'Uses.', files: ['a.txt', 'new.txt'] }]), /--- new\.txt ---\n\nUnlisted\n$/);
+  await writeFile(path.join(folder, 'new.txt'), '﻿With a mark');
+  assert.match(await thirdPartyNotices(folder, [{ name: 'A', use: 'Uses.', files: ['a.txt', 'new.txt'] }]), /--- new\.txt ---\n\n﻿With a mark\n$/);
   await writeFile(path.join(folder, 'new.txt'), Buffer.from('Copyright \xa9', 'latin1'));
   await assert.rejects(thirdPartyNotices(folder, [{ name: 'A', use: 'Uses.', files: ['a.txt', 'new.txt'] }]), /LICENSES\/new\.txt is not UTF-8/);
 });

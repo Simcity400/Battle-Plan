@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
 const RULE = "=".repeat(78);
-const UTF8 = new TextDecoder("utf-8", { fatal: true });
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export async function thirdPartyNotices(folder, components) {
   const entries = await readdir(folder, { withFileTypes: true });
@@ -19,9 +19,10 @@ export async function thirdPartyNotices(folder, components) {
   for (const [index, component] of components.entries()) {
     const texts = [];
     for (const name of component.files) {
+      const bytes = await readFile(path.join(folder, name));
       let text;
       try {
-        text = UTF8.decode(await readFile(path.join(folder, name)));
+        text = UTF8.decode(bytes);
       } catch {
         throw new Error(`LICENSES/${name} is not UTF-8, so its text could not be carried verbatim.`);
       }
