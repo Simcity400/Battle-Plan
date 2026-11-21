@@ -1,3 +1,1 @@
-tools/daily_tests.py checkout
-tools/daily_tests_test.py checkout
 tools/e2e/suite.py checkout

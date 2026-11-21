@@ -67,8 +67,6 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.changes.outputs.matrix) }}
-    env:
-      HOI4_CI_STORE: ${{ github.workspace }}/../ci-store
     steps:
       - uses: actions/checkout@v7
         with:

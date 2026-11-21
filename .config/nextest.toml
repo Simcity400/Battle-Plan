@@ -17,9 +17,6 @@ priority = 60
 filter = 'package(dashboard)'
 priority = 50
 
-[profile.daily.junit]
-path = "junit.xml"
-
 [profile.hosted]
 slow-timeout = { period = "60s", terminate-after = 10 }
 status-level = "slow"
