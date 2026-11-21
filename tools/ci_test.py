@@ -230,6 +230,24 @@ class Crates(unittest.TestCase):
     def test_an_unchanged_workspace_skips(self):
         self.assertEqual(decide("clippy", context(["docs/x.md"])).state, "skipped")
 
+    def test_a_widening_file_runs_the_workspace(self):
+        pipeline = PIPELINE.replace('limit = 3\nheavy = true\n', 'limit = 3\nheavy = true\nwiden = [".config/nextest.toml"]\n')
+        ctx = context([".config/nextest.toml"])
+        ctx.pipeline = ci.load_pipeline(pipeline)
+        ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
+        ctx.hosted = True
+        job = next(job for job in ctx.pipeline.jobs if job.name == "test")
+        self.assertEqual(ci.decide(job, ctx, "check").state, "run")
+
+    def test_a_changed_group_redefines_its_jobs(self):
+        changed = ci.load_pipeline(PIPELINE.replace('[group.all]\nos = "ubuntu-latest"', '[group.all]\nos = "windows-latest"'))
+        ctx = context(["docs/x.md"])
+        job = next(job for job in changed.jobs if job.name == "scan")
+        self.assertEqual(ci.decide(job, ctx, "check").state, "run")
+
+    def test_the_upstream_names_its_github_repository(self):
+        self.assertIsNone(ci.upstream_repository("no-such-remote-for-this-test/main"))
+
     def test_a_changed_crate_job_definition_checks_the_workspace(self):
         ctx = context(["docs/x.md"])
         ctx.definitions = dict(ctx.definitions, clippy="before")

@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -25,6 +25,7 @@ jobs:
       any: ${{ steps.plan.outputs.any }}
       base: ${{ steps.plan.outputs.base }}
       tier: ${{ steps.tier.outputs.tier }}
+      exact: ${{ steps.tier.outputs.exact }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -41,18 +42,19 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           if [ "$EVENT" = pull_request ]; then
-            echo "tier=check" >> "$GITHUB_OUTPUT"; echo "base=$PR_BASE" >> "$GITHUB_OUTPUT"
+            { echo "tier=check"; echo "base=$PR_BASE"; echo "exact="; } >> "$GITHUB_OUTPUT"
           elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
-            echo "tier=main" >> "$GITHUB_OUTPUT"; echo "base=$BEFORE" >> "$GITHUB_OUTPUT"
+            { echo "tier=main"; echo "base=$BEFORE"; echo "exact=--exact-base"; } >> "$GITHUB_OUTPUT"
           else
-            echo "tier=main" >> "$GITHUB_OUTPUT"; echo "base=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+            { echo "tier=main"; echo "base=$(git hash-object -t tree /dev/null)"; echo "exact=--exact-base"; } >> "$GITHUB_OUTPUT"
           fi
       - id: plan
         shell: bash
         env:
           TIER: ${{ steps.tier.outputs.tier }}
           BASE: ${{ steps.tier.outputs.base }}
-        run: python tools/ci.py changes --tier "$TIER" --base "$BASE" --github-output "$GITHUB_OUTPUT"
+          EXACT: ${{ steps.tier.outputs.exact }}
+        run: python tools/ci.py changes --tier "$TIER" --base "$BASE" $EXACT --github-output "$GITHUB_OUTPUT"
 
   run:
     needs: changes
@@ -95,8 +97,9 @@ jobs:
         env:
           TIER: ${{ needs.changes.outputs.tier }}
           BASE: ${{ needs.changes.outputs.base }}
+          EXACT: ${{ needs.changes.outputs.exact }}
           GROUP: ${{ matrix.group }}
-        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --base "$BASE"
+        run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --base "$BASE" $EXACT
 
   check:
     needs: [changes, run]
@@ -111,8 +114,8 @@ jobs:
         run: |
           echo "changes: $CHANGES; jobs: $RUN; any gated in: $ANY"
           [ "$CHANGES" = success ] || { echo "The changes job did not succeed"; exit 1; }
-          if [ "$ANY" = true ]; then
-            [ "$RUN" = success ] || { echo "A gated job did not pass"; exit 1; }
-          else
-            [ "$RUN" = skipped ] || { echo "Jobs ran although no gate was needed"; exit 1; }
-          fi
+          case "$ANY" in
+            true) [ "$RUN" = success ] || { echo "A gated job did not pass"; exit 1; } ;;
+            false) [ "$RUN" = skipped ] || { echo "Jobs ran although no gate was needed"; exit 1; } ;;
+            *) echo "The changes job gave no gate decision"; exit 1 ;;
+          esac

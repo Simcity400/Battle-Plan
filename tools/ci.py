@@ -96,6 +96,7 @@ class Job:
     heavy: bool
     unset: tuple
     environment: tuple
+    widen: tuple
     definition: str
 
 
@@ -135,7 +136,8 @@ def load_pipeline(text):
             hosted=tuple(table.get("hosted", ())), group=table.get("group", ""),
             base=table.get("base", False), workspace=table.get("workspace", False), limit=table.get("limit"),
             heavy=table.get("heavy", False), unset=tuple(table.get("unset", ())), environment=tuple(table.get("environment", ())),
-            definition=json.dumps([table, data["toolchain"].get(table["toolchain"])], sort_keys=True))
+            widen=tuple(table.get("widen", ())),
+            definition=json.dumps([table, data["toolchain"].get(table["toolchain"]), data.get("group", {}).get(table.get("group"))], sort_keys=True))
         problems = [f"tier {job.tier!r}"] if job.tier not in tiers else []
         problems += [f"kind {job.kind!r}"] if job.kind not in KINDS else []
         problems += [f"toolchain {job.toolchain!r}"] if job.toolchain not in toolchains else []
@@ -370,7 +372,8 @@ def decide_crates(job, ctx, toolchain):
     shared = matcher(job.shared)
     shared_files = file_entries(ctx.tree, [path for path in ctx.tree if shared(path)])
     owner = crate_owner(crates)
-    wide = redefined or toolchain_changed(ctx, job)
+    widened = matcher(job.widen)
+    wide = redefined or toolchain_changed(ctx, job) or any(widened(path) for path in ctx.changed)
     changed = {owner(path) for path in ctx.changed} - {None}
     selected = set(crates) if wide else changed | {crate.name for crate in crates.values() if crate.deps & changed}
     if not selected:
@@ -880,12 +883,30 @@ def definitions_at(base):
         return None
 
 
-def post_status(head, state, description, say, context="ci/check"):
+def upstream_repository(upstream):
+    """`owner/name` of the GitHub repository the upstream's remote points at, or None."""
+    remote = upstream.split("/", 1)[0]
+    url = git("remote", "get-url", remote, check=False).strip()
+    found = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
+    return found.group(1) if found else None
+
+
+def post_status(head, state, description, say, context="ci/check", repository=None):
     """Posts `ci/check` through tools/commit_status.py; False when the status was not posted for
     a reason other than GitHub not having the commit yet."""
     sys.path.insert(0, str(ROOT / "tools"))
     import commit_status
-    posted, message = commit_status.post(state, description, context=context, sha=head)
+    previous = os.environ.get("GH_REPO")
+    if repository:
+        os.environ["GH_REPO"] = repository
+    try:
+        posted, message = commit_status.post(state, description, context=context, sha=head)
+    finally:
+        if repository:
+            if previous is None:
+                os.environ.pop("GH_REPO", None)
+            else:
+                os.environ["GH_REPO"] = previous
     if posted:
         say(f"{context}: {message}: {description}")
         return True
@@ -1091,19 +1112,24 @@ def run_tier(args, tier):
     elif active.superseded():
         say(f"{context}: superseded by a newer run on this branch; not posted")
         return SUPERSEDED
-    elif not post_status(head, state, description, say, context):
+    elif not post_status(head, state, description, say, context, upstream_repository(args.upstream)):
         code = EXIT["error"] if code in (EXIT["success"], EXIT["pending"]) else code
     store.prune()
     return code
 
 
-def plan(tier, base_ref, gates):
-    """The decisions for a tier against the merge base with `base_ref`. With `gates`, from the
-    files alone: no toolchain is asked, no pass is reused, nothing is held or deferred."""
+def plan(tier, base_ref, gates, exact=False):
+    """The decisions for a tier against the merge base with `base_ref`, or against `base_ref`
+    itself when `exact` (a push compares with the tip it replaced, which a force-push may have
+    dropped). With `gates`, from the files alone: no toolchain is asked, no pass is reused,
+    nothing is held or deferred."""
     pipeline = load_pipeline(PIPELINE.read_text(encoding="utf-8"))
-    base = git("merge-base", "HEAD", base_ref, check=False).strip()
+    if exact:
+        base = git("rev-parse", "--verify", "--quiet", f"{base_ref}^{{tree}}", check=False).strip() and base_ref
+    else:
+        base = git("merge-base", "HEAD", base_ref, check=False).strip()
     if not base:
-        sys.exit(f"No merge base with {base_ref}: fetch it, or pass --base.")
+        sys.exit(f"No base at {base_ref}: fetch it, or pass --base.")
     values = {"python": sys.executable, "node": shutil.which("node") or "node",
               "npm": shutil.which("npm.cmd") or shutil.which("npm") or "npm", "base": base}
     tree, changed, head = read_tree(), changed_since(base), git("rev-parse", "HEAD").strip()
@@ -1121,7 +1147,7 @@ def plan(tier, base_ref, gates):
 
 def changes(args):
     """The workflow's `changes` job: each job's gate, and the matrix of the groups with work."""
-    pipeline, values, decisions = plan(args.tier, args.base, gates=True)
+    pipeline, values, decisions = plan(args.tier, args.base, gates=True, exact=args.exact_base)
     groups = {}
     for decision in decisions:
         print(f"  {decision.state:8} {decision.job.name:22} {decision.job.group:8} {decision.detail}")
@@ -1133,6 +1159,10 @@ def changes(args):
     for entry in matrix:
         entry.pop("setup", None)
     print(f"groups with work: {', '.join(groups) or 'none'}")
+    unplanned = [decision.job.name for decision in decisions if decision.state == "not run"]
+    if unplanned:
+        print(f"could not plan: {', '.join(unplanned)}")
+        return EXIT["error"]
     if args.github_output:
         with open(args.github_output, "a", encoding="utf-8") as out:
             out.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")
@@ -1144,7 +1174,7 @@ def changes(args):
 def job_group(args):
     """The workflow's matrix job: runs one group's jobs that `changes` gated in, Rust jobs one
     after another (they share a target folder) and the rest in parallel."""
-    pipeline, values, decisions = plan(args.tier, args.base, gates=False)
+    pipeline, values, decisions = plan(args.tier, args.base, gates=False, exact=args.exact_base)
     mine = [decision for decision in decisions if decision.job.group == args.group]
     if not mine:
         sys.exit(f"tools/ci.toml has no group {args.group!r}")
@@ -1192,10 +1222,12 @@ def main(argv=None):
     gating.add_argument("--tier", default="check")
     gating.add_argument("--base", required=True, metavar="REF")
     gating.add_argument("--github-output", metavar="FILE")
+    gating.add_argument("--exact-base", action="store_true", help="compare with the base itself, not the merge base")
     grouped = commands.add_parser("job", help="run one group's jobs, as the workflow does")
     grouped.add_argument("--tier", default="check")
     grouped.add_argument("--group", required=True)
     grouped.add_argument("--base", required=True, metavar="REF")
+    grouped.add_argument("--exact-base", action="store_true", help="compare with the base itself, not the merge base")
     args = parser.parse_args(argv)
     if args.command == "changes":
         return changes(args)

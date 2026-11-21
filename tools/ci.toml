@@ -208,3 +208,4 @@ heavy = true
 shared = ["tools/boat.py", "tools/boat_remote.py"]
 command = ["{python}", "tools/boat.py", "test", "--no-fail-fast", "{packages}"]
 hosted = ["cargo", "nextest", "run", "--no-fail-fast", "--no-tests=pass", "{packages}"]
+widen = [".config/nextest.toml"]
