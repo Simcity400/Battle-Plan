@@ -432,13 +432,32 @@ fn the_supply_line_follows_the_recorded_supply_and_days() {
     );
     status(&mut frame).supply_ratio = Some(10_000);
     status(&mut frame).out_of_supply_days = Recorded::Value(Some(0));
-    assert!(!refused(&rendered(&frame), "attrition supply"));
-    status(&mut frame).out_of_supply_days = Recorded::Value(Some(15));
     status(&mut frame).supply_ratio_exact = Recorded::Value(None);
     status(&mut frame).supply_grace_exact = Recorded::Value(None);
-    assert!(refused(&rendered(&frame), "attrition supply"));
+    let zero_days = rendered(&frame);
+    assert!(
+        !refused(&zero_days, "attrition supply"),
+        "{:?}",
+        zero_days.refused
+    );
+    status(&mut frame).out_of_supply_days = Recorded::Value(Some(15));
+    let missing_exact = rendered(&frame);
+    assert!(
+        missing_exact.refused.contains_key(
+            "counter attrition supply: the division's exact supply was not recorded with its days out of supply"
+        ),
+        "{:?}",
+        missing_exact.refused
+    );
     status(&mut frame).out_of_supply_days = Recorded::Value(None);
-    assert!(refused(&rendered(&frame), "attrition supply"));
+    let missing_days = rendered(&frame);
+    assert!(
+        missing_days.refused.contains_key(
+            "counter attrition supply: the division's days out of supply were refused when recorded"
+        ),
+        "{:?}",
+        missing_days.refused
+    );
 }
 
 #[test]
