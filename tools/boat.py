@@ -22,11 +22,10 @@ x86_64-pc-windows-msvc. Cargo's exit code passes through (101 for compile errors
 exit 75 means Boat failed: run it again, never locally.
 
 `snapshot`, from a clean worktree at the head of the branch the image serves, re-saves SNAPSHOT
-from a VM of its own (cloned from SNAPSHOT, or from BASE_SNAPSHOT, which tools/boat_setup.sh
-builds) that compiled that tree as builders do: WARM, then the test builds the shared timings
-show run most. About 20 minutes from SNAPSHOT, an hour from BASE_SNAPSHOT; worth running again
-once the branch has changed crates many others depend on, its dependencies or its features. The
-VM stops at the end of its idle tail.
+from a VM of its own (cloned from SNAPSHOT, or from BASE_SNAPSHOT) that cleared its build outputs,
+checked that tree whole (WARM) and then kept only what a check reads, so clones fit a default
+machine; release and test builds start cold on each VM. Worth running again once the branch has changed crates many others
+depend on, its dependencies or its features. The VM stops at the end of its idle tail.
 
 `build` downloads the named exe/dll/pdb outputs, checks their SHA-256 and records them with the
 source digest in `<dir>/boat-artifacts.json`.
@@ -71,39 +70,13 @@ import time
 import uuid
 
 TOOLS = Path(__file__).resolve().parent
-SNAPSHOT = "hoi4-record-once"
+SNAPSHOT = "battle-plan-check"
 BASE_SNAPSHOT = "hoi4-check"
 WARM = [
     ("ui", []),
     ("check", ["check", "--keep-going", "--workspace", "--all-targets"]),
-    ("build", ["build", "--keep-going", "--release", "-p", "viewer", "--bin", "viewer"]),
-    ("build", ["build", "--keep-going", "--release", "-p", "recorder", "-p", "collector", "--features", "replay/keep-journal"]),
-    ("build", ["build", "--keep-going", "--release", "-p", "replay", "--bin", "journal-encode", "--bin", "change-digest", "--bin", "direct-read", "--features", "memory-labels,multiplied"]),
-    ("build", ["build", "--keep-going", "--release", "-p", "playhead", "--features", "bench", "--bin", "playhead-bench"]),
 ]
 COMPILE_ERRORS = 101
-WARM_TESTS = 30
-WARM_TEST_HOURS = 24
-
-
-def frequent_tests(log, now):
-    """The test builds that succeeded most often in the log's last WARM_TEST_HOURS, as their runs sent them, most frequent first."""
-    counts = {}
-    try:
-        lines = log.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        return []
-    for line in lines:
-        try:
-            record = json.loads(line)
-            when = time.mktime(time.strptime(record["time"][:19], "%Y-%m-%dT%H:%M:%S"))
-        except (ValueError, KeyError, TypeError):
-            continue
-        if record.get("mode") == "test" and record.get("exit") == 0 and now - when < WARM_TEST_HOURS * 3600:
-            key = tuple(record["args"])
-            counts[key] = counts.get(key, 0) + 1
-    ranked = sorted(counts, key=lambda key: -counts[key])[:WARM_TESTS]
-    return [("test", ["--warm", "--", key[0], *key[1:2], "--no-fail-fast", *key[2:]]) for key in ranked]
 REMOTE = "/home/user/hoi4"
 TARGET = "x86_64-pc-windows-msvc"
 RUN_SH = b'#!/usr/bin/env bash\nset -euo pipefail\nsource /home/user/hoi4/env.sh\nexec python3 /home/user/hoi4/remote.py "$@"'
@@ -1347,7 +1320,10 @@ def make_snapshot(state, worktree, revision):
         wait_ready(vmid)
         install_runner(state, vmid)
         manifest = source_manifest(worktree)
-        for index, (mode, args) in enumerate(WARM + frequent_tests(state.logs / "timings.jsonl", time.time())):
+        status, _ = remote(vmid, "clear", token)
+        if status:
+            raise Failure(f"Could not clear the build outputs on {vmid} ({status}); {SNAPSHOT} was not saved")
+        for index, (mode, args) in enumerate(WARM):
             status, old = quick(vmid, "acquire", token)
             if status:
                 raise Failure(f"Could not claim {vmid} ({status})")
@@ -1365,9 +1341,10 @@ def make_snapshot(state, worktree, revision):
                 raise Failure(f"{mode} {' '.join(args)} failed ({status}); {SNAPSHOT} was not saved")
         if quick(vmid, "acquire", token)[0] or quick(vmid, "release", token)[0]:
             raise Failure(f"Could not clear {vmid} before saving the image")
-        status, _ = remote(vmid, "provenance", token)
-        if status:
-            raise Failure("Could not record the toolchain provenance")
+        for step in ("provenance", "prune"):
+            status, _ = remote(vmid, step, token)
+            if status:
+                raise Failure(f"The image's {step} step failed ({status}); {SNAPSHOT} was not saved")
         boat("exec", vmid, "--", "sh", "-c", f"echo {revision} > {REMOTE}/source-revision")
         boat("snapshot", vmid, SNAPSHOT)
         say(f"Saved {SNAPSHOT} from {revision}")
