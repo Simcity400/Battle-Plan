@@ -19,10 +19,15 @@ export class PresentationRate {
   }
 }
 
+export function shownAt(at: number, began: number, interval: number) {
+  return at + interval * (1 + Math.max(0, Math.floor((began - at) / interval)));
+}
+
 export class DisplayRate {
   private previous?: number;
   private gaps: number[] = [];
   private hz = 0;
+  get interval() { return 1000 / (this.hz || 60); }
 
   sample(at: number) {
     if (this.previous !== undefined && at > this.previous) this.gaps.push(at - this.previous);

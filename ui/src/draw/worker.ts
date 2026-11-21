@@ -1,4 +1,4 @@
-import { PresentationRate, DisplayRate } from './frameRate.ts';
+import { PresentationRate, DisplayRate, shownAt } from './frameRate.ts';
 import { anchorHour } from './kit.ts';
 import type { ClockAnchor, FromWorker, ToWorker } from './kit';
 import { Followed, type Answered } from './followed.ts';
@@ -76,6 +76,7 @@ const position = () => anchorHour(anchor, wall());
 let scheduled = false;
 let markWake: ReturnType<typeof setTimeout> | undefined;
 let lane = 0;
+let shownWall = 0;
 function wake() { if (!scheduled) { scheduled = true; requestAnimationFrame(frame); } }
 let dataPort: MessagePort | undefined;
 const followed = new Followed(what => dataPort?.postMessage(what), id => {
@@ -373,11 +374,11 @@ function report(s: Surface, head: number, notices: Present[]) {
   s.shown = shown;
   if (s.kind === 'race') {
     post({ type: 'racePresent', id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
-      head: s.model.fixed ?? head, hour: s.through ?? null, at: wall() });
+      head: s.model.fixed ?? head, hour: s.through ?? null, at: wall(), shown: shownWall });
   } else if (s.kind === 'panel') notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
-    head: s.model.fixed ?? head, date: s.date.drawn });
+    head: s.model.fixed ?? head, date: s.date.drawn, shown: shownWall });
   else notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
-    head: s.model.fixed ?? head, readHour: s.through, at: wall() });
+    head: s.model.fixed ?? head, readHour: s.through, at: wall(), shown: shownWall });
 }
 
 function tableRows(s: Table) {
@@ -399,7 +400,7 @@ function record(s: Surface, at: number, head: number, sample = false, detached =
   const hour = s.through === undefined ? undefined : Math.max(s.through,
     Math.min(target, confirmed ?? s.through, (nextText ?? Infinity) - 1));
   audit.push({ t: 'picture', widget: s.model.widget, surface: s.kind === 'table' ? 'table' : s.model.view,
-    placement: s.id, owner: s.owner, at, seek: anchor.seek, head: target, hour: detached ? null : hour ?? null, renderer: 'worker', drawMs: cost.get(s) ?? 0,
+    placement: s.id, owner: s.owner, at, shownAt: detached ? at : Math.max(at, shownWall), seek: anchor.seek, head: target, hour: detached ? null : hour ?? null, renderer: 'worker', drawMs: cost.get(s) ?? 0,
     since: s.kind === 'panel' ? s.date.drawn?.since : s.kind === 'race' ? s.since : s.model.date?.since,
     through: confirmed === undefined ? undefined : Math.min(confirmed, (nextText ?? Infinity) - 1),
     eligibleHour: eligible === null ? null : eligible - s.model.offset, inputThrough: entry && entry.date.through - s.model.offset,
@@ -409,18 +410,19 @@ function record(s: Surface, at: number, head: number, sample = false, detached =
 }
 function frame(at: number) {
   scheduled = false;
-  if (anchor.playing && !cap) {
+  if (anchor.playing) {
     const hz = display.sample(at);
     if (hz !== undefined && lane === 0) post({ type: 'displayRate', hz });
   }
-  const began = performance.now(), sampleTime = performance.timeOrigin + began;
-  const head = anchorHour(anchor, sampleTime);
+  const began = performance.now(), shown = shownAt(at, began, display.interval);
+  shownWall = performance.timeOrigin + shown;
+  const head = anchorHour(anchor, shownWall);
   if (anchor.playing) {
     const step = anchor.speed / cap, through = followed.stepHour;
     const start = through !== undefined && Number.isInteger(step) && step > 0 && head < anchor.lastHour
       ? through + Math.floor((head - through) / step) * step : undefined;
     const boundary = start === undefined ? undefined : anchor.at - performance.timeOrigin + (start - anchor.position) * 1000 / anchor.speed;
-    if (!cadence.due(began, cap, boundary)) { wake(); return; }
+    if (!cadence.due(shown, cap, boundary)) { wake(); return; }
   }
   followed.drain(head);
   if (lane === 0) {
@@ -467,7 +469,7 @@ function frame(at: number) {
     for (const s of panels.values()) record(s, presented, head, sample);
     for (const s of races.values()) record(s, presented, head, sample);
     for (const s of tables.values()) record(s, presented, head, sample);
-    audit.push({ t: 'workerFrame', at: presented, head, seek: anchor.seek, playing: anchor.playing, workMs, lane,
+    audit.push({ t: 'workerFrame', at: presented, frameAt: performance.timeOrigin + at, shownAt: shownWall, head, seek: anchor.seek, playing: anchor.playing, workMs, lane,
       applyMs: applied - began, paintMs: end - applied, rate, changed: changed!.size });
   }
   dirty.clear(); cost.clear();

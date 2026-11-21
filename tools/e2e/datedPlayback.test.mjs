@@ -263,6 +263,8 @@ test('Research requires five visible dated widgets, a full playing window and sa
   assert.equal(verdict(hidden, { ...window, visibility: [{ at: 100, id: 'special-projects', surface: 'special-project-details', visible: false }] }), true);
   assert.equal(verdict(records.map(r => r.t === 'picture' ? { ...r, hour: r.hour - 400 } : r)), false);
   assert.equal(verdict([...records, { ...records[1], hour: 1 }]), false);
+  assert.equal(verdict(records.map(r => r.t === 'picture' ? { ...r, shownAt: r.at + 1e9 } : r)), false,
+    'a picture is held only from a display its frame could reach');
   assert.equal(verdict(records.map(r => ({ ...r, renderer: 'dom' }))), false);
   assert.equal(verdict(records.filter(r => r.t !== 'workerFrame')), false);
 });
