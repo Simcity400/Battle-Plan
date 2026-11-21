@@ -1,23 +1,33 @@
 import type { FromWorker, ToWorker } from '../draw/kit';
 import type { DrawSample } from '../draw/notifications';
+import { ROW_HEIGHT } from '../draw/tables/logic.ts';
 
 export interface DrawLane { postMessage(message: ToWorker, transfer: Transferable[]): void }
 
 const SURFACE = new Set<ToWorker['type']>(['surface', 'table', 'dateFace', 'race', 'pointer', 'tablePointer', 'tableScroll', 'tableRead',
   'racePointer', 'inspectRace', 'detach', 'closeRace']);
 const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'structureLead', 'followFailure']);
-const WEIGHT: Partial<Record<ToWorker['type'], number>> = { table: 4, race: 2 };
+
+function painted(message: ToWorker): number {
+  if (message.type === 'surface') return Math.max(1, message.model.cells?.length ?? 0);
+  if (message.type === 'table') {
+    const { columns, height, settings } = message.model;
+    const rows = Math.ceil((height ?? 0) / (ROW_HEIGHT[settings?.density] ?? ROW_HEIGHT.comfortable));
+    return Math.max(1, (columns?.filter(column => column.shown).length ?? 0) * rows);
+  }
+  if (message.type === 'race') return Math.max(1, (message.model.slots ?? 0) * 3);
+  return 1;
+}
 
 export class DrawLanes {
-  private readonly owner = new Map<number, { lane: number; weight: number; table: boolean }>();
+  private readonly owner = new Map<number, { lane: number; weight: number }>();
   private readonly lanes: readonly DrawLane[];
   private readonly emit: (message: FromWorker) => void;
   private readonly load: number[];
-  private readonly tables: number[];
   private audit?: { waiting: number; records: DrawSample[]; done: boolean };
 
   constructor(lanes: readonly DrawLane[], emit: (message: FromWorker) => void) {
-    this.lanes = lanes; this.emit = emit; this.load = lanes.map(() => 0); this.tables = lanes.map(() => 0);
+    this.lanes = lanes; this.emit = emit; this.load = lanes.map(() => 0);
   }
 
   get count() { return this.lanes.length; }
@@ -30,18 +40,14 @@ export class DrawLanes {
         if (message.type !== 'surface' && message.type !== 'table' && message.type !== 'dateFace' && message.type !== 'race') {
           this.lanes[0]!.postMessage(message, transfer); return;
         }
-        const table = message.type === 'table';
-        let lane = 0;
-        for (let at = 1; at < this.lanes.length; at++) {
-          const fewer = table && this.tables[at]! !== this.tables[lane]! ? this.tables[at]! < this.tables[lane]! : this.load[at]! < this.load[lane]!;
-          if (fewer) lane = at;
-        }
-        held = { lane, weight: WEIGHT[message.type] ?? 1, table };
-        this.owner.set(message.id, held); this.load[lane]! += held.weight; if (table) this.tables[lane]!++;
+        held = { lane: this.load.indexOf(Math.min(...this.load)), weight: 0 };
+        this.owner.set(message.id, held);
       }
-      if (message.type === 'detach' || message.type === 'closeRace') {
-        this.owner.delete(message.id); this.load[held.lane]! -= held.weight; if (held.table) this.tables[held.lane]!--;
+      if (message.type === 'surface' || message.type === 'table' || message.type === 'race' || message.type === 'dateFace') {
+        const weight = painted(message);
+        this.load[held.lane]! += weight - held.weight; held.weight = weight;
       }
+      if (message.type === 'detach' || message.type === 'closeRace') { this.owner.delete(message.id); this.load[held.lane]! -= held.weight; }
       this.lanes[held.lane]!.postMessage(message, transfer);
       return;
     }
