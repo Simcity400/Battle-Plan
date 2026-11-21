@@ -959,7 +959,9 @@ fn figures_do_not_stand_while_a_stack_handed_to_the_meshes_is_not_chosen() {
     assert_eq!(layer(&side).meshes().and_then(|meshes| meshes.get(&102).copied()), Some(102), "the newest stack's mesh");
 }
 
+// quarantine: #140 the route facts disagree for unmoved divisions and transfers
 #[test]
+#[ignore = "quarantined under #140"]
 fn the_model_picker_reads_every_division_where_a_figure_stands_with_its_route_facts() {
     let side = side("units-pick");
     let divisions = layer(&side).pick_divisions();

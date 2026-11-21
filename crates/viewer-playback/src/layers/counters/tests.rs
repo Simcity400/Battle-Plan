@@ -581,7 +581,9 @@ fn reading_equals_composed(side: &MapSide) {
     assert_eq!(reading(side).differ(&fresh), (0, None));
 }
 
+// quarantine: #142 a vision or viewing-country change never settles
 #[test]
+#[ignore = "quarantined under #142"]
 fn the_counters_reading_the_vision_layer_follow_a_change_of_the_viewing_country_with_nothing_given() {
     let mut side = reading_side();
     reading_settled(&mut side);

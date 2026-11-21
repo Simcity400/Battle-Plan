@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import sys
 import unittest
+from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("ci", ROOT / "tools" / "ci.py")
@@ -453,6 +454,43 @@ class Verdict(unittest.TestCase):
         self.assertEqual(text, "failed: rust-clippy; not run: ui-tests; held for the game: rust-test; later tier: browser; 2 ran, 1 reused, 1 unchanged; 41s")
         long = [ci.Outcome("x" * 40 + str(index), "fail") for index in range(10)]
         self.assertLessEqual(len(ci.describe(long, 1)), ci.STATUS_LIMIT)
+
+    def test_a_failure_a_rule_names_is_not_run_and_every_other_failure_still_fails(self):
+        fixture = ("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests: Custom { kind: NotFound, "
+                   "error: \"BATTLE_PLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation\" }")
+        unset = "effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation"
+
+        def panic(thread, message):
+            return f"thread '{thread}' (4242) panicked at crates/a/src/lib.rs:1:2:\n{message}\nnote: run with `RUST_BACKTRACE=1`\n"
+
+        def case(name, stderr, kind="test failure with exit code 101"):
+            return f'<testcase name="{name}"><failure type="{kind}"/><system-err>{escape(stderr)}</system-err></testcase>'
+        report = "<testsuites><testsuite name=\"viewer-raids\"><testcase name=\"passes\"/><testcase name=\"ignored\"><skipped/></testcase>" + "".join([
+            case("a::fixture", panic("a::fixture", fixture)),
+            case("a::unset", panic("a::unset", unset)),
+            case("a::asserts_on_the_name", panic("a::asserts_on_the_name", 'assertion failed: parsed.contains_key("BATTLE_PLAN_GAME_DIR")')),
+            case("a::caught_then_asserts", panic("a::caught_then_asserts", fixture) + panic("a::caught_then_asserts", "assertion failed: x")),
+            case("a::worker", panic("worker", fixture)),
+            case("a::times_out", panic("a::times_out", fixture), kind="test timeout"),
+        ]) + "</testsuite></testsuites>"
+        rules = list(next(job for job in ci.load_pipeline(ci.PIPELINE.read_text(encoding="utf-8")).jobs
+                          if job.name == "rust-test").not_run)
+        passed, failures, held = ci.sorted_failures(report, rules)
+        self.assertEqual(passed, 1)
+        self.assertEqual([test for test, _ in failures], [f"viewer-raids a::{name}" for name in
+                                                          ("asserts_on_the_name", "caught_then_asserts", "worker", "times_out")])
+        self.assertEqual(held, {"needs the game install": {"viewer-raids": 2}})
+        self.assertIn("contains_key", failures[0][1])
+        self.assertEqual(ci.held_detail(held), "2 not run here: needs the game install")
+        lines = ci.failure_report((passed, failures, held))
+        self.assertIn("not run here: needs the game install: 2 tests, in viewer-raids (2)", lines)
+        self.assertEqual(sum(line.startswith("--- FAIL ") for line in lines), 4)
+        self.assertIsNone(ci.sorted_failures("not a report", rules))
+        summary = "        Summary [ 12.000s] {} tests run: 1 passed, 6 failed, 1 skipped\n"
+        self.assertTrue(ci.finished_every_test(summary.format(7), (passed, failures, held)))
+        self.assertFalse(ci.finished_every_test(summary.format(9), (passed, failures, held)))
+        self.assertFalse(ci.finished_every_test(summary.format("7/9"), (passed, failures, held)))
+        self.assertFalse(ci.finished_every_test("error: test run cancelled\n", (passed, failures, held)))
 
 
 class ReviewOfFourteen(unittest.TestCase):

@@ -1,3 +1,6 @@
+[store]
+dir = "target/nextest"
+
 [profile.default]
 fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 60 }
@@ -16,3 +19,15 @@ priority = 50
 
 [profile.daily.junit]
 path = "junit.xml"
+
+[profile.hosted]
+slow-timeout = { period = "60s", terminate-after = 10 }
+status-level = "slow"
+final-status-level = "none"
+failure-output = "never"
+success-output = "never"
+
+[profile.hosted.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true

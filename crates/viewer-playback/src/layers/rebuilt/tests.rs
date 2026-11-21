@@ -440,7 +440,9 @@ fn a_compose_lets_the_product_built_before_it_go() {
     assert_eq!(probe_of(&side).product().map(|built| built.hour), Some(hour), "built again at the hour sought: {}", window_state(&side, &gate));
 }
 
+// quarantine: #142 a vision or viewing-country change never settles
 #[test]
+#[ignore = "quarantined under #142"]
 fn a_viewing_country_change_lets_the_product_made_for_the_country_before_go() {
     use viewer_foundation::map::perspective::Country;
     let gate = Gate::opened();

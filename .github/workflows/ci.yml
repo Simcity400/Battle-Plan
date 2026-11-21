@@ -98,14 +98,6 @@ jobs:
           cache-targets: 'false'
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - if: matrix.needs_rust
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-      - if: matrix.needs_rust
-        shell: bash
-        env:
-          MODE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
-        run: |
-          { echo "SCCACHE_GHA_ENABLED=true"; echo "SCCACHE_GHA_RW_MODE=$MODE"; echo "RUSTC_WRAPPER=sccache"; } >> "$GITHUB_ENV"
-      - if: matrix.needs_rust
         uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-nextest
@@ -117,9 +109,12 @@ jobs:
           GROUP: ${{ matrix.group }}
           JOBS: ${{ matrix.jobs }}
         run: python tools/ci.py job --tier "$TIER" --group "$GROUP" --jobs "$JOBS" --base "$BASE" $EXACT
-      - if: always() && matrix.needs_rust
-        shell: bash
-        run: sccache --show-stats
+      - if: failure() && matrix.needs_rust
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-test-junit
+          path: target/nextest/hosted/junit.xml
+          if-no-files-found: ignore
 
   check:
     needs: [changes, run]

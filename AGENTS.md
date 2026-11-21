@@ -74,7 +74,7 @@ All Rust is in `crates/`; names group by prefix.
 
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
-- Only Rust compiles go to Boat, never this machine; release builds run in GitHub Actions (ADR 0001). The nightly run is the one exception that compiles here. Boat is never a fallback for GitHub CI. Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
+- Only Rust compiles go to Boat, never this machine; release builds run in GitHub Actions (ADR 0001). Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
   - Check: `python tools/ci.py check` runs Clippy on Boat for changed crates and their direct dependents.
   - Build: `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>`, only when you need to run that binary.
 - Everything else runs here: `npm.cmd run check:ui` for the UI, and Python checks and scripts directly.

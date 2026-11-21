@@ -28,6 +28,11 @@ tools/ci.toml:
 - a `heavy` job runs heavy work here (Boat's test path runs the test programs on this machine):
   it is skipped while the game lock exists, and not run at all while `[local] heavy = "paused"`,
   which the status names; neither counts as a pass or a failure;
+- a hosted job with a `report` (the nextest JUnit file its `hosted` command writes) reads its
+  failures from it and prints every one with its output: a plain test failure whose last panic
+  on its own thread a `not-run` rule's regex finds is counted as not run here, for the rule's
+  reason, never as passed; the job passes when those are its only failures and nextest's summary
+  shows every selected test run;
 - jobs of a later tier are listed as left to that tier.
 The verdict is one aggregate, as in T3 Code's `check` job: success only when every job of the
 tier passed, was reused, or was skipped because its gate was not needed. A job held for the game,
@@ -59,6 +64,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import xml.etree.ElementTree as ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 HOSTED = os.environ.get("GITHUB_ACTIONS") == "true"
@@ -67,6 +73,10 @@ TEMP = Path(os.environ.get("TEMP") or tempfile.gettempdir())
 GAME_LOCKS = tuple(TEMP / folder / "hoi4_game.lock" for folder in ("claude", "HOI4Replay"))
 GAME_LOCK_STALE = 90 * 60
 BOAT_FAILED = 75
+NEXTEST_TESTS_FAILED = 100
+SHOWN_LINES = 40
+PANIC = re.compile(r"^thread '(?P<thread>[^'\r\n]*)'(?: \(\d+\))? panicked at [^\r\n]*:\r?\n(?P<message>[^\r\n]*)", re.M)
+SUMMARY = re.compile(r"^\s*Summary \[[^\]]*\]\s+(\d+)(/\d+)? tests? run:", re.M)
 COMMAND_LIMIT = 24_000
 STATUS_LIMIT = 140
 RETAIN_DAYS = 30
@@ -98,6 +108,8 @@ class Job:
     environment: tuple
     widen: tuple
     keyed: tuple
+    report: str
+    not_run: tuple
     definition: str
 
 
@@ -139,6 +151,7 @@ def load_pipeline(text):
             base=table.get("base", False), workspace=table.get("workspace", False), limit=table.get("limit"),
             heavy=table.get("heavy", False), unset=tuple(table.get("unset", ())), environment=tuple(table.get("environment", ())),
             widen=tuple(table.get("widen", ())), keyed=tuple(table.get("keyed", ())),
+            report=table.get("report", ""), not_run=tuple(table.get("not-run", {}).items()),
             definition=json.dumps([table, data["toolchain"].get(table["toolchain"]), data.get("group", {}).get(table.get("group"))], sort_keys=True))
         problems = [f"tier {job.tier!r}"] if job.tier not in tiers else []
         problems += [f"kind {job.kind!r}"] if job.kind not in KINDS else []
@@ -146,6 +159,7 @@ def load_pipeline(text):
         problems += [] if job.command else ["command"]
         problems += [f"group {job.group!r}"] if job.group not in data.get("group", {}) else []
         problems += ["name, used twice"] if job.name in {known.name for known in jobs} else []
+        problems += ["report, which not-run reads"] if job.not_run and not job.report else []
         if problems:
             raise SystemExit(f"tools/ci.toml: job {job.name}: unknown or missing {', '.join(problems)}")
         jobs.append(job)
@@ -665,6 +679,85 @@ else:
             pass
 
 
+def last_panic(test, stderr):
+    """The first line of the message of the last panic on the test's own thread, or None."""
+    found = None
+    for match in PANIC.finditer(stderr):
+        if match["thread"] == test:
+            found = match["message"]
+    return found
+
+
+def sorted_failures(report, rules):
+    """(passed, [(test, output)] of the failures no rule names, {reason: {binary: count}} of those
+    one does) from a nextest JUnit report, or None when it is not one. A rule is (reason, regex).
+    A failure is the rule's only when nextest reports a plain test failure (not a timeout, abort
+    or leak) and the regex finds the first line of the last panic on the test's own thread; any
+    other panic, caught or on another thread, never decides it."""
+    try:
+        root = ElementTree.fromstring(report)
+    except ElementTree.ParseError:
+        return None
+    patterns = [(reason, re.compile(pattern)) for reason, pattern in rules]
+    passed, failures, held = 0, [], {}
+    for suite in root.iter("testsuite"):
+        for case in suite.iter("testcase"):
+            if case.find("skipped") is not None:
+                continue
+            failed = [part for part in (case.find("failure"), case.find("error")) if part is not None]
+            if not failed:
+                passed += 1
+                continue
+            stderr = next((part.text or "" for part in [case.find("system-err")] if part is not None), "")
+            output = "\n".join(filter(None, [
+                *(f"{part.get('type', '')}: {part.get('message', '')}\n{part.text or ''}" for part in failed),
+                *((part.text or "") for part in (case.find("system-out"), case.find("system-err")) if part is not None)]))
+            binary = suite.get("name") or case.get("classname") or ""
+            plain = [part.tag for part in failed] == ["failure"] and failed[0].get("type", "").startswith("test failure")
+            message = last_panic(case.get("name"), stderr) if plain else None
+            reason = next((reason for reason, pattern in patterns if pattern.search(message)), None) if message else None
+            if reason is None:
+                failures.append((f"{binary} {case.get('name')}", output))
+            else:
+                held.setdefault(reason, {}).setdefault(binary, 0)
+                held[reason][binary] += 1
+    return passed, failures, held
+
+
+def finished_every_test(log_text, sorted_report):
+    """Whether nextest's summary says it ran every test it selected, as many as the report holds:
+    a run cancelled partway reports only the tests it finished."""
+    passed, failures, held = sorted_report
+    summaries = SUMMARY.findall(log_text)
+    if not summaries or summaries[-1][1]:
+        return False
+    return int(summaries[-1][0]) == passed + len(failures) + sum(sum(binaries.values()) for binaries in held.values())
+
+
+def failure_report(sorted_report):
+    """The lines naming what a run's sorted failures were: each unnamed failure with the start of
+    its output, then the counts each rule held back."""
+    passed, failures, held = sorted_report
+    lines = [f"{passed} passed, {len(failures)} failed"]
+    for test, output in failures:
+        shown = output.splitlines()
+        lines += [f"--- FAIL {test}", *shown[:SHOWN_LINES]]
+        lines += [f"    ({len(shown) - SHOWN_LINES} more lines)"] if len(shown) > SHOWN_LINES else []
+    for reason, binaries in held.items():
+        lines.append(f"not run here: {reason}: {sum(binaries.values())} tests, in "
+                     + ", ".join(f"{binary} ({count})" for binary, count in sorted(binaries.items())))
+    return lines
+
+
+def failures_file(log):
+    """Where a hosted job writes its failure report, beside its log."""
+    return Path(log).with_suffix(".failures.txt")
+
+
+def held_detail(held):
+    return "; ".join(f"{sum(binaries.values())} not run here: {reason}" for reason, binaries in held.items())
+
+
 class Runner:
     """Runs decided jobs, logging to the run folder. Passes are returned, not recorded, so the run
     records them only if the files it read are still the files it hashed."""
@@ -715,6 +808,7 @@ class Runner:
         if job.heavy and game_running():
             return Outcome(job.name, "held", "the game lock exists; heavy local work waits for the game"), []
         started = time.monotonic()
+        held = ""
         values = dict(self.values, files=decision.arguments, packages=decision.arguments)
         if job.kind == "files" and decision.whole and job.whole:
             code = self.execute(expand(job.whole, values), log, job.unset)
@@ -723,9 +817,22 @@ class Runner:
             code = next((code for code in codes if code), 0)
         else:
             command = job.hosted if HOSTED and job.hosted else job.command
+            report = ROOT / job.report if HOSTED and job.hosted and job.report else None
+            if report:
+                report.unlink(missing_ok=True)
+                failures_file(log).unlink(missing_ok=True)
             code = self.execute(expand(command, values), log, job.unset, boat=job.kind == "crates" and not HOSTED)
+            if report and report.is_file() and code in (0, NEXTEST_TESTS_FAILED):
+                found = sorted_failures(report.read_text(encoding="utf-8", errors="replace"), job.not_run)
+                if found is not None:
+                    complete = finished_every_test(log.read_text(encoding="utf-8", errors="replace"), found)
+                    lines = failure_report(found) + ([] if complete else ["nextest's summary does not show every selected test run"])
+                    failures_file(log).write_text("\n".join(lines) + "\n", encoding="utf-8")
+                    if code == NEXTEST_TESTS_FAILED and complete and not found[1] and found[2]:
+                        code = 0
+                    held = held_detail(found[2])
         seconds = time.monotonic() - started
-        detail = decision.detail
+        detail = ", ".join(filter(None, [decision.detail, held]))
         if job.kind == "crates" and log.exists():
             found = re.findall(rb"generated (\d+) warnings?(?: \((\d+) duplicates?\))?", log.read_bytes())
             warnings = sum(int(n) - int(d or 0) for n, d in found)
@@ -1242,6 +1349,9 @@ def job_group(args):
         if outcome.state in ("fail", "not run") and outcome.log:
             lines = Path(outcome.log).read_text(encoding="utf-8", errors="replace").splitlines()
             print(f"\n== {outcome.name}\n" + "\n".join(lines[-200:]), flush=True)
+    for outcome in ordered:
+        if outcome.log and failures_file(outcome.log).is_file():
+            print(f"\n== {outcome.name}: tests\n" + failures_file(outcome.log).read_text(encoding="utf-8", errors="replace"), flush=True)
     print("")
     for outcome in ordered:
         print(report_line(outcome), flush=True)
