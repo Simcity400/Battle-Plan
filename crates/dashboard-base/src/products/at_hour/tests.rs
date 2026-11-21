@@ -652,7 +652,7 @@ fn stepped(pages: &Arc<dyn Pages>, exact: &dashboard_follow::panel::AtHour, ever
     let hook: playhead::Hook = Box::new(move |step, lanes| {
         let read = (step.last() >= join).then(|| due += 1).filter(|_| first || (due - 1) % skip == 0).map(|()| {
             let token = AtomicBool::new(false);
-            let mut read = advance(step.last(), first || step.reset(), &token, Some(dashboard_follow::panel::ProductStep { step, lanes, held: None }));
+            let mut read = advance(step.last(), first || step.reset(), &token, Some(dashboard_follow::panel::ProductStep { step, lanes, held: None, wake: None }));
             let waited = !seeded && read.pending;
             if waited { read = advance(step.last(), true, &token, None); }
             seeded = true;

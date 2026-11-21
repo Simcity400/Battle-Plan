@@ -192,6 +192,7 @@ pub fn open_clocked(units: Units, settings: Settings, clock: Hour, side: Side) -
     if let Some(entry) = entries.iter().find(|(held, _)| *held == key).and_then(|(_, entry)| entry.upgrade()) {
         return Ok(entry);
     }
+    let settings = Settings { entering: Some(if side == Side::Follow { entered } else { entered_map }), ..settings };
     let hooks = Arc::new(Hooks::default());
     let stepper_hooks = Arc::clone(&hooks);
     let hook: playhead::Hook = Box::new(move |step: &Step, lanes: &Lanes<'_>| stepper_hooks.run(step, lanes));
@@ -213,6 +214,14 @@ fn step_rate() -> f64 {
 
 pub fn settings() -> Settings {
     Settings { step_threads: 2, fetch_threads: 1, ring: 8, ahead: 4, rate: step_rate(), entering: Some(entered), ..Settings::default() }
+}
+
+fn entered_map(thread: playhead::Thread) {
+    use viewer_foundation::worker_priority::{Class, enter};
+    enter(match thread {
+        playhead::Thread::Stepper | playhead::Thread::Step | playhead::Thread::Seeking => Class::Kept,
+        playhead::Thread::Fetch => Class::Worker,
+    });
 }
 
 fn entered(thread: playhead::Thread) {

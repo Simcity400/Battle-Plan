@@ -33,7 +33,7 @@ impl Widget {
                 let token = AtomicBool::new(false);
                 let delivered = *last_through != i32::MIN;
                 let run = || {
-                    let reading = read(step.last(), step.reset(), &token, Some(ProductStep { step, lanes, held: None }));
+                    let reading = read(step.last(), step.reset(), &token, Some(ProductStep { step, lanes, held: None, wake: None }));
                     if reading.pending && !delivered { read(step.last(), true, &token, None) } else { reading }
                 };
                 let (reading, extra) = if audit.is_some() { at_hour::counted(run) } else { (run(), 0) };

@@ -64,7 +64,7 @@ impl Pool {
 }
 
 impl Pool {
-    pub(super) fn warm<T>(self: &Arc<Self>, run: usize, table: usize, columns: &[usize], hour: Hour, read: impl FnOnce(&Lane) -> io::Result<T>) -> Warm<T> {
+    pub(super) fn warm<T>(self: &Arc<Self>, run: usize, table: usize, columns: &[usize], hour: Hour, wake: Option<dashboard_follow::panel::Wake>, read: impl FnOnce(&Lane) -> io::Result<T>) -> Warm<T> {
         if self.unplaceable.lock().unwrap_or_else(PoisonError::into_inner).contains(&(run, table)) { return Warm::Cold; }
         let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
         let near = |lane: &Lane| lane.table() == table && columns.iter().all(|column| lane.requested().contains(column))
@@ -81,6 +81,7 @@ impl Pool {
                 if taken.lane(table, &columns, hour).is_err() { pool.unplaceable.lock().unwrap_or_else(PoisonError::into_inner).insert((run, table)); }
                 drop(taken);
                 pool.warming.lock().unwrap_or_else(PoisonError::into_inner).remove(&(run, table));
+                if let Some(wake) = wake { wake(); }
             });
             if spawned.is_err() {
                 warming.remove(&(run, table));
@@ -99,7 +100,12 @@ impl Drop for Taken {
         match free.iter_mut().find(|held| held.run == placed.run && held.at == placed.at) {
             Some(held) => {
                 for lane in placed.lanes {
-                    if !held.lanes.iter().any(|kept| kept.table() == lane.table()) { held.lanes.push(lane); }
+                    match held.lanes.iter().position(|kept| kept.table() == lane.table()) {
+                        None => held.lanes.push(lane),
+                        Some(at) if lane.requested().iter().all(|column| held.lanes[at].requested().contains(column)) => {}
+                        Some(at) if held.lanes[at].requested().iter().all(|column| lane.requested().contains(column)) => held.lanes[at] = lane,
+                        Some(_) => {}
+                    }
                 }
             }
             None => {

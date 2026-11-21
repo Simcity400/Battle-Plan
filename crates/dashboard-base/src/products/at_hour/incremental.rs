@@ -99,7 +99,8 @@ impl Projection {
             None => {
                 let warm = if step.is_some_and(|step| step.lanes_table(table)) {
                     let columns = self.columns.clone();
-                    pool.warm(run, table, &columns, *hour, |lane| self.from_lane(read, sample, view, edits, count, lane, None, *mode))
+                    let wake = step.and_then(|step| step.wake.cloned());
+                    pool.warm(run, table, &columns, *hour, wake, |lane| self.from_lane(read, sample, view, edits, count, lane, None, *mode))
                 } else { Warm::Cold };
                 match warm {
                     Warm::Read(result) => result?,
@@ -435,7 +436,7 @@ where P::Context: Sync, P::Params: Sync {
                     if stage >= state.plans.len() {
                         let planned = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
                         state.plans.push(planned);
-                    } else if identity_changed || clocked || hour > state.plans[stage].1 || P::plan_changes(stage, &edits, &state.frame, &at) {
+                    } else if state.rebuild || identity_changed || clocked || hour > state.plans[stage].1 || P::plan_changes(stage, &edits, &state.frame, &at) {
                         state.plans[stage] = sampling(&state.frame, &mut state.sampled, || P::retained_reads(&params, owner, stage, &state.frame, &at));
                     }
                     let (asks, _) = &state.plans[stage];
@@ -487,14 +488,14 @@ where P::Context: Sync, P::Params: Sync {
             let mut reply = sampling(&state.frame, &mut state.sampled, || own_refusals(&mut own, || P::reply(&state.frame, &params, &at)))?;
             finish(reply.warnings_mut(), &own, &warnings);
             let live = cells.finish();
+            let projected = |table: TableId| P::projection(&params, table, &state.plans, &context);
+            state.extra.set(&live, |g| state.plans.iter().flat_map(|(reads, _)| reads).rev().find(|r| r.table == g.table)
+                .is_some_and(|r| covers(r, g) && projected(g.table).is_none_or(|fields| g.columns.iter().all(|column| fields.contains(column)))));
             if !seed && !state.rebuild && state.data.is_ok() && *state.live == live
                 && state.reply.as_ref().and_then(|last| last.downcast_ref::<P::Reply>()).is_some_and(|last| *last == reply) {
                 return if values { current_values::<P>(state, &mut input) } else { Ok(state.data.clone()) };
             }
             state.live = Arc::new(live);
-            let projected = |table: TableId| P::projection(&params, table, &state.plans, &context);
-            state.extra.set(&state.live, |g| state.plans.iter().flat_map(|(reads, _)| reads).rev().find(|r| r.table == g.table)
-                .is_some_and(|r| covers(r, g) && projected(g.table).is_none_or(|fields| g.columns.iter().all(|column| fields.contains(column)))));
             state.extra.advance::<P>(&mut input)?;
             let live = (!state.live.is_empty()).then(|| state.extra.values(&state.live, &mut state.frame));
             let data = serde_json::to_value(WithLive { reply: &reply, live })?;

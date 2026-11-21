@@ -12,11 +12,14 @@ pub type ExactReader = Arc<dyn Fn(Hour, &std::sync::atomic::AtomicBool) -> Panel
 pub mod product;
 pub use playhead::Declared;
 
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
+
 #[derive(Clone, Copy)]
 pub struct ProductStep<'a> {
     pub step: &'a playhead::Step,
     pub lanes: &'a playhead::Lanes<'a>,
     pub held: Option<&'a [bool]>,
+    pub wake: Option<&'a Wake>,
 }
 
 impl ProductStep<'_> {
