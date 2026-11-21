@@ -59,7 +59,7 @@ pub struct Executable {
 const FIRST_SYNTHETIC_ID: u32 = 0x10_0000;
 
 fn leak(text: &str) -> &'static str {
-    Box::leak(text.to_owned().into_boxed_str())
+    executable_tables::leak_string(text)
 }
 
 impl Executable {
