@@ -1435,7 +1435,7 @@ impl Writer for PowerLedger {
             let before = if before.is_empty() { self.aliases.clone() } else { before };
             let moved: HashSet<u32> = moves.iter().map(|moved| moved.raw).collect();
             self.reconcile(hour, out, witnesses.as_ref(), &mut pending, &before, &moved)?;
-            self.recover = false;
+            self.recover = !inputs::daily_complete(hour);
         } else if self.recover {
             self.withhold_ended(out, &mut pending, midnight(at))?;
         }
