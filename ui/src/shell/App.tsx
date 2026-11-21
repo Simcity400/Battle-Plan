@@ -347,7 +347,7 @@ export default function App() {
         <div className="sidebar-header">
           <button type="button" className="icon-button sidebar-toggle" onClick={sidebar.toggle} aria-label={sidebar.hidden ? 'Keep sidebar open' : 'Hide sidebar'}
             data-tooltip={`${sidebar.hidden ? 'Keep sidebar open' : 'Hide sidebar'} · Ctrl+B`}><Icon name="sidebar" /></button>
-          <BrandMark size={20} /><span className="sidebar-wordmark"><strong>the game</strong> Replay</span>
+          <BrandMark size={20} /><span className="sidebar-wordmark"><strong>BattlePlan</strong></span>
         </div>
         <div className="sidebar-body">
         {tab === 'settings'
