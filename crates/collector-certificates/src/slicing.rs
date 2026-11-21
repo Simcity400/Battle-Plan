@@ -207,8 +207,14 @@ pub struct SliceSelection {
     pub scan_ticks: u64,
 }
 
+impl Default for SliceSelection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SliceSelection {
-    pub fn new(_storage: bool) -> Self {
+    pub fn new() -> Self {
         Self {
             hour: 0,
             force_full: true,
@@ -455,7 +461,7 @@ impl SliceSelection {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(hour: i32, force_full: bool, early: &[u32]) -> Self {
-        let mut selection = Self::new(true);
+        let mut selection = Self::new();
         selection.reset(hour, force_full);
         for &owner in early {
             assert!(insert_owner(&mut selection.early, owner));
@@ -480,6 +486,7 @@ pub struct SliceFingerprints {
     pub held: Held,
     marks: Option<u64>,
     pub drift: crate::drift::Store,
+    pub witnesses: Witnesses,
 }
 struct Fingerprint {
     value: Option<u64>,
@@ -500,6 +507,7 @@ impl SliceFingerprints {
             held: Held::default(),
             marks: None,
             drift: Default::default(),
+            witnesses: Witnesses::default(),
         }
     }
 
@@ -509,6 +517,7 @@ impl SliceFingerprints {
         self.held = Held::default();
         self.marks = None;
         self.drift.clear();
+        self.witnesses.forget();
     }
 
     fn keep_only(&mut self, seen: &[u32]) {
@@ -574,7 +583,9 @@ pub struct Held {
 }
 
 mod digest;
+mod witness;
 pub use digest::Digest;
+pub use witness::Witnesses;
 
 #[derive(Default)]
 pub struct Changed {
@@ -689,7 +700,7 @@ mod tests {
     fn certificate_scans_mark_owners_whose_certificate_changed() {
         let mut store = SliceFingerprints::new();
         let hour = |store: &mut SliceFingerprints, prints: [u64; 3]| {
-            let mut selection = SliceSelection::new(true);
+            let mut selection = SliceSelection::new();
             selection.reset(0, true);
             for (owner, print) in (1..).zip(prints) {
                 selection.scan_marking(store, owner, Some(print));
@@ -705,11 +716,9 @@ mod tests {
     #[test]
     fn selections_and_fingerprints_start_empty_without_callback_allocation() {
         crate::test_support::with_allocations_denied(|| {
-            for storage in [false, true] {
-                let selection = SliceSelection::new(storage);
-                for owners in [&selection.early, &selection.seen, &selection.walked] {
-                    assert_eq!(owners.capacity(), 0);
-                }
+            let selection = SliceSelection::new();
+            for owners in [&selection.early, &selection.seen, &selection.walked] {
+                assert_eq!(owners.capacity(), 0);
             }
             assert_eq!(SliceFingerprints::new().values.capacity(), 0);
         });
@@ -717,10 +726,10 @@ mod tests {
 
     #[test]
     fn failed_owner_bookkeeping_never_certifies_a_partial_census_or_forgets_healthy_owners() {
-        let mut original = SliceSelection::new(true);
+        let mut original = SliceSelection::new();
         let mut fingerprints = SliceFingerprints::new();
         original.scan(&mut fingerprints, 7, Some(1));
-        let mut failed = SliceSelection::new(false);
+        let mut failed = SliceSelection::new();
         failed.reset(1, false);
         crate::test_support::with_allocations_denied(|| {
             failed.scan(&mut fingerprints, u32::MAX, Some(2));
@@ -747,7 +756,7 @@ mod tests {
     #[test]
     fn new_changed_and_failing_owners_are_read_early_and_unchanged_ones_are_not() {
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(5, false);
         scan(
             &mut selection,
@@ -784,7 +793,7 @@ mod tests {
         );
         assert_eq!((selection.early_count, selection.out_of_range), (1, 0));
         assert!(selection.contains(70_000) && !selection.contains(70_001));
-        let mut full = SliceSelection::new(false);
+        let mut full = SliceSelection::new();
         full.reset(10, true);
         assert!(full.contains(12_345));
     }
@@ -792,7 +801,7 @@ mod tests {
     #[test]
     fn an_incomplete_pass_reads_every_owner_and_forgets_nobody() {
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(0, true);
         scan(&mut selection, &mut store, &[(1, Some(1)), (2, Some(2))]);
         selection.finish_pass(&mut store, true);
@@ -810,7 +819,7 @@ mod tests {
     #[test]
     fn only_a_complete_census_marks_unseen_owners_gone() {
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(3, false);
         scan(
             &mut selection,
@@ -828,7 +837,7 @@ mod tests {
     #[test]
     fn an_owner_missing_from_a_complete_census_is_new_when_it_returns() {
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         let census = |selection: &mut SliceSelection,
                       store: &mut SliceFingerprints,
                       hour,
@@ -853,7 +862,7 @@ mod tests {
     #[test]
     fn unpublished_reads_are_read_again_at_the_next_hour() {
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         let owners = [(1, Some(1)), (2, Some(2)), (25, Some(25)), (40, Some(40))];
         selection.reset(0, true);
         scan(&mut selection, &mut store, &owners);
@@ -914,7 +923,7 @@ mod tests {
     #[test]
     fn marked_owners_join_the_read_and_an_uncertified_take_reads_everyone() {
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         let census = |selection: &mut SliceSelection, store: &mut SliceFingerprints| {
             for owner in [1, 2, 3, 30] {
                 selection.scan(store, owner, Some(0));
@@ -956,7 +965,7 @@ mod tests {
 
     #[test]
     fn select_adds_an_owner_once_outside_its_slice() {
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(5, false);
         assert!(selection.select(29));
         assert_eq!(selection.early_count, 0);
@@ -979,7 +988,7 @@ mod tests {
         epoch: Option<u64>,
         context: u64,
     ) -> SliceSelection {
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(hour, false);
         for &owner in owners {
             selection.scan(store, owner, Some(0));
@@ -1042,7 +1051,7 @@ mod tests {
 
     #[test]
     fn a_daily_family_reads_everyone_at_the_boundary_and_only_selections_between() {
-        let mut selection = SliceSelection::new(false);
+        let mut selection = SliceSelection::new();
         for hour in [0, 24, -24] {
             selection.reset_daily(hour, false);
             assert!(!selection.force_full && selection.contains(5), "{hour}");
@@ -1064,7 +1073,7 @@ mod tests {
         selection.mark(7);
         assert_eq!(selection.marked_early(), 1);
         selection.invalidate(&mut store);
-        let mut next = SliceSelection::new(false);
+        let mut next = SliceSelection::new();
         next.reset_daily(6, false);
         next.scan(&mut store, 5, Some(0));
         next.scan(&mut store, 29, Some(0));
@@ -1079,7 +1088,7 @@ mod tests {
         let drifts = |owner: u32| owner.is_multiple_of(7);
         let drifting = owners.iter().filter(|&&owner| drifts(owner)).count();
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(false);
+        let mut selection = SliceSelection::new();
         let hour_reads = |selection: &mut SliceSelection, store: &mut SliceFingerprints| {
             for &owner in &owners {
                 let drift = drifts(owner);
@@ -1105,7 +1114,7 @@ mod tests {
             );
         }
         assert_eq!(day, drifting);
-        let mut daily = SliceSelection::new(false);
+        let mut daily = SliceSelection::new();
         daily.reset_daily(48, false);
         assert_eq!(hour_reads(&mut daily, &mut store), drifting);
         daily.reset_daily(49, false);
@@ -1127,7 +1136,7 @@ mod tests {
     fn drift_is_read_only_when_it_decides_a_read() {
         let owners: Vec<u32> = (1..=446).collect();
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(false);
+        let mut selection = SliceSelection::new();
         let checks = std::cell::Cell::new(0);
         let hour = |selection: &mut SliceSelection, store: &mut SliceFingerprints| {
             for &owner in &owners {
@@ -1147,7 +1156,7 @@ mod tests {
             hour(&mut selection, &mut store);
         }
         assert_eq!(checks.replace(0), owners.len());
-        let mut daily = SliceSelection::new(false);
+        let mut daily = SliceSelection::new();
         daily.reset_daily(25, false);
         hour(&mut daily, &mut store);
         assert_eq!(checks.replace(0), 0);

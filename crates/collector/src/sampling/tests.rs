@@ -834,7 +834,7 @@ fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
     let shared = Shared::new(0, 0, 1);
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
     let mut batch = acquisition::Batch::new(&pool);
-    let mut selection = crate::slicing::SliceSelection::new(true);
+    let mut selection = crate::slicing::SliceSelection::new();
     selection.reset(5, false);
     let mut payload = extended::intel::RelationsJob::new();
     payload.selection = Some(selection);

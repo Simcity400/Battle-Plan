@@ -295,7 +295,7 @@ impl RecordSources<'_> {
 }
 
 #[inline]
-pub(crate) fn is_canonical_range(addr: usize, len: usize) -> bool {
+pub fn is_canonical_range(addr: usize, len: usize) -> bool {
     if len == 0 {
         return true;
     }

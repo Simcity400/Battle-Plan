@@ -161,7 +161,7 @@ unsafe fn forwarded_reset(a: usize, b: usize, c: usize, d: usize, original: usiz
     unsafe { original(a, b, c, d) }
 }
 impl Hooks {
-    pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let callbacks = [
             region_add as *const () as usize,
             index_add as *const () as usize,
@@ -230,7 +230,7 @@ impl Hooks {
         ));
         Ok(Self { hooks, ledgers })
     }
-    pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             LOCAL_ENABLED.store(false, Ordering::Release);
             LEDGER_ENABLED.store(false, Ordering::Release);

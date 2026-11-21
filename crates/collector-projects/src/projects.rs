@@ -328,7 +328,7 @@ impl Captured {
             candidates: owned_vec(default_vec(capacity.program_candidates)),
             required_candidates: 0,
             raw_mode: false,
-            project_selection: SliceSelection::new(capacity.rows[1] != 0),
+            project_selection: SliceSelection::new(),
             project_changed: crate::slicing::Changed::default(),
             project_links: Vec::new(),
             project_owners: Vec::new(),

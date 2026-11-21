@@ -11,7 +11,6 @@ const OWNER_AIR: usize = 0x31000;
 pub(crate) const POOL: usize = 0x32000;
 pub(crate) const WING: usize = 0x33000;
 const WING2: usize = 0x34000;
-pub(crate) const ENTRIES: usize = 0x35000;
 const VARIANT: usize = 0x36000;
 const VARIANT2: usize = 0x37000;
 
@@ -177,7 +176,6 @@ pub(crate) fn fixture() -> Vec<u8> {
             ((id as u64) << 32) | cequipment_variant::REFERENCE_TYPE as u64,
         );
     }
-    let _ = ENTRIES;
     bytes
 }
 

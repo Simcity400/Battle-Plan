@@ -859,9 +859,9 @@ pub(crate) struct FamilyHooks<T> {
     base: usize,
 }
 impl<T: RegisteredFamily> FamilyHooks<T> {
-    pub(crate) fn construct(
+    pub(crate) fn construct<E: AsRef<str>>(
         base: usize,
-        construct: impl FnOnce() -> Result<T, &'static str>,
+        construct: impl FnOnce() -> Result<T, E>,
     ) -> Result<Self, &'static str> {
         let family = T::FAMILY;
         if !admit(family)? {
@@ -877,7 +877,7 @@ impl<T: RegisteredFamily> FamilyHooks<T> {
                 crate::hook::installation::refused(
                     crate::hook::installation::Kind::Construction,
                     None,
-                    cause,
+                    cause.as_ref(),
                 );
             }
             result
@@ -918,7 +918,7 @@ impl<T> FamilyHooks<T> {
     fn toggle(
         &mut self,
         enabled: bool,
-        mut toggle: impl FnMut(&mut T, bool) -> Result<bool, &'static str>,
+        mut toggle: impl FnMut(&mut T, bool) -> Result<bool, std::borrow::Cow<'static, str>>,
     ) -> Result<bool, &'static str> {
         let requested = enabled;
         let enabled = enabled && !failed(self.family);
@@ -926,7 +926,10 @@ impl<T> FamilyHooks<T> {
             return Ok(true);
         };
         if !requested {
-            return toggle(hooks, false);
+            return toggle(hooks, false).map_err(|cause| match cause {
+                std::borrow::Cow::Borrowed(cause) => cause,
+                std::borrow::Cow::Owned(_) => "hook restoration failed; collector retained",
+            });
         }
         let (result, report) = crate::hook::installation::capture(|| {
             let result = toggle(hooks, enabled);
@@ -938,20 +941,23 @@ impl<T> FamilyHooks<T> {
                         crate::hook::installation::Kind::Rollback
                     },
                     None,
-                    cause,
+                    cause.as_ref(),
                 );
             }
             result
         });
-        if report.failure.is_none() && report.sites.is_empty() {
-            return result;
+        let refused = if enabled {
+            "hook publication refused"
+        } else {
+            "hook restoration failed; collector retained"
+        };
+        if report.failure.is_some() || !report.sites.is_empty() {
+            if let Some(diagnostic) = audit_report(self.family, self.base, report)? {
+                remember_failure(self.family, diagnostic);
+                return Err(refused);
+            }
         }
-        if let Some(diagnostic) = audit_report(self.family, self.base, report)? {
-            let reason = crate::runtime::installation_message(diagnostic.cause.clone());
-            remember_failure(self.family, diagnostic);
-            return Err(reason);
-        }
-        result
+        result.map_err(|_| refused)
     }
 }
 macro_rules! family_hooks {
@@ -960,9 +966,9 @@ macro_rules! family_hooks {
             pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
                 self.toggle(enabled, |hooks, enabled| hooks.set_enabled(enabled).map_err(|cause|
                     if enabled {
-                        crate::runtime::installation_message(cause)
+                        cause.into()
                     } else {
-                        "hook restoration failed; collector retained"
+                        std::borrow::Cow::Borrowed("hook restoration failed; collector retained")
                     }))
             }
             pub(crate) fn executable_ranges(&self) -> impl Iterator<Item=Range<usize>> + '_ {
@@ -1036,7 +1042,9 @@ family_hooks!(
 );
 impl FamilyHooks<crate::map_events::hooks::Hooks> {
     pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-        self.toggle(enabled, |hooks, enabled| hooks.set_enabled(enabled))
+        self.toggle(enabled, |hooks, enabled| {
+            hooks.set_enabled(enabled).map_err(Into::into)
+        })
     }
     pub(crate) fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.inner
@@ -1120,7 +1128,7 @@ mod tests {
                             broken.toggle(true, |installed, enabled| {
                                 *installed = enabled;
                                 if enabled {
-                                    Err("synthetic publication failure")
+                                    Err("synthetic publication failure".into())
                                 } else {
                                     Ok(true)
                                 }
@@ -1220,7 +1228,7 @@ mod tests {
                     bytes: &[],
                 };
                 let mut hooks = FamilyHooks::construct(0, || {
-                    Ok(unsafe { crate::player_commands::Hooks::new(&memory, 0) })
+                    Ok::<_, &'static str>(unsafe { crate::player_commands::Hooks::new(&memory, 0) })
                 })
                 .unwrap();
                 for enabled in [true, false] {

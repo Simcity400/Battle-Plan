@@ -628,7 +628,7 @@ impl Hooks {
         memory: &impl Memory,
         base: usize,
         capture: bool,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, String> {
         if !capture {
             return Ok(Self { hooks: Vec::new() });
         }
@@ -677,7 +677,7 @@ impl Hooks {
         }
         Ok(Self { hooks })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if self.hooks.is_empty() {
             return Ok(true);
         }

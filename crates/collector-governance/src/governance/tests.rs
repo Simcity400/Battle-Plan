@@ -897,7 +897,7 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
     let mut enabled = [false; N];
     enabled[2] = true;
     enabled[4] = true;
-    captured.technology_selection = SliceSelection::new(true);
+    captured.technology_selection = SliceSelection::new();
     captured.technology_selection.reset(0, true);
     let mut store = SliceFingerprints::new();
     let changes = crate::country_input_changes::Domain::enabled(64);

@@ -98,8 +98,8 @@ pub fn collect() {
 }
 
 
-fn hook_error(site: &str, reason: &str) -> &'static str {
-    Box::leak(format!("fleet_region_changes {site}: {reason}").into_boxed_str())
+fn hook_error(site: &str, reason: &str) -> String {
+    format!("fleet_region_changes {site}: {reason}")
 }
 
 pub struct Hooks {
@@ -116,7 +116,7 @@ impl Hooks {
     #[doc = " The enclosing runtime authenticated this executable, owns this family"]
     #[doc = " exclusively and restores its patches and drains native calls before"]
     #[doc = " releasing its storage or unloading."]
-    pub unsafe fn prepare(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn prepare(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         for site in SITES {
             engine_sites::hook(base, site.rva)
                 .and_then(|code| code.sentinel::<16>())
@@ -147,11 +147,11 @@ impl Hooks {
     #[doc = ""]
     #[doc = " # Safety"]
     #[doc = " The requirements of [`Self::prepare`] apply."]
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         unsafe { Self::prepare(memory, base) }
     }
 
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
             WATCHES.set_enabled(false);
@@ -166,11 +166,11 @@ impl Hooks {
         Ok(true)
     }
 
-    pub fn install(&mut self) -> Result<bool, &'static str> {
+    pub fn install(&mut self) -> Result<bool, String> {
         self.set_enabled(true)
     }
 
-    pub fn disable(&mut self) -> Result<bool, &'static str> {
+    pub fn disable(&mut self) -> Result<bool, String> {
         self.set_enabled(false)
     }
 

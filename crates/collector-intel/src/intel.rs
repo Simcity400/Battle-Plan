@@ -875,7 +875,7 @@ impl Captured {
             flag_scratch: owned_vec(default_vec(capacity.rows[7])),
             flags_witness: None,
             relations_raw_mode: false,
-            relations_selection: SliceSelection::new(capacity.rows[13] != 0),
+            relations_selection: SliceSelection::new(),
             relation_active: [false; 2],
             left_out: [false; N],
             variables_apart: false,
@@ -889,7 +889,7 @@ impl Captured {
 
     pub fn take_relations_selection(&mut self, hour: i32, force_full: bool) -> SliceSelection {
         self.relations_selection.reset(hour, force_full);
-        std::mem::replace(&mut self.relations_selection, SliceSelection::new(false))
+        std::mem::replace(&mut self.relations_selection, SliceSelection::new())
     }
 
     pub fn restore_relations_selection(&mut self, selection: SliceSelection) {
@@ -8040,7 +8040,7 @@ mod tests {
         let mut store = Some(Box::new(SliceFingerprints::new()));
         let mut read = |hour: i32, store: &mut Option<Box<SliceFingerprints>>, observed: bool| {
             let job = if observed { &mut job } else { &mut unobserved };
-            let mut selection = SliceSelection::new(true);
+            let mut selection = SliceSelection::new();
             selection.reset(hour, false);
             job.selection = Some(selection);
             job.fingerprints = store.take();
@@ -8140,7 +8140,7 @@ mod tests {
         fingerprints: &mut Option<Box<SliceFingerprints>>,
         hour: i32,
     ) -> (Vec<u32>, Vec<crelation_status::OpinionRow>) {
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(hour, false);
         job.selection = Some(selection);
         job.fingerprints = fingerprints.take();

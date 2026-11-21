@@ -3000,8 +3000,7 @@ impl Hooks {
             taps.push(unsafe { Tap::new(address, tap, index, original) }?);
         }
         taps.push(
-            unsafe { crate::script_event_observer::targeted_selection_tap(memory, base) }
-                .map_err(str::to_owned)?,
+            unsafe { crate::script_event_observer::targeted_selection_tap(memory, base) }?,
         );
         Ok(Self { entries, taps })
     }

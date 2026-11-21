@@ -141,7 +141,7 @@ impl Captured {
             retired: CaptureRows::new(capacity.retired),
             available: CaptureRows::new(capacity.available),
             available_bytes: Arena::new(capacity.available_bytes),
-            available_selection: SliceSelection::new(false),
+            available_selection: SliceSelection::new(),
             witness: [None; N],
         }
     }

@@ -207,7 +207,7 @@ impl Hooks {
     #[doc = " The memory source and base must identify the authenticated executable in"]
     #[doc = " this process. The caller owns this family exclusively and must restore"]
     #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
-    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         use engine_mutations::{
             air_wing_equipment_mutations::Receiver,
             air_wing_equipment_mutations::SUBTRACT_VARIANT_RVA,
@@ -274,7 +274,7 @@ impl Hooks {
             preferences: unsafe { crate::wing_preferences::Hooks::new(base) }?,
         })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             WATCHES.set_hooks(false);
             crate::wing_preferences::lifetime_enabled(false);
@@ -373,8 +373,8 @@ macro_rules! call_site {
 call_site!(trim_airplanes, 4);
 call_site!(return_airplanes, 5);
 
-fn map_hook_error(site: &str, reason: &str) -> &'static str {
-    Box::leak(format!("wing_changes {site}: {reason}").into_boxed_str())
+fn map_hook_error(site: &str, reason: &str) -> String {
+    format!("wing_changes {site}: {reason}")
 }
 
 macro_rules! map_writer {

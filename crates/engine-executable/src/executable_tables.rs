@@ -66,11 +66,12 @@ impl<T: Send + Sync + 'static> RuntimeTable<T> {
         let view = match found {
             Some(view) => view,
             None => {
-                let made: &'static Verified<T> = Box::leak(Box::new((self.initialize)()));
+                let made = Box::new((self.initialize)());
                 let mut views = self.views.lock().unwrap_or_else(|error| error.into_inner());
                 match views.iter().find(|(tables, _)| *tables == key) {
                     Some((_, view)) => *view,
                     None => {
+                        let made: &'static Verified<T> = Box::leak(made);
                         views.push((key, made));
                         made
                     }
@@ -557,6 +558,38 @@ mod runtime_table_tests {
             assert_eq!(*table, 7);
             assert_eq!(ATTEMPTS.load(Ordering::Relaxed), 2);
         });
+    }
+
+    #[test]
+    fn concurrent_misses_keep_one_view_and_dispose_of_the_other() {
+        static ENTERED: std::sync::Barrier = std::sync::Barrier::new(2);
+        static DROPPED: AtomicUsize = AtomicUsize::new(0);
+        struct Counted(usize);
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                DROPPED.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        static TABLE: RuntimeTable<Counted> = RuntimeTable::new(|| {
+            ENTERED.wait();
+            Ok(Counted(7))
+        });
+        let views: Vec<usize> = std::thread::scope(|threads| {
+            let callers: Vec<_> = (0..2)
+                .map(|_| {
+                    threads.spawn(|| {
+                        let mut kept = 0;
+                        in_scope(|| kept = std::ptr::from_ref(&*TABLE) as usize);
+                        kept
+                    })
+                })
+                .collect();
+            callers.into_iter().map(|caller| caller.join().unwrap()).collect()
+        });
+        assert_eq!(views[0], views[1]);
+        assert_eq!(DROPPED.load(Ordering::SeqCst), 1);
+        in_scope(|| assert_eq!(TABLE.0, 7));
+        assert_eq!(DROPPED.load(Ordering::SeqCst), 1);
     }
 
     #[test]

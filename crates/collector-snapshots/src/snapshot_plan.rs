@@ -234,7 +234,7 @@ impl<M: Memory> Memory for Observed<'_, M> {
         if trace.eligible
             && len != 0
             && address != 0
-            && crate::address_range::is_canonical_range(address, len)
+            && engine_native::memory::is_canonical_range(address, len)
         {
             if engine_allocation::advisory(|| engine_allocation::reserve(&mut trace.hints, 1))
                 .is_err()

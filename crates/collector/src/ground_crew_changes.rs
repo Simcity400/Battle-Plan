@@ -256,7 +256,7 @@ pub(crate) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         if !cfg!(feature = "mission_changes") {
             return Ok(Self { hooks: Vec::new() });
         }
@@ -300,7 +300,7 @@ impl Hooks {
         }
         Ok(Self { hooks })
     }
-    pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             WATCHES.set_enabled(false);
         }

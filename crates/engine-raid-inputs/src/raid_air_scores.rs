@@ -501,9 +501,14 @@ fn read_scales(memory: &impl Memory, addresses: &[usize]) -> [Option<i64>; BATCH
         &mut bytes[..addresses.len() * 8],
         &mut complete[..addresses.len()],
     );
-    std::array::from_fn(|index| {
-        complete[index]
-            .then(|| i64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap()))
+    std::array::from_fn(|index| match addresses.get(index) {
+        Some(_) if complete[index] => Some(i64::from_le_bytes(
+            bytes[index * 8..index * 8 + 8].try_into().unwrap(),
+        )),
+        Some(&address) => address
+            .checked_add(AIR_SPOTTING_SCALE)
+            .and_then(|at| read::<i64>(memory, at)),
+        None => None,
     })
 }
 
@@ -1072,7 +1077,7 @@ mod tests {
             (row.friendly, row.enemy, row.air_spotting_scale),
             (42, 7, None)
         );
-        assert_eq!(memory.attempts.get(), 1);
+        assert_eq!(memory.attempts.get(), 2);
         let next = walk(&memory, BASE, GAME, HOUR + 1, &mut held, &mut output);
         assert!(!next.full);
         assert_eq!(
@@ -1083,7 +1088,45 @@ mod tests {
                 .air_spotting_scale,
             None
         );
-        assert_eq!(memory.attempts.get(), 1);
+        assert_eq!(memory.attempts.get(), 2);
+
+        world.spotting_scale(1, 5, 3);
+        struct OneShot<'a> {
+            memory: SliceMemory<'a>,
+            at: usize,
+            attempts: std::cell::Cell<usize>,
+        }
+        impl Memory for OneShot<'_> {
+            fn copy(&self, at: usize, to: &mut [u8]) -> bool {
+                if at == self.at {
+                    self.attempts.set(self.attempts.get() + 1);
+                    if self.attempts.get() == 1 {
+                        return false;
+                    }
+                }
+                self.memory.copy(at, to)
+            }
+        }
+        let memory = OneShot {
+            memory: SliceMemory {
+                base: MEMORY,
+                bytes: &world.bytes,
+            },
+            at: data + 5 * STRIDE + AIR_SPOTTING_SCALE,
+            attempts: Default::default(),
+        };
+        let mut fresh = super::tests::held(17, 1, 17);
+        fresh.certify(Some(1));
+        let recovered = walk(&memory, BASE, GAME, HOUR, &mut fresh, &mut output);
+        assert_eq!(
+            output[..recovered.outcome.len()]
+                .iter()
+                .find(|r| r.slot == 5)
+                .unwrap()
+                .air_spotting_scale,
+            Some(3)
+        );
+        assert_eq!(memory.attempts.get(), 2);
     }
 
     #[test]

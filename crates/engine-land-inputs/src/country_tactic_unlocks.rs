@@ -290,15 +290,22 @@ fn capture_buffer(
                 let entries = Array::from_header(header, POINTER)
                     .ok_or("country tactic unlock array invalid")?;
                 let bytes = list_bytes(entries.count)?;
-                list.ensure(bytes)?;
                 let end = start
                     .checked_add(entries.count as usize)
                     .ok_or("country tactic unlock count overflows")?;
-                unlocks.ensure(end)?;
                 let fits = database.is_some() && bytes <= list.len();
-                if !fits {
-                    prove_ends(memory, entries)?;
+                if !fits || end > unlocks.len() {
+                    let full = database.is_some() && (fits || list.is_growing());
+                    prove_ends(memory, entries).map_err(|reason| {
+                        if full {
+                            "country tactic unlock list unreadable"
+                        } else {
+                            reason
+                        }
+                    })?;
                 }
+                list.ensure(bytes)?;
+                unlocks.ensure(end)?;
                 capture.required_list = capture.required_list.max(bytes);
                 if let (Some(database), Some(staged)) = (database, list.get_mut(..bytes)) {
                     if !read_slice(memory, entries.data, staged) {

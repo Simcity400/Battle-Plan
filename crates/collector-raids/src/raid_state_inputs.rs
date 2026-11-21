@@ -97,8 +97,8 @@ impl Captured {
             required: native::Capacity::zero(),
             built: native::Capacity::zero(),
             census: Vec::new(),
-            states: SliceSelection::new(false),
-            countries: SliceSelection::new(false),
+            states: SliceSelection::new(),
+            countries: SliceSelection::new(),
         }
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -114,8 +114,8 @@ impl Captured {
             required: native::Capacity::zero(),
             built: capacity.walk,
             census: owned_vec(vec(capacity.walk.states)),
-            states: SliceSelection::new(true),
-            countries: SliceSelection::new(true),
+            states: SliceSelection::new(),
+            countries: SliceSelection::new(),
         }
     }
     pub fn reset(&mut self) {

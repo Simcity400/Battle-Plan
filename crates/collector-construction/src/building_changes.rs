@@ -346,7 +346,7 @@ unsafe extern "system" fn destroy_healthy_levels(
 callback!(get_or_create_building, 4, (status, template));
 callback!(read_building_status, 5, (status, reader));
 callback!(clear_building_status, 6, (status));
-callback!(enter_nudge_mode, 7, (idler, a, b, c, d, spare));
+callback!(enter_nudge_mode, 7, (idler, a, b, c, d));
 
 #[cfg(test)]
 mod tests {

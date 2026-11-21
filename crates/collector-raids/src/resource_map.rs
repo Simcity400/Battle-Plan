@@ -54,12 +54,12 @@ fn route_order(key: &RouteKey) -> (u32, u8, u32) {
 
 impl Captured {
     pub fn vacant() -> Self {
-        Self::new(false)
+        Self::new()
     }
     pub fn with_capacities(_capacity: &Capacities) -> Self {
-        Self::new(true)
+        Self::new()
     }
-    fn new(storage: bool) -> Self {
+    fn new() -> Self {
         Self {
             pending_owned: false,
             origins: Vec::new(),
@@ -75,7 +75,7 @@ impl Captured {
             routes: Vec::new(),
             path: Vec::new(),
             outcomes: [crate::MISSING; N],
-            selection: SliceSelection::new(storage),
+            selection: SliceSelection::new(),
         }
     }
     pub fn reset(&mut self) {

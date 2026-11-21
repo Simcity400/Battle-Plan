@@ -1121,7 +1121,7 @@ impl Hooks {
         counts: replay_data::event_feed_rows::EventFeedCounts,
         slots: usize,
         enabled: bool,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, String> {
         if !enabled {
             return Ok(Self { held: None });
         }
@@ -1175,7 +1175,7 @@ impl Hooks {
             || FAULT.load(Ordering::SeqCst) != 0
             || !SHARED.load(Ordering::SeqCst).is_null()
         {
-            return Err("Event feed previous owner retained");
+            return Err("Event feed previous owner retained".into());
         }
         TARGETS[0].store(targets[0], Ordering::SeqCst);
         TARGETS[1].store(targets[1], Ordering::SeqCst);
@@ -1190,7 +1190,7 @@ impl Hooks {
         })
     }
 
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         let Some(held) = self.held.as_mut() else {
             return Ok(true);
         };

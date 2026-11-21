@@ -1,14 +1,8 @@
 use crate::hook::Hook;
 use engine_sites::Rva;
 
-pub(crate) fn site(
-    family: &str,
-    name: &str,
-    index: usize,
-    phase: &str,
-    cause: &str,
-) -> &'static str {
-    Box::leak(format!("{family}: {name} (site {index}) {phase}: {cause}").into_boxed_str())
+pub(crate) fn site(family: &str, name: &str, index: usize, phase: &str, cause: &str) -> String {
+    format!("{family}: {name} (site {index}) {phase}: {cause}")
 }
 pub(crate) fn locate(
     base: usize,
@@ -16,7 +10,7 @@ pub(crate) fn locate(
     family: &str,
     name: &str,
     index: usize,
-) -> Result<(usize, [u8; 16]), &'static str> {
+) -> Result<(usize, [u8; 16]), String> {
     engine_sites::code(base, key)
         .and_then(|code| Ok((code.address, code.original::<16>()?)))
         .map_err(|withheld| {
@@ -34,7 +28,7 @@ pub(crate) fn publication<'a>(
     hooks: &[Hook],
     names: impl Iterator<Item = &'a str>,
     cause: &str,
-) -> &'static str {
+) -> String {
     let sites: Vec<_> = names.enumerate().collect();
     let failed: Vec<_> = hooks
         .iter()
@@ -53,9 +47,7 @@ pub(crate) fn publication<'a>(
     } else {
         "snapshot mismatch"
     };
-    Box::leak(
-        format!("{family}: {scope} [{selected}] publication failed: {cause}").into_boxed_str(),
-    )
+    format!("{family}: {scope} [{selected}] publication failed: {cause}")
 }
 
 #[cfg(test)]

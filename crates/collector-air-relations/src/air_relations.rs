@@ -114,7 +114,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
-            selection: SliceSelection::new(true),
+            selection: SliceSelection::new(),
             parts: allocation::owned_vec(allocation::collect_vec(
                 (0..PARTS).map(|_| Staging::with_capacity(capacity)),
             )),
@@ -683,7 +683,7 @@ pub fn allocation_failure_exercise() {
     if held.apply(&part).is_err() {
         return;
     }
-    let mut selection = SliceSelection::new(true);
+    let mut selection = SliceSelection::new();
     if crate::allocation::failed() {
         return;
     }

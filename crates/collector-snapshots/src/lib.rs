@@ -1,4 +1,3 @@
-pub mod address_range;
 pub mod snapshot_plan;
 
 #[cfg(test)]

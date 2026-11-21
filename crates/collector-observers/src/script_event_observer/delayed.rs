@@ -192,7 +192,7 @@ pub(super) fn forwarded_pass(country: usize, run: impl FnOnce() -> usize) -> usi
     flight.returned();
     result
 }
-pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
+pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), String> {
     let mut hooks = Vec::new();
     let verify = |site: native::Site| verify_hook::<16>(base, site);
     for (index, (site, callback)) in native::DELAYED_ENTRIES
@@ -213,7 +213,7 @@ pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'stati
     }
     Ok((hooks, Vec::new()))
 }
-pub(super) unsafe fn forwarded_taps(base: usize) -> Result<Vec<Tap>, &'static str> {
+pub(super) unsafe fn forwarded_taps(base: usize) -> Result<Vec<Tap>, String> {
     let mut taps = Vec::new();
     for (index, site) in native::DELAYED_TAPS.into_iter().enumerate() {
         let (at, original) = verify_hook::<16>(base, site)?;

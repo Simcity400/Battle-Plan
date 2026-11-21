@@ -1,5 +1,5 @@
 
-pub use crate::address_range::is_canonical_range;
+pub use engine_native::memory::is_canonical_range;
 use crate::raw_plan::{Attempt, CapturePlan, Observations, Request};
 use engine_native::Memory;
 use std::cell::RefCell;

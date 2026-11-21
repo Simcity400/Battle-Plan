@@ -668,7 +668,7 @@ fn option(event: usize, scope: usize, ordinal: i32) {
     });
 }
 
-fn hook_failure(site: native::Site, stage: &str, cause: impl std::fmt::Display) -> &'static str {
+fn hook_failure(site: native::Site, stage: &str, cause: impl std::fmt::Display) -> String {
     terminal_hook_failure(site.label(), stage, cause)
 }
 
@@ -676,8 +676,8 @@ pub(super) fn terminal_hook_failure(
     label: &str,
     stage: &str,
     cause: impl std::fmt::Display,
-) -> &'static str {
-    Box::leak(format!("{label}: {stage} failed: {cause}").into_boxed_str())
+) -> String {
+    format!("{label}: {stage} failed: {cause}")
 }
 
 #[doc = " The site's address and the 16 bytes its patch replaces, of which the first `N` are verified"]
@@ -685,7 +685,7 @@ pub(super) fn terminal_hook_failure(
 fn verify_hook<const N: usize>(
     base: usize,
     site: native::Site,
-) -> Result<(usize, [u8; 16]), &'static str> {
+) -> Result<(usize, [u8; 16]), String> {
     let withheld = |cause| hook_failure(site, "sentinel", cause);
     let code = engine_sites::code(base, site.rva).map_err(withheld)?;
     let owned = code.original::<N>().map_err(withheld)?;
@@ -700,7 +700,7 @@ fn verify_hook<const N: usize>(
 pub unsafe fn hooks(
     _memory: &impl Memory,
     base: usize,
-) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
+) -> Result<(Vec<Hook>, Vec<Tap>), String> {
     let verify = |site: native::Site| verify_hook::<16>(base, site);
     let mut taps = Vec::new();
     for (index, site) in native::TAPS.into_iter().enumerate() {
@@ -787,7 +787,7 @@ pub fn delayed_pass(country: usize, run: impl FnOnce() -> usize) -> usize {
 pub unsafe fn delayed_pass_taps(
     _memory: &impl Memory,
     base: usize,
-) -> Result<Vec<Tap>, &'static str> {
+) -> Result<Vec<Tap>, String> {
     unsafe { delayed::forwarded_taps(base) }
 }
 
@@ -820,7 +820,7 @@ pub fn take_selection_cause() -> Option<replay_data::event_feed_rows::EventFeedC
 pub unsafe fn targeted_selection_tap(
     _memory: &impl Memory,
     base: usize,
-) -> Result<Tap, &'static str> {
+) -> Result<Tap, String> {
     unsafe { decisions::selection_tap(base) }
 }
 

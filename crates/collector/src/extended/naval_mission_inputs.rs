@@ -1,7 +1,7 @@
 use crate::{
     navy_ledger_changes::{Counts as LedgerCounts, Skip as LedgerSkip},
     sampling::qpc,
-    slicing::{Digest, SliceFingerprints, SliceSelection},
+    slicing::{SliceFingerprints, SliceSelection},
     spooling::table,
     table_capture::{Arena, CaptureRows, grow_capacity},
 };
@@ -260,6 +260,7 @@ pub struct Captured {
     keys: Vec<u64>,
     weather: Vec<(u32, [Value; 9])>,
     selection: SliceSelection,
+    witness: Vec<u64>,
     ledger_counts: LedgerCounts,
     sequence: fn(usize) -> Option<(u64, u64)>,
     ledger_sequence: fn(usize) -> Option<(u64, u64)>,
@@ -298,25 +299,6 @@ fn finish(len: usize, unread: u32) -> Outcome {
             unread_rows: unread,
         }
     }
-}
-
-fn fingerprint(task_forces: &[TaskForce], headquarters: &[u64]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    let mut mix = |value: u64| {
-        for byte in value.to_le_bytes() {
-            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-        }
-    };
-    for task_force in task_forces {
-        mix(task_force.row.leader);
-        mix(task_force.row.headquarters as u64);
-        for &character in &headquarters
-            [task_force.headquarters..task_force.headquarters + task_force.row.headquarters]
-        {
-            mix(character);
-        }
-    }
-    hash
 }
 
 #[derive(Default)]
@@ -469,7 +451,8 @@ impl Captured {
                 size(capacity.task_forces),
                 (0, [Value::default(); 9]),
             )),
-            selection: SliceSelection::new(storage),
+            selection: SliceSelection::new(),
+            witness: Vec::new(),
             ledger_counts: LedgerCounts::default(),
             sequence: default_sequence(),
             ledger_sequence: default_ledger_sequence(),
@@ -530,6 +513,7 @@ impl Captured {
                 .map(HeldNavy::allocated_bytes)
                 .sum::<usize>()
             + self.leaders.allocated_bytes()
+            + self.witness.capacity() * size_of::<u64>()
             + self.mines.capacity() * size_of::<replay_data::rows::NavalRegionalMineRow>()
             + self.accidents.capacity() * size_of::<replay_data::rows::NavalAccidentReportRow>()
             + self.entries.allocated_bytes()
@@ -1875,52 +1859,64 @@ impl Captured {
         let resolve = |handle| creference_registry::resolve(memory, base, handle);
         let mut receivers = 0;
         let mut leaders = std::mem::take(&mut self.leaders);
+        let mut witness = std::mem::take(&mut self.witness);
         for index in 0..self.named.len {
             let country = self.named.first[index];
-            let certificate = self.certificate(
-                memory,
-                base,
-                game_state,
-                country,
-                (&resolve, &mut leaders),
-                &mut receivers,
-            );
-            self.selection
-                .scan_marking(fingerprints, country.id, certificate);
+            witness.clear();
+            let stamp = self
+                .witness(
+                    memory,
+                    base,
+                    game_state,
+                    country,
+                    (&resolve, &mut leaders),
+                    (&mut witness, &mut receivers),
+                )
+                .map(|()| fingerprints.witnesses.observe(country.id, &witness));
+            self.selection.scan_marking(fingerprints, country.id, stamp);
         }
+        fingerprints.witnesses.finish();
         crate::navy_ledger_changes::record_leaders(leaders.finish());
         self.leaders = leaders;
+        self.witness = witness;
         fingerprints.finish_scan();
         self.selection.finish_census(fingerprints);
         receivers
     }
 
-    fn certificate(
+    fn witness(
         &self,
         memory: &impl Memory,
         base: usize,
         game_state: usize,
         country: ccountry::Country,
         (resolve, leaders): (inputs::Resolve<'_>, &mut Leaders),
-        receivers: &mut usize,
-    ) -> Option<u64> {
-        let owned = Self::owned(Self::task_forces(&self.task_forces), country.canonical_slot);
-        let mut digest = Digest::new();
-        digest.u64(fingerprint(owned, &self.headquarters.first));
-        digest.u64(u64::from(
-            self.escort_owners.binary_search(&country.id).is_ok(),
-        ));
-        let mut certify = |digest: &mut Digest, receiver: usize| {
-            let (epoch, sequence) = (self.sequence)(receiver)?;
-            *receivers += 1;
-            digest.u64(receiver as u64).u64(epoch).u64(sequence);
+        (witness, receivers): (&mut Vec<u64>, &mut usize),
+    ) -> Option<()> {
+        let mut push = |words: &[u64]| {
+            engine_allocation::advisory(|| reserve(witness, words.len())).ok()?;
+            witness.extend_from_slice(words);
             Some(())
         };
-        certify(&mut digest, country.pointer)?;
+        let owned = Self::owned(Self::task_forces(&self.task_forces), country.canonical_slot);
+        push(&[owned.len() as u64])?;
+        for task_force in owned {
+            push(&[task_force.row.leader, task_force.row.headquarters as u64])?;
+            push(
+                &self.headquarters.first[task_force.headquarters
+                    ..task_force.headquarters + task_force.row.headquarters],
+            )?;
+        }
+        push(&[u64::from(
+            self.escort_owners.binary_search(&country.id).is_ok(),
+        )])?;
+        let (epoch, sequence) = (self.sequence)(country.pointer)?;
+        *receivers += 1;
+        push(&[country.pointer as u64, epoch, sequence])?;
         let navy = cstrategic_navy_manager::navy(memory, base, game_state, country).ok()?;
         let hubs =
             engine_native::cpdx_array::Array::read(memory, navy.checked_add(inputs::HUBS)?, 4)?;
-        digest.u64(u64::from(hubs.count));
+        push(&[u64::from(hubs.count)])?;
         let mut chunk = [0_u8; 256];
         let total = hubs.count as usize * 4;
         let mut done = 0;
@@ -1929,7 +1925,11 @@ impl Captured {
             if !engine_native::memory::read_slice(memory, hubs.data + done, &mut chunk[..len]) {
                 return None;
             }
-            digest.bytes(&chunk[..len]);
+            for word in chunk[..len].chunks(8) {
+                let mut bytes = [0; 8];
+                bytes[..word.len()].copy_from_slice(word);
+                push(&[u64::from_le_bytes(bytes)])?;
+            }
             done += len;
         }
         for task_force in owned {
@@ -1941,11 +1941,9 @@ impl Captured {
                 match leader {
                     Some((leader, (epoch, sequence))) => {
                         *receivers += 1;
-                        digest.u64(leader as u64).u64(epoch).u64(sequence);
+                        push(&[1, leader as u64, epoch, sequence])?;
                     }
-                    None => {
-                        digest.u64(0);
-                    }
+                    None => push(&[0])?,
                 }
             }
             for &character in &self.headquarters.first
@@ -1956,18 +1954,19 @@ impl Captured {
                 }
                 match inputs::headquarters_sources(memory, base, character, resolve).ok()? {
                     Some((leader, sources)) => {
-                        digest.u64(leader as u64);
+                        push(&[1, leader as u64])?;
+                        let mut count = 0_u64;
                         for source in sources {
-                            digest.u64(source as u64);
+                            push(&[source as u64])?;
+                            count += 1;
                         }
+                        push(&[count])?;
                     }
-                    None => {
-                        digest.u64(0);
-                    }
+                    None => push(&[0])?,
                 }
             }
         }
-        Some(digest.finish())
+        Some(())
     }
 
     fn read_family(

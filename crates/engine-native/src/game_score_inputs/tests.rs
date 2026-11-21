@@ -754,6 +754,41 @@ struct Rounds<'a> {
     rounds: std::cell::Cell<usize>,
 }
 
+struct Once<'a> {
+    inner: Fault<'a>,
+    spent: std::cell::Cell<bool>,
+    attempts: std::cell::Cell<usize>,
+}
+
+impl<'a> Once<'a> {
+    fn new(bytes: &'a [u8], address: usize) -> Self {
+        Self {
+            inner: Fault { bytes, address },
+            spent: std::cell::Cell::new(false),
+            attempts: std::cell::Cell::new(0),
+        }
+    }
+}
+
+impl Memory for Once<'_> {
+    fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+        let address = self.inner.address;
+        if at <= address && address < at.saturating_add(output.len()) {
+            self.attempts.set(self.attempts.get() + 1);
+        }
+        if self.spent.get() {
+            return SliceMemory {
+                base: 0,
+                bytes: self.inner.bytes,
+            }
+            .copy(at, output);
+        }
+        let copied = self.inner.copy(at, output);
+        self.spent.set(!copied);
+        copied
+    }
+}
+
 impl Memory for Rounds<'_> {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
         self.rounds.set(self.rounds.get() + 1);
@@ -835,7 +870,17 @@ fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
             })
             .collect::<Vec<_>>()
     };
-    for fault in [site(100) + 4, VECTORS + 130 * 0x40 + 8] {
+    let mut clean = vec![AirSite::default(); SITES];
+    read_first_sites_buffer(&SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        }, 0, 1, Some(0x100), crate::walk::Buffer::Growing(&mut clean));
+    for fault in [
+        site(100) + 4,
+        site(110) + cair_base::COUNTRY_CONTAINERS + 4,
+        site(120) + cair_base::COUNTRY_CONTAINERS_COUNT,
+        VECTORS + 130 * 0x40 + 8,
+    ] {
         let memory = Rounds {
             inner: Fault {
                 bytes: &bytes,
@@ -858,6 +903,13 @@ fn game_score_first_sites_gather_by_batch_with_each_site_failing_alone() {
         });
         assert_eq!(rows, expected);
         assert!(batched < 40, "{batched} guarded rounds");
+        assert!(expected.iter().any(|site| site.access.is_err_and(|error| error.contains("unreadable"))));
+        let once = Once::new(&bytes, fault);
+        let mut recovered = vec![AirSite::default(); SITES];
+        read_first_sites_buffer(&once, 0, 1, Some(0x100), crate::walk::Buffer::Growing(&mut recovered));
+        assert!(once.spent.get());
+        assert_eq!(once.attempts.get(), 2, "fault {fault:#x} is retried exactly once");
+        assert_eq!(recovered, clean, "fault {fault:#x}");
     }
     let mut rows = vec![AirSite::default(); SITES];
     read_first_sites_buffer(&SliceMemory {
@@ -936,7 +988,14 @@ fn game_score_fleets_gather_by_batch_with_each_fleet_failing_alone() {
         let capture = walk_country_inputs(memory, 0, GS, &mut countries, &mut fleets);
         (capture, countries, fleets)
     }
-    for fault in [fleet(90) + 4, fleet(130) + cfleet::TASK_FORCE_COUNT] {
+    let (_, _, clean) = walk(&SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    });
+    for fault in [
+        fleet(90) + 4,
+        fleet(130) + cfleet::TASK_FORCE_COUNT,
+    ] {
         let memory = Rounds {
             inner: Fault {
                 bytes: &bytes,
@@ -969,7 +1028,24 @@ fn game_score_fleets_gather_by_batch_with_each_fleet_failing_alone() {
             Err("game score fleet pointer is null")
         );
         assert!(rounds < 60, "{rounds} guarded rounds");
+        let once = Once::new(&bytes, fault);
+        let (_, _, recovered) = walk(&once);
+        assert!(once.spent.get());
+        assert_eq!(once.attempts.get(), 2, "fault {fault:#x} is retried exactly once");
+        assert_eq!(recovered, clean, "fault {fault:#x}");
     }
+    let (_, _, fleets) = walk(&Fault {
+        bytes: &bytes,
+        address: fleet(130) + cfleet::TASK_FORCE_COUNT,
+    });
+    assert_eq!(
+        fleets[130],
+        FleetCount {
+            fleet: 630,
+            task_forces: Err("game score task force count unreadable"),
+        }
+    );
+    assert_eq!(fleets[131].task_forces, Ok(131));
     assert_eq!(
         walk(&SliceMemory {
             base: 0,

@@ -119,7 +119,7 @@ impl Captured {
             aces: CaptureRows::new(capacity.rows[3]),
             reservations: Arena::new(capacity.reservations),
             command_power: CaptureRows::new(capacity.command_power),
-            selection: SliceSelection::new(capacity.rows[0] != 0),
+            selection: SliceSelection::new(),
             essentials: Vec::new(),
             memo: Default::default(),
             volunteer_air: Default::default(),
@@ -458,7 +458,7 @@ mod tests {
     #[test]
     fn launch_owners_are_read_only_when_new_marked_or_unpublished() {
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         let scan = |selection: &mut SliceSelection, store: &mut SliceFingerprints, last: u32| {
             for slot in 1..=last {
                 selection.scan(store, slot, Some(0));

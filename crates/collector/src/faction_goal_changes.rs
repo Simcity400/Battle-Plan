@@ -88,8 +88,8 @@ impl OwnedHook {
         }
     }
 }
-fn site_error(site: &str, operation: &str, cause: impl std::fmt::Display) -> &'static str {
-    Box::leak(format!("FactionGoals/{site} {operation}: {cause}").into_boxed_str())
+fn site_error(site: &str, operation: &str, cause: impl std::fmt::Display) -> String {
+    format!("FactionGoals/{site} {operation}: {cause}")
 }
 pub struct Hooks {
     hooks: Vec<OwnedHook>,
@@ -97,7 +97,7 @@ pub struct Hooks {
 impl Hooks {
     #[doc = " # Safety"]
     #[doc = " Attach owns the verified image and native patch publication lifetime."]
-    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "faction_changes") {
             let mut located = [(0, [0; 16]); SITES];
@@ -164,7 +164,7 @@ impl Hooks {
         }
         Ok(Self { hooks })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         #[cfg(test)]
         let _exclusive = tests::exclusive();
         if !enabled {

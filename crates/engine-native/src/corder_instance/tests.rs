@@ -337,6 +337,18 @@ fn capture(image: &MemoryImage, rows: &mut Vec<Row>, geometry: &mut Vec<u32>) ->
 }
 
 #[test]
+fn census_sequences_refuse_ordinals_past_the_stored_width() {
+    let last = u32::MAX as usize;
+    assert_eq!(super::census_sequence(5, 7), Ok(12));
+    assert_eq!(super::census_sequence(last, 0), Ok(u32::MAX));
+    assert_eq!(super::census_sequence(last - 1, 1), Ok(u32::MAX));
+    let overflow = Err("army order census sequence overflows");
+    assert_eq!(super::census_sequence(last + 1, 0), overflow);
+    assert_eq!(super::census_sequence(last, 1), overflow);
+    assert_eq!(super::census_sequence(1, u32::MAX), overflow);
+}
+
+#[test]
 fn invasion_allocation_authenticates_the_subscriber_and_reuses_the_plan_prefix() {
     let mut image = MemoryImage::default();
     image.order(FIRST, 1, TYPE_INVASION);

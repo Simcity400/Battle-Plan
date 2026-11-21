@@ -157,7 +157,7 @@ pub fn forwarded(leader: usize, site: Lifetime) -> Notification<'static> {
     WATCHES.lifetime(leader, site)
 }
 
-fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str {
+fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> String {
     let sites = site.map_or_else(
         || {
             MUTATIONS
@@ -168,12 +168,10 @@ fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str
         },
         |index| MUTATIONS[index].name.to_owned(),
     );
-    Box::leak(
-        format!("unit_leader_changes [{sites}] hook {action} failed: {detail}").into_boxed_str(),
-    )
+    format!("unit_leader_changes [{sites}] hook {action} failed: {detail}")
 }
 
-fn validate_sites(base: usize) -> Result<(), &'static str> {
+fn validate_sites(base: usize) -> Result<(), String> {
     for (index, site) in MUTATIONS.iter().enumerate() {
         crate::verified(base, site.rva)
             .map_err(|reason| hook_failure(Some(index), "sentinel validation", reason))?;
@@ -192,7 +190,7 @@ impl Hooks {
     #[doc = " The memory source and base must identify the authenticated executable in"]
     #[doc = " this process. The caller owns this family exclusively and must restore"]
     #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
-    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "unit_leader_changes") {
             validate_sites(base)?;
@@ -241,7 +239,7 @@ impl Hooks {
         }
         Ok(Self { hooks })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             PATCHED.store(false, Ordering::SeqCst);
             observe();

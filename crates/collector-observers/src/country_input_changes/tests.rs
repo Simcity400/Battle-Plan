@@ -832,7 +832,7 @@ fn startup_country_offer_keeps_the_seed_epoch_and_observes_writes_at_scale() {
         };
         let first = take(&domain, table).0.expect("seed epoch");
         let mut store = SliceFingerprints::new();
-        let mut selection = SliceSelection::new(false);
+        let mut selection = SliceSelection::new();
         let mut changed = Changed::default();
         selection.reset(10, true);
         select_changed(

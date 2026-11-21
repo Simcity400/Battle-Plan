@@ -93,7 +93,7 @@ impl Captured {
             bytes: Arena::new(0),
             scratch: native::Scratch::vacant(),
             memo: native::Memo::default(),
-            selection: SliceSelection::new(false),
+            selection: SliceSelection::new(),
             changed: Changed::default(),
             keys: None,
             context: None,
@@ -109,7 +109,7 @@ impl Captured {
                 .map_err(crate::allocation::io)
                 .unwrap_or_else(|_| native::Scratch::vacant()),
             memo: native::Memo::default(),
-            selection: SliceSelection::new(true),
+            selection: SliceSelection::new(),
             changed: Changed::default(),
             keys: None,
             context: None,

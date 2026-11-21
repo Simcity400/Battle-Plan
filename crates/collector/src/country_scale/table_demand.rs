@@ -46,97 +46,100 @@ pub(crate) fn presize_periodic(
             accept(rows(outcome).map(|count| map.raise_naval(index, count)));
         }
     }
-    macro_rules! accept_hint {
-        ($index:literal, $result:expr $(,)?) => {
-            if capacity_census || matches!($index, 9 | 10 | 13 | 16 | 32 | 33 | 40) {
+    macro_rules! size {
+        (prompt, $result:expr $(,)?) => {
+            accept($result)
+        };
+        (census, $result:expr $(,)?) => {
+            if capacity_census {
                 accept($result);
             }
         };
     }
-    accept_hint!(
-        3,
+    size!(
+        census,
         rows(engine_railways::sprovince_supply_data::count(memory, base, state))
-        .map(|count| super::raise(&mut extended.economy.rows[2], super::rows(count, 1))),
+            .map(|count| super::raise(&mut extended.economy.rows[2], super::rows(count, 1))),
     );
-    accept_hint!(4, extended.province_unit_order.presize(memory, base, state));
-    accept_hint!(5, extended.governance.presize(memory, base, state));
-    accept_hint!(6, extended.characters.presize(memory, base, state));
-    accept_hint!(7, extended.projects.presize(memory, base, state));
-    accept_hint!(9, extended.division_templates.presize(memory, base, state));
-    accept_hint!(
-        10,
+    size!(census, extended.province_unit_order.presize(memory, base, state));
+    size!(census, extended.governance.presize(memory, base, state));
+    size!(census, extended.characters.presize(memory, base, state));
+    size!(census, extended.projects.presize(memory, base, state));
+    size!(prompt, extended.division_templates.presize(memory, base, state));
+    size!(
+        prompt,
         extended
             .industrial_organisations
             .presize(memory, base, state),
     );
-    accept_hint!(11, extended.production.presize(memory, base, state));
-    accept_hint!(12, extended.model_inputs.presize(memory, base, state));
-    accept_hint!(13, extended.naval_counters.presize(memory, base, state));
-    accept_hint!(14, extended.intel.presize(memory, base, state));
-    accept_hint!(15, extended.country_stability.presize(memory, base, state));
-    accept_hint!(
-        16,
+    size!(census, extended.production.presize(memory, base, state));
+    size!(census, extended.model_inputs.presize(memory, base, state));
+    size!(prompt, extended.naval_counters.presize(memory, base, state));
+    size!(census, extended.intel.presize(memory, base, state));
+    size!(census, extended.country_stability.presize(memory, base, state));
+    size!(
+        prompt,
         extended
             .division_presentation
             .presize_names(memory, base, state),
     );
-    accept_hint!(17, extended.plans.presize_execution(memory, base, state));
-    accept_hint!(18, extended.weather.presize(memory, base, state));
-    accept_hint!(19, extended.combat_progress.presize(memory, base));
+    size!(census, extended.plans.presize_execution(memory, base, state));
+    size!(census, extended.weather.presize(memory, base, state));
+    size!(census, extended.combat_progress.presize(memory, base));
     extended
         .new_divisions
         .raise_for_equipment(extended.production.rows[2]);
-    accept_hint!(20, extended.map_names.presize(memory, base, state));
-    accept_hint!(
-        21,
+    size!(census, extended.map_names.presize(memory, base, state));
+    size!(
+        census,
         extended.modifier_definitions.presize(memory, base, state),
     );
-    accept_hint!(22, extended.naval_bases.presize(memory, base, state));
-    accept_hint!(23, extended.map_facilities.presize(memory, base, state));
-    accept_hint!(24, extended.raid_launch_inputs.presize(memory, base, state));
-    accept_hint!(25, extended.supply_trains.presize(memory, base, state));
-    accept_hint!(26, extended.active_abilities.presize(memory, base, state));
-    accept_hint!(27, extended.faction_theatres.presize(memory, base, state));
-    accept_hint!(28, extended.logistics.presize(memory, base, state));
-    accept_hint!(29, extended.hired_advisors.presize(memory, base, state));
-    accept_hint!(
-        30,
+    size!(census, extended.naval_bases.presize(memory, base, state));
+    size!(census, extended.map_facilities.presize(memory, base, state));
+    size!(census, extended.raid_launch_inputs.presize(memory, base, state));
+    size!(census, extended.supply_trains.presize(memory, base, state));
+    size!(census, extended.active_abilities.presize(memory, base, state));
+    size!(census, extended.faction_theatres.presize(memory, base, state));
+    size!(census, extended.logistics.presize(memory, base, state));
+    size!(census, extended.hired_advisors.presize(memory, base, state));
+    size!(
+        census,
         extended.raid_target_statuses.presize(memory, base, state),
     );
-    accept_hint!(31, extended.raid_state_inputs.presize(memory, base, state));
-    accept_hint!(32, extended.combat_log.presize(memory, base, state));
-    accept_hint!(33, extended.group_counters.presize(memory, base, state));
-    accept_hint!(34, extended.air.presize(memory, base, state));
-    accept_hint!(35, extended.naval_history.presize(memory, base, state));
-    accept_hint!(36, extended.visibility.presize(memory, base, state));
-    accept_hint!(37, extended.fog.presize(memory, base, state));
-    accept_hint!(
-        38,
+    size!(census, extended.raid_state_inputs.presize(memory, base, state));
+    size!(prompt, extended.combat_log.presize(memory, base, state));
+    size!(prompt, extended.group_counters.presize(memory, base, state));
+    size!(census, extended.air.presize(memory, base, state));
+    size!(census, extended.naval_history.presize(memory, base, state));
+    size!(census, extended.visibility.presize(memory, base, state));
+    size!(census, extended.fog.presize(memory, base, state));
+    size!(
+        census,
         extended.country_tactic_unlocks.presize(memory, base, state),
     );
-    accept_hint!(39, extended.construction.presize(memory, base, state));
-    accept_hint!(40, extended.economy.presize(memory, base, state));
-    accept_hint!(41, extended.session.presize(memory, base, state));
-    accept_hint!(
-        42,
+    size!(census, extended.construction.presize(memory, base, state));
+    size!(prompt, extended.economy.presize(memory, base, state));
+    size!(census, extended.session.presize(memory, base, state));
+    size!(
+        census,
         extended.naval_mission_inputs.presize(memory, base, state),
     );
-    accept_hint!(
-        43,
+    size!(
+        census,
         extended.character_portraits.presize(memory, base, state),
     );
-    accept_hint!(44, extended.army_icon_inputs.presize(memory, base, state));
-    accept_hint!(45, extended.leader_portraits.presize(memory, base));
-    accept_hint!(46, extended.leader_paths.presize(memory, base));
-    accept_hint!(
-        47,
+    size!(census, extended.army_icon_inputs.presize(memory, base, state));
+    size!(census, extended.leader_portraits.presize(memory, base));
+    size!(census, extended.leader_paths.presize(memory, base));
+    size!(
+        census,
         extended.naval_result_details.presize(memory, base, state),
     );
-    accept_hint!(
-        48,
+    size!(
+        census,
         extended.naval_combat_sources.presize(memory, base, state),
     );
-    accept_hint!(49, map.presize_combats(memory, base));
+    size!(census, map.presize_combats(memory, base));
     failure.map_or(Ok(()), Err)
 }
 

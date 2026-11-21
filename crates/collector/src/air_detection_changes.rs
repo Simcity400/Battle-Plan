@@ -119,7 +119,7 @@ pub(crate) struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
-    pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub(crate) unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "mission_changes") {
             let (at, prefix) = engine_sites::hook(base, native::DETECTION_OVERRIDE_WRITER_RVA)
@@ -147,7 +147,7 @@ impl Hooks {
         }
         Ok(Self { hooks })
     }
-    pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub(crate) fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             DOMAIN.set_enabled(false);
         }

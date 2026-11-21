@@ -563,7 +563,7 @@ impl Captured {
             inputs: std::mem::replace(&mut self.research_inputs, CaptureRows::new(0)),
             bonuses: std::mem::replace(&mut self.research_bonuses, CaptureRows::new(0)),
             modifiers: std::mem::replace(&mut self.research_modifiers, CaptureRows::new(0)),
-            selection: std::mem::replace(&mut self.research_selection, SliceSelection::new(false)),
+            selection: std::mem::replace(&mut self.research_selection, SliceSelection::new()),
             changed: crate::slicing::Changed::default(),
         }
     }
@@ -682,10 +682,10 @@ impl Captured {
             dictionary_required: 0,
             research_loaned: false,
             left_out: [false; N],
-            research_selection: SliceSelection::new(capacity.rows[18] != 0),
-            technology_selection: SliceSelection::new(capacity.rows[2] != 0),
+            research_selection: SliceSelection::new(),
+            technology_selection: SliceSelection::new(),
             technology_changed: crate::slicing::Changed::default(),
-            focus_selection: SliceSelection::new(capacity.rows[0] != 0),
+            focus_selection: SliceSelection::new(),
             focus_changed: crate::slicing::Changed::default(),
         }
     }

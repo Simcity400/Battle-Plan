@@ -43,13 +43,13 @@ fn hook_failure(
     action: &str,
     names: impl Iterator<Item = &'static str>,
     reason: String,
-) -> &'static str {
+) -> String {
     let names = names.collect::<Vec<_>>().join(", ");
     let message = format!("naval_management_changes {action} [{names}]: {reason}");
     *PUBLICATION_ERROR
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message.clone());
-    Box::leak(message.into_boxed_str())
+    message
 }
 
 pub fn boundary(invalidate: bool) {
@@ -257,7 +257,7 @@ impl Hooks {
         memory: &impl Memory,
         base: usize,
         state: usize,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, String> {
         let mut taps = Vec::new();
         let mut methods = Vec::new();
         let mut located = [(0, [0; 16]); SITES.len() + METHODS.len()];
@@ -341,7 +341,7 @@ impl Hooks {
         }
         Ok(Self { taps, methods })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             self.observe(false);
         }
@@ -405,7 +405,7 @@ mod tests {
         assert!(message.contains("repair split command"));
         assert!(message.contains("task destroy"));
         assert!(message.contains("synthetic verification refusal"));
-        assert_eq!(PUBLICATION_ERROR.lock().unwrap().as_deref(), Some(message));
+        assert_eq!(PUBLICATION_ERROR.lock().unwrap().as_deref(), Some(message.as_str()));
         *PUBLICATION_ERROR.lock().unwrap() = None;
     }
 

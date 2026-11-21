@@ -385,7 +385,7 @@ fn removal_edges(before: [u32; 3], after: [u32; 3]) -> Result<(u32, u32), &'stat
 unsafe extern "system-unwind" fn clear_cooldown(status: usize, definition: usize) -> usize {
     unsafe { remove(status, definition, 0, 2) }
 }
-pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
+pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), String> {
     let verify = |site: native::Site| verify_hook::<16>(base, site);
     let mut hooks = Vec::new();
     let mut taps = Vec::new();

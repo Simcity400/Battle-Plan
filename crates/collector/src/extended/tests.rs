@@ -2604,7 +2604,7 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
     for refused_before_completion in [false, true] {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let mut fingerprints = Box::new(SliceFingerprints::new());
-        let mut prior = SliceSelection::new(true);
+        let mut prior = SliceSelection::new();
         prior.reset(hour, false);
         prior.scan(&mut fingerprints, owner, Some(71));
         assert!(prior.contains(owner));
@@ -2640,7 +2640,7 @@ fn ordinary_terminal_outcomes_return_original_naval_store_and_forget_unpublished
             original_store
         );
         assert!(!returned.force_full);
-        let mut next = SliceSelection::new(true);
+        let mut next = SliceSelection::new();
         next.reset(hour, false);
         next.scan(returned.fingerprints.as_mut().unwrap(), owner, Some(71));
         assert!(

@@ -436,7 +436,7 @@ impl Hooks {
     #[doc = " The memory source and base must identify the authenticated executable in"]
     #[doc = " this process. The caller owns this family exclusively and must restore"]
     #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         use engine_mutations::{
             script_variable_mutations::CLEAR_RVA, script_variable_mutations::END_CONTEXT_RVA,
             script_variable_mutations::TLS_INDEX_RVA,
@@ -500,7 +500,7 @@ impl Hooks {
         let mut taps = Vec::new();
         if !hooks.is_empty() {
             if crate::located(base, site.rva).is_err() {
-                return Err(site.failure());
+                return Err(site.failure().into());
             }
             let code = engine_sites::hook(base, site.rva).map_err(|_| site.failure())?;
             let hook = unsafe {

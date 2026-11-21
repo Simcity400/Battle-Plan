@@ -707,21 +707,18 @@ impl Census {
                     &POINTER_LAYOUT,
                     &mut pointer_bytes,
                 );
-                if copied == 0 {
-                    return Err("division roster pointer unreadable");
-                }
                 let Some(inputs) = self.unit_inputs.as_mut().and_then(SharedBox::get_mut) else {
                     self.overflowed = true;
                     return Err("division owned roster capacity exhausted");
                 };
                 for i in 0..count {
-                    if i >= copied {
-                        return Err("division roster pointer unreadable");
-                    }
-                    let pointer = usize::try_from(u64::from_le_bytes(
-                        pointer_bytes[i * 8..i * 8 + 8].try_into().unwrap(),
-                    ))
-                    .map_err(|_| "division roster pointer unreadable")?;
+                    let raw = if i < copied {
+                        u64::from_le_bytes(pointer_bytes[i * 8..i * 8 + 8].try_into().unwrap())
+                    } else {
+                        read::<u64>(memory, pointers[i]).ok_or("division roster pointer unreadable")?
+                    };
+                    let pointer = usize::try_from(raw)
+                        .map_err(|_| "division roster pointer unreadable")?;
                     if inputs.roster_slots.len() == inputs.roster_slots.capacity() {
                         let unread = roster.count as usize - (first as usize + i);
                         self.required = self.required.saturating_add(unread);

@@ -1450,6 +1450,13 @@ impl<'a> Iterator for CensusOrders<'a> {
     }
 }
 
+fn census_sequence(before: usize, ordinal: u32) -> Result<u32, &'static str> {
+    u32::try_from(before)
+        .ok()
+        .and_then(|before| before.checked_add(ordinal))
+        .ok_or("army order census sequence overflows")
+}
+
 fn census_order_of(visits: &[Visit], len: usize, census: &mut Vec<u32>) {
     const UNSET: u32 = u32::MAX;
     census.clear();
@@ -1729,12 +1736,13 @@ pub fn stitch_census(
                 .iter()
                 .filter(|visit| visit.pointer != 0 && (visit.sequence as usize) < admitted)
             {
+                let sequence = census_sequence(report.visited, visit.sequence)?;
                 let at = visit_index(visits, visit.pointer);
                 visits[at] = Visit {
                     pointer: visit.pointer,
                     owner: visit.owner,
                     instance: visit.instance,
-                    sequence: (report.visited as u32).wrapping_add(visit.sequence),
+                    sequence,
                     ..Visit::default()
                 };
             }
@@ -2237,6 +2245,7 @@ impl<M: Memory> Graph<'_, M> {
             return Ok((instance, self.begin_graph(index, parent, edge)?));
         }
         self.entering = Some(pointer);
+        let sequence = census_sequence(self.visited, 0)?;
         let parent = if self.visits.is_empty() || self.visited >= self.visits.len() * 3 / 4 {
             let parent = self.grow_visits(parent)?;
             index = visit_index(self.visits, pointer);
@@ -2378,7 +2387,7 @@ impl<M: Memory> Graph<'_, M> {
             owner,
             instance,
             record,
-            sequence: self.visited as u32,
+            sequence,
             ..Visit::default()
         };
         self.visited += 1;

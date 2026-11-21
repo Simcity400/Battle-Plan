@@ -357,7 +357,7 @@ pub fn record(counts: &Counts, divisions: Option<usize>) {
     }
 }
 
-fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str {
+fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> String {
     let sites = site.map_or_else(
         || {
             MUTATIONS
@@ -368,12 +368,10 @@ fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str
         },
         |index| MUTATIONS[index].name.to_owned(),
     );
-    Box::leak(
-        format!("army_stat_changes [{sites}] hook {action} failed: {detail}").into_boxed_str(),
-    )
+    format!("army_stat_changes [{sites}] hook {action} failed: {detail}")
 }
 
-fn validate_sites(base: usize) -> Result<(), &'static str> {
+fn validate_sites(base: usize) -> Result<(), String> {
     for (index, site) in MUTATIONS.iter().enumerate() {
         if let Err(cause) =
             engine_sites::hook(base, site.rva).and_then(|code| code.sentinel::<16>().map(drop))
@@ -396,7 +394,7 @@ impl Hooks {
     #[doc = " The memory source and base must identify the authenticated executable in"]
     #[doc = " this process. The caller owns this family exclusively and must restore"]
     #[doc = " its hooks and quiesce native calls before releasing code or unloading."]
-    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "army_stat_changes") {
             validate_sites(base)?;
@@ -435,7 +433,7 @@ impl Hooks {
             operands: unsafe { crate::panel_operand_hooks::Hooks::new(base) }?,
         })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !self.operands.set_enabled(enabled)? {
             return Ok(false);
         }

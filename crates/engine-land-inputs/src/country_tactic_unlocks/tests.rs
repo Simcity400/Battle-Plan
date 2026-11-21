@@ -283,6 +283,22 @@ fn an_unfit_list_is_demand_only_once_its_ends_read() {
 }
 
 #[test]
+fn an_unreadable_list_is_refused_before_growing_capture_buffers() {
+    let mut memory = Fixture::new();
+    memory.array(Fixture::row(1) + TACTICS, 0x7fff_0000, 4096);
+    let mut owned = Owned::new(0, 0, 0, 0);
+    let result = owned.fixture(&memory);
+    assert_eq!(
+        result.outcome,
+        Outcome::Unavailable {
+            reason: "country tactic unlock list unreadable"
+        }
+    );
+    assert_eq!(owned.list.len(), 24);
+    assert!(owned.unlocks.is_empty());
+}
+
+#[test]
 fn every_short_read_is_unavailable_and_stops_at_the_first_fault() {
     let memory = Fixture::new();
     let _ = Owned::fits().fixture(&memory);

@@ -612,7 +612,7 @@ fn real_silent_constructors_refuse_and_propagate_their_family() {
             .unwrap()
     };
     let equipment = FamilyHooks::<crate::equipment_destruction::Hooks>::construct(0, || {
-        Ok(unsafe { crate::equipment_destruction::Hooks::new(&Unreadable, 0) })
+        Ok::<_, &'static str>(unsafe { crate::equipment_destruction::Hooks::new(&Unreadable, 0) })
     })
     .unwrap();
     drop(reader);
@@ -729,6 +729,7 @@ fn initial_internal_rollback_failure_enters_teardown_and_stays_terminal() {
                         || Err("initial rollback failed".into()),
                     )
                     .map(|()| true)
+                    .map_err(Into::into)
                 })
             }),
             (Family::Hourly.name(), &mut || {
@@ -812,14 +813,13 @@ fn later_shared_rollback_is_latched_before_an_earlier_reporting_error() {
                     air_reports += 1;
                 }
                 air.toggle(true, |hooks, enabled| {
-                    Hook::set_family_enabled(hooks, enabled)
-                        .map_err(crate::runtime::installation_message)
+                    Hook::set_family_enabled(hooks, enabled).map_err(Into::into)
                 })
             }),
             (Family::BuildingBombing.name(), &mut || {
                 bombing.toggle(true, |hooks, enabled| {
                     Hook::set_family_enabled_shared_prepared(hooks, enabled, fail_bombing_flush)
-                        .map_err(crate::runtime::installation_message)
+                        .map_err(Into::into)
                 })
             }),
         ],
@@ -857,8 +857,7 @@ fn later_shared_rollback_is_latched_before_an_earlier_reporting_error() {
     for hooks in [&mut air, &mut bombing] {
         hooks
             .toggle(false, |hooks, enabled| {
-                Hook::set_family_enabled(hooks, enabled)
-                    .map_err(crate::runtime::installation_message)
+                Hook::set_family_enabled(hooks, enabled).map_err(Into::into)
             })
             .unwrap();
         assert!(!hooks.inner.as_ref().unwrap()[0].is_enabled());

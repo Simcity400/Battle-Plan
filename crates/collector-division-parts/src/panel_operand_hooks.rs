@@ -9,7 +9,7 @@ static ORIGINAL: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
 pub struct Hooks {
     hooks: Vec<Hook>,
 }
-fn failure(site: Option<usize>, reason: &str) -> &'static str {
+fn failure(site: Option<usize>, reason: &str) -> String {
     let sites = site.map_or_else(
         || {
             MUTATIONS
@@ -20,12 +20,12 @@ fn failure(site: Option<usize>, reason: &str) -> &'static str {
         },
         |index| MUTATIONS[index].name.into(),
     );
-    Box::leak(format!("division_panel_changes [{sites}]: {reason}").into_boxed_str())
+    format!("division_panel_changes [{sites}]: {reason}")
 }
 impl Hooks {
     #[doc = " # Safety"]
     #[doc = " The enclosing family owns the authenticated executable and patch lifetime."]
-    pub unsafe fn new(base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         let callbacks = [
             add_pool as *const () as usize,
@@ -48,7 +48,7 @@ impl Hooks {
         }
         Ok(Self { hooks })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             changes::patched(false);
         }

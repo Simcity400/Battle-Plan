@@ -135,12 +135,12 @@ pub(crate) fn hook_failure(
     action: &str,
     sites: &str,
     reason: impl std::fmt::Display,
-) -> &'static str {
+) -> String {
     let message = format!("{family} {action} [{sites}]: {reason}");
     *PUBLICATION_ERROR
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message.clone());
-    Box::leak(message.into_boxed_str())
+    message
 }
 
 
@@ -153,7 +153,7 @@ pub struct Hooks {
     fleet_regions: collector_observers::fleet_region_changes::Hooks,
 }
 impl Hooks {
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         let mut located = [(0, [0; 16]); SITES];
         if cfg!(feature = "mission_changes")
@@ -187,7 +187,7 @@ impl Hooks {
             },
         })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             WATCHES.registry.set_enabled(false);
         }

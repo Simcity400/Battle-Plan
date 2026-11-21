@@ -694,7 +694,7 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
         _ => feed::refuse("decision retained-state tap identity differs"),
     }
 }
-pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), &'static str> {
+pub(super) unsafe fn hooks(base: usize) -> Result<(Vec<Hook>, Vec<Tap>), String> {
     let verify = |site: native::Site| verify_hook::<16>(base, site);
     let callbacks = [
         timed as *const () as usize,
@@ -790,7 +790,7 @@ pub(super) const REQUEST_TIMED_LEN: usize =
     sites::REQUEST_TARGETED.rva.0 - sites::REQUEST_TARGETED_TIMED.rva.0;
 
 #[doc = " A CALL site's address, its patch bytes and the span it owns."]
-fn verify_call(base: usize, site: native::Site) -> Result<(usize, [u8; 16], usize), &'static str> {
+fn verify_call(base: usize, site: native::Site) -> Result<(usize, [u8; 16], usize), String> {
     Ok(if site.rva == sites::REACTIVATE_TARGETED_DAYS.rva {
         let (at, original) = verify_hook::<REACTIVATE_DAYS_LEN>(base, site)?;
         (at, original, REACTIVATE_DAYS_LEN)
@@ -803,7 +803,7 @@ fn verify_call(base: usize, site: native::Site) -> Result<(usize, [u8; 16], usiz
     })
 }
 
-pub(super) unsafe fn selection_tap(base: usize) -> Result<Tap, &'static str> {
+pub(super) unsafe fn selection_tap(base: usize) -> Result<Tap, String> {
     let site = sites::TARGETED_SELECTION_RESULT;
     let (at, original) = verify_hook::<16>(base, site)?;
     unsafe { Tap::new(at, tap, 16, original) }

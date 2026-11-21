@@ -59,13 +59,10 @@ impl engine_native::corders_group_member::MembershipSignals for Observer {
     }
 }
 
-fn failure(index: usize, detail: &str) -> &'static str {
-    Box::leak(
-        format!(
-            "order_membership_changes [{}]: {detail}",
-            MUTATIONS[index].0.name
-        )
-        .into_boxed_str(),
+fn failure(index: usize, detail: &str) -> String {
+    format!(
+        "order_membership_changes [{}]: {detail}",
+        MUTATIONS[index].0.name
     )
 }
 pub struct Hooks {
@@ -74,7 +71,7 @@ pub struct Hooks {
 impl Hooks {
     #[doc = " # Safety"]
     #[doc = " The runtime owns the authenticated image and this patch family's lifetime."]
-    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "order_membership_changes") {
             let callbacks = [
@@ -123,7 +120,7 @@ impl Hooks {
         }
         Ok(Self { hooks })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             PATCHED.store(false, Ordering::SeqCst);
             observe();

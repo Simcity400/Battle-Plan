@@ -833,7 +833,7 @@ fn a_refused_escort_tree_is_read_again_at_the_next_hour() {
     let mut captured = Captured::with_capacities(&fixture_capacities(&world));
     let mut fingerprints = SliceFingerprints::new();
     let read = |fingerprints: &mut SliceFingerprints, hour| {
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset_hooked(hour, false);
         for country in 1..=3 {
             selection.scan_marking(fingerprints, country, Some(u64::from(country)));

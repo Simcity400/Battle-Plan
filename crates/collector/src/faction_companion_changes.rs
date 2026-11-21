@@ -137,8 +137,8 @@ impl OwnedHook {
         }
     }
 }
-fn site_error(site: &str, operation: &str, cause: impl std::fmt::Display) -> &'static str {
-    Box::leak(format!("FactionCompanions/{site} {operation}: {cause}").into_boxed_str())
+fn site_error(site: &str, operation: &str, cause: impl std::fmt::Display) -> String {
+    format!("FactionCompanions/{site} {operation}: {cause}")
 }
 pub struct Hooks {
     hooks: Vec<(Family, OwnedHook)>,
@@ -147,7 +147,7 @@ pub struct Hooks {
 impl Hooks {
     #[doc = " # Safety"]
     #[doc = " Attach owns the authenticated image, patch publication and hook lifetime."]
-    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         BASE.store(base, Ordering::Release);
         let mut hooks = Vec::new();
         let available = [cfg!(feature = "faction_changes"); FAMILIES];
@@ -292,7 +292,7 @@ impl Hooks {
         }
         Ok(Self { hooks, available })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             for watches in &WATCHES {
                 watches.set_enabled(false);

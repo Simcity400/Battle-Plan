@@ -155,7 +155,7 @@ pub fn forwarded(group: usize) -> Notification<'static> {
     WATCHES.destroy(group)
 }
 
-fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str {
+fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> String {
     let sites = site.map_or_else(
         || {
             MUTATIONS
@@ -166,12 +166,10 @@ fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str
         },
         |index| MUTATIONS[index].0.name.to_owned(),
     );
-    Box::leak(
-        format!("orders_group_changes [{sites}] hook {action} failed: {detail}").into_boxed_str(),
-    )
+    format!("orders_group_changes [{sites}] hook {action} failed: {detail}")
 }
 
-fn validate_sites(base: usize) -> Result<(), &'static str> {
+fn validate_sites(base: usize) -> Result<(), String> {
     for (index, (site, _)) in MUTATIONS.iter().enumerate() {
         crate::verified(base, site.rva)
             .map_err(|reason| hook_failure(Some(index), "sentinel validation", reason))?;
@@ -190,7 +188,7 @@ impl Hooks {
     #[doc = " The memory source and base must identify the authenticated executable in this"]
     #[doc = " process. The caller owns this family exclusively and must restore its hooks and"]
     #[doc = " quiesce native calls before releasing code or unloading."]
-    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         validate_sites(base)?;
         let callbacks: [usize; SITES] = [
             set_leader as *const () as usize,
@@ -210,7 +208,7 @@ impl Hooks {
         }
         Ok(Self { hooks })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         if !enabled {
             PATCHED.store(false, Ordering::SeqCst);
             observe();

@@ -1,7 +1,6 @@
 
 use collector_memory::terminal as allocation;
 use collector_primitives::raw_memory;
-use collector_snapshots::address_range;
 use collector_status::status;
 
 pub mod raw;

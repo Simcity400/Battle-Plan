@@ -24,7 +24,30 @@ pub struct VariableTables {
 
 impl VariableTables {
     pub fn content_digest(&self) -> [u8; 32] {
-        <sha2::Sha256 as sha2::Digest>::digest(format!("{self:?}").as_bytes()).into()
+        <sha2::Sha256 as sha2::Digest>::digest(self.content()).into()
+    }
+
+    fn content(&self) -> Vec<u8> {
+        fn frame(bytes: &mut Vec<u8>, text: &str) {
+            bytes.extend_from_slice(&(text.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+        }
+        let mut bytes = Vec::new();
+        for (scope, names) in [
+            ("global", &self.global),
+            ("country", &self.country),
+            ("state", &self.state),
+            ("unit_leader", &self.unit_leader),
+            (ORGANISATION_SCOPE, &self.industrial_organisation),
+            ("special_project", &self.project),
+        ] {
+            frame(&mut bytes, scope);
+            bytes.extend_from_slice(&(names.len() as u64).to_le_bytes());
+            for name in names {
+                frame(&mut bytes, name);
+            }
+        }
+        bytes
     }
 
     pub fn decode(game_dir: &Path) -> io::Result<Self> {
@@ -265,6 +288,41 @@ mod tests {
             parse_documentation("## Dynamic variables for scope global\n### replacement\n")
                 .unwrap();
         assert!(validate_documentation(&scopes).is_err());
+    }
+
+    #[test]
+    fn content_digest_frames_each_scope_and_name() {
+        let tables = |global: &[&'static str], country: &[&'static str]| VariableTables {
+            global: global.to_vec(),
+            country: country.to_vec(),
+            state: Vec::new(),
+            unit_leader: Vec::new(),
+            industrial_organisation: Vec::new(),
+            project: Vec::new(),
+        };
+        let word = |text: &str| [&(text.len() as u64).to_le_bytes()[..], text.as_bytes()].concat();
+        let count = |count: u64| count.to_le_bytes().to_vec();
+        let mut expected = [word("global"), count(1), word("ab")].concat();
+        for scope in ["country", "state", "unit_leader", ORGANISATION_SCOPE, "special_project"] {
+            expected.extend([word(scope), count(0)].concat());
+        }
+        assert_eq!(tables(&["ab"], &[]).content(), expected);
+        assert_eq!(
+            tables(&["ab"], &[]).content_digest(),
+            <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(&expected))
+        );
+        assert_eq!(
+            tables(&["ab"], &[]).content_digest(),
+            tables(&["ab"], &[]).content_digest()
+        );
+        for changed in [
+            tables(&["a", "b"], &[]),
+            tables(&[], &["ab"]),
+            tables(&["ab"], &[""]),
+            tables(&["ac"], &[]),
+        ] {
+            assert_ne!(changed.content_digest(), tables(&["ab"], &[]).content_digest());
+        }
     }
 
     #[test]

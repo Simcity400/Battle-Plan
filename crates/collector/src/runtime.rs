@@ -825,13 +825,13 @@ fn run(
         crate::army_stat_changes::Hooks::new(&memory, base)
     })?;
     let mut country_input_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::country_input_changes::Hooks::new(&memory, base).map_err(installation_message)
+        crate::country_input_changes::Hooks::new(&memory, base)
     })?;
     let mut raid_hooks = FamilyHooks::construct(base, || unsafe {
         crate::raid_changes::Hooks::new(&memory, base)
     })?;
     let mut naval_tree_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::naval_tree_changes::Hooks::new(&memory, base).map_err(installation_message)
+        crate::naval_tree_changes::Hooks::new(&memory, base)
     })?;
     let mut unit_leader_hooks = FamilyHooks::construct(base, || unsafe {
         crate::unit_leader_changes::Hooks::new(&memory, base)
@@ -927,28 +927,28 @@ fn run(
         crate::opinion_changes::Hooks::new(&memory, base)
     })?;
     let mut destruction_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::equipment_destruction::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::equipment_destruction::Hooks::new(&memory, base) })
     })?;
     let mut naval_result_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::naval_result_sources::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::naval_result_sources::Hooks::new(&memory, base) })
     })?;
     let mut experience_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::experience_gains::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::experience_gains::Hooks::new(&memory, base) })
     })?;
     let mut command_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::player_commands::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::player_commands::Hooks::new(&memory, base) })
     })?;
     let mut air_loss_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::air_losses::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::air_losses::Hooks::new(&memory, base) })
     })?;
     let mut bombing_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::building_bombing::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::building_bombing::Hooks::new(&memory, base) })
     })?;
     let mut nuclear_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::nuclear_strikes::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::nuclear_strikes::Hooks::new(&memory, base) })
     })?;
     let mut map_event_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe {
+        Ok::<_, &'static str>(unsafe {
             crate::map_events::hooks::Hooks::new(&memory, base, |family| {
                 config
                     .map_events
@@ -958,23 +958,23 @@ fn run(
         })
     })?;
     let mut market_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::market_changes::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::market_changes::Hooks::new(&memory, base) })
     })?;
     let events = crate::country_scale::observe_production_output(&memory, base).unwrap_or(0);
     let mut line_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::line_output::Hooks::new(&memory, base, events) })
+        Ok::<_, &'static str>(unsafe { crate::line_output::Hooks::new(&memory, base, events) })
     })?;
     let mut world_hooks = FamilyHooks::construct(base, || unsafe {
         crate::world_lifetime::Hooks::new(&memory, base, event_feed_generation)
     })?;
     let mut land_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::land_events::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::land_events::Hooks::new(&memory, base) })
     })?;
     let mut prune_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::combat_log_prune::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::combat_log_prune::Hooks::new(&memory, base) })
     })?;
     let mut construction_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::construction_ic::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::construction_ic::Hooks::new(&memory, base) })
     })?;
     let logistics_rows = crate::logistics_balance::prepare(&memory, base)
         .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?;
@@ -982,7 +982,7 @@ fn run(
         crate::logistics_balance::Hooks::new(&memory, base)
     })?;
     let mut fuel_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::fuel_awards::Hooks::new(&memory, base) })
+        Ok::<_, &'static str>(unsafe { crate::fuel_awards::Hooks::new(&memory, base) })
     })?;
     let operation_outcomes = config.operation_outcomes
         && crate::extended::records_any(
@@ -990,10 +990,10 @@ fn run(
             &crate::extended::operation_outcomes::TABLES,
         );
     let mut operation_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::operation_outcomes::Hooks::new(&memory, base, operation_outcomes) })
+        Ok::<_, &'static str>(unsafe { crate::operation_outcomes::Hooks::new(&memory, base, operation_outcomes) })
     })?;
     let mut politics_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::politics_changes::Hooks::new(&memory, base, config.politics_capture) })
+        Ok::<_, &'static str>(unsafe { crate::politics_changes::Hooks::new(&memory, base, config.politics_capture) })
     })?;
     progress.step("hooks_prepared", None);
     let slots = crate::country_scale::observe(&memory, base).unwrap_or(0);
@@ -1210,7 +1210,7 @@ fn run(
     sizing.extended.peace_settlements = peace_capacity;
     sizing.extended.peace_bids = peace_capacity;
     let mut peace_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe { crate::peace_settlements::Hooks::new(&memory, base, peace_capacity) })
+        Ok::<_, &'static str>(unsafe { crate::peace_settlements::Hooks::new(&memory, base, peace_capacity) })
     })?;
     let pe_offset = read::<u32>(&memory, module as usize + 0x3c).unwrap_or(0) as usize;
     let image_size = read::<u32>(&memory, module as usize + pe_offset + 0x50).unwrap_or(0) as usize;
@@ -1479,15 +1479,11 @@ fn run(
                         army_stat_hooks.set_enabled(true)
                     }),
                     ("country_input_changes", &mut || {
-                        country_input_hooks
-                            .set_enabled(true)
-                            .map_err(installation_message)
+                        country_input_hooks.set_enabled(true)
                     }),
                     ("raid_changes", &mut || raid_hooks.set_enabled(true)),
                     ("naval_tree_changes", &mut || {
-                        naval_tree_hooks
-                            .set_enabled(true)
-                            .map_err(installation_message)
+                        naval_tree_hooks.set_enabled(true)
                     }),
                     ("unit_leader_changes", &mut || {
                         unit_leader_hooks.set_enabled(true)
@@ -1497,9 +1493,7 @@ fn run(
                     }),
                     ("census_changes", &mut || census_hooks.set_enabled(true)),
                     ("world_input_changes", &mut || {
-                        world_input_hooks
-                            .set_enabled(true)
-                            .map_err(installation_message)
+                        world_input_hooks.set_enabled(true)
                     }),
                     ("local_subunit_changes", &mut || {
                         local_subunit_hooks.set_enabled(true)
@@ -1776,19 +1770,13 @@ fn run(
             RestoreFamily::Rails => rail_hooks.set_enabled(false),
             RestoreFamily::Territory => territory_hooks.set_enabled(false),
             RestoreFamily::ArmyStats => army_stat_hooks.set_enabled(false),
-            RestoreFamily::CountryInputs => country_input_hooks
-                .set_enabled(false)
-                .map_err(installation_message),
+            RestoreFamily::CountryInputs => country_input_hooks.set_enabled(false),
             RestoreFamily::Raid => raid_hooks.set_enabled(false),
-            RestoreFamily::NavalTrees => naval_tree_hooks
-                .set_enabled(false)
-                .map_err(installation_message),
+            RestoreFamily::NavalTrees => naval_tree_hooks.set_enabled(false),
             RestoreFamily::UnitLeaders => unit_leader_hooks.set_enabled(false),
             RestoreFamily::NavalManagement => naval_management_hooks.set_enabled(false),
             RestoreFamily::Census => census_hooks.set_enabled(false),
-            RestoreFamily::WorldInputs => world_input_hooks
-                .set_enabled(false)
-                .map_err(installation_message),
+            RestoreFamily::WorldInputs => world_input_hooks.set_enabled(false),
             RestoreFamily::WarParticipation => participation_hooks.set_enabled(false),
             RestoreFamily::AirRecords => air_record_hooks.set_enabled(false),
             RestoreFamily::LocalSubunits => local_subunit_hooks.set_enabled(false),

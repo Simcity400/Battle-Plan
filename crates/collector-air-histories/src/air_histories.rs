@@ -1040,7 +1040,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
-            selection: SliceSelection::new(true),
+            selection: SliceSelection::new(),
             parts: allocation::owned_vec(allocation::collect_vec(
                 (0..PARTS).map(|_| Staging::with_capacities(capacity)),
             )),
@@ -1642,7 +1642,7 @@ pub fn allocation_failure_exercise() {
     if held.apply(std::slice::from_mut(&mut part)).is_err() {
         return;
     }
-    let mut selection = SliceSelection::new(true);
+    let mut selection = SliceSelection::new();
     if crate::allocation::failed() {
         return;
     }
@@ -1718,7 +1718,7 @@ mod tests {
                 generation: 1,
             },
         ];
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(0, true);
         let mut rows = Vec::new();
         assert_eq!(
@@ -1767,7 +1767,7 @@ mod tests {
             histories: vec![History::copied(7, state, &channels, &failures).unwrap()],
             generation: 1,
         }];
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(0, true);
         let mut rows = Vec::new();
         assert_eq!(
@@ -1820,7 +1820,7 @@ mod tests {
                 generation: 1,
             },
         ];
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(0, true);
         let mut rows = Vec::new();
         assert_eq!(
@@ -2020,7 +2020,7 @@ mod tests {
         staging.state = State::Copied;
         let mut held = Held::new();
         held.apply(std::slice::from_mut(&mut staging)).unwrap();
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(0, true);
         let mut output = vec![AirNavalPatrolHistoryRow::default(); 8];
         assert_eq!(
@@ -2042,7 +2042,7 @@ mod tests {
             histories: vec![History::new(7, state(1, false), &channels).unwrap()],
             generation: 1,
         });
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         selection.reset(0, true);
         let mut rows = Vec::new();
         assert_eq!(

@@ -62,7 +62,7 @@ pub fn capture_job(
     slice: Option<&mut Slice>,
 ) -> CaptureReport {
     let started = qpc();
-    let mut whole = SliceSelection::new(false);
+    let mut whole = SliceSelection::new();
     let selection = match slice {
         Some(slice) => {
             let _reads = crate::read_accounting::table(TableId::SupplyNodes);
@@ -405,7 +405,7 @@ impl Captured {
         Self {
             parts: owned_vec(collect_vec((0..PARTS).map(|_| Part::vacant()))),
             trains: Trains::vacant(),
-            selection: SliceSelection::new(false),
+            selection: SliceSelection::new(),
             terminal_failure: None,
         }
     }
@@ -414,7 +414,7 @@ impl Captured {
         Self {
             parts: owned_vec(collect_vec((0..PARTS).map(|_| Part::new(c)))),
             trains: Trains::new(c),
-            selection: SliceSelection::new(true),
+            selection: SliceSelection::new(),
             terminal_failure: None,
         }
     }
@@ -428,7 +428,7 @@ impl Captured {
     }
 
     pub fn take_selection(&mut self) -> SliceSelection {
-        std::mem::replace(&mut self.selection, SliceSelection::new(false))
+        std::mem::replace(&mut self.selection, SliceSelection::new())
     }
 
     pub fn restore_selection(&mut self, selection: SliceSelection) {
@@ -841,7 +841,7 @@ mod tests {
     fn the_job_selects_new_countries_then_only_its_slice_and_rereads_unpublished_reads() {
         let mut store = SliceFingerprints::new();
         let seen = |store: &mut SliceFingerprints, hour: i32, owners: &[u32]| {
-            let mut selection = SliceSelection::new(true);
+            let mut selection = SliceSelection::new();
             selection.reset(hour, false);
             for &owner in owners {
                 selection.scan(store, owner, Some(0));
@@ -861,7 +861,7 @@ mod tests {
         assert_eq!(retry.early_count, 1);
         let joined = seen(&mut store, 8, &[1, 29, 30, 4_999]);
         assert!(joined.contains(4_999) && !joined.contains(30));
-        let mut whole = SliceSelection::new(false);
+        let mut whole = SliceSelection::new();
         let context = CaptureContext {
             base: 0,
             game_state: 0,
@@ -874,7 +874,7 @@ mod tests {
         };
         select_countries(&memory, context, &mut whole, None);
         assert!(whole.force_full && whole.contains(1) && whole.contains(4_999));
-        let mut selection = SliceSelection::new(true);
+        let mut selection = SliceSelection::new();
         select_countries(&memory, context, &mut selection, Some(&mut store));
         assert!(selection.force_full);
     }

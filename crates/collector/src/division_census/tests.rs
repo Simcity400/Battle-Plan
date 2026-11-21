@@ -256,6 +256,31 @@ fn a_roster_past_the_initial_storage_grows_in_one_capture() {
 }
 
 #[test]
+fn a_one_shot_fault_on_a_batch_first_roster_pointer_is_read_once_more() {
+    let bytes = many::world(2, 2);
+    let first = many::roster(1, 2);
+    let memory = CoreHintMemory {
+        bytes: &bytes,
+        events: RefCell::new(Vec::new()),
+        fault: Cell::new(Some(first)),
+        once: true,
+        hints: false,
+    };
+    let mut census = Census::new();
+    census.capture_inputs(&memory, 0, many::GAME_STATE);
+    assert_eq!(
+        census.unit_inputs().unwrap().outcome(),
+        Outcome::Rows { len: 4 }
+    );
+    let attempts = memory
+        .copies()
+        .iter()
+        .filter(|&&(at, len)| at <= first && first < at + len)
+        .count();
+    assert_eq!(attempts, 2);
+}
+
+#[test]
 fn entries_past_the_initial_storage_grow_to_the_exact_count_in_one_capture() {
     const COUNTRIES: u32 = 4500;
     const PER: u32 = 2;
