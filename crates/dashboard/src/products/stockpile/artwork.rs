@@ -102,7 +102,7 @@ fn held(source: &Source, catalogue: &Arc<Catalogue>) -> Arc<Mutex<Held>> {
     state
 }
 
-fn best_variants(frame: &DecodedFrame, units: &installed_content_core::equipment::Database, owner: Owner) -> Result<BTreeMap<String, u64>, String> {
+fn best_variants(frame: &DecodedFrame, units: &content_reader_core::equipment::Database, owner: Owner) -> Result<BTreeMap<String, u64>, String> {
     if let Some(why) = &units.lost {
         return Err(format!("equipment database is refused: {why}"));
     }

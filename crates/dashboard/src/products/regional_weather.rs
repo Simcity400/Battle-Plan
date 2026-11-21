@@ -7,8 +7,8 @@ use crate::{
 };
 use dashboard_query::{Query, read};
 use engine_executable::modifier_keys;
-use installed_content_core::province_graph::ProvinceGraph;
-use installed_content_localisation::localisation::Argument;
+use content_reader_core::province_graph::ProvinceGraph;
+use content_reader_localisation::localisation::Argument;
 use replay_columnar::{manifest::Status, summary};
 use replay_data::{
     rows::{Recorded, TableId, WeatherProvinceRow, WeatherRegionRow, tables},
@@ -224,7 +224,7 @@ fn weather(source: &Source, load: &LoadContext) -> io::Result<Arc<Weather>> {
             }
             Ok((graph, geometry)) => {
                 let members = regions.regions.iter().map(|(&id, region)| (id, region.native_provinces(|province| geometry.centroids.contains_key(&province)))).collect();
-                let pass = installed_content_weather::weather::temperature::read_with(layers, &graph, &geometry)
+                let pass = content_reader_weather::weather::temperature::read_with(layers, &graph, &geometry)
                     .map(|pass| {
                         let plan = Plan::new(&pass);
                         (pass, plan)

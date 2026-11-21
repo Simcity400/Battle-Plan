@@ -1,5 +1,5 @@
 
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 
 use super::fixed::{self, Point};
 use viewer_foundation::map::text::{self, Font, GlyphMetrics};

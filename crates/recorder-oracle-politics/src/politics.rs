@@ -3,7 +3,7 @@ use super::{
     Report, complete, country_tag, current_slice_owners, invalid, required_country_tag,
     slice_owner_limitation,
 };
-use installed_content_save::{Save, characters as saved, governance};
+use content_reader_save::{Save, characters as saved, governance};
 use replay_data::{rows::CountryRow, rows::PartyLeaderRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -86,7 +86,7 @@ fn available_advisors(
         compared += 1;
         recorded.entry(tag.to_vec()).or_default().insert((
             row.character,
-            installed_content_core::parser::c_string(&row.idea).to_vec(),
+            content_reader_core::parser::c_string(&row.idea).to_vec(),
         ));
     }
     for (tag, records) in report.canonical_countries(&pack.character_status) {
@@ -196,7 +196,7 @@ fn available_advisors(
 
 fn faction_advisors(
     frame: &DecodedFrame,
-    factions: &BTreeMap<u64, installed_content_save::Faction>,
+    factions: &BTreeMap<u64, content_reader_save::Faction>,
     characters: &saved::Pack,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -312,7 +312,7 @@ fn advisor_token_key(token: &[u8]) -> (u32, Vec<u8>) {
     });
     (
         hash,
-        installed_content_core::parser::c_string(token).to_ascii_lowercase(),
+        content_reader_core::parser::c_string(token).to_ascii_lowercase(),
     )
 }
 
@@ -428,7 +428,7 @@ fn advisor_tokens(frame: &DecodedFrame, pack: &saved::Pack, report: &mut Report)
 
 fn civil_wars(
     frame: &DecodedFrame,
-    countries: &BTreeMap<Vec<u8>, installed_content_save::Country>,
+    countries: &BTreeMap<Vec<u8>, content_reader_save::Country>,
     links: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -731,7 +731,7 @@ mod tests {
                     character_status={character={id=2 type=73} advisor=no}
                 }}}
             "#;
-        let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
@@ -779,7 +779,7 @@ mod tests {
                     character_status={character={id=1 type=73} advisor=yes}
                 }}}
             "#;
-        let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
@@ -829,7 +829,7 @@ mod tests {
                 character_status={character={id=1 type=73} advisor=yes}
             }}}
         "#;
-        let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
         let germany = germany();
         let links = BTreeMap::from([(102, &germany)]);
         let mut frame = frame();
@@ -870,7 +870,7 @@ mod tests {
                 character_status={character={id=2 type=73} advisor=yes}
             }}}
         "#;
-        let pack = saved::parse(&installed_content_core::parser::parse(source).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_core::parser::parse(source).unwrap().items).unwrap();
         let country = germany();
         let links = BTreeMap::from([(102, &country)]);
         let mut frame = frame();
@@ -1106,7 +1106,7 @@ mod tests {
 
     fn saved_leaders() -> (governance::Pack, saved::Pack) {
         let characters = saved::parse(
-            &installed_content_core::parser::parse(
+            &content_reader_core::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="a"
                         country_leaders={ country_leader={ ideology=nazism id=12 }
@@ -1282,7 +1282,7 @@ mod tests {
         for tag in [b"GER".as_slice(), b"ITA", b"D01"] {
             countries.insert(
                 tag.to_vec(),
-                installed_content_save::Country {
+                content_reader_save::Country {
                     tag: tag.to_vec(),
                     ..Default::default()
                 },
@@ -1317,7 +1317,7 @@ mod tests {
         load_hour: bool,
     ) -> Report {
         let mut pack = saved::parse(
-            &installed_content_core::parser::parse(
+            &content_reader_core::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="a"
                         advisors={ advisor={ slot="political_advisor" idea_token="GER_a" }
@@ -1388,19 +1388,19 @@ mod tests {
     fn advisor_tokens_merge_case_variants_from_different_mod_files() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let names = installed_content_core::key_names::KeyNames::default();
-        let mut authored = installed_content_core::characters::Characters::default();
+        let names = content_reader_core::key_names::KeyNames::default();
+        let mut authored = content_reader_core::characters::Characters::default();
         for file in [
             b"characters={AAA_first={advisor={slot=chief idea_token=mixed_advisor}}}".as_slice(),
             b"characters={AAA_second={advisor={slot=chief idea_token=MiXeD_Advisor}}}".as_slice(),
         ] {
-            authored.merge(installed_content_core::characters::parse(file, &names).unwrap());
+            authored.merge(content_reader_core::characters::parse(file, &names).unwrap());
         }
         let (tokens, gap) = authored.advisor_tokens();
         assert!(gap.is_none());
         let tokens = tokens.collect::<Vec<_>>();
         assert_eq!(tokens, ["mixed_advisor"]);
-        let mut pack = saved::parse(&installed_content_core::parser::parse(br#"
+        let mut pack = saved::parse(&content_reader_core::parser::parse(br#"
             character_manager={historical={
                 character={id={id=1 type=73} token=first advisors={advisor={idea_token=mixed_advisor}}}
                 character={id={id=2 type=73} token=second advisors={advisor={idea_token=MiXeD_Advisor}}}
@@ -1529,7 +1529,7 @@ mod tests {
 
     fn run_faction_advisors(rows: &[(u32, &[u8])], slots: Vec<Option<&[u8]>>) -> Report {
         let characters = saved::parse(
-            &installed_content_core::parser::parse(
+            &content_reader_core::parser::parse(
                 br#"character_manager={ historical={
                     character={ id={ id=1482 type=73 } token="GER_a"
                         advisors={ advisor={ slot="political_advisor" idea_token="GER_a_idea" }
@@ -1545,7 +1545,7 @@ mod tests {
         let id = (1_u64 << 32) | 88;
         let factions = BTreeMap::from([(
             id,
-            installed_content_save::Faction {
+            content_reader_save::Faction {
                 id,
                 goals: Default::default(),
                 companions: Default::default(),

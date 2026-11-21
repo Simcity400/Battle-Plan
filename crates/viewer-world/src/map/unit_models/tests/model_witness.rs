@@ -50,7 +50,7 @@ fn figures(
                     region: &|_| None,
                     scale: &|_, _| 1.0,
                 },
-                localisation: &installed_content_localisation::localisation::Localisation::default(),
+                localisation: &content_reader_localisation::localisation::Localisation::default(),
             })
             .unwrap()
     });

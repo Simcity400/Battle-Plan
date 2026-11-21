@@ -110,13 +110,13 @@ const JIFFY: f64 = 1.0 / 60.0;
 
 impl Animated {
     fn decode(path: &str, bytes: &[u8]) -> io::Result<Self> {
-        let image = |cursor: installed_content_image::cursor::Cursor| CustomCursorImage {
+        let image = |cursor: content_reader_image::cursor::Cursor| CustomCursorImage {
             rgba: cursor.image.pixels.into(),
             size: [cursor.image.width as u16, cursor.image.height as u16],
             hotspot: cursor.hotspot,
         };
         let (frames, steps) = if path.ends_with(".ani") {
-            let animated = installed_content_image::cursor::decode_ani(bytes)?;
+            let animated = content_reader_image::cursor::decode_ani(bytes)?;
             let steps = animated
                 .steps
                 .iter()
@@ -124,7 +124,7 @@ impl Animated {
                 .collect();
             (animated.frames.into_iter().map(image).collect(), steps)
         } else {
-            (vec![image(installed_content_image::cursor::decode(bytes)?)], vec![(0, f64::INFINITY)])
+            (vec![image(content_reader_image::cursor::decode(bytes)?)], vec![(0, f64::INFINITY)])
         };
         let period = steps.iter().map(|&(_, seconds)| seconds).sum();
         Ok(Self { frames, steps, period })

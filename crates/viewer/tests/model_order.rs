@@ -1,5 +1,5 @@
-use installed_content_core::{mesh, test_support::Stack};
-use installed_content_image::native::Decode;
+use content_reader_core::{mesh, test_support::Stack};
+use content_reader_image::native::Decode;
 use std::sync::Arc;
 use viewer_audio::{Content, Emitter, Engine, Frame, Group, Mix, Samples};
 use viewer_foundation::map::camera::{Camera, MapDefines, MapSize, Pose};
@@ -36,7 +36,7 @@ fn bake_permutations_preserve_event_light_and_audio_admission_and_random_streams
     );
     let layers = stack.layers(&[]);
     let descriptors = mesh::parse_descriptors(entities.as_bytes(), "synthetic.asset").unwrap();
-    let catalog = installed_content_sound::sound::Catalog::read(&layers).unwrap();
+    let catalog = content_reader_sound::sound::Catalog::read(&layers).unwrap();
     assert!(catalog.notes.is_empty(), "{:?}", catalog.notes.lines());
     let content = Arc::new(Content::new(catalog, None));
     let effect = &content.catalog.effects[content.catalog.effect("limited").unwrap()];

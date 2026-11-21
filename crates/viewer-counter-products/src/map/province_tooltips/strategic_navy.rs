@@ -38,7 +38,7 @@ impl Default for Defines {
     }
 }
 impl Defines {
-    pub(super) fn load(d: &installed_content_core::defines::Defines) -> Self {
+    pub(super) fn load(d: &content_reader_core::defines::Defines) -> Self {
         let fixed = |section, key| d.fixed5(section, key).map_err(|e| e.to_string());
         Self {
             sources: replay_derive::naval_dominance_derive::Defines::read(|section, key| {
@@ -90,7 +90,7 @@ pub(super) fn append(
         }
     };
     if !region_content.provinces.iter().any(|province| {
-        context.content.kinds.get(province) == Some(&installed_content_core::map::ProvinceKind::Sea)
+        context.content.kinds.get(province) == Some(&content_reader_core::map::ProvinceKind::Sea)
     }) {
         return;
     }
@@ -228,8 +228,8 @@ pub(super) fn append(
 
 fn terrain_category<'c>(
     content: &'c super::counter_content::Content,
-    region: &installed_content_regions::regions::StrategicRegion,
-) -> Result<&'c installed_content_core::terrain::TerrainCategory, String> {
+    region: &content_reader_regions::regions::StrategicRegion,
+) -> Result<&'c content_reader_core::terrain::TerrainCategory, String> {
     let terrain = content.movement_terrain.as_ref().map_err(Clone::clone)?;
     let index = region
         .naval_terrain
@@ -332,7 +332,7 @@ pub(super) fn default_region(
         Ok(format!(
             "{}{tag} {}",
             viewer_foundation::map::native_text::FLAG,
-            installed_content_localisation::localisation::crt_case_text(&name, true, true)
+            content_reader_localisation::localisation::crt_case_text(&name, true, true)
         ))
     };
     match dominance_parts(context.content, context.frame, context.vision.ours(), region, &context.links, sources, marked) {
@@ -721,7 +721,7 @@ mod tests {
 
     #[test]
     fn the_ratio_list_follows_the_minimum_in_roster_order() {
-        let loc: installed_content_localisation::localisation::Localisation = [
+        let loc: content_reader_localisation::localisation::Localisation = [
             ("SEAZONE_MINIMUM_DOMINANCE", "min $VALUE|0$"),
             ("NAVAL_DOMINANCE_RATIO_HEADER", "ratios"),
             ("NAVAL_DOMINANCE_RATIO", "$TAG$ $VALUE|0$"),
@@ -780,7 +780,7 @@ mod tests {
         assert!(own_row(&[&row(3, 1)], &links, 11).is_err());
     }
     fn text(row: NavalSupremacyRow) -> String {
-        let loc: installed_content_localisation::localisation::Localisation = [
+        let loc: content_reader_localisation::localisation::Localisation = [
             (
                 "NAVAL_DOMINANCE_CURRENT_VALUE",
                 "current $CURRENT|5$ share $RATIO|5$",

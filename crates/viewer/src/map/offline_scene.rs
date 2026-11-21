@@ -1,6 +1,6 @@
 use viewer_playback::map_icons::MapIcons;
 use eframe::wgpu;
-use installed_content_core::ResolvedLayers;
+use content_reader_core::ResolvedLayers;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::{fs, io, path::PathBuf};
@@ -69,7 +69,7 @@ fn default_steps() -> u32 {
 }
 
 #[test]
-#[ignore = "offline installed-content integration; requires BATTLE_PLAN_CONTENT_SCENE_INPUT JSON"]
+#[ignore = "offline content-reader integration; requires BATTLE_PLAN_CONTENT_SCENE_INPUT JSON"]
 fn content_stack_scene() -> io::Result<()> {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -110,16 +110,16 @@ fn content_stack_scene() -> io::Result<()> {
 
 fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) -> io::Result<()> {
     eprintln!("Content scene: static map assets");
-    let definitions = installed_content_core::terrain::read_definitions(layers)?;
-    let default_map = installed_content_core::terrain::read_default_map(layers)?;
+    let definitions = content_reader_core::terrain::read_definitions(layers)?;
+    let default_map = content_reader_core::terrain::read_default_map(layers)?;
     let province_image =
-        installed_content_image::bmp::decode_rgb(&layers.read(&format!("map/{}", default_map.provinces))?)?;
+        content_reader_image::bmp::decode_rgb(&layers.read(&format!("map/{}", default_map.provinces))?)?;
     let map = camera::MapSize {
         width: province_image.width,
         height: province_image.height,
     };
-    let defines = installed_content_core::defines::read(layers)?;
-    let decode = installed_content_image::native::Decode {
+    let defines = content_reader_core::defines::read(layers)?;
+    let decode = content_reader_image::native::Decode {
         force_pow2_textures: input.force_pow2_textures,
     };
     let assets = crate::map_assets::load_with_products(
@@ -135,8 +135,8 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         decode,
     )?;
     eprintln!("Content scene: interface assets");
-    let map_data = installed_content_core::map::load(layers)?;
-    let regions = installed_content_regions::regions::read(layers)?.regions;
+    let map_data = content_reader_core::map::load(layers)?;
+    let regions = content_reader_regions::regions::read(layers)?.regions;
     let viewer_playback::map_icons::LoadedIcons {
         combat,
         raids,
@@ -320,8 +320,8 @@ fn synthetic_impacts(
     layers: &ResolvedLayers,
     impacts: &[SyntheticImpact],
 ) -> io::Result<viewer_world::map::strike_effects::Impacts> {
-    let stacks = installed_content_core::positions::read_unit_stacks(layers)?;
-    let map = installed_content_core::map::load(layers)?;
+    let stacks = content_reader_core::positions::read_unit_stacks(layers)?;
+    let map = content_reader_core::map::load(layers)?;
     let boxes = viewer_foundation::map::province_admission::province_boxes(
         &viewer_foundation::map::province_map::ProvinceMap {
             width: map.width,

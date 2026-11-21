@@ -5,7 +5,7 @@ use crate::{
     products::at_hour::{At, AtHour, Owner, Read},
 };
 use dashboard_text::{metadata::link_slot, template_facts};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::{CountryLinkRow, TableId, tables};
 use replay_frame::frame::{DecodedFrame, DecodedSource};
 use serde::{Deserialize, Serialize};

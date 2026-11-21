@@ -338,8 +338,8 @@ pub fn mode_hover(
     }
 }
 
-pub fn picks_region(kind: Option<installed_content_core::map::ProvinceKind>, region: Option<u32>) -> bool {
-    kind == Some(installed_content_core::map::ProvinceKind::Sea) && region.is_some()
+pub fn picks_region(kind: Option<content_reader_core::map::ProvinceKind>, region: Option<u32>) -> bool {
+    kind == Some(content_reader_core::map::ProvinceKind::Sea) && region.is_some()
 }
 
 pub fn four_buttons(document: &Document) -> bool {
@@ -853,7 +853,7 @@ mod tests {
 
     #[test]
     fn a_loaded_recording_takes_settings_options_below_the_command_line() {
-        use installed_content_settings::settings::MapOptions;
+        use content_reader_settings::settings::MapOptions;
         use viewer_counters::map::counters::CounterColorMode;
         let game = MapOptions {
             day_night: false,
@@ -1185,7 +1185,7 @@ mod tests {
 
     #[test]
     fn a_picked_region_hovers_as_the_region_builder_answers_its_mode() {
-        use installed_content_core::map::ProvinceKind::*;
+        use content_reader_core::map::ProvinceKind::*;
         use viewer_counter_products::map::province_tooltips::ModeHover;
         assert!(picks_region(Some(Sea), Some(40)));
         assert!(!picks_region(Some(Sea), None));

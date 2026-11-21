@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, io};
 
 use super::{Inputs, Stock, color4, style};
-use installed_content_core::{defines::Defines, map::ProvinceKind};
-use installed_content_regions::regions::StrategicRegion;
+use content_reader_core::{defines::Defines, map::ProvinceKind};
+use content_reader_regions::regions::StrategicRegion;
 use replay_data::{rows::RaidAirScoreRow, rows::tables};
 
 mod fold;
@@ -47,7 +47,7 @@ impl Content {
         })
     }
 
-    pub fn bind(&self, map: &std::sync::Arc<installed_content_core::map::MapData>) {
+    pub fn bind(&self, map: &std::sync::Arc<content_reader_core::map::MapData>) {
         self.fold
             .lock()
             .unwrap_or_else(|error| error.into_inner())

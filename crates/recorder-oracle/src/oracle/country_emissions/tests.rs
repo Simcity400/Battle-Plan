@@ -191,7 +191,7 @@ fn projected_full_oracle_scopes_canonical_censuses_and_refuses_uncaptured_reserv
                 ungrouped: 0,
             }]));
         let mut saved = parse_country_emissions(&document, &captured).unwrap();
-        let membership: installed_content_save::PartialMapMembership = installed_content_save::MapMembership {
+        let membership: content_reader_save::PartialMapMembership = content_reader_save::MapMembership {
             provinces: std::collections::BTreeMap::from([(0, None)]),
         }
         .into();

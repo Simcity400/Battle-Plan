@@ -23,11 +23,11 @@ pub fn compare(
     let spell = |token: u32| -> io::Result<Vec<u8>> {
         tokens
             .get(&token)
-            .map(|value| installed_content_core::parser::c_string(value).to_vec())
+            .map(|value| content_reader_core::parser::c_string(value).to_vec())
             .ok_or_else(|| invalid("faction account definition lacks token spelling"))
     };
     let mut saved = expected.entries.clone();
-    let zero = installed_content_save::Decimal::parse(b"0")?;
+    let zero = content_reader_save::Decimal::parse(b"0")?;
     for (index, row) in rows.iter().enumerate() {
         if row.account as usize != index {
             return Err(invalid("noncontiguous faction account indices"));
@@ -178,12 +178,12 @@ mod tests {
     #[test]
     fn faction_account_oracle_preserves_departed_history_sparse_admission_and_gain_only_changes() {
         let (mut frame, mut save, _, _) = crate::fixtures::fixture();
-        let number = |text: &str| installed_content_save::Decimal::parse(text.as_bytes()).unwrap();
-        save.faction_accounts = Some(installed_content_save::faction_accounts::Accounts {
+        let number = |text: &str| content_reader_save::Decimal::parse(text.as_bytes()).unwrap();
+        save.faction_accounts = Some(content_reader_save::faction_accounts::Accounts {
             count: 2,
             entries: BTreeMap::from([(
                 1,
-                installed_content_save::faction_accounts::Account {
+                content_reader_save::faction_accounts::Account {
                     influence_count: 2,
                     influence: BTreeMap::from([(1, number("-1"))]),
                     initiative: number("0"),

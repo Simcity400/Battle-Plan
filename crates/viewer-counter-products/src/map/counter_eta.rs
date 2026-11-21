@@ -25,11 +25,11 @@ pub(crate) fn map_arrival(remaining: i64) -> Arrival {
 }
 
 pub fn sentence(
-    localisation: &installed_content_localisation::localisation::Localisation,
+    localisation: &content_reader_localisation::localisation::Localisation,
     arrival: &Arrival,
     ours: bool,
 ) -> Result<String, String> {
-    use installed_content_localisation::localisation::Argument;
+    use content_reader_localisation::localisation::Argument;
     let key = match (arrival.days == 0, ours) {
         (true, true) => UNIT_MOVING_HOURS,
         (false, true) => UNIT_MOVING_DAYS_HOURS,
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn the_wording_follows_the_viewing_country_and_the_content_text() {
-        let localisation: installed_content_localisation::localisation::Localisation = [
+        let localisation: content_reader_localisation::localisation::Localisation = [
             (
                 "UNIT_MOVING_HOURS",
                 "Arrives at its destination in $HOURS|Y$ §Yhour(s)§!.",
@@ -111,7 +111,7 @@ mod tests {
             sentence(&localisation, &one, false).as_deref(),
             Ok("UNIT_MOVING_HOURS_NONPLAYER")
         );
-        let icon: installed_content_localisation::localisation::Localisation = [(
+        let icon: content_reader_localisation::localisation::Localisation = [(
             "UNIT_MOVING_DAYS_HOURS".to_owned(),
             "£time $DAYS$".to_owned(),
         )]

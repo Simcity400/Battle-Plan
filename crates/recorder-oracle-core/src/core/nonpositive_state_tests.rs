@@ -5,7 +5,7 @@ use replay_frame::frame::TableView;
 fn fixture(
     owner: u32,
     controller: u32,
-) -> (DecodedFrame, Save, installed_content_save::PartialMapMembership) {
+) -> (DecodedFrame, Save, content_reader_save::PartialMapMembership) {
     let (mut frame, mut save, membership, _) = super::super::fixtures::fixture();
     *frame.tables[TableId::States.index()] =
         TableView::Complete(TableRows::States(vec![StateRow {
@@ -29,7 +29,7 @@ fn fixture(
 fn run(
     frame: &DecodedFrame,
     save: &Save,
-    membership: &installed_content_save::PartialMapMembership,
+    membership: &content_reader_save::PartialMapMembership,
 ) -> Report {
     let context = super::super::country_context(frame).unwrap();
     let mut report = Report::default();

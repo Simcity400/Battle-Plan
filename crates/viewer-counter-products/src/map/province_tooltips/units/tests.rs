@@ -392,7 +392,7 @@ fn content_reader_keeps_native_category_reset_and_unknown_tail_refusals() {
         .read(b"sub_units={boat={type=infantry}}", "replaced.txt");
     assert_eq!(
         content.subunits.category(b"Boat").unwrap(),
-        installed_content_core::equipment::category_mask("infantry").unwrap()
+        content_reader_core::equipment::category_mask("infantry").unwrap()
     );
     content.subunits.read(
         b"sub_units={bad={weights={x @variable=1}}}",

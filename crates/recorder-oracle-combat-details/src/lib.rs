@@ -1,6 +1,6 @@
-use installed_content_save as save;
-use installed_content_save::Decimal;
-use installed_content_save::Save;
+use content_reader_save as save;
+use content_reader_save::Decimal;
+use content_reader_save::Save;
 #[cfg(test)]
 use recorder_oracle_support::fixtures;
 use recorder_oracle_support::report::Report;

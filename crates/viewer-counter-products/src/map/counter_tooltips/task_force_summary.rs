@@ -1,6 +1,6 @@
 
 use super::*;
-use installed_content_core::unit_leader::SubUnits;
+use content_reader_core::unit_leader::SubUnits;
 use replay_data::{rows::ShipModelRow, rows::ShipRow, rows::TaskForceRow};
 use viewer_foundation::map::counter_order;
 use viewer_foundation::map::msvc_stable_sort::sort;
@@ -313,7 +313,7 @@ fn merge_groups<'a>(all: &mut BTreeMap<i32, Group<'a>>, groups: BTreeMap<i32, Gr
 
 fn composition(
     groups: &BTreeMap<i32, Group<'_>>,
-    equipment: Result<&installed_content_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_core::equipment::Database, &str>,
 ) -> Result<String, String> {
     let mut ordered = groups.values().collect::<Vec<_>>();
     let mut missing = None;

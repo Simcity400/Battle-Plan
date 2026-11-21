@@ -358,7 +358,7 @@ mod tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = test_frame(0);
-        let gui = installed_content_core::gui::native::read(
+        let gui = content_reader_core::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = raw pdx_tooltip = RAW }
             guiButtonType = { name = missing pdx_tooltip = MISSING }
@@ -392,7 +392,7 @@ mod tests {
     fn port_callback_handled_empty_controls_suppress_authored_fallback() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let gui = installed_content_core::gui::native::read(
+        let gui = content_reader_core::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
         let authored = Authored::read(gui.template("authored").unwrap(), false);
@@ -433,7 +433,7 @@ mod tests {
     fn port_callback_false_allows_fallback_but_unknown_admission_does_not() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let gui = installed_content_core::gui::native::read(
+        let gui = content_reader_core::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
         let input = Hover {
@@ -467,7 +467,7 @@ mod tests {
     fn authored_fallback_replaces_only_present_hash_fields_and_appends_unscoped_bound() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let gui = installed_content_core::gui::native::read(
+        let gui = content_reader_core::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = absent pdx_tooltip = MISSING pdx_tooltip_delayed = BODY }
             guiButtonType = { name = empty pdx_tooltip = EMPTY }

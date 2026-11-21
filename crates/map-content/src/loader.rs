@@ -1,6 +1,6 @@
 use crate::witness::ContentReads;
 use dashboard_text::triggers::LeaderRoles;
-use installed_content_core::{ResolvedLayers, defines::Defines, map::MapData};
+use content_reader_core::{ResolvedLayers, defines::Defines, map::MapData};
 use std::{
     collections::BTreeMap,
     io,
@@ -47,16 +47,16 @@ impl Loader {
     }
 
     pub fn map(&self) -> io::Result<MapData> {
-        self.result(installed_content_core::map::load(&self.reader(&self.layers, "map")))
+        self.result(content_reader_core::map::load(&self.reader(&self.layers, "map")))
     }
 
     pub fn terrain(
         &self,
     ) -> io::Result<(
-        installed_content_core::terrain::TerrainDefinitions,
-        installed_content_core::terrain::DefaultMap,
+        content_reader_core::terrain::TerrainDefinitions,
+        content_reader_core::terrain::DefaultMap,
     )> {
-        let result = self.result(installed_content_core::terrain::read(
+        let result = self.result(content_reader_core::terrain::read(
             &self.reader(&self.layers, "terrain"),
         ))?;
         for reason in &result.0.skipped {
@@ -68,7 +68,7 @@ impl Loader {
     }
 
     pub fn defines(&self) -> io::Result<Defines> {
-        self.result(installed_content_core::defines::read(
+        self.result(content_reader_core::defines::read(
             &self.reader(&self.layers, "defines"),
         ))
     }
@@ -100,19 +100,19 @@ impl Loader {
 
     pub fn heightmap(
         &self,
-        default_map: &installed_content_core::terrain::DefaultMap,
-    ) -> io::Result<installed_content_image::IndexedImage> {
+        default_map: &content_reader_core::terrain::DefaultMap,
+    ) -> io::Result<content_reader_image::IndexedImage> {
         let layers = self.reader(&self.layers, "heightmap");
         self.result((|| {
-            installed_content_core::terrain::read_indexed_image(
+            content_reader_core::terrain::read_indexed_image(
                 &layers,
                 &format!("map/{}", default_map.heightmap),
             )
         })())
     }
 
-    pub fn buildings(&self) -> io::Result<installed_content_core::buildings::Buildings> {
-        self.result(installed_content_core::buildings::read(
+    pub fn buildings(&self) -> io::Result<content_reader_core::buildings::Buildings> {
+        self.result(content_reader_core::buildings::read(
             &self.reader(&self.layers, "trigger"),
         ))
     }
@@ -120,10 +120,10 @@ impl Loader {
     pub fn ideologies(
         &self,
     ) -> io::Result<(
-        installed_content_core::ideologies::Ideologies,
-        Vec<installed_content_core::Diagnostic>,
+        content_reader_core::ideologies::Ideologies,
+        Vec<content_reader_core::Diagnostic>,
     )> {
-        let result = self.result(installed_content_core::ideologies::read(
+        let result = self.result(content_reader_core::ideologies::read(
             &self.reader(&self.layers, "trigger"),
         ))?;
         for (_, warning) in &result.1 {
@@ -136,10 +136,10 @@ impl Loader {
     pub fn resources(
         &self,
     ) -> io::Result<(
-        installed_content_core::resources::Resources,
-        Vec<installed_content_core::Diagnostic>,
+        content_reader_core::resources::Resources,
+        Vec<content_reader_core::Diagnostic>,
     )> {
-        let result = self.result(installed_content_core::resources::read(
+        let result = self.result(content_reader_core::resources::read(
             &self.reader(&self.layers, "trigger"),
         ))?;
         for (_, warning) in &result.1 {
@@ -153,13 +153,13 @@ impl Loader {
         &self,
         stack: &ResolvedLayers,
         language: &str,
-    ) -> io::Result<Arc<installed_content_localisation::localisation::Localisation>> {
+    ) -> io::Result<Arc<content_reader_localisation::localisation::Localisation>> {
         let reader = self.reader(stack, "localisation");
         let read = match &self.cache_dir {
             Some(cache_dir) => {
-                installed_content_localisation::localisation::read_cached(&reader, language, cache_dir)
+                content_reader_localisation::localisation::read_cached(&reader, language, cache_dir)
             }
-            None => installed_content_localisation::localisation::read(&reader, language),
+            None => content_reader_localisation::localisation::read(&reader, language),
         };
         let localisation = self.result(read.map(Arc::new))?;
         for note in localisation
@@ -175,7 +175,7 @@ impl Loader {
 
     pub fn validate_heightmap(
         &self,
-        image: &installed_content_image::IndexedImage,
+        image: &content_reader_image::IndexedImage,
         map: [u32; 2],
     ) -> io::Result<()> {
         self.result(viewer_foundation::map::textures::expect_size(
@@ -230,12 +230,12 @@ impl TriggerLoader {
         checked(self.loader.as_ref(), result)
     }
 
-    pub fn buildings(&self) -> io::Result<installed_content_core::buildings::Buildings> {
-        self.checked(installed_content_core::buildings::read(&self.layers))
+    pub fn buildings(&self) -> io::Result<content_reader_core::buildings::Buildings> {
+        self.checked(content_reader_core::buildings::read(&self.layers))
     }
 
-    pub fn tag_aliases(&self) -> io::Result<installed_content_core::tag_aliases::TagAliases> {
-        self.checked(installed_content_core::tag_aliases::read(&self.layers))
+    pub fn tag_aliases(&self) -> io::Result<content_reader_core::tag_aliases::TagAliases> {
+        self.checked(content_reader_core::tag_aliases::read(&self.layers))
     }
 
     pub fn leader_roles(&self) -> Result<Arc<LeaderRoles>, String> {
@@ -257,10 +257,10 @@ impl TriggerLoader {
         defines: &Defines,
         map: &MapData,
     ) -> io::Result<(
-        installed_content_states::states::States,
-        Vec<installed_content_core::Diagnostic>,
+        content_reader_states::states::States,
+        Vec<content_reader_core::Diagnostic>,
     )> {
-        self.checked(installed_content_states::states::read(
+        self.checked(content_reader_states::states::read(
             &self.layers,
             defines,
             &map.definitions,
@@ -270,8 +270,8 @@ impl TriggerLoader {
     pub fn graph(
         &self,
     ) -> io::Result<(
-        Result<installed_content_core::province_graph::ProvinceGraph, String>,
-        installed_content_core::province_geometry::ProvinceGeometry,
+        Result<content_reader_core::province_graph::ProvinceGraph, String>,
+        content_reader_core::province_geometry::ProvinceGeometry,
     )> {
         let result = self.checked(graph(&self.layers))?;
         if let Err(error) = &result.0 {
@@ -300,7 +300,7 @@ impl TriggerLoader {
 
     pub fn neighbor_states(
         &self,
-        graph: Result<&installed_content_core::province_graph::ProvinceGraph, &String>,
+        graph: Result<&content_reader_core::province_graph::ProvinceGraph, &String>,
         states: &BTreeMap<u32, Vec<u32>>,
     ) -> Result<BTreeMap<u32, Vec<u32>>, String> {
         let result = neighbors(graph, states);
@@ -320,9 +320,9 @@ impl TriggerLoader {
         result
     }
 
-    pub fn constants(&self) -> Result<installed_content_core::script_constants::Constants, String> {
+    pub fn constants(&self) -> Result<content_reader_core::script_constants::Constants, String> {
         let result =
-            installed_content_core::script_constants::read(&self.layers).map_err(|error| error.to_string());
+            content_reader_core::script_constants::read(&self.layers).map_err(|error| error.to_string());
         if let Err(error) = &result {
             self.note(&format!("script constants: {error}"));
         }
@@ -360,7 +360,7 @@ impl TriggerLoader {
 }
 
 pub fn state_content(
-    states: &BTreeMap<u32, installed_content_states::states::StateDefinition>,
+    states: &BTreeMap<u32, content_reader_states::states::StateDefinition>,
 ) -> (BTreeMap<u32, Vec<u32>>, std::collections::BTreeSet<u32>) {
     (
         states
@@ -376,9 +376,9 @@ pub fn state_content(
 }
 
 pub fn assemble_trigger_content(
-    tag_aliases: Arc<installed_content_core::tag_aliases::TagAliases>,
+    tag_aliases: Arc<content_reader_core::tag_aliases::TagAliases>,
     leader_roles: Result<Arc<LeaderRoles>, String>,
-    buildings: installed_content_core::buildings::Buildings,
+    buildings: content_reader_core::buildings::Buildings,
     state_provinces: BTreeMap<u32, Vec<u32>>,
     impassable: std::collections::BTreeSet<u32>,
     neighbor_states: Result<BTreeMap<u32, Vec<u32>>, String>,
@@ -386,7 +386,7 @@ pub fn assemble_trigger_content(
     resource_bonuses: [i64; 2],
     continents: Result<Vec<String>, String>,
     invasion_prepare_days: Result<i32, String>,
-    script_constants: Result<installed_content_core::script_constants::Constants, String>,
+    script_constants: Result<content_reader_core::script_constants::Constants, String>,
 ) -> TriggerContent {
     TriggerContent {
         triggers: Default::default(),
@@ -415,22 +415,22 @@ pub fn checked<T>(loader: Option<&Loader>, result: io::Result<T>) -> io::Result<
 }
 
 pub struct CombatInputs {
-    pub traits: installed_content_core::unit_leader::Traits,
-    pub sub_units: Result<installed_content_core::unit_leader::SubUnits, String>,
-    pub country_traits: Result<Arc<installed_content_core::leader_traits::LeaderTraits>, String>,
-    pub database: installed_content_core::combat_tactics::Database,
-    pub scripted: installed_content_core::scripted_triggers::ScriptedTriggers,
+    pub traits: content_reader_core::unit_leader::Traits,
+    pub sub_units: Result<content_reader_core::unit_leader::SubUnits, String>,
+    pub country_traits: Result<Arc<content_reader_core::leader_traits::LeaderTraits>, String>,
+    pub database: content_reader_core::combat_tactics::Database,
+    pub scripted: content_reader_core::scripted_triggers::ScriptedTriggers,
 }
 impl CombatInputs {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
-        let traits = installed_content_core::unit_leader::Traits::registered(layers)?;
+        let traits = content_reader_core::unit_leader::Traits::registered(layers)?;
         let sub_units =
-            installed_content_core::unit_leader::sub_units(layers).map_err(|error| error.to_string());
-        let country_traits = installed_content_core::leader_traits::read(layers)
+            content_reader_core::unit_leader::sub_units(layers).map_err(|error| error.to_string());
+        let country_traits = content_reader_core::leader_traits::read(layers)
             .map(|(traits, _)| Arc::new(traits))
             .map_err(|error| error.to_string());
-        let database = installed_content_core::combat_tactics::read(layers)?;
-        let scripted = installed_content_core::scripted_triggers::read(layers)?;
+        let database = content_reader_core::combat_tactics::read(layers)?;
+        let scripted = content_reader_core::scripted_triggers::read(layers)?;
         Ok(Self {
             traits,
             sub_units,
@@ -442,13 +442,13 @@ impl CombatInputs {
 
     pub fn names(
         &self,
-        buildings: &installed_content_core::buildings::Buildings,
-        ideologies: &installed_content_core::ideologies::Ideologies,
-        resources: &installed_content_core::resources::Resources,
-    ) -> installed_content_core::trigger_keys::TriggerNames {
-        installed_content_core::trigger_keys::TriggerNames {
+        buildings: &content_reader_core::buildings::Buildings,
+        ideologies: &content_reader_core::ideologies::Ideologies,
+        resources: &content_reader_core::resources::Resources,
+    ) -> content_reader_core::trigger_keys::TriggerNames {
+        content_reader_core::trigger_keys::TriggerNames {
             scripted: resolved_scripted(&self.database.phases, self.scripted.clone()),
-            counts: Some(installed_content_core::trigger_keys::CountTriggerNames::new(
+            counts: Some(content_reader_core::trigger_keys::CountTriggerNames::new(
                 buildings, ideologies, resources,
             )),
         }
@@ -457,11 +457,11 @@ impl CombatInputs {
 
 pub fn resolved_scripted(
     phases: &[Vec<u8>],
-    mut scripted: installed_content_core::scripted_triggers::ScriptedTriggers,
-) -> installed_content_core::scripted_triggers::ScriptedTriggers {
+    mut scripted: content_reader_core::scripted_triggers::ScriptedTriggers,
+) -> content_reader_core::scripted_triggers::ScriptedTriggers {
     for template in scripted.templates.values_mut() {
         if let Ok(body) = &mut template.body {
-            installed_content_core::combat_tactics::resolve_phase_triggers(phases, body);
+            content_reader_core::combat_tactics::resolve_phase_triggers(phases, body);
         }
     }
     scripted
@@ -469,13 +469,13 @@ pub fn resolved_scripted(
 
 pub fn movement(layers: &ResolvedLayers, defines: &Defines) -> io::Result<MovementContent> {
     Ok(MovementContent::new(
-        installed_content_core::movement::MovementMap::read(layers, defines)?,
-        installed_content_core::movement::MovementDefines::read(defines)?,
+        content_reader_core::movement::MovementMap::read(layers, defines)?,
+        content_reader_core::movement::MovementDefines::read(defines)?,
     ))
 }
 
 pub fn leader_roles(layers: &ResolvedLayers) -> Result<Arc<LeaderRoles>, String> {
-    installed_content_core::characters::leader_templates(layers)
+    content_reader_core::characters::leader_templates(layers)
         .map(LeaderRoles::new)
         .map(Arc::new)
 }
@@ -483,20 +483,20 @@ pub fn leader_roles(layers: &ResolvedLayers) -> Result<Arc<LeaderRoles>, String>
 pub fn graph(
     layers: &ResolvedLayers,
 ) -> io::Result<(
-    Result<installed_content_core::province_graph::ProvinceGraph, String>,
-    installed_content_core::province_geometry::ProvinceGeometry,
+    Result<content_reader_core::province_graph::ProvinceGraph, String>,
+    content_reader_core::province_geometry::ProvinceGeometry,
 )> {
-    match installed_content_core::province_graph::ProvinceGraph::read(layers) {
+    match content_reader_core::province_graph::ProvinceGraph::read(layers) {
         Ok((graph, geometry)) => Ok((Ok(graph), geometry)),
         Err(error) => Ok((
             Err(error.to_string()),
-            installed_content_core::province_geometry::ProvinceGeometry::read(layers)?,
+            content_reader_core::province_geometry::ProvinceGeometry::read(layers)?,
         )),
     }
 }
 
 pub fn neighbors(
-    graph: Result<&installed_content_core::province_graph::ProvinceGraph, &String>,
+    graph: Result<&content_reader_core::province_graph::ProvinceGraph, &String>,
     states: &BTreeMap<u32, Vec<u32>>,
 ) -> Result<BTreeMap<u32, Vec<u32>>, String> {
     match graph {
@@ -508,21 +508,21 @@ pub fn neighbors(
 }
 
 pub fn continents(layers: &ResolvedLayers) -> Result<Vec<String>, String> {
-    installed_content_core::terrain::read_default_map(layers)
+    content_reader_core::terrain::read_default_map(layers)
         .and_then(|map| layers.read(&map.file("continent")?))
         .and_then(|bytes| {
-            installed_content_equipment_graphics::equipment_graphics::context::continent_names(&bytes)
+            content_reader_equipment_graphics::equipment_graphics::context::continent_names(&bytes)
         })
         .map_err(|why| why.to_string())
 }
 fn audio_source(
-    layers: &installed_content_core::ResolvedLayers,
-    defines: &installed_content_core::defines::Defines,
+    layers: &content_reader_core::ResolvedLayers,
+    defines: &content_reader_core::defines::Defines,
     user: &std::path::Path,
     warnings: &mut Vec<String>,
     reads: Option<&ContentReads>,
 ) -> Option<Arc<viewer_audio::Source>> {
-    let catalog = match installed_content_sound::sound::Catalog::read(layers) {
+    let catalog = match content_reader_sound::sound::Catalog::read(layers) {
         Ok(catalog) => catalog,
         Err(error) => {
             warnings.push(format!(
@@ -541,10 +541,10 @@ fn audio_source(
         .int32("NGame", "MUSIC_PLAYER_RECENTLY_PLAYED_SIZE")
         .map_err(|error| warnings.push(format!("Map music repeats songs freely: {error}.")))
         .map_or(0, |size| usize::try_from(size).unwrap_or(0));
-    let battle = installed_content_sound::combat_sounds::BattleDefines::load(defines)
+    let battle = content_reader_sound::combat_sounds::BattleDefines::load(defines)
         .map_err(|error| warnings.push(format!("Map battles are silent: {error}.")))
         .ok();
-    let combat_sounds = match installed_content_sound::combat_sounds::Layers::read(layers) {
+    let combat_sounds = match content_reader_sound::combat_sounds::Layers::read(layers) {
         Ok(combat_sounds) => {
             if !combat_sounds.notes.is_empty() {
                 warnings.push(format!(
@@ -559,14 +559,14 @@ fn audio_source(
             Default::default()
         }
     };
-    let defines = installed_content_sound::sound::Defines::load(defines)
+    let defines = content_reader_sound::sound::Defines::load(defines)
         .map_err(|error| {
             warnings.push(format!(
                 "Map audio plays its height and voice categories without their volumes: {error}."
             ))
         })
         .ok();
-    let music = match installed_content_sound::music::Music::read(layers) {
+    let music = match content_reader_sound::music::Music::read(layers) {
         Ok(music) => {
             if !music.notes.is_empty() {
                 warnings.push(format!(
@@ -581,7 +581,7 @@ fn audio_source(
             Default::default()
         }
     };
-    let stations = installed_content_sound::music::enabled_stations_with(user, |path| {
+    let stations = content_reader_sound::music::enabled_stations_with(user, |path| {
         let result = std::fs::read(path);
         if let Some(reads) = reads {
             reads.user_bytes(b"@user/playlists/settings.txt", &result);

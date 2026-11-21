@@ -2,7 +2,7 @@ use super::*;
 
 type OccupationMapFixture = (
     saved::Pack,
-    BTreeMap<u32, installed_content_save::State>,
+    BTreeMap<u32, content_reader_save::State>,
     [CountryRow; 3],
     replay_data::rows::StateResistanceRow,
     replay_data::rows::StateRow,
@@ -474,7 +474,7 @@ fn occupation_resistance_hover_compares_additions_and_exile_without_certifying_r
     let text = b"countries={AAA={} BBB={diplomacy={hosting_our_government_in_exile=AAA legitimacy=75}}} states={7={resistance={added_resistance_targets={{amount=-1.23456 controller=AAA tooltip=fixture}}}}} provinces={}";
     let saved = saved_pack(text);
     let intel =
-        installed_content_save::intel::parse(&installed_content_core::parser::parse(text).unwrap().items).unwrap();
+        content_reader_save::intel::parse(&content_reader_core::parser::parse(text).unwrap().items).unwrap();
     let a = CountryRow {
         id: 10,
         tag: b"AAA".to_vec(),
@@ -578,14 +578,14 @@ fn occupation_resistance_hover_compares_additions_and_exile_without_certifying_r
     assert_eq!(report.differences.len(), 2);
 }
 
-fn history_fixture(input: &[u8]) -> installed_content_states::states::StateDefinition {
-    let context = installed_content_states::states::Context {
-        resource: &|_| installed_content_states::states::Resource::Found,
+fn history_fixture(input: &[u8]) -> content_reader_states::states::StateDefinition {
+    let context = content_reader_states::states::Context {
+        resource: &|_| content_reader_states::states::Resource::Found,
         max_building_levels: 20,
         province_count: 1000,
-        names: &installed_content_core::key_names::KeyNames::default(),
+        names: &content_reader_core::key_names::KeyNames::default(),
     };
-    installed_content_states::states::parse_states(input, &context)
+    content_reader_states::states::parse_states(input, &context)
         .unwrap()
         .0
         .remove(0)
@@ -606,7 +606,7 @@ fn state_cores_compare_canonical_membership_with_the_saved_country_lists() {
             .map(|(tag, states)| {
                 (
                     tag.to_vec(),
-                    installed_content_save::Country {
+                    content_reader_save::Country {
                         tag: tag.to_vec(),
                         cores: states.to_vec(),
                         ..Default::default()
@@ -664,7 +664,7 @@ fn state_claims_compare_canonical_membership_with_the_saved_country_lists() {
         .map(|(tag, claims)| {
             (
                 tag.to_vec(),
-                installed_content_save::Country {
+                content_reader_save::Country {
                     tag: tag.to_vec(),
                     claims,
                     ..Default::default()
@@ -703,7 +703,7 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
         (701_u32, &b"natural_harbor"[..]),
         (702, b"favorable_approach"),
     ]);
-    let state = |locations: Vec<(&[u8], u32)>| installed_content_save::State {
+    let state = |locations: Vec<(&[u8], u32)>| content_reader_save::State {
         id: 4,
         owner: None,
         controller: None,
@@ -720,7 +720,7 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
             .collect(),
         contested_owners: Vec::new(),
     };
-    let province = |id, tokens: &[&[u8]]| installed_content_save::ProvinceOverride {
+    let province = |id, tokens: &[&[u8]]| content_reader_save::ProvinceOverride {
         id,
         name: None,
         owner: None,
@@ -784,7 +784,7 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
 }
 
 fn saved_pack(text: &[u8]) -> saved::Pack {
-    saved::parse(&installed_content_core::parser::parse(text).unwrap().items).unwrap()
+    saved::parse(&content_reader_core::parser::parse(text).unwrap().items).unwrap()
 }
 
 #[test]
@@ -1370,7 +1370,7 @@ fn building_and_railway_comparisons_detect_one_native_unit_and_order_changes() {
         cost: 9_007_199_254_740_993,
         priority: -1,
         amount: 1,
-        created_hour: installed_content_save::GameDate::parse(b"1936.1.1.12")
+        created_hour: content_reader_save::GameDate::parse(b"1936.1.1.12")
             .unwrap()
             .engine_hour()
             .unwrap(),
@@ -1743,7 +1743,7 @@ fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
             country: 12,
             cost: 100_001,
             amount: 1,
-            created_hour: installed_content_save::GameDate::parse(b"1936.1.1.12")
+            created_hour: content_reader_save::GameDate::parse(b"1936.1.1.12")
                 .unwrap()
                 .engine_hour()
                 .unwrap(),
@@ -1871,13 +1871,13 @@ fn resolved_province_buildings_compare_signed_zero_values_and_named_membership()
 fn naval_bases_sum_the_contents_port_buildings() {
     let saved = saved_pack(b"countries={} states={} provinces={7={buildings={dock={level=2 healthy_levels=1 partial_health=0} pier={level=3 healthy_levels=3 partial_health=0} factory={level=5 healthy_levels=5 partial_health=0}}}}");
     let ports = BTreeSet::from([b"dock".to_vec(), b"pier".to_vec()]);
-    let country_bases = [installed_content_save::naval_launch::CountryNavalLaunchOccurrence {
+    let country_bases = [content_reader_save::naval_launch::CountryNavalLaunchOccurrence {
         ordinal: 0,
         tag: b"TST".to_vec(),
         naval_bases: Some(
             vec![7]
                 .into_iter()
-                .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
+                .map(content_reader_save::naval_launch::NavalBaseOccurrence::from)
                 .collect(),
         ),
     }];
@@ -1942,13 +1942,13 @@ fn naval_base_membership_uses_saved_rosters_rather_than_all_port_buildings() {
     )
     .unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    let rosters = [installed_content_save::naval_launch::CountryNavalLaunchOccurrence {
+    let rosters = [content_reader_save::naval_launch::CountryNavalLaunchOccurrence {
         ordinal: 0,
         tag: b"TST".to_vec(),
         naval_bases: Some(
             vec![19]
                 .into_iter()
-                .map(installed_content_save::naval_launch::NavalBaseOccurrence::from)
+                .map(content_reader_save::naval_launch::NavalBaseOccurrence::from)
                 .collect(),
         ),
     }];
@@ -1967,9 +1967,9 @@ fn naval_base_membership_uses_saved_rosters_rather_than_all_port_buildings() {
 
 #[test]
 fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_bases() {
-    use installed_content_save::naval_launch::parse_country_occurrences;
+    use content_reader_save::naval_launch::parse_country_occurrences;
     use replay_data::{rows::NavalBaseRow, rows::Recorded};
-    let bases = parse_country_occurrences(&installed_content_core::parser::parse(
+    let bases = parse_country_occurrences(&content_reader_core::parser::parse(
         b"A={strategic_navy={naval_base={7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"} 7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"}}}}",
     ).unwrap().items).unwrap();
     let tags = [
@@ -2127,7 +2127,7 @@ fn resolved_construction_names_retain_exact_numeric_and_queue_checks() {
         speed: -1,
         produced: -9_007_199_254_740_993,
         priority: -1,
-        created_hour: installed_content_save::GameDate::parse(b"1936.1.1.12")
+        created_hour: content_reader_save::GameDate::parse(b"1936.1.1.12")
             .unwrap()
             .engine_hour()
             .unwrap(),
@@ -2198,7 +2198,7 @@ fn missing_construction_name_does_not_skip_numeric_or_target_comparison() {
         cost: 9_007_199_254_740_994,
         priority: -2,
         amount: 1,
-        created_hour: installed_content_save::GameDate::parse(b"1936.1.1.12")
+        created_hour: content_reader_save::GameDate::parse(b"1936.1.1.12")
             .unwrap()
             .engine_hour()
             .unwrap(),
@@ -3007,8 +3007,8 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         convoys_base: 0.into(),
         ..Default::default()
     };
-    use installed_content_save::economy::{self, ConvoyCounts};
-    let decimal = |text: &[u8]| installed_content_save::Decimal::parse(text).unwrap();
+    use content_reader_save::economy::{self, ConvoyCounts};
+    let decimal = |text: &[u8]| content_reader_save::Decimal::parse(text).unwrap();
     let economy = economy::Pack {
         countries: BTreeMap::from([(
             b"GER".to_vec(),
@@ -3029,11 +3029,11 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
                         assigned: 2,
                         required: 3,
                     },
-                    delivered: installed_content_save::production::Pool {
+                    delivered: content_reader_save::production::Pool {
                         equipment: Vec::new(),
                         allow_zero_entries: Some(false),
                     },
-                    sunk: installed_content_save::production::Pool {
+                    sunk: content_reader_save::production::Pool {
                         equipment: Vec::new(),
                         allow_zero_entries: Some(false),
                     },
@@ -3071,7 +3071,7 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
     };
     let countries = BTreeMap::from([(
         b"GER".to_vec(),
-        installed_content_save::Country {
+        content_reader_save::Country {
             tag: b"GER".to_vec(),
             regional_convoy_efficiency: Some(BTreeMap::new()),
             ..Default::default()

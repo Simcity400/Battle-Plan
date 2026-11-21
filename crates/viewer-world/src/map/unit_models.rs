@@ -19,9 +19,9 @@ use viewer_foundation::movement_timing::Etas;
 use viewer_foundation::profiling::BuilderSpans;
 use viewer_foundation::table_access::TokenNames;
 
-use installed_content_core::{ResolvedLayers, defines::Defines, map::MapData, mesh, terrain::DefaultMap};
-use installed_content_image::native::Decode;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_core::{ResolvedLayers, defines::Defines, map::MapData, mesh, terrain::DefaultMap};
+use content_reader_image::native::Decode;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::{
     rows::DivisionModelInputRow, rows::DivisionStatusRow, rows::DivisionTemplateIconRow,
     rows::TableId, rows::tables,
@@ -46,8 +46,8 @@ use {
     crate::map::unit_history::Field, crate::map::unit_history::Kind,
     crate::map::unit_history::NavalSources, crate::map::unit_history::Target,
     crate::map::unit_history::Targets,
-    installed_content_equipment_graphics::equipment_graphics::countries as model_countries,
-    installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
+    content_reader_equipment_graphics::equipment_graphics::countries as model_countries,
+    content_reader_equipment_graphics::equipment_graphics::countries::ModelCountry,
     viewer_foundation::map::counter_move, viewer_foundation::map::perspective::Sight,
     viewer_foundation::map::perspective::Vision, viewer_foundation::map::tables::core,
     viewer_foundation::map::tables::rows, viewer_foundation::map::unit_rules::STANDSTILL,
@@ -518,7 +518,7 @@ impl UnitModelAssets {
         mut try_load: impl FnMut(
             LoadStack,
             &Defines,
-            &mut Vec<installed_content_core::Diagnostic>,
+            &mut Vec<content_reader_core::Diagnostic>,
         ) -> io::Result<Self>,
     ) -> Self {
         let mut notes = Vec::new();
@@ -590,12 +590,12 @@ impl UnitModelAssets {
         defines: &Defines,
         map: &MapData,
         default_map: &DefaultMap,
-        warnings: &mut Vec<installed_content_core::Diagnostic>,
+        warnings: &mut Vec<content_reader_core::Diagnostic>,
     ) -> io::Result<Self> {
         let roster = layers.descriptor_roster()?;
         if !roster.unreadable.is_empty() {
             warnings.push((
-                installed_content_core::DiagnosticKind::ParseFailure,
+                content_reader_core::DiagnosticKind::ParseFailure,
                 format!(
                     "Unit model descriptors that do not parse even when closed are skipped: {}",
                     roster.unreadable.join(", ")
@@ -604,7 +604,7 @@ impl UnitModelAssets {
         }
         if !roster.logged.is_empty() {
             warnings.push((
-                installed_content_core::DiagnosticKind::Logged,
+                content_reader_core::DiagnosticKind::Logged,
                 format!(
                     "Unit model entity registration diagnostics: {}",
                     roster.logged.join("; ")
@@ -614,7 +614,7 @@ impl UnitModelAssets {
         let sub_units = model_selection::Content::load(layers)?;
         if !sub_units.dropped.is_empty() {
             warnings.push((
-                installed_content_core::DiagnosticKind::Warning,
+                content_reader_core::DiagnosticKind::Warning,
                 format!(
                     "Sub-unit equipment needs the engine drops: {}",
                     sub_units.dropped.join("; ")
@@ -626,7 +626,7 @@ impl UnitModelAssets {
         warnings.extend(
             name_warnings
                 .into_iter()
-                .map(|message| (installed_content_core::DiagnosticKind::Warning, message)),
+                .map(|message| (content_reader_core::DiagnosticKind::Warning, message)),
         );
         let graphics = equipment_graphics::Content::load(layers, &names)?;
         let geography = context::Content::load(layers, default_map, &map.definitions, defines)?;
@@ -659,7 +659,7 @@ impl UnitModelAssets {
                 .cloned()
                 .collect(),
             ships,
-            dynamic_tags: installed_content_core::country_tags::read_definitions(layers)
+            dynamic_tags: content_reader_core::country_tags::read_definitions(layers)
                 .map(|tags| {
                     tags.into_iter()
                         .filter(|(_, tag)| tag.dynamic)
@@ -852,7 +852,7 @@ impl UnitModelAssets {
             return Err("SimulationFeatures must have one complete row".into());
         };
         fn text(bytes: &[u8]) -> Result<&str, String> {
-            installed_content_core::parser::text(bytes).map_err(|error| error.to_string())
+            content_reader_core::parser::text(bytes).map_err(|error| error.to_string())
         }
         let key = || {
             let tokens = TokenNames::new(frame).map_err(|error| error.to_string())?;
@@ -3057,7 +3057,7 @@ struct RaidModel {
     slot: usize,
     instance: ModelInstance,
     track: viewer_foundation::map::unit_pose::UnitTrack,
-    stages: Vec<installed_content_raids::raids::RaidAnimationStage>,
+    stages: Vec<content_reader_raids::raids::RaidAnimationStage>,
 }
 
 impl RaidModel {
@@ -3247,7 +3247,7 @@ mod aircraft_ladder_tests {
 
     fn limits(values: &equipment_graphics::LimitValues) -> equipment_graphics::Limits<'_> {
         fn evaluate(
-            _: &[installed_content_core::parser::Item],
+            _: &[content_reader_core::parser::Item],
             _: dashboard_text::triggers::Scopes,
         ) -> dashboard_text::triggers::Eval {
             panic!("a declared saved or cosmetic model never evaluates graphical pool limits")

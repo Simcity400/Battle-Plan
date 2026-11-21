@@ -1,6 +1,6 @@
 use super::{Chart, Content, DecodedFrame, State, Vision, bind_hover, loc, text};
 use crate::binding::Bindings;
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use engine_executable::executable_tables::auxiliary::AIR_GRAPH_DISPLAYS;
 use replay_data::rows::{AirMenuWindow, tables};
 
@@ -322,7 +322,7 @@ pub(super) fn bind(
 }
 
 pub(crate) fn draw(
-    root: &installed_content_core::gui::native::Element,
+    root: &content_reader_core::gui::native::Element,
     layout: &viewer_foundation::map::native_gui::Layout,
     origin: [i32; 2],
     resources: &impl crate::gui::CombatResources,

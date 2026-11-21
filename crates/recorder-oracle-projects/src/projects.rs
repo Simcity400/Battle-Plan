@@ -1,5 +1,5 @@
 use super::{Report, complete, country_tag, invalid, required_country_tag};
-use installed_content_save::{characters as characters_saved, projects as saved};
+use content_reader_save::{characters as characters_saved, projects as saved};
 use replay_data::{rows::CountryRow, rows::RaidScope, rows::RaidSource, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -779,7 +779,7 @@ fn compare_projects(
                     .iter()
                     .map(|entry| {
                         (
-                            installed_content_core::parser::c_string(&entry.name),
+                            content_reader_core::parser::c_string(&entry.name),
                             entry.value_raw,
                         )
                     })

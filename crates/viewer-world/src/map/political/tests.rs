@@ -32,7 +32,7 @@ fn build_oracle(
     })
 }
 
-use installed_content_core::{map::CountryColors, map::ProvinceDefinition};
+use content_reader_core::{map::CountryColors, map::ProvinceDefinition};
 use replay_data::{
     rows::AutonomyRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::TableId,
     rows::TableRows,

@@ -1,6 +1,6 @@
 
 use crate::framework::{Columns, Hour, Output, Read, Rows, Value, Watch, Writer, columns};
-use installed_content_country_names::country_names::CountryNames;
+use content_reader_country_names::country_names::CountryNames;
 use replay_columnar::leaf::Writer as Bytes;
 use replay_data::{
     format::FormatVersion,

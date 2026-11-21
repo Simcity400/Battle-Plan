@@ -20,7 +20,7 @@ use dashboard_text::{
     identity::{Look, NamingCountry},
     scripted_text::ScriptedText,
 };
-use installed_content_country_names::country_names::CountryNames;
+use content_reader_country_names::country_names::CountryNames;
 use replay_data::rows::*;
 use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, Tables};
 use std::{
@@ -247,7 +247,7 @@ struct CharacterFact {
     id: u32,
     script_token: Option<String>,
     saved_name: String,
-    template: Result<installed_content_core::characters::BuiltTemplate, String>,
+    template: Result<content_reader_core::characters::BuiltTemplate, String>,
     portrait: RecordedPortrait,
 }
 
@@ -780,11 +780,11 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
             if row.cause == PowerCause::Diplomacy {
                 let relation = row.component == Some(PowerDailyCostKind::Relation as u32);
                 let key = if relation {
-                    Some(installed_content_core::diplomacy::improve_relation_title_key().to_owned())
+                    Some(content_reader_core::diplomacy::improve_relation_title_key().to_owned())
                 } else if !row.item_key.is_empty() {
-                    installed_content_core::diplomacy::scripted_action_name_key(std::str::from_utf8(&row.item_key).unwrap_or_default()).ok()
+                    content_reader_core::diplomacy::scripted_action_name_key(std::str::from_utf8(&row.item_key).unwrap_or_default()).ok()
                 } else if row.charged {
-                    row.item_token.and_then(installed_content_core::diplomacy::charged_action_name_key).map(str::to_owned)
+                    row.item_token.and_then(content_reader_core::diplomacy::charged_action_name_key).map(str::to_owned)
                 } else {
                     None
                 };
@@ -821,7 +821,7 @@ fn named_item(frame: Option<&DecodedFrame>, row: &PowerItemRow, context: &Contex
                         let argument = std::str::from_utf8(argument).ok();
                         match key.zip(argument) {
                             Some((key, argument)) if content.catalogue.localisation.get(key).is_some() => {
-                                let arguments = [("ARG", installed_content_localisation::localisation::Argument::Text(argument))];
+                                let arguments = [("ARG", content_reader_localisation::localisation::Argument::Text(argument))];
                                 let arguments: &[_] = if argument.is_empty() { &[] } else { &arguments };
                                 match dashboard_text::catalogue::localised_with(&content.catalogue.localisation, key, arguments, View::Scripted) {
                                     Ok(name) => item.name = Some(name),

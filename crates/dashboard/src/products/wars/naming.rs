@@ -4,8 +4,8 @@ use super::{
     native::Pair,
 };
 use dashboard_base::catalogue::{self, Catalogue};
-use installed_content_country_names::country_names::CountryNames;
-use installed_content_localisation::localisation::Argument;
+use content_reader_country_names::country_names::CountryNames;
+use content_reader_localisation::localisation::Argument;
 
 pub(super) fn unknown(reason: impl Into<String>) -> WarName {
     WarName {

@@ -12,7 +12,7 @@ use dashboard_text::{
     scope,
     scripted_text,
 };
-use installed_content_country_names::country_names;
+use content_reader_country_names::country_names;
 use replay_data::rows::{StateRow, TableId, tables};
 use replay_frame::frame::{DecodedFrame, DecodedSource, TableView};
 use serde::{Deserialize, Serialize};
@@ -91,7 +91,7 @@ impl Content {
         }
         let regions = crate::content::strategic_regions(&cat.content.layers)
             .map(|regions| {
-                let named = |region: &installed_content_regions::regions::StrategicRegion| {
+                let named = |region: &content_reader_regions::regions::StrategicRegion| {
                     if !cat.has_presentation_key(&region.name_key) {
                         return Err(format!("localisation {} is missing; region title is unavailable", region.name_key));
                     }

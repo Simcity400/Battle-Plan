@@ -2,7 +2,7 @@ use crate::map::{
     models::{ModelInstance, ModelMesh},
     unit_history::LandFigure,
 };
-use installed_content_core::{ResolvedLayers, mesh};
+use content_reader_core::{ResolvedLayers, mesh};
 use std::sync::Arc;
 
 const PARALLEL: f32 = 1e-4;

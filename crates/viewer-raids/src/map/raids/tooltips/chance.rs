@@ -1,7 +1,7 @@
 
-use installed_content_localisation::localisation::Argument as Arg;
-use installed_content_localisation::localisation::Localisation;
-use installed_content_raids::{raids::tooltips::Formula, raids::tooltips::Modifier};
+use content_reader_localisation::localisation::Argument as Arg;
+use content_reader_localisation::localisation::Localisation;
+use content_reader_raids::{raids::tooltips::Formula, raids::tooltips::Modifier};
 use viewer_foundation::tooltip_text::{ensure_newlines, localise};
 
 pub fn mapped(m: &Modifier, raw: i64) -> Result<i64, String> {

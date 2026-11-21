@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use engine_native::raid_tooltip_operands::{NUCLEAR_BOMB_TOKEN, THERMONUCLEAR_BOMB_TOKEN};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::{NukeRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

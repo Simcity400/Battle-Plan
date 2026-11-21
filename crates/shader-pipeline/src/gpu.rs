@@ -1,7 +1,7 @@
 
 use super::{Buffer, Compiled};
-use installed_content_core::content::diagnostics::{self, Diagnostics};
-use installed_content_core::pdxshader::{
+use content_reader_core::content::diagnostics::{self, Diagnostics};
+use content_reader_core::pdxshader::{
     Address, DepthStencilState, RasterizerState,
     program::{Filter, Program, Sampler, Stage, Technique},
 };

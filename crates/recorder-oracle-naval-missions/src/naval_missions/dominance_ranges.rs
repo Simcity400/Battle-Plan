@@ -89,7 +89,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_save::naval_missions::{Pack, TaskForce};
+    use content_reader_save::naval_missions::{Pack, TaskForce};
     use replay_data::rows::{NavalMissionLedgerRow, NavalMissionTaskForceRow, TaskForceRow};
 
     fn fixture() -> (DecodedFrame, Save) {

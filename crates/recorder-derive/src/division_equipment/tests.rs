@@ -5,7 +5,7 @@ use crate::{
     stock::Stockpile,
     testing::noting::{self, Noted, Noting},
 };
-use installed_content_core::unit_leader::needs::SubUnitNeeds;
+use content_reader_core::unit_leader::needs::SubUnitNeeds;
 use replay_data::rows::{
     CountryLocalSubunitRow, DivisionEquipmentCountRow, DivisionEquipmentDesignRow, DivisionEquipmentRow, DivisionEquipmentTemplateRow, DivisionEquipmentTypeRow, DivisionLandInputsRow,
     DivisionManpowerContributor, DivisionPanelStatsRow, DivisionTemplateIconRow, LexicalTokenRow, LocalSubunitRequirement, Recorded, StockpileRow, TemplateSettings, TemplateSubunit,

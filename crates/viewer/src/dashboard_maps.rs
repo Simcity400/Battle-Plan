@@ -32,12 +32,12 @@ use viewer_world::map::scene::Scene;
 pub(crate) struct MapSourceKey {
     recording: SourceKey,
     texture_quality: u8,
-    visual_mods: Option<Vec<installed_content_core::content::visual::Choice>>,
+    visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
 }
 
 struct MapSource {
     texture_quality: u8,
-    visual_mods: Option<Vec<installed_content_core::content::visual::Choice>>,
+    visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
     source: Arc<Source>,
     content: Option<Arc<Content>>,
     error: Option<String>,
@@ -119,7 +119,7 @@ struct LoadingSource {
     texture_quality: u8,
     key: MapSourceKey,
     config: Config,
-    visual_mods: Option<Vec<installed_content_core::content::visual::Choice>>,
+    visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
     result: mpsc::Receiver<Result<Arc<Content>, String>>,
     alive: Arc<AtomicBool>,
 }
@@ -328,8 +328,8 @@ impl DashboardMaps {
         &self,
     ) -> Vec<(
         MapSourceKey,
-        Vec<installed_content_core::content::visual::Choice>,
-        Vec<installed_content_core::content::visual::RecordedMod>,
+        Vec<content_reader_core::content::visual::Choice>,
+        Vec<content_reader_core::content::visual::RecordedMod>,
         String,
     )> {
         self.sources
@@ -346,7 +346,7 @@ impl DashboardMaps {
                     .identity
                     .mods
                     .iter()
-                    .map(|recorded| installed_content_core::content::visual::RecordedMod {
+                    .map(|recorded| content_reader_core::content::visual::RecordedMod {
                         id: recorded.id.clone(),
                         name: recorded.display_name.clone(),
                     })

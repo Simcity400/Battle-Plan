@@ -1,6 +1,6 @@
 
 use super::{CameraDefines, gates};
-use installed_content_regions::regions::StrategicRegion;
+use content_reader_regions::regions::StrategicRegion;
 use std::collections::BTreeMap;
 use viewer_foundation::map::province_schedule::Schedule;
 

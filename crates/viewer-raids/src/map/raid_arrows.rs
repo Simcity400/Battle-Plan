@@ -1,5 +1,5 @@
 
-use installed_content_equipment_graphics::equipment_graphics::countries as model_countries;
+use content_reader_equipment_graphics::equipment_graphics::countries as model_countries;
 use std::collections::BTreeMap;
 use viewer_foundation::map::aircraft_model;
 #[cfg(test)]
@@ -14,8 +14,8 @@ use viewer_foundation::map::unit_pose::{
     elapsed_hours, movement_progress, next_hour_progress, phase_progress, remaining_hours,
 };
 
-use installed_content_core::{movement::MovementMap, province_graph::RaidPath, province_graph::raid_route};
-use installed_content_raids::{
+use content_reader_core::{movement::MovementMap, province_graph::RaidPath, province_graph::raid_route};
+use content_reader_raids::{
     raids::PathArrowDefines, raids::RaidArrowKind, raids::RaidGraphicsDefines, raids::RaidType,
 };
 use replay_data::{rows::RaidRow, rows::RaidTargetRow, rows::TaskForceRow, rows::tables};
@@ -628,7 +628,7 @@ pub enum UnitEntity {
 }
 
 pub fn unit_entity(
-    model: &installed_content_raids::raids::RaidUnitModel,
+    model: &content_reader_raids::raids::RaidUnitModel,
     tag: &str,
     culture: &str,
     primary: &[(u64, u64)],

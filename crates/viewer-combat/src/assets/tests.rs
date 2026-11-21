@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_image::native::Decode;
+use content_reader_image::native::Decode;
 use viewer_foundation::map::lazy_icons::flag_set;
 use viewer_foundation::map::sprites::Interface;
 use viewer_foundation::map::test_support::gui as tests;
@@ -19,7 +19,7 @@ fn custom_sea_declarations_follow_effective_strategic_templates() {
     )
     .unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let regions = installed_content_regions::regions::read(&layers).unwrap();
+    let regions = content_reader_regions::regions::read(&layers).unwrap();
     assert_eq!(
         regions.regions.get(&1).unwrap().static_modifier_names,
         Vec::<String>::new()
@@ -179,7 +179,7 @@ pub(crate) fn synthetic_assets(
     let shared = Arc::new(ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap());
     let registry = Registry::load(&shared).unwrap();
     let interface = Interface {
-        sprites: installed_content_gfx::gfx::SpriteSet::new(&registry.files),
+        sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
         registry,
         decode: Decode::default(),
     };
@@ -207,7 +207,7 @@ pub(crate) fn synthetic_assets(
     lazy.set_background(false);
     let flags = flag_set(
         &shared,
-        installed_content_core::flags::FlagSet::Normal,
+        content_reader_core::flags::FlagSet::Normal,
         [1, 1],
         |_| {},
         &lazy,
@@ -425,7 +425,7 @@ fn combat_resources_preserve_producer_dimensions_and_named_refusals() {
     std::fs::write(root.join("gfx/one.tga"), tga(10, 4)).unwrap();
     std::fs::write(root.join("gfx/interface/covered.tga"), tga(10, 4)).unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let read = installed_content_core::gui::native::sprites::read_sprites(
+    let read = content_reader_core::gui::native::sprites::read_sprites(
         br#"spriteTypes = {
                 spriteType = { name = "GFX_negative" textureFile = "gfx/one.tga" noOfFrames = -2 }
                 spriteType = { name = "GFX_covered" textureFile = "gfx/interface/covered.tga" }

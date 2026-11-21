@@ -3,7 +3,7 @@ use super::{
     pointlights::Light,
     weather_effects::{block, curve, get, number, text, tokens},
 };
-use installed_content_core::{ResolvedLayers, parser};
+use content_reader_core::{ResolvedLayers, parser};
 use std::{collections::BTreeMap, io};
 
 struct Curve {
@@ -94,7 +94,7 @@ impl Lights {
                     Curve {
                         start: number(a, "start", 0.0),
                         duration: number(a, "duration", 1.0),
-                        repeat: installed_content_core::parser::read_bool_field(a, "repeat", false),
+                        repeat: content_reader_core::parser::read_bool_field(a, "repeat", false),
                         op: text(a, "op").to_owned(),
                         knots: values.chunks_exact(2).map(|v| [v[0], v[1]]).collect(),
                     },

@@ -1,8 +1,8 @@
 use super::*;
 use crate::map::{native_gui as gui, sprites};
 use eframe::wgpu;
-use installed_content_core::ResolvedLayers;
-use installed_content_image::dds;
+use content_reader_core::ResolvedLayers;
+use content_reader_image::dds;
 use std::sync::Arc;
 
 pub(super) fn installed() -> (Arc<ResolvedLayers>, library::Library) {
@@ -14,14 +14,14 @@ pub(super) fn installed() -> (Arc<ResolvedLayers>, library::Library) {
     }
     let folders: Vec<_> = roots.iter().map(|root| (root.as_path(), &[][..])).collect();
     let layers = Arc::new(ResolvedLayers::from_folders(&folders).unwrap());
-    let map = installed_content_core::terrain::read_default_map(&layers).unwrap();
-    let size = installed_content_image::bmp::rgb_dimensions(
+    let map = content_reader_core::terrain::read_default_map(&layers).unwrap();
+    let size = content_reader_image::bmp::rgb_dimensions(
         &layers.read(&map.file("provinces").unwrap()).unwrap(),
     )
     .unwrap();
     let library = library::Library::new(layers.clone()).with_globals(library::globals(
         size,
-        installed_content_image::native::Decode::default(),
+        content_reader_image::native::Decode::default(),
     ));
     (layers, library)
 }
@@ -285,7 +285,7 @@ fn compare_installed_native_models() {
     let (_serial, device, queue) = device();
     let arena = gpu::Arena::new(&device);
     let mut pages: Vec<_> = (0..6).map(texture).collect();
-    pages.push(dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
+    pages.push(dds::Texture::from_rgba8(content_reader_image::Rgba8Image {
         width: 1,
         height: 1,
         pixels: vec![0; 4],

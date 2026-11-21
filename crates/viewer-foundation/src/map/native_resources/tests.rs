@@ -158,8 +158,8 @@ fn fonts_load_through_the_native_registry() {
 
 struct Drawn<'a> {
     resources: &'a GuiResources,
-    gui: &'a installed_content_core::gui::native::Gui,
-    localisation: installed_content_localisation::localisation::Localisation,
+    gui: &'a content_reader_core::gui::native::Gui,
+    localisation: content_reader_localisation::localisation::Localisation,
 }
 
 impl crate::map::native_gui::Resources for Drawn<'_> {
@@ -169,7 +169,7 @@ impl crate::map::native_gui::Resources for Drawn<'_> {
     fn font(&self, name: &[u8]) -> Option<&native_text::Font> {
         self.resources.font(name)
     }
-    fn localisation(&self) -> &installed_content_localisation::localisation::Localisation {
+    fn localisation(&self) -> &content_reader_localisation::localisation::Localisation {
         &self.localisation
     }
     fn text_colors(&self) -> &TextColors {
@@ -187,7 +187,7 @@ impl crate::map::native_gui::Resources for Drawn<'_> {
     fn text_flag(&self, _: &str) -> Result<Option<Texture>, String> {
         Ok(None)
     }
-    fn gui_type(&self, name: &[u8]) -> Option<&installed_content_core::gui::native::Element> {
+    fn gui_type(&self, name: &[u8]) -> Option<&content_reader_core::gui::native::Element> {
         self.gui.template(name)
     }
     fn texture_file(&self, path: &[u8]) -> Option<TextureFile> {
@@ -216,7 +216,7 @@ fn byte_names_match_end_to_end() {
             ("gfx/b.tga", tga(4, 4)),
         ],
     );
-    let gui = installed_content_core::gui::native::read(
+    let gui = content_reader_core::gui::native::read(
         b"guiTypes = { containerWindowType = { name = \"w\" size = { width = 50 height = 50 } \
           iconType = { name = \"i\" spriteType = \"GFX_\x80a\" } } }",
     );
@@ -543,7 +543,7 @@ fn force_pow2_textures_sets_the_decode_and_the_effect_globals() {
         ),
     ] {
         let decode =
-            installed_content_settings::settings::SettingsKeys::read(settings.as_bytes()).texture_decode();
+            content_reader_settings::settings::SettingsKeys::read(settings.as_bytes()).texture_decode();
         let mut resources = GuiResources::new(
             Registry::load(&layers).unwrap(),
             b"l_english",
@@ -614,19 +614,19 @@ fn a_font_page_the_mods_break_or_lack_is_named_and_the_recordings_drawn() {
         format!("name=\"Art\"\npath=\"{art}\"\n").as_bytes(),
     );
     std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-    let options = installed_content_core::ResolveOptions {
+    let options = content_reader_core::ResolveOptions {
         game_dir: root.join("steamapps/common/Game"),
         user_dir: root.join("user"),
         cache_dir: root.join("cache"),
     };
     let base = root.join("base");
     let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-    let selected = [installed_content_core::content::visual::Choice {
+    let selected = [content_reader_core::content::visual::Choice {
         id: "mod/art.mod".into(),
         name: "Art".into(),
     }];
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
     let presentation = layers.presentation();
     let assets = Assets {
         sprites: Default::default(),
@@ -693,19 +693,19 @@ path=\"{art}\"
 ").as_bytes(),
     );
     std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-    let options = installed_content_core::ResolveOptions {
+    let options = content_reader_core::ResolveOptions {
         game_dir: root.join("steamapps/common/Game"),
         user_dir: root.join("user"),
         cache_dir: root.join("cache"),
     };
     let base = root.join("base");
     let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
-    let selected = [installed_content_core::content::visual::Choice {
+    let selected = [content_reader_core::content::visual::Choice {
         id: "mod/art.mod".into(),
         name: "Art".into(),
     }];
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
     let presentation = layers.presentation();
     let assets = Assets {
         sprites: [b"GFX_x".to_vec(), b"GFX_kept".to_vec()].into(),
@@ -723,7 +723,7 @@ path=\"{art}\"
             resources = resources.with_recorded_registry(Registry::load(&layers.recorded_only()).unwrap());
         }
         let mut images = Vec::new();
-        let (loaded, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+        let (loaded, fallbacks) = content_reader_core::content::observe_overlay_refusals(|| {
             resources.load(presentation, &assets, &mut images)
         });
         loaded.unwrap();
@@ -771,18 +771,18 @@ fn mounted(
         format!("name=\"Art\"\npath=\"{folder}\"\n").as_bytes(),
     );
     std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
-    let options = installed_content_core::ResolveOptions {
+    let options = content_reader_core::ResolveOptions {
         game_dir: root.join("steamapps/common/Game"),
         user_dir: root.join("user"),
         cache_dir: root.join("cache"),
     };
     let mut layers = ResolvedLayers::from_folders(&[(root.join("base").as_path(), &[][..])]).unwrap();
-    let selected = [installed_content_core::content::visual::Choice {
+    let selected = [content_reader_core::content::visual::Choice {
         id: "mod/art.mod".into(),
         name: "Art".into(),
     }];
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
     (root, layers)
 }
 
@@ -799,7 +799,7 @@ fn with_recorded(
     )
     .with_recorded_registry(Registry::load(&layers.recorded_only()).unwrap());
     let mut images = Vec::new();
-    let (loaded, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+    let (loaded, fallbacks) = content_reader_core::content::observe_overlay_refusals(|| {
         resources.load(presentation, assets, &mut images)
     });
     (loaded, resources, fallbacks)
@@ -994,7 +994,7 @@ fn only_the_kept_attempts_notes_are_named() {
     .with_recorded_registry(Registry::load(&layers.recorded_only()).unwrap());
     let mut images = Vec::new();
     let mut load = |names: &[&str]| {
-        installed_content_core::content::observe_overlay_refusals(|| {
+        content_reader_core::content::observe_overlay_refusals(|| {
             resources.load(presentation, &sprites(names), &mut images)
         })
     };

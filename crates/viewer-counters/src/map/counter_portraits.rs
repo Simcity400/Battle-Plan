@@ -6,9 +6,9 @@ use viewer_foundation::errors::examples;
 use viewer_foundation::map::test_support::test_tga_rgba8;
 use viewer_foundation::parallel::map;
 
-use installed_content_core::{ResolvedLayers, characters, characters::Authored, gui::native::resources};
-use installed_content_gfx::gfx::SpriteSet;
-use installed_content_image::{dds, native::Decode};
+use content_reader_core::{ResolvedLayers, characters, characters::Authored, gui::native::resources};
+use content_reader_gfx::gfx::SpriteSet;
+use content_reader_image::{dds, native::Decode};
 
 use viewer_foundation::map::{
     lazy_icons::{LazyImages, LazyTextures, Lookup},
@@ -180,7 +180,7 @@ pub fn load(
             .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))
     });
     let mut characters = BTreeMap::<String, Authored>::new();
-    let mut coverage = installed_content_core::coverage::Coverage::default();
+    let mut coverage = content_reader_core::coverage::Coverage::default();
     for (path, parsed_path) in paths.iter().zip(parsed) {
         coverage.next_file();
         let (found, stop) = parsed_path?;
@@ -339,7 +339,7 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content_core::gui::native::sprites::read_sprites(
+            content_reader_core::gui::native::sprites::read_sprites(
                 b"spriteTypes = { spriteType = { name = GFX_portrait texturefile = gfx/portrait.tga } }",
             ),
         )]);
@@ -370,7 +370,7 @@ mod tests {
                 if path.contains("broken") {
                     return Err(io::Error::other("broken"));
                 }
-                Ok(dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
+                Ok(dds::Texture::from_rgba8(content_reader_image::Rgba8Image {
                     width: 8,
                     height: 4,
                     pixels: vec![0; 128],
@@ -426,7 +426,7 @@ mod tests {
             "test portrait",
             Arc::new(|path: &str| {
                 let width = if path.contains("generic") { 6 } else { 8 };
-                Ok(dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
+                Ok(dds::Texture::from_rgba8(content_reader_image::Rgba8Image {
                     width,
                     height: 4,
                     pixels: vec![0; width as usize * 16],

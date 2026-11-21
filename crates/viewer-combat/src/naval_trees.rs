@@ -1,5 +1,5 @@
 use super::naval_labels::RecordedLabels;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::{
     naval_trees, naval_trees::SideSource, naval_trees::Trees, rows::ModifierBreakdownNode,
     rows::ModifierDefinitionRow, rows::NavalCombatShipRow, rows::NavalCombatSideDetails,

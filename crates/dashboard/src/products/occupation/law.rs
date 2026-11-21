@@ -1,7 +1,7 @@
 
 use crate::catalogue::{self, Catalogue, View};
 pub(super) use dashboard_text::occupation_law::{GroupLaw, LawInputs, admitted, law_for};
-use installed_content_core::occupation_laws::Laws;
+use content_reader_core::occupation_laws::Laws;
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;

@@ -3,7 +3,7 @@ use replay_data::{rows::CountryFactoriesRow, rows::TableId, rows::TableRows};
 use replay_frame::{frame::Metrics, frame::TableView};
 
 fn save(ger: &str, ita: &str) -> Save {
-    installed_content_save::parse(
+    content_reader_save::parse(
         format!(
             r#"HOI4txt
 date="1936.1.2.17" game_unique_id="campaign" version="build" game_unique_seed=-42 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
@@ -24,10 +24,10 @@ provinces={{}}
 const CLEAN: &str = "refresh=8 production={ dirty=no }";
 
 fn content(extra: &str) -> Buildings {
-    installed_content_core::buildings::parse(
+    content_reader_core::buildings::parse(
         format!("buildings={{ civ={{general_production=1}} arms={{military_production=1}} yard={{naval_production=1}} infrastructure={{}} both={{military_production=1 general_production=1}} {extra} }}")
             .as_bytes(),
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap()
 }
@@ -49,7 +49,7 @@ fn run(saved: &Save, content: &Buildings, rows: Vec<CountryFactoriesRow>) -> io:
         saved,
         content,
         rows,
-        &installed_content_save::MapMembership {
+        &content_reader_save::MapMembership {
             provinces: BTreeMap::from([(1, Some(1)), (2, Some(2)), (3, Some(3))]),
         }
         .into(),
@@ -60,7 +60,7 @@ fn run_with_membership(
     saved: &Save,
     content: &Buildings,
     rows: Vec<CountryFactoriesRow>,
-    membership: &installed_content_save::PartialMapMembership,
+    membership: &content_reader_save::PartialMapMembership,
 ) -> io::Result<Report> {
     run_with_states(saved, content, rows, membership, Vec::new())
 }
@@ -69,7 +69,7 @@ fn run_with_states(
     saved: &Save,
     content: &Buildings,
     rows: Vec<CountryFactoriesRow>,
-    membership: &installed_content_save::PartialMapMembership,
+    membership: &content_reader_save::PartialMapMembership,
     states: Vec<replay_data::rows::StateRow>,
 ) -> io::Result<Report> {
     let mut frame = DecodedFrame {
@@ -109,7 +109,7 @@ fn unowned_state_factories_follow_positive_control_and_never_charge_null_control
     let state = saved.states.get_mut(&2).unwrap();
     state.owner = None;
     state.controller = None;
-    let membership = installed_content_save::MapMembership {
+    let membership = content_reader_save::MapMembership {
         provinces: BTreeMap::from([(1, Some(1)), (2, Some(2)), (3, Some(3))]),
     }
     .into();
@@ -318,9 +318,9 @@ fn missing_rows_inputs_or_content_are_not_silently_compared() {
         .is_err()
     );
     assert!(run(&save("refresh=0", CLEAN), &content(""), rows()).is_err());
-    let undeclared = installed_content_core::buildings::parse(
+    let undeclared = content_reader_core::buildings::parse(
         b"buildings={ civ={} arms={} yard={} infrastructure={} }",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     assert!(run(&save(CLEAN, CLEAN), &undeclared, rows()).is_err());

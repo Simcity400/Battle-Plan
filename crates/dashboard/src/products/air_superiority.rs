@@ -221,7 +221,7 @@ dashboard_base::reply_warnings!(AirSuperiorityReply, AirChoicesReply);
 
 pub struct Names {
     catalogue: Result<Arc<Catalogue>, String>,
-    regions: Result<Arc<installed_content_regions::regions::StrategicRegions>, String>,
+    regions: Result<Arc<content_reader_regions::regions::StrategicRegions>, String>,
     warnings: Vec<String>,
 }
 

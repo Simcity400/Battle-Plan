@@ -10,9 +10,9 @@ use std::{
     io,
 };
 
-use installed_content_core::{ResolvedLayers, gui::native::resources, gui::native::sprites::SpriteKind};
-use installed_content_gfx::{gfx::SpriteSet, gfx::SpriteType};
-use installed_content_image::{Rgba8Image, dds, native::Decode};
+use content_reader_core::{ResolvedLayers, gui::native::resources, gui::native::sprites::SpriteKind};
+use content_reader_gfx::{gfx::SpriteSet, gfx::SpriteType};
+use content_reader_image::{Rgba8Image, dds, native::Decode};
 
 #[cfg(any(test, feature = "test-support"))]
 pub const FRAME_SIZE: [u32; 2] = [30, 12];
@@ -402,7 +402,7 @@ mod tests {
         std::fs::write(root.join("gfx/type.tga"), bytes).unwrap();
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = SpriteSet::new(&[("interface/test.gfx".into(),
-            installed_content_core::gui::native::sprites::read_sprites(b"spriteTypes={spriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga noOfFrames=2 framedirectiony=yes}}"))]);
+            content_reader_core::gui::native::sprites::read_sprites(b"spriteTypes={spriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga noOfFrames=2 framedirectiony=yes}}"))]);
         let mut images = Vec::new();
         let (atlas, warnings) =
             TypeAtlas::load(&layers, &sprites, Decode::default(), &mut images).unwrap();
@@ -437,7 +437,7 @@ mod tests {
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let layers = ResolvedLayers::from_folders(&[]).unwrap();
         let sprites = SpriteSet::new(&[("interface/test.gfx".into(),
-            installed_content_core::gui::native::sprites::read_sprites(b"spriteTypes={corneredTileSpriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga size={x=12 y=30} borderSize={x=1 y=1}}}"))]);
+            content_reader_core::gui::native::sprites::read_sprites(b"spriteTypes={corneredTileSpriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga size={x=12 y=30} borderSize={x=1 y=1}}}"))]);
         let (atlas, warnings) =
             TypeAtlas::load(&layers, &sprites, Decode::default(), &mut Vec::new()).unwrap();
         assert!(atlas.declares("GFX_div_templ_7_small"));
@@ -487,7 +487,7 @@ mod tests {
             .join(" ");
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content_core::gui::native::sprites::read_sprites(
+            content_reader_core::gui::native::sprites::read_sprites(
                 format!("spriteTypes = {{ {declarations} }}").as_bytes(),
             ),
         )]);
@@ -529,7 +529,7 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content_core::gui::native::sprites::read_sprites(
+            content_reader_core::gui::native::sprites::read_sprites(
                 b"spriteTypes = { spriteType = { name = GFX_div_templ_1_small texturefile = gfx/type.dds } }",
             ),
         )]);
@@ -556,7 +556,7 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content_core::gui::native::sprites::read_sprites(
+            content_reader_core::gui::native::sprites::read_sprites(
                 b"spriteTypes = { spriteType = { name = GFX_div_templ_1_small texturefile = gfx/type.tga } }",
             ),
         )]);
@@ -606,7 +606,7 @@ mod tests {
         std::fs::write(root.join("gfx/type.dds"), bytes).unwrap();
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content_core::gui::native::sprites::read_sprites(
+            content_reader_core::gui::native::sprites::read_sprites(
                 b"spriteTypes={spriteType={name=GFX_div_templ_1_small texturefile=gfx/type.dds}}",
             ),
         )]);
@@ -666,7 +666,7 @@ mod tests {
         }).collect::<Vec<_>>().join("\n");
         let sprites = SpriteSet::new(&[(
             "interface/test.gfx".into(),
-            installed_content_core::gui::native::sprites::read_sprites(
+            content_reader_core::gui::native::sprites::read_sprites(
                 format!("spriteTypes={{{declarations}}}").as_bytes(),
             ),
         )]);
@@ -785,7 +785,7 @@ mod tests {
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let sprites = SpriteSet::new(&[(
             "interface/counters.gfx".to_owned(),
-            installed_content_core::gui::native::sprites::read_sprites(
+            content_reader_core::gui::native::sprites::read_sprites(
                 b"spriteTypes = { \
                   spriteType = { name = \"GFX_div_templ_7_small\" noOfFrames = -2 } \
                   spriteType = { name = \"GFX_unit_infantry_icon_medium_white\" \

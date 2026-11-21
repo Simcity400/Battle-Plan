@@ -13,11 +13,11 @@ use viewer_foundation::map::tables::core;
 #[cfg(test)]
 use viewer_foundation::table_access::TokenNames;
 
-use installed_content_core::{ResolvedLayers, cities::Cities};
-use installed_content_image::{IndexedImage, native::Decode};
+use content_reader_core::{ResolvedLayers, cities::Cities};
+use content_reader_image::{IndexedImage, native::Decode};
 
 #[cfg(test)]
-use installed_content_core::buildings::BuildingType;
+use content_reader_core::buildings::BuildingType;
 #[cfg(test)]
 use replay_data::{rows::BuildingRow, rows::ProvinceRow, rows::tables};
 #[cfg(test)]
@@ -764,7 +764,7 @@ impl Sprawl {
         layers: &ResolvedLayers,
         decode: Decode,
         plan: &SprawlPlan,
-        defines: &installed_content_core::defines::Defines,
+        defines: &content_reader_core::defines::Defines,
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let roster = layers.descriptor_roster()?;
@@ -897,7 +897,7 @@ impl Sprawl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::cities;
+    use content_reader_core::cities;
 
     fn damage_types() -> Vec<BuildingType> {
         ["infrastructure", "industrial_complex", "arms_factory"]
@@ -1114,7 +1114,7 @@ mod tests {
     #[test]
     fn city_damage_drives_authored_fire_and_smoke_on_the_state_entry_clock() {
         use super::super::entity_animation::{Clip, Node, Player, Rig};
-        use installed_content_core::mesh;
+        use content_reader_core::mesh;
         let state = |name: &str, particle: &str| Clip {
             state: mesh::EntityState {
                 name: name.into(),
@@ -1341,7 +1341,7 @@ mod tests {
     fn grouped_city_frames_preserve_admission_placements_requests_and_clock_records() {
         use super::super::entity_animation::{Clip, Node, Rig};
         use super::super::models::ModelPass;
-        use installed_content_core::mesh;
+        use content_reader_core::mesh;
         use viewer_foundation::map::camera::{Free, Lens, Pose};
         engine_executable::executable_tables::initialize_for_tests()
             .expect("supported executable metadata");

@@ -1,5 +1,5 @@
-use installed_content_core::parser::c_string;
-use installed_content_localisation::{localisation::Localisation, localisation::Unlocalised};
+use content_reader_core::parser::c_string;
+use content_reader_localisation::{localisation::Localisation, localisation::Unlocalised};
 use std::collections::BTreeMap;
 
 pub const VICTORY_POINT: u32 = 0x26;

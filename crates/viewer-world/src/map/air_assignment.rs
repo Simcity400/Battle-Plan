@@ -1,4 +1,4 @@
-use installed_content_core::{defines::Defines, province_geometry::ProvinceGeometry};
+use content_reader_core::{defines::Defines, province_geometry::ProvinceGeometry};
 use replay_data::{rows::AirWingRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
@@ -26,7 +26,7 @@ impl Colors {
                 )));
             }
             Ok(std::array::from_fn(|at| {
-                installed_content_core::crt::truncate_f32(values[at] as f32 * 255.0) as u8
+                content_reader_core::crt::truncate_f32(values[at] as f32 * 255.0) as u8
             }))
         };
         let names = [
@@ -45,7 +45,7 @@ impl Colors {
             });
         Ok(Self {
             fallback,
-            country_alpha: installed_content_core::crt::truncate_f32(country_alpha * 255.0) as u8,
+            country_alpha: content_reader_core::crt::truncate_f32(country_alpha * 255.0) as u8,
             fallback_enabled,
             allowed: color("AIR_RANGE_CAN_ASSIGN_MISSION_STRIPES_COLOR")?,
             blocked: color("AIR_RANGE_CANNOT_ASSIGN_MISSION_STRIPES_COLOR")?,

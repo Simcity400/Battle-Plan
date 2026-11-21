@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use std::sync::OnceLock;
 
-use installed_content_core::buildings::BuildingType;
-use installed_content_raids::{raids::BuildingSelector, raids::RaidType, raids::TargetType};
+use content_reader_core::buildings::BuildingType;
+use content_reader_raids::{raids::BuildingSelector, raids::RaidType, raids::TargetType};
 use replay_data::{rows::RaidScope, rows::RaidTargetStatusRow, rows::tables};
 
 use super::{

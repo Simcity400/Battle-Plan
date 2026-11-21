@@ -1,5 +1,5 @@
-use installed_content_core::{gui::native, gui::native::Element, unit_leader::Skills};
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_core::{gui::native, gui::native::Element, unit_leader::Skills};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatSideDetails, rows::LandCombatSideInputs,
     rows::LandCombatSideRow, rows::tables,
@@ -180,7 +180,7 @@ fn authored_key<'a>(
     if hash == 0 {
         return Ok(None);
     }
-    std::str::from_utf8(installed_content_core::parser::c_string(key))
+    std::str::from_utf8(content_reader_core::parser::c_string(key))
         .map(Some)
         .map_err(|_| {
             format!("authored_tooltip_undecodable_key: {path}'s {field} key {key:?} is not UTF-8")
@@ -1154,7 +1154,7 @@ fn naval_flag_hovers(
         .iter()
         .map(|row| (row.id, row.canonical_slot))
         .collect();
-    let names = installed_content_country_names::country_names::CountryNames::read(
+    let names = content_reader_country_names::country_names::CountryNames::read(
         frame,
         &static_content.localisation,
     );

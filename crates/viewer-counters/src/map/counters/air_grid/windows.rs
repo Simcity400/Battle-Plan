@@ -345,7 +345,7 @@ fn update_item(
     let text = if data.item.planes < 1000 {
         data.item.planes.to_string()
     } else {
-        installed_content_localisation::localisation::format_scripted_variable(
+        content_reader_localisation::localisation::format_scripted_variable(
             i64::from(data.item.planes) * 100_000,
             Some(b"*1"),
         )

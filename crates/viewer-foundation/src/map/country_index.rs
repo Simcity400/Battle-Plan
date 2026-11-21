@@ -52,7 +52,7 @@ impl CountryIndex {
                         std::str::from_utf8(&row.cosmetic_tag)
                             .map(str::to_owned)
                             .map_err(|_| "country cosmetic tag is not UTF-8".into()),
-                        installed_content_country_names::country_names::original_tag(country, row)
+                        content_reader_country_names::country_names::original_tag(country, row)
                             .map(str::to_owned),
                     ),
                 ))
@@ -426,7 +426,7 @@ mod tests {
                         std::str::from_utf8(&row.cosmetic_tag)
                             .map(str::to_owned)
                             .map_err(|_| "country cosmetic tag is not UTF-8".into()),
-                        installed_content_country_names::country_names::original_tag(country, row)
+                        content_reader_country_names::country_names::original_tag(country, row)
                             .map(str::to_owned),
                     ),
                 ))

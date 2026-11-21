@@ -1,6 +1,6 @@
 
-use installed_content_division_names::division_names::Database;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_division_names::division_names::Database;
+use content_reader_localisation::localisation::Localisation;
 #[cfg(test)]
 use replay_data::rows::DivisionStatusRow;
 use replay_data::{rows::NameOperands, rows::Recorded, rows::TaskForceCounterInputRow};
@@ -99,8 +99,8 @@ fn legacy_army_name<'a>(
     names()?
         .resolve(&naming.group, naming.order, naming.ordered != 0)
         .map_err(|why| match why {
-            installed_content_division_names::division_names::Unresolved::NoGroup
-            | installed_content_division_names::division_names::Unresolved::NoFallback => {
+            content_reader_division_names::division_names::Unresolved::NoGroup
+            | content_reader_division_names::division_names::Unresolved::NoFallback => {
                 "legacy name allocation inputs are not recorded (no recorded visible override)"
                     .into()
             }

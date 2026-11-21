@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use installed_content_save::naval_history as saved;
+use content_reader_save::naval_history as saved;
 use replay_data::{
     rows::CountryRow, rows::NavalSupremacyRow, rows::SunkConvoyRow, rows::SunkShipEntry,
     rows::tables,

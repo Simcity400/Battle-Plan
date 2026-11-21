@@ -22,7 +22,7 @@ fn inline_icons_of_localised_authored_texts_are_acquired() {
         VIEWPORT,
     )
     .unwrap();
-    let localisation: installed_content_localisation::localisation::Localisation = [
+    let localisation: content_reader_localisation::localisation::Localisation = [
         ("NOTE_KEY".to_owned(), "a £note_icon b".to_owned()),
         ("BUTTON_KEY".to_owned(), "£button_icon".to_owned()),
         ("UNRELATED_KEY".to_owned(), "£unrelated_inline".to_owned()),
@@ -45,7 +45,7 @@ fn inline_icons_of_localised_authored_texts_are_acquired() {
 
 #[test]
 fn raid_tooltip_regression_inventory_loads_runtime_selected_localisation() {
-    let loc: installed_content_localisation::localisation::Localisation = [
+    let loc: content_reader_localisation::localisation::Localisation = [
         ("arbitrary_scripted_choice", "\u{a3}scripted|2"),
         ("ABCDE_project_narrative", "\u{a3}project"),
         ("cosmetic_country_name", "\u{a3}country"),
@@ -76,7 +76,7 @@ const MAX_RESOLUTION_NAVY: &str = r#"guiTypes = {
 fn the_asset_set_does_not_depend_on_the_gui_viewport() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let localisation = installed_content_localisation::localisation::Localisation::default();
+    let localisation = content_reader_localisation::localisation::Localisation::default();
     for source in [
         format!(
             "{SYNTHETIC_NAVY_GUI}

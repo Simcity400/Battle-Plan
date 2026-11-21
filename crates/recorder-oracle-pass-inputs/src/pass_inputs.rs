@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_core::parser::c_string;
+use content_reader_core::parser::c_string;
 use replay_data::rows::Recorded;
 
 mod directed_wars;
@@ -267,7 +267,7 @@ fn task_force_port(
     hour: replay_data::Hour,
     row: &replay_data::rows::TaskForceCounterInputRow,
     force: &replay_data::rows::TaskForceRow,
-    saved: &installed_content_save::counter_inputs::TaskForce,
+    saved: &content_reader_save::counter_inputs::TaskForce,
     r: &mut Report,
 ) {
     let label = format!("TaskForceCounterInputs {}.port_mission", row.task_force);
@@ -370,7 +370,7 @@ fn task_force_port(
                 let field = format!("{label}.avoided_ship_types[{at}]");
                 match kind {
                     Some(kind) => {
-                        let comparable = installed_content_core::parser::c_string(kind);
+                        let comparable = content_reader_core::parser::c_string(kind);
                         if comparable.len() < kind.len() {
                             r.limitation("native text serialization ends at the first NUL; captured trailing ship-type bytes are not save-comparable", &field);
                         }
@@ -868,7 +868,7 @@ fn countries(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
     Ok(())
 }
 
-fn saved_groups(save: &Save) -> BTreeMap<u64, &installed_content_save::naval_history::OrdersGroup> {
+fn saved_groups(save: &Save) -> BTreeMap<u64, &content_reader_save::naval_history::OrdersGroup> {
     save.naval_history
         .theatre_countries
         .iter()
@@ -882,7 +882,7 @@ fn saved_groups(save: &Save) -> BTreeMap<u64, &installed_content_save::naval_his
 fn hq_template_context(
     frame: &DecodedFrame,
     row: &replay_data::rows::OrdersGroupCounterInputRow,
-    saved: &installed_content_save::naval_history::OrdersGroup,
+    saved: &content_reader_save::naval_history::OrdersGroup,
     r: &mut Report,
 ) -> io::Result<()> {
     let value = row

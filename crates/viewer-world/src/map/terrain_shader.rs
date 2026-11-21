@@ -1,9 +1,9 @@
 use eframe::wgpu::{self, util::DeviceExt};
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, pdxshader::DepthStencilState, pdxshader::RasterizerState,
     pdxshader::program::Stage,
 };
-use installed_content_image::native::Decode;
+use content_reader_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::cell::RefCell;
 use std::{
@@ -2115,7 +2115,7 @@ mod tests {
         let program = |water: &str| {
             let text = format!("Code [[ static const float WATER_HEIGHT = {water}; ]]");
             Arc::new(
-                installed_content_core::pdxshader::program::read_with(b"terrain.shader", &|path| {
+                content_reader_core::pdxshader::program::read_with(b"terrain.shader", &|path| {
                     Some(if path == b"terrain.shader" {
                         text.clone().into_bytes()
                     } else {

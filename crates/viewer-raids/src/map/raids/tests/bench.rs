@@ -2,7 +2,7 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use installed_content_raids::{
+use content_reader_raids::{
     raids::BattalionRequirement, raids::EquipmentRequirement, raids::SourceKind,
     raids::StartingPoint,
 };
@@ -47,7 +47,7 @@ fn kinds() -> Vec<RaidType> {
         category: Some("army".into()),
         show_target: parse("NOT = { is_in_faction_with = FROM }"),
         target_types: vec![TargetType::Building(
-            installed_content_raids::raids::BuildingSelector {
+            content_reader_raids::raids::BuildingSelector {
                 types: vec![target.into()],
                 minimum_level: Some(1),
                 ..Default::default()
@@ -58,7 +58,7 @@ fn kinds() -> Vec<RaidType> {
         ..Default::default()
     };
     let battalions = |name: &str| {
-        vec![installed_content_raids::raids::UnitRequirement {
+        vec![content_reader_raids::raids::UnitRequirement {
             battalions: vec![BattalionRequirement {
                 name: name.into(),
                 min: Some(2),
@@ -90,7 +90,7 @@ fn kinds() -> Vec<RaidType> {
                 types: vec![SourceKind::AirBase],
                 ..Default::default()
             },
-            unit_requirements: vec![installed_content_raids::raids::UnitRequirement {
+            unit_requirements: vec![content_reader_raids::raids::UnitRequirement {
                 equipment: vec![EquipmentRequirement {
                     types: vec!["strategic_bomber".into()],
                     min: Some(10),
@@ -120,7 +120,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         height: (COLUMN * 4) as i32,
         ..Default::default()
     };
-    let mut graph = installed_content_core::province_graph::ProvinceGraph::default();
+    let mut graph = content_reader_core::province_graph::ProvinceGraph::default();
     for country in 0..countries {
         for row in 0..COLUMN {
             let id = province(country, row);
@@ -165,7 +165,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         types: kinds(),
         ..Default::default()
     };
-    assets.trigger_content.buildings = installed_content_core::buildings::Buildings {
+    assets.trigger_content.buildings = content_reader_core::buildings::Buildings {
         types: ["naval_base", "air_base"]
             .map(|name| {
                 (
@@ -181,7 +181,7 @@ fn world(countries: u32) -> (RaidAssets, DecodedFrame) {
         ..Default::default()
     };
     super::set_counts(&mut assets);
-    assets.equipment = installed_content_core::equipment::fixture::load(&[(
+    assets.equipment = content_reader_core::equipment::fixture::load(&[(
         "common/units/equipment/a.txt",
         "equipments = { large_plane_airframe = { is_archetype = yes type = strategic_bomber } transport_plane = { is_archetype = yes type = air_transport } }",
     )])

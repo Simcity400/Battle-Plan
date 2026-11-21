@@ -1,6 +1,6 @@
 
-use installed_content_country_names::country_names::{self, CountryNames, Operands};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_country_names::country_names::{self, CountryNames, Operands};
+use content_reader_localisation::localisation::Localisation;
 use replay::{campaign::Replay, campaign::SeekResult, recording_files};
 use replay_data::{Hour, rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, TableView};

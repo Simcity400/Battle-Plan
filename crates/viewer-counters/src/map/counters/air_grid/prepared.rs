@@ -1,6 +1,6 @@
 use super::super::{CounterInputs, tables};
 use super::*;
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_data::{rows::AirBaseRow, rows::Recorded, rows::WingEquipmentRow};
 use replay_frame::frame::DecodedFrame;
 use std::{

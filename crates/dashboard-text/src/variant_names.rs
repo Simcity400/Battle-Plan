@@ -66,7 +66,7 @@ pub fn compare_variants(
 }
 
 pub fn enabled_module_slots<'f>(
-    database: &installed_content_core::equipment::Database,
+    database: &content_reader_core::equipment::Database,
     index: usize,
     frame: impl Into<HourFrame<'f>>,
 ) -> Result<bool, String> {
@@ -91,7 +91,7 @@ pub fn enabled_module_slots<'f>(
 }
 
 pub fn variant_order<'f>(
-    database: &installed_content_core::equipment::Database,
+    database: &content_reader_core::equipment::Database,
     index: usize,
     variant: &VariantDefinitionRow,
     frame: impl Into<HourFrame<'f>>,
@@ -510,7 +510,7 @@ pub trait Texts {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl Texts for installed_content_localisation::localisation::Localisation {
+impl Texts for content_reader_localisation::localisation::Localisation {
     fn has(&self, key: &str) -> bool {
         self.get(key).is_some()
     }

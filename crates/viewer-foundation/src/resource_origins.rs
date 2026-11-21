@@ -11,7 +11,7 @@ pub use dashboard_text::state_resources::{
     ResourceOperands, building_grants_from, grant_lists, grant_of, resource_operands,
 };
 pub const INFRASTRUCTURE_TOKEN: u32 = engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN;
-use installed_content_core::{ResolvedLayers, buildings::Buildings, defines::Defines};
+use content_reader_core::{ResolvedLayers, buildings::Buildings, defines::Defines};
 use replay_data::{
     rows::ResourceOriginRow, rows::StateResourceInputRow, rows::StateResourceRow,
     rows::TableSchema, rows::tables,
@@ -19,7 +19,7 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 
 pub struct Content {
-    pub resources: Vec<installed_content_core::resources::Resource>,
+    pub resources: Vec<content_reader_core::resources::Resource>,
     pub buildings: Buildings,
     pub bonuses: [i64; 2],
     pub oil: String,
@@ -28,13 +28,13 @@ pub struct Content {
 
 impl Content {
     pub fn load(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
-        let (resources, notes) = installed_content_core::resources::read(layers)?;
+        let (resources, notes) = content_reader_core::resources::read(layers)?;
         if let Some(gap) = resources.gap() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, gap.to_string()));
         }
         Ok(Self {
             resources: resources.declarations,
-            buildings: installed_content_core::buildings::read(layers)?,
+            buildings: content_reader_core::buildings::read(layers)?,
             bonuses: resource_bonuses(defines)?,
             oil: defines.text("NGame", "OIL_RESOURCE")?,
             warnings: notes.into_iter().map(|(_, note)| note).collect(),
@@ -54,7 +54,7 @@ impl Definition {
     pub fn name_key(&self) -> String {
         format!(
             "PRODUCTION_MATERIALS_{}",
-            installed_content_localisation::localisation::crt_case_text(&self.name, true, false)
+            content_reader_localisation::localisation::crt_case_text(&self.name, true, false)
         )
     }
 }

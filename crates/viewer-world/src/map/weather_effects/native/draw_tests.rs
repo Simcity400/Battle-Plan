@@ -306,7 +306,7 @@ fn inputs(trail: bool) -> Vec<VertexInput> {
 }
 
 fn effect(replacement: bool) -> Arc<Effect> {
-    let source = Arc::new(installed_content_core::pdxshader::program::read_with(b"weather-proof.shader", &|path| {
+    let source = Arc::new(content_reader_core::pdxshader::program::read_with(b"weather-proof.shader", &|path| {
         Some(if path == b"weather-proof.shader" {
             b"RasterizerState Visible { CullMode = none } Effect Fixture { RasterizerState = Visible } Effect Alternate { RasterizerState = Visible } Effect FixtureTrail { RasterizerState = Visible } Effect FixtureTrailNoBillboard { RasterizerState = Visible } Effect UnknownScale { RasterizerState = Visible }".to_vec()
         } else { Vec::new() })

@@ -12,9 +12,9 @@ doctest = false
 [dependencies]
 map-display-data.workspace = true
 product-codec.workspace = true
-installed-content-core.workspace = true
-installed-content-image.workspace = true
-installed-content-regions.workspace = true
+content-reader-core.workspace = true
+content-reader-image.workspace = true
+content-reader-regions.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 
@@ -22,8 +22,8 @@ replay-frame.workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-regions = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
-installed-content-regions = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

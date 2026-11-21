@@ -8,8 +8,8 @@ mod visions;
 pub mod witness;
 mod zone_projection;
 
-use installed_content_core::{ResolvedLayers, map::MapData};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_core::{ResolvedLayers, map::MapData};
+use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::tables as row_tables;
 use replay_frame::frame::DecodedFrame;
 use std::{

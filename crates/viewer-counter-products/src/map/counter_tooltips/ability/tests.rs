@@ -28,7 +28,7 @@ fn with_context<R>(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>) -> R) ->
     .map(|(key, value)| (key.into(), value.into()))
     .collect();
     let vision = Vision::sharing(1, []);
-    let names = installed_content_division_names::division_names::Database::default();
+    let names = content_reader_division_names::division_names::Database::default();
     let units = Err("unused".into());
     run(&Context {
         nato: false,

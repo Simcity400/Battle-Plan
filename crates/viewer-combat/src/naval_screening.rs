@@ -1,5 +1,5 @@
 use super::keyed::Keyed;
-use installed_content_naval_combat_defines::naval_combat_defines::Defines;
+use content_reader_naval_combat_defines::naval_combat_defines::Defines;
 use replay_data::{
     rows::NavalCombatShipRow, rows::NavalCombatSideDetails, rows::NavalCombatSummaryInputs,
     rows::ShipModelRow,

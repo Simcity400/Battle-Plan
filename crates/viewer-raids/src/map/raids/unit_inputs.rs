@@ -1,5 +1,5 @@
 use super::{RaidAssets, script::World};
-use installed_content_raids::{raids::RaidGraphicsDefines, raids::RaidType};
+use content_reader_raids::{raids::RaidGraphicsDefines, raids::RaidType};
 use replay_data::{rows::RaidRow, rows::RaidTargetRow, rows::TaskForceRow, rows::tables};
 use replay_frame::frame::DecodedSource;
 use std::collections::BTreeMap;

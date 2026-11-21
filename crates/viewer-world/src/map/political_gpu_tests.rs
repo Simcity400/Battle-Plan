@@ -1261,7 +1261,7 @@ fn political_gpu_recording() {
     let path =
         PathBuf::from(std::env::var_os("BATTLE_PLAN_POLITICAL_REPLAY").or_else(|| std::env::var_os("HOI4_POLITICAL_REPLAY")).expect("BATTLE_PLAN_POLITICAL_REPLAY"));
     let replay = replay::campaign::Replay::open(std::fs::read(&path).unwrap()).unwrap();
-    let options = installed_content_core::ResolveOptions {
+    let options = content_reader_core::ResolveOptions {
         game_dir: PathBuf::from(
             std::env::var_os("BATTLE_PLAN_POLITICAL_GAME_DIR").or_else(|| std::env::var_os("HOI4_POLITICAL_GAME_DIR")).expect("BATTLE_PLAN_POLITICAL_GAME_DIR"),
         ),
@@ -1270,11 +1270,11 @@ fn political_gpu_recording() {
         ),
         cache_dir: path.parent().unwrap().join("political-content-cache"),
     };
-    let content = installed_content_core::resolve(&replay.identity, &options).unwrap();
-    let map = installed_content_core::map::load(&content.layers).unwrap();
+    let content = content_reader_core::resolve(&replay.identity, &options).unwrap();
+    let map = content_reader_core::map::load(&content.layers).unwrap();
     let field =
-        FieldDefines::load(&installed_content_core::defines::read(&content.layers).unwrap()).unwrap();
-    let strategic = installed_content_regions::regions::read(&content.layers)
+        FieldDefines::load(&content_reader_core::defines::read(&content.layers).unwrap()).unwrap();
+    let strategic = content_reader_regions::regions::read(&content.layers)
         .unwrap()
         .regions;
     let bitmap = ProvinceMap {

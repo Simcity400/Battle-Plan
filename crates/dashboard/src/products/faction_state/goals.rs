@@ -6,7 +6,7 @@ use crate::{
     scripted_text::ScriptedText,
 };
 use dashboard_text::faction_names;
-use installed_content_core::faction_goals::{Catalog, Definition};
+use content_reader_core::faction_goals::{Catalog, Definition};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use serde::Serialize;
@@ -83,7 +83,7 @@ impl<'a> Texts<'a> {
             frame,
             faction,
             cat,
-            definitions: installed_content_core::faction_goals::cached(&cat.content.layers),
+            definitions: content_reader_core::faction_goals::cached(&cat.content.layers),
             art,
             lexical: faction_names::LexicalNames::from_source(frame),
             viewpoint,
@@ -139,7 +139,7 @@ impl<'a> Texts<'a> {
             Ok(icon) => shown.icon = icon,
             Err(why) => failures.push(why),
         }
-        let render = |bound: &installed_content_core::gui::native::BoundLocalization| -> Result<String, String> {
+        let render = |bound: &content_reader_core::gui::native::BoundLocalization| -> Result<String, String> {
             if bound.is_empty() {
                 return Ok(String::new());
             }
@@ -193,13 +193,13 @@ pub(super) fn unnamed(frame: &DecodedFrame, token: Option<u32>, why: &str) -> Fa
     shown
 }
 
-pub(super) fn term_name(localisation: &installed_content_localisation::localisation::Localisation, category: &str) -> Option<String> {
+pub(super) fn term_name(localisation: &content_reader_localisation::localisation::Localisation, category: &str) -> Option<String> {
     let key = category.to_ascii_uppercase();
     localisation.get(&key)?;
     catalogue::localised(localisation, &key, catalogue::View::Plain).ok().filter(|name| !name.is_empty())
 }
 
-fn bands(definition: &Definition, localisation: &installed_content_localisation::localisation::Localisation) -> Vec<FactionProgressBand> {
+fn bands(definition: &Definition, localisation: &content_reader_localisation::localisation::Localisation) -> Vec<FactionProgressBand> {
     definition
         .progress_sections
         .iter()
@@ -240,7 +240,7 @@ pub(super) fn counted(definitions: &[FactionGoalDefinition]) -> Vec<String> {
 }
 
 pub(super) fn scripted(frame: &DecodedFrame, faction: u64, cat: &Catalogue) -> bool {
-    let Ok(definitions) = installed_content_core::faction_goals::cached(&cat.content.layers) else { return false };
+    let Ok(definitions) = content_reader_core::faction_goals::cached(&cat.content.layers) else { return false };
     let lexical = faction_names::LexicalNames::from_source(frame);
     let spelled = |token: u32| faction_names::template_spelling(frame, Some(token)).ok().flatten();
     let goals = frame

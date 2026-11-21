@@ -24,7 +24,7 @@ fn two_country_fixture() -> (DecodedFrame, Save) {
         TableView::Complete(TableRows::CountryLinks(links)).into();
     save.countries.insert(
         b"TWO".to_vec(),
-        installed_content_save::Country {
+        content_reader_save::Country {
             tag: b"TWO".to_vec(),
             ..Default::default()
         },
@@ -70,7 +70,7 @@ fn participation_oracle_compares_every_saved_component_membership_and_binary_omi
     .collect();
     frame.tables[TableId::WarOwnedRelations.index()] =
         TableView::Complete(TableRows::WarOwnedRelations(owned)).into();
-    let ledger = installed_content_save::war_participation::Ledger {
+    let ledger = content_reader_save::war_participation::Ledger {
         first: b"GER".to_vec(),
         second: b"THREE".to_vec(),
         equipment_damage: 100_001,
@@ -84,7 +84,7 @@ fn participation_oracle_compares_every_saved_component_membership_and_binary_omi
         lend_lease_received: -800_000,
         captured_provinces: vec![-7, 5000],
     };
-    save.war_relations.push(installed_content_save::WarRelation {
+    save.war_relations.push(content_reader_save::WarRelation {
         participation: [Some(ledger), None],
         roster_owner: b"GER".to_vec(),
         target: b"THREE".to_vec(),
@@ -225,7 +225,7 @@ fn participation_oracle_compares_native_history_rows_outside_the_displayed_same_
         ]))
         .into();
     save.war_delivery_histories
-        .push(installed_content_save::war_participation::DeliveryHistory {
+        .push(content_reader_save::war_participation::DeliveryHistory {
             owner: b"GER".to_vec(),
             target: b"TWO".to_vec(),
             industry_sent: 100_000,
@@ -258,7 +258,7 @@ fn participation_oracle_compares_native_history_rows_outside_the_displayed_same_
 fn ordered_repeated_goals_aliases_and_missing_objects_compare_without_normalizing() {
     let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
     let handle = (3_u64 << 32) | 12_345;
-    save.war_relations.push(installed_content_save::WarRelation {
+    save.war_relations.push(content_reader_save::WarRelation {
         participation: [None, None],
         roster_owner: b"GER".to_vec(),
         target: b"GER".to_vec(),
@@ -404,7 +404,7 @@ fn ordered_repeated_goals_aliases_and_missing_objects_compare_without_normalizin
 #[test]
 fn redeclaration_does_not_compare_retired_goals_with_live_goals_and_checks_reverse_coverage() {
     let (mut frame, mut save) = two_country_fixture();
-    save.war_relations.push(installed_content_save::WarRelation {
+    save.war_relations.push(content_reader_save::WarRelation {
         participation: [None, None],
         roster_owner: b"GER".to_vec(),
         target: b"TWO".to_vec(),
@@ -535,7 +535,7 @@ fn redeclaration_does_not_compare_retired_goals_with_live_goals_and_checks_rever
 #[test]
 fn each_saved_relation_requires_both_live_endpoint_occurrences() {
     let (mut frame, mut save) = two_country_fixture();
-    save.war_relations.push(installed_content_save::WarRelation {
+    save.war_relations.push(content_reader_save::WarRelation {
         participation: [None, None],
         roster_owner: b"GER".to_vec(),
         target: b"TWO".to_vec(),

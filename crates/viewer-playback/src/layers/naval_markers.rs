@@ -5,7 +5,7 @@ use super::{
     land_markers::{bytes_of, held, held_as, opaque, u64s},
 };
 use crate::playhead_host::mirror::{Mirror, Mirrors};
-use installed_content_core::map::ProvinceKind;
+use content_reader_core::map::ProvinceKind;
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
 use replay_data::rows::{NavalCombatSideDetails, NavalProvinceCombatRow, TableId};

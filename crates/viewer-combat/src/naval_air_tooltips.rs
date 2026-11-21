@@ -1,4 +1,4 @@
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::rows::NavalCombatPlane;
 use viewer_foundation::tooltip_text::tooltip_keys;
 use viewer_foundation::tooltip_text::{TextIcons, builtin, displayable};
@@ -292,7 +292,7 @@ pub(super) fn carrier_org_suffix(
         } else {
             'G'
         };
-        let percent = installed_content_core::fixed5::fixed5_percent(organisation_ratio, 0, true);
+        let percent = content_reader_core::fixed5::fixed5_percent(organisation_ratio, 0, true);
         let value = format!("\u{11}{colour}{percent}\u{11}!");
         text.push_str(" (");
         text.push_str(&builtin(
@@ -352,13 +352,13 @@ pub(super) fn efficiency_prefix(
         &[("VAL", Argument::Fixed5(sortie_efficiency))],
     )?;
     text.push('\n');
-    let base = installed_content_core::fixed5::fixed5_percent(base, 0, true);
+    let base = content_reader_core::fixed5::fixed5_percent(base, 0, true);
     text.push_str(&builtin(icons, loc, STAT_BASE_VALUE, &[])?);
     text.push_str(&format!("\u{11}H{base}\u{11}!\n"));
     text.push_str(member_breakdown);
     let coloured = |value, factor| {
         let colour = if value < ONE { 'R' } else { 'G' };
-        let value = installed_content_core::fixed5::fixed5_percent(value, 0, true);
+        let value = content_reader_core::fixed5::fixed5_percent(value, 0, true);
         format!(
             "\u{11}{colour}{}{value}\u{11}!",
             if factor { "x" } else { "" }
@@ -393,7 +393,7 @@ pub(super) fn efficiency_prefix(
                 text.push_str("    ");
                 text.push_str(&builtin(icons, loc, MODIFIER_CARRIER_NIGHT_TRAFFIC, &[])?);
                 text.push_str(": ");
-                let country = installed_content_core::fixed5::fixed5_percent(country_night, 0, true);
+                let country = content_reader_core::fixed5::fixed5_percent(country_night, 0, true);
                 text.push_str(&format!("\u{11}G{country}\u{11}!"));
                 text.push('\n');
             }

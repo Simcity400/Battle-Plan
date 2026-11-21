@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::construction::Manpower;
+use content_reader_save::construction::Manpower;
 use replay_data::rows::{FactionManpowerRow, FactionProgramRow, FactionRuleRow};
 fn group<T>(
     rows: &[T],
@@ -44,7 +44,7 @@ pub fn variables(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             .and_then(|row| row.seed)
             .ok_or_else(|| invalid("faction variable seed occurrence missing"))?;
         let entries = &actual[1..];
-        let empty = installed_content_save::intel::Variables::default();
+        let empty = content_reader_save::intel::Variables::default();
         let expected = saved.companions.variables.as_ref().unwrap_or(&empty);
         if let Some(expected_seed) = expected.seed {
             compare(vec![seed], &[expected_seed], id, "variables.seed", report);
@@ -104,7 +104,7 @@ pub fn rules(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
             .map(|row| {
                 tokens
                     .get(&row.token)
-                    .map(|literal| installed_content_core::parser::c_string(literal).to_vec())
+                    .map(|literal| content_reader_core::parser::c_string(literal).to_vec())
                     .ok_or_else(|| invalid("faction rule token is absent from LexicalTokens"))
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -323,7 +323,7 @@ pub fn minimum_upgrades(frame: &DecodedFrame, save: &Save, report: &mut Report) 
             .map(|row| {
                 tokens
                     .get(&row.token)
-                    .map(|literal| installed_content_core::parser::c_string(literal).to_vec())
+                    .map(|literal| content_reader_core::parser::c_string(literal).to_vec())
                     .ok_or_else(|| invalid("faction minimum upgrade token spelling unavailable"))
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -356,7 +356,7 @@ pub fn doctrine(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::R
             .map(|row| {
                 tokens
                     .get(&row.token)
-                    .map(|literal| installed_content_core::parser::c_string(literal).to_vec())
+                    .map(|literal| content_reader_core::parser::c_string(literal).to_vec())
                     .ok_or_else(|| invalid("faction doctrine folder token spelling unavailable"))
             })
             .collect::<io::Result<Vec<_>>>()?;
@@ -386,7 +386,7 @@ mod tests {
         let (mut frame, mut save, _, _) = crate::fixtures::fixture();
         save.factions.insert(
             7,
-            installed_content_save::Faction {
+            content_reader_save::Faction {
                 id: 7,
                 name: None,
                 members: vec![],
@@ -397,7 +397,7 @@ mod tests {
                 theatres: vec![],
                 advisor_slots: vec![],
                 goals: Default::default(),
-                companions: installed_content_save::faction_companions::Snapshot {
+                companions: content_reader_save::faction_companions::Snapshot {
                     advisor_slots: Vec::new(),
                     extracted: Some(Vec::new()),
                     projection_effects: None,

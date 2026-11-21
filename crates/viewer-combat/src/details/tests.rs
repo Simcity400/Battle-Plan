@@ -544,9 +544,9 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut localisation = Localisation::default();
     localisation.language = "english".into();
-    let names = installed_content_division_names::division_names::parse(
+    let names = content_reader_division_names::division_names::parse(
         br#"SOV_INF_01 = { ordered = { 144 = { "%dya Strelkovaya Diviziya" } } }"#,
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let mut row = LandCombatDivisionRow {
@@ -674,9 +674,9 @@ fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
 fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let names = installed_content_division_names::division_names::parse(
+    let names = content_reader_division_names::division_names::parse(
         br#"INF = { ordered = { 1 = { "First" } } unordered = { loose = { "Loose" } } }"#,
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     )
     .unwrap();
     let row = |division, group: &[u8], order, ordered: u8| LandCombatDivisionRow {

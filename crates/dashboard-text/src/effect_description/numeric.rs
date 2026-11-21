@@ -84,7 +84,7 @@ impl Renderer<'_, '_, '_> {
                 } else {
                     'Y'
                 };
-                let number = installed_content_core::fixed5::fixed5_to_string(scaled, 1);
+                let number = content_reader_core::fixed5::fixed5_to_string(scaled, 1);
                 let value = format!(
                     "\u{11}{colour}{}{number}%\u{11}!",
                     if scaled < 0 { "" } else { "+" }
@@ -109,10 +109,10 @@ impl Renderer<'_, '_, '_> {
             return Ok(0);
         }
         let operand = scalar_operand(item)?;
-        match installed_content_core::fixed5::int_operand(operand, item.quoted()) {
-            installed_content_core::fixed5::IntOperand::Integer(value) => Ok(value),
-            installed_content_core::fixed5::IntOperand::Constant(value) => Ok((value / 100_000) as i32),
-            installed_content_core::fixed5::IntOperand::Scoped => {
+        match content_reader_core::fixed5::int_operand(operand, item.quoted()) {
+            content_reader_core::fixed5::IntOperand::Integer(value) => Ok(value),
+            content_reader_core::fixed5::IntOperand::Constant(value) => Ok((value / 100_000) as i32),
+            content_reader_core::fixed5::IntOperand::Scoped => {
                 Ok((self.scoped_value(operand, scopes)? / 100_000) as i32)
             }
             _ => Err("integer effect operand was not stored".into()),
@@ -126,7 +126,7 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn numeric_marked_country(&self, country: u32) -> Result<String, String> {
-        let name = installed_content_localisation::localisation::crt_case_text(
+        let name = content_reader_localisation::localisation::crt_case_text(
             &self.country_name(country, true)?,
             true,
             true,
@@ -273,7 +273,7 @@ impl Renderer<'_, '_, '_> {
                 values.push(format!(
                     "\n{}: {}",
                     self.char_native_text(key, &[], scopes, false)?,
-                    installed_content_core::fixed5::fixed5_percent(value, -1, false)
+                    content_reader_core::fixed5::fixed5_percent(value, -1, false)
                 ));
             }
         }
@@ -334,7 +334,7 @@ impl Renderer<'_, '_, '_> {
         let resource = field(fields, "resource")
             .and_then(|item| item.value.read_string())
             .unwrap_or_default();
-        let resource = installed_content_core::parser::text(resource).map_err(|why| why.to_string())?;
+        let resource = content_reader_core::parser::text(resource).map_err(|why| why.to_string())?;
         let resources = self
             .context
             .content
@@ -349,13 +349,13 @@ impl Renderer<'_, '_, '_> {
                 "create_import resource {resource} repeated native database record identity is unverified"
             ));
         }
-        let icon = definition.icon_frame.filter(|frame| *frame <= i32::MAX as u32).ok_or_else(|| format!("create_import resource {resource} signed/default icon_frame is not preserved by installed_content_core::resources"))?;
+        let icon = definition.icon_frame.filter(|frame| *frame <= i32::MAX as u32).ok_or_else(|| format!("create_import resource {resource} signed/default icon_frame is not preserved by content_reader_core::resources"))?;
         let amount = fields
             .iter()
             .filter(|item| item.keyword_is("amount"))
             .filter_map(
-                |item| match installed_content_core::crt::scan_i32(item.value.scalar()?) {
-                    installed_content_core::crt::Scanned::Stored(value) => Some(value),
+                |item| match content_reader_core::crt::scan_i32(item.value.scalar()?) {
+                    content_reader_core::crt::Scanned::Stored(value) => Some(value),
                     _ => None,
                 },
             )
@@ -374,20 +374,20 @@ impl Renderer<'_, '_, '_> {
         ];
         let mut date = String::new();
         if let Some(start) = field(fields, "start_date") {
-            let value = installed_content_core::parser::text(start.value.read_string().unwrap_or_default())
+            let value = content_reader_core::parser::text(start.value.read_string().unwrap_or_default())
                 .map_err(|why| why.to_string())?;
             let value = if value.split('.').count() == 3 {
                 format!("{value}.1")
             } else {
                 value.to_owned()
             };
-            let stored = installed_content_save::SavedDate::parse(value.as_bytes()).map_err(|why| {
+            let stored = content_reader_save::SavedDate::parse(value.as_bytes()).map_err(|why| {
                 format!("create_import date requires the game-date parser: {why}")
             })?;
-            if stored != installed_content_save::SavedDate::Invalid {
+            if stored != content_reader_save::SavedDate::Invalid {
                 let (year, _, day) =
                     numeric_date_parts(stored.engine_hour().map_err(|why| why.to_string())?);
-                let installed_content_save::SavedDate::Calendar(calendar) = stored else {
+                let content_reader_save::SavedDate::Calendar(calendar) = stored else {
                     unreachable!()
                 };
                 date = format!("{year}.{}.{day}", calendar.month);

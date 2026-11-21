@@ -40,7 +40,7 @@ pub fn content_identity(
     replay_data::identity::Identity,
 ) {
     let options = crate::products::ContentOptions {
-        options: installed_content_core::ResolveOptions {
+        options: content_reader_core::ResolveOptions {
             game_dir: root.to_owned(),
             user_dir: root.join("user"),
             cache_dir: root.join("cache"),
@@ -50,7 +50,7 @@ pub fn content_identity(
     };
     std::fs::create_dir_all(root.join("dlc")).unwrap();
     declare_languages(root);
-    let gathered = installed_content_core::gather(&installed_content_core::GatherOptions {
+    let gathered = content_reader_core::gather(&content_reader_core::GatherOptions {
         game_dir: options.options.game_dir.clone(),
         user_dir: options.options.user_dir.clone(),
         cache_dir: options.options.cache_dir.clone(),
@@ -79,15 +79,15 @@ pub fn write_with_facts(
     identity: &replay_data::identity::Identity,
     input: Vec<Record>,
 ) {
-    let gathered = installed_content_core::gather(&installed_content_core::GatherOptions {
+    let gathered = content_reader_core::gather(&content_reader_core::GatherOptions {
         game_dir: options.options.game_dir.clone(),
         user_dir: options.options.user_dir.clone(),
         cache_dir: options.options.cache_dir.clone(),
         dlc_order: Some(Vec::new()),
     })
     .unwrap();
-    let (pack, _) = installed_content_core::content::facts::write(
-        &installed_content_core::content::facts::Source {
+    let (pack, _) = content_reader_core::content::facts::write(
+        &content_reader_core::content::facts::Source {
             layers: &gathered.layers,
             withheld: Default::default(),
         },

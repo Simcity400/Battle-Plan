@@ -4,8 +4,8 @@ use std::{
     io,
 };
 
-use installed_content_core::buildings::Buildings;
-use installed_content_save::{PartialMapMembership, Save, StateControlEmission};
+use content_reader_core::buildings::Buildings;
+use content_reader_save::{PartialMapMembership, Save, StateControlEmission};
 use replay_data::{rows::CountryRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 

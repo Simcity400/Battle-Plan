@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use installed_content_save::{Save, production};
+use content_reader_save::{Save, production};
 use replay::campaign::Replay;
 use replay_data::{Hour, rows::CountryRow, rows::ProductionLineRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -132,7 +132,7 @@ fn compare_design_templates(
                             tokens
                                 .get(token)
                                 .copied()
-                                .map(installed_content_core::parser::c_string)
+                                .map(content_reader_core::parser::c_string)
                                 .map(<[u8]>::to_vec)
                                 .ok_or_else(|| {
                                     invalid(format!(
@@ -1146,7 +1146,7 @@ fn omitted_not_positive(
     label: &str,
     field: &str,
     captured: i64,
-    saved: Option<&installed_content_save::Decimal>,
+    saved: Option<&content_reader_save::Decimal>,
 ) {
     match saved {
         Some(saved) => report.scalar(label, field, Some(captured), Some(saved)),
@@ -1435,7 +1435,7 @@ fn name_field(report: &mut Report, label: &str, actual: &[u8], saved: Option<&[u
         saved.is_some(),
     );
     if let Some(saved) = saved {
-        let end = installed_content_core::parser::c_string(actual).len();
+        let end = content_reader_core::parser::c_string(actual).len();
         equal(report, label, &actual[..end], saved);
         if end < actual.len() {
             report.limitation("text string serialization stops at the first NUL; the captured suffix is not present in the save", label);

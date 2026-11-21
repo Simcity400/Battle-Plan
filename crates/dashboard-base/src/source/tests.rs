@@ -14,10 +14,10 @@ fn cached_content_replies_do_not_sweep_a_clean_generation() {
         crate::SourceKey { source_id: "freshness".into(), revision: "1".into() },
         "memory.battleplan".into(), replay, &AtomicBool::new(false),
     ).unwrap();
-    let options = installed_content_core::ResolveOptions {
+    let options = content_reader_core::ResolveOptions {
         game_dir: "synthetic-game".into(), user_dir: "synthetic-user".into(), cache_dir: "synthetic-cache".into(),
     };
-    let content = Arc::new(installed_content_core::content::ResolvedContent {
+    let content = Arc::new(content_reader_core::content::ResolvedContent {
         layers: Default::default(), stats: Default::default(), changed: Vec::new(), notes: Vec::new(),
     });
     source.set_test_content(options.clone(), Arc::clone(&content));
@@ -87,24 +87,24 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
     };
     let held_old = source.content(&old.options).unwrap();
     let held_new = source.content(&new.options).unwrap();
-    let (_, mut own) = installed_content_core::content::diagnostics::capture(|| {
+    let (_, mut own) = content_reader_core::content::diagnostics::capture(|| {
         let _ = held_new.layers.read_uncovered_path(b"gfx/custom/icon.dds");
     });
     let mut old_lines = Vec::new();
-    installed_content_core::content::diagnostics::current().append_to(&mut old_lines);
+    content_reader_core::content::diagnostics::current().append_to(&mut old_lines);
     source.append_changed_warnings(&mut old_lines, Some(&old));
     assert!(!uncovered(&old_lines));
-    assert!(!installed_content_core::content::diagnostics::current().has_uncovered());
+    assert!(!content_reader_core::content::diagnostics::current().has_uncovered());
     assert!(Arc::ptr_eq(&source.bound_content(&new.options).unwrap(), &held_new));
     assert!(Arc::ptr_eq(&source.content(&old.options).unwrap(), &held_old));
     assert!(Arc::ptr_eq(&source.content(&new.options).unwrap(), &held_new));
     source.content(&old.options).unwrap();
-    installed_content_core::content::diagnostics::scope(&mut own, false, || {
+    content_reader_core::content::diagnostics::scope(&mut own, false, || {
         let mut new_lines = Vec::new();
-        installed_content_core::content::diagnostics::current().append_to(&mut new_lines);
+        content_reader_core::content::diagnostics::current().append_to(&mut new_lines);
         source.append_changed_warnings(&mut new_lines, Some(&new));
     assert!(uncovered(&new_lines));
-    assert!(installed_content_core::content::diagnostics::current().has_uncovered());
+    assert!(content_reader_core::content::diagnostics::current().has_uncovered());
     });
     drop((held_old, held_new));
     let _ = std::fs::remove_dir_all(&root);
@@ -158,7 +158,7 @@ fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise(
         &AtomicBool::new(false),
     )
     .unwrap();
-    let localisation: installed_content_localisation::localisation::Localisation =
+    let localisation: content_reader_localisation::localisation::Localisation =
         [("GER".to_owned(), "German Reich".to_owned())]
             .into_iter()
             .collect();
@@ -206,7 +206,7 @@ fn warning_allocation_exhaustion_never_skips_localisation_or_saved_names() {
         "first retained diagnostic".into(),
         "second retained diagnostic".into(),
     ];
-    let localisation: installed_content_localisation::localisation::Localisation =
+    let localisation: content_reader_localisation::localisation::Localisation =
         [("GER".to_owned(), "Synthetic localised name".to_owned())]
             .into_iter()
             .collect();

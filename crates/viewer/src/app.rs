@@ -676,7 +676,7 @@ pub struct Viewer {
     awaiting_folders: bool,
     document: Option<Document>,
     loading: Option<mpsc::Receiver<Result<LoadedReplay, String>>>,
-    startup_content: Option<installed_content_core::content::Loading>,
+    startup_content: Option<content_reader_core::content::Loading>,
     error: Option<String>,
     scene: Option<Scene>,
     scene_target: Presented,
@@ -735,7 +735,7 @@ pub struct Viewer {
     visual_stale_campaign: Option<String>,
     map_preferences_seen: Option<(
         String,
-        Option<Vec<installed_content_core::content::visual::Choice>>,
+        Option<Vec<content_reader_core::content::visual::Choice>>,
         u32,
         u8,
     )>,
@@ -1165,7 +1165,7 @@ impl Viewer {
         let perspective = options.perspective.clone();
         let map_mode = options.map_mode.clone();
         let counter_view = CounterView::new(
-            options.counter_settings(&installed_content_settings::settings::MapOptions::DEFAULT),
+            options.counter_settings(&content_reader_settings::settings::MapOptions::DEFAULT),
         );
         let hidden_since = embedded.as_ref().map(|_| Instant::now());
         if options.playback_cost_end.is_none() {
@@ -1267,7 +1267,7 @@ impl Viewer {
             options,
             document: None,
             loading: None,
-            startup_content: installed_content_core::content::Generation::loading(),
+            startup_content: content_reader_core::content::Generation::loading(),
             error,
             scene: None,
             scene_target: Presented::default(),
@@ -1418,7 +1418,7 @@ impl Viewer {
         Ok(pool)
     }
 
-    fn take_game_options(&mut self, game: &installed_content_settings::settings::MapOptions) {
+    fn take_game_options(&mut self, game: &content_reader_settings::settings::MapOptions) {
         self.counter_view = CounterView::new(self.options.counter_settings(game));
         if !self.host_graphics {
             self.graphics.day_night = self.options.day_night.unwrap_or(game.day_night);
@@ -2581,8 +2581,8 @@ impl Viewer {
         job_priority::spawn(move || {
             let _stage = viewer_foundation::load_record::stage("load");
             let _generation = startup_content.as_ref().map_or_else(
-                installed_content_core::content::Generation::enter,
-                installed_content_core::content::Loading::enter_generation,
+                content_reader_core::content::Generation::enter,
+                content_reader_core::content::Loading::enter_generation,
             );
             drop(startup_content);
             let initial = InitialHour {
@@ -7515,7 +7515,7 @@ pub(crate) mod tests {
             top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Blocked)
         );
-        let gui = installed_content_core::gui::native::read(
+        let gui = content_reader_core::gui::native::read(
             br#"guiTypes = { iconType = {
             name = unbound pdx_tooltip = TITLE
         } }"#,

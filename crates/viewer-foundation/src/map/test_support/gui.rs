@@ -5,11 +5,11 @@ use crate::map::{
     native_windows::{NAVAL_COMBAT_WINDOW, NAVY_WINDOW, NativeWindows},
     sprites::SpriteSheet,
 };
-use installed_content_core::{
+use content_reader_core::{
     gui::native, gui::native::Element, gui::native::fonts::FontFacts,
     gui::native::fonts::TextColors,
 };
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use std::collections::HashMap;
 
 pub struct Fixture {

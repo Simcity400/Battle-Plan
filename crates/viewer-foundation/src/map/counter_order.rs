@@ -105,7 +105,7 @@ pub struct Hull<'a> {
 pub fn better_hull(
     a: &Hull<'_>,
     b: &Hull<'_>,
-    equipment: Result<&installed_content_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_core::equipment::Database, &str>,
 ) -> Result<bool, String> {
     let air = |hull: &Hull<'_>| {
         hull.model
@@ -132,7 +132,7 @@ pub fn better_hull(
 fn preferred_variant(
     a: &ShipModelRow,
     b: &ShipModelRow,
-    equipment: Result<&installed_content_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_core::equipment::Database, &str>,
 ) -> Result<bool, String> {
     let (a, b) = (variant_packet(a)?, variant_packet(b)?);
     let definition = |index: Option<i32>| -> Result<(i32, Option<usize>), String> {
@@ -216,7 +216,7 @@ fn variant_packet(model: &ShipModelRow) -> Result<&replay_data::rows::HullVarian
 }
 
 fn plane_definition(
-    equipment: &installed_content_core::equipment::Database,
+    equipment: &content_reader_core::equipment::Database,
     index: usize,
 ) -> Result<bool, String> {
     let mut chain = Vec::new();
@@ -250,7 +250,7 @@ pub enum HullIcon {
 
 pub fn hull_icon<'a>(
     ships: impl IntoIterator<Item = Hull<'a>>,
-    equipment: Result<&installed_content_core::equipment::Database, &str>,
+    equipment: Result<&content_reader_core::equipment::Database, &str>,
 ) -> HullIcon {
     let mut best: Vec<Hull<'a>> = Vec::new();
     for ship in ships {
@@ -617,7 +617,7 @@ mod tests {
         }
     }
 
-    fn definition_index(database: &installed_content_core::equipment::Database, name: &[u8]) -> i32 {
+    fn definition_index(database: &content_reader_core::equipment::Database, name: &[u8]) -> i32 {
         database
             .equipment
             .iter()
@@ -829,7 +829,7 @@ mod tests {
             organisation_marker: Some(-5),
             ..null
         };
-        let mut incomplete = installed_content_core::equipment::Database::default();
+        let mut incomplete = content_reader_core::equipment::Database::default();
         incomplete.lost = Some("fixture definition gap".into());
         for equipment in [Err("absent content"), Ok(&incomplete)] {
             assert_eq!(

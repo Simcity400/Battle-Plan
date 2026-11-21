@@ -44,7 +44,7 @@ pub(super) fn compare(
         tokens
             .get(&token)
             .copied()
-            .map(installed_content_core::parser::c_string)
+            .map(content_reader_core::parser::c_string)
             .ok_or_else(|| {
                 invalid(format!(
                     "organisation token {token} missing from LexicalTokens"
@@ -213,7 +213,7 @@ pub(super) fn compare(
                 .iter()
                 .map(|entry| {
                     (
-                        installed_content_core::parser::c_string(&entry.name).to_vec(),
+                        content_reader_core::parser::c_string(&entry.name).to_vec(),
                         entry.value_raw,
                     )
                 })
@@ -348,7 +348,7 @@ pub(super) fn compare_designs(
                     .copied()
                     .ok_or_else(|| invalid(format!("design bonus token {} absent", bonus.key)))?;
                 Ok((
-                    installed_content_core::parser::c_string(name).to_vec(),
+                    content_reader_core::parser::c_string(name).to_vec(),
                     bonus.value_raw,
                 ))
             })

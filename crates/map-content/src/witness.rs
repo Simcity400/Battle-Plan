@@ -1,5 +1,5 @@
 use content_witness::{Recorder, Witness};
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers,
     content::{ContentRead, ReadOutcome},
 };

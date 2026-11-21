@@ -82,18 +82,18 @@ impl ActiveEntry {
 }
 
 pub struct StateContent {
-    pub defines: installed_content_core::defines::Defines,
-    pub states: installed_content_states::states::States,
+    pub defines: content_reader_core::defines::Defines,
+    pub states: content_reader_states::states::States,
     pub names: StateNames,
-    pub warnings: Vec<installed_content_states::states::Diagnostic>,
+    pub warnings: Vec<content_reader_states::states::Diagnostic>,
 }
 
 pub fn live_state_warnings(
-    notes: &[installed_content_states::states::Diagnostic],
+    notes: &[content_reader_states::states::Diagnostic],
 ) -> impl Iterator<Item = &str> {
-    use installed_content_states::states::MisreadCause;
+    use content_reader_states::states::MisreadCause;
     notes.iter().filter_map(|note| {
-        let exact = note.kind == installed_content_core::DiagnosticKind::Misread
+        let exact = note.kind == content_reader_core::DiagnosticKind::Misread
             && matches!(
                 note.cause,
                 Some(
@@ -104,15 +104,15 @@ pub fn live_state_warnings(
                         | MisreadCause::NonBlockBuildings
                 )
             );
-        (note.kind != installed_content_core::DiagnosticKind::Warning && !exact)
+        (note.kind != content_reader_core::DiagnosticKind::Warning && !exact)
             .then_some(note.message.as_str())
     })
 }
 
 pub fn read_state_content(
-    layers: &installed_content_core::ResolvedLayers,
+    layers: &content_reader_core::ResolvedLayers,
 ) -> std::io::Result<StateContent> {
-    let defines = installed_content_core::defines::read(layers)?;
+    let defines = content_reader_core::defines::read(layers)?;
     let (states, names, warnings) = read_state_templates(layers, &defines)?;
     Ok(StateContent {
         defines,
@@ -123,18 +123,18 @@ pub fn read_state_content(
 }
 
 fn read_state_templates(
-    layers: &installed_content_core::ResolvedLayers,
-    defines: &installed_content_core::defines::Defines,
+    layers: &content_reader_core::ResolvedLayers,
+    defines: &content_reader_core::defines::Defines,
 ) -> std::io::Result<(
-    installed_content_states::states::States,
+    content_reader_states::states::States,
     StateNames,
-    Vec<installed_content_states::states::Diagnostic>,
+    Vec<content_reader_states::states::Diagnostic>,
 )> {
-    let map = installed_content_core::terrain::read_default_map(layers)?;
+    let map = content_reader_core::terrain::read_default_map(layers)?;
     let provinces =
-        installed_content_core::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
+        content_reader_core::map::parse_definitions(&layers.read(&map.file("definitions")?)?)?;
     let (states, warnings) =
-        installed_content_states::states::read_with_diagnostics(layers, defines, &provinces)?;
+        content_reader_states::states::read_with_diagnostics(layers, defines, &provinces)?;
     let names = states
         .definitions()
         .iter()
@@ -143,23 +143,23 @@ fn read_state_templates(
     Ok((states, names, warnings))
 }
 
-type Database<T> = installed_content_core::content::diagnostics::Once<(Result<T, String>, Vec<String>)>;
+type Database<T> = content_reader_core::content::diagnostics::Once<(Result<T, String>, Vec<String>)>;
 
 pub struct Environment {
     prepared: prepared::PreparedInputs,
-    defines: installed_content_core::defines::Defines,
-    layers: installed_content_core::ResolvedLayers,
-    ideologies: Database<installed_content_core::ideologies::Ideologies>,
-    terrain_definitions: Database<installed_content_core::terrain::TerrainDefinitions>,
-    leader_traits: Database<installed_content_core::leader_traits::LeaderTraits>,
-    ideas: Database<installed_content_core::ideas::IdeaContent>,
+    defines: content_reader_core::defines::Defines,
+    layers: content_reader_core::ResolvedLayers,
+    ideologies: Database<content_reader_core::ideologies::Ideologies>,
+    terrain_definitions: Database<content_reader_core::terrain::TerrainDefinitions>,
+    leader_traits: Database<content_reader_core::leader_traits::LeaderTraits>,
+    ideas: Database<content_reader_core::ideas::IdeaContent>,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) inputs: std::sync::OnceLock<Result<EnvironmentInputs, String>>,
 }
 
 impl Environment {
-    pub(super) fn read(layers: &installed_content_core::ResolvedLayers) -> std::io::Result<Self> {
-        let defines = installed_content_core::defines::read(layers)?;
+    pub(super) fn read(layers: &content_reader_core::ResolvedLayers) -> std::io::Result<Self> {
+        let defines = content_reader_core::defines::read(layers)?;
         Ok(Self {
             prepared: Default::default(),
             defines,
@@ -186,14 +186,14 @@ impl Environment {
         .collect()
     }
 
-    fn ideas(&self) -> Result<&installed_content_core::ideas::IdeaContent, &str> {
+    fn ideas(&self) -> Result<&content_reader_core::ideas::IdeaContent, &str> {
         self.ideas
             .get_or_init(|| {
                 let loaded = (|| {
                     let officers = self
                         .defines
                         .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-                    installed_content_core::ideas::read(&self.layers, &officers)
+                    content_reader_core::ideas::read(&self.layers, &officers)
                 })();
                 match loaded {
                     Ok((ideas, _, notes)) => {
@@ -207,39 +207,39 @@ impl Environment {
             .map_err(String::as_str)
     }
 
-    pub(crate) fn defines(&self) -> &installed_content_core::defines::Defines {
+    pub(crate) fn defines(&self) -> &content_reader_core::defines::Defines {
         &self.defines
     }
 
-    pub(crate) fn ideologies(&self) -> Result<&installed_content_core::ideologies::Ideologies, String> {
+    pub(crate) fn ideologies(&self) -> Result<&content_reader_core::ideologies::Ideologies, String> {
         self.ideologies_result().as_ref().map_err(Clone::clone)
     }
 
-    pub(crate) fn terrain(&self) -> Result<&installed_content_core::terrain::TerrainDefinitions, String> {
+    pub(crate) fn terrain(&self) -> Result<&content_reader_core::terrain::TerrainDefinitions, String> {
         self.terrain_result().as_ref().map_err(Clone::clone)
     }
 
     pub(crate) fn leader_traits(
         &self,
-    ) -> Result<&installed_content_core::leader_traits::LeaderTraits, String> {
+    ) -> Result<&content_reader_core::leader_traits::LeaderTraits, String> {
         self.leader_traits_result().as_ref().map_err(Clone::clone)
     }
 
-    fn ideologies_result(&self) -> &Result<installed_content_core::ideologies::Ideologies, String> {
+    fn ideologies_result(&self) -> &Result<content_reader_core::ideologies::Ideologies, String> {
         &self
             .ideologies
-            .get_or_init(|| match installed_content_core::ideologies::read(&self.layers) {
+            .get_or_init(|| match content_reader_core::ideologies::read(&self.layers) {
                 Ok((db, notes)) => (Ok(db), notes.into_iter().map(|(_, why)| why).collect()),
                 Err(why) => (Err(why.to_string()), Vec::new()),
             })
             .0
     }
 
-    fn terrain_result(&self) -> &Result<installed_content_core::terrain::TerrainDefinitions, String> {
+    fn terrain_result(&self) -> &Result<content_reader_core::terrain::TerrainDefinitions, String> {
         &self
             .terrain_definitions
             .get_or_init(
-                || match installed_content_core::terrain::read_definitions(&self.layers) {
+                || match content_reader_core::terrain::read_definitions(&self.layers) {
                     Ok(db) => {
                         let notes = db.skipped.clone();
                         (Ok(db), notes)
@@ -250,10 +250,10 @@ impl Environment {
             .0
     }
 
-    fn leader_traits_result(&self) -> &Result<installed_content_core::leader_traits::LeaderTraits, String> {
+    fn leader_traits_result(&self) -> &Result<content_reader_core::leader_traits::LeaderTraits, String> {
         &self
             .leader_traits
-            .get_or_init(|| match installed_content_core::leader_traits::read(&self.layers) {
+            .get_or_init(|| match content_reader_core::leader_traits::read(&self.layers) {
                 Ok((db, notes)) => (Ok(db), notes.into_iter().map(|(_, why)| why).collect()),
                 Err(why) => (Err(why.to_string()), Vec::new()),
             })
@@ -277,19 +277,19 @@ pub(super) struct EnvironmentInputs {
     state_error: Option<String>,
     continents: Result<Vec<String>, String>,
     impassable: BTreeSet<u32>,
-    neighbors: installed_content_core::content::diagnostics::Once<Result<BTreeMap<u32, Vec<u32>>, String>>,
+    neighbors: content_reader_core::content::diagnostics::Once<Result<BTreeMap<u32, Vec<u32>>, String>>,
     terrain:
-        installed_content_core::content::diagnostics::Once<Option<installed_content_core::movement::MovementMap>>,
+        content_reader_core::content::diagnostics::Once<Option<content_reader_core::movement::MovementMap>>,
     terrain_names: Result<Vec<Vec<u8>>, String>,
     dlcs: BTreeSet<String>,
-    triggers: Result<installed_content_core::trigger_keys::TriggerNames, String>,
-    aliases: std::sync::Arc<installed_content_core::tag_aliases::TagAliases>,
-    buildings: Result<installed_content_core::buildings::Buildings, String>,
+    triggers: Result<content_reader_core::trigger_keys::TriggerNames, String>,
+    aliases: std::sync::Arc<content_reader_core::tag_aliases::TagAliases>,
+    buildings: Result<content_reader_core::buildings::Buildings, String>,
     bonuses: Result<[i64; 2], String>,
     roles: Result<LeaderRoles, String>,
     invasion_days: Result<i32, String>,
-    constants: Result<installed_content_core::script_constants::Constants, String>,
-    traits: Result<installed_content_core::unit_leader::Traits, String>,
+    constants: Result<content_reader_core::script_constants::Constants, String>,
+    traits: Result<content_reader_core::unit_leader::Traits, String>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -371,7 +371,7 @@ impl ScriptedContent {
             .get_or_init(|| self.layers.layers.dlc_names().map_err(|e| e.to_string()))
             .as_ref()
             .map_err(Clone::clone)?;
-        static TRIGGERS: std::sync::OnceLock<installed_content_core::trigger_keys::TriggerNames> =
+        static TRIGGERS: std::sync::OnceLock<content_reader_core::trigger_keys::TriggerNames> =
             std::sync::OnceLock::new();
         Ok(World::unrecorded(
             dlcs,
@@ -540,10 +540,10 @@ impl<'a> ScriptedText<'a> {
                 }
             }
             let key = match value {
-                installed_content_scripted_localisation::scripted_localisation::TextValue::Key(key) => {
+                content_reader_scripted_localisation::scripted_localisation::TextValue::Key(key) => {
                     key.as_slice()
                 }
-                installed_content_scripted_localisation::scripted_localisation::TextValue::RandomList(
+                content_reader_scripted_localisation::scripted_localisation::TextValue::RandomList(
                     list,
                 ) => {
                     let key = self
@@ -762,7 +762,7 @@ impl<'a> ScriptedText<'a> {
             }
         };
         let tag =
-            installed_content_country_names::country_names::original_or_own_tag_in(&self.frame, owner)?;
+            content_reader_country_names::country_names::original_or_own_tag_in(&self.frame, owner)?;
         victory_point_name(self.localisation, id, &tag)
     }
 
@@ -978,8 +978,8 @@ impl EnvironmentInputs {
             state_error: None,
             continents: Err("no synthetic continent content is supplied".into()),
             impassable: BTreeSet::new(),
-            neighbors: installed_content_core::content::diagnostics::Once::from(Ok(BTreeMap::new())),
-            terrain: installed_content_core::content::diagnostics::Once::from(None),
+            neighbors: content_reader_core::content::diagnostics::Once::from(Ok(BTreeMap::new())),
+            terrain: content_reader_core::content::diagnostics::Once::from(None),
             terrain_names: Ok(Vec::new()),
             dlcs: BTreeSet::new(),
             triggers: Ok(Default::default()),
@@ -996,7 +996,7 @@ impl EnvironmentInputs {
     #[cfg(test)]
     pub(super) fn with_aliases(
         self,
-        aliases: std::sync::Arc<installed_content_core::tag_aliases::TagAliases>,
+        aliases: std::sync::Arc<content_reader_core::tag_aliases::TagAliases>,
     ) -> Self {
         Self { aliases, ..self }
     }
@@ -1004,7 +1004,7 @@ impl EnvironmentInputs {
     #[cfg(test)]
     pub(super) fn with_triggers(
         self,
-        triggers: installed_content_core::trigger_keys::TriggerNames,
+        triggers: content_reader_core::trigger_keys::TriggerNames,
     ) -> Self {
         Self {
             triggers: Ok(triggers),

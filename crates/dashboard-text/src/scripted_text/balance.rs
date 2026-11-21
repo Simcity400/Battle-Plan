@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{
     ModifierDefinitionRow, PowerBalanceMemberRow, PowerBalanceModifierBreakdownRow,
     PowerBalanceRow, SimulationFeatureRow,
@@ -113,7 +113,7 @@ pub(super) fn matches_numeric_handler(name: &str, ordinal: u32) -> bool {
 impl<'a> ScriptedText<'a> {
     fn active_range_effects(
         &self,
-        effects: &[installed_content_core::parser::Item],
+        effects: &[content_reader_core::parser::Item],
         refused: &mut Vec<String>,
         slot: u32,
         name: &str,
@@ -192,7 +192,7 @@ impl<'a> ScriptedText<'a> {
                 })?;
             registry.insert(literal.to_ascii_lowercase(), definition);
         }
-        let database = installed_content_core::power_balance::read(&self.content.layers.layers, &|key| {
+        let database = content_reader_core::power_balance::read(&self.content.layers.layers, &|key| {
             Some(registry.contains_key(&key.to_ascii_lowercase()))
         })
         .map_err(|e| format!("{name}: {e}"))?;
@@ -297,7 +297,7 @@ impl<'a> ScriptedText<'a> {
             for (&value, &(_, key, default, fulfilled)) in range
                 .rules
                 .iter()
-                .zip(installed_content_core::power_balance::rules())
+                .zip(content_reader_core::power_balance::rules())
             {
                 if value == default {
                     continue;
@@ -367,7 +367,7 @@ impl<'a> ScriptedText<'a> {
         let mut blocks = Vec::with_capacity(sources.len());
         for source in sources {
             let key =
-                std::str::from_utf8(installed_content_core::parser::c_string(source)).map_err(|_| {
+                std::str::from_utf8(content_reader_core::parser::c_string(source)).map_err(|_| {
                     format!(
                         "static modifier {} is not UTF-8",
                         String::from_utf8_lossy(source)

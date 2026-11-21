@@ -1,5 +1,5 @@
 use dashboard_text::naval_battle_name::Picker;
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
@@ -291,7 +291,7 @@ fn vp_tag(
         (format!("state {state}'s owner (slot {slot})"), slot)
     };
     Ok(
-        installed_content_country_names::country_names::original_or_own_tag(frame, slot)
+        content_reader_country_names::country_names::original_or_own_tag(frame, slot)
             .map(str::to_owned)
             .map_err(|reason| format!("{subject}: {reason}")),
     )

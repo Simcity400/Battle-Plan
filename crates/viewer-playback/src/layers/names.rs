@@ -14,8 +14,8 @@ use crate::{
 };
 use engine_executable::executable_tables::Tables as Executable;
 use replay_frame::frame::DecodedFrame;
-use installed_content_country_names::country_names::{CountryNames, NamingAppearance, NamingRows, Operands, naming_operands};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_country_names::country_names::{CountryNames, NamingAppearance, NamingRows, Operands, naming_operands};
+use content_reader_localisation::localisation::Localisation;
 use map_display_data::landscape::{Placements, WorldName};
 use playhead::Step;
 use replay_columnar::manifest::Status;

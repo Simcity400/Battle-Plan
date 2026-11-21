@@ -307,7 +307,7 @@ impl UnitModelAssets {
                                 "naval_combat_entity: fallback model country is unavailable"
                                     .to_owned()
                             })?;
-                        installed_content_core::parser::text(installed_content_core::parser::c_string(&country.tag))
+                        content_reader_core::parser::text(content_reader_core::parser::c_string(&country.tag))
                             .map_err(|_| {
                                 "naval_combat_entity: fallback model tag is not text".to_owned()
                             })

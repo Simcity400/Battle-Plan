@@ -1,7 +1,7 @@
 
 use super::{Carried, Settling, Dirty, Gpu, Inputs, Installs, Layer, Num, Scope, Scoped, Shown, Sight, Text, View, Wrote};
 use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
-use installed_content_core::map::{MapData, ProvinceKind};
+use content_reader_core::map::{MapData, ProvinceKind};
 use playhead::{Step, changes::Changes};
 use replay_columnar::manifest::Status;
 use replay_data::{Hour, rows::TableId};

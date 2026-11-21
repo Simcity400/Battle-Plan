@@ -459,7 +459,7 @@ fn serialized_definitions_cannot_be_qualified_as_omitted_group_members() {
 fn division_census_from_text_save() {
     let path = std::env::var_os("BATTLE_PLAN_CENSUS_SAVE").or_else(|| std::env::var_os("HOI4_CENSUS_SAVE")).expect("set BATTLE_PLAN_CENSUS_SAVE");
     let bytes = std::fs::read(&path).unwrap();
-    let saved = installed_content_save::parse(&bytes).unwrap();
+    let saved = content_reader_save::parse(&bytes).unwrap();
     let mut memberships: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
     let mut army_memberships: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
     let mut groups = [0; 2];
@@ -575,7 +575,7 @@ fn save_with(months: &[String], extra: &str) -> Save {
         months.concat(),
         month("equipment", 0, &[(9, "1")]),
     );
-    installed_content_save::parse(text.as_bytes()).unwrap()
+    content_reader_save::parse(text.as_bytes()).unwrap()
 }
 
 fn save(months: &[String]) -> Save {
@@ -583,7 +583,7 @@ fn save(months: &[String]) -> Save {
 }
 
 fn theatre_groups(save: &mut Save, tag: &[u8], groups: &[u32]) {
-    use installed_content_save::naval_history::{LandTheatre, OrdersGroup, TheatreCountry};
+    use content_reader_save::naval_history::{LandTheatre, OrdersGroup, TheatreCountry};
     save.naval_history.theatre_countries = Some(BTreeMap::from([(
         tag.to_vec(),
         TheatreCountry {
@@ -883,7 +883,7 @@ fn lend_lease_compares_every_saved_amount_and_receiver() {
 
 #[test]
 fn retained_oracle_checks_empty_month_membership_enemy_order_and_all_manpower_counters() {
-    use installed_content_save::combat_log as saved_log;
+    use content_reader_save::combat_log as saved_log;
     use replay_data::rows::{
         CombatLogEnemyEquipmentRow, CombatLogGroupRow, CombatLogManpowerRow, CombatLogMonthRow,
     };

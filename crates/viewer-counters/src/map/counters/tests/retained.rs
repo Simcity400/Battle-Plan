@@ -1166,7 +1166,7 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
     use replay_frame::frame::TableView;
     use viewer_foundation::map::province_map::ProvinceMap;
     engine_executable::executable_tables::initialize_for_tests().unwrap();
-    let stack = installed_content_core::test_support::Stack::new("base-icon-lookups");
+    let stack = content_reader_core::test_support::Stack::new("base-icon-lookups");
     let base = stack.base();
     stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");
     stack.write(
@@ -1246,12 +1246,12 @@ fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours
                 .unwrap();
         },
         |content| {
-            let definitions = installed_content_core::buildings::parse(
+            let definitions = content_reader_core::buildings::parse(
                 b"buildings={hq_first={naval_headquarter=yes} hq_second={naval_headquarter=yes}
                 fac_a={specialization={air}} fac_b={specialization={naval}}
                 ambiguous={naval_headquarter=yes specialization={land}}
                 ambiguous={naval_headquarter=no specialization={nuclear}}}",
-                &installed_content_core::key_names::KeyNames::default(),
+                &content_reader_core::key_names::KeyNames::default(),
             )
             .unwrap();
             content.building_icons = BuildingIconContent::load(
@@ -1680,7 +1680,7 @@ fn base_windows_standing_still_are_kept_and_a_changed_offer_lays_out_its_family_
 
 fn with_base_windows(name: &str, run: impl FnOnce(CounterInputs<'_>)) {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
-    let stack = installed_content_core::test_support::Stack::new(name);
+    let stack = content_reader_core::test_support::Stack::new(name);
     let base = stack.base();
     stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");
     stack.write(

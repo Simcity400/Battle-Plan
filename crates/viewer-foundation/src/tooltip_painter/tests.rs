@@ -72,7 +72,7 @@ fn naval_tooltip_width_uses_authored_fallback_and_counts_missing_or_wrong_types(
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use {crate::map::test_support::gui::fixture, crate::map::test_support::gui::fixture_with};
-    let read = installed_content_core::gui::native::read;
+    let read = content_reader_core::gui::native::read;
     let fallback = fixture_with(read(
         br#"guiTypes={textBoxType={name=defaultTextBox maxWidth=375}}"#,
     ));

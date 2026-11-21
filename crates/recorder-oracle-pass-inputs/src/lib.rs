@@ -1,4 +1,4 @@
-use installed_content_save::Save;
+use content_reader_save::Save;
 use recorder_oracle_counters::counters;
 use recorder_oracle_country_rosters::country_rosters;
 use recorder_oracle_naval_missions::naval_missions;

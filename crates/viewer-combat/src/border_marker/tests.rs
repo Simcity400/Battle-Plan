@@ -104,10 +104,10 @@ fn border_marker_membership_and_event_scopes_use_native_alias_and_copy_links() {
 fn border_marker_multi_option_enemy_event_appears_only_under_win() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let events = installed_content_events::events::parse(
+    let events = content_reader_events::events::parse(
         b"add_namespace=s country_event={id=s.5 title=VICTORY option={name=A} option={name=B}} country_event={id=s.6 title=DEFEAT option={name=A} option={name=B}}",
         "events/synthetic.txt",
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     );
     let border = LandBorderWarInputs {
         sides: [
@@ -268,9 +268,9 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
         "0;0;0;0;land;false;unknown;0\n1;1;1;1;land;false;synthetic;1\n",
     )
     .unwrap();
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     let content = dashboard_text::scripted_text::ScriptedContent::read(
-        Arc::new(installed_content_core::content::ResolvedContent {
+        Arc::new(content_reader_core::content::ResolvedContent {
             layers,
             stats: Default::default(),
             changed: Vec::new(),
@@ -322,7 +322,7 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
 fn border_marker_event_native_effects_or_title_follow_option_count() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let events = installed_content_events::events::parse(b"add_namespace=s country_event={id=s.1 title={text=IGNORED text=TITLE trigger={always=no}} immediate={custom_effect_tooltip=FIRST hidden_effect={custom_effect_tooltip=HIDDEN} add_political_power=2} option={name=A effect_tooltip={custom_effect_tooltip=SECOND}}}", "events/synthetic.txt", &installed_content_core::key_names::KeyNames::default());
+    let events = content_reader_events::events::parse(b"add_namespace=s country_event={id=s.1 title={text=IGNORED text=TITLE trigger={always=no}} immediate={custom_effect_tooltip=FIRST hidden_effect={custom_effect_tooltip=HIDDEN} add_political_power=2} option={name=A effect_tooltip={custom_effect_tooltip=SECOND}}}", "events/synthetic.txt", &content_reader_core::key_names::KeyNames::default());
     let mut event = events.get(b"S.01").unwrap().clone();
     let base = localisation();
     let loc = base
@@ -400,7 +400,7 @@ fn border_marker_event_native_effects_or_title_follow_option_count() {
         );
         assert_eq!(text.body, "Event Text TITLE");
         assert!(text.refused.is_empty());
-        event.titles[1].value = installed_content_core::parser::Value::Scalar(b"OTHER_TITLE".to_vec());
+        event.titles[1].value = content_reader_core::parser::Value::Scalar(b"OTHER_TITLE".to_vec());
         let text = event_description(
             &event, false, &describe, &mut graph, &render, &NoIcons, &loc,
         );
@@ -465,8 +465,8 @@ fn covered_events_keep_supported_operative_text_and_refuse_missing_scoped_reader
         b"add_namespace=s country_event={id=s.1 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.2 immediate={custom_effect_tooltip=TEXT}} operative_leader_event={id=s.3 title=TITLE option={name=A hidden_effect={remove_unit_leader_role={character=fixture}}}}",
     )
     .unwrap();
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
-    let events = installed_content_events::events::LazyEvents::new(Arc::new(layers));
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let events = content_reader_events::events::LazyEvents::new(Arc::new(layers));
     let render = |key: &[u8], _: &EventScopes| Ok(String::from_utf8_lossy(key).into_owned());
     let loc = localisation();
     with_effects(&loc, |context| {

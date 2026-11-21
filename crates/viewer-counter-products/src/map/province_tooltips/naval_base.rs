@@ -1,5 +1,5 @@
 use super::{Arg, Tooltip, counter_content, tooltip_text_state_name};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::{naval_count_approx, perspective::Vision};

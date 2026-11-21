@@ -33,12 +33,12 @@ fn game_score_rosters_compare_order_counts_and_missing_zero() {
     saved.counter_inputs.fleets = BTreeMap::from([
         (
             9,
-            installed_content_save::counter_inputs::Fleet {
+            content_reader_save::counter_inputs::Fleet {
                 task_forces: vec![31, 30],
                 ..Default::default()
             },
         ),
-        (2, installed_content_save::counter_inputs::Fleet::default()),
+        (2, content_reader_save::counter_inputs::Fleet::default()),
     ]);
     let mut input = row();
     input.army_count = Some(2);
@@ -164,7 +164,7 @@ fn game_score_wings_compare_zero_missing_and_extra_without_inventing_cached_stat
     let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
     saved.air_wings.insert(
         11,
-        installed_content_save::AirWing {
+        content_reader_save::AirWing {
             government_in_exile_tag: None,
             manpower: None,
 

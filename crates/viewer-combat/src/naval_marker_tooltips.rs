@@ -1,6 +1,6 @@
 use super::content::Content as StaticContent;
-use installed_content_country_names::country_names::CountryNames;
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_country_names::country_names::CountryNames;
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::NavalCombatDetailsRow, rows::NavalCombatShipRow, rows::ShipRow, rows::TableSchema,
     rows::TaskForceCounterInputRow, rows::TaskForceRow, rows::tables,

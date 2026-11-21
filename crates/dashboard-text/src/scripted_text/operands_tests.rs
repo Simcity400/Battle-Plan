@@ -1,7 +1,7 @@
 use super::*;
 use crate::scope::tests::positive_frame as frame;
 use crate::scripted_text::{EventObject, EventScope, EventScopes, ScriptedText};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::{PoliticalPartyRow, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView};
 

@@ -1,5 +1,5 @@
-use installed_content_core::{ResolveOptions, ResolvedLayers, flags::FlagSet};
-use installed_content_image::Rgba8Image;
+use content_reader_core::{ResolveOptions, ResolvedLayers, flags::FlagSet};
+use content_reader_image::Rgba8Image;
 use replay_data::identity::Identity;
 use serde::Serialize;
 use std::io;
@@ -38,7 +38,7 @@ pub struct FlagImage {
 pub fn flag_keys(player: &serde_json::Value) -> Option<Vec<String>> {
     let text = |key: &str| player[key].as_str();
     text("tag")?;
-    let keys = installed_content_country_names::country_names::flag_keys(
+    let keys = content_reader_country_names::country_names::flag_keys(
         text("original"),
         text("cosmetic")?,
         Some(text("group")?),
@@ -59,8 +59,8 @@ pub struct FlagContent {
 
 impl FlagContent {
     pub fn load(identity: &Identity, options: &ResolveOptions) -> io::Result<Self> {
-        let content = installed_content_core::resolve(identity, options)?.exact()?;
-        let defines = installed_content_core::defines::read(&content.layers)?;
+        let content = content_reader_core::resolve(identity, options)?.exact()?;
+        let defines = content_reader_core::defines::read(&content.layers)?;
         Ok(Self {
             cell: FlagSet::Normal.cell(&defines)?,
             layers: content.layers,
@@ -69,7 +69,7 @@ impl FlagContent {
 
     pub fn find(&self, keys: &[String]) -> io::Result<Option<FlagImage>> {
         search(keys, |asset| match self.layers.read_uncovered(asset) {
-            Ok(bytes) => Ok(installed_content_core::flags::decode_checked(&bytes, self.cell).ok()),
+            Ok(bytes) => Ok(content_reader_core::flags::decode_checked(&bytes, self.cell).ok()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         })

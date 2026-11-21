@@ -26,7 +26,7 @@ impl<'rows> selection::Names<'rows> for Reference<'_, '_> {
     }
 }
 
-use installed_content_core::{parser::c_string, parser::text};
+use content_reader_core::{parser::c_string, parser::text};
 
 fn name<'t>(
     assets: &UnitModelAssets,

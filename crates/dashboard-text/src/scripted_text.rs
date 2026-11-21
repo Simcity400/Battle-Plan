@@ -4,8 +4,8 @@ use job_priority::SpawnCarried as _;
 use replay_frame::frame::DecodedFrame;
 
 use crate::scope::{RecordedScopes, table_in as rows};
-use installed_content_country_names::country_names::CountryNames;
-use installed_content_localisation::{localisation::Localisation, localisation::crt_case_text};
+use content_reader_country_names::country_names::CountryNames;
+use content_reader_localisation::{localisation::Localisation, localisation::crt_case_text};
 use replay_data::rows::{
     CharacterRow, CountryAppearanceRow, CountryLinkRow, CountryRow, FactionRow,
     IndustrialOrganisationRow, IntelligenceAgencyRow, LexicalTokenRow, LocalPlayerRow,
@@ -435,33 +435,33 @@ impl Drop for DescriptionScopeGuard<'_, '_, '_> {
 }
 
 pub struct ScriptedContent {
-    pub names: installed_content_scripted_localisation::scripted_localisation::Names,
+    pub names: content_reader_scripted_localisation::scripted_localisation::Names,
     pub recursion: i32,
-    pub tag_aliases: std::sync::Arc<installed_content_core::tag_aliases::TagAliases>,
+    pub tag_aliases: std::sync::Arc<content_reader_core::tag_aliases::TagAliases>,
     pub recorded_language: String,
-    pub layers: std::sync::Arc<installed_content_core::content::ResolvedContent>,
+    pub layers: std::sync::Arc<content_reader_core::content::ResolvedContent>,
     pub(crate) environment:
-        installed_content_core::content::diagnostics::Once<Result<entries::Environment, String>>,
+        content_reader_core::content::diagnostics::Once<Result<entries::Environment, String>>,
     pub(crate) state_content: std::sync::Arc<
-        installed_content_core::content::diagnostics::Once<Result<entries::StateContent, String>>,
+        content_reader_core::content::diagnostics::Once<Result<entries::StateContent, String>>,
     >,
     pub(crate) template_names:
-        installed_content_core::content::diagnostics::Once<Result<Localisation, String>>,
-    event_index: installed_content_core::content::diagnostics::Once<installed_content_events::events::LazyEvents>,
-    pub(crate) effects: installed_content_core::content::diagnostics::Once<
+        content_reader_core::content::diagnostics::Once<Result<Localisation, String>>,
+    event_index: content_reader_core::content::diagnostics::Once<content_reader_events::events::LazyEvents>,
+    pub(crate) effects: content_reader_core::content::diagnostics::Once<
         Result<crate::effect_description::CachedContent, String>,
     >,
 }
 
 impl ScriptedContent {
     pub fn read(
-        content: std::sync::Arc<installed_content_core::content::ResolvedContent>,
+        content: std::sync::Arc<content_reader_core::content::ResolvedContent>,
         recorded_language: String,
     ) -> Result<Self, String> {
         let layers = &content.layers;
-        let names = installed_content_scripted_localisation::scripted_localisation::names(layers)
+        let names = content_reader_scripted_localisation::scripted_localisation::names(layers)
             .map_err(|error| format!("common/scripted_localisation is unreadable: {error}"))?;
-        let environment = installed_content_core::content::diagnostics::Once::new();
+        let environment = content_reader_core::content::diagnostics::Once::new();
         let recursion = environment
             .get_or_init(|| {
                 Environment::read(layers).map_err(|error| {
@@ -473,7 +473,7 @@ impl ScriptedContent {
             .defines()
             .int32("NGame", "MAX_SCRIPTED_LOC_RECURSION")
             .map_err(|error| format!("NGame.MAX_SCRIPTED_LOC_RECURSION is unavailable: {error}"))?;
-        let tag_aliases = installed_content_core::tag_aliases::read(layers)
+        let tag_aliases = content_reader_core::tag_aliases::read(layers)
             .map_err(|error| format!("common/country_tag_aliases is unreadable: {error}"))?;
         Ok(Self {
             names,
@@ -482,16 +482,16 @@ impl ScriptedContent {
             recorded_language,
             layers: content,
             environment,
-            state_content: std::sync::Arc::new(installed_content_core::content::diagnostics::Once::new()),
-            template_names: installed_content_core::content::diagnostics::Once::new(),
-            event_index: installed_content_core::content::diagnostics::Once::new(),
-            effects: installed_content_core::content::diagnostics::Once::new(),
+            state_content: std::sync::Arc::new(content_reader_core::content::diagnostics::Once::new()),
+            template_names: content_reader_core::content::diagnostics::Once::new(),
+            event_index: content_reader_core::content::diagnostics::Once::new(),
+            effects: content_reader_core::content::diagnostics::Once::new(),
         })
     }
 
-    pub(crate) fn event_index(&self) -> &installed_content_events::events::LazyEvents {
+    pub(crate) fn event_index(&self) -> &content_reader_events::events::LazyEvents {
         self.event_index.get_or_init(|| {
-            installed_content_events::events::LazyEvents::from_content(std::sync::Arc::clone(&self.layers))
+            content_reader_events::events::LazyEvents::from_content(std::sync::Arc::clone(&self.layers))
         })
     }
 
@@ -789,7 +789,7 @@ impl<'a> ScriptedText<'a> {
             reserved_tag: std::sync::OnceLock::new(),
             root,
             viewer: None,
-            nato_counters: installed_content_settings::settings::MapOptions::DEFAULT.nato_counters,
+            nato_counters: content_reader_settings::settings::MapOptions::DEFAULT.nato_counters,
             world: std::sync::OnceLock::new(),
         };
         if crate::triggers::inputs::recording() {
@@ -1135,7 +1135,7 @@ impl<'a> ScriptedText<'a> {
         if country == 0 {
             self.reserved_tag
                 .get_or_init(|| {
-                    installed_content_country_names::country_names::reserved_zero_tag_in(&self.frame)
+                    content_reader_country_names::country_names::reserved_zero_tag_in(&self.frame)
                         .map(Cow::into_owned)
                 })
                 .as_deref()
@@ -1492,7 +1492,7 @@ impl<'a> ScriptedText<'a> {
         }
         let digits = segment.strip_prefix(['-', '+']).unwrap_or(segment);
         if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
-            let id = installed_content_core::fixed5::decimal_i32(segment.as_bytes());
+            let id = content_reader_core::fixed5::decimal_i32(segment.as_bytes());
             if id <= 0 {
                 return Ok(object);
             }
@@ -2138,7 +2138,7 @@ impl<'a> ScriptedText<'a> {
             None => {
                 crate::party_names::party_key_with_selected_tag(
                     &naming,
-                    &installed_content_country_names::country_names::original_or_own_tag_in(
+                    &content_reader_country_names::country_names::original_or_own_tag_in(
                         &self.frame,
                         slot,
                     )?,

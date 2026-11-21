@@ -24,7 +24,7 @@ dashboard-query.workspace = true
 replay-columnar.workspace = true
 job-priority.workspace = true
 map-snow.workspace = true
-installed-content-wargoals.workspace = true
+content-reader-wargoals.workspace = true
 replay.workspace = true
 engine-air-history.workspace = true
 engine-fuel.workspace = true
@@ -36,22 +36,22 @@ engine-native.workspace = true
 engine-resources.workspace = true
 engine-stability.workspace = true
 engine-projects.workspace = true
-installed-content-core.workspace = true
+content-reader-core.workspace = true
 recording-upgrade.workspace = true
 replay-spool.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }
-installed-content-country-names.workspace = true
-installed-content-division-names.workspace = true
-installed-content-equipment-graphics.workspace = true
-installed-content-events.workspace = true
-installed-content-gfx.workspace = true
-installed-content-image.workspace = true
-installed-content-localisation.workspace = true
-installed-content-province-area.workspace = true
-installed-content-raids.workspace = true
-installed-content-regions.workspace = true
-installed-content-settings.workspace = true
-installed-content-weather.workspace = true
+content-reader-country-names.workspace = true
+content-reader-division-names.workspace = true
+content-reader-equipment-graphics.workspace = true
+content-reader-events.workspace = true
+content-reader-gfx.workspace = true
+content-reader-image.workspace = true
+content-reader-localisation.workspace = true
+content-reader-province-area.workspace = true
+content-reader-raids.workspace = true
+content-reader-regions.workspace = true
+content-reader-settings.workspace = true
+content-reader-weather.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 replay-looks.workspace = true
@@ -90,19 +90,19 @@ dashboard = { workspace = true, features = ["export-types"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
 engine-research.workspace = true
 replay = { workspace = true, features = ["test-support"] }
-installed-content-core = { workspace = true, features = ["test-support"] }
-installed-content-country-names = { workspace = true, features = ["test-support"] }
-installed-content-division-names = { workspace = true, features = ["test-support"] }
-installed-content-equipment-graphics = { workspace = true, features = ["test-support"] }
-installed-content-events = { workspace = true, features = ["test-support"] }
-installed-content-focus = { workspace = true, features = ["test-support"] }
-installed-content-gfx = { workspace = true, features = ["test-support"] }
-installed-content-image = { workspace = true, features = ["test-support"] }
-installed-content-localisation = { workspace = true, features = ["test-support"] }
-installed-content-province-area = { workspace = true, features = ["test-support"] }
-installed-content-regions = { workspace = true, features = ["test-support"] }
-installed-content-settings = { workspace = true, features = ["test-support"] }
-installed-content-states = { workspace = true, features = ["test-support"] }
+content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-country-names = { workspace = true, features = ["test-support"] }
+content-reader-division-names = { workspace = true, features = ["test-support"] }
+content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
+content-reader-events = { workspace = true, features = ["test-support"] }
+content-reader-focus = { workspace = true, features = ["test-support"] }
+content-reader-gfx = { workspace = true, features = ["test-support"] }
+content-reader-image = { workspace = true, features = ["test-support"] }
+content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-province-area = { workspace = true, features = ["test-support"] }
+content-reader-regions = { workspace = true, features = ["test-support"] }
+content-reader-settings = { workspace = true, features = ["test-support"] }
+content-reader-states = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
@@ -113,8 +113,8 @@ dashboard-text = { workspace = true, features = ["test-support"] }
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-weather = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-installed-content-weather = { workspace = true, features = ["test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }

@@ -511,7 +511,7 @@ mod tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use super::super::test_support::{frame, put, registered_command_power};
-        use installed_content_localisation::localisation::Localisation;
+        use content_reader_localisation::localisation::Localisation;
         use replay_data::rows::Recorded;
 
         let resources = draw_resources();
@@ -537,7 +537,7 @@ mod tests {
             .need_detection = false;
         assets.trigger_content.buildings.types.insert(
             "facility".into(),
-            installed_content_core::buildings::BuildingType {
+            content_reader_core::buildings::BuildingType {
                 name: "facility".into(),
                 ..Default::default()
             },

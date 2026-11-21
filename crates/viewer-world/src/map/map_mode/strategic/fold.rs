@@ -3,7 +3,7 @@ use crate::map::{
     map_mode::Style,
     projection_fold::{RowFold, fields},
 };
-use installed_content_core::map::MapData;
+use content_reader_core::map::MapData;
 use map_display_data::{landscape::ProvinceField, retained::Retained, value_index::ValueIndex};
 use replay_data::rows::{RowCodec, TableId, TableSchema};
 use replay_frame::frame::ViewIdentity;

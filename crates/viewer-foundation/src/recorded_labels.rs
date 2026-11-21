@@ -1,5 +1,5 @@
-use installed_content_core::ResolvedLayers;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_core::ResolvedLayers;
+use content_reader_localisation::localisation::Localisation;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,7 +115,7 @@ impl RecordedLabels {
         let index = if display == language {
             Ok(None)
         } else {
-            installed_content_localisation::localisation::read(layers, &language)
+            content_reader_localisation::localisation::read(layers, &language)
                 .map(|recorded| Some(LabelIndex::new(&recorded)))
                 .map_err(|error| error.to_string())
         };
@@ -279,7 +279,7 @@ mod tests {
             "\u{feff}l_english:\n NIGHT:0 \"Night\"\n",
         )
         .unwrap();
-        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
         let labels = RecordedLabels::prepare("english".into(), "french", &layers);
         std::fs::remove_dir_all(&root).unwrap();
         let french = loc("french", &[("NIGHT", "Nuit")]);

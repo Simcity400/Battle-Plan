@@ -1,6 +1,6 @@
 use super::{Content, DecodedFrame, Vision, bind_hover, loc, text};
 use crate::binding::Bindings;
-use installed_content_localisation::localisation::Argument;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{AirCountryRelationRow, Recorded, tables};
 use std::{
     cell::{OnceCell, RefCell},
@@ -391,7 +391,7 @@ fn cipher(
 
 struct MarkedCountries<'a> {
     content: &'a Content,
-    names: installed_content_country_names::country_names::CountryNames<'a>,
+    names: content_reader_country_names::country_names::CountryNames<'a>,
     raw: BTreeMap<u32, u32>,
     flags: crate::binding::Flags,
 }
@@ -405,7 +405,7 @@ impl<'a> MarkedCountries<'a> {
             .collect();
         Ok(Self {
             content,
-            names: installed_content_country_names::country_names::CountryNames::read(
+            names: content_reader_country_names::country_names::CountryNames::read(
                 frame,
                 &content.localisation,
             ),
@@ -414,7 +414,7 @@ impl<'a> MarkedCountries<'a> {
         })
     }
     fn country(&self, slot: u32) -> Result<String, String> {
-        let name = installed_content_localisation::localisation::crt_case_text(
+        let name = content_reader_localisation::localisation::crt_case_text(
             &self.names.name_with(slot, "_DEF")?,
             true,
             true,

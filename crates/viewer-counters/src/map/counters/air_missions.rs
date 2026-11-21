@@ -271,7 +271,7 @@ impl HourTables {
 pub(super) struct HourInputs<'a> {
     pub(super) content: &'a CounterContent,
     pub(super) assets: &'a CounterAssets,
-    pub(super) localisation: &'a installed_content_localisation::localisation::Localisation,
+    pub(super) localisation: &'a content_reader_localisation::localisation::Localisation,
     pub(super) passes: Option<&'a dyn AirPasses>,
 }
 
@@ -413,7 +413,7 @@ impl Prepared {
 }
 
 fn ground_hover(inputs: &HourInputs<'_>, region: u32, active: u32, state: Ground) -> Result<Arc<viewer_foundation::tooltip_text::Tooltip>, String> {
-    use installed_content_localisation::localisation::Argument;
+    use content_reader_localisation::localisation::Argument;
     use viewer_foundation::tooltip_text::Tooltip;
     let (cost, boost) = *inputs.content.ground_crew_defines.as_ref().map_err(Clone::clone)?;
     let loc = inputs.localisation;
@@ -540,7 +540,7 @@ impl Prepared {
     }
 
     fn supply_hovers(&mut self, inputs: &HourInputs<'_>) {
-        use installed_content_localisation::localisation::Argument;
+        use content_reader_localisation::localisation::Argument;
         for &region in inputs.content.region_names.keys() {
             let supply = self.supply(region).unwrap();
             let key = match supply.severity {
@@ -616,7 +616,7 @@ impl Prepared {
         frame: &DecodedFrame,
         regional_wings: &RegionalWings<'_>,
     ) {
-        use installed_content_localisation::localisation::Argument;
+        use content_reader_localisation::localisation::Argument;
         use viewer_foundation::{
             map::{
                 air_reachability::MissionCountrySources, air_registry_sources::AirRegistrySources,
@@ -937,17 +937,17 @@ impl Prepared {
                                 let number = if small {
                                     format!(
                                         "{}/{}",
-                                        installed_content_core::fixed5::fixed5_to_string(
+                                        content_reader_core::fixed5::fixed5_to_string(
                                             supply.supplied,
                                             0
                                         ),
-                                        installed_content_core::fixed5::fixed5_to_string(supply.needed, 0)
+                                        content_reader_core::fixed5::fixed5_to_string(supply.needed, 0)
                                     )
                                 } else {
                                     format!(
                                         "{}R{}{}!",
                                         viewer_foundation::map::native_text::COLOR,
-                                        installed_content_core::fixed5::fixed5_to_string(supply.deficit, 1),
+                                        content_reader_core::fixed5::fixed5_to_string(supply.deficit, 1),
                                         viewer_foundation::map::native_text::COLOR
                                     )
                                 };

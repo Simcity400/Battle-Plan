@@ -21,8 +21,8 @@ use viewer_foundation::map::province_schedule::Schedule;
 #[cfg(test)]
 use viewer_foundation::map::test_support::gui;
 
-use installed_content_core::{gui::native, map::MapData, map::ProvinceKind};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_core::{gui::native, map::MapData, map::ProvinceKind};
+use content_reader_localisation::localisation::Localisation;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
@@ -48,7 +48,7 @@ pub struct LabelDefines {
 }
 
 impl LabelDefines {
-    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
         let number = |section: &str, key: &str| -> io::Result<f32> {
             let value = defines.number(section, key)? as f32;
             if value.is_finite() {
@@ -167,7 +167,7 @@ pub struct LabelContent {
 }
 
 impl LabelContent {
-    pub fn load(defines: &installed_content_core::defines::Defines) -> io::Result<Self> {
+    pub fn load(defines: &content_reader_core::defines::Defines) -> io::Result<Self> {
         Ok(Self {
             defines: LabelDefines::load(defines)?,
             anchors: BTreeMap::new(),

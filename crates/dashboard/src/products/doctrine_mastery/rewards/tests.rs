@@ -38,7 +38,7 @@ fn content() -> Context {
     ]);
     let catalogue = Arc::new(catalogue);
     catalogue.scripted_content().unwrap().set_synthetic_environment(Default::default());
-    let database = Arc::new(installed_content_core::doctrines::read(&catalogue.content.layers).unwrap());
+    let database = Arc::new(content_reader_core::doctrines::read(&catalogue.content.layers).unwrap());
     Context { catalogue, database, default_reward: Ok(100_000) }
 }
 

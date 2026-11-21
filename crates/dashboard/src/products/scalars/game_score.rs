@@ -10,7 +10,7 @@ use crate::{
 use dashboard_follow::live::{Cells, Source as Cell};
 use replay_data::rows::{CountryGameScoreRow, GameScoreMultiplierRow, Recorded, TableId, tables};
 use dashboard_text::catalogue::{View, localised};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};

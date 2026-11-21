@@ -125,7 +125,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
     engine_executable::executable_tables::initialize(&options.game_dir)?;
     let started = Instant::now();
     let language = stacks::language(&options.user_dir)?;
-    let decode = installed_content_settings::settings::read_keys(&options.user_dir)?.texture_decode();
+    let decode = content_reader_settings::settings::read_keys(&options.user_dir)?.texture_decode();
     let (candidates, refused) = stacks::candidates(&options.user_dir, options.workshop.as_deref())?;
     for unusable in &refused {
         eprintln!(
@@ -228,7 +228,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
 
 fn stack(
     options: &Options,
-    (language, decode): (&str, installed_content_image::native::Decode),
+    (language, decode): (&str, content_reader_image::native::Decode),
     candidates: &[stacks::Candidate],
     plan: &stacks::Plan,
     scratch: &Path,
@@ -243,7 +243,7 @@ fn stack(
     };
     if let Some(candidate) = candidates.iter().find(|candidate| candidate.id == plan.id) {
         report.descriptor_file = Some(candidate.file.clone());
-        if let Ok(descriptor) = installed_content_core::parser::parse(candidate.descriptor.as_bytes()) {
+        if let Ok(descriptor) = content_reader_core::parser::parse(candidate.descriptor.as_bytes()) {
             let field = |key: &[u8]| {
                 descriptor
                     .get(key)
@@ -258,7 +258,7 @@ fn stack(
     let started = Instant::now();
     let gathered = stacks::user_folder(&scratch.join(&plan.id), language, candidates, &plan.mods)
         .and_then(|user_dir| {
-            installed_content_core::gather(&installed_content_core::GatherOptions {
+            content_reader_core::gather(&content_reader_core::GatherOptions {
                 game_dir: options.game_dir.clone(),
                 user_dir,
                 cache_dir: cache.join(&plan.id),

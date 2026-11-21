@@ -1,7 +1,7 @@
 
 use super::*;
 use crate::scripted_text::{EventObject, EventScope};
-use installed_content_core::tokens::Token;
+use content_reader_core::tokens::Token;
 
 #[cfg(test)]
 mod tests;
@@ -133,7 +133,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.char_scientist(scopes)? else {
             return Ok(String::new());
         };
-        let days = installed_content_core::fixed5::decimal_i32(item.value.scalar().unwrap_or_default());
+        let days = content_reader_core::fixed5::decimal_i32(item.value.scalar().unwrap_or_default());
         let at = {
             let mut graph = self.graph.borrow_mut();
             let at = graph.scopes.len();
@@ -159,7 +159,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         item: &Item,
         scopes: Scopes,
     ) -> Result<String, String> {
-        if item.kind != installed_content_core::parser::native::Kind::Bare || item.number() {
+        if item.kind != content_reader_core::parser::native::Kind::Bare || item.number() {
             return Ok(String::new());
         }
         let token = item.value.c_str().map_err(|why| why.to_string())?;

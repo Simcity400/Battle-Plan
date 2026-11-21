@@ -3,8 +3,8 @@ use std::{cell::RefCell, collections::BTreeMap, io, sync::Arc};
 use viewer_foundation::map::textures::load_uploadable;
 
 use eframe::wgpu;
-use installed_content_core::ResolvedLayers;
-use installed_content_image::{dds, native::Decode};
+use content_reader_core::ResolvedLayers;
+use content_reader_image::{dds, native::Decode};
 
 use viewer_foundation::map::{
     gpu_contract::{DEPTH_FORMAT, buffer},

@@ -14,18 +14,18 @@ pub enum Kind {
     Offline,
 }
 
-impl From<installed_content_core::DiagnosticKind> for Kind {
-    fn from(kind: installed_content_core::DiagnosticKind) -> Self {
+impl From<content_reader_core::DiagnosticKind> for Kind {
+    fn from(kind: content_reader_core::DiagnosticKind) -> Self {
         match kind {
-            installed_content_core::DiagnosticKind::ParseFailure => Self::ParseFailure,
-            installed_content_core::DiagnosticKind::Misread => Self::Misread,
-            installed_content_core::DiagnosticKind::Unsettled => Self::Unsettled,
-            installed_content_core::DiagnosticKind::Unsupported => Self::Unsupported,
-            installed_content_core::DiagnosticKind::Refused => Self::Refused,
-            installed_content_core::DiagnosticKind::Ambiguous => Self::Ambiguous,
-            installed_content_core::DiagnosticKind::Fallback => Self::Fallback,
-            installed_content_core::DiagnosticKind::Logged => Self::Logged,
-            installed_content_core::DiagnosticKind::Warning => Self::Warning,
+            content_reader_core::DiagnosticKind::ParseFailure => Self::ParseFailure,
+            content_reader_core::DiagnosticKind::Misread => Self::Misread,
+            content_reader_core::DiagnosticKind::Unsettled => Self::Unsettled,
+            content_reader_core::DiagnosticKind::Unsupported => Self::Unsupported,
+            content_reader_core::DiagnosticKind::Refused => Self::Refused,
+            content_reader_core::DiagnosticKind::Ambiguous => Self::Ambiguous,
+            content_reader_core::DiagnosticKind::Fallback => Self::Fallback,
+            content_reader_core::DiagnosticKind::Logged => Self::Logged,
+            content_reader_core::DiagnosticKind::Warning => Self::Warning,
         }
     }
 }
@@ -68,7 +68,7 @@ impl Finding {
         }
     }
 
-    pub fn reader(subject: &str, (kind, message): installed_content_core::Diagnostic) -> Self {
+    pub fn reader(subject: &str, (kind, message): content_reader_core::Diagnostic) -> Self {
         Self::new(kind.into(), subject, message)
     }
 

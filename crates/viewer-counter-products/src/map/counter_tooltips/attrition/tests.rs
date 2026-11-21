@@ -196,7 +196,7 @@ fn render_with(frame: &DecodedFrame, lookups: Result<&Lookups<'_>, String>) -> T
     .map(|(key, value)| (key.into(), value.into()))
     .collect();
     let vision = Vision::sharing(1, []);
-    let names = installed_content_division_names::division_names::Database::default();
+    let names = content_reader_division_names::division_names::Database::default();
     let units = Err("unused".into());
     let context = Context {
         nato: false,
@@ -281,7 +281,7 @@ fn composition(frame: &mut DecodedFrame, unreadable: u8) {
 }
 
 fn rendered_with_sub_units(frame: &DecodedFrame) -> Tooltip {
-    let mut units = installed_content_core::unit_leader::SubUnits::default();
+    let mut units = content_reader_core::unit_leader::SubUnits::default();
     units.read(
         b"sub_units={ marine={special_forces=yes type=infantry} infantry={type=infantry} }",
         "common/units/test.txt",

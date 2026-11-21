@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_core::{
+use content_reader_core::{
     occupation_modifiers::Definition, occupation_modifiers::Definitions, occupation_modifiers::Kind,
 };
 use replay_data::{

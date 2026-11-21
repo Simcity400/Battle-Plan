@@ -5,9 +5,9 @@ use std::{collections::BTreeMap, io};
 use viewer_foundation::map::textures::load_image;
 
 use eframe::wgpu;
-use installed_content_core::{ResolvedLayers, defines::Defines, map::MapData, parser, parser::Value};
-use installed_content_image::{SharedRgba8Image as Rgba8Image, native::Decode};
-use installed_content_regions::regions::StrategicRegion;
+use content_reader_core::{ResolvedLayers, defines::Defines, map::MapData, parser, parser::Value};
+use content_reader_image::{SharedRgba8Image as Rgba8Image, native::Decode};
+use content_reader_regions::regions::StrategicRegion;
 
 use viewer_foundation::map::{
     camera::{Camera, MapSize},

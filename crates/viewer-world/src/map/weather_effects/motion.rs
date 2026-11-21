@@ -1,4 +1,4 @@
-use installed_content_core::mesh::Transform;
+use content_reader_core::mesh::Transform;
 
 #[derive(Clone, Copy)]
 pub(super) struct Space {

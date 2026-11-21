@@ -2,7 +2,7 @@
 use dashboard_text::template_facts::{country, hq, template};
 pub(super) use dashboard_text::template_facts::{country_with, hq_with, template_with};
 #[cfg(test)]
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 #[cfg(test)]
 use replay_frame::frame::DecodedFrame;
 

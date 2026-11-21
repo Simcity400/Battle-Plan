@@ -10,7 +10,7 @@ use viewer_foundation::debug_fields;
 pub(crate) const NAVAL_BASE: u8 = engine_native::craid_source::KIND_NAVAL_BASE as u8;
 pub(crate) const BUILDING: u8 = engine_native::craid_source::KIND_BUILDING as u8;
 
-use installed_content_core::{
+use content_reader_core::{
     province_geometry::ProvinceGeometry, province_graph::ProvinceGraph, province_graph::RaidPath,
     province_graph::raid_distance,
 };

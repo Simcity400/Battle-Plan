@@ -13,7 +13,7 @@ use viewer_combat as combat;
 use viewer_foundation::map::sprites::Interface;
 use viewer_foundation::map::text::load;
 
-use installed_content_core::{
+use content_reader_core::{
     ResolvedLayers, content::ResolvedContent, defines::Defines, gui::native::Cause,
     gui::native::Refusal,
 };
@@ -34,10 +34,10 @@ struct Log {
 fn read_states(
     log: &mut Log,
     read: impl FnOnce() -> io::Result<(
-        installed_content_states::states::States,
-        Vec<installed_content_core::Diagnostic>,
+        content_reader_states::states::States,
+        Vec<content_reader_core::Diagnostic>,
     )>,
-) -> Option<installed_content_states::states::States> {
+) -> Option<content_reader_states::states::States> {
     let diagnostic_start = log.diagnostics.len();
     let states = log.read("states", read).map(|(states, notes)| {
         log.typed("states", notes);
@@ -128,7 +128,7 @@ impl Log {
     fn typed(
         &mut self,
         reader: &str,
-        messages: impl IntoIterator<Item = installed_content_core::Diagnostic>,
+        messages: impl IntoIterator<Item = content_reader_core::Diagnostic>,
     ) {
         for (kind, message) in messages {
             self.note(reader, kind.into(), message);
@@ -136,7 +136,7 @@ impl Log {
     }
 }
 
-fn raid_type_notes(log: &mut Log, raid: &installed_content_raids::raids::RaidType) {
+fn raid_type_notes(log: &mut Log, raid: &content_reader_raids::raids::RaidType) {
     let subject = format!("raid {}", raid.name);
     if let Some(why) = &raid.tooltip.refused {
         log.about("raids", Kind::Refused, &subject, why);
@@ -159,7 +159,7 @@ fn gui_refusal(log: &mut Log, reader: &str, file: &str, refusal: &Refusal) {
 }
 
 pub fn run_sounds(
-    content: installed_content_core::GatheredContent,
+    content: content_reader_core::GatheredContent,
     values: Option<super::values::Writer>,
 ) -> (Vec<ReaderRun>, Vec<Diagnostic>, super::report::StateHistory) {
     let mut log = Log {
@@ -167,14 +167,14 @@ pub fn run_sounds(
         ..Log::default()
     };
     let layers = &content.layers;
-    let defines = log.read("defines", || installed_content_core::defines::read(layers));
+    let defines = log.read("defines", || content_reader_core::defines::read(layers));
     sounds(&mut log, layers, defines.as_ref());
     (log.runs, log.diagnostics, log.state_history)
 }
 
 pub fn run(
-    content: installed_content_core::GatheredContent,
-    decode: installed_content_image::native::Decode,
+    content: content_reader_core::GatheredContent,
+    decode: content_reader_image::native::Decode,
     values: Option<super::values::Writer>,
     maps_only: bool,
 ) -> (Vec<ReaderRun>, Vec<Diagnostic>, super::report::StateHistory) {
@@ -194,7 +194,7 @@ pub fn run(
         ..Log::default()
     };
     let layers: &ResolvedLayers = &resolved.layers;
-    let defines = log.read("defines", || installed_content_core::defines::read(layers));
+    let defines = log.read("defines", || content_reader_core::defines::read(layers));
     match &defines {
         Some(defines) => {
             log.read("viewer.zoom_defines", || {
@@ -247,7 +247,7 @@ pub fn run(
     sounds(&mut log, layers, defines.as_ref());
     let counts = match (&map.buildings, &map.ideologies, &map.resources) {
         (Some(buildings), Some((ideologies, _)), Some((resources, _))) => {
-            let names = installed_content_core::trigger_keys::CountTriggerNames::new(
+            let names = content_reader_core::trigger_keys::CountTriggerNames::new(
                 buildings, ideologies, resources,
             );
             log.value("trigger_keys", &names);
@@ -328,13 +328,13 @@ fn interface(
     log: &mut Log,
     layers: &ResolvedLayers,
     language: &str,
-    decode: installed_content_image::native::Decode,
+    decode: content_reader_image::native::Decode,
 ) -> (
     Option<Interface>,
-    Option<installed_content_localisation::localisation::Localisation>,
+    Option<content_reader_localisation::localisation::Localisation>,
 ) {
     let localisation = log.read("localisation", || {
-        installed_content_localisation::localisation::read(layers, language)
+        content_reader_localisation::localisation::read(layers, language)
     });
     if let Some(localisation) = &localisation {
         for message in &localisation.logged {
@@ -355,10 +355,10 @@ fn interface(
     }
     let interface = log
         .read("gui.resources", || {
-            installed_content_core::gui::native::resources::Registry::load(layers)
+            content_reader_core::gui::native::resources::Registry::load(layers)
         })
         .map(|registry| Interface {
-            sprites: installed_content_gfx::gfx::SpriteSet::new(&registry.files),
+            sprites: content_reader_gfx::gfx::SpriteSet::new(&registry.files),
             registry,
             decode,
         });
@@ -367,8 +367,8 @@ fn interface(
             log.value("gfx", &interface.sprites);
             for (file, sprites) in &interface.registry.files {
                 let fonts = sprites.fonts.iter().filter_map(|event| match event {
-                    installed_content_core::gui::native::fonts::FontEvent::Font(facts) => Some(facts),
-                    installed_content_core::gui::native::fonts::FontEvent::Override(_) => None,
+                    content_reader_core::gui::native::fonts::FontEvent::Font(facts) => Some(facts),
+                    content_reader_core::gui::native::fonts::FontEvent::Override(_) => None,
                 });
                 for refusal in sprites
                     .refusals
@@ -424,7 +424,7 @@ fn interface(
         None => log.not_run(&["gfx", "viewer.fonts"], "gui.resources"),
     }
     if let Some(guis) = log.read("gui.native", || {
-        installed_content_core::gui::native::read_layers(layers)
+        content_reader_core::gui::native::read_layers(layers)
     }) {
         for (file, gui) in &guis.files {
             for refusal in gui.refusals() {
@@ -458,7 +458,7 @@ fn interface(
         }
     }
     log.read("viewer.cursor", || {
-        installed_content_image::cursor::decode(&layers.read_uncovered("gfx/cursors/normal.cur")?)
+        content_reader_image::cursor::decode(&layers.read_uncovered("gfx/cursors/normal.cur")?)
     });
     if let Some(roster) = log.read("mesh.roster", || layers.descriptor_roster()) {
         log.notes("mesh.roster", Kind::Logged, &roster.logged);
@@ -468,12 +468,12 @@ fn interface(
     }
     log.read("mesh.texture_index", || layers.texture_index());
     match log.read("particles", || {
-        installed_content_core::particles::Catalog::read(layers)
+        content_reader_core::particles::Catalog::read(layers)
     }) {
         Some(catalog) => {
             log.notes("particles", Kind::Refused, catalog.refused());
             if let Some(effects) = log.read("weather", || {
-                installed_content_weather::weather::effects(layers, &catalog)
+                content_reader_weather::weather::effects(layers, &catalog)
             }) {
                 let withheld: Vec<String> = effects
                     .values()
@@ -492,7 +492,7 @@ fn interface(
                             writer.write("particles.emitters", &(object, &particle));
                         }
                         let document =
-                            installed_content_core::parser::parse(&particle.path.read_uncovered(layers)?)
+                            content_reader_core::parser::parse(&particle.path.read_uncovered(layers)?)
                                 .inspect_err(|_| kind = Kind::ParseFailure)?;
                         if let Some(writer) = &values {
                             writer.write("particles.emitters", &(object, &document));
@@ -542,60 +542,60 @@ fn interface(
         }
         None => log.not_run(&["weather", "particles.emitters"], "particles"),
     }
-    if let Some(abilities) = log.read("abilities", || installed_content_abilities::abilities::read(layers))
+    if let Some(abilities) = log.read("abilities", || content_reader_abilities::abilities::read(layers))
     {
         log.typed("abilities", abilities.warnings);
     }
-    log.read("ambient", || installed_content_core::ambient::read(layers));
+    log.read("ambient", || content_reader_core::ambient::read(layers));
     (interface, localisation)
 }
 
 struct Map {
     terrain: Option<(
-        installed_content_core::terrain::TerrainDefinitions,
-        installed_content_core::terrain::DefaultMap,
+        content_reader_core::terrain::TerrainDefinitions,
+        content_reader_core::terrain::DefaultMap,
     )>,
-    buildings: Option<installed_content_core::buildings::Buildings>,
+    buildings: Option<content_reader_core::buildings::Buildings>,
     ideologies: Option<(
-        installed_content_core::ideologies::Ideologies,
-        Vec<installed_content_core::Diagnostic>,
+        content_reader_core::ideologies::Ideologies,
+        Vec<content_reader_core::Diagnostic>,
     )>,
     resources: Option<(
-        installed_content_core::resources::Resources,
-        Vec<installed_content_core::Diagnostic>,
+        content_reader_core::resources::Resources,
+        Vec<content_reader_core::Diagnostic>,
     )>,
-    data: Option<installed_content_core::map::MapData>,
-    regions: Option<BTreeMap<u32, installed_content_regions::regions::StrategicRegion>>,
+    data: Option<content_reader_core::map::MapData>,
+    regions: Option<BTreeMap<u32, content_reader_regions::regions::StrategicRegion>>,
 }
 
 fn map(
     log: &mut Log,
     layers: &ResolvedLayers,
     defines: Option<&Defines>,
-    decode: installed_content_image::native::Decode,
+    decode: content_reader_image::native::Decode,
 ) -> Map {
-    let map = log.read("map", || installed_content_core::map::load(layers));
+    let map = log.read("map", || content_reader_core::map::load(layers));
     log.read("map.country_colors", || {
-        installed_content_core::map::read_country_colors(layers)
+        content_reader_core::map::read_country_colors(layers)
     });
-    let terrain = log.read("terrain", || installed_content_core::terrain::read(layers));
+    let terrain = log.read("terrain", || content_reader_core::terrain::read(layers));
     match &terrain {
         Some((definitions, default_map)) => {
             log.notes("terrain", Kind::Misread, &definitions.skipped);
             log.read("terrain.map_images", || {
-                installed_content_core::terrain::read_map_images(layers, default_map, decode)
+                content_reader_core::terrain::read_map_images(layers, default_map, decode)
             });
         }
         None => log.not_run(&["terrain.map_images"], "terrain"),
     }
-    let regions = log.read("regions", || installed_content_regions::regions::read(layers));
+    let regions = log.read("regions", || content_reader_regions::regions::read(layers));
     if let Some(regions) = &regions {
         log.notes("regions", Kind::Warning, &regions.notes);
     }
     let regions = regions.map(|database| database.regions);
-    log.read("adjacencies", || installed_content_core::adjacencies::read(layers));
+    log.read("adjacencies", || content_reader_core::adjacencies::read(layers));
     if let Some(rules) = log.read("adjacency_rules", || {
-        installed_content_core::adjacency_rules::read(layers)
+        content_reader_core::adjacency_rules::read(layers)
     }) {
         for rule in &rules {
             if let Some(why) = &rule.unsupported {
@@ -608,16 +608,16 @@ fn map(
             }
         }
     }
-    log.read("cities", || installed_content_core::cities::read(layers));
-    log.read("railways", || installed_content_core::railways::read(layers));
+    log.read("cities", || content_reader_core::cities::read(layers));
+    log.read("railways", || content_reader_core::railways::read(layers));
     log.read("positions.unit_stacks", || {
-        installed_content_core::positions::read_unit_stacks(layers)
+        content_reader_core::positions::read_unit_stacks(layers)
     });
     log.read("positions.buildings", || {
-        installed_content_core::positions::read_buildings(layers)
+        content_reader_core::positions::read_buildings(layers)
     });
     let graph = log.read("province_graph", || {
-        installed_content_core::province_graph::ProvinceGraph::read(layers)
+        content_reader_core::province_graph::ProvinceGraph::read(layers)
     });
     if let Some((graph, _)) = &graph {
         for ((from, to), why) in &graph.unavailable {
@@ -629,7 +629,7 @@ fn map(
             );
         }
     }
-    let buildings = log.read("buildings", || installed_content_core::buildings::read(layers));
+    let buildings = log.read("buildings", || content_reader_core::buildings::read(layers));
     if let Some(buildings) = &buildings {
         for slot in &buildings.ambiguous_slots {
             log.about(
@@ -656,23 +656,23 @@ fn map(
             }
         }
     }
-    let resources = log.read("resources", || installed_content_core::resources::read(layers));
+    let resources = log.read("resources", || content_reader_core::resources::read(layers));
     if let Some((_, warnings)) = &resources {
         log.typed("resources", warnings.clone());
     }
-    let ideologies = log.read("ideologies", || installed_content_core::ideologies::read(layers));
+    let ideologies = log.read("ideologies", || content_reader_core::ideologies::read(layers));
     if let Some((_, warnings)) = &ideologies {
         log.typed("ideologies", warnings.clone());
     }
     if let Some(modes) = log.read("scripted_map_modes", || {
-        installed_content_core::scripted_map_modes::read(layers)
+        content_reader_core::scripted_map_modes::read(layers)
     }) {
         for (file, field) in &modes.refused {
             log.about("scripted_map_modes", Kind::Refused, file, field);
         }
         for mode in &modes.modes {
             for (side, layer) in [("top", &mode.top), ("bottom", &mode.bottom)] {
-                use installed_content_core::scripted_map_modes::LayerType;
+                use content_reader_core::scripted_map_modes::LayerType;
                 if matches!(
                     layer.kind,
                     LayerType::Country | LayerType::State | LayerType::StateController
@@ -706,7 +706,7 @@ fn map(
         };
     };
     if let Some(movement) = log.read("movement", || {
-        installed_content_core::movement::MovementMap::read(layers, defines)
+        content_reader_core::movement::MovementMap::read(layers, defines)
     }) {
         for ((from, to), why) in movement.unavailable_edges() {
             log.about(
@@ -718,7 +718,7 @@ fn map(
         }
     }
     if let Some(movement) = log.read("movement.defines", || {
-        installed_content_core::movement::MovementDefines::read(defines)
+        content_reader_core::movement::MovementDefines::read(defines)
     }) {
         for (part, refusal) in [
             ("organisation", movement.organisation.as_ref().err()),
@@ -745,7 +745,7 @@ fn map(
         };
     };
     let states = read_states(log, || {
-        installed_content_states::states::read(layers, defines, &data.definitions)
+        content_reader_states::states::read(layers, defines, &data.definitions)
     });
     match states {
         Some(states) => {
@@ -796,7 +796,7 @@ fn map(
 
 fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some((_, warnings)) = log.read("modifier_definitions", || {
-        installed_content_core::modifier_definitions::read(layers)
+        content_reader_core::modifier_definitions::read(layers)
     }) {
         log.typed("modifier_definitions", warnings);
     }
@@ -810,7 +810,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         }
     };
     let ideas = match officers {
-        Some(officers) => log.read("ideas", || installed_content_core::ideas::read(layers, &officers)),
+        Some(officers) => log.read("ideas", || content_reader_core::ideas::read(layers, &officers)),
         None => {
             log.not_run(&["ideas"], "ideas.officers");
             None
@@ -820,7 +820,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         Some((_, advisors, warnings)) => {
             log.typed("ideas", warnings);
             if let Some((_, warnings)) = log.read("characters", || {
-                installed_content_core::characters::read(layers, advisors)
+                content_reader_core::characters::read(layers, advisors)
             }) {
                 log.typed("characters", warnings);
             }
@@ -830,11 +830,11 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     let values = log.values.clone();
     if let Some(stops) = log.read("characters.portraits", || {
         let names = layers.key_names()?;
-        installed_content_core::characters::paths(layers)?
+        content_reader_core::characters::paths(layers)?
             .into_iter()
             .map(|path| {
                 let (_, stop) = {
-                    let read = installed_content_core::characters::portraits(
+                    let read = content_reader_core::characters::portraits(
                         &path.read(layers)?,
                         &names,
                         "army",
@@ -856,7 +856,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         );
     }
     if let Some(templates) = log.read("characters.leader_templates", || {
-        installed_content_core::characters::leader_templates(layers).map_err(io::Error::other)
+        content_reader_core::characters::leader_templates(layers).map_err(io::Error::other)
     }) {
         for template in &templates {
             if let Err(why) = &template.role {
@@ -871,18 +871,18 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         }
     }
     if let Some((_, warnings)) = log.read("leader_traits", || {
-        installed_content_core::leader_traits::read(layers)
+        content_reader_core::leader_traits::read(layers)
     }) {
         log.typed("leader_traits", warnings);
     }
-    if let Some(names) = log.read("names", || installed_content_core::names::read(layers)) {
+    if let Some(names) = log.read("names", || content_reader_core::names::read(layers)) {
         log.notes("names", Kind::Unsettled, &names.unknown);
     }
-    if let Some((_, warnings)) = log.read("focus", || installed_content_focus::focus::read(layers)) {
+    if let Some((_, warnings)) = log.read("focus", || content_reader_focus::focus::read(layers)) {
         log.typed("focus", warnings);
     }
     if let Some(None) = log.read("focus.point_days", || {
-        installed_content_focus::focus::point_days(layers)
+        content_reader_focus::focus::point_days(layers)
     }) {
         log.note(
             "focus.point_days",
@@ -891,7 +891,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         );
     }
     if let Some((_, warnings)) = log.read("technology", || {
-        installed_content_core::technology::read_equipment(layers)
+        content_reader_core::technology::read_equipment(layers)
     }) {
         log.typed("technology", warnings);
     }
@@ -902,11 +902,11 @@ fn units(
     layers: &ResolvedLayers,
     defines: Option<&Defines>,
     map: &Map,
-    decode: installed_content_image::native::Decode,
-    localisation: Option<&installed_content_localisation::localisation::Localisation>,
+    decode: content_reader_image::native::Decode,
+    localisation: Option<&content_reader_localisation::localisation::Localisation>,
 ) {
     let equipment = log.read("equipment", || {
-        installed_content_core::equipment::Database::load(layers)
+        content_reader_core::equipment::Database::load(layers)
     });
     if let Some(equipment) = &equipment {
         log.notes("equipment", Kind::Misread, &equipment.misreads);
@@ -916,7 +916,7 @@ fn units(
     }
     model_labels(log, layers, equipment.as_ref(), localisation);
     if let Some(groups) = log.read("equipment.groups", || {
-        installed_content_core::equipment::Groups::load(layers)
+        content_reader_core::equipment::Groups::load(layers)
     }) {
         log.notes("equipment.groups", Kind::Misread, &groups.misreads);
         if let Some(lost) = &groups.lost {
@@ -924,7 +924,7 @@ fn units(
         }
     }
     if let Some((_, warnings)) = log.read("division_names", || {
-        installed_content_division_names::division_names::read::<installed_content_core::Diagnostic>(layers)
+        content_reader_division_names::division_names::read::<content_reader_core::Diagnostic>(layers)
     }) {
         log.typed("division_names", warnings);
     }
@@ -942,7 +942,7 @@ fn units(
                     .cloned()
             };
             if let Some(leaders) = log.read("unit_leader", || {
-                installed_content_core::unit_leader::Leaders::<installed_content_core::Diagnostic>::load(
+                content_reader_core::unit_leader::Leaders::<content_reader_core::Diagnostic>::load(
                     layers, &spelling,
                 )
             }) {
@@ -1003,17 +1003,17 @@ fn units(
         _ => log.not_run(&["viewer.unit_models"], "defines, map and terrain"),
     }
     if let Some(traits) = log.read("unit_leader.traits", || {
-        installed_content_core::unit_leader::Traits::registered(layers)
+        content_reader_core::unit_leader::Traits::registered(layers)
     }) {
         log.notes("unit_leader.traits", Kind::Unsupported, &traits.unsupported);
     }
     if let Some(sub_units) = log.read("unit_leader.sub_units", || {
-        installed_content_core::unit_leader::sub_units(layers)
+        content_reader_core::unit_leader::sub_units(layers)
     }) {
         log.notes("unit_leader.sub_units", Kind::Misread, sub_units.warnings());
     }
     let cultures = log.read("train_gfx.cultures", || {
-        installed_content_core::train_gfx::cultures(layers)
+        content_reader_core::train_gfx::cultures(layers)
     });
     let tags = log.read("viewer.country_tags", || {
         viewer_world::map::trains::country_tag_index(layers)
@@ -1033,9 +1033,9 @@ fn units(
             let is_tag = |tag: &str| tags.files.contains_key(tag);
             let has_entity = |entity: &str| roster.descriptors.entities.contains_key(entity);
             if let Some(database) = log.read("train_gfx", || {
-                installed_content_core::train_gfx::Database::read(
+                content_reader_core::train_gfx::Database::read(
                     layers,
-                    &installed_content_core::train_gfx::Registries {
+                    &content_reader_core::train_gfx::Registries {
                         is_tag: &is_tag,
                         cultures: &cultures,
                         has_entity: &has_entity,
@@ -1055,8 +1055,8 @@ fn units(
 fn model_labels(
     log: &mut Log,
     layers: &ResolvedLayers,
-    equipment: Option<&installed_content_core::equipment::Database>,
-    localisation: Option<&installed_content_localisation::localisation::Localisation>,
+    equipment: Option<&content_reader_core::equipment::Database>,
+    localisation: Option<&content_reader_localisation::localisation::Localisation>,
 ) {
     const READER: &str = "viewer.model_labels";
     let (Some(equipment), Some(localisation)) = (equipment, localisation) else {
@@ -1064,7 +1064,7 @@ fn model_labels(
         return;
     };
     let Some(tags) = log.read(READER, || {
-        installed_content_core::country_tags::read_definitions(layers)
+        content_reader_core::country_tags::read_definitions(layers)
     }) else {
         return;
     };
@@ -1113,7 +1113,7 @@ fn model_labels(
 
 fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     let Some(catalog) = log.read("viewer.sounds", || {
-        installed_content_sound::sound::Catalog::read(layers)
+        content_reader_sound::sound::Catalog::read(layers)
     }) else {
         return;
     };
@@ -1124,14 +1124,14 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     }
     match defines {
         Some(defines) => {
-            if let Err(error) = installed_content_sound::sound::Defines::load(defines) {
+            if let Err(error) = content_reader_sound::sound::Defines::load(defines) {
                 log.note(
                     "viewer.sounds",
                     Kind::Refused,
                     format!("NSound defines: {error}"),
                 );
             }
-            match installed_content_sound::combat_sounds::BattleDefines::load(defines) {
+            match content_reader_sound::combat_sounds::BattleDefines::load(defines) {
                 Ok(battle) if catalog.effect(&battle.effect).is_none() => log.about(
                     "viewer.sounds",
                     Kind::Refused,
@@ -1149,7 +1149,7 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         None => log.not_run(&["viewer.sounds.defines"], "defines"),
     }
     if let Some(combat_sounds) = log.read("viewer.battle_sounds", || {
-        installed_content_sound::combat_sounds::Layers::read(layers)
+        content_reader_sound::combat_sounds::Layers::read(layers)
     }) {
         for (message, count) in combat_sounds.notes.entries() {
             for _ in 0..*count {
@@ -1223,7 +1223,7 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
             continue;
         }
         match layers.read_uncovered(&sound.path) {
-            Ok(bytes) => match installed_content_sound::wav::decode(&bytes) {
+            Ok(bytes) => match content_reader_sound::wav::decode(&bytes) {
                 Ok(_) => decoded += 1,
                 Err(why) => log.about(
                     "viewer.sounds",
@@ -1240,7 +1240,7 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         }
     }
     if let Some(music) = log.read("viewer.music", || {
-        installed_content_sound::music::Music::read(layers)
+        content_reader_sound::music::Music::read(layers)
     }) {
         for (message, count) in music.notes.entries() {
             for _ in 0..*count {
@@ -1275,7 +1275,7 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
             }
             match layers.read_uncovered(&track.path) {
                 Ok(bytes) => {
-                    if let Err(why) = installed_content_sound::ogg::probe(bytes) {
+                    if let Err(why) = content_reader_sound::ogg::probe(bytes) {
                         log.about("viewer.music", Kind::Unsupported, &track.path, &why);
                     }
                 }
@@ -1302,7 +1302,7 @@ fn sounds(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
 
 fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     if let Some(scripted) = log.read("scripted_triggers", || {
-        installed_content_core::scripted_triggers::read(layers)
+        content_reader_core::scripted_triggers::read(layers)
     }) {
         log.notes("scripted_triggers", Kind::Logged, &scripted.logged);
         for (name, template) in &scripted.templates {
@@ -1316,16 +1316,16 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
             }
         }
     }
-    if let Some(aliases) = log.read("tag_aliases", || installed_content_core::tag_aliases::read(layers)) {
+    if let Some(aliases) = log.read("tag_aliases", || content_reader_core::tag_aliases::read(layers)) {
         log.notes("tag_aliases", Kind::Unsettled, &aliases.unknown);
     }
     if let Some(names) = log.read("scripted_localisation", || {
-        installed_content_scripted_localisation::scripted_localisation::names(layers)
+        content_reader_scripted_localisation::scripted_localisation::names(layers)
     }) {
         log.typed("scripted_localisation", names.warnings);
     }
     if let Some(database) = log.read("combat_tactics", || {
-        installed_content_core::combat_tactics::read(layers)
+        content_reader_core::combat_tactics::read(layers)
     }) {
         log.notes("combat_tactics", Kind::Unsettled, &database.unsupported);
         log.notes("combat_tactics", Kind::Logged, &database.logged);
@@ -1340,7 +1340,7 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
             }
         }
     }
-    if let Some(catalog) = log.read("raids", || installed_content_raids::raids::read(layers)) {
+    if let Some(catalog) = log.read("raids", || content_reader_raids::raids::read(layers)) {
         log.typed("raids", catalog.misreads.iter().cloned());
         log.notes("raids", Kind::Refused, &catalog.refused);
         for (name, why) in &catalog.unsupported {
@@ -1364,7 +1364,7 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
         }
     }
     if let Some(groups) = log.read("raids.names", || {
-        installed_content_raids::raids::names::Groups::read(layers)
+        content_reader_raids::raids::names::Groups::read(layers)
     }) {
         log.typed("raids.names", groups.warnings.iter().cloned());
         for (name, why) in groups.refused() {
@@ -1379,7 +1379,7 @@ fn triggers(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
     match defines {
         Some(defines) => {
             log.read("raids.graphics_defines", || {
-                installed_content_raids::raids::RaidGraphicsDefines::read(defines)
+                content_reader_raids::raids::RaidGraphicsDefines::read(defines)
             });
         }
         None => log.not_run(&["raids.graphics_defines"], "defines"),
@@ -1391,8 +1391,8 @@ fn viewer_map_assets(
     layers: &ResolvedLayers,
     defines: Option<&Defines>,
     map: &Map,
-    decode: installed_content_image::native::Decode,
-    registry: Option<&installed_content_core::gui::native::resources::Registry>,
+    decode: content_reader_image::native::Decode,
+    registry: Option<&content_reader_core::gui::native::resources::Registry>,
 ) {
     let Some(defines) = defines else {
         log.not_run(
@@ -1513,7 +1513,7 @@ fn viewer_map_assets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_raids::raids::RaidType;
+    use content_reader_raids::raids::RaidType;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -1573,7 +1573,7 @@ mod tests {
         let mut log = Log::default();
         let states = read_states(&mut log, || {
             reads += 1;
-            installed_content_states::states::read(&layers, &defines, &BTreeMap::new())
+            content_reader_states::states::read(&layers, &defines, &BTreeMap::new())
         })
         .unwrap();
         assert_eq!(reads, 1);
@@ -1629,7 +1629,7 @@ mod tests {
         let mut log = Log::default();
         log.typed(
             "focus",
-            [(installed_content_core::DiagnosticKind::Unsupported, warning)],
+            [(content_reader_core::DiagnosticKind::Unsupported, warning)],
         );
         assert_eq!(log.diagnostics.len(), 1);
         let note = &log.diagnostics[0];
@@ -1678,25 +1678,25 @@ mod tests {
         fs::create_dir_all(buildings.parent().unwrap()).unwrap();
         fs::write(buildings, "buildings = { mod_building = {} }").unwrap();
         let layers = ResolvedLayers::from_folders(&[(&fixture.0, &[][..])]).unwrap();
-        let catalog = installed_content_raids::raids::read(&layers).unwrap();
+        let catalog = content_reader_raids::raids::read(&layers).unwrap();
         assert!(
             catalog
                 .misreads
                 .iter()
-                .any(|(kind, _)| *kind == installed_content_core::DiagnosticKind::Misread),
+                .any(|(kind, _)| *kind == content_reader_core::DiagnosticKind::Misread),
             "{catalog:?}"
         );
         assert!(
             catalog
                 .misreads
                 .iter()
-                .any(|(kind, _)| *kind == installed_content_core::DiagnosticKind::Unsupported),
+                .any(|(kind, _)| *kind == content_reader_core::DiagnosticKind::Unsupported),
             "{catalog:?}"
         );
         assert!(!catalog.uncertain.is_empty(), "{catalog:?}");
         assert_eq!(
             catalog.uncertain[0].kind,
-            installed_content_core::DiagnosticKind::Unsupported
+            content_reader_core::DiagnosticKind::Unsupported
         );
         let mut log = Log::default();
         triggers(&mut log, &layers, None);
@@ -1739,27 +1739,27 @@ mod tests {
         );
         for (producer, message, expected) in [
             (
-                installed_content_core::DiagnosticKind::Logged,
+                content_reader_core::DiagnosticKind::Logged,
                 "unsupported colour",
                 Kind::Logged,
             ),
             (
-                installed_content_core::DiagnosticKind::Warning,
+                content_reader_core::DiagnosticKind::Warning,
                 "file cannot be followed",
                 Kind::Warning,
             ),
             (
-                installed_content_core::DiagnosticKind::ParseFailure,
+                content_reader_core::DiagnosticKind::ParseFailure,
                 "unknown form",
                 Kind::ParseFailure,
             ),
             (
-                installed_content_core::DiagnosticKind::Fallback,
+                content_reader_core::DiagnosticKind::Fallback,
                 "shown by its script name",
                 Kind::Fallback,
             ),
             (
-                installed_content_core::DiagnosticKind::Ambiguous,
+                content_reader_core::DiagnosticKind::Ambiguous,
                 "declared more than once with differing fields",
                 Kind::Ambiguous,
             ),
@@ -1772,14 +1772,14 @@ mod tests {
     #[test]
     fn raids_are_not_run_without_the_interface_registry() {
         let layers = ResolvedLayers::from_folders(&[]).unwrap();
-        let defines = installed_content_core::defines::read(&layers).unwrap();
+        let defines = content_reader_core::defines::read(&layers).unwrap();
         let map = Map {
             terrain: None,
             buildings: None,
             ideologies: None,
             resources: None,
             regions: None,
-            data: Some(installed_content_core::map::MapData {
+            data: Some(content_reader_core::map::MapData {
                 width: 1,
                 height: 1,
                 province_ids: vec![0],

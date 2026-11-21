@@ -10,7 +10,7 @@ use std::{io, sync::Weak};
 
 #[derive(Default)]
 pub(crate) struct Fold {
-    bank: Option<Weak<installed_content_core::map::MapData>>,
+    bank: Option<Weak<content_reader_core::map::MapData>>,
     active: Option<Active>,
 }
 struct Active {
@@ -18,7 +18,7 @@ struct Active {
     viewer: u32,
     branch: u64,
     campaign: ViewIdentity,
-    bank: Weak<installed_content_core::map::MapData>,
+    bank: Weak<content_reader_core::map::MapData>,
     hour: i32,
     layers: [Option<State>; 2],
 }
@@ -45,7 +45,7 @@ struct State {
     evaluated: usize,
 }
 impl Fold {
-    pub(crate) fn bind(&mut self, map: &std::sync::Arc<installed_content_core::map::MapData>) {
+    pub(crate) fn bind(&mut self, map: &std::sync::Arc<content_reader_core::map::MapData>) {
         self.bank = Some(std::sync::Arc::downgrade(map));
     }
     pub(crate) fn close(
@@ -432,7 +432,7 @@ mod tests {
         tests::{content, frame, map},
     };
     use dashboard_text::triggers::{ContentFacts, World};
-    use installed_content_core::scripted_map_modes::{self, MapModes};
+    use content_reader_core::scripted_map_modes::{self, MapModes};
     use replay_data::rows::{CountryLinkRow, CountryRow, ProvinceRow, TableRows};
     use replay_frame::frame::{FrameDecoder, FrameEncoder, TableView};
     use std::{collections::BTreeSet, sync::Arc};
@@ -497,7 +497,7 @@ mod tests {
                 .collect(),
         ))
         .into();
-        let names = installed_content_core::trigger_keys::TriggerNames {
+        let names = content_reader_core::trigger_keys::TriggerNames {
             scripted: Default::default(),
             counts: Some(Default::default()),
         };
@@ -605,7 +605,7 @@ mod tests {
         fold.bind(&bank);
         let mut input = frame();
         input.tables[TableId::Campaign.index()] = crate::map::test_campaign();
-        let names = installed_content_core::trigger_keys::TriggerNames::default();
+        let names = content_reader_core::trigger_keys::TriggerNames::default();
         let dlcs = BTreeSet::new();
         let aliases = Arc::default();
         let mut encoder = FrameEncoder::new();

@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, sync::OnceLock};
 use viewer_foundation::naval_math::dominance_value;
 
-use installed_content_core::{
+use content_reader_core::{
     defines::Defines, map::MapData, map::ProvinceKind, terrain::TerrainDefinitions,
 };
-use installed_content_regions::regions::StrategicRegion;
+use content_reader_regions::regions::StrategicRegion;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
@@ -991,7 +991,7 @@ mod tests {
     fn mod_terrain_and_control_ratio_supply_the_minimum() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let terrain = installed_content_core::terrain::parse_definitions(b"categories={ ocean={minimum_seazone_dominance=9} crystal_sea={minimum_seazone_dominance=17} }").unwrap();
+        let terrain = content_reader_core::terrain::parse_definitions(b"categories={ ocean={minimum_seazone_dominance=9} crystal_sea={minimum_seazone_dominance=17} }").unwrap();
         let defines = Defines::new().unwrap();
         defines
             .load(
@@ -1013,7 +1013,7 @@ mod tests {
                 .map(|id| {
                     (
                         id,
-                        installed_content_core::map::ProvinceDefinition {
+                        content_reader_core::map::ProvinceDefinition {
                             id,
                             rgb: [0; 3],
                             kind: ProvinceKind::Sea,

@@ -47,7 +47,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             required,
             ..Default::default()
         });
-        let mut projects = installed_content_core::special_projects::Catalog::default();
+        let mut projects = content_reader_core::special_projects::Catalog::default();
         projects.projects = [("oilfield".into(), Default::default())].into();
         assets.tooltip.projects = Ok(projects);
         let mut frame = frame();
@@ -97,7 +97,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 0,
             nato: false,
-            countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
+            countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
         };
@@ -146,9 +146,9 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
                 .specializations
                 .push("test".into());
             assets.tooltip.intel = Ok(intel::Defines::default());
-            let mut project = installed_content_core::special_projects::Project::default();
+            let mut project = content_reader_core::special_projects::Project::default();
             project.name = narrative.map(Into::into);
-            let mut projects = installed_content_core::special_projects::Catalog::default();
+            let mut projects = content_reader_core::special_projects::Catalog::default();
             projects.projects = [("oilfield".into(), project)].into();
             assets.tooltip.projects = Ok(projects);
             let mut frame = positive_frame();
@@ -197,7 +197,7 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
                 scripted_content: &scripted,
                 ours: 1,
                 nato: false,
-                countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
+                countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
                 flag_exists: &|_| true,
                 scripted: Default::default(),
             };
@@ -257,7 +257,7 @@ fn captive_uses_original_leader_name_without_character_identity() {
         nato: false,
         flag_exists: &|_| true,
         scripted: Default::default(),
-        countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
+        countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
     };
     let scope = RaidScope {
         leader_reference: (7 << 32) | 84,
@@ -303,8 +303,8 @@ fn scripted_content_with_files(
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
     }
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let content = installed_content_core::content::ResolvedContent {
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let content = content_reader_core::content::ResolvedContent {
         layers,
         stats: Default::default(),
         changed: Vec::new(),
@@ -371,7 +371,7 @@ fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
             scripted_content: &scripted,
             ours: 2,
             nato,
-            countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
+            countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
         };
@@ -422,14 +422,14 @@ fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
         scripted_content: &scripted,
         ours: 2,
         nato: false,
-        countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
+        countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
     };
     run(&context);
 }
-fn triggers(text: &str) -> installed_content_core::triggers::Triggers {
-    installed_content_core::parser::parse(text.as_bytes())
+fn triggers(text: &str) -> content_reader_core::triggers::Triggers {
+    content_reader_core::parser::parse(text.as_bytes())
         .unwrap()
         .items
 }
@@ -478,9 +478,9 @@ fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
 fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inversion() {
     use super::super::super::test_support::put;
     let mut assets = assets();
-    let mut project = installed_content_core::special_projects::Project::default();
+    let mut project = content_reader_core::special_projects::Project::default();
     project.name = Some("project_name".into());
-    let mut projects = installed_content_core::special_projects::Catalog::default();
+    let mut projects = content_reader_core::special_projects::Catalog::default();
     projects.projects = [("oilfield".into(), project)].into();
     assets.tooltip.projects = Ok(projects);
     let mut frame = frame();
@@ -532,7 +532,7 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
         scripted_content: &Err("no scripted content in this test".into()),
         ours: 0,
         nato: false,
-        countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
+        countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
     };
@@ -714,7 +714,7 @@ fn state_name_uses_the_stored_owner_name_in_the_recording_language_only() {
         scripted_content: &Err("no scripted content in this test".into()),
         ours: 0,
         nato: false,
-        countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
+        countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
     };
@@ -737,7 +737,7 @@ fn state_name_uses_the_stored_owner_name_in_the_recording_language_only() {
 fn phase_progress_uses_preparation_override_and_refuses_missing_flying_inputs() {
     with_context(|context| {
         let kind = RaidType {
-            tooltip: installed_content_raids::raids::tooltips::Definition {
+            tooltip: content_reader_raids::raids::tooltips::Definition {
                 days_to_prepare: 2,
                 ..Default::default()
             },
@@ -845,7 +845,7 @@ fn hover_build_cost() {
             nato: false,
             flag_exists: &|_| true,
             scripted: Default::default(),
-            countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
+            countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
         };
         let tooltip = context.raid(1, 84, false).unwrap();
         assert!(tooltip.refused.is_empty(), "{:?}", tooltip.refused);
@@ -902,7 +902,7 @@ fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 0,
             nato: false,
-            countries: installed_content_country_names::country_names::CountryNames::read(&frame, &loc),
+            countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
         };

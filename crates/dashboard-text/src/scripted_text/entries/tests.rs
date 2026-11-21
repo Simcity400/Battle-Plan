@@ -61,7 +61,7 @@ pub(super) fn geography_catalogue() -> (crate::catalogue::Catalogue, crate::cata
     ] {
         std::fs::write(folder.0.join("map/logs").join(name), bytes).unwrap();
     }
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&folder.0, &[])]).unwrap();
     let _reads = layers.report_uncovered_reads();
     (crate::catalogue::tests::layers_catalogue(layers), folder)
 }
@@ -145,7 +145,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
     let content = cat.scripted_content().unwrap();
     let frame = geography_frame();
     let text = ScriptedText::new(&frame, &cat.localisation, content, 1);
-    let ((warnings, cached), _) = installed_content_core::content::diagnostics::capture(|| {
+    let ((warnings, cached), _) = content_reader_core::content::diagnostics::capture(|| {
         assert_eq!(
             text.expand("[ROOT.64.Neighbors]").as_deref(),
             Ok("Localized neighbors")
@@ -201,7 +201,7 @@ fn reached_scripted_geography_preserves_values_diagnostics_and_cache_reuse() {
     for name in ["provinces.bmp", "terrain.bmp", "rivers.bmp"] {
         std::fs::remove_file(folder.0.join("map/logs").join(name)).unwrap();
     }
-    let (reused, _) = installed_content_core::content::diagnostics::capture(|| {
+    let (reused, _) = content_reader_core::content::diagnostics::capture(|| {
         let next = ScriptedText::new(&frame, &cat.localisation, content, 1);
         assert_eq!(
             next.expand("[ROOT.64.Neighbors]").as_deref(),
@@ -334,26 +334,26 @@ fn description_append_preserves_active_cursor_graph_and_guard_state() {
 fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use installed_content_states::{states::Diagnostic, states::MisreadCause};
+    use content_reader_states::{states::Diagnostic, states::MisreadCause};
     let (cat, _folder) = crate::scripted_text::tests::catalogue("", "");
     let warnings = vec![
         Diagnostic {
-            kind: installed_content_core::DiagnosticKind::Warning,
+            kind: content_reader_core::DiagnosticKind::Warning,
             message: "native template skip".into(),
             cause: None,
         },
         Diagnostic {
-            kind: installed_content_core::DiagnosticKind::Misread,
+            kind: content_reader_core::DiagnosticKind::Misread,
             message: "proven state recovery".into(),
             cause: Some(MisreadCause::InvalidImpassable),
         },
         Diagnostic {
-            kind: installed_content_core::DiagnosticKind::Misread,
+            kind: content_reader_core::DiagnosticKind::Misread,
             message: "unproven state recovery".into(),
             cause: None,
         },
         Diagnostic {
-            kind: installed_content_core::DiagnosticKind::Unsupported,
+            kind: content_reader_core::DiagnosticKind::Unsupported,
             message: "unsupported state content".into(),
             cause: None,
         },
@@ -361,7 +361,7 @@ fn scripted_text_cached_state_diagnostics_are_filtered_and_reported_once() {
     assert!(
         cat.state_content
             .set(Ok(StateContent {
-                defines: installed_content_core::defines::read(&cat.content.layers).unwrap(),
+                defines: content_reader_core::defines::read(&cat.content.layers).unwrap(),
                 states: Default::default(),
                 names: StateNames::new(),
                 warnings: warnings.clone(),

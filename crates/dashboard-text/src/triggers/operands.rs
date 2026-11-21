@@ -1,6 +1,6 @@
 use crate::triggers::Failure;
 
-use installed_content_core::{
+use content_reader_core::{
     fixed5::IntOperand, fixed5::decimal_fixed5, fixed5::decimal_i32, fixed5::int_operand,
     fixed5::script_fixed5, parser::Item, parser::Operator, parser::Value, parser::read_bool,
 };

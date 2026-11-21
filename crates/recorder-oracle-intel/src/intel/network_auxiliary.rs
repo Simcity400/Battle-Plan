@@ -1,6 +1,6 @@
 use super::*;
 use engine_intelligence::network_auxiliary::{Entry, NATIONAL, kind};
-use installed_content_save::intel::{IntelNetworkEntry, network_auxiliary as saved_aux};
+use content_reader_save::intel::{IntelNetworkEntry, network_auxiliary as saved_aux};
 use replay_data::rows::IntelNetworkAuxiliaryRow;
 
 type Key = (u8, u32, u64);
@@ -13,7 +13,7 @@ fn entry(kind: u8, scope: u32, ordinal: usize) -> Entry {
         ..Entry::default()
     }
 }
-fn raw(value: &Option<installed_content_save::Decimal>, name: &str) -> io::Result<i64> {
+fn raw(value: &Option<content_reader_save::Decimal>, name: &str) -> io::Result<i64> {
     value
         .as_ref()
         .map(|v| v.raw)
@@ -396,7 +396,7 @@ mod tests {
 }
                  }
             } } } }"#;
-        let pack = saved::parse(&installed_content_core::parser::parse(save).unwrap().items).unwrap();
+        let pack = saved::parse(&content_reader_core::parser::parse(save).unwrap().items).unwrap();
         let network = &pack.strategic_operatives.as_ref().unwrap()[&7].networks[0];
         let tokens = TokenNames::from([
             (0x4bfe, b"owned_worth".as_slice()),

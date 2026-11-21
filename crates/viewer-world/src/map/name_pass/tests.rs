@@ -3,7 +3,7 @@ use std::cell::Cell;
 use viewer_foundation::map::camera::MapDefines;
 
 const W: f32 = 5632.0;
-use installed_content_core::{adjacencies::Adjacency, adjacencies::IMPASSABLE, adjacencies::SEA_CROSSING};
+use content_reader_core::{adjacencies::Adjacency, adjacencies::IMPASSABLE, adjacencies::SEA_CROSSING};
 
 fn link(from: u32, to: u32, kind: u8) -> Adjacency {
     Adjacency {
@@ -451,10 +451,10 @@ fn named_areas_change_with_control_and_nothing_else() {
             .map(|id| {
                 (
                     id,
-                    installed_content_core::map::ProvinceDefinition {
+                    content_reader_core::map::ProvinceDefinition {
                         id,
                         rgb: [0; 3],
-                        kind: installed_content_core::map::ProvinceKind::Land,
+                        kind: content_reader_core::map::ProvinceKind::Land,
                         continent: 0,
                     },
                 )
@@ -538,10 +538,10 @@ fn state_areas_name_each_states_provinces_and_go_close_in() {
             .map(|id| {
                 (
                     id,
-                    installed_content_core::map::ProvinceDefinition {
+                    content_reader_core::map::ProvinceDefinition {
                         id,
                         rgb: [0; 3],
-                        kind: installed_content_core::map::ProvinceKind::Land,
+                        kind: content_reader_core::map::ProvinceKind::Land,
                         continent: 0,
                     },
                 )
@@ -591,8 +591,8 @@ fn state_areas_name_each_states_provinces_and_go_close_in() {
 
 #[test]
 fn strategic_names_group_land_and_sea_by_content_and_withhold_unresolved_names() {
-    use installed_content_core::{map::CountryColors, map::ProvinceDefinition, map::ProvinceKind};
-    use installed_content_regions::regions::StrategicRegion;
+    use content_reader_core::{map::CountryColors, map::ProvinceDefinition, map::ProvinceKind};
+    use content_reader_regions::regions::StrategicRegion;
     let map = MapData {
         width: 3,
         height: 1,
@@ -825,7 +825,7 @@ fn lookup_graph(
             graph.entry(b).or_default().insert(a);
         }
     };
-    for (id, neighbours) in installed_content_core::movement::raster_neighbours(width, height, ids)
+    for (id, neighbours) in content_reader_core::movement::raster_neighbours(width, height, ids)
         .unwrap()
         .iter()
         .enumerate()

@@ -11,10 +11,10 @@ use viewer_foundation::map::name_draw::{Placements, WorldName, next_generation};
 
 use super::map_mode::GroupLabels;
 use eframe::wgpu;
-use installed_content_core::{ResolvedLayers, adjacencies, map::MapData, map::ProvinceKind};
-use installed_content_country_names::country_names::CountryNames;
-use installed_content_image::IndexedImage;
-use installed_content_localisation::{localisation, localisation::Localisation};
+use content_reader_core::{ResolvedLayers, adjacencies, map::MapData, map::ProvinceKind};
+use content_reader_country_names::country_names::CountryNames;
+use content_reader_image::IndexedImage;
+use content_reader_localisation::{localisation, localisation::Localisation};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
@@ -261,8 +261,8 @@ struct CountryArea {
 impl NameAreas {
     pub fn strategic(
         map: &MapData,
-        regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
-        name: impl Fn(&installed_content_regions::regions::StrategicRegion) -> Result<String, String>,
+        regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
+        name: impl Fn(&content_reader_regions::regions::StrategicRegion) -> Result<String, String>,
     ) -> Self {
         Self {
             countries: regions

@@ -1,12 +1,12 @@
 use dashboard_text::triggers::{
     Combat, Eval, Evaluator, Scope, Scopes, World, compare, shown, trigger_boolean,
 };
-use installed_content_core::{
+use content_reader_core::{
     combat_tactics::effect_slot, leader_traits::LeaderTraits, parser::Item, parser::Operator,
     parser::c_string, scripted_triggers::ScriptedTriggers, trigger_keys::CountTriggerNames,
     trigger_keys::TriggerNames, unit_leader::SubUnits, unit_leader::Traits,
 };
-use installed_content_localisation::{localisation::Argument, localisation::Localisation};
+use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LexicalTokenRow, rows::tables,
 };
@@ -120,8 +120,8 @@ impl Content {
         &self.leader_traits
     }
 
-    pub(super) fn from_database(database: installed_content_core::combat_tactics::Database) -> Self {
-        let installed_content_core::combat_tactics::Database {
+    pub(super) fn from_database(database: content_reader_core::combat_tactics::Database) -> Self {
+        let content_reader_core::combat_tactics::Database {
             phases,
             tactics,
             unsupported,
@@ -298,7 +298,7 @@ const PICTURE_PREFIX: &str = "combat_tactic:";
 pub const NULL_PICTURE: &str = PICTURE_PREFIX;
 
 fn definition(
-    tactic: &installed_content_core::combat_tactics::Tactic,
+    tactic: &content_reader_core::combat_tactics::Tactic,
     warnings: &mut Vec<String>,
 ) -> Result<Definition, String> {
     let name = String::from_utf8_lossy(&tactic.token);
@@ -341,7 +341,7 @@ fn field_boolean(
 ) -> bool {
     let mut state = default;
     for item in items.iter().filter(|item| item.keyword_is(key)) {
-        match item.value.scalar().and_then(installed_content_core::parser::read_bool) {
+        match item.value.scalar().and_then(content_reader_core::parser::read_bool) {
             Some(value) => state = value,
             _ => warnings.push(format!(
                 "Combat tactics: tactic {tactic}'s {key} = {} is not exactly yes or no; the game logs an error and keeps {}.",
@@ -1594,7 +1594,7 @@ fn entry_values(
 
 fn preferred_description(
     values: &mut Values,
-    popup: &installed_content_core::gui::native::Element,
+    popup: &content_reader_core::gui::native::Element,
     icons: &dyn TextIcons,
     loc: &Localisation,
     unavailable: &mut BTreeSet<String>,
@@ -1840,8 +1840,8 @@ fn repair_heap<T: Clone, F: Fn(&T, &T) -> bool>(
 mod tests {
     use super::*;
     use dashboard_text::triggers::ContentFacts;
-    use installed_content_core::key_names::KeyNames;
-    use installed_content_core::{fixed5::decimal_fixed5, fixed5::script_fixed5};
+    use content_reader_core::key_names::KeyNames;
+    use content_reader_core::{fixed5::decimal_fixed5, fixed5::script_fixed5};
     use replay_data::{
         rows::BuildingRow, rows::CountryResourceRow, rows::PoliticalPartyRow, rows::ProvinceRow,
         rows::ResourceDefinitionRow, rows::StateRow, rows::TableId, rows::TableRows,
@@ -1876,9 +1876,9 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
         }
-        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
         let content = Ok(dashboard_text::scripted_text::ScriptedContent::read(
-            Arc::new(installed_content_core::content::ResolvedContent {
+            Arc::new(content_reader_core::content::ResolvedContent {
                 layers,
                 stats: Default::default(),
                 changed: Vec::new(),
@@ -1955,15 +1955,15 @@ mod tests {
             active,
             attacker,
             items: Vec::new(),
-            phase: installed_content_core::combat_tactics::UNKNOWN_PHASE,
-            display_phase: installed_content_core::combat_tactics::UNKNOWN_PHASE,
+            phase: content_reader_core::combat_tactics::UNKNOWN_PHASE,
+            display_phase: content_reader_core::combat_tactics::UNKNOWN_PHASE,
             effects: no_effects(),
             picture: Err("tactic t has no picture field".into()),
         }
     }
 
     fn trigger(text: &str) -> Vec<Item> {
-        let database = installed_content_core::combat_tactics::parse(
+        let database = content_reader_core::combat_tactics::parse(
             format!("t = {{ trigger = {{ {text} }} }}").as_bytes(),
             &names(&ScriptedTriggers::default()),
         );
@@ -2029,7 +2029,7 @@ mod tests {
                         "GER_lost_agent",
                         "GER_miscounted",
                     ]
-                    .map(|tag| installed_content_core::characters::LeaderTemplate {
+                    .map(|tag| content_reader_core::characters::LeaderTemplate {
                         path: "common/characters/GER.txt".into(),
                         tag: tag.into(),
                         line: None,
@@ -2173,7 +2173,7 @@ mod tests {
 
     fn parsed_with(text: &[u8], names: &KeyNames) -> Content {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
-        Content::from_database(installed_content_core::combat_tactics::parse(text, names))
+        Content::from_database(content_reader_core::combat_tactics::parse(text, names))
     }
 
     #[test]
@@ -2318,7 +2318,7 @@ mod tests {
     #[test]
     fn popup_preferred_description_retains_authored_text_without_selector_arguments() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
-        let gui = installed_content_core::gui::native::read(
+        let gui = content_reader_core::gui::native::read(
             br#"guiTypes = { containerWindowType = {
                 name = tactics_list_view
                 instantTextboxType = {
@@ -2361,7 +2361,7 @@ mod tests {
             ])
         );
 
-        let scoped = installed_content_core::gui::native::read(
+        let scoped = content_reader_core::gui::native::read(
             br#"guiTypes = { containerWindowType = {
                 name = tactics_list_view instantTextboxType = {
                     name = preferred_tactic_desc_text text = MOD_PREFERRED_DESC
@@ -2388,7 +2388,7 @@ mod tests {
 
     #[test]
     fn popup_phase_follows_native_resolution() {
-        let loc: installed_content_localisation::localisation::Localisation = [
+        let loc: content_reader_localisation::localisation::Localisation = [
             ("opening", "Opening"),
             ("PHASE_DISPLAY", "Shown in $NAME$"),
             ("PHASE_START", "Starts in $NAME$"),
@@ -2397,7 +2397,7 @@ mod tests {
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
         let phases = [b"opening".to_vec()];
-        use installed_content_core::{combat_tactics::NO_PHASE, combat_tactics::UNKNOWN_PHASE};
+        use content_reader_core::{combat_tactics::NO_PHASE, combat_tactics::UNKNOWN_PHASE};
         let run = |(display_phase, phase): (i32, i32)| {
             let definition = Definition {
                 phase,
@@ -2549,7 +2549,7 @@ mod tests {
     fn numeric_fields_use_their_native_readers() {
         assert_eq!(script_fixed5(b"010"), Some(800_000));
         assert_eq!(decimal_fixed5(b"010"), 1_000_000);
-        let loc: installed_content_localisation::localisation::Localisation = [
+        let loc: content_reader_localisation::localisation::Localisation = [
             ("TACTIC_LIST_VALUE_GOOD", "$VAL$"),
             ("TACTIC_LIST_VALUE_BAD", "$VAL$"),
             ("TACTIC_LIST_VALUE_NEUTRAL", "$VAL$"),
@@ -2578,7 +2578,7 @@ mod tests {
 
     #[test]
     fn popup_entry_refusals_name_the_tactic_and_key() {
-        let loc: installed_content_localisation::localisation::Localisation = [
+        let loc: content_reader_localisation::localisation::Localisation = [
             ("tactic_a", "Tactic A"),
             ("HEADER", "$KEY$"),
             ("TACTIC_LIST_VALUE_GOOD", "+$VAL$"),
@@ -3077,15 +3077,15 @@ mod tests {
 
     #[test]
     fn blocks_under_one_value_names_are_read_as_one_value() {
-        let mut buildings = installed_content_core::buildings::Buildings::default();
+        let mut buildings = content_reader_core::buildings::Buildings::default();
         buildings.types.insert(
             "arms_factory".into(),
-            installed_content_core::buildings::BuildingType::default(),
+            content_reader_core::buildings::BuildingType::default(),
         );
         let mut names = names(&ScriptedTriggers::default());
         names.counts = CountTriggerNames::new(
             &buildings,
-            &installed_content_core::ideologies::Ideologies::default(),
+            &content_reader_core::ideologies::Ideologies::default(),
             &Default::default(),
         );
         let content = parsed_with(
@@ -3425,12 +3425,12 @@ mod tests {
             "common/scripted_triggers/cycles.txt",
             "cycle_a = { CYCLE_B = yes }\ncycle_b = { cycle_a = yes }",
         );
-        let layers = installed_content_core::ResolvedLayers::from_folders(&[
+        let layers = content_reader_core::ResolvedLayers::from_folders(&[
             (&root.join("vanilla"), &[][..]),
             (&root.join("mod"), &[][..]),
         ])
         .unwrap();
-        let scripted = installed_content_core::scripted_triggers::read(&layers).unwrap();
+        let scripted = content_reader_core::scripted_triggers::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         let tokens: &[(&[u8], u32)] = &[
             (b"my_check", 0x6001),
@@ -3480,9 +3480,9 @@ mod tests {
              tooltip = { is_attacker = no }\nnot_tooltip = { is_attacker = no }",
         );
         let layers =
-            installed_content_core::ResolvedLayers::from_folders(&[(&root.join("vanilla"), &[][..])])
+            content_reader_core::ResolvedLayers::from_folders(&[(&root.join("vanilla"), &[][..])])
                 .unwrap();
-        let scripted = installed_content_core::scripted_triggers::read(&layers).unwrap();
+        let scripted = content_reader_core::scripted_triggers::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         let weigh = |trigger: &str| {
             weigh_with(
@@ -3546,10 +3546,10 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, text).unwrap();
         }
-        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
         let traits = Traits::registered(&layers).unwrap();
         let country_leader_traits =
-            Arc::new(installed_content_core::leader_traits::read(&layers).unwrap().0);
+            Arc::new(content_reader_core::leader_traits::read(&layers).unwrap().0);
         std::fs::remove_dir_all(&root).unwrap();
 
         let mut frame = DecodedFrame {
@@ -4005,15 +4005,15 @@ mod tests {
             "common/ideologies/mod_ideologies.txt",
             "ideologies = { Technocracy = { types = { planners = { } } } }",
         );
-        let layers = installed_content_core::ResolvedLayers::from_folders(&[
+        let layers = content_reader_core::ResolvedLayers::from_folders(&[
             (&root.join("vanilla"), &[][..]),
             (&root.join("mod"), &[][..]),
         ])
         .unwrap();
-        let buildings = installed_content_core::buildings::read(&layers).unwrap();
-        let (ideologies, _) = installed_content_core::ideologies::read(&layers).unwrap();
+        let buildings = content_reader_core::buildings::read(&layers).unwrap();
+        let (ideologies, _) = content_reader_core::ideologies::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
-        let armor = installed_content_core::trigger_keys::EQUIPMENT_CATEGORIES[0].0;
+        let armor = content_reader_core::trigger_keys::EQUIPMENT_CATEGORIES[0].0;
         let tokens: &[(&[u8], u32)] = &[
             (b"GER", 0x7001),
             (b"mod_mill", 0x7101),
@@ -4025,7 +4025,7 @@ mod tests {
             (b"nothing", 0x7106),
         ];
         for (name, _) in &tokens[..tokens.len() - 1] {
-            assert_eq!(installed_content_core::trigger_keys::registered_trigger(name), None);
+            assert_eq!(content_reader_core::trigger_keys::registered_trigger(name), None);
         }
 
         let hour = 5;
@@ -4236,7 +4236,7 @@ mod tests {
         let detail = skilled();
         let aliases = BTreeMap::from([(100, 1), (200, 2)]);
         let (armor_mask, other) = (
-            installed_content_core::trigger_keys::EQUIPMENT_CATEGORIES[0].1,
+            content_reader_core::trigger_keys::EQUIPMENT_CATEGORIES[0].1,
             0x20,
         );
         let units = [(1, armor_mask), (2, armor_mask | other), (3, other), (4, 0)].map(

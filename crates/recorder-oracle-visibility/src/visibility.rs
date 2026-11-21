@@ -9,7 +9,7 @@ use engine_native::{
     cmilitary_access_relation, coffer_air_base_access_relation, coffer_docking_rights_relation,
     coffer_military_access_relation,
 };
-use installed_content_save::Save;
+use content_reader_save::Save;
 use replay_data::{rows::RelationLinkRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 

@@ -1,5 +1,5 @@
 
-use installed_content_core::map::MapData;
+use content_reader_core::map::MapData;
 
 use super::{camera::Camera, province_admission};
 

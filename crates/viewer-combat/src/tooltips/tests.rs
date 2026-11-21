@@ -254,9 +254,9 @@ fn political_province_hover_keys_preload_native_inline_icons() {
 }
 
 fn tactics(text: &[u8]) -> Tactics {
-    Tactics::from_database(installed_content_core::combat_tactics::parse(
+    Tactics::from_database(content_reader_core::combat_tactics::parse(
         text,
-        &installed_content_core::key_names::KeyNames::default(),
+        &content_reader_core::key_names::KeyNames::default(),
     ))
 }
 
@@ -271,9 +271,9 @@ fn loc(entries: &[(&str, &str)]) -> Localisation {
 fn recorded_tactics_find_their_registry_effects() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let mut names = installed_content_core::key_names::KeyNames::default();
+    let mut names = content_reader_core::key_names::KeyNames::default();
     names.counts.ideologies_gap = Some("common/ideologies/a.txt is unknown from line 1".into());
-    let registry = Tactics::from_database(installed_content_core::combat_tactics::parse(
+    let registry = Tactics::from_database(content_reader_core::combat_tactics::parse(
         br#"@bonus = 0.25
             PHASES = { }
             tactic_a = { ATTACKER = @bonus Combat_Width = 0.1 attacker_movement_speed = 010 }

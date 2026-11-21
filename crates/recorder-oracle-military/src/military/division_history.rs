@@ -193,7 +193,7 @@ mod tests {
         let (mut frame, mut saved, ..) = crate::fixtures::fixture();
         let id = (7_u64 << 32) | 51;
         let hour = frame.hour;
-        let entry = |provinces: Vec<u32>| installed_content_save::DivisionHistoryEntry {
+        let entry = |provinces: Vec<u32>| content_reader_save::DivisionHistoryEntry {
             name: Some(b"subject".to_vec()),
             custom_name: None,
             kind: 11,
@@ -207,10 +207,10 @@ mod tests {
             provinces,
             sunk_ship: None,
         };
-        let zero = || installed_content_save::Decimal::parse(b"0").unwrap();
+        let zero = || content_reader_save::Decimal::parse(b"0").unwrap();
         saved.divisions.insert(
             id,
-            installed_content_save::Division {
+            content_reader_save::Division {
                 id,
                 roster_owner: b"GER".to_vec(),
                 logical_owner: b"GER".to_vec(),
@@ -222,8 +222,8 @@ mod tests {
                 hit_points: zero(),
                 organisation: zero(),
                 country_intel: Vec::new(),
-                presentation: installed_content_save::DivisionPresentation {
-                    history: Some(installed_content_save::DivisionHistory {
+                presentation: content_reader_save::DivisionPresentation {
+                    history: Some(content_reader_save::DivisionHistory {
                         amount: None,
                         career: vec![entry(vec![5]), entry(vec![9263, 362])],
                         awards: Vec::new(),

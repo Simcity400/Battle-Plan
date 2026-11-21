@@ -296,7 +296,7 @@ impl SnowContent {
         Ok(memo.intern_shared(projected))
     }
     pub fn new(
-        map: &installed_content_core::map::MapData,
+        map: &content_reader_core::map::MapData,
         permanent: &[bool],
         winter: map_snow::winter::Winter,
     ) -> io::Result<Self> {
@@ -380,10 +380,10 @@ impl crate::ProductContent {
             .map_err(|(kind, reason)| io::Error::new(*kind, reason.clone()))
     }
 }
-fn read_snow(loader: &crate::loader::Loader, map: &installed_content_core::map::MapData) -> io::Result<SnowContent> {
+fn read_snow(loader: &crate::loader::Loader, map: &content_reader_core::map::MapData) -> io::Result<SnowContent> {
     loader.reads.load_retryable(|layers| {
-        let (definitions, defaults) = installed_content_core::terrain::read(layers)?;
-        let terrain = installed_content_image::bmp::decode_indexed(
+        let (definitions, defaults) = content_reader_core::terrain::read(layers)?;
+        let terrain = content_reader_image::bmp::decode_indexed(
             &layers.read(&format!("map/{}", defaults.terrain))?,
         )?;
         if [terrain.width, terrain.height] != [map.width, map.height] {
@@ -394,8 +394,8 @@ fn read_snow(loader: &crate::loader::Loader, map: &installed_content_core::map::
         }
         let cells =
             map_snow::SnowCells::new(map, &map_snow::permanent_mask(&definitions, &terrain))?;
-        let defines = installed_content_core::defines::read(layers)?;
-        let regions = installed_content_regions::regions::read(layers)?.regions;
+        let defines = content_reader_core::defines::read(layers)?;
+        let regions = content_reader_regions::regions::read(layers)?.regions;
         let winter = map_snow::winter::Winter::load(layers, &defines, map, &regions)?;
         Ok(SnowContent {
             cells,

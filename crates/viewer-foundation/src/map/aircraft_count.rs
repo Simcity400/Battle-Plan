@@ -1,5 +1,5 @@
 
-use installed_content_core::defines::Defines;
+use content_reader_core::defines::Defines;
 use std::io;
 
 pub use replay_derive::aircraft_count::*;

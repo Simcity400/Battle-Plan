@@ -3,7 +3,7 @@ use super::BreakdownLine;
 use dashboard_base::catalogue::View;
 use dashboard_base::products::politics_content::{PoliticsContent, RecordedName};
 use dashboard_text::idea_names::{IdeaCountry, IdeaName};
-use installed_content_core::characters::BuiltTemplate;
+use content_reader_core::characters::BuiltTemplate;
 
 pub struct RecordedCharacter<'a> {
     pub script: Option<&'a str>,

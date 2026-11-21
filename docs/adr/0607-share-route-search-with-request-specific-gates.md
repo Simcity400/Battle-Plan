@@ -10,4 +10,4 @@ Evaluate class access before mode-2 node admission. Transport classification use
 
 Invasion routes use mode 0, forced transfer and region checks. Keep native prechecks and their refusal order, including the content-endpoint refusal before task-force access. Use the stored port sea if it resolves, otherwise the first sea neighbour in definition order, even across an impassable edge. Forced transfer accepts sea-to-sea or exact port-sea pairs and refuses land-to-land. Stop expansion on the requesting country's state ownership only if its raw reference is signed-positive. Return the single sea for equal endpoints. Otherwise exclude source and include target, and preserve the route when the final navy-permission gate changes the return flag.
 
-[Counter routes](../../crates/installed-content-unit-path/src/unit_path/counter.rs) · [Invasion routes and A*](../../crates/installed-content-unit-path/src/unit_path/invasion.rs)
+[Counter routes](../../crates/content-reader-unit-path/src/unit_path/counter.rs) · [Invasion routes and A*](../../crates/content-reader-unit-path/src/unit_path/invasion.rs)

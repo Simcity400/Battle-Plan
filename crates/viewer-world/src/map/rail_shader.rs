@@ -3,8 +3,8 @@ use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
 
 use eframe::wgpu;
-use installed_content_core::{ResolvedLayers, pdxshader::program::Stage};
-use installed_content_image::native::Decode;
+use content_reader_core::{ResolvedLayers, pdxshader::program::Stage};
+use content_reader_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 
 fn refuse(reason: impl Into<String>) -> io::Error {

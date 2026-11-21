@@ -20,4 +20,4 @@ RIFF scanning keeps the first format and data chunks and stops once it has both.
 
 Music admits Vorbis in Ogg only. A probe decodes one packet and playback consumes the stream one packet at a time. Every packet must keep the first packet's channel count and rate. A corrupt packet can be skipped. Other decoding failures and panics become named stream refusals. Installation tests read the path in `BATTLE_PLAN_GAME_DIR` and their fixture checks omit DLC layers.
 
-[Audio definitions](../../crates/installed-content-sound/src/sound.rs) · [Music](../../crates/installed-content-sound/src/music.rs) · [Battle ambience](../../crates/installed-content-sound/src/combat_sounds.rs) · [WAVE](../../crates/installed-content-sound/src/wav.rs) · [Vorbis](../../crates/installed-content-sound/src/ogg.rs)
+[Audio definitions](../../crates/content-reader-sound/src/sound.rs) · [Music](../../crates/content-reader-sound/src/music.rs) · [Battle ambience](../../crates/content-reader-sound/src/combat_sounds.rs) · [WAVE](../../crates/content-reader-sound/src/wav.rs) · [Vorbis](../../crates/content-reader-sound/src/ogg.rs)

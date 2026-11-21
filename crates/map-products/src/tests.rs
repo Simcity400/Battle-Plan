@@ -1,7 +1,7 @@
 use super::tables;
 use super::*;
 use content_witness::{Entry, Outcome};
-use installed_content_core::{
+use content_reader_core::{
     content::ResolvedLayers,
     map::{ProvinceDefinition, ProvinceKind},
     test_support::Stack,
@@ -106,7 +106,7 @@ fn content(stack: &Stack) -> ProductContent {
                 map_text: events::Content::new(&Default::default()),
                 audio: Some(Arc::new(
                     viewer_audio::Content::new(Default::default(), None).with_battles(
-                        Some(installed_content_sound::combat_sounds::BattleDefines {
+                        Some(content_reader_sound::combat_sounds::BattleDefines {
                             effect: "fixture_distant".into(),
                             falloff_default: 80.,
                             min_unit_count: 1,
@@ -188,11 +188,11 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
     );
     let content = content(&stack);
     let layers = stack.layers(&[]);
-    let defines = installed_content_core::defines::read(&layers).unwrap();
+    let defines = content_reader_core::defines::read(&layers).unwrap();
     let load_bank = || {
         MapBuildingAssets::load(
             &layers,
-            installed_content_image::native::Decode::default(),
+            content_reader_image::native::Decode::default(),
             &content.map,
             &defines,
             &mut Vec::new(),
@@ -341,7 +341,7 @@ fn witness_is_a_canonical_set_including_misses_errors_and_retained_reads() {
         })
         .unwrap();
     assert_eq!(before, other.witness().unwrap());
-    let result: io::Result<installed_content_core::content::Bytes> = reads.load(|layers| layers.read("map/missing.txt"));
+    let result: io::Result<content_reader_core::content::Bytes> = reads.load(|layers| layers.read("map/missing.txt"));
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
     retained.read("map/later.txt").unwrap();
     assert_ne!(before, reads.witness().unwrap());
@@ -549,7 +549,7 @@ fn witness_changes_on_mod_order_replace_paths_and_a_new_higher_layer_file() {
         let mut layers = ResolvedLayers::from_folders(folders).unwrap();
         for layer in &mut layers.layers {
             layer.id = match &layer.source {
-                installed_content_core::content::LayerSource::Folder(root) => {
+                content_reader_core::content::LayerSource::Folder(root) => {
                     root.file_name().unwrap().to_string_lossy().into_owned()
                 }
                 _ => unreachable!(),

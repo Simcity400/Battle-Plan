@@ -4,7 +4,7 @@ use crate::{
     layers::{Layer, View},
     playhead_host::{Frame, MapSide, open, units::Units},
 };
-use installed_content_sound::combat_sounds::{BattleDefines, CombatSound};
+use content_reader_sound::combat_sounds::{BattleDefines, CombatSound};
 use playhead::{
     Settings, Timeline,
     pages::{Pages, Run},

@@ -3,7 +3,7 @@ use crate::binding::{self, Bindings};
 use crate::modifier_text::Definitions;
 use crate::state_view::{loc, paths_named};
 use crate::tooltips::{hover_text, set_hover};
-use installed_content_localisation::localisation::{Argument, crt_case_text};
+use content_reader_localisation::localisation::{Argument, crt_case_text};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap as Sources;
@@ -39,7 +39,7 @@ fn terrain(content: &Content, frame: &DecodedFrame, vision: &Vision, region: u32
 }
 
 fn marked(content: &Content, frame: &DecodedFrame, raw: u32, slot: u32) -> Result<String, String> {
-    let names = installed_content_country_names::country_names::CountryNames::read(frame, &content.localisation);
+    let names = content_reader_country_names::country_names::CountryNames::read(frame, &content.localisation);
     let name = crt_case_text(&names.name_with(slot, "_DEF")?, true, true);
     let flags = binding::flags(content, frame).map_err(|e| e.to_string())?;
     Ok(format!("{}{} {name}", crate::INLINE_FLAG, binding::country_flag(&flags, raw)?))

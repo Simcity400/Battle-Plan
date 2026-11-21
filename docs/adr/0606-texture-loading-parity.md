@@ -12,4 +12,4 @@ The IJG 9a JPEG reader uses the fast eight-by-eight inverse DCT and disables fan
 
 The Rust `image` library decodes BMP, ICO, PNG and fallback Targa into RGBA. Pixel rounding, PNG colour and gamma handling, and the treatment of malformed files can differ from the game's loader. An undecodable file produces a named refusal.
 
-[Native texture dispatch](../../crates/installed-content-image/src/native/mod.rs) · [DDS](../../crates/installed-content-image/src/native/load_dds.rs) · [JPEG](../../crates/installed-content-image/src/native/libjpeg.rs) · [Fallback decoders](../../crates/installed-content-image/src/native/standard.rs)
+[Native texture dispatch](../../crates/content-reader-image/src/native/mod.rs) · [DDS](../../crates/content-reader-image/src/native/load_dds.rs) · [JPEG](../../crates/content-reader-image/src/native/libjpeg.rs) · [Fallback decoders](../../crates/content-reader-image/src/native/standard.rs)

@@ -9,7 +9,7 @@ use viewer_foundation::map::memo::TableKey;
 use viewer_foundation::parallel::Beside;
 use viewer_foundation::parallel::Workers;
 
-use installed_content_raids::{
+use content_reader_raids::{
     raids::EquipmentRequirement, raids::RaidType, raids::SourceKind, raids::StartingPoint,
     raids::UnitRequirement,
 };

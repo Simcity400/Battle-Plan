@@ -16,7 +16,7 @@ use std::{
     },
 };
 
-const UNKNOWN_FOCUS_ICON: &str = installed_content_focus::focus::UNKNOWN_ICON;
+const UNKNOWN_FOCUS_ICON: &str = content_reader_focus::focus::UNKNOWN_ICON;
 
 pub const ICON_EDGE: u32 = 96;
 
@@ -36,10 +36,10 @@ impl Kind {
     }
 }
 
-fn focus_database(database: FocusDatabase) -> installed_content_focus::focus::Database {
+fn focus_database(database: FocusDatabase) -> content_reader_focus::focus::Database {
     match database {
-        FocusDatabase::National => installed_content_focus::focus::Database::National,
-        FocusDatabase::Continuous => installed_content_focus::focus::Database::Continuous,
+        FocusDatabase::National => content_reader_focus::focus::Database::National,
+        FocusDatabase::Continuous => content_reader_focus::focus::Database::Continuous,
     }
 }
 
@@ -63,7 +63,7 @@ fn declared_icon_png(catalogue: &Catalogue, sprite: &str) -> io::Result<Option<S
 
 struct TechnologyName {
     database_index: Option<u32>,
-    presentation: Result<installed_content_core::technology::PresentationName, String>,
+    presentation: Result<content_reader_core::technology::PresentationName, String>,
     folders: Vec<String>,
     children: std::sync::OnceLock<catalogue::Drawn<Result<Vec<String>, String>>>,
 }
@@ -78,8 +78,8 @@ struct TechnologyNames {
 
 impl TechnologyNames {
     fn read(
-        definitions: Vec<installed_content_core::technology::Template>,
-        unread: Vec<installed_content_core::technology::UnreadFile>,
+        definitions: Vec<content_reader_core::technology::Template>,
+        unread: Vec<content_reader_core::technology::UnreadFile>,
     ) -> Self {
         let mut out = Self::default();
         let mut unknown_place = None;
@@ -140,9 +140,9 @@ impl TechnologyNames {
 
 #[cfg(test)]
 fn technology_name(
-    presentation: &installed_content_core::technology::PresentationName,
+    presentation: &content_reader_core::technology::PresentationName,
     world: Result<&crate::triggers::World<'_>, String>,
-    database: Option<&Arc<installed_content_core::equipment::Database>>,
+    database: Option<&Arc<content_reader_core::equipment::Database>>,
 ) -> Result<String, String> {
     let mut children = technology_children(presentation, world, database)?;
     Ok(if children.len() == 1 {
@@ -153,9 +153,9 @@ fn technology_name(
 }
 
 fn technology_children(
-    presentation: &installed_content_core::technology::PresentationName,
+    presentation: &content_reader_core::technology::PresentationName,
     world: Result<&crate::triggers::World<'_>, String>,
-    database: Option<&Arc<installed_content_core::equipment::Database>>,
+    database: Option<&Arc<content_reader_core::equipment::Database>>,
 ) -> Result<Vec<String>, String> {
     presentation.children(
         |body| {
@@ -196,25 +196,25 @@ struct PreparedContent {
 }
 
 struct Preparation {
-    definitions: Arc<installed_content_focus::focus::Focuses>,
+    definitions: Arc<content_reader_focus::focus::Focuses>,
     point_days: Option<f64>,
     technology_names: Arc<TechnologyNames>,
     inventory: Vec<String>,
-    preparation_warnings: Vec<installed_content_core::Diagnostic>,
+    preparation_warnings: Vec<content_reader_core::Diagnostic>,
     warnings: Vec<String>,
-    folder_definitions: Arc<Vec<installed_content_core::technology::FolderDefinition>>,
+    folder_definitions: Arc<Vec<content_reader_core::technology::FolderDefinition>>,
     folder_warnings: Vec<String>,
 }
 
 impl Preparation {
-    fn read(layers: &installed_content_core::ResolvedLayers, kind: Kind) -> io::Result<Self> {
+    fn read(layers: &content_reader_core::ResolvedLayers, kind: Kind) -> io::Result<Self> {
         let mut warnings = Vec::new();
         let mut folder_definitions = Vec::new();
         let mut folder_warnings = Vec::new();
         let (definitions, point_days, technology_names, inventory, preparation_warnings) =
             match kind {
                 Kind::Focus(_) => {
-                    let (definitions, definition_warnings) = installed_content_focus::focus::read(layers)?;
+                    let (definitions, definition_warnings) = content_reader_focus::focus::read(layers)?;
                     warnings.extend(
                         definition_warnings
                             .iter()
@@ -222,15 +222,15 @@ impl Preparation {
                     );
                     (
                         definitions,
-                        installed_content_focus::focus::point_days(layers)?,
+                        content_reader_focus::focus::point_days(layers)?,
                         TechnologyNames::default(),
                         Vec::new(),
                         definition_warnings,
                     )
                 }
                 Kind::Technology => {
-                    let read = installed_content_core::technology::Database::read(layers)?;
-                    match installed_content_core::technology::read_folders(layers) {
+                    let read = content_reader_core::technology::Database::read(layers)?;
+                    match content_reader_core::technology::read_folders(layers) {
                         Ok(folders) => {
                             folder_definitions = folders.folders;
                             folder_warnings
@@ -254,7 +254,7 @@ impl Preparation {
                         );
                     }
                     (
-                        installed_content_focus::focus::Focuses::default(),
+                        content_reader_focus::focus::Focuses::default(),
                         None,
                         TechnologyNames::read(read.definitions, read.unread),
                         read.tokens,
@@ -275,7 +275,7 @@ impl Preparation {
     }
 }
 
-type IconKey = (bool, installed_content_core::content::ArtworkMode, String);
+type IconKey = (bool, content_reader_core::content::ArtworkMode, String);
 
 pub struct Context {
     diagnostics: catalogue::OwnRefusals,
@@ -284,13 +284,13 @@ pub struct Context {
     catalogue: Arc<Catalogue>,
     artwork_cache: BTreeMap<String, catalogue::Drawn<(Artwork, Vec<String>)>>,
     icon_cache: std::sync::Mutex<BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>>,
-    definitions: Arc<installed_content_focus::focus::Focuses>,
+    definitions: Arc<content_reader_focus::focus::Focuses>,
     focus_text_needs_frame: OnceLock<bool>,
     point_days: Option<f64>,
     warnings: Vec<String>,
     inventory: Vec<String>,
-    preparation_warnings: Vec<installed_content_core::Diagnostic>,
-    folder_definitions: Arc<Vec<installed_content_core::technology::FolderDefinition>>,
+    preparation_warnings: Vec<content_reader_core::Diagnostic>,
+    folder_definitions: Arc<Vec<content_reader_core::technology::FolderDefinition>>,
     folder_warnings: Vec<String>,
     folder_availability: OnceLock<catalogue::Drawn<Vec<Option<bool>>>>,
 }
@@ -518,7 +518,7 @@ impl FocusProjection {
     }
 }
 
-fn focus_icons_need_frame(definition: &installed_content_focus::focus::FocusDefinition) -> bool {
+fn focus_icons_need_frame(definition: &content_reader_focus::focus::FocusDefinition) -> bool {
     definition
         .icons
         .cases
@@ -533,7 +533,7 @@ fn focus_icons_need_frame(definition: &installed_content_focus::focus::FocusDefi
 
 fn focus_needs_frame(
     catalogue: &Catalogue,
-    definition: &installed_content_focus::focus::FocusDefinition,
+    definition: &content_reader_focus::focus::FocusDefinition,
     include_descriptions: bool,
 ) -> bool {
     focus_icons_need_frame(definition)
@@ -741,7 +741,7 @@ impl Context {
     fn focus(
         &self,
         token: &str,
-    ) -> Result<Option<&installed_content_focus::focus::FocusDefinition>, &installed_content_core::coverage::Gap>
+    ) -> Result<Option<&content_reader_focus::focus::FocusDefinition>, &content_reader_core::coverage::Gap>
     {
         match self.kind {
             Kind::Focus(database) => self.definitions.get_in(focus_database(database), token),
@@ -990,7 +990,7 @@ impl Context {
         }
     }
 
-    fn declared_icon(&self, token: &str) -> Option<&installed_content_gfx::gfx::SpriteType> {
+    fn declared_icon(&self, token: &str) -> Option<&content_reader_gfx::gfx::SpriteType> {
         let name = self.selected_icon(token).ok()??;
         self.catalogue
             .sprites
@@ -1060,7 +1060,7 @@ impl Context {
         ))
     }
 
-    pub fn tokens(&self) -> (&[String], &[installed_content_core::Diagnostic]) {
+    pub fn tokens(&self) -> (&[String], &[content_reader_core::Diagnostic]) {
         (&self.inventory, &self.preparation_warnings)
     }
 
@@ -1610,7 +1610,7 @@ impl Context {
         collect(&mut items)
     }
 
-    fn prefetch_icons(&self, sprites: Vec<&installed_content_gfx::gfx::SpriteType>) {
+    fn prefetch_icons(&self, sprites: Vec<&content_reader_gfx::gfx::SpriteType>) {
         let Ok(decode) = self.catalogue.gui_decode.as_ref() else {
             return;
         };
@@ -1618,7 +1618,7 @@ impl Context {
         let sprites: Vec<_> = sprites.into_iter().map(|sprite| (sprite, 0)).collect();
         let batch = || catalogue::sprite_frames_png(layers, &sprites, *decode, ICON_EDGE);
         let _ = if self.catalogue.recorded().is_some() {
-            installed_content_core::content::strict(batch)
+            content_reader_core::content::strict(batch)
         } else {
             batch()
         };
@@ -1627,7 +1627,7 @@ impl Context {
     fn cached_icon(&self, drawing: &Catalogue, name: &str) -> io::Result<Option<String>> {
         let key = (
             !std::ptr::eq(drawing, &*self.catalogue),
-            installed_content_core::content::artwork_mode(),
+            content_reader_core::content::artwork_mode(),
             name.to_owned(),
         );
         let held = |cache: &BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>| {
@@ -1792,8 +1792,8 @@ pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
 }
 
 fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
-    use installed_content_core::{gui::native::Fields, gui::native::Kind};
-    let (_, root) = installed_content_core::gui::native::kept_container_window(
+    use content_reader_core::{gui::native::Fields, gui::native::Kind};
+    let (_, root) = content_reader_core::gui::native::kept_container_window(
         catalogue.guis()?,
         "topbar",
         &mut Vec::new(),
@@ -1873,7 +1873,7 @@ fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
 mod tests {
     use super::*;
     use crate::catalogue::texture_tests::{from_url, png_bytes, texture_catalogue};
-    use installed_content_image::{Rgba8Image, native::Decode};
+    use content_reader_image::{Rgba8Image, native::Decode};
 
     #[test]
     fn focus_text_keeps_authored_titles_without_reaching_conditional_icons() {
@@ -2588,15 +2588,15 @@ mod tests {
             &[],
         );
         let layers = &catalogue.content.layers;
-        let presentation = installed_content_core::technology::Database::read(layers).unwrap();
+        let presentation = content_reader_core::technology::Database::read(layers).unwrap();
         let registry = layers.key_names().unwrap();
         let again = layers.key_names().unwrap();
         assert!(Arc::ptr_eq(
             registry.equipment_database().unwrap(),
             again.equipment_database().unwrap()
         ));
-        let triggers = installed_content_core::trigger_keys::TriggerNames::default();
-        let aliases = Arc::new(installed_content_core::tag_aliases::TagAliases::default());
+        let triggers = content_reader_core::trigger_keys::TriggerNames::default();
+        let aliases = Arc::new(content_reader_core::tag_aliases::TagAliases::default());
         let empty = BTreeSet::new();
         let world = crate::triggers::World::unrecorded(&empty, &triggers, &aliases);
         let named = |key: &str| {
@@ -3059,7 +3059,7 @@ mod tests {
 mod interface_refusals {
     use crate::catalogue::{Catalogue, tests::folder_catalogue};
     use crate::products::artwork;
-    use installed_content_core::ResolvedLayers;
+    use content_reader_core::ResolvedLayers;
     use std::collections::BTreeSet;
     use std::sync::{Arc, atomic::AtomicBool};
 

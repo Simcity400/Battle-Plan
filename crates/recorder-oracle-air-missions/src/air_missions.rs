@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use installed_content_save::Save;
+use content_reader_save::Save;
 use replay_data::{rows::AirSortieModifierRow, rows::AirWingRow, rows::Recorded, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -1705,7 +1705,7 @@ mod tests {
         let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
         saved.air_wings.insert(
             1,
-            installed_content_save::AirWing {
+            content_reader_save::AirWing {
                 government_in_exile_tag: None,
                 manpower: None,
                 reinforcement_setting: None,
@@ -1793,7 +1793,7 @@ mod tests {
         saved.air_wings.clear();
         saved.air_wings.insert(
             1,
-            installed_content_save::AirWing {
+            content_reader_save::AirWing {
                 government_in_exile_tag: None,
                 manpower: None,
                 reinforcement_setting: None,
@@ -1933,7 +1933,7 @@ mod tests {
         saved
             .air
             .ground_crews
-            .push(installed_content_save::air::GroundCrews {
+            .push(content_reader_save::air::GroundCrews {
                 country: b"GER".to_vec(),
                 region: 9,
                 enabled: true,
@@ -2205,7 +2205,7 @@ mod tests {
                     })
                     .collect(),
             ));
-        saved.war_relations.push(installed_content_save::WarRelation {
+        saved.war_relations.push(content_reader_save::WarRelation {
             participation: [None, None],
             first_goals: Vec::new(),
             second_goals: Vec::new(),

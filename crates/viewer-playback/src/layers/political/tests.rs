@@ -1,6 +1,6 @@
 
 use super::{Content, Installer, LEFT_OUT, Ordering, Political, Row, Set, Whole};
-use installed_content_core::map::{MapData, ProvinceDefinition, ProvinceKind};
+use content_reader_core::map::{MapData, ProvinceDefinition, ProvinceKind};
 use std::{collections::HashSet, sync::Arc};
 use viewer_world::map::{
     borders::{BorderClass, BorderDraw, BorderMesh, BorderMeshes, Vertex},

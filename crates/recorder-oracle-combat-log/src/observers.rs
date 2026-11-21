@@ -1,6 +1,6 @@
 use crate::{Report, complete, invalid, required_country_tag};
 use engine_land_inputs::combat_log_events as kind;
-use installed_content_save::{
+use content_reader_save::{
     Save,
     combat_log::{Activity, BattleSide, Observer, ObserverDamage},
     production::Pool,
@@ -17,8 +17,8 @@ fn append<T>(rows: &mut Vec<T>, ordinal: u64, value: T) -> io::Result<()> {
     rows.push(value);
     Ok(())
 }
-fn decimal(raw: i64) -> io::Result<installed_content_save::Decimal> {
-    installed_content_save::Decimal::parse(
+fn decimal(raw: i64) -> io::Result<content_reader_save::Decimal> {
+    content_reader_save::Decimal::parse(
         format!(
             "{}{}.{:05}",
             if raw < 0 { "-" } else { "" },
@@ -104,7 +104,7 @@ fn decode(
                 {
                     for e in equipment {
                         if b != 0 || e.amount_raw != 0 {
-                            pool.equipment.push(installed_content_save::production::Equipment {
+                            pool.equipment.push(content_reader_save::production::Equipment {
                                 variant: e.variant,
                                 amount: decimal(e.amount_raw)?,
                             });
@@ -120,7 +120,7 @@ fn decode(
                 }
                 .ok_or_else(|| invalid("active observer amount lacks serialized pool"))?;
                 if pool.allow_zero_entries == Some(true) || c != 0 {
-                    pool.equipment.push(installed_content_save::production::Equipment {
+                    pool.equipment.push(content_reader_save::production::Equipment {
                         variant: b,
                         amount: decimal(c as i64)?,
                     });
@@ -183,7 +183,7 @@ fn decode(
                         .as_mut()
                         .ok_or_else(|| invalid("active activity amount lacks pool"))?;
                     if pool.allow_zero_entries == Some(true) || c != 0 {
-                        pool.equipment.push(installed_content_save::production::Equipment {
+                        pool.equipment.push(content_reader_save::production::Equipment {
                             variant: b,
                             amount: decimal(c as i64)?,
                         });
@@ -207,8 +207,8 @@ fn pools_equal(actual: Option<&Pool>, saved: Option<&Pool>) -> bool {
                 equipment,
                 allow_zero_entries,
             } = actual;
-            let values = |e: &installed_content_save::production::Equipment| {
-                let installed_content_save::production::Equipment { variant, amount } = e;
+            let values = |e: &content_reader_save::production::Equipment| {
+                let content_reader_save::production::Equipment { variant, amount } = e;
                 (*variant, amount.raw)
             };
             *allow_zero_entries == saved.allow_zero_entries

@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io};
 
-use installed_content_save::naval_history as saved;
+use content_reader_save::naval_history as saved;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 
@@ -8,7 +8,7 @@ use super::{Report, complete, equal, invalid};
 
 pub fn compare_railway_buildings(
     frame: &DecodedFrame,
-    saved: &installed_content_save::construction::Pack,
+    saved: &content_reader_save::construction::Pack,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -65,7 +65,7 @@ pub fn compare_railway_buildings(
 fn compare_selected_building(
     hour: i32,
     row: &replay_data::rows::RailCooldownRow,
-    saved: &installed_content_save::construction::Pack,
+    saved: &content_reader_save::construction::Pack,
     names: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {

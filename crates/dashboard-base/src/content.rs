@@ -1,6 +1,6 @@
 
 use crate::{Source, catalogue::kept::Keeping, invalid, products::ContentOptions};
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use replay_data::identity::Verification;
 use std::{io, path::PathBuf, sync::Arc};
 
@@ -47,13 +47,13 @@ pub(crate) fn localisation_in(
     source: &Source,
     content: &ContentOptions,
     key: LocalisationKey,
-    resolved: impl FnOnce() -> io::Result<Arc<installed_content_core::content::ResolvedContent>>,
+    resolved: impl FnOnce() -> io::Result<Arc<content_reader_core::content::ResolvedContent>>,
     keeping: Keeping,
 ) -> io::Result<Arc<Localisation>> {
     type Cached = Option<(
         LocalisationKey,
         Arc<Localisation>,
-        installed_content_core::content::diagnostics::Diagnostics,
+        content_reader_core::content::diagnostics::Diagnostics,
     )>;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -67,10 +67,10 @@ pub(crate) fn localisation_in(
     let mut warnings = Vec::new();
     check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
     let build = || {
-        installed_content_core::content::diagnostics::capture(|| {
+        content_reader_core::content::diagnostics::capture(|| {
             let layers = resolved()?;
             let language = recorded_language(source.replay_ref());
-            installed_content_localisation::localisation::read_cached(
+            content_reader_localisation::localisation::read_cached(
                 &layers.layers,
                 &language,
                 &content.options.cache_dir,
@@ -93,7 +93,7 @@ pub(crate) fn localisation_in(
 }
 
 pub fn warm(source: &Source, content: &ContentOptions) {
-    let _warm = installed_content_core::content::Generation::inherit();
+    let _warm = content_reader_core::content::Generation::inherit();
     let resolved = source.content(&content.options).ok();
     let _generation = resolved.as_ref().map(|content| content.layers.enter_generation());
     let _ = localisation(source, content);
@@ -137,11 +137,11 @@ pub fn check_verification(
 }
 
 pub fn strategic_regions(
-    layers: &installed_content_core::ResolvedLayers,
-) -> io::Result<Arc<installed_content_regions::regions::StrategicRegions>> {
+    layers: &content_reader_core::ResolvedLayers,
+) -> io::Result<Arc<content_reader_regions::regions::StrategicRegions>> {
     layers
-        .derived::<crate::catalogue::CachedResult<installed_content_regions::regions::StrategicRegions>>()
-        .get_or_init(|| installed_content_regions::regions::read(layers))
+        .derived::<crate::catalogue::CachedResult<content_reader_regions::regions::StrategicRegions>>()
+        .get_or_init(|| content_reader_regions::regions::read(layers))
 }
 
 pub fn check_replay(

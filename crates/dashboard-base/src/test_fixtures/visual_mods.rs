@@ -1,7 +1,7 @@
 
 use crate::{Source, presentation::Presentation, products::ContentOptions};
-use installed_content_core::content::visual::Choice;
-use installed_content_image::Rgba8Image;
+use content_reader_core::content::visual::Choice;
+use content_reader_image::Rgba8Image;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},

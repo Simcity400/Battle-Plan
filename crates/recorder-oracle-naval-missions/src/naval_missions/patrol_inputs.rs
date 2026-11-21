@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::{SaveDocument, naval_missions::PatrolMissionFields};
+use content_reader_save::{SaveDocument, naval_missions::PatrolMissionFields};
 use replay_data::rows::NavalPatrolMissionInputRow;
 
 pub(super) fn bind(
@@ -200,7 +200,7 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_save::naval_missions::{PatrolMissionFields, PatrolMissionSave};
+    use content_reader_save::naval_missions::{PatrolMissionFields, PatrolMissionSave};
     use replay_data::rows::{NavalMissionLedgerRow, NavalMissionTaskForceRow, TaskForceRow};
     fn fixture() -> (DecodedFrame, Save) {
         let (mut frame, mut save, _, _) = fixtures::fixture();

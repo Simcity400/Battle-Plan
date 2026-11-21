@@ -285,7 +285,7 @@ fn railway_second(
     gate: RailwaySecondGate<'_>,
     loc: &Localisation,
     mut source: impl FnMut(u64) -> Result<u32, String>,
-    query: impl FnOnce() -> Result<installed_content_unit_path::unit_path::selected_transport::Outputs, String>,
+    query: impl FnOnce() -> Result<content_reader_unit_path::unit_path::selected_transport::Outputs, String>,
 ) {
     let RailwaySecondGate { travel, rejection } = gate;
     let needed = (|| {
@@ -317,7 +317,7 @@ fn railway_second(
             match query() {
                 Ok(outputs) => {
                     let mut bytes = std::mem::take(&mut out.title).into_bytes();
-                    installed_content_unit_path::unit_path::selected_transport::append_railway_second(
+                    content_reader_unit_path::unit_path::selected_transport::append_railway_second(
                         &mut bytes, &outputs,
                     );
                     out.title =
@@ -391,7 +391,7 @@ pub(super) fn build(context: &Context<'_>, selected: &[Unit], nato: bool) -> Too
     match queries.selected_transport_message(selected, context.province.id) {
         Ok(outputs) => {
             let mut bytes = std::mem::take(&mut out.title).into_bytes();
-            installed_content_unit_path::unit_path::selected_transport::append_first(&mut bytes, &outputs);
+            content_reader_unit_path::unit_path::selected_transport::append_first(&mut bytes, &outputs);
             out.title = String::from_utf8(bytes).expect("transport localisation preserves UTF-8");
         }
         Err(reason) => refuse(&mut out, "transport", reason),
@@ -1006,7 +1006,7 @@ mod tests {
             || {
                 calls += 1;
                 Ok(
-                    installed_content_unit_path::unit_path::selected_transport::Outputs {
+                    content_reader_unit_path::unit_path::selected_transport::Outputs {
                         primary: b"\nRisk\ncontinued".to_vec(),
                         secondary: b"unappended".to_vec(),
                     },

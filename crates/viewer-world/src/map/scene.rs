@@ -414,7 +414,7 @@ impl SceneTextures {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &MapAssets,
-        icon_images: &[installed_content_image::dds::Texture],
+        icon_images: &[content_reader_image::dds::Texture],
     ) -> io::Result<Arc<Self>> {
         check_textures(device)?;
         let fow_noise = Arc::new(upload(
@@ -605,7 +605,7 @@ impl TextureCache {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &MapAssets,
-        icon_images: &[installed_content_image::dds::Texture],
+        icon_images: &[content_reader_image::dds::Texture],
     ) -> io::Result<Arc<SceneTextures>> {
         let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
         entries.retain(|(_, textures)| textures.strong_count() != 0);
@@ -676,7 +676,7 @@ impl Scene {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &MapAssets,
-        icon_images: &[installed_content_image::dds::Texture],
+        icon_images: &[content_reader_image::dds::Texture],
         lazy: &Arc<LazyTextures>,
         graphics: dashboard_core::protocol::MapGraphics,
     ) -> io::Result<Self> {
@@ -2120,8 +2120,8 @@ impl Scene {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        map: &installed_content_core::map::MapData,
-        strategic_regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
+        map: &content_reader_core::map::MapData,
+        strategic_regions: &BTreeMap<u32, content_reader_regions::regions::StrategicRegion>,
         field: &viewer_foundation::map::gradient_math::FieldDefines,
         cache: &crate::map::political_gpu::Cache,
     ) -> io::Result<()> {

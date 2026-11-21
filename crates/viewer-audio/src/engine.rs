@@ -1,9 +1,9 @@
 
 use crate::{Frame, Group, Listener, Mix};
-use installed_content_sound::sound::{
+use content_reader_sound::sound::{
     Catalog, Compressor, Curve, Defines, Effect, Falloff, Notes, Overflow,
 };
-use installed_content_sound::wav::Pcm;
+use content_reader_sound::wav::Pcm;
 use std::{collections::HashMap, sync::Arc};
 
 pub const RATE: u32 = 44_100;
@@ -37,11 +37,11 @@ pub struct Content {
     pub defines: Option<Defines>,
     height_category: Option<usize>,
     voice_category: Option<usize>,
-    pub music: installed_content_sound::music::Music,
+    pub music: content_reader_sound::music::Music,
     pub stations: Option<Vec<String>>,
     pub recently_played: usize,
-    pub battle: Option<installed_content_sound::combat_sounds::BattleDefines>,
-    pub layers: installed_content_sound::combat_sounds::Layers,
+    pub battle: Option<content_reader_sound::combat_sounds::BattleDefines>,
+    pub layers: content_reader_sound::combat_sounds::Layers,
 }
 
 impl Content {
@@ -67,8 +67,8 @@ impl Content {
 
     pub fn with_battles(
         mut self,
-        battle: Option<installed_content_sound::combat_sounds::BattleDefines>,
-        layers: installed_content_sound::combat_sounds::Layers,
+        battle: Option<content_reader_sound::combat_sounds::BattleDefines>,
+        layers: content_reader_sound::combat_sounds::Layers,
     ) -> Self {
         self.battle = battle;
         self.layers = layers;
@@ -77,7 +77,7 @@ impl Content {
 
     pub fn with_music(
         mut self,
-        music: installed_content_sound::music::Music,
+        music: content_reader_sound::music::Music,
         stations: Option<Vec<String>>,
         recently_played: usize,
     ) -> Self {
@@ -890,7 +890,7 @@ impl Engine {
             return;
         }
         let offset =
-            |range: installed_content_sound::sound::Range| range.first != 0.0 || range.second != 0.0;
+            |range: content_reader_sound::sound::Range| range.first != 0.0 || range.second != 0.0;
         let volume_offset = offset(effect.volume_offset);
         let delay_offset = offset(effect.delay_offset);
         let rate_offset = offset(effect.playback_rate_offset);
@@ -915,7 +915,7 @@ impl Engine {
                 weights[choice] = 0;
             }
         }
-        let width = |range: installed_content_sound::sound::Range| range.second - range.first;
+        let width = |range: content_reader_sound::sound::Range| range.second - range.first;
         for index in 0..instance.slots.len() {
             if instance.slots[index].voice.is_some() {
                 continue;

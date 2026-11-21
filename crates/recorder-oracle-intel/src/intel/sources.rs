@@ -1,5 +1,5 @@
 use super::*;
-use installed_content_save::{ActualCountry, Save, intel::sources as saved};
+use content_reader_save::{ActualCountry, Save, intel::sources as saved};
 use replay_data::rows::{IntelContributionRow as Contribution, IntelSourceRow as Source};
 
 type ContributionKey = (u8, u32, u32);
@@ -173,8 +173,8 @@ pub fn compare(
 
 fn compare_pack(
     frame: &DecodedFrame,
-    save: &installed_content_save::intel::Pack,
-    emissions: Option<&[installed_content_save::SavedCountryEmission]>,
+    save: &content_reader_save::intel::Pack,
+    emissions: Option<&[content_reader_save::SavedCountryEmission]>,
     countries: &BTreeMap<u32, &CountryRow>,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -387,7 +387,7 @@ mod tests {
     use super::*;
     #[test]
     fn intel_sources_saved_accumulator_is_pending_and_values_are_accumulated() {
-        let document = installed_content_core::parser::parse(
+        let document = content_reader_core::parser::parse(
             br#"intel={discriminant=7 dynamic_intel_pools={
                 {}
                 {accumulator={{-7 {}} {-7 {army=-0.00001}}}
@@ -459,10 +459,10 @@ mod tests {
             ..Default::default()
         };
         let countries = BTreeMap::from([(17, &country), (39, &country), (23, &target)]);
-        let pack = installed_content_save::intel::Pack {
+        let pack = content_reader_save::intel::Pack {
             countries: BTreeMap::from([(
                 b"MOD".to_vec(),
-                installed_content_save::intel::Country {
+                content_reader_save::intel::Country {
                     sources: Some(state.clone()),
                     radar_source: Some(saved::Reference::default()),
                     token_source: Some(saved::Reference::default()),
@@ -471,9 +471,9 @@ mod tests {
             )]),
             strategic_operatives: Some(BTreeMap::from([(
                 19,
-                installed_content_save::intel::StrategicOperative {
+                content_reader_save::intel::StrategicOperative {
                     index: 19,
-                    networks: vec![installed_content_save::intel::IntelNetworkEntry {
+                    networks: vec![content_reader_save::intel::IntelNetworkEntry {
                         target: b"TGT".to_vec(),
                         source: Some(saved::Reference::default()),
                         ..Default::default()

@@ -1,5 +1,5 @@
 use super::{map_mode::ColorList, resource_icons::anchor_provinces};
-use installed_content_core::{defines::Defines, gui::native, occupation_modifiers};
+use content_reader_core::{defines::Defines, gui::native, occupation_modifiers};
 use replay_data::{rows, rows::Recorded, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -74,7 +74,7 @@ pub struct Content {
     pub defines: IconDefines,
 }
 impl Content {
-    pub fn load(layers: &installed_content_core::ResolvedLayers, defines: &Defines) -> io::Result<Self> {
+    pub fn load(layers: &content_reader_core::ResolvedLayers, defines: &Defines) -> io::Result<Self> {
         Ok(Self {
             definitions: occupation_modifiers::Definitions::read(layers)?,
             defines: IconDefines::load(defines)?,

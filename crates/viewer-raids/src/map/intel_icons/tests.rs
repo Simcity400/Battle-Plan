@@ -341,7 +341,7 @@ fn entries_group_by_state_sort_and_bound_the_operations() {
         &raids,
         &frame,
         2,
-        &installed_content_localisation::localisation::Localisation::default(),
+        &content_reader_localisation::localisation::Localisation::default(),
         "english",
     );
     let states: Vec<u32> = icons.states.iter().map(|state| state.state).collect();
@@ -412,7 +412,7 @@ fn a_shield_needs_its_country_to_control_its_capital_state() {
             &raids,
             frame,
             2,
-            &installed_content_localisation::localisation::Localisation::default(),
+            &content_reader_localisation::localisation::Localisation::default(),
             "english",
         )
     };
@@ -465,7 +465,7 @@ fn an_unavailable_character_table_withholds_the_operative_portrait() {
             &raids,
             frame,
             2,
-            &installed_content_localisation::localisation::Localisation::default(),
+            &content_reader_localisation::localisation::Localisation::default(),
             "english",
         );
         icons
@@ -792,7 +792,7 @@ fn buffered_operation_icons_for(
         &raids,
         &frame,
         2,
-        &installed_content_localisation::localisation::Localisation::default(),
+        &content_reader_localisation::localisation::Localisation::default(),
         "english",
     )
 }
@@ -886,7 +886,7 @@ fn the_client_buffer_draws_only_while_the_map_is_viewed_as_the_clients_country()
     let mut frame = test_support::positive_frame();
     put::<tables::Operations>(&mut frame, vec![buffered_test_operation(1)]);
     put::<tables::AgencyOperationBuffers>(&mut frame, vec![buffer()]);
-    let localisation = installed_content_localisation::localisation::Localisation::default();
+    let localisation = content_reader_localisation::localisation::Localisation::default();
     let shown = icons(&IntelAssets::test(defines(), Vec::new(), Vec::new(), 0), &raids, &frame, 2, &localisation, "english");
     assert_eq!(operations(&shown), 0);
     assert!(shown.report.reasons.keys().any(|reason| reason.contains("the recording client's viewpoint is unknown")), "{:?}", shown.report);
@@ -916,7 +916,7 @@ fn unavailable_ui_buffer_withholds_saved_operations_and_names_the_refusal() {
 
 #[test]
 fn running_duration_substitutes_the_lowercase_green_number_and_keeps_authored_units() {
-    let localisation: installed_content_localisation::localisation::Localisation = [(
+    let localisation: content_reader_localisation::localisation::Localisation = [(
         "ABILITY_DUR_DAYS".to_owned(),
         "\u{11}Y$num|H$ cycles\u{11}!".to_owned(),
     )]

@@ -8,7 +8,7 @@ pub(super) mod walk;
 mod plans;
 mod plan_tail;
 use crate::map::{mesh_pose, mesh_shader, shader_scene};
-use installed_content_core::pdxshader::program::Stage;
+use content_reader_core::pdxshader::program::Stage;
 use shader_pipeline::{
     binding,
     gpu::{CONSTANT_BINDINGS, TEXTURE_BINDINGS},
@@ -1184,8 +1184,8 @@ fn selection_suffix(skinned: bool, caster: bool) -> &'static str {
 }
 
 fn material_flags(
-    lit: &installed_content_core::pdxshader::BlendState,
-    shadow: &installed_content_core::pdxshader::BlendState,
+    lit: &content_reader_core::pdxshader::BlendState,
+    shadow: &content_reader_core::pdxshader::BlendState,
     diffuse: bool,
 ) -> (bool, bool) {
     let mut textured = diffuse && (lit.enable || lit.alpha_test);
@@ -3095,7 +3095,7 @@ mod tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
-        let program = installed_content_core::pdxshader::program::read_with(b"slices.shader", &|path| {
+        let program = content_reader_core::pdxshader::program::read_with(b"slices.shader", &|path| {
             Some(if path == b"slices.shader" {
                 b"Effect Draw { }".to_vec()
             } else {
@@ -3427,7 +3427,7 @@ mod tests {
 
     #[test]
     fn shadow_alpha_state_can_admit_an_alternate_material() {
-        use installed_content_core::pdxshader::BlendState;
+        use content_reader_core::pdxshader::BlendState;
         let opaque = BlendState::default();
         let cutout = BlendState {
             enable: false,

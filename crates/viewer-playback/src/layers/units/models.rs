@@ -115,7 +115,7 @@ impl Select for crate::document::Content {
             };
             let hour = crate::document::Hour::new(self, frame, 0.0);
             let values = viewer_world::map::equipment_graphics::LimitValues::default();
-            let evaluate = |items: &[installed_content_core::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
+            let evaluate = |items: &[content_reader_core::parser::Item], scopes| hour.trigger_world().evaluate(items, scopes);
             let (mut standing, mut choosing) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
             let inputs = SelectInputs {
                 frame,

@@ -44,7 +44,7 @@ fn append_rig(library: &mut ModelLibrary, slot: usize) {
         bound: 1.,
         convoy_radius: None,
         attachments: 1,
-        cull_distance_squared: installed_content_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
+        cull_distance_squared: content_reader_core::mesh::DEFAULT_CULL_DISTANCE_SQUARED,
     });
 }
 

@@ -474,10 +474,10 @@ fn scriptable_random_weights_use_the_unified_operands_and_ignore_modifier_condit
     let evaluator = crate::triggers::Evaluator::new(text.world().unwrap(), None);
     let scopes = crate::triggers::Scopes::of(crate::triggers::Scope::Country(1));
     let member =
-        |source: &str| installed_content_scripted_localisation::scripted_localisation::RandomMember {
+        |source: &str| content_reader_scripted_localisation::scripted_localisation::RandomMember {
             weight: 1_000_000,
             key: Vec::new(),
-            modifiers: installed_content_core::parser::parse(source.as_bytes())
+            modifiers: content_reader_core::parser::parse(source.as_bytes())
                 .unwrap()
                 .items
                 .into_iter()

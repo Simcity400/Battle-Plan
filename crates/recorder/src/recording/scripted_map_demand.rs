@@ -1,10 +1,10 @@
-use installed_content_core::ResolvedLayers;
-use installed_content_core::scripted_map_modes::LayerType;
+use content_reader_core::ResolvedLayers;
+use content_reader_core::scripted_map_modes::LayerType;
 use std::{collections::BTreeSet, io};
 
 fn reaches_sharing(
-    items: &[installed_content_core::parser::Item],
-    templates: &installed_content_core::scripted_triggers::ScriptedTriggers,
+    items: &[content_reader_core::parser::Item],
+    templates: &content_reader_core::scripted_triggers::ScriptedTriggers,
     visited: &mut BTreeSet<Vec<u8>>,
 ) -> bool {
     items.iter().any(|item| {
@@ -36,11 +36,11 @@ fn reaches_sharing(
 
 pub(super) fn read(layers: &ResolvedLayers, language: &str) -> io::Result<serde_json::Value> {
     let language = language.strip_prefix("l_").unwrap_or(language);
-    let modes = installed_content_core::scripted_map_modes::read(layers)?;
+    let modes = content_reader_core::scripted_map_modes::read(layers)?;
     let templates = if modes.modes.is_empty() {
         Default::default()
     } else {
-        installed_content_core::scripted_triggers::read(layers)?
+        content_reader_core::scripted_triggers::read(layers)?
     };
     let mut sharing_roster = false;
     let mut all_controllers = false;
@@ -58,7 +58,7 @@ pub(super) fn read(layers: &ResolvedLayers, language: &str) -> io::Result<serde_
                 all_controllers = true;
                 continue;
             };
-            let targets = installed_content_core::country_scorers::script_targets(block);
+            let targets = content_reader_core::country_scorers::script_targets(block);
             if !targets.arrays.is_empty() {
                 all_controllers = true;
             }
@@ -78,8 +78,8 @@ pub(super) fn read(layers: &ResolvedLayers, language: &str) -> io::Result<serde_
     }
     let mut victory_point = false;
     if !modes.modes.is_empty() {
-        let localisation = installed_content_localisation::localisation::read(layers, language)?;
-        let scripted = installed_content_scripted_localisation::scripted_localisation::names(layers)?;
+        let localisation = content_reader_localisation::localisation::read(layers, language)?;
+        let scripted = content_reader_scripted_localisation::scripted_localisation::names(layers)?;
         let mut pending = modes
             .modes
             .iter()
@@ -131,7 +131,7 @@ pub(super) fn read(layers: &ResolvedLayers, language: &str) -> io::Result<serde_
                 for text in &entry.texts {
                     sharing_roster |=
                         reaches_sharing(&text.trigger, &templates, &mut BTreeSet::new());
-                    use installed_content_scripted_localisation::scripted_localisation::TextValue;
+                    use content_reader_scripted_localisation::scripted_localisation::TextValue;
                     match &text.value {
                         Some(TextValue::Key(key)) => {
                             pending.push(String::from_utf8_lossy(key).into_owned())
@@ -167,14 +167,14 @@ mod tests {
         let mut modes_seen = 0;
         for user_dir in std::env::split_paths(&profiles) {
             let content =
-                installed_content_core::content::gather(&installed_content_core::content::GatherOptions {
+                content_reader_core::content::gather(&content_reader_core::content::GatherOptions {
                     game_dir: game_dir.clone(),
                     cache_dir: user_dir.join("content_cache"),
                     user_dir,
                     dlc_order: None,
                 })
                 .unwrap();
-            let modes = installed_content_core::scripted_map_modes::read(&content.layers).unwrap();
+            let modes = content_reader_core::scripted_map_modes::read(&content.layers).unwrap();
             let demand = read(&content.layers, &content.language).unwrap();
             modes_seen += modes.modes.len();
             eprintln!(

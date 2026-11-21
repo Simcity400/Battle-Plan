@@ -1,7 +1,7 @@
 
 use super::fresh_search::Inputs;
 use game_model::movement::{army::MovementSpeedInputs, unit::eta_ratio};
-use installed_content_unit_path::{unit_path::CounterRequest, unit_path::Fact, unit_path::MoveWorld};
+use content_reader_unit_path::{unit_path::CounterRequest, unit_path::Fact, unit_path::MoveWorld};
 use replay_data::{rows::FreshRailwayCounterEta, rows::RailwayGunCounterInputRow, rows::tables};
 use viewer_foundation::map::movement_reads::Moves;
 
@@ -179,7 +179,7 @@ fn remaining(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_core::{
+    use content_reader_core::{
         movement::MovementMap, movement::Neighbour, movement::ProvinceTerrain,
         movement::RailMovementDefines,
     };

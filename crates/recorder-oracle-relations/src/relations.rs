@@ -4,7 +4,7 @@ use std::{
     io,
 };
 
-use installed_content_save::Save;
+use content_reader_save::Save;
 use replay_data::{rows::CountryRow, rows::FactionRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -447,8 +447,8 @@ fn compare_relation_hours(
     (cancel, start_hour, end_hour): (u8, i32, i32),
     (saved_cancel, start_date, end_date): (
         bool,
-        Option<installed_content_save::GameDate>,
-        Option<installed_content_save::GameDate>,
+        Option<content_reader_save::GameDate>,
+        Option<content_reader_save::GameDate>,
     ),
 ) -> io::Result<()> {
     if (cancel != 0) != saved_cancel {
@@ -714,7 +714,7 @@ pub fn compare_factions(
 fn compare_faction_presentation(
     label: &str,
     actual: &FactionRow,
-    expected: &installed_content_save::Faction,
+    expected: &content_reader_save::Faction,
     tokens: Option<&BTreeMap<u32, &[u8]>>,
     report: &mut Report,
 ) {

@@ -638,7 +638,7 @@ impl CreatorRows for PlanRows<'_> {
     fn reference(&self, slot: u32) -> Result<i32, String> {
         if slot == 0 {
             let reserved = self.reserved()?;
-            return installed_content_country_names::country_names::reserved_reference_of(&recorded(reserved.reference));
+            return content_reader_country_names::country_names::reserved_reference_of(&recorded(reserved.reference));
         }
         let countries_complete = self.whole(TableId::Countries);
         let native = *self.natives(slot).last().ok_or_else(|| {
@@ -647,7 +647,7 @@ impl CreatorRows for PlanRows<'_> {
         let appearance = self.appearance(native).ok_or_else(|| {
             if self.appearance_complete() { format!("country slot {slot} has no CountryAppearance row") } else { format!("CountryAppearance is incomplete this hour: country slot {slot} is unknown") }
         })?;
-        installed_content_country_names::country_names::original_or_own_reference_of(&appearance.original_tag_reference, native)
+        content_reader_country_names::country_names::original_or_own_reference_of(&appearance.original_tag_reference, native)
     }
 
     fn reserved_tag(&self) -> Result<String, String> {

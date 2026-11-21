@@ -47,7 +47,7 @@ pub fn character_script_token_in<'a>(
 pub fn built_template<'a>(
     character: &CharacterRow,
     lexical: Option<impl Into<replay_frame::frame::Rows<'a, LexicalTokenRow>>>,
-) -> Result<installed_content_core::characters::BuiltTemplate, String> {
+) -> Result<content_reader_core::characters::BuiltTemplate, String> {
     built_template_in(
         character,
         lexical.map(|lexical| Rowset::Decoded(lexical.into().as_slice())),
@@ -57,7 +57,7 @@ pub fn built_template<'a>(
 pub fn built_template_in(
     character: &CharacterRow,
     lexical: Option<Rowset<'_, LexicalTokenRow>>,
-) -> Result<installed_content_core::characters::BuiltTemplate, String> {
+) -> Result<content_reader_core::characters::BuiltTemplate, String> {
     let id = character.id;
     if character.template_present == 0 {
         return Err(format!(
@@ -83,7 +83,7 @@ pub fn built_template_in(
     })?;
     let tag = std::str::from_utf8(literal)
         .map_err(|_| format!("character {id}'s template tag token {token} is not UTF-8"))?;
-    Ok(installed_content_core::characters::BuiltTemplate {
+    Ok(content_reader_core::characters::BuiltTemplate {
         tag: tag.to_owned(),
         file: character.template_file.clone(),
         line: character.template_line,
@@ -364,10 +364,10 @@ impl Look {
         Some(Self {
             name_tag: name_tag.to_owned(),
             original_or_own_tag: if row.canonical_slot == 0 {
-                installed_content_country_names::country_names::reserved_zero_original_tag_in(frame)
+                content_reader_country_names::country_names::reserved_zero_original_tag_in(frame)
                     .map(Cow::into_owned)
             } else {
-                installed_content_country_names::country_names::original_tag(row, appearance)
+                content_reader_country_names::country_names::original_tag(row, appearance)
                     .map(str::to_owned)
             },
             cosmetic_tag: cosmetic_tag.to_owned(),

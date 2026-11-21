@@ -74,7 +74,7 @@ pub fn resources(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
                 .get(&row.token)
                 .ok_or_else(|| invalid("nonzero faction resource lacks token spelling"))?;
             report.scalar_checks += 1;
-            let spelling = installed_content_core::parser::c_string(spelling);
+            let spelling = content_reader_core::parser::c_string(spelling);
             if spelling != name {
                 report.difference(format!("{label}[{index}] token"), spelling, name);
             }
@@ -103,15 +103,15 @@ mod tests {
     #[test]
     fn faction_resources_compare_system_slot_zero_repeated_tokens_negative_and_omitted_zero() {
         let (mut frame, mut save, _, _) = crate::fixtures::fixture();
-        save.faction_accounts = Some(installed_content_save::faction_accounts::Accounts {
+        save.faction_accounts = Some(content_reader_save::faction_accounts::Accounts {
             extracted: Some(vec![
                 (
                     b"mod_resource".to_vec(),
-                    installed_content_save::Decimal::parse(b"-2").unwrap(),
+                    content_reader_save::Decimal::parse(b"-2").unwrap(),
                 ),
                 (
                     b"mod_resource".to_vec(),
-                    installed_content_save::Decimal::parse(b"3").unwrap(),
+                    content_reader_save::Decimal::parse(b"3").unwrap(),
                 ),
             ]),
             ..Default::default()

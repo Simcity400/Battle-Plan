@@ -10,7 +10,7 @@ use std::io;
 pub fn compare(
     replay: &Replay,
     frame: &DecodedFrame,
-    document: &installed_content_save::SaveDocument,
+    document: &content_reader_save::SaveDocument,
     report: &mut Report,
 ) -> io::Result<()> {
     report.limitation(

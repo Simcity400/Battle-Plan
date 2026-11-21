@@ -12,9 +12,9 @@ doctest = false
 [dependencies]
 replay.workspace = true
 engine-executable.workspace = true
-installed-content-core.workspace = true
-installed-content-regions.workspace = true
-installed-content-weather.workspace = true
+content-reader-core.workspace = true
+content-reader-regions.workspace = true
+content-reader-weather.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
@@ -27,12 +27,12 @@ replay-identity = { workspace = true, features = ["test-support"] }
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-country-names = { workspace = true, features = ["test-support"] }
+content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-province-area = { workspace = true, features = ["test-support"] }
+content-reader-regions = { workspace = true, features = ["test-support"] }
+content-reader-weather = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-installed-content-country-names = { workspace = true, features = ["test-support"] }
-installed-content-localisation = { workspace = true, features = ["test-support"] }
-installed-content-province-area = { workspace = true, features = ["test-support"] }
-installed-content-regions = { workspace = true, features = ["test-support"] }
-installed-content-weather = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }

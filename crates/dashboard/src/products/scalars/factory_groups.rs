@@ -5,7 +5,7 @@ use crate::{
     catalogue::{self, Catalogue, View},
     products::{LoadContext, Product},
 };
-use installed_content_core::buildings::{Buildings, FactoryFlags};
+use content_reader_core::buildings::{Buildings, FactoryFlags};
 use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};
 #[cfg(any(test, feature = "export-types"))]
@@ -95,7 +95,7 @@ pub(super) fn groups(buildings: &Buildings, name: impl Fn(&str) -> Option<String
 }
 
 fn read(catalogue: &Catalogue) -> io::Result<FactoryGroupsReply> {
-    let buildings = installed_content_core::buildings::read(&catalogue.content.layers)?;
+    let buildings = content_reader_core::buildings::read(&catalogue.content.layers)?;
     let (groups, mut warnings) = groups(&buildings, |token| {
         catalogue.localisation.get(token)?;
         catalogue.localised(token, View::Plain)

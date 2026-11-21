@@ -1,5 +1,5 @@
 use super::{Report, complete, invalid, required_country_tag};
-use installed_content_save::{Save, naval_management as saved};
+use content_reader_save::{Save, naval_management as saved};
 use replay_data::rows::CountryRow;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -536,7 +536,7 @@ mod tests {
     }
     #[test]
     fn naval_management_oracle_scopes_countries_and_objects_to_canonical_emissions() {
-        use installed_content_save::{ActualCountry, CountryEmissionIdentity, SaveDocument};
+        use content_reader_save::{ActualCountry, CountryEmissionIdentity, SaveDocument};
 
         let fleet = 61 | (1_u64 << 32);
         let task = 61 | (2_u64 << 32);

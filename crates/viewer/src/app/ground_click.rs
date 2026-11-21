@@ -1,4 +1,4 @@
-use installed_content_core::map::ProvinceKind;
+use content_reader_core::map::ProvinceKind;
 use viewer_world::map::map_mode::{MapMode, Stock};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -6,7 +6,7 @@ use crate::map::visibility::event_shared;
 use crate::tooltip_text::localise;
 use crate::tooltip_text::state_name;
 use crate::unit_handle::Unit;
-use installed_content_unit_path::{
+use content_reader_unit_path::{
     unit_path::CommonClass, unit_path::CommonCombat, unit_path::CommonMoveText,
     unit_path::CommonMoveWorld, unit_path::CommonUnit, unit_path::NativeArmyOccupant,
     unit_path::selected_transport as transport,
@@ -537,7 +537,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
     fn controller_area(&self, province: u32) -> Fact<u32> {
         self.common_controller_area(province)
     }
-    fn area_node(&self, label: u32) -> Fact<installed_content_unit_path::unit_path::AreaNode> {
+    fn area_node(&self, label: u32) -> Fact<content_reader_unit_path::unit_path::AreaNode> {
         let node = self.common_area_node(label)?;
         let first_land = node
             .first_land
@@ -550,7 +550,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
                 .copied()
                 .ok_or_else(|| format!("selected area representative {first} has no nonsea index"))
         });
-        Ok(installed_content_unit_path::unit_path::AreaNode {
+        Ok(content_reader_unit_path::unit_path::AreaNode {
             label,
             first_land_province: first_land,
             nonsea_index,
@@ -949,7 +949,7 @@ impl CommonMoveWorld for Moves<'_, '_> {
 
 pub struct CommonText<'a> {
     pub frame: &'a DecodedFrame,
-    pub loc: &'a installed_content_localisation::localisation::Localisation,
+    pub loc: &'a content_reader_localisation::localisation::Localisation,
     pub recorded_language: &'a str,
     pub state_keys: &'a BTreeMap<u32, Fact<String>>,
 }
@@ -962,11 +962,11 @@ impl CommonMoveText for CommonText<'_> {
             &[
                 (
                     "FREE",
-                    installed_content_localisation::localisation::Argument::Int32(available),
+                    content_reader_localisation::localisation::Argument::Int32(available),
                 ),
                 (
                     "NEED",
-                    installed_content_localisation::localisation::Argument::Int32(required),
+                    content_reader_localisation::localisation::Argument::Int32(required),
                 ),
             ],
         )
@@ -977,7 +977,7 @@ impl CommonMoveText for CommonText<'_> {
             "NAVAL_TRANSPORT_INTERCEPT_WARNING",
             &[(
                 "ATTR",
-                installed_content_localisation::localisation::Argument::Fixed5(risk),
+                content_reader_localisation::localisation::Argument::Fixed5(risk),
             )],
         )
     }
@@ -991,7 +991,7 @@ impl CommonMoveText for CommonText<'_> {
             },
             &[(
                 "CONVOYS",
-                installed_content_localisation::localisation::Argument::Int32(convoys),
+                content_reader_localisation::localisation::Argument::Int32(convoys),
             )],
         )
     }
@@ -1001,7 +1001,7 @@ impl CommonMoveText for CommonText<'_> {
             key,
             &[(
                 "DAYS",
-                installed_content_localisation::localisation::Argument::Int32(days),
+                content_reader_localisation::localisation::Argument::Int32(days),
             )],
         )
     }
@@ -1038,7 +1038,7 @@ impl CommonMoveText for CommonText<'_> {
             key,
             &[(
                 "STATE",
-                installed_content_localisation::localisation::Argument::Text(&name),
+                content_reader_localisation::localisation::Argument::Text(&name),
             )],
         )
     }
@@ -1055,7 +1055,7 @@ impl CommonMoveText for CommonText<'_> {
                 .map_err(|_| "selected warning owner has no CountryLinks row")?;
             rows[at].canonical_slot
         };
-        let name = installed_content_country_names::country_names::CountryNames::read_selected(
+        let name = content_reader_country_names::country_names::CountryNames::read_selected(
             self.frame,
             self.loc,
             [slot],
@@ -1066,14 +1066,14 @@ impl CommonMoveText for CommonText<'_> {
             key,
             &[(
                 "OWNER",
-                installed_content_localisation::localisation::Argument::Text(&name),
+                content_reader_localisation::localisation::Argument::Text(&name),
             )],
         )
     }
     fn rule(
         &self,
         key: &str,
-        rule: &installed_content_core::adjacency_rules::AdjacencyRule,
+        rule: &content_reader_core::adjacency_rules::AdjacencyRule,
     ) -> Fact<String> {
         let name = self.plain(&rule.name)?;
         localise(
@@ -1081,18 +1081,18 @@ impl CommonMoveText for CommonText<'_> {
             key,
             &[(
                 "RULE_NAME",
-                installed_content_localisation::localisation::Argument::Text(&name),
+                content_reader_localisation::localisation::Argument::Text(&name),
             )],
         )
     }
     fn warning(&self, key: &str, raw: i64) -> Fact<String> {
-        let value = installed_content_core::fixed5::fixed5_to_string(raw, 0);
+        let value = content_reader_core::fixed5::fixed5_to_string(raw, 0);
         localise(
             self.loc,
             key,
             &[(
                 "VAL",
-                installed_content_localisation::localisation::Argument::Text(&value),
+                content_reader_localisation::localisation::Argument::Text(&value),
             )],
         )
     }

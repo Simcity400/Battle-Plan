@@ -4,7 +4,7 @@ use crate::map::{
     native_gui::{self, Layout, Resources, SpriteInfo, SpriteKind, Texture},
     sprites::SpriteSheet,
 };
-use installed_content_core::gui::native;
+use content_reader_core::gui::native;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -16,7 +16,7 @@ pub struct Fixture {
     pub sheets: BTreeMap<Vec<u8>, SpriteSheet>,
     progress: BTreeMap<Vec<u8>, ([i32; 2], SpriteSheet)>,
     font: crate::map::native_text::Font,
-    localisation: installed_content_localisation::localisation::Localisation,
+    localisation: content_reader_localisation::localisation::Localisation,
     text_colors: native::fonts::TextColors,
     pub session_sprites: bool,
     pub animated: BTreeMap<Vec<u8>, f32>,
@@ -117,7 +117,7 @@ impl Resources for Fixture {
         Some(&self.font)
     }
 
-    fn localisation(&self) -> &installed_content_localisation::localisation::Localisation {
+    fn localisation(&self) -> &content_reader_localisation::localisation::Localisation {
         &self.localisation
     }
 
@@ -646,7 +646,7 @@ pub mod image;
 pub mod localisation;
 pub mod unit_types;
 
-pub fn equipment_from_documents(documents: &[&[u8]]) -> installed_content_core::equipment::Database {
+pub fn equipment_from_documents(documents: &[&[u8]]) -> content_reader_core::equipment::Database {
     let paths: Vec<String> = (0..documents.len())
         .map(|index| format!("common/units/equipment/{index:03}.txt"))
         .collect();
@@ -655,7 +655,7 @@ pub fn equipment_from_documents(documents: &[&[u8]]) -> installed_content_core::
         .zip(documents)
         .map(|(path, text)| (path.as_str(), std::str::from_utf8(text).unwrap()))
         .collect();
-    let (equipment, _) = installed_content_core::equipment::fixture::load(&files);
+    let (equipment, _) = content_reader_core::equipment::fixture::load(&files);
     assert!(equipment.lost.is_none(), "{:?}", equipment.lost);
     equipment
 }

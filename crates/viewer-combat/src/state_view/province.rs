@@ -1,8 +1,8 @@
 use super::{loc, paths_named, withhold_named};
 use crate::binding::{self, Bindings, Flags};
 use crate::content::Content;
-use installed_content_core::gui::native;
-use installed_content_localisation::localisation::Argument;
+use content_reader_core::gui::native;
+use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{ProvinceRow, Recorded, StateRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
@@ -109,7 +109,7 @@ fn dynamic_modifiers(content: &Content, frame: &DecodedFrame, root: &native::Ele
         mine.sort_by_key(|row| row.ordinal);
         let mut entries = Vec::new();
         for row in mine {
-            let token = String::from_utf8_lossy(installed_content_core::parser::c_string(&row.token)).into_owned();
+            let token = String::from_utf8_lossy(content_reader_core::parser::c_string(&row.token)).into_owned();
             let definition = database
                 .find(&token)?
                 .ok_or_else(|| format!("dynamic modifier {token} is not in the content"))?;

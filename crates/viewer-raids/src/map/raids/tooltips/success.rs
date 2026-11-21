@@ -2,7 +2,7 @@ use super::super::{RaidAssets, script::World, target_country, unit_inputs};
 use super::{chance, intel};
 use engine_executable::modifier_keys as keys;
 use engine_native::raid_tooltip_operands::*;
-use installed_content_raids::raids::tooltips::Modifier;
+use content_reader_raids::raids::tooltips::Modifier;
 use replay_data::{rows::RaidRow, rows::RaidScope, rows::RaidTooltipOperandRow, rows::tables};
 
 type Result<T> = std::result::Result<T, String>;

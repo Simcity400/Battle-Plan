@@ -44,7 +44,7 @@ fn saved(pool_type: &[u8], raid: Option<u64>) -> save::air::Wing {
 
 #[test]
 fn native_saved_raid_instance_reaches_full_reference_comparison() {
-    let doc = installed_content_core::parser::parse(
+    let doc = content_reader_core::parser::parse(
         b"strategic_air={MOD={air_wing_pool={definition=ModTransport \
           air_wings={id={id=4294967295 type=69} experience=0 \
           equipment={allow_zero_entries=no} \

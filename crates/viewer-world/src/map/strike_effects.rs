@@ -334,7 +334,7 @@ mod tests {
         entity_animation::{Clip, Node, Player, Rig},
         models::PaletteJoint,
     };
-    use installed_content_core::{mesh, mesh::EntityState, mesh::Transform};
+    use content_reader_core::{mesh, mesh::EntityState, mesh::Transform};
     use replay_data::{rows::NuclearStrikeRow, rows::TableId, rows::TableRows};
     use replay_frame::{frame::Metrics, frame::TableView};
 
@@ -527,14 +527,14 @@ mod tests {
     fn content_declares_the_effect_entities_and_a_missing_one_is_named() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let descriptors = installed_content_core::mesh::parse_descriptors(
+        let descriptors = content_reader_core::mesh::parse_descriptors(
             br#"entity={name=nuke_entity state={name=attack event={time=0.5 particle=mist keep_particle=yes sound={soundeffect=blast}}}}"#,
             "gfx/synthetic.asset",
         )
         .unwrap();
         let library = ModelLibrary::load(
-            &installed_content_core::ResolvedLayers::default(),
-            installed_content_image::native::Decode::default(),
+            &content_reader_core::ResolvedLayers::default(),
+            content_reader_image::native::Decode::default(),
             &descriptors,
             &[NUCLEAR_ENTITY.into()],
             &mut Vec::new(),

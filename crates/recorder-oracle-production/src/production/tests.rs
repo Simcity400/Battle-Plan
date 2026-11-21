@@ -1,7 +1,7 @@
 use super::super::lexical_tokens;
 use super::*;
-use installed_content_core::parser;
-use installed_content_save::Decimal;
+use content_reader_core::parser;
+use content_reader_save::Decimal;
 use replay_data::{
     rows::ArmyUpgradeDeliveryRow, rows::ArmyUpgradeGroupRow, rows::ArmyUpgradeProducedRow,
     rows::ArmyUpgradeRequestRow, rows::CountryRow, rows::IndustrialOrganisationHistoryRow,
@@ -388,7 +388,7 @@ fn organisations_compare_order_key_texts_owner_and_history_units() {
             variant,
             units,
             design_hour: Some(
-                installed_content_save::GameDate::parse(b"1936.1.1.12")
+                content_reader_save::GameDate::parse(b"1936.1.1.12")
                     .unwrap()
                     .engine_hour()
                     .unwrap(),
@@ -694,7 +694,7 @@ fn licences_and_the_deployment_queue_compare_exactly_against_a_real_save_shape()
         giver: 9,
         lended_cic: -1,
         required_cic: 3,
-        start_date: installed_content_save::GameDate {
+        start_date: content_reader_save::GameDate {
             year: 1936,
             month: 1,
             day: 1,
@@ -780,7 +780,7 @@ fn every_licence_record_field_can_differ_on_its_own() {
         giver: 9,
         lended_cic: -1,
         required_cic: 3,
-        start_date: installed_content_save::GameDate {
+        start_date: content_reader_save::GameDate {
             year: 1936,
             month: 1,
             day: 1,
@@ -1613,7 +1613,7 @@ fn lexical_writers_keep_exact_bytes_and_scope_unproved_nul_literals() {
 
 #[test]
 fn variant_archetypes_follow_the_content_equipment_types() {
-    let (equipment, _) = installed_content_core::equipment::fixture::load(&[(
+    let (equipment, _) = content_reader_core::equipment::fixture::load(&[(
         "common/units/equipment/planes.txt",
         "equipments = {
             airframe = { is_archetype = yes }
@@ -1673,7 +1673,7 @@ fn variant_archetypes_follow_the_content_equipment_types() {
 fn duplicated_archetype_variants_of_the_live_save_match_the_content() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (equipment, _) = installed_content_core::equipment::fixture::load(&[
+    let (equipment, _) = content_reader_core::equipment::fixture::load(&[
         (
             "common/units/equipment/plane_airframes.txt",
             "equipments = {
@@ -2385,7 +2385,7 @@ fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store
     } } }"#;
     let saved = production::parse(&parser::parse(source).unwrap().items).unwrap();
     let date = |s: &[u8]| {
-        installed_content_save::GameDate::parse(s)
+        content_reader_save::GameDate::parse(s)
             .unwrap()
             .engine_hour()
             .unwrap()

@@ -38,8 +38,8 @@ fn assets(name: &str) -> Arc<AircraftAssets> {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
-    let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let map = installed_content_core::map::MapData {
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let map = content_reader_core::map::MapData {
         width: 1,
         height: 1,
         province_ids: vec![0],
@@ -48,11 +48,11 @@ fn assets(name: &str) -> Arc<AircraftAssets> {
     };
     let assets = AircraftAssets::load(
         &layers,
-        installed_content_image::native::Decode::default(),
+        content_reader_image::native::Decode::default(),
         &map,
         (
-            &installed_content_core::defines::Defines::new().unwrap(),
-            &installed_content_core::defines::Defines::new().unwrap(),
+            &content_reader_core::defines::Defines::new().unwrap(),
+            &content_reader_core::defines::Defines::new().unwrap(),
         ),
         &BTreeMap::new(),
         &mut Vec::new(),

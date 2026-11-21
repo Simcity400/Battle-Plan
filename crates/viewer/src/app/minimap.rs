@@ -2,7 +2,7 @@
 use super::Viewer;
 use crate::document::Document;
 use eframe::egui;
-use installed_content_localisation::localisation::Localisation;
+use content_reader_localisation::localisation::Localisation;
 use std::collections::BTreeMap;
 use viewer_combat::{
     find_view,

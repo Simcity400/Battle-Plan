@@ -265,7 +265,7 @@ fn sortie_member_breakdown(
     trees: &super::naval_trees::Sources<'_>,
     content: &super::naval_air_groups::Content,
     icons: &dyn TextIcons,
-    loc: &installed_content_localisation::localisation::Localisation,
+    loc: &content_reader_localisation::localisation::Localisation,
 ) -> Result<String, String> {
     let mut text = String::new();
     if plane.carrier_member_present == 0 || sortie_efficiency == 100_000 {
