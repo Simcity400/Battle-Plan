@@ -369,6 +369,7 @@ fn journal_mode(args: &[String]) -> io::Result<()> {
     let mut out = io::BufWriter::new(io::stdout().lock());
     let mut whole = blake3::Hasher::new();
     let (mut lines, mut ordinal, mut hours) = (0_u64, 0_u32, 0_u64);
+    let mut run_seen = false;
     let started = std::time::Instant::now();
     let mut scratch = Vec::new();
     let mut emit = |store: &Store, digests: &mut [TableDigest], ordinal: u32, hours: u64, out: &mut io::BufWriter<_>| -> io::Result<()> {
@@ -397,6 +398,9 @@ fn journal_mode(args: &[String]) -> io::Result<()> {
         let Some(record) = source.record()? else { break };
         match record {
             Record::Run { first_hour, .. } => {
+                if std::mem::replace(&mut run_seen, true) {
+                    return Err(invalid("change-digest journal digests a journal of one run, and this one holds another"));
+                }
                 store.begin_run(first_hour);
                 ordinal = 0;
             }

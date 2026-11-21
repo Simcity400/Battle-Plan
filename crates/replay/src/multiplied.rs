@@ -581,7 +581,7 @@ pub fn preroll(directory: &Path, capture: u32, block: u32, out: &Path) -> io::Re
     let kinds = schema()?;
     let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
     let recorded = recorded_tables(&kinds)?;
-    let mut scan = scan_journal(directory, capture, &kinds, recorded, &REMOVED, true)?;
+    let mut scan = scan_journal(directory, capture, &kinds, recorded, &REMOVED, true, true)?;
     let at = start_segment(&scan.scanned, block)?;
     let appends: Vec<Vec<u8>> = scan.scanned[..at].iter_mut().flat_map(|held| std::mem::take(&mut held.appends)).collect();
     let (witness, manifest, tables) = restored(directory, capture, scan.segments[at].0, &kinds, &columns, &scan.journal, appends)?;
@@ -790,7 +790,7 @@ struct Scan {
     partial: Vec<bool>,
 }
 
-fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], recorded: usize, removed: &[Removed], appends: bool) -> io::Result<Scan> {
+fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], recorded: usize, removed: &[Removed], appends: bool, one_run: bool) -> io::Result<Scan> {
     let segments: Vec<(u32, PathBuf)> = crate::columnar_journal::segments(directory)?
         .into_iter()
         .filter(|(held, _, _)| *held == capture)
@@ -848,8 +848,8 @@ fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], recorded: u
         })?;
         scanned.push(held);
     }
-    if scanned.iter().filter(|held| held.run.is_some()).count() > 1 {
-        return Err(invalid("A multiplied journal holds one run"));
+    if one_run && scanned.iter().filter(|held| held.run.is_some()).count() > 1 {
+        return Err(invalid("A multiplied journal, or one given a start, holds one run"));
     }
     Ok(Scan { journal: written.first(candidates[0]), exact: exact.is_some(), scanned, segments, partial })
 }
@@ -971,6 +971,7 @@ pub struct Multiplied {
     built: Option<Built>,
     passing: Option<(Option<crate::columnar_journal::Witness>, Vec<u8>)>,
     runs: u32,
+    one_run: bool,
     segment_hours: Vec<(u32, u64)>,
     pub spent: std::time::Duration,
 }
@@ -999,7 +1000,8 @@ impl Multiplied {
         let kinds = schema()?;
         let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
         let recorded = recorded_tables(&kinds)?;
-        let Scan { journal, exact, mut scanned, segments, partial } = scan_journal(directory, capture, &kinds, recorded, removed, false)?;
+        let one_run = start.is_some() || factors.factor.iter().any(|&factor| factor > 1);
+        let Scan { journal, exact, mut scanned, segments, partial } = scan_journal(directory, capture, &kinds, recorded, removed, false, one_run)?;
         for (table, partial) in partial.into_iter().enumerate() {
             factors.in_phase[table] |= partial;
         }
@@ -1035,11 +1037,15 @@ impl Multiplied {
         let out_of_phase = (0..factors.factor.len()).filter(|&table| !factors.in_phase[table]).map(|table| factors.factor[table]).max().unwrap_or(1);
         let copies = (1..out_of_phase).map(|_| upstream(Vec::new())).collect::<io::Result<_>>()?;
         let live = factors.factor.iter().map(|&factor| if factor > 1 { vec![Bits::default(); factor as usize] } else { Vec::new() }).collect();
-        Ok(Self { kinds, columns, journal, begin: None, start: synthetic.clone(), exact_schema: exact, recorded, factors, first, copies, hours: 0, live, built: None, passing: None, runs: 0, segment_hours, spent: std::time::Duration::ZERO })
+        Ok(Self { kinds, columns, journal, begin: None, start: synthetic.clone(), exact_schema: exact, recorded, factors, first, copies, hours: 0, live, built: None, passing: None, runs: 0, one_run, segment_hours, spent: std::time::Duration::ZERO })
     }
 
     pub fn blocks_before(&self, segment: u32) -> u64 {
         self.segment_hours.iter().filter(|&&(held, hours)| held < segment && hours > 0).count() as u64
+    }
+
+    pub fn hours_before(&self, segment: u32) -> u64 {
+        self.segment_hours.iter().filter(|&&(held, _)| held < segment).map(|&(_, hours)| hours).sum()
     }
 
     pub fn in_phase(&self) -> Vec<String> {
@@ -1369,8 +1375,8 @@ impl Source for Multiplied {
                 None => return Ok(None),
                 Some(Item::Synthetic(_)) | Some(Item::Record(Record::Hour { .. })) => true,
                 Some(Item::Record(Record::Run { .. })) => {
-                    if self.runs > 0 {
-                        return Err(invalid("A multiplied journal holds one run"));
+                    if self.one_run && self.runs > 0 {
+                        return Err(invalid("A multiplied journal, or one given a start, holds one run"));
                     }
                     false
                 }
