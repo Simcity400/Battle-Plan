@@ -9,7 +9,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_smoke as rs
 
-FIVE = ["collector.dll", "dxcompiler.dll", "dxil.dll", "battle-plan-recorder.exe", "replay-desktop.exe"]
+FIVE = ["battle-plan-recorder.exe", "collector.dll", "dxcompiler.dll", "dxil.dll", "replay-desktop.exe"]
+NOTICES = ["LICENSE", "THIRD-PARTY-NOTICES.txt"]
 
 
 def png(path, width, height, pixel, filters=(0,)):
@@ -52,15 +53,23 @@ class ReleaseSmoke(unittest.TestCase):
 
     def test_the_shipped_binaries_are_the_app_the_recorder_the_collector_and_the_compiler(self):
         self.assertEqual(rs.shipped_binaries(), FIVE)
+        self.assertEqual(rs.shipped_notices(), NOTICES)
 
     def test_exactly_the_five_beside_each_other_pass_with_licences_and_installer_internals(self):
-        installed = self.tree(*FIVE, "LICENSE", "LICENSES/winit-LICENSE-APACHE.txt", "$PLUGINSDIR/nsis_tauri_utils.dll")
-        self.assertEqual(rs.layout_problems(installed, FIVE), [])
+        installed = self.tree(*FIVE, *NOTICES, "$PLUGINSDIR/nsis_tauri_utils.dll")
+        self.assertEqual(rs.layout_problems(installed, FIVE, NOTICES), [])
+
+    def test_the_old_licences_folder_or_a_missing_combined_notice_is_named(self):
+        installed = self.tree(*FIVE, "LICENSE", "LICENSES/SDL-LICENSE.txt")
+        self.assertEqual(rs.layout_problems(installed, FIVE, NOTICES), [
+            "THIRD-PARTY-NOTICES.txt is not in the install folder",
+            "LICENSES/SDL-LICENSE.txt is installed but not shipped",
+        ])
 
     def test_an_old_viewer_or_compiler_executable_or_a_missing_or_moved_dll_is_named(self):
         installed = self.tree("replay-desktop.exe", "battle-plan-recorder.exe", "collector.dll", "viewer.exe",
                               "shader-tools/dxc/dxc.exe", "shader-tools/dxc/dxcompiler.dll", "shader-tools/dxc/dxil.dll")
-        self.assertEqual(rs.layout_problems(installed, FIVE), [
+        self.assertEqual(rs.layout_problems(installed, FIVE, []), [
             "dxcompiler.dll is not in the install folder",
             "dxil.dll is not in the install folder",
             "shader-tools/dxc/dxc.exe is installed but not shipped",

@@ -190,6 +190,7 @@ FunctionEnd
 !macro NSIS_HOOK_POSTINSTALL
   Delete "$INSTDIR\viewer.exe"
   RMDir /r "$INSTDIR\shader-tools"
+  RMDir /r "$INSTDIR\LICENSES"
   ${If} $UpdateMode <> 1
   ${AndIf} $NoShortcutMode <> 1
     CreateShortcut "$SMPROGRAMS\${HOI_RECORDER}.lnk" "$INSTDIR\${HOI_RECORDER_EXE}"
@@ -232,6 +233,7 @@ FunctionEnd
   ${AndIf} $HoiStateFile != ""
     WriteINIStr "$HoiStateFile" "closed" "app" "1"
   ${EndIf}
+  RMDir /r "$INSTDIR\LICENSES"
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
