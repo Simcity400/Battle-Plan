@@ -178,7 +178,7 @@ test('a restarted or reopened pop-out is sent the hour and playback chosen meanw
     };
     let state = nextPopoutState(CLOSED, { generation: 1, sequence: 1, viewer: 1, open: true, status: status() });
     render(state); await tick();
-    assert.deepEqual(shown.at(-1), { generation: 1, hour: 10, playing: true, seekSequence: 0, fraction: 0.25, hoursPerSecond: 1440 });
+    assert.deepEqual(shown.at(-1), { generation: 1, hour: 10, playing: true, seekSequence: 0, fraction: 0.25, hoursPerSecond: 1440, composedAt: 0 });
     running = null;
     state = nextPopoutState(state, { generation: 1, sequence: 2, viewer: 1, status: status({ running: false, ready: false, error: 'Native viewer exited (1)' }) });
     render(state);
@@ -186,11 +186,11 @@ test('a restarted or reopened pop-out is sent the hour and playback chosen meanw
     running = 1;
     state = nextPopoutState(state, { generation: 1, sequence: 3, viewer: 2, open: true, status: status({ ready: false }) });
     render(state); await tick();
-    assert.deepEqual(shown.at(-1), { generation: 1, hour: 40, playing: false, seekSequence: 1, fraction: 0.25, hoursPerSecond: 1440 });
+    assert.deepEqual(shown.at(-1), { generation: 1, hour: 40, playing: false, seekSequence: 1, fraction: 0.25, hoursPerSecond: 1440, composedAt: 0 });
     running = 2;
     state = nextPopoutState(nextPopoutState(state, { generation: 1, sequence: 4, viewer: 1, open: false, status: null }), { generation: 2, sequence: 5, viewer: 2, open: true, status: status() });
     render(state); await tick();
-    assert.deepEqual(shown.at(-1), { generation: 2, hour: 40, playing: false, seekSequence: 1, fraction: 0.25, hoursPerSecond: 1440 });
+    assert.deepEqual(shown.at(-1), { generation: 2, hour: 40, playing: false, seekSequence: 1, fraction: 0.25, hoursPerSecond: 1440, composedAt: 0 });
     stop?.();
   } finally { await vite.close(); }
 });

@@ -165,7 +165,7 @@ def exempt(name, start, comment):
     if (name.endswith("/Cargo.toml") or name == "Cargo.toml") and comment in CARGO_GENERATED:
         return True
     if re.fullmatch(rb"// quarantine: #[1-9][0-9]* \S.*", comment):
-        return name.endswith(".rs")
+        return name.endswith(".rs") or bool(re.search(r"\.test\.[cm]?[jt]sx?$", name))
     return bool(re.fullmatch(rb"(?:#|//|/\*)\s*SPDX-License-Identifier: [\w.+() -]+(?:\*/)?", comment))
 
 

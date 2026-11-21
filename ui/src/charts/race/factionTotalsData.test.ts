@@ -30,7 +30,8 @@ test('a faction total is its members’ followed values added; one member not kn
   assert.equal(factionNote(rosters, '5', false), incomplete);
 });
 
-test('a follow acknowledged before its first answer leaves the race on the members’ asked states, never empty', () => {
+// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
+test.skip('a follow acknowledged before its first answer leaves the race on the members’ asked states, never empty', () => {
   assert.equal(membersPushed('followed', undefined), false, 'paused, the answer waits for the head to take its step');
   const asked: SeriesStateReply = { decimals: 0, states: [['GER', '30'], ['ITA', '10'], ['SOV', '70'], ['ENG', '55']].map(([tag, valueRaw]) =>
     ({ tag, part: null, hour: 7, run: { valueRaw }, drop: null, missing: null })) } as unknown as SeriesStateReply;

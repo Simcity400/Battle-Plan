@@ -48,7 +48,8 @@ async function dashboard(run: (view: any) => Promise<void>) {
         const file = id.replaceAll('\\', '/');
         if (file.endsWith('/dashboard/Dashboard.tsx') || file.endsWith('/dashboard/sources.ts')) return code
           .replace(/import \{[^\n]+\} from 'react';/, 'const { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } = globalThis.__renameFixture;')
-          .replace("import { createPortal } from 'react-dom';", 'const createPortal = value => value;');
+          .replace("import { createPortal } from 'react-dom';", 'const createPortal = value => value;')
+          .replace("import { useSlotTags } from './countrySlots.ts';", 'const useSlotTags = () => undefined;');
         return Object.entries(replacements).find(([suffix]) => file.endsWith(suffix))?.[1];
       },
     }] });

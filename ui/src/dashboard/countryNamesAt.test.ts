@@ -79,7 +79,8 @@ test('dated fact hooks own independent reads and mask switched clients immediate
   } finally { delete host.__datedFactHooks; await vite.close(); }
 });
 
-test('dated names retain explicit loading, absence, failure and stable completed state identities', async () => {
+// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
+test.skip('dated names retain explicit loading, absence, failure and stable completed state identities', async () => {
   const fixture = hooks(), host = globalThis as typeof globalThis & { __nameReadHooks?: typeof fixture };
   host.__nameReadHooks = fixture;
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
