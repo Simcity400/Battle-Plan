@@ -28,6 +28,7 @@ installed-content-scripted-localisation = { workspace = true, features = ["test-
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }
+unify-bytemuck = { workspace = true }
 unify-either = { workspace = true }
 unify-num-traits = { workspace = true }
 unify-smallvec = { workspace = true }

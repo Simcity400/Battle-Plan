@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-license.workspace = true
+license = "MIT AND IJG"
 
 [lib]
 doctest = false
@@ -12,7 +12,7 @@ doctest = false
 [dependencies]
 sha2.workspace = true
 png.workspace = true
-miniz_oxide = "0.8"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "ico", "png", "tga"] }
 
 [features]
 test-support = []
@@ -24,3 +24,5 @@ test-support = []
 installed-content-image = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-bitflags-2 = { workspace = true }
+unify-bytemuck = { workspace = true }
+unify-num-traits = { workspace = true }
