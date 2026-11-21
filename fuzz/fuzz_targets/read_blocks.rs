@@ -1,20 +1,14 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::TableId;
-use replay_frame::frame::FrameDecoder;
 
 fn read(replay: &Replay) {
     for block in &replay.index {
-        let mut decoder = FrameDecoder::new();
-        if let Ok(frames) = replay.read_block(block) {
-            for frame in frames {
-                let _ = decoder.advance(&frame);
-            }
-        }
+        let _ = replay.read_block_alone(block, &TableId::ALL, |_, _| Ok(()), || Ok(()));
         let tables = [TableId::Campaign, TableId::Countries, TableId::CountryLinks];
-        let _ = replay.read_block_selected(block, &tables);
+        let _ = replay.read_block_alone(block, &tables, |_, _| Ok(()), || Ok(()));
         let _ = replay.seek_selected(block.branch, block.first_hour, Some(&tables));
         let _ = replay.seek_selected(block.branch, block.last_hour, Some(&tables));
     }

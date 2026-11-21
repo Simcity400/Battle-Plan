@@ -1,8 +1,12 @@
 #![no_main]
 
+use std::io::Write;
+
 use libfuzzer_sys::fuzz_target;
-use replay::container::Replay;
+use replay::campaign::Summary;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = Replay::read_partial_from(&mut std::io::Cursor::new(data), data.len() as u64);
+    let mut file = tempfile::tempfile().expect("create a temporary recording");
+    file.write_all(data).expect("write the temporary recording");
+    let _ = Summary::read_from(file);
 });

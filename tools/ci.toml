@@ -209,6 +209,16 @@ command = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "{p
 hosted = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "cargo", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
 
 [[job]]
+name = "fuzz-build"
+group = "rust"
+tier = "check"
+toolchain = "rust"
+inputs = ["fuzz/**", "crates/replay/**", "crates/replay-columnar/**", "crates/replay-data/**", "crates/replay-frame/**", "crates/dashboard-base/**"]
+shared = ["tools/boat.py", "tools/boat_remote.py"]
+command = ["{python}", "tools/boat.py", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
+hosted = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
+
+[[job]]
 name = "rust-test"
 group = "rust"
 tier = "check"

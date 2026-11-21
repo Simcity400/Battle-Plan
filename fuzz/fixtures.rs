@@ -1,6 +1,6 @@
 use std::io;
 
-use replay::{container::Replay, spool::ControlRecord, spool::Record};
+use replay::{campaign::Replay, spool::ControlRecord, spool::Record};
 use replay_data::{
     identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
     identity::SessionStart, identity::Verification, rows::CampaignRow, rows::CountryLinkRow,
