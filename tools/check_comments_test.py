@@ -281,6 +281,15 @@ macro_rules! fetch {
         let x: Result<u8, E> = unsafe { read($p) };
     }};
 }
+macro_rules! row {
+    ($row:expr, $limit:expr, $p:expr) => {
+        Row {
+            // SAFETY: refused, a comparison is safe; the unsafe read is the next field.
+            in_range: $row < $limit,
+            value: unsafe { *$p },
+        }
+    };
+}
 macro_rules! pop {
     ($head:expr) => {{
         // SAFETY: kept, every linked base holds a header that push wrote.
@@ -300,6 +309,7 @@ fn total(cells: &[*const u32]) -> std::io::Result<u32> {
             b"// SAFETY: refused, a visibility parameter before a safe function.",
             b"// SAFETY: refused, a safe function's body is not this comment's code.",
             b"// SAFETY: refused, the empty vector is safe; the unsafe call is the next argument.",
+            b"// SAFETY: refused, a comparison is safe; the unsafe read is the next field.",
         ])
 
     def test_git_status_keeps_rename_baselines_without_granting_them_to_copies(self):

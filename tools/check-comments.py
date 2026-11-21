@@ -294,7 +294,7 @@ def unsafe_site(node):
     while unit is not None and unit.type != ";" and (unit.type != "," or generics):
         if has_unsafe(unit):
             return True
-        if unit.text in (b":", b"->"):
+        if unit.text == b"->" or unit.text == b":" and node.text == b"let":
             in_type = True
         elif unit.text == b"=" and not generics:
             in_type = False

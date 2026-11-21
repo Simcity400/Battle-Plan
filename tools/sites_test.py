@@ -172,9 +172,12 @@ const AFTER: Rva = Rva(0x54);
                               '    Key { rva: 0x10, name: "sites::Append", kind: Kind::Code(0) },\n'
                               '    Key { rva: 0x20, name: "sites::Destroy", kind: Kind::Code(1) },\n'
                               '    Key { rva: 0x30, name: "sites::Lost", kind: Kind::Code(2) },\n];\n', encoding="utf-8")
-            with (patch.object(sites, "OUTPUT", str(output)), patch.object(sites, "BUILDS", {"new": "2.0", "old": "1.0"}),
-                  patch.object(sites, "addresses", return_value={0x10: 0x20, 0x20: 0x28})):
-                self.assertEqual(sites.published_names(), {0x20: "sites::Append", 0x28: "sites::Destroy"})
+            with patch.object(sites, "OUTPUT", str(output)), patch.object(sites, "BUILDS", {"new": "2.0", "old": "1.0"}):
+                with patch.object(sites, "addresses", return_value={0x10: 0x20, 0x20: 0x28}), self.assertRaises(SystemExit):
+                    sites.published_names()
+                with patch.object(sites, "addresses", return_value={0x10: 0x20, 0x20: 0x28, 0x30: 0x38}):
+                    self.assertEqual(sites.published_names(),
+                                     {0x20: "sites::Append", 0x28: "sites::Destroy", 0x38: "sites::Lost"})
 
     def test_a_failed_publication_restores_the_outputs_already_replaced(self):
         with tempfile.TemporaryDirectory() as root:

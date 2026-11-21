@@ -757,7 +757,12 @@ def published_names():
     if version[1] == BUILDS[reference]:
         return names
     moved = addresses(reference)
-    return {moved[rva]: name for rva, name in names.items() if isinstance(moved.get(rva), int)}
+    unmapped = sorted(name for rva, name in names.items() if not isinstance(moved.get(rva), int))
+    if unmapped:
+        raise SystemExit("%d published sites have no position recorded for the new reference %s (%s); "
+                         "relocate it with its layouts checked, or map them, so no site loses its name"
+                         % (len(unmapped), BUILDS[reference], ", ".join(unmapped[:5])))
+    return {moved[rva]: name for rva, name in names.items()}
 
 
 def replace_files(outputs):
@@ -1185,6 +1190,12 @@ def report(image, spec, recorded, layout_checked):
     return reasons, wrong, withheld
 
 
+def digest(path):
+    """The SHA-256 of the executable at `path`, as engine_sites::LAYOUT_CHECKED records it."""
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).digest()
+
+
 def verify(spec, images, reference, written, promoted_from=None):
     """Whether `spec` fails against the source keys and every known build, printing each failure;
     with `written`, also whether the committed generated.rs differs from it. With `promoted_from`,
@@ -1207,7 +1218,7 @@ def verify(spec, images, reference, written, promoted_from=None):
     for rva in sorted(source - spec_keys):
         print("FAIL key %#x is not generated; run tools/sites.py generate" % rva)
         failed = True
-    checked_builds = {b for b in BUILDS if hashlib.sha256(open(exe(b), "rb").read()).digest() in layout_checked()}
+    checked_builds = {b for b in BUILDS if digest(exe(b)) in layout_checked()}
     if reference not in checked_builds:
         print("FAIL the reference build %s is not in engine_sites::LAYOUT_CHECKED" % BUILDS[reference])
         failed = True
@@ -1274,7 +1285,7 @@ def main(argv):
     if a.cmd == "check":
         raise SystemExit(1 if verify(spec, images, reference, written=True) else 0)
     image = Image(a.exe)
-    got = resolve_keys(image, spec, layout_checked=False)
+    got = resolve_keys(image, spec, layout_checked=digest(a.exe) in layout_checked())
     os.makedirs(os.path.join(DATA, "sites"), exist_ok=True)
     with open(os.path.join(DATA, "sites", a.build + ".json"), "w") as f:
         json.dump({"%#x" % k: v for k, v in got.items() if isinstance(v, int)}, f, indent=0)
