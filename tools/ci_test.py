@@ -365,7 +365,8 @@ class Sharding(unittest.TestCase):
         ctx, decisions, sizes = self.sharded(["crates/hub/src/lib.rs"])
         legs = ci.matrix_legs(ctx.pipeline, decisions, ctx.crates, sizes)
         tests = [leg for leg in legs if leg["jobs"] == "test"]
-        self.assertEqual([leg["shard"] for leg in tests], ["1/2", "2/2"])
+        self.assertEqual([leg["shard"].rsplit("/", 1)[0] for leg in tests], ["1/2", "2/2"])
+        self.assertEqual([leg["name"] for leg in tests], ["test 1/2", "test 2/2"])
         self.assertTrue(all(leg["needs_python"] for leg in legs))
         self.assertIn("clippy", next(leg for leg in legs if leg["shard"] == "")["jobs"].split())
         taken = []
@@ -378,9 +379,14 @@ class Sharding(unittest.TestCase):
     def test_a_runner_that_would_split_otherwise_fails_its_leg(self):
         ctx, decisions, sizes = self.sharded(["crates/hub/src/lib.rs"])
         mine = [d for d in decisions if d.job.name == "test"]
-        for shard in ("3/3", "1/1", "x"):
+        legs = [leg for leg in ci.matrix_legs(ctx.pipeline, decisions, ctx.crates, sizes) if leg["jobs"] == "test"]
+        digest = legs[0]["shard"].rsplit("/", 1)[1]
+        for shard in (f"3/3/{digest}", f"1/1/{digest}", "1/2/000000000000", "1/2", "x"):
             _, refused = ci.take_shard(mine, shard, ctx.crates, sizes)
             self.assertEqual([o.state for o in refused], ["fail"], shard)
+        moved = dict(sizes, **{"crates/tool/src/lib.rs": 500})
+        _, refused = ci.take_shard(mine, legs[0]["shard"], ctx.crates, moved)
+        self.assertEqual([o.state for o in refused], ["fail"])
 
     def test_main_tests_the_workspace_and_names_what_lies_beyond_a_pull_requests_scope(self):
         _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"], tier="main")
@@ -391,7 +397,10 @@ class Sharding(unittest.TestCase):
         _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"])
         self.assertEqual(next(d for d in decisions if d.job.name == "test").arguments, ["-p", "leaf", "-p", "other"])
         _, decisions, _ = self.sharded(["docs/x.md"], tier="main")
-        self.assertEqual(next(d for d in decisions if d.job.name == "test").state, "skipped")
+        decision = next(d for d in decisions if d.job.name == "test")
+        self.assertEqual((decision.state, decision.arguments), ("run", ["--workspace"]))
+        self.assertEqual(len(decision.beyond), len(self.WORKSPACE))
+        self.assertEqual(next(d for d in decisions if d.job.name == "scan").state, "run")
 
     def test_a_failure_beyond_a_pull_requests_scope_says_so(self):
         lines = ci.failure_report((3, [("app t::one", "boom"), ("leaf::bin/x t::two", "bang")], {}), {"app"})
@@ -407,9 +416,55 @@ class Sharding(unittest.TestCase):
 
 
 class RestoredTarget(unittest.TestCase):
+    TRACKED = ["crates/a/src/lib.rs", "crates/a/src/x.rs", "crates/b/src/lib.rs", "Cargo.lock"]
+
     def test_a_changed_path_and_every_folder_above_it_are_newer(self):
-        self.assertEqual(ci.newer_paths(["crates/a/src/gone.rs", "Cargo.lock"]),
-                         {"crates", "crates/a", "crates/a/src", "crates/a/src/gone.rs", "Cargo.lock"})
+        self.assertEqual(ci.newer_paths([("M", "crates/a/src/x.rs"), ("M", "Cargo.lock")], self.TRACKED),
+                         {"crates", "crates/a", "crates/a/src", "crates/a/src/x.rs", "Cargo.lock"})
+
+    def test_a_file_added_or_removed_makes_its_whole_crate_newer(self):
+        for status in ("A", "D"):
+            newer = ci.newer_paths([(status, "crates/a/src/native.rs")], self.TRACKED)
+            self.assertLessEqual({"crates/a/src/lib.rs", "crates/a/src/x.rs", "crates/a/src/native.rs"}, newer, status)
+            self.assertNotIn("crates/b/src/lib.rs", newer, status)
+
+    def test_pruning_keeps_the_units_the_build_used_and_no_executables(self):
+        import tempfile
+        used, unused = "0123456789abcdef", "fedcba9876543210"
+        messages = "\n".join([
+            ci.json.dumps({"reason": "compiler-artifact", "filenames": [f"D:\\t\\debug\\deps\\liba-{used}.rlib"]}),
+            ci.json.dumps({"reason": "build-script-executed", "out_dir": "D:\\t\\debug\\build\\a-1111222233334444\\out"}),
+            "not json"])
+        live = ci.live_units(messages)
+        self.assertEqual(live, {used, "1111222233334444"})
+        with tempfile.TemporaryDirectory() as folder:
+            profile = Path(folder)
+            for path in (f"deps/liba-{used}.rlib", f"deps/liba-{unused}.rlib", f"deps/a-{used}.exe", f".fingerprint/a-{unused}/lib-a",
+                         f".fingerprint/a-{used}/lib-a", "build/a-1111222233334444/out/x", "a.exe", "deps/kept.txt"):
+                Path(profile, path).parent.mkdir(parents=True, exist_ok=True)
+                Path(profile, path).write_text("x", encoding="utf-8")
+            ci.prune(profile, live)
+            left = sorted(path.relative_to(profile).as_posix() for path in profile.rglob("*") if path.is_file())
+        self.assertEqual(left, sorted(["build/a-1111222233334444/out/x", f".fingerprint/a-{used}/lib-a", "deps/kept.txt", f"deps/liba-{used}.rlib"]))
+
+    def test_only_a_build_that_succeeded_names_the_commit(self):
+        import tempfile
+        original = ci.PIPELINE
+        with tempfile.TemporaryDirectory() as folder:
+            def run(code):
+                pipeline = Path(folder, "ci.toml")
+                pipeline.write_text(PIPELINE.replace('command = ["boat", "test", "{packages}"]\n',
+                                                     'command = ["boat", "test", "{packages}"]\nshards = 2\nwarm = '
+                                                     + ci.json.dumps([sys.executable, "-c", f"import sys; sys.exit({code})"]) + "\n"), encoding="utf-8")
+                ci.PIPELINE = pipeline
+                ci.warm("test", Path(folder, "target"))
+                return Path(folder, "target", ci.BUILT_FROM)
+            try:
+                Path(folder, "target", "debug").mkdir(parents=True)
+                self.assertFalse(run(1).exists())
+                self.assertEqual(run(0).read_text(encoding="utf-8").strip(), ci.git("rev-parse", "HEAD").strip())
+            finally:
+                ci.PIPELINE = original
 
 
 
@@ -432,6 +487,19 @@ class Pipeline(unittest.TestCase):
         scripts = sorted(path.name for path in (ROOT / "tools").glob("check-*.py"))
         self.assertTrue(scripts)
         self.assertEqual([script for script in scripts if f"tools/{script}" not in commands], [])
+
+    def test_the_cache_workflow_warms_every_sharded_job_and_restores_what_ci_restores(self):
+        import yaml
+        pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
+        cache = yaml.safe_load((ROOT / ".github" / "workflows" / "rust-cache.yml").read_text(encoding="utf-8"))
+        ci_workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+        warm = cache["jobs"]["warm"]
+        self.assertEqual(sorted(warm["strategy"]["matrix"]["job"]), sorted(job.name for job in pipeline.jobs if job.warm))
+        self.assertEqual(sorted(job.name for job in pipeline.jobs if job.warm), sorted(job.name for job in pipeline.jobs if job.shards))
+        paths = [step["with"]["path"] for step in warm["steps"] if str(step.get("uses", "")).startswith("actions/cache/")]
+        paths += [step["with"]["path"] for step in ci_workflow["jobs"]["run"]["steps"] if str(step.get("uses", "")).startswith("actions/cache/")]
+        self.assertEqual(len(paths), 3)
+        self.assertEqual(len(set(paths)), 1)
 
     def test_an_unknown_tier_is_refused(self):
         with self.assertRaises(SystemExit):

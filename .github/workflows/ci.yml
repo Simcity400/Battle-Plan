@@ -26,7 +26,6 @@ jobs:
       base: ${{ steps.plan.outputs.base }}
       tier: ${{ steps.tier.outputs.tier }}
       exact: ${{ steps.tier.outputs.exact }}
-      warm: ${{ steps.plan.outputs.warm }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -99,10 +98,6 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             .cargo-target
-            !.cargo-target/debug/*.exe
-            !.cargo-target/debug/*.pdb
-            !.cargo-target/debug/deps/*.exe
-            !.cargo-target/debug/deps/*.pdb
           key: rust-${{ matrix.jobs }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: |
             rust-${{ matrix.jobs }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
@@ -128,59 +123,6 @@ jobs:
           name: junit-${{ strategy.job-index }}
           path: target/nextest/hosted/junit.xml
           if-no-files-found: ignore
-
-  rust-cache:
-    needs: changes
-    if: github.event_name == 'push' && needs.changes.outputs.warm != '[]'
-    name: cache ${{ matrix.job }}
-    runs-on: windows-latest
-    timeout-minutes: 300
-    concurrency:
-      group: rust-cache-${{ matrix.job }}
-      cancel-in-progress: false
-    strategy:
-      fail-fast: false
-      matrix:
-        job: ${{ fromJSON(needs.changes.outputs.warm) }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-      - run: rustup toolchain install
-      - uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            .cargo-target
-            !.cargo-target/debug/*.exe
-            !.cargo-target/debug/*.pdb
-            !.cargo-target/debug/deps/*.exe
-            !.cargo-target/debug/deps/*.pdb
-          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
-          restore-keys: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
-      - run: python tools/ci.py times --target .cargo-target
-      - shell: bash
-        env:
-          JOB: ${{ matrix.job }}
-        run: python tools/ci.py warm --job "$JOB" --target .cargo-target
-      - uses: actions/cache/save@v6
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            .cargo-target
-            !.cargo-target/debug/*.exe
-            !.cargo-target/debug/*.pdb
-            !.cargo-target/debug/deps/*.exe
-            !.cargo-target/debug/deps/*.pdb
-          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
 
   check:
     needs: [changes, run]

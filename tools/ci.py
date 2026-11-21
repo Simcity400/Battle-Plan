@@ -16,6 +16,7 @@ Boat. Exit 0 on success, 1 on a failure, 2 when a job that should have run could
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -261,7 +262,8 @@ class Context:
     """What a plan decides from: the files as they are, the paths changed since the base, the
     workspace crates (None when the manifests could not be read), the pipeline, each job's
     definition at the base (None when the base has no readable pipeline, so every job runs), and
-    whether the tier runs every crate whenever any crate changed (a push to main)."""
+    whether the tier runs every job across everything it covers, whatever changed (a push to
+    main)."""
     tree: set
     changed: set
     crates: dict | None
@@ -304,7 +306,7 @@ def decide_inputs(job, ctx):
     if job.kind == "crates":
         return decide_crates(job, ctx)
     inputs = matcher(job.inputs)
-    wide = widened(ctx, job)
+    wide = ctx.everything or widened(ctx, job)
     if job.kind == "files":
         pool = ctx.tree if wide else ctx.changed & ctx.tree
         candidates = sorted(path for path in pool if inputs(path))
@@ -318,17 +320,16 @@ def decide_inputs(job, ctx):
 
 def decide_crates(job, ctx):
     """The changed crates and their direct dependents; the workspace when the change is wide, or
-    on a tier that runs everything once any crate changed, naming the crates that lie beyond a
-    pull request's scope."""
+    on a tier that runs everything, naming the crates that lie beyond a pull request's scope."""
     wide = widened(ctx, job)
     if ctx.crates is None:
-        rust = wide or any(path.startswith("crates/") for path in ctx.changed)
+        rust = wide or ctx.everything or any(path.startswith("crates/") for path in ctx.changed)
         return Decision(job, "not run", "the Cargo manifests could not be read") if rust else Decision(job, "skipped", "no crate changed since the base")
     crates = ctx.crates
     owner = crate_owner(crates)
     changed = {owner(path) for path in ctx.changed} - {None}
     selected = set(crates) if wide else changed | {crate.name for crate in crates.values() if crate.deps & changed}
-    if not selected:
+    if not selected and not ctx.everything:
         return Decision(job, "skipped", "no crate changed since the base")
     beyond = [] if wide or not ctx.everything else sorted(set(crates) - selected)
     if ctx.everything:
@@ -652,6 +653,10 @@ def committed_sizes():
     return sizes
 
 
+def split_digest(split):
+    return hashlib.sha256(json.dumps(split).encode()).hexdigest()[:12]
+
+
 def shards(decision, crates, sizes):
     """The crate lists a sharded job's runners take, None for an empty one, or [None] for a job
     that is not sharded."""
@@ -677,7 +682,7 @@ def matrix_legs(pipeline, decisions, crates, sizes):
         for at, shard in enumerate(split, 1):
             if shard:
                 legs.append(dict(group=decision.job.group, name=f"{decision.job.name} {at}/{len(split)}", jobs=decision.job.name,
-                                 shard=f"{at}/{len(split)}", **needs(decision.job.group)))
+                                 shard=f"{at}/{len(split)}/{split_digest(split)}", **needs(decision.job.group)))
     return [dict(group=group, name=group, jobs=" ".join(names), shard="", **needs(group))
             for group, names in groups.items()] + legs
 
@@ -697,29 +702,30 @@ def changes(args):
         print(f"could not plan: {', '.join(unplanned)}")
         return EXIT["error"]
     if args.github_output:
-        warmed = [d.job.name for d in decisions if d.state == "run" and d.job.warm]
         with open(args.github_output, "a", encoding="utf-8") as out:
             out.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")
             out.write(f"any={'true' if matrix else 'false'}\n")
             out.write(f"base={base}\n")
-            out.write(f"warm={json.dumps(warmed, separators=(',', ':'))}\n")
     return 0
 
 
 def take_shard(decisions, shard, crates, sizes):
     """The decisions with the one planned sharded job cut to runner `at` of `count`'s crates, and
-    the outcomes failing the leg when this runner would split the job otherwise than `changes`."""
+    the outcomes failing the leg when this runner would split the job otherwise than `changes`,
+    whose split the shard names by digest."""
     try:
-        at, count = (int(part) for part in shard.split("/"))
+        at, count, planned = shard.split("/")
+        at, count = int(at), int(count)
     except ValueError:
-        return decisions, [Outcome(shard, "fail", "a shard is AT/COUNT")]
+        return decisions, [Outcome(shard, "fail", "a shard is AT/COUNT/DIGEST")]
     sharded = [d for d in decisions if d.state == "run" and d.job.shards]
     if len(sharded) != 1:
         return decisions, [Outcome(shard, "fail", f"shard {shard} names {len(sharded)} sharded jobs to run, not one")]
     decision = sharded[0]
     split = shards(decision, crates, sizes)
-    if len(split) != count or not 1 <= at <= count or not split[at - 1]:
-        return decisions, [Outcome(decision.job.name, "fail", f"planned as shard {shard}, but this runner splits the job into {len(split)}")]
+    if len(split) != count or not 1 <= at <= count or not split[at - 1] or split_digest(split) != planned:
+        return decisions, [Outcome(decision.job.name, "fail", f"planned as shard {shard}, but this runner splits the job "
+                                   f"otherwise ({len(split)}/{split_digest(split)})")]
     mine = split[at - 1]
     cut = Decision(decision.job, "run", f"shard {shard}: {len(mine)} of {decision.detail}",
                    [arg for name in mine for arg in ("-p", name)], crates=mine, beyond=decision.beyond)
@@ -766,32 +772,44 @@ def check(args):
     return report(outcomes, "ci check (GitHub CI is the gate)")
 
 
-def newer_paths(changed):
-    """The paths a restored target folder must see as newer than itself: each changed path, added,
-    modified or deleted, and every folder above one, so a build script watching a folder notices
-    a file added to or removed from it."""
-    newer = set()
-    for path in changed:
+def newer_paths(changes, tracked):
+    """The paths a restored target folder must see as newer than itself, from `changes` (status,
+    path) since the commit it was built from: each changed path and every folder above it, so a
+    build script watching a folder sees a file added to or removed from it; and, for a file added
+    or removed, every file in its top two folders (its crate's), since a new file can change how
+    the crate compiles (a second candidate for a module) without being in any unit's dep-info."""
+    newer, structural = set(), set()
+    for status, path in changes:
         parts = path.split("/")
         newer.update("/".join(parts[:end]) for end in range(1, len(parts) + 1))
+        if status in ("A", "D") and len(parts) > 2:
+            structural.add("/".join(parts[:2]) + "/")
+    newer.update(path for path in tracked if path.startswith(tuple(structural)))
     return newer
+
+
+def built_from(target):
+    """The commit a target folder names as the one it was built from, when this clone has it."""
+    try:
+        named = (Path(target) / BUILT_FROM).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return named if named and git("cat-file", "-t", named, check=False).strip() == "commit" else None
 
 
 def set_times(target):
     """Sets every tracked file's and folder's time so Cargo's freshness check, which compares
     times, sees in a target folder restored from a cache exactly the files that differ from the
-    commit it was built from (named in the folder's BUILT_FROM file): those are now, the rest a
-    fixed old time older than any build. Without that commit every file is now, so every
-    workspace crate rebuilds; third-party crates are keyed by version, not time, and stay."""
+    commit it was built from: those are now, the rest a fixed old time older than any build.
+    Without that commit every file is now, so every workspace crate rebuilds; third-party crates
+    are keyed by version, not time, and stay."""
     now = time.time()
-    built_from = None
-    try:
-        built_from = (Path(target) / BUILT_FROM).read_text(encoding="utf-8").strip()
-    except OSError:
-        pass
-    known = bool(built_from) and git("cat-file", "-t", built_from, check=False).strip() == "commit"
+    source = built_from(target)
     tracked = z(git("ls-files", "-z"))
-    newer = newer_paths(z(git("diff", "--name-only", "--no-renames", "-z", built_from, "HEAD"))) if known else None
+    newer = None
+    if source:
+        fields = z(git("diff", "--name-status", "--no-renames", "-z", source, "HEAD"))
+        newer = newer_paths(zip(fields[0::2], fields[1::2]), tracked)
     folders = {"/".join(path.split("/")[:end]) for path in tracked for end in range(1, path.count("/") + 1)}
     for path in [*tracked, *sorted(folders, key=lambda folder: -folder.count("/"))]:
         stamp = now if newer is None or path in newer else SETTLED
@@ -799,23 +817,85 @@ def set_times(target):
             os.utime(ROOT / path, (stamp, stamp))
         except OSError:
             pass
-    print(f"file times: {len(newer) if known else 'every'} paths newer than the target folder"
-          + (f" (built from {built_from[:10]})" if known else " (it names no commit this clone has)"), flush=True)
+    print(f"file times: {len(newer) if source else 'every'} paths newer than the target folder"
+          + (f" (built from {source[:10]})" if source else " (it names no commit this clone has)"), flush=True)
     return 0
 
 
-def warm(name, target):
-    """Runs a job's `warm` command, which builds every unit its runners may reuse, then names HEAD
-    in the target folder as the commit it was built from. A unit that fails to build is simply
-    absent, so the folder is named whatever the command's exit code."""
-    job = next((job for job in load_pipeline(PIPELINE.read_text(encoding="utf-8")).jobs if job.name == name), None)
+UNIT = re.compile(r"-([0-9a-f]{16})(?=[./\\]|$)")
+
+
+def live_units(messages):
+    """The unit hashes a Cargo build used, built or fresh, from its JSON messages: every artifact's
+    file names and every build script's output folder."""
+    live = set()
+    for line in messages.splitlines():
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        paths = message.get("filenames") or []
+        paths += [message["out_dir"]] if message.get("reason") == "build-script-executed" else []
+        for path in paths:
+            live.update(UNIT.findall(path.replace("\\", "/")))
+    return live
+
+
+def prune(profile, live):
+    """Removes from a profile folder (`.cargo-target/debug`) every unit the last build did not
+    use, so a unit that comes back later (a feature or profile setting changed and changed back)
+    is built again rather than found fresh against files it never saw; then the executables,
+    which no runner reuses and which would fill the cache."""
+    removed = 0
+    for folder in (".fingerprint", "build", "deps"):
+        for entry in (Path(profile) / folder).glob("*"):
+            found = UNIT.search(entry.name)
+            if found and found.group(1) not in live:
+                shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+                removed += 1
+    for pattern in ("*.exe", "*.pdb", "deps/*.exe", "deps/*.pdb"):
+        for entry in Path(profile).glob(pattern):
+            entry.unlink()
+    return removed
+
+
+def rust_unchanged(source, pipeline):
+    """Whether nothing a Rust build reads changed between `source` and HEAD: no crate, vendored
+    crate or Rust toolchain file."""
+    rust = matcher(("crates/**", *pipeline.toolchains["rust"]))
+    return not any(rust(path) for path in z(git("diff", "--name-only", "--no-renames", "-z", source, "HEAD")))
+
+
+def warm(name, target, github_output=None):
+    """Fills a target folder for a sharded job's cache: runs the job's `warm` command, which builds
+    every unit its runners may reuse, and, when it succeeds, prunes the units it did not use and
+    names HEAD as the commit the folder was built from. A failed build leaves the folder naming
+    the commit it named before, so whatever changed since then is rebuilt from it. A folder that
+    no Rust input changed since is not built or saved again."""
+    pipeline = load_pipeline(PIPELINE.read_text(encoding="utf-8"))
+    job = next((job for job in pipeline.jobs if job.name == name), None)
     if job is None or not job.warm:
         sys.exit(f"tools/ci.toml has no job {name!r} with a warm command")
-    started = time.monotonic()
-    code = subprocess.run(job.warm, cwd=ROOT, stdin=subprocess.DEVNULL).returncode
-    print(f"warmed {name} in {time.monotonic() - started:.0f}s, exit {code}", flush=True)
-    Path(target).mkdir(parents=True, exist_ok=True)
-    (Path(target) / BUILT_FROM).write_text(git("rev-parse", "HEAD").strip() + "\n", encoding="utf-8")
+    source = built_from(target)
+    save = not (source and rust_unchanged(source, pipeline))
+    if save:
+        started = time.monotonic()
+        with tempfile.TemporaryFile() as messages:
+            code = subprocess.run([*job.warm, "--message-format=json-render-diagnostics"], cwd=ROOT, stdout=messages,
+                                  stdin=subprocess.DEVNULL).returncode
+            messages.seek(0)
+            live = live_units(messages.read().decode("utf-8", errors="replace"))
+        print(f"warmed {name} in {time.monotonic() - started:.0f}s, exit {code}, {len(live)} units", flush=True)
+        if code == 0:
+            print(f"pruned {prune(Path(target) / 'debug', live)} units the build did not use", flush=True)
+            (Path(target) / BUILT_FROM).write_text(git("rev-parse", "HEAD").strip() + "\n", encoding="utf-8")
+        else:
+            print(f"the build failed: the folder still names {source[:10] if source else 'no commit'}", flush=True)
+    else:
+        print(f"no Rust input changed since {source[:10]}: nothing to build or save", flush=True)
+    if github_output:
+        with open(github_output, "a", encoding="utf-8") as out:
+            out.write(f"save={'true' if save else 'false'}\n")
     return 0
 
 
@@ -844,6 +924,7 @@ def main(argv=None):
     warming = commands.add_parser("warm", help="build what a sharded job's target folder cache keeps, and name HEAD in it")
     warming.add_argument("--job", required=True)
     warming.add_argument("--target", required=True)
+    warming.add_argument("--github-output", metavar="FILE")
     args = parser.parse_args(argv)
     if args.command == "check":
         return check(args)
@@ -853,7 +934,7 @@ def main(argv=None):
         return job_group(args)
     if args.command == "times":
         return set_times(args.target)
-    return warm(args.job, args.target)
+    return warm(args.job, args.target, args.github_output)
 
 
 if __name__ == "__main__":
