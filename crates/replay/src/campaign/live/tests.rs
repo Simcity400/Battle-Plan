@@ -421,9 +421,9 @@ fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a
 
     let mut first = Everything::new(None, None);
     assert_eq!(encode(&mut first, Some(0)), [(1, 300)], "--stop-after=0 stops at the short block");
-    assert_eq!(recorded_blocks(&folder.recording()).unwrap(), 1);
+    assert_eq!(recorded_blocks(&folder.recording(), SOURCE, 0).unwrap(), 1);
     let mut resumed = Everything::new(None, None);
-    resumed.blocks = recorded_blocks(&folder.recording()).unwrap();
+    resumed.blocks = recorded_blocks(&folder.recording(), SOURCE, 0).unwrap();
     assert_eq!(encode(&mut resumed, Some(1)), [(2, 720)], "a resumed encoder counts on from its committed prefix");
 }
 

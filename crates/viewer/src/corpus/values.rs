@@ -35,6 +35,14 @@ impl Output {
         unlinked(root)?;
         let path = root.join(OWNED);
         unlinked(&path)?;
+        if !path.exists()
+            && let Some(report) = unowned_reports(root)?.into_iter().next()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} is from an earlier run that this drive cannot confirm; remove it or choose another --out", report.display()),
+            ));
+        }
         let mut manifest = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -82,7 +90,11 @@ impl Output {
 
     pub fn clear(root: &Path) -> io::Result<()> {
         if root.join(OWNED).is_file() {
-            drop(Self::prepare(root)?);
+            match Self::prepare(root) {
+                Ok(output) => drop(output),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
         } else if !unlinked(root).unwrap_or(false) {
             return Ok(());
         }
@@ -269,6 +281,26 @@ fn listed(root: &Path) -> io::Result<Option<Vec<PathBuf>>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+fn unowned_reports(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type()?.is_dir() {
+            for file in fs::read_dir(entry.path())? {
+                let file = file?;
+                if owned_path(&format!("{name}/{}", file.file_name().to_string_lossy())).is_some() {
+                    found.push(file.path());
+                }
+            }
+        } else if owned_path(&name).is_some() {
+            found.push(entry.path());
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 fn owned_path(line: &str) -> Option<PathBuf> {
@@ -801,8 +833,12 @@ mod tests {
         fs::create_dir_all(root.join("stack"))?;
         fs::write(root.join("notes.md"), "kept")?;
         fs::write(root.join("stack/mine.txt"), "kept")?;
+        let legacy = Output::prepare(&root).err().expect("reports no manifest owns are refused before anything is written");
+        assert!(legacy.to_string().contains("cannot confirm"), "{legacy}");
+        assert!(!root.join(OWNED).exists());
+        fs::remove_file(root.join("stack/mine.txt"))?;
         let output = Output::prepare(&root)?;
-        let busy = Output::prepare(&root).err().expect("a second run into the same folder is refused");
+        let busy =Output::prepare(&root).err().expect("a second run into the same folder is refused");
         assert!(busy.to_string().contains("another mod-corpus run"), "{busy}");
         let text = Writer::new(&output, "stack", Mode::Text);
         text.write("reader", &1);
@@ -813,6 +849,7 @@ mod tests {
         drop(text);
         drop(output);
 
+        fs::write(root.join("stack/mine.txt"), "kept")?;
         let output = Output::prepare(&root)?;
         assert!(!root.join("stack/reader.txt").exists());
         assert!(!root.join("other.sha256").exists());

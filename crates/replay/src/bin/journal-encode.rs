@@ -91,7 +91,7 @@ fn main() -> io::Result<()> {
     }
     let tables = replay_data::rows::TableId::ALL.len();
     let factors = times.unwrap_or_else(|| Factors { factor: vec![1; tables], in_phase: vec![false; tables] });
-    let prefix = encode_report::recorded_blocks(out)?;
+    let prefix = encode_report::recorded_blocks(out, "journal-encode", capture)?;
     if let Some(block) = stop_after.filter(|&block| block < prefix) {
         return Err(io::Error::other(format!("Block {block} is committed in {} already", out.display())));
     }
