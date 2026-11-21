@@ -195,7 +195,7 @@ pub(super) struct Publication {
 
 pub(super) fn publications(hour: &Hour<'_>) -> io::Result<Logged<Publication>> {
     let table = TableId::CountryPowerDailyCosts;
-    if !hour.complete(table) {
+    if !costs_complete(hour) {
         return Ok(Logged { backlog: hour.first, rows: Vec::new() });
     }
     let view = hour.table(table);
@@ -209,19 +209,38 @@ pub(super) fn publications(hour: &Hour<'_>) -> io::Result<Logged<Publication>> {
     raws.extend(deleted.into_iter().map(|raw| (raw, true)));
     let mut rows = Vec::with_capacity(raws.len());
     for (country, deleted_only) in raws {
-        let mut costs = Vec::new();
-        for ordinal in 0..=u32::MAX {
-            let Some(cost) = keyed::<CountryPowerDailyCostRow>(&hour.table(table), u128::from(country) << 32 | u128::from(ordinal))? else { break };
-            costs.push(cost);
-        }
-        rows.push(Publication { country, costs, deleted_only });
+        rows.push(Publication { country, costs: batch(&view, country)?, deleted_only });
     }
     Ok(Logged { backlog: hour.first, rows })
 }
 
+fn batch(view: &TableView<'_>, country: u32) -> io::Result<Vec<CountryPowerDailyCostRow>> {
+    let mut costs = Vec::new();
+    for ordinal in 0..=u32::MAX {
+        let Some(cost) = keyed::<CountryPowerDailyCostRow>(view, u128::from(country) << 32 | u128::from(ordinal))? else { break };
+        costs.push(cost);
+    }
+    Ok(costs)
+}
+
+pub(super) fn costs_complete(hour: &Hour<'_>) -> bool {
+    hour.complete(TableId::CountryPowerDailyCosts)
+}
+
+pub(super) fn costs_of(hour: &Hour<'_>, country: u32) -> io::Result<Vec<CountryPowerDailyCostRow>> {
+    batch(&hour.table(TableId::CountryPowerDailyCosts), country)
+}
+
+pub(super) fn costed(hour: &Hour<'_>) -> Vec<u32> {
+    let view = hour.table(TableId::CountryPowerDailyCosts);
+    let mut raws: Vec<u32> = view.rows().filter_map(|slot| view.key(slot)).map(|key| (key >> 32) as u32).collect();
+    raws.sort_unstable();
+    raws.dedup();
+    raws
+}
+
 pub(super) fn holds_no_costs(hour: &Hour<'_>, country: u32) -> io::Result<bool> {
-    let table = TableId::CountryPowerDailyCosts;
-    Ok(hour.complete(table) && hour.table(table).slot(u128::from(country) << 32).is_none())
+    Ok(costs_complete(hour) && hour.table(TableId::CountryPowerDailyCosts).slot(u128::from(country) << 32).is_none())
 }
 
 pub(super) fn input_reason(hour: &Hour<'_>) -> Option<String> {

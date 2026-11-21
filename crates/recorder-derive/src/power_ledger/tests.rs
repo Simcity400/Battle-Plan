@@ -105,6 +105,12 @@ const MATCHED: i32 = 124;
 const DAILY_GONE: i32 = 125;
 const PAIRED: i32 = 144;
 const TOTAL_KEPT: i32 = 145;
+const GROWN_BLOCKED: i32 = 169;
+const GROWN: i32 = 170;
+const SHRUNK_BLOCKED: i32 = 193;
+const SHRUNK: i32 = 194;
+const MOVED: i32 = 217;
+const MOVED_DELETED: i32 = 218;
 const NO_CHANGES: i32 = 26;
 
 fn put_daily(store: &mut Store, hour: i32, row: &CountryPowerDailyRow) {
@@ -123,6 +129,11 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryLinks, &CountryLinkRow { id, canonical_slot: slot }, TEXTS).unwrap();
             testing::put(store, TableId::CountryCommandPower, &CountryCommandPowerRow { canonical_slot: slot, ..Default::default() }, TEXTS).unwrap();
         }
+    }
+    if matches!(hour, GROWN_BLOCKED | SHRUNK_BLOCKED) {
+        store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
+    } else if matches!(hour, GROWN | SHRUNK) {
+        complete(store, TableId::CountryLinks);
     }
     if hour == NO_CAPTURE {
         store.status(TableId::PoliticsCaptureCoverage.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
@@ -282,6 +293,31 @@ fn edit(store: &mut Store, hour: i32) {
         TOTAL_KEPT => {
             put_daily(store, hour, &daily(144, 3 * Q, Q / 2 + Q / 10, 144));
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+        }
+        168 => {
+            put_daily(store, hour, &daily(168, 3 * Q, Q / 2, 168));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(168, 0, PowerDailyCostKind::Relation, Q / 2, 168), TEXTS).unwrap();
+        }
+        GROWN_BLOCKED => {
+            put_daily(store, hour, &daily(168, 3 * Q, Q / 2 + Q / 10, 168));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(168, 1, PowerDailyCostKind::MioResearch, Q / 10, 168), TEXTS).unwrap();
+        }
+        192 | 216 => {
+            put_daily(store, hour, &daily(hour, 3 * Q, Q / 2 + Q / 10, hour as u64));
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 0, PowerDailyCostKind::Relation, Q / 2, hour as u64), TEXTS).unwrap();
+            testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 1, PowerDailyCostKind::MioResearch, Q / 10, hour as u64), TEXTS).unwrap();
+        }
+        SHRUNK_BLOCKED => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+            put_daily(store, hour, &daily(192, 3 * Q, Q / 2, 192));
+        }
+        MOVED => {
+            testing::put(store, TableId::Countries, &CountryRow { id: 1, canonical_slot: 50, ..Default::default() }, TEXTS).unwrap();
+            testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 50 }, TEXTS).unwrap();
+        }
+        MOVED_DELETED => {
+            testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
+            put_daily(store, hour, &daily(216, 3 * Q, Q / 2, 216));
         }
         _ => {}
     }
@@ -513,7 +549,8 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     let (other, _) = through(0..=OTHER_PUBLISHED);
     assert_eq!(shared(&other, 0), Some(Q / 4));
     let (unshared, _) = through(0..=UNSHARED_DELETED);
-    assert_eq!(shared(&unshared, 0), Some(Q / 4), "a deletion leaves a part another application published as it was");
+    assert_eq!(shared(&unshared, 0), None, "a country leaving a shared holder leaves the part its batch published there unknown, and a deletion from another country keeps it so");
+    assert_eq!(cell::<Part>(&unshared, TableId::PowerDayParts, part_key(40, POLITICAL, 0), "spent"), Some(Q / 4), "and its batch is read again under its new holder");
     let gains = part_key(10, POLITICAL, Total::GAINS);
     let (unmatched, _) = through(0..=UNMATCHED);
     assert_eq!(cell::<Part>(&unmatched, TableId::PowerDayParts, gains, "payments"), Some(2));
@@ -535,6 +572,59 @@ fn a_shorter_republished_day_withdraws_its_dropped_costs_and_keeps_todays_other_
     let (kept, _) = through(0..=TOTAL_KEPT);
     assert_eq!(mismatch(&kept), Some(i64::from(Coverage::STEADY_MISMATCH)), "a deletion whose remaining costs miss the total read that hour is a mismatch");
     assert_eq!(covered(&kept), Some(false), "and its unchanged survivor is no longer covered");
+}
+
+#[test]
+fn the_first_hour_after_a_blocked_one_reconciles_each_open_batch_with_its_current_rows() {
+    let (store, _) = through(0..=25);
+    let costs = cost_items(&store);
+    let (relation, organisation) = (part_key(10, POLITICAL, costs[0]), part_key(10, POLITICAL, costs[1]));
+    let covered = |store: &Store, key: u128| {
+        let view = store.view(TableId::PowerDayParts.index());
+        view.bool(column::<Part>("covered"), view.slot(key).expect("a row"))
+    };
+    let (published, _) = through(0..=192);
+    assert_eq!(keys(&published, TableId::PowerDayParts), [relation, organisation]);
+    let (shrunk, _) = through(0..=SHRUNK);
+    assert_eq!(keys(&shrunk, TableId::PowerDayParts), [relation], "a cost removed while the ledger was blocked withdraws its part");
+    assert_eq!(covered(&shrunk, relation), covered(&published, relation), "and the survivor keeps the coverage it proved");
+    let (settled, _) = through(0..=216);
+    assert_eq!(spend(&settled, 10, POLITICAL, costs[1], "days"), spend(&shrunk, 10, POLITICAL, costs[1], "days"), "day 192 settles without the withdrawn cost");
+    let (before, _) = through(0..=168);
+    assert_eq!(keys(&before, TableId::PowerDayParts), [relation]);
+    let (blocked, _) = through(0..=GROWN_BLOCKED);
+    assert!(matches!(blocked.view(TableId::PowerDayParts.index()).status(), Status::Unavailable { .. }), "the links not read block the ledger");
+    let (grown, _) = through(0..=GROWN);
+    assert_eq!(keys(&grown, TableId::PowerDayParts), [relation, organisation], "a cost added while the ledger was blocked opens its part");
+    assert_eq!(cell::<Part>(&grown, TableId::PowerDayParts, organisation, "spent"), Some(Q / 10));
+    assert_eq!((covered(&grown, relation), covered(&grown, organisation)), (Some(true), Some(true)), "the batch read that hour adds up to its application");
+    assert_eq!(cell::<Part>(&grown, TableId::PowerDayParts, relation, "read"), Some(168), "an unchanged part is left as it was proven");
+    for name in ["day_payments", "day_charge", "days"] {
+        for &ordinal in &costs {
+            assert_eq!(spend(&grown, 10, POLITICAL, ordinal, name), spend(&before, 10, POLITICAL, ordinal, name), "reconciling settles no closed day again ({name})");
+        }
+    }
+}
+
+#[test]
+fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
+    let (store, _) = through(0..=216);
+    let held = |store: &Store, holder: u32| keys(store, TableId::PowerDayParts).into_iter().filter(|&key| (key >> 40) as u32 == holder).collect::<Vec<_>>();
+    assert_eq!(held(&store, 10).len(), 2);
+    let (moved, _) = through(0..=MOVED);
+    assert_eq!(held(&moved, 10), Vec::<u128>::new(), "the old holder keeps none of the batch");
+    let spent = |store: &Store, ordinal: u32| cell::<Part>(store, TableId::PowerDayParts, part_key(50, POLITICAL, ordinal), "spent");
+    assert_eq!(held(&moved, 50), [part_key(50, POLITICAL, 0), part_key(50, POLITICAL, 1)], "the new holder reads it again");
+    assert_eq!((spent(&moved, 0), spent(&moved, 1)), (Some(Q / 2), Some(Q / 10)));
+    let (deleted, _) = through(0..=MOVED_DELETED);
+    assert_eq!(held(&deleted, 50), [part_key(50, POLITICAL, 0)], "a cost deleted after the move is withdrawn under the new holder");
+    assert_eq!(held(&deleted, 10), Vec::<u128>::new());
+    let (next, _) = through(0..=240);
+    for ordinal in cost_items(&store) {
+        assert_eq!(spend(&next, 10, POLITICAL, ordinal, "days"), spend(&store, 10, POLITICAL, ordinal, "days"), "day 216 settles nothing under the old holder");
+    }
+    assert!(next.view(TableId::PowerSpendTotals.index()).slot(total_key(50, POLITICAL, 1)).is_none(), "nor the deleted cost under the new one");
+    assert_eq!((spend(&next, 50, POLITICAL, 0, "days"), spend(&next, 50, POLITICAL, 0, "day_charge")), (Some(1), Some(Q / 2)));
 }
 
 #[test]
