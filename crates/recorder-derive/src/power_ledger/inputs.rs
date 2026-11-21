@@ -231,14 +231,6 @@ pub(super) fn costs_of(hour: &Hour<'_>, country: u32) -> io::Result<Vec<CountryP
     batch(&hour.table(TableId::CountryPowerDailyCosts), country)
 }
 
-pub(super) fn costed(hour: &Hour<'_>) -> Vec<u32> {
-    let view = hour.table(TableId::CountryPowerDailyCosts);
-    let mut raws: Vec<u32> = view.rows().filter_map(|slot| view.key(slot)).map(|key| (key >> 32) as u32).collect();
-    raws.sort_unstable();
-    raws.dedup();
-    raws
-}
-
 pub(super) fn holds_no_costs(hour: &Hour<'_>, country: u32) -> io::Result<bool> {
     Ok(costs_complete(hour) && hour.table(TableId::CountryPowerDailyCosts).slot(u128::from(country) << 32).is_none())
 }

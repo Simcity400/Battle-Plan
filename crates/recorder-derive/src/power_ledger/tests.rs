@@ -111,6 +111,10 @@ const SHRUNK_BLOCKED: i32 = 193;
 const SHRUNK: i32 = 194;
 const MOVED: i32 = 217;
 const MOVED_DELETED: i32 = 218;
+const OVERNIGHT_BLOCKED: i32 = 263;
+const OVERNIGHT: i32 = 264;
+const REPLACED_BLOCKED: i32 = 311;
+const REPLACED: i32 = 312;
 const NO_CHANGES: i32 = 26;
 
 fn put_daily(store: &mut Store, hour: i32, row: &CountryPowerDailyRow) {
@@ -130,9 +134,9 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::CountryCommandPower, &CountryCommandPowerRow { canonical_slot: slot, ..Default::default() }, TEXTS).unwrap();
         }
     }
-    if matches!(hour, GROWN_BLOCKED | SHRUNK_BLOCKED) {
+    if matches!(hour, GROWN_BLOCKED | SHRUNK_BLOCKED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED) {
         store.status(TableId::CountryLinks.index(), Status::Unavailable { reason: 1 }, true, Some(hour), false).unwrap();
-    } else if matches!(hour, GROWN | SHRUNK) {
+    } else if matches!(hour, GROWN | SHRUNK | OVERNIGHT | REPLACED) {
         complete(store, TableId::CountryLinks);
     }
     if hour == NO_CAPTURE {
@@ -140,7 +144,17 @@ fn edit(store: &mut Store, hour: i32) {
     } else {
         complete(store, TableId::PoliticsCaptureCoverage);
         for country in [1, 2] {
-            let since_hour = if hour >= SAME_ITEM { SAME_ITEM - 2 } else if hour >= SHORTER { hour - 1 } else { 0 };
+            let since_hour = if hour >= SHRUNK {
+                SHRUNK - 1
+            } else if hour >= GROWN {
+                GROWN - 1
+            } else if hour >= SAME_ITEM {
+                SAME_ITEM - 2
+            } else if hour >= SHORTER {
+                hour - 1
+            } else {
+                0
+            };
             let witness = Streams { country, epoch: 1, since_hour, through_hour: hour, streams: Streams::ALL_STREAMS, ..Default::default() };
             testing::put(store, TableId::PoliticsCaptureCoverage, &witness, TEXTS).unwrap();
         }
@@ -302,7 +316,7 @@ fn edit(store: &mut Store, hour: i32) {
             put_daily(store, hour, &daily(168, 3 * Q, Q / 2 + Q / 10, 168));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(168, 1, PowerDailyCostKind::MioResearch, Q / 10, 168), TEXTS).unwrap();
         }
-        192 | 216 => {
+        192 | 216 | 240 | 288 | REPLACED => {
             put_daily(store, hour, &daily(hour, 3 * Q, Q / 2 + Q / 10, hour as u64));
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 0, PowerDailyCostKind::Relation, Q / 2, hour as u64), TEXTS).unwrap();
             testing::put(store, TableId::CountryPowerDailyCosts, &cost(hour, 1, PowerDailyCostKind::MioResearch, Q / 10, hour as u64), TEXTS).unwrap();
@@ -315,9 +329,10 @@ fn edit(store: &mut Store, hour: i32) {
             testing::put(store, TableId::Countries, &CountryRow { id: 1, canonical_slot: 50, ..Default::default() }, TEXTS).unwrap();
             testing::put(store, TableId::CountryLinks, &CountryLinkRow { id: 1, canonical_slot: 50 }, TEXTS).unwrap();
         }
-        MOVED_DELETED => {
+        MOVED_DELETED | OVERNIGHT_BLOCKED | REPLACED_BLOCKED => {
             testing::remove(store, TableId::CountryPowerDailyCosts, 1 << 32 | 1).unwrap();
-            put_daily(store, hour, &daily(216, 3 * Q, Q / 2, 216));
+            let day = midnight(hour);
+            put_daily(store, hour, &daily(day, 3 * Q, Q / 2, day as u64));
         }
         _ => {}
     }
@@ -597,11 +612,15 @@ fn the_first_hour_after_a_blocked_one_reconciles_each_open_batch_with_its_curren
     let (grown, _) = through(0..=GROWN);
     assert_eq!(keys(&grown, TableId::PowerDayParts), [relation, organisation], "a cost added while the ledger was blocked opens its part");
     assert_eq!(cell::<Part>(&grown, TableId::PowerDayParts, organisation, "spent"), Some(Q / 10));
-    assert_eq!((covered(&grown, relation), covered(&grown, organisation)), (Some(true), Some(true)), "the batch read that hour adds up to its application");
-    assert_eq!(cell::<Part>(&grown, TableId::PowerDayParts, relation, "read"), Some(168), "an unchanged part is left as it was proven");
+    assert_eq!((covered(&grown, relation), covered(&grown, organisation)), (Some(true), Some(false)), "an unchanged part keeps the coverage it proved, and a new one needs a capture since its day began");
+    assert_eq!(cell::<Part>(&grown, TableId::PowerDayParts, relation, "read"), Some(168));
     for name in ["day_payments", "day_charge", "days"] {
-        for &ordinal in &costs {
-            assert_eq!(spend(&grown, 10, POLITICAL, ordinal, name), spend(&before, 10, POLITICAL, ordinal, name), "reconciling settles no closed day again ({name})");
+        for key in [total_key(10, POLITICAL, costs[0]), total_key(10, POLITICAL, costs[1]), total_key(30, POLITICAL, 0), total_key(30, POLITICAL, 1), total_key(40, POLITICAL, 0)] {
+            let total = |store: &Store| {
+                let view = store.view(TableId::PowerSpendTotals.index());
+                view.slot(key).and_then(|slot| view.number(column::<Total>(name), slot))
+            };
+            assert_eq!(total(&grown), total(&before), "reconciling settles no closed day again ({name})");
         }
     }
 }
@@ -625,6 +644,12 @@ fn a_country_that_changes_holders_mid_day_takes_its_open_batch_with_it() {
     }
     assert!(next.view(TableId::PowerSpendTotals.index()).slot(total_key(50, POLITICAL, 1)).is_none(), "nor the deleted cost under the new one");
     assert_eq!((spend(&next, 50, POLITICAL, 0, "days"), spend(&next, 50, POLITICAL, 0, "day_charge")), (Some(1), Some(Q / 2)));
+    let (overnight, _) = through(0..=OVERNIGHT);
+    assert!(overnight.view(TableId::PowerSpendTotals.index()).slot(total_key(50, POLITICAL, 1)).is_none(), "a cost removed in a blocked hour before midnight is withdrawn before its day settles");
+    assert_eq!((spend(&overnight, 50, POLITICAL, 0, "days"), spend(&overnight, 50, POLITICAL, 0, "day_charge")), (Some(2), Some(Q)));
+    let (replaced, _) = through(0..=REPLACED);
+    assert_eq!((spend(&replaced, 50, POLITICAL, 0, "day_unknown"), spend(&replaced, 50, POLITICAL, 1, "day_unknown")), (Some(1), Some(1)), "a batch replaced by the next day's while the ledger was blocked settles its day as unknown");
+    assert_eq!(spend(&replaced, 50, POLITICAL, 0, "day_charge"), Some(Q), "and charges nothing it could not prove");
 }
 
 #[test]
@@ -694,30 +719,34 @@ fn an_allocation_holds_until_its_refund_names_it() {
 
 #[test]
 fn a_resume_in_the_middle_writes_what_a_run_never_stopped_writes() {
-    let (unbroken, _) = through(0..=49);
-    let (stopped, before) = through(0..=24);
-    let saved = before.save().unwrap();
-    let mut resumed = testing::resumed(&stopped, TEXTS);
-    let mut after = writers();
-    after.load(&saved, &mut resumed).unwrap();
-    after.prime(&resumed, 1, 24);
-    for at in 25..=49 {
-        run(&mut resumed, &mut after, at);
-    }
-    for table in TABLES.iter().map(|output| output.table()) {
-        assert_eq!(testing::rows(&resumed, table), testing::rows(&unbroken, table), "{table:?}");
+    for (stop, end) in [(24, 49), (MOVED - 1, MOVED_DELETED), (GROWN_BLOCKED, GROWN)] {
+        let (unbroken, _) = through(0..=end);
+        let (stopped, before) = through(0..=stop);
+        let saved = before.save().unwrap();
+        let mut resumed = testing::resumed(&stopped, TEXTS);
+        let mut after = writers();
+        after.load(&saved, &mut resumed).unwrap();
+        after.prime(&resumed, 1, stop);
+        for at in stop + 1..=end {
+            run(&mut resumed, &mut after, at);
+        }
+        for table in TABLES.iter().map(|output| output.table()) {
+            assert_eq!(testing::rows(&resumed, table), testing::rows(&unbroken, table), "{table:?} resumed after hour {stop}");
+        }
     }
 }
 
 #[test]
-fn its_blob_holds_two_hours_and_a_damaged_one_is_refused() {
-    let ledger = PowerLedger { last: Some(5), run_first: Some(-3), ..PowerLedger::default() };
+fn its_blob_holds_two_hours_the_links_and_a_due_recovery_and_a_damaged_one_is_refused() {
+    let ledger = PowerLedger { last: Some(5), run_first: Some(-3), recover: true, links: [(1, 10), (2, 10), (3, 20)].into(), ..PowerLedger::default() };
     let mut blob = Bytes::new();
     ledger.save(&mut blob).unwrap();
-    assert!(blob.bytes().len() <= 10, "two hours, nothing of an input's rows");
+    assert!(blob.bytes().len() <= 18, "two hours, a flag and three links, nothing of an input's rows");
     let mut loaded = PowerLedger::default();
     loaded.load(blob.bytes()).unwrap();
-    assert!(loaded.rebuild);
+    assert!(loaded.rebuild && loaded.recover);
     assert_eq!((loaded.last, loaded.run_first), (Some(5), Some(-3)));
+    assert_eq!(loaded.links, ledger.links);
+    assert_eq!((loaded.sole(10, 1), loaded.sole(20, 3)), (false, true), "the holders are rebuilt from the links");
     assert!(loaded.load(&blob.bytes()[..blob.bytes().len() - 1]).is_err());
 }
