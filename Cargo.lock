@@ -7082,6 +7082,7 @@ dependencies = [
  "content-reader-regions",
  "either",
  "engine-native",
+ "job-priority",
  "num-traits",
  "playhead",
  "recorder-derive",
