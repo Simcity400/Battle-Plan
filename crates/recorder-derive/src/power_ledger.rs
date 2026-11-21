@@ -416,6 +416,42 @@ impl PowerLedger {
         inputs::keyed::<Item>(&own.table(TableId::PowerItems), item_key(holder, ordinal))?.ok_or_else(|| invalid(format!("PowerItems holds no item {ordinal} of holder {holder} a day part names")))
     }
 
+    fn known_item(&self, own: &Rows<'_>, pending: &Pending, holder: u32, id: &ItemId) -> io::Result<Option<u32>> {
+        let hash = id.hash();
+        if let Some(fresh) = pending.fresh.get(&(holder, hash))
+            && let Some(&at) = fresh.iter().find(|&&at| pending.items[at].1 == *id)
+        {
+            return Ok(Some(pending.items[at].0.ordinal));
+        }
+        for &ordinal in self.items.get(&(holder, hash)).map_or(&[][..], Vec::as_slice) {
+            if let Some(row) = inputs::keyed::<Item>(&own.table(TableId::PowerItems), item_key(holder, ordinal))?
+                && ItemId::of(&row) == *id
+            {
+                return Ok(Some(ordinal));
+            }
+        }
+        Ok(None)
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "an application's identity and the parts it keeps are read together")]
+    fn unchanged(&self, own: &Rows<'_>, pending: &Pending, holder: u32, today: i32, sequence: u64, matched: bool, costs: &[&CountryPowerDailyCostRow], produced: &mut HashSet<u128>) -> io::Result<()> {
+        let mut items: BTreeMap<u32, (i128, i64)> = BTreeMap::new();
+        for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
+            let ordinal = if matched { self.known_item(own, pending, holder, &ItemId::cost(cost))? } else { Some(Total::GAINS) };
+            let Some(ordinal) = ordinal else { continue };
+            let entry = items.entry(ordinal).or_default();
+            entry.0 += i128::from(cost.cost_raw);
+            entry.1 += 1;
+        }
+        for (ordinal, (sum, payments)) in items {
+            let key = part_key(holder, POLITICAL, ordinal);
+            if Self::held_part(own, pending, key, today)?.is_some_and(|part| part.sequence == Some(sequence) && part.payments == payments && matches!(part.spent, Recorded::Value(spent) if i128::from(spent) == sum)) {
+                produced.insert(key);
+            }
+        }
+        Ok(())
+    }
+
     fn item(&mut self, own: &Rows<'_>, pending: &mut Pending, holder: u32, id: ItemId, first: First) -> io::Result<u32> {
         let hash = id.hash();
         if let Some(fresh) = pending.fresh.get(&(holder, hash))
@@ -669,10 +705,13 @@ impl PowerLedger {
             applications.entry((cost.epoch, cost.day_hour, cost.pp_sequence)).or_default().push(cost);
         }
         for ((epoch, day_hour, sequence), costs) in applications {
+            let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
             if publication.deleted_only && !(sole && midnight(day_hour) == today && self.opened(own, pending, holder, today, sequence)?) {
+                if !sole && midnight(day_hour) == today {
+                    self.unchanged(own, pending, holder, today, sequence, matched, &costs, &mut produced)?;
+                }
                 continue;
             }
-            let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && daily.day_hour == day_hour && daily.pp_sequence == Some(sequence));
             if !publication.deleted_only {
                 let seen = pending.costs.entry(holder).or_default();
                 for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
