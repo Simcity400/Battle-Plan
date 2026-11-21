@@ -606,8 +606,7 @@ mod tests {
     use crate::frame::DecodedFrame;
 
     fn fixture() -> DecodedFrame {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        synthetic_game::enter_fixed_modifiers();
         let mut keys = keys::all().unwrap().collect::<Vec<_>>();
         keys.sort_unstable_by_key(|key| key.index);
         let mut frame = DecodedFrame {

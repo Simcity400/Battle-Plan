@@ -17,14 +17,15 @@ fn tokens() -> TokenNames<'static> {
     .collect()
 }
 
-fn stat(selector: u32, value_raw: i64) -> UnitBonusStat {
+fn stat(name: &[u8], value_raw: i64) -> UnitBonusStat {
     UnitBonusStat {
-        selector,
+        selector: content_reader_core::equipment::stat_index(name).unwrap() as u32,
         value_raw,
     }
 }
 
 fn rows() -> Vec<CountryUnitBonusRow> {
+    content_reader_core::test_game::enter();
     vec![
         CountryUnitBonusRow {
             country: 102,
@@ -38,19 +39,19 @@ fn rows() -> Vec<CountryUnitBonusRow> {
                     category: false,
                     token: 41,
                     combat_width_raw: -50_000,
-                    stats: vec![stat(0, 25_000)],
+                    stats: vec![stat(b"max_strength", 25_000)],
                     grants: vec![RecordedGrant {
                         category_token: 62,
                         add: 1,
                         display_as_percentage: 0,
-                        stats: vec![stat(3, 10_000), stat(3, 0)],
+                        stats: vec![stat(b"breakthrough", 10_000), stat(b"breakthrough", 0)],
                     }],
                 },
                 RecordedTarget {
                     category: true,
                     token: 61,
                     combat_width_raw: 0,
-                    stats: vec![stat(5, 7)],
+                    stats: vec![stat(b"hard_attack", 7)],
                     grants: Vec::new(),
                 },
             ],
@@ -67,13 +68,7 @@ fn rows() -> Vec<CountryUnitBonusRow> {
 }
 
 fn saved(list: &str) -> Vec<UnitBonus> {
-    let name = |selector: usize| content_reader_core::equipment::stat_metadata()[selector].0;
-    let text = format!(
-        "countries={{GER={{deployment={{unit_modifiers={{{}}}}}}}}}",
-        list.replace("STAT0", name(0))
-            .replace("STAT3", name(3))
-            .replace("STAT5", name(5))
-    );
+    let text = format!("countries={{GER={{deployment={{unit_modifiers={{{list}}}}}}}}}");
     let document = content_reader_core::parser::parse(text.as_bytes()).unwrap();
     content_reader_save::production::parse(&document.items)
         .unwrap()
@@ -84,16 +79,15 @@ fn saved(list: &str) -> Vec<UnitBonus> {
 }
 
 const LIST: &str = r#"
-    { synthetic_unit={ STAT0=0.25 combat_width=-0.5 need_equipment={ synthetic_archetype=1.5 }
-        battalion_mult={ category=synthetic_recipient add=yes display_as_percentage=no STAT3=0.1 }
+    { synthetic_unit={ max_strength=0.25 combat_width=-0.5 need_equipment={ synthetic_archetype=1.5 }
+        battalion_mult={ category=synthetic_recipient add=yes display_as_percentage=no breakthrough=0.1 }
         night={ attack=0.1 } synthetic_terrain={ movement=0.2 } priority=2 sprite=synthetic_sprite }
-      synthetic_category={ STAT5=0.00007 }
+      synthetic_category={ hard_attack=0.00007 }
       type=effect number=-3 localization_key="named" }
     { type=rewards number=1 id=synthetic_doctrine }"#;
 
 fn run(rows: Vec<CountryUnitBonusRow>, list: &str, hour: i32) -> Report {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for stat metadata tests");
+    content_reader_core::test_game::enter();
     let (mut frame, mut save, _, _) = crate::fixtures::fixture();
     save.production
         .unit_bonuses
