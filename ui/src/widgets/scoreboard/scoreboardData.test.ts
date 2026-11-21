@@ -54,13 +54,17 @@ test.skip('a top ranks by the sorted measure, else the measure chosen, never by 
 test('a reply\'s cells are exact amounts by the columns asked, a missing value keeps its reason and never reads as zero', () => {
   const wide = (1n << 80n) + 1n;
   const reply: ScoreboardReply = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [
-    { tag: 'GER', cells: [{ valueRaw: `-${wide}`, missing: null, partial: true }, { valueRaw: null, missing: 'GER\'s stability was not recorded at this hour', partial: false }] },
+    { country: 'GER', tag: 'GER', cells: [{ valueRaw: `-${wide}`, missing: null, partial: true }, { valueRaw: null, missing: 'GER\'s stability was not recorded at this hour', partial: false }] },
   ] }, 2);
   const [row] = replyRows(reply, ['casualtiesTaken', 'stability']);
   assert.deepEqual(row!.cells.get('casualtiesTaken'), { amount: -wide, missing: null, partial: true });
   const [slotted] = replyRows({ ...reply, rows: [{ ...reply.rows[0]!, country: 5 }] }, ['casualtiesTaken', 'stability']);
   assert.equal(slotted!.key, countryKey(5), 'a country chosen by slot keys its row by that slot, as the followed rows and the exact reads do');
   assert.equal(slotted!.tag, 'GER');
+  const cells = [{ valueRaw: '1', missing: null, partial: false }, { valueRaw: '2', missing: null, partial: false }];
+  const both = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 5, tag: 'GER', cells }, { country: 'GER', tag: 'GER', cells }] }, 2);
+  assert.deepEqual(replyRows(both, ['casualtiesTaken', 'stability']).map(row => row.key), [countryKey(5), 'GER'], 'a slot and a tag holding the same country are two rows');
+  assert.throws(() => validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 5, tag: 'GER', cells }, { country: 5, tag: 'GER', cells }] }, 2), /Invalid Scoreboard row/);
   assert.equal(row!.cells.get('stability')!.amount, null);
   assert.equal(formatCell(taken, -wide, true), '† −1,208,925,819,614,629,174,706,177');
   assert.equal(formatCell(stability, 50_000n), '50%');

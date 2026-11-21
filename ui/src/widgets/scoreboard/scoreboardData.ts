@@ -7,6 +7,7 @@ import { formatAmount } from '../../charts/valueAxis.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { CELL, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
+import type { CountryRef } from '../../generated/dashboard';
 import { contentKey, contentSet } from '../../dashboard/options.ts';
 import type { OptionValue } from '../../dashboard/options';
 import { int, object } from '../../dashboard/validation.ts';
@@ -37,13 +38,14 @@ export function validateColumnsReply(value: unknown): ScoreboardColumnsReply {
 export function validateScoreboardReply(value: unknown, columns: number): ScoreboardReply {
   if (!object(value) || typeof value.branchId !== 'string' || !int(value.hour) || !(value.missing === null || typeof value.missing === 'string')
     || !Array.isArray(value.rows) || !Array.isArray(value.warnings)) throw new Error('Invalid Scoreboard reply.');
-  const tags = new Set<string>();
+  const countries = new Set<string>();
   for (const row of value.rows) {
-    if (!object(row) || typeof row.tag !== 'string' || tags.has(row.tag) || !Array.isArray(row.cells) || row.cells.length !== columns
+    if (!object(row) || typeof row.tag !== 'string' || !(typeof row.country === 'string' || int(row.country))
+      || countries.has(countryKey(row.country as CountryRef)) || !Array.isArray(row.cells) || row.cells.length !== columns
       || !row.cells.every(cell => object(cell) && typeof cell.partial === 'boolean'
         && (typeof cell.valueRaw === 'string' ? /^-?\d{1,39}$/.test(cell.valueRaw) && cell.missing === null : cell.valueRaw === null && typeof cell.missing === 'string')))
       throw new Error('Invalid Scoreboard row.');
-    tags.add(row.tag);
+    countries.add(countryKey(row.country as CountryRef));
   }
   return value as unknown as ScoreboardReply;
 }
