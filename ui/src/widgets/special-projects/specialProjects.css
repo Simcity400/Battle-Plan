@@ -4,66 +4,50 @@
 .special-project-section span { margin-left:4px; font-variant-numeric:tabular-nums; }
 .special-project-none { margin:0; padding:8px 8px 4px; color:var(--muted); font-size:0.75rem; }
 
-.special-project-now { position:relative; display:flex; align-items:center; gap:8px; height:64px; margin:3px 3px 0; padding:6px 8px 14px 6px;
-  border-radius:var(--r-md); background:color-mix(in srgb, var(--text) 3%, transparent); box-shadow:inset 0 0 0 1px var(--line-soft); }
-.special-project-now-text { display:flex; flex-direction:column; gap:2px; flex:1; min-width:0; }
-.special-project-now-text > strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.8125rem; font-weight:500; line-height:1.25; }
-.special-project-now-text > span { display:inline-flex; align-items:center; gap:6px; min-width:0; color:var(--muted); font-size:0.75rem; font-variant-numeric:tabular-nums; }
-.special-project-now-left { display:flex; flex-direction:column; align-items:flex-end; flex-shrink:0; line-height:1.1; font-variant-numeric:tabular-nums; }
-.special-project-now-left strong { font-family:var(--font-display); font-size:calc(var(--font-size-display) * 1.57143); font-weight:700; letter-spacing:-.02em; }
-.special-project-now-left small { color:var(--muted); font-size:0.6875rem; font-weight:500; }
-.special-project-progress { position:absolute; left:8px; right:8px; bottom:6px; height:3px; border-radius:999px; background:color-mix(in srgb, var(--text) 12%, transparent); }
-.special-project-progress > span { position:absolute; inset:0; border-radius:999px; background:var(--accent);
-  transform-origin:left; transform:scaleX(var(--project-progress)); transition:transform 600ms var(--ease); }
-.special-project-progress > i { position:absolute; inset:0; pointer-events:none; transform:translateX(calc((var(--project-progress) - 1) * 100%)); transition:transform 600ms var(--ease); }
-.special-project-progress > i::after { content:''; position:absolute; right:-4px; top:-2.5px; width:7px; height:7px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgb(0 0 0 / 40%); }
-[data-motion='reduced'] .special-project-progress > :is(span, i) { transition:none; }
-.special-project-now.is-paused .special-project-progress > span { background:var(--warning); box-shadow:none; }
-.special-project-now.is-paused .special-project-progress > i, .special-project-now.is-unknown .special-project-progress > i { display:none; }
-.special-project-now.is-unknown .special-project-progress > span { background:var(--quiet); }
-.special-project-now .blueprint-tile { flex:none; width:60px; height:40px; }
-.special-project-now .blueprint-tile img { width:54px; height:33px; }
+.special-project-rows { display:grid; grid-template-columns:36px fit-content(40%) fit-content(28%) minmax(24px, 140px) max-content max-content minmax(0, 1fr); column-gap:8px; }
+.special-project-rows > .special-project-section, .special-project-rows > .special-project-none, .special-project-rows > .special-project-earlier { grid-column:1 / -1; }
+.special-project-now, .special-project-row { grid-column:1 / -1; display:grid; grid-template-columns:subgrid; align-items:center; min-height:30px; padding:3px 6px;
+  border-radius:var(--r-sm); font-size:0.78125rem; font-variant-numeric:tabular-nums; cursor:default; list-style:none; transition:background var(--t-fast) var(--ease); }
+.special-project-now:hover, .special-project-row:hover { background:var(--hover); }
 .special-project-now:focus-visible, .special-project-row:focus-visible, .special-project-earlier-item:focus-visible { outline-offset:-2px; }
+.special-project-row::-webkit-details-marker { display:none; }
+.blueprint-tile { display:grid; place-items:center; }
+.special-project-now .blueprint-tile, .special-project-row .blueprint-tile { width:36px; height:24px; border-radius:4px; }
+.special-project-now .blueprint-tile img, .special-project-row .blueprint-tile img { width:32px; height:20px; }
+.special-project-name { min-width:0; overflow:hidden; font-weight:500; text-overflow:ellipsis; white-space:nowrap; }
+.special-project-who { display:inline-flex; align-items:center; gap:6px; min-width:0; overflow:hidden; color:var(--muted); white-space:nowrap; }
 .special-project-state { flex:none; white-space:nowrap; color:var(--muted); font-weight:600; }
 .special-project-state.is-paused { color:var(--warning); }
 .special-project-scientist { display:inline-flex; align-items:center; gap:6px; min-width:0; }
 .special-project-scientist > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .special-project-scientist > img, .special-project-scientist > .art-fallback { flex:none; width:15px; height:20px; border-radius:2px; object-fit:cover; }
 .special-project-scientist.is-unassigned { color:var(--quiet); }
-
-.special-project-row { position:relative; display:flex; align-items:center; gap:10px; min-height:46px; padding:3px 6px; border-radius:var(--r-sm);
-  cursor:default; list-style:none; transition:background var(--t-fast) var(--ease); }
-.special-project-row::-webkit-details-marker { display:none; }
-.special-project-row:hover { background:var(--hover); }
-.special-project-label { display:grid; gap:2px; min-width:0; flex:1; }
-.special-project-label strong, .special-project-label > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.special-project-label strong { font-size:0.8125rem; font-weight:500; line-height:1.25; }
-.special-project-label > span { color:var(--muted); font-size:0.75rem; font-variant-numeric:tabular-nums; }
-.special-project-row .blueprint-tile { flex:none; width:54px; height:36px; }
-.special-project-row .blueprint-tile img { width:48px; height:29px; }
-.special-project-row.is-cancelled .blueprint-tile { opacity:.5; }
-.special-project-row.is-cancelled .special-project-label strong { color:var(--muted); }
+.special-project-progress { position:relative; height:5px; border-radius:999px; background:color-mix(in srgb, var(--text) 12%, transparent); overflow:hidden; }
+.special-project-progress > span { position:absolute; inset:0; border-radius:999px; background:var(--accent);
+  transform-origin:left; transform:scaleX(var(--project-progress)); transition:transform 600ms var(--ease); }
+[data-motion='reduced'] .special-project-progress > span { transition:none; }
+.special-project-now.is-paused .special-project-progress > span { background:var(--warning); }
+.special-project-now.is-unknown .special-project-progress > span { background:var(--quiet); }
+.special-project-percent { min-width:3.2em; font-weight:600; text-align:end; }
+.special-project-iterations { min-width:7.5em; color:var(--muted); text-align:end; white-space:nowrap; }
+.special-project-when { grid-column:4 / 7; color:var(--muted); white-space:nowrap; }
 .special-project-earlier { border-radius:var(--r-sm); transition:background var(--t-fast) var(--ease); }
+.special-project-earlier > summary { display:grid; grid-template-columns:36px auto minmax(0, 1fr) 16px; column-gap:8px; cursor:pointer; }
 .special-project-earlier[open] { background:var(--hover); }
-.special-project-earlier > summary { cursor:pointer; }
 .special-project-earlier[open] > .special-project-row:hover { background:transparent; }
 .special-project-chevron { flex-shrink:0; color:var(--quiet); transition:transform var(--t) var(--ease), color var(--t-fast) var(--ease); }
 .special-project-chevron path { fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
 .special-project-row:hover .special-project-chevron { color:var(--text); }
 .special-project-earlier[open] .special-project-chevron { transform:rotate(180deg); }
-.special-project-count { font-size:0.8125rem; font-weight:600; font-variant-numeric:tabular-nums; }
-.special-project-earlier-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:2px 10px; padding:2px 8px 8px 70px; }
-.special-project-earlier-item { display:flex; align-items:center; gap:8px; min-width:0; height:30px; border-radius:var(--r-sm); font-size:0.75rem; }
-.special-project-earlier-item .blueprint-tile { flex:none; width:36px; height:24px; border-radius:4px; }
-.special-project-earlier-item .blueprint-tile img { width:32px; height:20px; }
+.special-project-count { font-size:0.75rem; font-weight:600; font-variant-numeric:tabular-nums; }
+.special-project-earlier-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:2px 10px; padding:2px 8px 8px 50px; }
+.special-project-earlier-item { display:flex; align-items:center; gap:8px; min-width:0; height:28px; border-radius:var(--r-sm); font-size:0.75rem; }
+.special-project-earlier-item .blueprint-tile { flex:none; width:30px; height:20px; border-radius:4px; }
+.special-project-earlier-item .blueprint-tile img { width:26px; height:16px; }
 .special-project-earlier-item > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 @container (max-width: 360px) {
-  .special-project-now .blueprint-tile { width:48px; height:32px; }
-  .special-project-now .blueprint-tile img { width:44px; height:27px; }
   .special-project-earlier-grid { padding-left:8px; }
-}
-@container (max-width: 300px) {
-  .special-project-now-left small { display:none; }
+  .special-project-iterations { display:none; }
 }
 
 .project-details { display:grid; gap:14px; margin-top:16px; padding:0 4px 6px; }

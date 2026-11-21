@@ -124,15 +124,14 @@ export const panelViews: Readonly<Record<string, PanelView>> = {
   'special-projects': {
     structure: (raw, hour) => projectStructure(projectHistory(raw), hour),
     nextChange: (raw, hour) => projectChangeAfter(projectHistory(raw), hour),
-    geometry: { rowAttribute: 'data-project', extraFields: '.special-project-progress > span', meters: '.special-project-progress',
-      knob: field => !!field.closest('.special-project-progress') && !field.closest('.is-paused,.is-unknown') },
+    geometry: { rowAttribute: 'data-project', extraFields: '.special-project-progress > span', meters: '.special-project-progress' },
     values(raw, _live, hour, shape) {
       const reply = projectHistory(raw);
       if (currentKey(reply, hour) !== shape && projectStructure(reply, hour) !== shape) return null;
       const cells = new Map<string, string>();
-      const { running, completed, cancelled } = currentProjects(reply, hour);
+      const { running, completed } = currentProjects(reply, hour);
       if (!running.length) cells.set('none', 'No projects in progress.');
-      for (const card of [...completed, ...cancelled]) cells.set(card.project.id, card.info.name);
+      for (const card of completed) cells.set(card.project.id, card.info.name);
       for (const { project } of running) {
         const at = runningValues(project, hour);
         if (!at) continue;

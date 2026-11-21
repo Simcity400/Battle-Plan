@@ -60,7 +60,7 @@ test('daily reads step without interpolation and future completion stays hidden'
 test('missing hours are unavailable and completed projects stay listed without a retention period', () => {
   const data = fixture();
   assert.equal(observedAt(data,200),false);
-  assert.deepEqual(currentProjects(data,200),{ running: [], completed: [], earlier: [], cancelled: [] });
+  assert.deepEqual(currentProjects(data,200),{ running: [], completed: [], earlier: [] });
   assert.equal(currentProjects(data,148).completed.length,1);
   assert.equal(currentProjects(data,199).completed.length,1, 'a completion long past still lists');
 });
@@ -127,13 +127,14 @@ test('presentation has no content count cap at 5000 projects and defaults are sa
   assert.equal(definition.defaultTime, 'follow');
 });
 
-test('paused cards are named and cancelled episodes end by observation without a completion tick', () => {
+test('paused cards are named, and cancelled episodes leave Current and end by observation without a completion tick', () => {
   const data = fixture();
   data.projects[0].runs = [{...data.projects[0].runs[0],state:'paused',lastHour:139}, {...data.projects[0].runs[0],firstHour:140,lastHour:199,state:'cancelled',cancellation:{hour:140,exact:false}}];
   assert.equal(currentProjects(data,139).running.length,1);
   assert.equal(projectTooltip(data,currentProjects(data,139).running[0]).rows.find(row=>row.label==='State')?.value,'Paused');
   assert.equal(currentProjects(data,140).running.length,0);
-  assert.equal(currentProjects(data,140).cancelled.length,1, 'a cancelled project is listed, not dropped');
+  const cancelled = currentProjects(data,140);
+  assert.equal(cancelled.running.length + cancelled.completed.length + cancelled.earlier.length, 0, 'a cancelled project is not listed in Current');
   const lane=projectHistory(data,199).lanes[0];
   assert.equal(lane.muted,true);
   assert.equal(lane.spans.at(-1)?.lastHour,139);
@@ -325,13 +326,13 @@ function projects(): SpecialProjectsReply {
   return validateSpecialProjectsReply(data);
 }
 
-test('Current lists running projects closest to completion first, then completed, the folded first-recorded group and cancelled', () => {
+test('Current lists running projects closest to completion first, then completed and the folded first-recorded group', () => {
   const ids = (cards: readonly { project: { id: string } }[]) => cards.map(card => card.project.id);
   const late = currentProjects(projects(), 199);
   assert.deepEqual(ids(late.running), ['gamma', 'beta']);
   assert.deepEqual(ids(late.completed), ['done']);
   assert.deepEqual(ids(late.earlier), ['early']);
-  assert.deepEqual(ids(late.cancelled), ['delta']);
+  assert.ok(![...late.running, ...late.completed, ...late.earlier].some(card => card.project.id === 'delta'), 'the cancelled project is not listed');
   assert.equal(earlierBound(late.earlier), 100);
   const before = currentProjects(projects(), 159);
   assert.deepEqual(ids(before.running), ['gamma', 'done', 'beta'], 'progress orders running projects, not their ids');

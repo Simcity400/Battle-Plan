@@ -65,62 +65,53 @@ type HourNow = () => number;
 function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps; feed: PanelFeed | null }) {
   const list = useRef<HTMLDivElement>(null);
   const valueId = useId();
-  const widths = useMemo(() => {
-    const progress = new Set<string>(), iterations = new Set<string>();
-    for (const project of reply.projects) for (const run of project.runs) {
-      if (run.state === 'completed' || run.state === 'cancelled') continue;
-      progress.add((run.progress + '%').replace(/\d/g, '0'));
-      iterations.add(iterationCount(run.iterations).replace(/\d/g, '0'));
-    }
-    return [...progress].map(text => <strong key={text}>{text}</strong>)
-      .concat([...iterations].map(text => <small key={text}>{text}</small>));
-  }, [reply]);
   const exactRead = feed?.exactRead;
   useDrawnPanel(list, clock, feed, true);
   const groups = useMemo(() => currentProjects(reply, at), [reply, at]);
-  const { running, completed, earlier, cancelled } = groups;
-  const rows = (g: typeof groups) => (['running', 'completed', 'earlier', 'cancelled'] as const).flatMap(section =>
+  const { running, completed, earlier } = groups;
+  const rows = (g: typeof groups) => (['running', 'completed', 'earlier'] as const).flatMap(section =>
     g[section].map(card => JSON.stringify([section, card.project.id, card.run.presentation])));
   useRecordedRows('special-projects', perfLog && exactRead ? { hour: at, rows: () => rows(groups),
     exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined);
-  if (!running.length && !completed.length && !earlier.length && !cancelled.length) return <WidgetState kind="empty" message="No special projects yet." />;
-  const row = (card: ProjectCard, line: string, className = '') => <div key={card.project.id} className={`special-project-row${className}`} {...item(card)}>
-    <ProjectTile icon={card.info.icon} /><span className="special-project-label"><strong data-panel-label={card.project.id}>{card.info.name}</strong><span>{line}</span></span></div>;
+  if (!running.length && !completed.length && !earlier.length) return <WidgetState kind="empty" message="No special projects yet." />;
   return <div className="special-project-list" ref={list}>
-    {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
-      const { run, info } = card;
-      return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
-        style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties} {...item(card)}>
-        <ProjectTile icon={info.icon} />
-        <span className="special-project-now-text"><strong>{info.name}</strong><span>
-          {run.state === 'paused' && <><b className="special-project-state is-paused">Paused</b>·</>}
-          {run.state === 'unknown' && <><b className="special-project-state">State unknown</b>·</>}
-          <Scientist reply={reply} info={info} /></span></span>
-        <span className="special-project-now-left"><span className="project-value-widths" aria-hidden="true">{widths}</span>
-          <strong id={`${valueId}-${card.project.id}-progress`} data-paint="progress">{run.progress}%</strong><small id={`${valueId}-${card.project.id}-iterations`} data-paint="iterations">{iterationCount(run.iterations)}</small></span>
-        <span className="special-project-progress" aria-hidden="true"><span /><i /></span>
-      </div>;
-    })}</Section> : <p data-panel-label="none" className="special-project-none">No projects in progress.</p>}
-    {completed.length + earlier.length > 0 && <Section label="Completed" count={completed.length + earlier.length}>
-      {completed.map(card => {
-        const person = reply.people[card.info.scientist].name;
-        return row(card, `${dayLabel(card.run.completion!.hour)}${person ? ` · ${person}` : ''}`);
-      })}
-      {earlier.length > 0 && <details className="special-project-earlier">
-        <summary className="special-project-row"><span className="blueprint-tile special-project-count">+{usNumber.format(earlier.length)}</span>
-          <span className="special-project-label"><strong>{`${usNumber.format(earlier.length)} completed by ${dayLabel(earlierBound(earlier))}`}</strong><span>Already complete when first recorded</span></span>
-          <svg className="special-project-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></summary>
-        <div className="special-project-earlier-grid">{earlier.map(card => <div key={card.project.id} className="special-project-earlier-item" {...item(card)}>
-          <ProjectTile icon={card.info.icon} /><span>{card.info.name}</span></div>)}</div>
-      </details>}
-    </Section>}
-    {cancelled.length > 0 && <Section label="Cancelled" count={cancelled.length}>
-      {cancelled.map(card => row(card, `Cancelled · ${dayLabel(card.run.cancellation!.hour)} · ${card.run.progress}%`, ' is-cancelled'))}
-    </Section>}
+    <div className="special-project-rows">
+      {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
+        const { run, info } = card;
+        return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
+          style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties} {...item(card)}>
+          <ProjectTile icon={info.icon} />
+          <strong className="special-project-name">{info.name}</strong>
+          <span className="special-project-who">
+            {run.state === 'paused' && <b className="special-project-state is-paused">Paused</b>}
+            {run.state === 'unknown' && <b className="special-project-state">State unknown</b>}
+            <Scientist reply={reply} info={info} /></span>
+          <span className="special-project-progress" aria-hidden="true"><span /></span>
+          <strong className="special-project-percent" id={`${valueId}-${card.project.id}-progress`} data-paint="progress">{run.progress}%</strong>
+          <small className="special-project-iterations" id={`${valueId}-${card.project.id}-iterations`} data-paint="iterations">{iterationCount(run.iterations)}</small>
+        </div>;
+      })}</Section> : <p data-panel-label="none" className="special-project-none">No projects in progress.</p>}
+      {completed.length + earlier.length > 0 && <Section label="Completed" count={completed.length + earlier.length}>
+        {completed.map(card => <div key={card.project.id} className="special-project-row" {...item(card)}>
+          <ProjectTile icon={card.info.icon} />
+          <strong className="special-project-name" data-panel-label={card.project.id}>{card.info.name}</strong>
+          <span className="special-project-who"><Scientist reply={reply} info={card.info} /></span>
+          <span className="special-project-when">{dayLabel(card.run.completion!.hour)}</span>
+        </div>)}
+        {earlier.length > 0 && <details className="special-project-earlier">
+          <summary className="special-project-row"><span className="blueprint-tile special-project-count">+{usNumber.format(earlier.length)}</span>
+            <strong className="special-project-name">{`${usNumber.format(earlier.length)} completed by ${dayLabel(earlierBound(earlier))}`}</strong>
+            <span className="special-project-who">Already complete when first recorded</span>
+            <svg className="special-project-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></summary>
+          <div className="special-project-earlier-grid">{earlier.map(card => <div key={card.project.id} className="special-project-earlier-item" {...item(card)}>
+            <ProjectTile icon={card.info.icon} /><span>{card.info.name}</span></div>)}</div>
+        </details>}
+      </Section>}
+    </div>
     <table className="sr-only"><caption>Special projects</caption>
       <thead><tr><th scope="col">Project</th><th scope="col">Status</th><th scope="col">Scientist</th><th scope="col">Progress</th><th scope="col">Iterations</th></tr></thead>
-      <tbody>{[...running, ...completed, ...earlier, ...cancelled].map(card => {
-        const active = card.run.state !== 'completed' && card.run.state !== 'cancelled';
+      <tbody>{[...running, ...completed, ...earlier].map(card => {
+        const active = card.run.state !== 'completed';
         return <tr key={card.project.id}><th scope="row">{card.info.name}</th><td>{card.run.state}</td>
           <td>{scientistName(reply, card.info)}</td>
           <td aria-labelledby={active ? `${valueId}-${card.project.id}-progress` : undefined}>{active ? null : `${card.run.progress}%`}</td>

@@ -123,35 +123,32 @@ export function historyCard(data: SpecialProjectsReply, id: string, hour: number
 export const completedWhenFirstRecorded = (project: ProjectEpisode, run: SpecialProjectRun) =>
   !!run.completion && !run.completion.exact && run.completion.hour === project.runs[0].firstHour;
 
-export interface CurrentProjects { running: ProjectCard[]; completed: ProjectCard[]; earlier: ProjectCard[]; cancelled: ProjectCard[] }
+export interface CurrentProjects { running: ProjectCard[]; completed: ProjectCard[]; earlier: ProjectCard[] }
 
 const byName = (a: ProjectCard, b: ProjectCard) => a.info.name.localeCompare(b.info.name) || (a.project.id < b.project.id ? -1 : a.project.id > b.project.id ? 1 : 0);
 
 export function currentProjects(data: SpecialProjectsReply, hour: number): CurrentProjects {
-  const groups: CurrentProjects = { running: [], completed: [], earlier: [], cancelled: [] };
+  const groups: CurrentProjects = { running: [], completed: [], earlier: [] };
   if (!observedAt(data, hour)) return groups;
   for (const project of data.projects) {
     const run = runAt(project.runs, hour);
     if (!run) continue;
     const card = { project, run, info: data.presentations[run.presentation] };
     if (run.state === 'completed') (completedWhenFirstRecorded(project, run) ? groups.earlier : groups.completed).push(card);
-    else if (run.state === 'cancelled') groups.cancelled.push(card);
-    else groups.running.push(card);
+    else if (run.state !== 'cancelled') groups.running.push(card);
   }
   groups.running.sort((a, b) => b.run.progress - a.run.progress || a.project.start.hour - b.project.start.hour || byName(a, b));
   groups.completed.sort((a, b) => b.run.completion!.hour - a.run.completion!.hour || byName(a, b));
   groups.earlier.sort(byName);
-  groups.cancelled.sort((a, b) => b.run.cancellation!.hour - a.run.cancellation!.hour || byName(a, b));
   return groups;
 }
 
 export function currentKey(data: SpecialProjectsReply, hour: number): string {
   if (!observedAt(data, hour)) return 'unobserved';
-  const { running, completed, earlier, cancelled } = currentProjects(data, hour);
+  const { running, completed, earlier } = currentProjects(data, hour);
   const part = (cards: readonly ProjectCard[], extra: (card: ProjectCard) => string) =>
     JSON.stringify(cards.map(card => [card.project.id, card.info, data.people[card.info.scientist], extra(card)]));
-  return [part(running, card => card.run.state), part(completed, card => String(card.run.completion!.hour)), part(earlier, () => ''),
-    part(cancelled, card => `${card.run.cancellation!.hour}\u0001${card.run.progress}`)].join('\u0003');
+  return [part(running, card => card.run.state), part(completed, card => String(card.run.completion!.hour)), part(earlier, () => '')].join('\u0003');
 }
 
 export function projectStructure(reply: SpecialProjectsReply, hour: number) {
