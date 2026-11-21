@@ -1,4 +1,4 @@
-import { contrast, isDark, mixOklab, normalizeColor, oklchHex, oklchToRgb, parseColor, readableText, rgbToOklch, solveLightness, toHex, toHexAlpha } from './color.ts';
+import { contrast, isDark, mixOklab, mixRgb, normalizeColor, oklchHex, oklchToRgb, parseColor, readableText, rgbToOklch, solveLightness, toHex, toHexAlpha } from './color.ts';
 
 export type ThemeMode = 'dark' | 'light';
 
@@ -46,18 +46,22 @@ export function deriveColors(seeds: ThemeSeeds): ThemeColors {
   const shade = (lightness: number, chroma = tint) => oklchHex({ l: clamp(lightness, 0.03, 0.992), c: chroma, h: hue });
   const surfaceL = dark ? canvas.l + 0.04 : canvas.l < 0.95 ? canvas.l + (0.995 - canvas.l) * 0.78 : canvas.l - 0.015;
   const surface = shade(surfaceL, dark ? tint : tint * 0.45);
-  const surfaceRgb = parseColor(surface)!;
+  const chrome = shade(dark ? canvas.l + 0.022 : canvas.l + (0.995 - canvas.l) * 0.5, tint * (dark ? 1.1 : 0.6));
+  const raised = shade(dark ? canvas.l + 0.09 : surfaceL - 0.035, tint * 1.1);
+  const overlay = shade(dark ? canvas.l + 0.065 : 0.992, tint);
   const textStart = { l: dark ? 0.96 : 0.2, c: Math.min(0.02, accent.c * 0.12), h: accent.h };
   const text = oklchToRgb(solveLightness(textStart, canvasRgb, 8, dark ? 'lighter' : 'darker'));
-  const muted = oklchToRgb(solveLightness({ ...textStart, l: dark ? 0.7 : 0.5 }, surfaceRgb, 4.6, dark ? 'lighter' : 'darker'));
+  const fills = [canvasRgb, ...[chrome, surface, overlay].map(parseColor)]
+    .map(fill => mixRgb(fill!, text, dark ? 0.06 : 0.05)).concat(parseColor(raised)!);
+  const muted = oklchToRgb(fills.reduce((solved, fill) => solveLightness(solved, fill, 4.6, dark ? 'lighter' : 'darker'), { ...textStart, l: dark ? 0.7 : 0.5 }));
   const glow = normalizeColor(seeds.glow) ?? oklchHex({ l: accent.l, c: Math.max(accent.c, 0.05), h: (accent.h + 35) % 360 });
   const accentHex = normalizeColor(seeds.accent) ?? '#5fb3ff';
   return {
     canvas: normalizeColor(seeds.canvas) ?? '#0b1017',
-    chrome: shade(dark ? canvas.l + 0.022 : canvas.l + (0.995 - canvas.l) * 0.5, tint * (dark ? 1.1 : 0.6)),
+    chrome,
     surface,
-    raised: shade(dark ? canvas.l + 0.09 : surfaceL - 0.035, tint * 1.1),
-    overlay: shade(dark ? canvas.l + 0.065 : 0.992, tint),
+    raised,
+    overlay,
     border: shade(dark ? canvas.l + 0.15 : canvas.l - 0.11, tint * 1.4),
     text: toHex(text),
     muted: toHex(muted),
@@ -69,6 +73,21 @@ export function deriveColors(seeds: ThemeSeeds): ThemeColors {
     warning: oklchHex({ l: dark ? 0.82 : 0.6, c: 0.13, h: 78 }),
     error: oklchHex({ l: dark ? 0.7 : 0.54, c: 0.17, h: 22 }),
   };
+}
+
+export const seedsOf = (colors: ThemeColors): ThemeSeeds => ({ canvas: colors.canvas, accent: colors.accent, glow: colors.glow });
+
+export function customRoles(colors: ThemeColors): ThemeRole[] {
+  const derived = deriveColors(seedsOf(colors));
+  return themeRoles.filter(role => normalizeColor(colors[role]) !== derived[role]);
+}
+
+export function reseed(colors: ThemeColors, seed: keyof ThemeSeeds, value: string, kept: readonly ThemeRole[]): ThemeColors {
+  const next = normalizeColor(value);
+  if (!next || next === normalizeColor(colors[seed])) return colors;
+  const derived = deriveColors({ ...seedsOf(colors), [seed]: next });
+  for (const role of kept) if (role !== seed) derived[role] = colors[role];
+  return derived;
 }
 
 export function completeColors(partial: Partial<Record<string, unknown>>, fallback: ThemeSeeds): ThemeColors {
@@ -93,8 +112,8 @@ export function contrastWarnings(colors: ThemeColors): string[] {
   const rgb = (role: ThemeRole) => parseColor(colors[role])!;
   const checks: [ThemeRole, ThemeRole, number, string][] = [
     ['text', 'surface', 4.5, 'Text is hard to read on panels'],
-    ['muted', 'surface', 3, 'Secondary text is hard to read on panels'],
-    ['accentText', 'accent', 3, 'Text on accent buttons is hard to read'],
+    ['muted', 'surface', 4.5, 'Secondary text is hard to read on panels'],
+    ['accentText', 'accent', 4.5, 'Text on accent buttons is hard to read'],
     ['text', 'canvas', 4.5, 'Text is hard to read on the canvas'],
   ];
   return checks.filter(([a, b, ratio]) => contrast(rgb(a), rgb(b)) < ratio).map(([, , , message]) => message);
@@ -111,13 +130,13 @@ const carbon: ThemeDefinition = {
   id: 'carbon', name: 'Carbon', builtIn: true,
   variants: {
     dark: {
-      canvas: '#0a0a0a', chrome: '#000000', surface: '#111111', raised: '#1e1e1e', overlay: '#111111', border: '#1f1f1f',
-      text: '#f5f5f5', muted: '#8a8a8a', accent: '#346bf1', accentText: '#ffffff', selection: '#f5f5f5', glow: '#346bf1',
+      canvas: '#0a0a0a', chrome: '#000000', surface: '#111111', raised: '#1e1e1e', overlay: '#191919', border: '#1f1f1f',
+      text: '#f5f5f5', muted: '#929292', accent: '#346bf1', accentText: '#ffffff', selection: '#f5f5f5', glow: '#346bf1',
       positive: '#22c55e', warning: '#fe9a00', error: '#fb414a',
     },
     light: {
       canvas: '#fcfcfc', chrome: '#fafafa', surface: '#ffffff', raised: '#f4f4f5', overlay: '#ffffff', border: '#e4e4e7',
-      text: '#27272a', muted: '#71717b', accent: '#1b4ed8', accentText: '#ffffff', selection: '#27272a', glow: '#1b4ed8',
+      text: '#27272a', muted: '#6a6a74', accent: '#1b4ed8', accentText: '#ffffff', selection: '#27272a', glow: '#1b4ed8',
       positive: '#15803d', warning: '#b45309', error: '#dc2626',
     },
   },
@@ -145,6 +164,16 @@ export function contrastColors(colors: ThemeColors, percent: number): ThemeColor
   if (percent >= 100) return colors;
   const amount = Math.max(0, percent) / 100;
   const canvas = parseColor(colors.canvas)!;
-  const ink = (role: 'text' | 'muted') => toHex(mixOklab(canvas, parseColor(colors[role])!, amount));
+  const direction = isDark(canvas) ? 'lighter' : 'darker';
+  const text = mixOklab(canvas, parseColor(colors.text)!, amount);
+  const fills = (['canvas', 'chrome', 'surface', 'overlay'] as const).map(role => mixRgb(parseColor(colors[role])!, text, direction === 'lighter' ? 0.06 : 0.05))
+    .concat(parseColor(colors.raised)!);
+  const ink = (role: 'text' | 'muted') => {
+    const full = parseColor(colors[role])!;
+    const faded = fills.reduce((solved, fill) => solveLightness(solved, fill, Math.min(4.6, contrast(full, fill)), direction),
+      rgbToOklch(role === 'text' ? text : mixOklab(canvas, full, amount)));
+    const rgb = oklchToRgb(faded);
+    return toHex(contrast(rgb, canvas) > contrast(full, canvas) ? full : rgb);
+  };
   return { ...colors, text: ink('text'), muted: ink('muted'), border: toHexAlpha(parseColor(colors.border)!, amount) };
 }

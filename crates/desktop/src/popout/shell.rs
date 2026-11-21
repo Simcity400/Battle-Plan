@@ -55,7 +55,7 @@ impl Shell {
             }
             Err(_) => {
                 let _ = thread.join();
-                Err("The pop-out map window did not start".into())
+                Err("The pop-out map window didn’t start".into())
             }
         }
     }
@@ -182,7 +182,7 @@ fn run(
     ready: mpsc::Sender<Result<(), String>>,
 ) {
     let class = wide(CLASS);
-    let title = wide("Battle Plan map");
+    let title = wide("BattlePlan map");
     // SAFETY: every Win32 call below runs on this thread, which owns the window and its
     // message loop. WM_NCCREATE adopts the state box and sets `adopted`, and WM_NCDESTROY then
     // frees it; when creation fails before adoption, this function frees it instead, so the box
@@ -234,7 +234,7 @@ fn run(
                 drop(Box::from_raw(state));
             }
             let _ = ready.send(Err(format!(
-                "Cannot create the pop-out map window: {error}"
+                "Couldn’t create the pop-out map window: {error}"
             )));
             return;
         }

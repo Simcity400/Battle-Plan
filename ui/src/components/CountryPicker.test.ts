@@ -45,7 +45,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
           if (node.props.role === 'option') s.rows.push(node.props);
           if (node.props.className === 'country-picker-list') s.scroll = node.props.onScroll;
           if (node.props['aria-label'] === 'Search countries') s.search = node.props.onChange;
-          if (node.type === 'button' && node.props.children === 'Retry') s.retryAction = node.props.onClick;
+          if (node.props.onRetry) s.retryAction = node.props.onRetry;
           walk(node.props.children); }); walk(props.children); return createElement('div', null, props.children); };`,
     '/components/CountryFlag.tsx': `import { createElement } from 'react'; export const CountryFlag = ({ image }) => createElement('span', { 'data-flag': image?.tag });`,
     '/components/Icons.tsx': `import { createElement } from 'react'; export const Icon = ({ name }) => createElement('i', { 'data-icon': name });`,
@@ -99,7 +99,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     assert.doesNotMatch(html, /no recorded read|Name and flag unavailable|data-icon="alert"/);
     assert.equal(state.rows[1]['aria-label'], undefined, 'missing looks leave the fallback country name visible');
     assert.equal(state.rows[1]['data-tooltip'], undefined);
-    const rowFor = (tag: string) => state.rows.find(row => row.children[2].props.children === tag)!;
+    const rowFor = (tag: string) => state.rows.find(row => row.children[2]?.props?.children === tag)!;
     for (const index of [2, 3, 4]) {
       assert.equal(rowFor(tags[index]).children[1].props.children, 'Country name unavailable', 'unrequested supplying reads are absent');
     }
@@ -107,7 +107,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     assert.deepEqual(state.headerReads, [{ tag: 'read 4999', hour: 101 }]);
     state.rows[0].onClick(); assert.deepEqual(state.changed, [tags[0]], 'a mapped alias never replaces the pickable actor');
     state.open = true; props.selectedTag = tags[0]; render(); await flush(); html = render();
-    assert.match(html, /<span><\/span>/, 'a proved empty name stays empty'); assert.match(html, /data-flag="read 0"/);
+    assert.match(html, /<span class="country-picker-unnamed">actor 0000<small>name not recorded<\/small><\/span>/, 'a proved empty name falls back to the tag, marked as not recorded'); assert.match(html, /data-flag="read 0"/);
     props.choiceReads = new Map(reads).set(tags[0], null);
     html = render(); assert.doesNotMatch(html, /data-flag="read 0"/); assert.match(html, /Country name unavailable/); await flush();
     assert.ok(!state.wanted.some(read => read.tag === 'read 0'), 'changed witnesses release old names immediately');
@@ -134,20 +134,20 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     html = render(); assert.match(html, /Loading countries…/);
     await flush(); html = render();
     assert.match(html, /Couldn’t load countries\./);
-    assert.match(html, />Retry</);
+    assert.match(html, />Try again</);
     assert.match(html, /data-detail="Synthetic native roster request failed"/);
     assert.doesNotMatch(html.replace(/<[^>]*>/g, ''), /Synthetic native roster request failed/);
     const failedLoads = state.rosterLoads;
     state.rosterError = null; state.rosterReply = { countries: props.countries, warnings: ['Synthetic ownership diagnostic'] };
     assert.ok(state.retryAction); state.retryAction(); render(); await flush(); html = render(); await flush(); html = render();
-    assert.equal(state.rosterLoads, failedLoads + 1, 'Retry actually reloads the countries');
+    assert.equal(state.rosterLoads, failedLoads + 1, 'Try again actually reloads the countries');
     assert.match(html, /Metadata belongs to another holder/);
     assert.doesNotMatch(html, /Couldn’t load countries|Couldn’t load flags|Synthetic ownership diagnostic|Flags unavailable|Some ownership history is unavailable|class="pill"/);
   } finally { await vite.close(); delete globals.__pickerWitness; }
 });
 
 test('the listbox names its active option only while that row is drawn, and is multiselectable for a multi-country field', async () => {
-  const state = { hooks: [] as unknown[], cursor: 0, listbox: undefined as Record<string, any> | undefined,
+  const state = { hooks: [] as unknown[], cursor: 0, listbox: undefined as Record<string, any> | undefined, search: undefined as Record<string, any> | undefined,
     scroll: undefined as ((event: { currentTarget: { scrollTop: number; clientHeight: number } }) => void) | undefined };
   const globals = globalThis as typeof globalThis & { __pickerList?: typeof state };
   globals.__pickerList = state;
@@ -167,6 +167,7 @@ test('the listbox names its active option only while that row is drawn, and is m
       export const Popover = props => { const s = globalThis.__pickerList;
         const walk = nodes => Children.forEach(nodes, node => { if (!isValidElement(node)) return;
           if (node.props.role === 'listbox') s.listbox = node.props;
+          if (node.props['aria-label'] === 'Search countries') s.search = node.props;
           if (node.props.className === 'country-picker-list') s.scroll = node.props.onScroll;
           walk(node.props.children); }); walk(props.children); return createElement('div', null, props.children); };`,
     '/components/CountryFlag.tsx': `import { createElement } from 'react'; export const CountryFlag = () => createElement('span');`,
@@ -211,5 +212,19 @@ test('the listbox names its active option only while that row is drawn, and is m
     assert.match(html, /id="picker-list-country-1"/);
     props.chosen = undefined; props.addLabel = undefined; render();
     assert.equal(state.listbox!['aria-multiselectable'], false, 'one country is chosen at a time');
+    const picked: (string | null)[] = [];
+    props.onChange = tag => { picked.push(tag); };
+    const type = (value: string) => { state.search!.onChange({ currentTarget: { value } }); return render(); };
+    const enter = () => state.search!.onKeyDown({ key: 'Enter', preventDefault() {} });
+    html = type('Country 01');
+    assert.equal(state.search!.type, 'search', 'Ctrl+B and the clear button work from the country search');
+    assert.doesNotMatch(html, /data-active/, 'several matches leave no row active until the arrows pick one');
+    enter();
+    assert.deepEqual(picked, [], 'Enter does not guess between several matches');
+    html = type('country 042');
+    assert.match(html, /id="picker-list-country-0"[^>]*data-active="true"/, 'the sole match shows it is the one Enter chooses');
+    assert.equal(state.search!['aria-activedescendant'], 'picker-list-country-0');
+    enter();
+    assert.deepEqual(picked, ['T042'], 'Enter in the search chooses the sole match');
   } finally { await vite.close(); delete globals.__pickerList; }
 });

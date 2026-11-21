@@ -8,21 +8,24 @@ import './Select.css';
 
 export interface SelectOption { value: string; label: string; disabled?: boolean; reason?: string; detail?: string }
 
-export function Select({ id: triggerId, label, value, options, disabled = false, autoFocus, onChange }: {
-  id?: string; label: string; value: string; options: readonly SelectOption[]; disabled?: boolean; autoFocus?: boolean; onChange: (value: string) => void;
+export function Select({ id: triggerId, label, value, options, disabled = false, autoFocus, repick = false, onOpen, onChange }: {
+  id?: string; label: string; value: string; options: readonly SelectOption[]; disabled?: boolean; autoFocus?: boolean;
+  repick?: boolean; onOpen?: () => void; onChange: (value: string) => void;
 }) {
   const id = useId();
   const menu = usePopover('start');
   const [held, setHeld] = useState(options);
   if (held !== options && !sameOptions(held, options)) setHeld(options);
   const selected = held.find(option => option.value === value);
+  const shown = selected?.label ?? value;
   return <>
     <button ref={menu.trigger} id={triggerId} type="button" className="select-trigger" popoverTarget={id} autoFocus={autoFocus} aria-haspopup="listbox" aria-expanded={menu.open}
-      aria-label={label} disabled={disabled} data-detail={selected?.detail} data-tooltip={selected?.reason}>
-      <span>{selected?.label ?? value}</span><Icon name="chevron-down" /></button>
+      aria-label={label} aria-describedby={`${id}-value`} disabled={disabled} data-detail={selected?.detail} data-tooltip={selected?.reason} data-tooltip-overflow={shown}>
+      <span id={`${id}-value`} data-overflow-label>{shown}</span><Icon name="chevron-down" /></button>
     { }
-    <Popover menu={menu} portal={false} id={id} className="select-menu" aria-label={label}>
-      {menu.open && <SelectMenu label={label} value={value} options={held} onChoose={chosen => { menu.close(); if (chosen !== value) onChange(chosen); }} />}
+    <Popover menu={menu} portal={false} id={id} className="select-menu" aria-label={label}
+      onToggle={event => { if (event.newState === 'open') onOpen?.(); }}>
+      {menu.open && <SelectMenu label={label} value={value} options={held} onLeave={menu.close} onChoose={chosen => { menu.close(); if (repick || chosen !== value) onChange(chosen); }} />}
 
     </Popover>
   </>;
@@ -35,7 +38,7 @@ const sameOptions = (a: readonly SelectOption[], b: readonly SelectOption[]) => 
 });
 
 const OPTION_HEIGHT = 32;
-function SelectMenu({ label, value, options, onChoose }: { label: string; value: string; options: readonly SelectOption[]; onChoose(value: string): void }) {
+function SelectMenu({ label, value, options, onChoose, onLeave }: { label: string; value: string; options: readonly SelectOption[]; onChoose(value: string): void; onLeave(): void }) {
   const selected = options.findIndex(option => option.value === value && !option.disabled);
   const [activeValue, setActiveValue] = useState<string | null>(() => options[selected >= 0 ? selected : selectIndex(options, -1, 'Home') ?? -1]?.value ?? null);
   const kept = options.findIndex(option => option.value === activeValue && !option.disabled);
@@ -119,10 +122,9 @@ function SelectMenu({ label, value, options, onChoose }: { label: string; value:
     nodes.current.get(active)?.focus({ preventScroll: true });
   }, [active, activeValue, index]);
   const keys = (event: KeyboardEvent<HTMLDivElement>) => {
-    const tab = event.key === 'Tab';
-    const next = selectIndex(options, active, tab ? event.shiftKey ? 'ArrowUp' : 'ArrowDown' : event.key);
+    if (event.key === 'Tab') { onLeave(); return; }
+    const next = selectIndex(options, active, event.key);
     if (next === null) return;
-    if (tab && (event.shiftKey ? next >= active : next <= active)) return;
     event.preventDefault();
     reveal(next); setActiveValue(options[next].value);
   };
@@ -139,7 +141,7 @@ function SelectMenu({ label, value, options, onChoose }: { label: string; value:
             else nodes.current.delete(at);
           }}
           style={{ position: 'absolute', top: index.offset(at), minHeight: OPTION_HEIGHT, left: 0, right: 0 }}
-          disabled={option.disabled} data-detail={option.detail} data-tooltip={option.reason ?? option.label} data-option-index={at}
+          disabled={option.disabled} data-detail={option.detail} data-tooltip={option.reason} data-option-index={at}
           data-popover-autofocus={at === active || undefined} onFocus={() => setActiveValue(option.value)} onClick={() => onChoose(option.value)}>
           <span className="menu-item-label">{option.label}</span>{option.value === value && <Icon name="check" />}
         </button>;

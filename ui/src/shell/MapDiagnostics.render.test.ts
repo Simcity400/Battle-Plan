@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import { branchCoverage, historyLabels, missingTime } from './diagnosticsData.ts';
-import { formatDate, gameDate } from '../dashboard/calendar.ts';
+import { formatDate, formatTime, gameDate } from '../dashboard/calendar.ts';
 import type { ReplayMetadata } from './api';
 
 test('a branch’s gaps sit where they fall in its recorded time, and missing time reads in hours or days', () => {
@@ -43,7 +43,8 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     assert.doesNotMatch(lossy, /Complete/);
     const stopped = visible({ ...metadata, partial: { sessionId: 's1', reason: 'The game closed.', failedHour: branch.lastHour } });
     assert.match(stopped, /Stopped early/);
-    assert.match(stopped, /was saved: The game closed\./);
+    assert.ok(stopped.includes(`${formatDate(gameDate(branch.lastHour)!)} ${formatTime(gameDate(branch.lastHour)!.hour)} couldn’t be recorded: The game closed.`), 'the same words as the notice, naming only the hour that failed');
+    assert.match(visible({ ...metadata, partial: { sessionId: 's1', reason: 'The game closed.', failedHour: null } }), /Part of the recording couldn’t be saved: The game closed\./);
     const damaged = visible({ ...metadata, damaged: { parts: 0, firstHour: null, lastHour: null, reasons: ['Checksum mismatch'] } });
     assert.match(damaged, /Damaged/, 'a recording that failed its checksum is not called complete');
     assert.doesNotMatch(damaged, /Complete|Recorded throughout/);
@@ -56,9 +57,9 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     assert.match(switchable, /Main history.*Showing/s, 'the history being played says so');
     assert.ok(switchable.includes(`aria-label="Show Left behind ${formatDate(gameDate(branch.firstHour + 24 * 10)!)}"`), 'another history can be played from its row');
     assert.doesNotMatch(markup(two, null), /Showing|aria-label="Show /, 'without a playing campaign there is nothing to switch');
-    assert.match(visible(null), /No recording open/);
+    assert.match(visible(null), /No campaign open/);
     assert.match(visible(null), /Technical overlay/);
-    assert.match(markup(metadata, null), /data-tooltip="GER 1936.battleplan/);
+    assert.match(markup(metadata, null), /data-tooltip="GER 1936\nC:\/recordings"/,'the tooltip names the recording and its folder, without the extension');
   } finally { await vite.close(); }
 });
 

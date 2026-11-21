@@ -2,7 +2,7 @@ export interface CountryFlagLook {
   nameFailure?: Error; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean }
 
 export function countryFlagUnavailable(reason?: string, pending = false, decodeFailed = false) {
-  const detail = decodeFailed ? 'The flag image could not be displayed.' : reason;
+  const detail = decodeFailed ? 'Couldn’t display the flag image.' : reason;
   return { reason: detail, text: pending ? 'Flag loading' : 'Flag unavailable' };
 }
 

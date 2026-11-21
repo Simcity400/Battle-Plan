@@ -38,7 +38,7 @@ pub fn launch(version: &str, package: &[u8], arguments: &str) -> Result<(), Stri
     let path = std::env::temp_dir().join(format!("battle-plan-{version}-setup.exe"));
     std::fs::write(&path, package).map_err(|error| {
         format!(
-            "The installer could not be saved to {}: {error}",
+            "The installer couldn’t be saved to {}: {error}",
             path.display()
         )
     })?;
@@ -47,10 +47,10 @@ pub fn launch(version: &str, package: &[u8], arguments: &str) -> Result<(), Stri
 
 fn start(path: &Path, arguments: &str) -> Result<(), String> {
     open(path.as_os_str(), Some(arguments), SW_SHOW)
-        .map_err(|error| format!("The installer could not be started: {error}."))
+        .map_err(|error| format!("The installer couldn’t be started: {error}."))
 }
 
 pub fn browse(url: &str) -> Result<(), String> {
     open(OsStr::new(url), None, SW_SHOWNORMAL)
-        .map_err(|error| format!("The release page could not be opened: {error}."))
+        .map_err(|error| format!("The release page couldn’t be opened: {error}."))
 }

@@ -7,7 +7,7 @@ export interface FactionStyle { colour?: string; name?: string }
 export interface FactionColourSet { id: string; name: string; entries: { faction: string; colour: string; name?: string }[] }
 export interface CampaignSettings {
   version: 1;
-  campaigns: Record<string, { factions: Record<string, FactionStyle>; flag?: string }>;
+  campaigns: Record<string, { factions: Record<string, FactionStyle>; flag?: string; counterCountries?: Record<string, string[]> }>;
   shared: Record<string, { colour: string }>;
   sets: FactionColourSet[];
 }
@@ -23,6 +23,7 @@ const KEY = 'hoi4-replay.campaign-settings.v1';
 export const MAX_CAMPAIGN_SETTINGS_STORAGE = 2_000_000;
 const MAX_TEXT = 160;
 const MAX_IDENTITY = 400;
+const MAX_SCOPE = 400;
 const EMPTY: CampaignSettings = { version: 1, campaigns: {}, shared: {}, sets: [] };
 type Storage = Pick<globalThis.Storage, 'getItem' | 'setItem'>;
 
@@ -33,6 +34,18 @@ const colour = (value: unknown): string | undefined => {
   const hex = typeof value === 'string' ? normalizeColor(value) : null;
   return hex && /^#[0-9a-f]{6}$/.test(hex) ? hex : undefined;
 };
+
+const tagList = (value: unknown): string[] | null => Array.isArray(value) ? [...new Set(value.filter(opaqueTag))] : null;
+
+function counterLists(value: unknown): Record<string, string[]> | null {
+  if (!object(value)) return null;
+  const lists: Record<string, string[]> = {};
+  for (const [scope, entry] of Object.entries(value)) {
+    const tags = scope.length <= MAX_SCOPE && safeKey(scope, /^./) ? tagList(entry) : null;
+    if (tags) lists[scope] = tags;
+  }
+  return Object.keys(lists).length ? lists : null;
+}
 
 function style(value: unknown): FactionStyle | null {
   if (!object(value)) return null;
@@ -52,7 +65,8 @@ export function parseCampaignSettings(input: unknown): CampaignSettings {
       const parsed = safeKey(id, /^\d{1,20}$/) ? style(entry) : null;
       if (parsed && (parsed.colour || parsed.name)) factions[id] = parsed;
     }
-    campaigns[key] = { factions, ...(opaqueTag(value.flag) ? { flag: value.flag } : {}) };
+    const counters = counterLists(value.counterCountries);
+    campaigns[key] = { factions, ...(opaqueTag(value.flag) ? { flag: value.flag } : {}), ...(counters ? { counterCountries: counters } : {}) };
   }
   const shared: CampaignSettings['shared'] = {};
   for (const [key, value] of Object.entries(object(input.shared) ? input.shared : {})) {
@@ -110,6 +124,16 @@ export function setCampaignFlag(settings: CampaignSettings, campaign: string, ta
   return { ...settings, campaigns: { ...settings.campaigns, [campaign]: entry } };
 }
 
+export function counterCountries(settings: CampaignSettings, campaign: string, scope: string): string[] | undefined {
+  return Object.hasOwn(settings.campaigns, campaign) ? settings.campaigns[campaign].counterCountries?.[scope] : undefined;
+}
+
+export function setCounterCountries(settings: CampaignSettings, campaign: string, scope: string, tags: readonly string[]): CampaignSettings {
+  if (!safeKey(campaign, /^[0-9a-f]{1,128}$/) || scope.length > MAX_SCOPE || !safeKey(scope, /^./)) return settings;
+  const entry = settings.campaigns[campaign] ?? { factions: {} };
+  return { ...settings, campaigns: { ...settings.campaigns, [campaign]: { ...entry, counterCountries: { ...entry.counterCountries, [scope]: tagList(tags) ?? [] } } } };
+}
+
 export function saveColourSet(settings: CampaignSettings, id: string, name: string, campaign: string,
   factions: readonly { id: string; name: string | null }[], colours: ReadonlyMap<string, string>): CampaignSettings {
   const chosen = settings.campaigns[campaign]?.factions ?? {};
@@ -157,7 +181,7 @@ export function saveCampaignSettings(settings: CampaignSettings, storage?: Stora
     (storage ?? localStorage).setItem(KEY, raw);
     return null;
   } catch {
-    return 'Campaign settings could not be saved on this device; they apply until the app closes.';
+    return 'Couldn’t save campaign settings on this device. They apply until the app closes.';
   }
 }
 

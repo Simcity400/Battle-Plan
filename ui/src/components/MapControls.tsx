@@ -8,22 +8,25 @@ import { desktopAvailable, errorMessage, exportMap } from '../shell/api';
 import { closePopout, nextPopoutMonitor, openPopout, restartPopout, setPopoutCameraMode } from '../shell/popout';
 import CameraModeControl from './CameraModeControl';
 import AircraftPicker from './AircraftPicker';
+import type { AircraftChoice } from '../dashboard/aircraftChoice';
 import type { CameraMode, FlyAircraftStatus } from '../generated/dashboard';
 import type { MapOptions, ReplayMetadata } from '../shell/api';
 import { formatDateTime } from '../dashboard/calendar';
 import { Icon } from './Icons';
+import { FailureLine } from './FailureLine';
+import { actionFailure, type PlainFailure } from '../dashboard/queryError.ts';
 import type { BranchJoin } from '../generated/dashboard';
 import { historyLabels } from '../shell/diagnosticsData';
 import './mapControls.css';
 
-export default function MapControls({ source, client, metadata, branchId, onBranch, onChooseHistory, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, popoutStopped, popoutCameraMode, popoutCameraOverlays = false, aircraft = null, onAircraft, popoutFlyAircraft = null, aircraftHost = null }: {
+export default function MapControls({ source, client, metadata, branchId, onBranch, onChooseHistory, options, onOptions, compact = false, viewId, children, onRemove, onReset, poppedOut, popoutGeneration = 0, popoutProblem, onPopoutRetry, popoutStopped, popoutCameraMode, popoutCameraOverlays = false, aircraft = null, onAircraft, popoutFlyAircraft = null, aircraftHost = null }: {
   compact?: boolean; viewId?: string; children?: ReactNode; onRemove?: () => void; onReset?: () => void;
   poppedOut?: boolean;
   popoutGeneration?: number;
-  popoutProblem?: string | null; popoutStopped?: boolean;
+  popoutProblem?: string | null; onPopoutRetry?: () => void; popoutStopped?: boolean;
   popoutCameraMode?: CameraMode | null;
   popoutCameraOverlays?: boolean;
-  aircraft?: string | null; onAircraft?: (aircraft: string | null) => void; popoutFlyAircraft?: FlyAircraftStatus | null;
+  aircraft?: AircraftChoice | null; onAircraft?: (aircraft: AircraftChoice | null) => void; popoutFlyAircraft?: FlyAircraftStatus | null;
   aircraftHost?: HTMLElement | null;
   source: DashboardSource | null; client: DashboardClient;
   metadata: ReplayMetadata | null; branchId: string | null; onBranch: (id: string) => void;
@@ -34,67 +37,74 @@ export default function MapControls({ source, client, metadata, branchId, onBran
   const menu = usePopover();
   const { trigger, open } = menu;
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<(PlainFailure & { retry?: () => void }) | null>(null);
   const branch = metadata?.branches.find(item => item.id === branchId);
   const labels = historyLabels(metadata?.branches ?? []);
 
-  const run = async (action: () => Promise<void>) => {
+  const failed = (sentence: string, cause: unknown, retry?: () => void) => setError({ ...actionFailure(sentence, errorMessage(cause)), retry });
+  const run = async (sentence: string, action: () => Promise<void>) => {
     setBusy(true); setError(null);
     try { await action(); menu.close(); }
-    catch (cause) { setError(errorMessage(cause)); }
+    catch (cause) { failed(sentence, cause, () => void run(sentence, action)); }
     finally { setBusy(false); }
   };
   const exportImage = async (view?: string) => {
     menu.close();
     setBusy(true); setError(null);
     try { await afterPaint(); await exportMap(view); }
-    catch (cause) { setError(errorMessage(cause)); menu.popup.current?.showPopover(); }
+    catch (cause) { failed(view === 'popout' ? 'Couldn’t export the pop-out map.' : 'Couldn’t export the map.', cause, () => void exportImage(view)); menu.popup.current?.showPopover(); }
     finally { setBusy(false); }
   };
+  const camera = (mode: CameraMode, overlays: boolean) => {
+    setError(null);
+    void setPopoutCameraMode(popoutGeneration, mode, overlays).catch(cause => failed('Couldn’t change the pop-out camera.', cause, () => camera(mode, overlays)));
+  };
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const problem = poppedOut && popoutProblem && popoutProblem !== dismissed ? actionFailure(popoutStopped ? 'The pop-out map stopped.' : 'The pop-out map didn’t take the last change.', popoutProblem) : null;
   return <>
     <button ref={trigger} type="button" className={compact ? "icon-button map-controls-trigger is-compact" : "icon-button map-controls-trigger"} data-widget-settings={compact || undefined} popoverTarget={id}
       aria-label="Map settings" data-tooltip="Map settings" aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
     <Popover menu={menu} id={id} className="map-controls-menu" aria-label="Map settings">
       <PopoverHeading title="Map settings" menu={menu} onDelete={onRemove} onReset={onReset} />
-      <div className="map-menu-section">
-        <label className="map-option-row"><span>Fog of war</span><input type="checkbox" role="switch" disabled={!source} checked={options.fog} onChange={event => onOptions({ ...options, fog: event.currentTarget.checked })} /></label>
-      </div>
-      {open && <MapAppearance key={source ? `${source.id}:${source.revision}` : "empty"} source={source} client={client} viewId={viewId} />}
       {metadata && branch && <div className="map-menu-section map-recording-options">
         {metadata.branches.length > 1 && <div className="map-option-row"><span>History</span><Select label="Campaign history" value={branch.id} onChange={onBranch}
           options={metadata.branches.map(item => ({ value: item.id, label: labels.get(item.id) ?? item.id }))} /></div>}
         <small className="map-branch-range">{formatDateTime(branch.firstHour)}<br />to {formatDateTime(branch.lastHour)}</small>
         {branch.fork && <small className="map-branch-range">Play from {formatDateTime(branch.fork.hour)} on was left behind when the game was loaded from an earlier save.</small>}
         {branch.joins.filter(join => join.evidence === 'unconfirmed' || join.evidence === 'unrecorded' || join.evidence === 'chosen').map(join =>
-          <JoinNote key={join.segmentId} join={join} busy={busy} onChoose={onChooseHistory && (parent => void run(() => onChooseHistory(join.segmentId, parent)))} />)}
+          <JoinNote key={join.segmentId} join={join} busy={busy} onChoose={onChooseHistory && (parent => void run('Couldn’t change the campaign history.', () => onChooseHistory(join.segmentId, parent)))} />)}
       </div>}
       <div className="map-menu-section">
-        <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available with the native map in the desktop app'} onClick={() => void exportImage(viewId)}><Icon name="save" />Export map image</button>
-        {poppedOut && popoutProblem && <p className="map-menu-error" role="alert">{popoutProblem}</p>}
-        {poppedOut && popoutStopped && <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run(() => restartPopout(popoutGeneration))}><Icon name="refresh" />Restart pop-out map</button>}
+        <button type="button" className="map-menu-action" disabled={!desktopAvailable || !metadata || busy} data-tooltip={desktopAvailable ? 'Save the rendered map as a PNG image' : 'Available in the desktop app'} onClick={() => void exportImage(viewId)}><Icon name="save" />Export map image</button>
+        {problem && <FailureLine className="map-menu-error" message={problem.text} detail={problem.detail}
+          onRetry={popoutStopped ? undefined : onPopoutRetry} onDismiss={popoutStopped || onPopoutRetry ? undefined : () => setDismissed(popoutProblem ?? null)} />}
+        {poppedOut && popoutStopped && <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run('Couldn’t restart the pop-out map.', () => restartPopout(popoutGeneration))}><Icon name="refresh" />Restart pop-out map</button>}
         {poppedOut && desktopAvailable && popoutCameraMode && <div className="map-option-row"><span>Pop-out camera</span>
           <CameraModeControl value={popoutCameraMode} overlays={popoutCameraOverlays}
-            onChange={mode => void setPopoutCameraMode(popoutGeneration, mode, popoutCameraOverlays).catch(cause => setError(errorMessage(cause)))}
-            onOverlaysChange={shown => void setPopoutCameraMode(popoutGeneration, popoutCameraMode, shown).catch(cause => setError(errorMessage(cause)))} /></div>}
+            onChange={mode => camera(mode, popoutCameraOverlays)} onOverlaysChange={shown => camera(popoutCameraMode, shown)} /></div>}
         {poppedOut && desktopAvailable && popoutCameraMode === 'fly' && onAircraft && <div className="map-option-row"><span>Pop-out aircraft</span>
           <AircraftPicker client={client} source={source} chosen={aircraft} status={popoutFlyAircraft} onChoose={onAircraft} host={aircraftHost} /></div>}
         {poppedOut !== undefined && desktopAvailable && (poppedOut ? <>
-          <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Save the pop-out window's map as a PNG image" onClick={() => void exportImage('popout')}><Icon name="save" />Export pop-out map</button>
-          <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Move the pop-out map to the next monitor" onClick={() => void run(() => nextPopoutMonitor(popoutGeneration))}><Icon name="monitor" />Move pop-out to next monitor</button>
-          <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run(() => closePopout(popoutGeneration))}><Icon name="close" />Close pop-out map</button>
-        </> : <button type="button" className="map-menu-action" disabled={!metadata || busy} data-tooltip="Show this map alone in its own window, following this app's clock and settings" onClick={() => void run(async () => { await openPopout(); })}><Icon name="monitor" />Pop out map</button>)}
+          <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Save the pop-out window’s map as a PNG image" onClick={() => void exportImage('popout')}><Icon name="save" />Export pop-out map</button>
+          <button type="button" className="map-menu-action" disabled={busy} data-tooltip="Move the pop-out map to the next monitor" onClick={() => void run('Couldn’t move the pop-out map.', () => nextPopoutMonitor(popoutGeneration))}><Icon name="monitor" />Move pop-out to next monitor</button>
+          <button type="button" className="map-menu-action" disabled={busy} onClick={() => void run('Couldn’t close the pop-out map.', () => closePopout(popoutGeneration))}><Icon name="close" />Close pop-out map</button>
+        </> : <button type="button" className="map-menu-action" disabled={!metadata || busy} data-tooltip="Show this map alone in its own window, following this app’s clock and settings" onClick={() => void run('Couldn’t pop out the map.', async () => { await openPopout(); })}><Icon name="monitor" />Pop out map</button>)}
+        {error && <FailureLine className="map-menu-error" message={error.text} detail={error.detail} onRetry={error.retry} retryDisabled={busy} />}
       </div>
+      <div className="map-menu-section">
+        <label className="map-option-row"><span>Fog of war</span><input type="checkbox" role="switch" disabled={!source} checked={options.fog} onChange={event => onOptions({ ...options, fog: event.currentTarget.checked })} /></label>
+        {!desktopAvailable && <p className="map-menu-note">Map display options apply in the desktop app.</p>}
+      </div>
+      {open && <MapAppearance key={source ? `${source.id}:${source.revision}` : "empty"} source={source} client={client} viewId={viewId} />}
       {open && children}
-      {!desktopAvailable && <p className="map-menu-note">Map display options apply in the desktop app.</p>}
-      {error && <p className="map-menu-error" role="alert">{error}</p>}
     </Popover>
   </>;
 }
 
 function JoinNote({ join, busy, onChoose }: { join: BranchJoin; busy: boolean; onChoose?: (parentId: string | null) => void }) {
   const at = formatDateTime(join.hour);
-  const text = join.evidence === 'unconfirmed' ? `From ${at}: the recording can't tell which save this play was loaded from, so it goes on from the latest play.`
-    : join.evidence === 'unrecorded' ? `Before ${at}: play the recorder didn't see. This goes on from the latest recorded play.`
+  const text = join.evidence === 'unconfirmed' ? `From ${at}: the recording can’t tell which save this play was loaded from, so it goes on from the latest play.`
+    : join.evidence === 'unrecorded' ? `Before ${at}: play the recorder didn’t see. This goes on from the latest recorded play.`
     : `From ${at}: goes on from the play you chose.`;
   const choosable = onChoose && (join.choices.length > 1 || join.evidence === 'chosen');
   return <>

@@ -905,7 +905,7 @@ struct NativeWindow {
 impl NativeWindow {
     fn new(window: crate::host::Window) -> io::Result<Self> {
         if unsafe { GetParent(window.hwnd() as HWND) }.is_null() {
-            return Err(io::Error::other("The map's window has no host window"));
+            return Err(io::Error::other("The map’s window has no host window"));
         }
         Ok(Self { window, placement: Cell::new(Placement::default()), region: RefCell::new(None) })
     }

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Select } from '../components/Select';
 import { invoke } from '@tauri-apps/api/core';
 import { desktopAvailable, errorMessage } from './api';
 import { Icon } from '../components/Icons';
-import { sameDisplay } from './videoOptions';
+import { FailureLine } from '../components/FailureLine';
+import { FRAME_LIMIT_HINT, MAX_FRAME_LIMIT, MIN_FRAME_LIMIT, frameLimitInput, sameDisplay } from './videoOptions';
 import type { VideoOptions } from './videoOptions';
 interface VideoReply { settings: VideoOptions; gameSettings: VideoOptions | null; gameSettingsError: string | null; gameMapUiScale: number | null; mapUiScaleChoices: number[] }
 
@@ -13,68 +14,106 @@ const INTERFACE_SCALE = 'Interface scale';
 const MAP_UI_SCALE = 'Map UI scale';
 export const VIDEO_OPTION_LABELS = [VSYNC, FRAME_LIMIT, INTERFACE_SCALE, MAP_UI_SCALE];
 const MATCH_GAME = 'match';
-const MIN_FRAME_LIMIT = 1;
-const MAX_FRAME_LIMIT = 1000;
 
 export function useVideoSettings(enabled: boolean, userFolder?: string) {
   const [reply, setReply] = useState<VideoReply | null>(null);
   const [draft, setDraft] = useState<VideoOptions | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ detail: string; write: VideoOptions | null } | null>(null);
   const [retry, setRetry] = useState(0);
+  const [pending, setPending] = useState(false);
+  const writes = useRef<{ next: VideoOptions | null; running: boolean; live: boolean }>({ next: null, running: false, live: true });
+  useEffect(() => { const queue = writes.current; queue.live = true; return () => { queue.live = false; }; }, []);
   useEffect(() => {
     if (!enabled || !desktopAvailable) return;
     let active = true;
     setError(null); setReply(null); setDraft(null);
     void invoke<VideoReply>('video_settings').then(value => {
       if (active) { setReply(value); setDraft(value.settings); }
-    }).catch(cause => { if (active) setError(errorMessage(cause)); });
+    }).catch(cause => { if (active) setError({ detail: errorMessage(cause), write: null }); }).finally(() => { if (active) setPending(false); });
     return () => { active = false; };
   }, [enabled, retry, userFolder]);
+  const write = async () => {
+    const queue = writes.current;
+    if (queue.running) return;
+    queue.running = true;
+    setPending(true);
+    while (queue.next) {
+      const settings = queue.next; queue.next = null;
+      try {
+        const value = await invoke<VideoReply>('set_video_settings', { settings });
+        if (queue.live) { setReply(value); setError(null); if (!queue.next) setDraft(value.settings); }
+      } catch (cause) {
+        if (queue.live) setError({ detail: errorMessage(cause), write: settings });
+      }
+    }
+    queue.running = false;
+    if (queue.live) setPending(false);
+  };
+  const apply = (next: VideoOptions) => {
+    if (sameDisplay(next, draft ?? undefined)) return;
+    setDraft(next); writes.current.next = next; void write();
+  };
   return {
-    draft, error, gameError: reply?.gameSettingsError, gameMapUiScale: reply?.gameMapUiScale ?? null, mapUiScaleChoices: reply?.mapUiScaleChoices ?? [],
-    dirty: !!draft && !sameDisplay(draft, reply?.settings),
+    draft, error: error?.detail ?? null, writeFailed: !!error?.write, pending, gameError: reply?.gameSettingsError, gameMapUiScale: reply?.gameMapUiScale ?? null, mapUiScaleChoices: reply?.mapUiScaleChoices ?? [],
     canReset: !!reply?.gameSettings,
     atGame: !!reply?.gameSettings && sameDisplay(draft, reply.gameSettings),
-    update: (value: Partial<VideoOptions>) => { if (draft) setDraft({ ...draft, ...value, useGameSettings: false }); },
-    reset: () => { if (reply?.gameSettings) setDraft(reply.gameSettings); },
-    cancel: () => setDraft(reply?.settings ?? null),
-    retry: () => setRetry(value => value + 1),
-    save: async () => {
-      if (!draft) return;
-      const value = await invoke<VideoReply>('set_video_settings', { settings: draft });
-      setReply(value); setDraft(value.settings);
+    update: (value: Partial<VideoOptions>) => { if (draft) apply({ ...draft, ...value, useGameSettings: false }); },
+    reset: () => { if (reply?.gameSettings) apply(reply.gameSettings); },
+    retry: () => {
+      if (!error?.write) { setPending(true); setRetry(value => value + 1); return; }
+      writes.current.next ??= error.write; void write();
     },
   };
 }
 
+function FrameLimit({ value, disabled, onCommit }: { value: number | null; disabled: boolean; onCommit: (value: number | null) => void }) {
+  const shown = value === null ? '' : String(value);
+  const hintId = useId();
+  const [text, setText] = useState(shown);
+  const [bad, setBad] = useState(false);
+  const [invalid, setInvalid] = useState(false);
+  useEffect(() => { setText(shown); setBad(false); setInvalid(false); }, [shown]);
+  const commit = () => {
+    const parsed = frameLimitInput(text, bad);
+    setInvalid(!parsed);
+    if (parsed && parsed.value !== value) onCommit(parsed.value);
+  };
+  return <>
+    <span className="frame-limit-field"><input type="number" min={MIN_FRAME_LIMIT} max={MAX_FRAME_LIMIT} step={1} placeholder="Off" aria-label={FRAME_LIMIT} disabled={disabled}
+      aria-invalid={invalid || undefined} aria-describedby={invalid ? hintId : undefined} value={text}
+      onChange={event => { setText(event.currentTarget.value); setBad(event.currentTarget.validity.badInput); setInvalid(false); }} onBlur={commit}
+      onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } }} /><small>frames a second</small></span>
+    {invalid && <div className="map-option-note" id={hintId}><FailureLine message={FRAME_LIMIT_HINT} /></div>}
+  </>;
+}
+
+const unavailable = <span className="settings-value">Desktop only</span>;
+
 export default function VideoControls({ video, busy }: { video: ReturnType<typeof useVideoSettings>; busy: boolean }) {
   const enabled = !!video.draft && !busy;
+  const loading = video.error ? 'Unavailable' : 'Loading…';
   return <>
-    <label className="map-option-row"><span>{VSYNC} <span className="folder-info" tabIndex={0} role="img" aria-label="About VSync" data-tooltip="Synchronizes all native maps to the display to reduce tearing. This is a global graphics setting; browser preview uses the browser's presentation settings."><Icon name="info" /></span></span>
-      {desktopAvailable ? <input type="checkbox" role="switch" disabled={!enabled} aria-checked={video.draft ? video.draft.vsync : 'mixed'} checked={video.draft?.vsync ?? false} onChange={event => video.update({ vsync: event.currentTarget.checked })} /> : <span className="graphics-unavailable">Desktop only</span>}
+    <label className="map-option-row"><span>{VSYNC} <span className="folder-info" tabIndex={0} role="img" aria-label="About VSync" onClick={event => event.preventDefault()} data-tooltip="Synchronises every map to the display to reduce tearing. In the browser, the browser’s own presentation settings apply."><Icon name="info" /></span></span>
+      {!desktopAvailable ? unavailable : video.draft ? <input type="checkbox" role="switch" disabled={!enabled} checked={video.draft.vsync} onChange={event => video.update({ vsync: event.currentTarget.checked })} />
+        : <span className="map-option-unknown" role="img" aria-label={`${VSYNC}: ${loading}`}>—</span>}
     </label>
-    <div className="map-option-row"><span>{FRAME_LIMIT} <span className="folder-info" tabIndex={0} role="img" aria-label="About the frame rate limit" data-tooltip="Holds every native map to at most this many evenly spaced frames a second, which a weaker machine can draw steadily and a laptop on battery pays less for. Empty draws as the display and VSync allow."><Icon name="info" /></span></span>
-      {desktopAvailable ? <span className="frame-limit-field"><input type="number" min={MIN_FRAME_LIMIT} max={MAX_FRAME_LIMIT} step={1} placeholder="Off" aria-label={FRAME_LIMIT} disabled={!enabled || !video.draft}
-        value={video.draft?.mapFrameLimit ?? ''}
-        onChange={event => {
-          const hz = event.currentTarget.value === '' ? null : Math.round(Number(event.currentTarget.value));
-          if (hz === null || (hz >= MIN_FRAME_LIMIT && hz <= MAX_FRAME_LIMIT)) video.update({ mapFrameLimit: hz });
-        }} /><small>frames a second</small></span>
-        : <span className="graphics-unavailable">Desktop only</span>}
+    <div className="map-option-row"><span>{FRAME_LIMIT} <span className="folder-info" tabIndex={0} role="img" aria-label="About the frame rate limit" data-tooltip="Holds every map to at most this many evenly spaced frames a second, which a weaker machine can draw steadily and a laptop on battery pays less for. Empty draws as fast as the display and VSync allow."><Icon name="info" /></span></span>
+      {!desktopAvailable ? unavailable : video.draft ? <FrameLimit value={video.draft.mapFrameLimit} disabled={!enabled} onCommit={hz => video.update({ mapFrameLimit: hz })} />
+        : <span className="map-option-unknown" role="img" aria-label={`${FRAME_LIMIT}: ${loading}`}>—</span>}
     </div>
-    <div className="map-option-row"><span>{INTERFACE_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About interface scale" data-tooltip="Changes the size of app text, menus and buttons. Map widget sizes still use the dashboard Edit handles. In browser preview, use browser zoom."><Icon name="info" /></span></span>
+    <div className="map-option-row"><span>{INTERFACE_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About interface scale" data-tooltip="Changes the size of app text, menus and buttons. Map widget sizes still use the dashboard Edit handles. In the browser, use browser zoom."><Icon name="info" /></span></span>
       {desktopAvailable ? <Select label={INTERFACE_SCALE} disabled={!enabled} value={String(video.draft?.uiScale ?? '')} onChange={value => video.update({ uiScale: Number(value) })}
-        options={[...(video.draft ? [] : [{ value: '', label: video.error ? 'Unavailable' : 'Loading...' }]),
+        options={[...(video.draft ? [] : [{ value: '', label: loading }]),
           ...[...new Set([...Array.from({ length: 16 }, (_, index) => 75 + index * 5), ...(video.draft ? [video.draft.uiScale] : [])])].sort((a, b) => a - b).map(scale => ({ value: String(scale), label: `${scale}%` }))]} />
-        : <span className="graphics-unavailable">Browser zoom</span>}
+        : unavailable}
     </div>
-    <div className="map-option-row"><span>{MAP_UI_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About map UI scale" data-tooltip="Size of counters, map icons, labels, combat bubbles, the combat window and map tooltips. Match game draws them as large as the game shows them on this desktop, from its settings.txt and pdx_settings.txt display settings."><Icon name="info" /></span></span>
+    <div className="map-option-row"><span>{MAP_UI_SCALE} <span className="folder-info" tabIndex={0} role="img" aria-label="About map UI scale" data-tooltip="Size of counters, map icons, labels, combat bubbles, the combat window and map tooltips. Match game draws them as large as the game shows them on this desktop, from its own display settings."><Icon name="info" /></span></span>
       {desktopAvailable ? <Select label={MAP_UI_SCALE} disabled={!enabled} value={video.draft ? String(video.draft.mapUiScale ?? MATCH_GAME) : ''}
         onChange={value => video.update({ mapUiScale: value === MATCH_GAME ? null : Number(value) })}
-        options={[...(video.draft ? [] : [{ value: '', label: video.error ? 'Unavailable' : 'Loading...' }]),
-          { value: MATCH_GAME, label: video.gameMapUiScale === null ? 'Match game (default)' : `Match game (${video.gameMapUiScale}%)` },
+        options={[...(video.draft ? [] : [{ value: '', label: loading }]),
+          { value: MATCH_GAME, label: video.gameMapUiScale === null ? 'Match game' : `Match game (${video.gameMapUiScale}%)` },
           ...[...new Set([...video.mapUiScaleChoices, ...(video.draft?.mapUiScale != null ? [video.draft.mapUiScale] : [])])].sort((a, b) => a - b).map(scale => ({ value: String(scale), label: `${scale}%` }))]} />
-        : <span className="graphics-unavailable">Desktop only</span>}
+        : unavailable}
     </div>
   </>;
 }

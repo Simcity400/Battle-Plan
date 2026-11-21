@@ -144,7 +144,7 @@ impl WindowSurface {
         let default = self
             .surface
             .get_default_config(&state.adapter, size[0], size[1])
-            .ok_or("The map's surface is not supported by its adapter")?;
+            .ok_or("Couldn’t draw in the map’s window: the graphics adapter doesn’t support it")?;
         let mut configuration = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: state.target_format,

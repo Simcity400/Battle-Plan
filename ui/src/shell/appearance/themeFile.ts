@@ -92,7 +92,7 @@ function parseVsCodeTheme(input: Record<string, unknown>): ImportedTheme {
   const colors = input.colors as Record<string, unknown>;
   const pick = (...keys: string[]) => keys.map(key => colors[key]).find(value => normalizeColor(value));
   const background = normalizeColor(pick('editor.background', 'sideBar.background', 'panel.background'));
-  if (!background) throw new Error('This VS Code theme does not set an editor background.');
+  if (!background) throw new Error('This VS Code theme doesn’t set an editor background.');
   const type = String(input.type ?? '').toLowerCase();
   const mode: ThemeMode = type.includes('light') ? 'light' : type.includes('dark') || type === 'hc' ? 'dark' : colorsMode({ canvas: background });
   const over = (value: unknown) => normalizeColor(value, background) ?? undefined;
@@ -122,11 +122,11 @@ function parseVsCodeTheme(input: Record<string, unknown>): ImportedTheme {
 export function parseThemeText(text: string): ImportedTheme {
   if (text.length > MAX_THEME_FILE_BYTES) throw new Error('Theme files must be smaller than 512 KB.');
   let input: unknown;
-  try { input = parseJsonc(text); } catch { throw new Error('This is not a valid theme file. Themes are JSON.'); }
-  if (!object(input)) throw new Error('This is not a valid theme file.');
+  try { input = parseJsonc(text); } catch { throw new Error('This isn’t a valid theme file. Themes are JSON.'); }
+  if (!object(input)) throw new Error('This isn’t a valid theme file.');
   if (object(input.colors) && Object.keys(input.colors).some(key => key.includes('.'))) return parseVsCodeTheme(input);
-  if (input.format !== undefined && input.format !== THEME_FILE_FORMAT) throw new Error('This file is not an Battle Plan theme.');
-  if (input.version !== undefined && input.version !== 1) throw new Error(`Theme file version ${String(input.version)} is not supported.`);
+  if (input.format !== undefined && input.format !== THEME_FILE_FORMAT) throw new Error('This file isn’t a BattlePlan theme.');
+  if (input.version !== undefined && input.version !== 1) throw new Error(`Theme file version ${String(input.version)} isn’t supported.`);
   return parseOwnTheme(input);
 }
 

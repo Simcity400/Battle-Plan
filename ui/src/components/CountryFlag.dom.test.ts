@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { canvasPage } from '../../../tools/canvas-page.ts';
 
 test('unavailable widget flags preserve eager slots and borders when styles load later', async () => {
-  const styles = await Promise.all(['../dashboard/dashboard.css', '../charts/log/log.css', '../widgets/espionage-log/espionageLog.css',
+  const styles = await Promise.all(['./CountryFlag.css', '../charts/log/log.css', '../widgets/espionage-log/espionageLog.css',
     '../widgets/aces/aces.css', '../widgets/battles/battles.css', '../widgets/peace-deals/peaceDeals.css']
     .map(path => readFile(new URL(path, import.meta.url), 'utf8')));
   const { result } = await canvasPage(`

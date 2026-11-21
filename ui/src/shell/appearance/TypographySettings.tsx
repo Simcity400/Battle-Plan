@@ -3,9 +3,11 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { Icon } from '../../components/Icons';
+import { FailureLine } from '../../components/FailureLine';
 import { Popover, usePopover } from '../../components/Popover';
 import { Select } from '../../components/Select';
-import { SettingsBlock } from './AppearanceSettings';
+import { ConfirmRow, SettingsBlock } from '../SettingsBlock';
+import { desktopAvailable } from '../api';
 import { FONT_PRESETS, canUseFontFamily, defaultFontLabel, fontStack, isMonospaceFamily } from './fonts';
 import { discoverInstalledFonts, useFontDiscovery } from './fontDiscovery';
 import { DEFAULT_TYPOGRAPHY, FONT_SIZE_LIMITS } from './typography';
@@ -43,7 +45,7 @@ function FontOptions({ label, families, value, placeholder, focusSearch, onPick 
     }
   };
   return <div onKeyDown={keys}>
-    <input className="font-menu-search" aria-label={`Search ${label.toLowerCase()} fonts`} placeholder="Search fonts…" role="combobox" aria-expanded="true" aria-controls={id}
+    <input type="search" className="font-menu-search" aria-label={`Search ${label.toLowerCase()} fonts`} placeholder="Search fonts" role="combobox" aria-expanded="true" aria-controls={id}
       aria-activedescendant={at >= 0 ? `${id}-${at}` : undefined} data-popover-autofocus={focusSearch || undefined} value={query}
       onChange={event => { setQuery(event.currentTarget.value); setActive(0); setScrollTop(0); if (list.current) list.current.scrollTop = 0; }} />
     <div ref={list} id={id} className="font-menu-list" role="listbox" aria-label={label} onScroll={event => setScrollTop(event.currentTarget.scrollTop)}>
@@ -104,10 +106,11 @@ function FontPicker({ id, label, hint, value, placeholder, onChange, installed, 
   const changed = !!value || (!!sized && size !== DEFAULT_TYPOGRAPHY.sizes[sized]);
   return <div className="font-setting" id={id}>
     <div className="settings-row font-row">
-    <span className="settings-row-text"><strong>{label}{changed && <button type="button" className="icon-button small font-reset" aria-label={`Reset ${label.toLowerCase()}`} data-tooltip={sized ? 'Reset font and size' : 'Reset font'}
-      onClick={() => { setText(''); setSettled(true); setMessage(null); onReset(); }}><Icon name="refresh" /></button>}</strong><small>{hint}</small></span>
+    <span className="settings-row-text"><strong>{label}</strong><small>{hint}</small></span>
     <div className="font-picker">
-      <div className="font-controls"><div className="font-input" ref={anchor}>
+      <div className="font-controls">{changed && <button type="button" className="icon-button small font-reset" aria-label={`Reset ${label.toLowerCase()}${sized ? ' and its size' : ''}`}
+        data-tooltip={`Reset ${label.toLowerCase()}${sized ? ' and its size' : ''}`} data-tooltip-side="left"
+        onClick={() => { setText(''); setSettled(true); setMessage(null); onReset(); }}><Icon name="refresh" /></button>}<div className="font-input" ref={anchor}>
       {installed ? <button ref={menu.trigger} type="button" className="select-trigger font-family-trigger" aria-label={label} aria-haspopup="listbox" aria-expanded={menu.open} aria-controls={listId}
         onClick={() => menu.open ? menu.close() : openFonts()}><span>{FONT_PRESETS.find(preset => preset.family === value && value)?.label ?? (value || placeholder)}</span><Icon name="chevron-down" /></button>
         : <><input ref={input} value={text} placeholder={placeholder} aria-label={label} role="combobox" aria-expanded={menu.open} aria-controls={listId} aria-haspopup="listbox" maxLength={200} autoComplete="off" autoCapitalize="off"
@@ -121,13 +124,13 @@ function FontPicker({ id, label, hint, value, placeholder, onChange, installed, 
         <button ref={menu.trigger} type="button" className="icon-button small font-dropdown-trigger" aria-label={`Choose ${label.toLowerCase()}`} aria-haspopup="listbox" aria-expanded={menu.open} aria-controls={listId}
           onClick={() => menu.open ? menu.close() : openFonts()}><Icon name="chevron-down" /></button></>}
       </div>{sized && <div className="font-size-control"><Select label={`${label} size`} value={String(size)} onChange={value => onSize(Number(value))}
-        options={Array.from({ length: max - min + 1 }, (_, i) => ({ value: String(min + i), label: `${min + i} px` }))} /></div>}</div>
+        options={Array.from({ length: max - min + 1 }, (_, i) => ({ value: String(min + i), label: `${min + i}px` }))} /></div>}</div>
       <Popover menu={menu} id={listId} className="font-menu" aria-label={label}>
         {menu.open && <FontOptions label={label} families={families} value={value} placeholder={placeholder} focusSearch={focusOptions.current}
           onPick={pick} />}
       </Popover>
-      {message ? <small className="font-missing" role="status"><Icon name="alert" />{message}</small> : rejected ? <small className="font-missing" role="status"><Icon name="alert" />“{text.trim()}” {canUseFontFamily(text, installed) ? 'isn’t monospace' : 'wasn’t found'}. Your current font is unchanged.</small>
-        : value && !available && <small className="font-missing"><Icon name="alert" />“{value}” is unavailable in this browser. Using the system font.</small>}
+      {message ? <FailureLine message={message} /> : rejected ? <FailureLine message={`“${text.trim()}” ${canUseFontFamily(text, installed) ? 'isn’t monospace' : 'wasn’t found'}. Your current font is unchanged.`} />
+        : value && !available && <small className="font-missing"><Icon name="alert" />“{value}” {desktopAvailable ? 'isn’t installed on this computer' : 'is unavailable in this browser'}. Using the system font.</small>}
     </div>
     </div>{preview && <div className="font-preview">{preview}</div>}
   </div>;
@@ -137,6 +140,9 @@ export default function TypographySettings({ appearance, searchTarget }: { appea
   const { settings, update } = appearance;
   const { typography } = settings;
   const discovery = useFontDiscovery();
+  const [resetting, setResetting] = useState(false);
+  const resetTrigger = useRef<HTMLButtonElement>(null);
+  const cancelReset = () => { setResetting(false); requestAnimationFrame(() => resetTrigger.current?.focus()); };
   const fonts = discovery.status === 'granted' ? discovery.families : null;
   const defaults = useMemo(() => ({ ui: defaultFontLabel(), mono: defaultFontLabel(true) }), []);
   const discover = () => { void discoverInstalledFonts(); };
@@ -160,24 +166,30 @@ export default function TypographySettings({ appearance, searchTarget }: { appea
   const headings = <div className="font-preview-headings"><h2>Campaign overview</h2><span>Research and production</span></div>;
   const diagnostics = <pre className="font-preview-diagnostics">{`Playback ready\nSamples: 12345    Coverage: complete\nFrame: 16.7 ms   Cache: 128 MiB`}</pre>;
   const changed = Object.values(settings.fonts).some(Boolean) || JSON.stringify({ ...typography, advanced: false }) !== JSON.stringify(DEFAULT_TYPOGRAPHY);
-  return <SettingsBlock id="appearance-typography" title="Typography" actions={<>
-    {changed && <button type="button" className="button small quiet" onClick={() => update(previous => ({ ...previous, fonts: { interface: '', display: '', tables: '', diagnostics: '' }, typography: { ...structuredClone(DEFAULT_TYPOGRAPHY), advanced: previous.typography.advanced } }))}>Reset typography</button>}
+  return <SettingsBlock id="appearance-typography" title="Typography" actions={
     <label className="typography-advanced">Advanced<input type="checkbox" role="switch" aria-label="Show advanced typography settings" checked={typography.advanced}
-      onChange={event => update(previous => ({ ...previous, typography: { ...previous.typography, advanced: event.currentTarget.checked } }))} /></label>
-  </>}>
+      onChange={event => update(previous => ({ ...previous, typography: { ...previous.typography, advanced: event.currentTarget.checked } }))} /></label>}>
     {row('interface', 'Interface font', 'Menus, labels and controls.', typography.advanced ? null : <>{headings}<div className="font-preview-interface"><span>Example campaign · 12 Mar · 14:00</span><button type="button" className="button small">Preview control</button></div></>)}
     {typography.advanced && row('display', 'Headings font', 'Page headings, country names and widget titles.', headings)}
     {row('tables', 'Tables font', 'Data tables. Empty uses the interface font, as charts do.', <TypographyTablePreview />)}
     {typography.advanced && row('diagnostics', 'Diagnostics font', 'Technical reports and recording diagnostics.', diagnostics, true)}
     {typography.advanced && isMac && <label className="settings-row" id="appearance-font-smoothing">
       <span className="settings-row-text"><strong>Font smoothing</strong><small>Use thinner grayscale text smoothing instead of the macOS default.</small></span>
-      {!typography.smoothing && <button type="button" className="icon-button small" aria-label="Reset font smoothing" onClick={() => update(previous => ({ ...previous, typography: { ...previous.typography, smoothing: true } }))}><Icon name="refresh" /></button>}
-      <input type="checkbox" role="switch" aria-label="Font smoothing" checked={typography.smoothing} onChange={event => update(previous => ({ ...previous, typography: { ...previous.typography, smoothing: event.currentTarget.checked } }))} />
+      <span className="settings-row-control">{!typography.smoothing && <button type="button" className="icon-button small font-reset" aria-label="Reset font smoothing" data-tooltip="Reset font smoothing" data-tooltip-side="left" onClick={() => update(previous => ({ ...previous, typography: { ...previous.typography, smoothing: true } }))}><Icon name="refresh" /></button>}
+      <input type="checkbox" role="switch" aria-label="Font smoothing" checked={typography.smoothing} onChange={event => update(previous => ({ ...previous, typography: { ...previous.typography, smoothing: event.currentTarget.checked } }))} /></span>
     </label>}
     <label className="settings-row" id="appearance-word-wrap"><span className="settings-row-text"><strong>Word wrapping</strong><small>Wrap long text in tables and technical reports.</small></span>
-      {!typography.wordWrap && <button type="button" className="icon-button small" aria-label="Reset word wrapping" onClick={() => update(previous => ({ ...previous, typography: { ...previous.typography, wordWrap: true } }))}><Icon name="refresh" /></button>}
-      <input type="checkbox" role="switch" aria-label="Word wrapping" checked={typography.wordWrap} onChange={event => update(previous => ({ ...previous, typography: { ...previous.typography, wordWrap: event.currentTarget.checked } }))} />
+      <span className="settings-row-control">{!typography.wordWrap && <button type="button" className="icon-button small font-reset" aria-label="Reset word wrapping" data-tooltip="Reset word wrapping" data-tooltip-side="left" onClick={() => update(previous => ({ ...previous, typography: { ...previous.typography, wordWrap: true } }))}><Icon name="refresh" /></button>}
+      <input type="checkbox" role="switch" aria-label="Word wrapping" checked={typography.wordWrap} onChange={event => update(previous => ({ ...previous, typography: { ...previous.typography, wordWrap: event.currentTarget.checked } }))} /></span>
     </label>
+    {changed && (resetting ? <ConfirmRow title="Reset typography?" action="Reset typography" onCancel={cancelReset}
+      detail="Every font, text size and wrapping choice here returns to its default." onConfirm={() => {
+        setResetting(false);
+        update(previous => ({ ...previous, fonts: { interface: '', display: '', tables: '', diagnostics: '' }, typography: { ...structuredClone(DEFAULT_TYPOGRAPHY), advanced: previous.typography.advanced } }));
+      }} />
+      : <div className="settings-row"><span className="settings-row-text"><strong>Typography defaults</strong>
+        <small>Returns every font, text size and wrapping choice here to its default.</small></span>
+        <button ref={resetTrigger} type="button" className="button small" onClick={() => setResetting(true)}><Icon name="refresh" />Reset typography</button></div>)}
   </SettingsBlock>;
 }
 

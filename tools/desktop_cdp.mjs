@@ -4,7 +4,7 @@ if (process.argv.length < 4) throw new Error('Usage: node tools/desktop_cdp.mjs 
 const session = JSON.parse(await readFile(path.join(process.argv[2], 'session.json'), 'utf8'));
 if (!Number.isInteger(session.port) || session.port < 1024 || session.port > 65535) throw new Error('Invalid debugging port');
 const targets=await (await fetch(`http://127.0.0.1:${session.port}/json/list`, {signal: AbortSignal.timeout(10000)})).json();
-const target=targets.find(t=>t.type==='page' && t.title==='Battle Plan');
+const target=targets.find(t=>t.type==='page' && t.title==='BattlePlan');
 if(!target) throw new Error('Desktop WebView2 target unavailable');
 const socket=new WebSocket(target.webSocketDebuggerUrl);
 await new Promise((resolve,reject)=>{

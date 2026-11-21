@@ -103,7 +103,7 @@ pub fn session_target_at(
     mode: CaptureMode,
 ) -> Result<(PathBuf, bool), String> {
     let settings = RecorderSettings::load_from(settings_path)
-        .map_err(|error| format!("Recorder settings could not be read: {error}"))?;
+        .map_err(|error| format!("Recorder settings couldn’t be read: {error}"))?;
     let current = current_folder(&settings, root, campaign);
     if settings.campaigns.get(campaign).map(|choice| choice.next) != Some(NextLoad::NewFile)
         && !other_mode(&current, campaign, mode)
@@ -128,7 +128,7 @@ pub fn session_target_at(
         (folder, new_file)
     })
     .map(|(_, target)| target)
-    .map_err(|error| format!("Recorder settings could not be saved: {error}"))
+    .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))
 }
 
 pub fn session_target(

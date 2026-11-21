@@ -20,7 +20,7 @@ use windows_sys::Win32::System::{
 
 const RECORDER: &str = "battle-plan-recorder.exe";
 
-const HELD: &str = "Battle Plan Recorder was not started with Battle Plan: the program that opened Battle Plan would close the recorder with it, ending a recording. Start Battle Plan Recorder from the Start menu, or turn on Start with Windows in its settings.";
+const HELD: &str = "BattlePlan Recorder wasn’t started with BattlePlan: the program that opened BattlePlan would close the recorder with it, ending a recording. Start BattlePlan Recorder from the Start menu, or turn on Start with Windows in its settings.";
 
 pub fn start_recorder() {
     if !RecorderSettings::load().map_or(true, |settings| settings.start_with_replay) {
@@ -39,7 +39,7 @@ pub fn start_recorder() {
         std::thread::spawn(move || {
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Warning)
-                .set_title("Battle Plan Recorder")
+                .set_title("BattlePlan Recorder")
                 .set_description(refusal)
                 .set_buttons(rfd::MessageButtons::Ok)
                 .show()
@@ -76,7 +76,7 @@ fn launch_independently(command: &mut Command) -> Result<Child, String> {
     if checked && held == 0 {
         return Ok(child);
     }
-    let refused = if checked { HELD.to_owned() } else { format!("Battle Plan Recorder could not start: {}", io::Error::last_os_error()) };
+    let refused = if checked { HELD.to_owned() } else { format!("BattlePlan Recorder couldn’t start: {}", io::Error::last_os_error()) };
     let _ = child.kill();
     let _ = child.wait();
     Err(refused)
@@ -90,7 +90,7 @@ fn refusal(error: &io::Error) -> String {
     if held {
         HELD.to_owned()
     } else {
-        format!("Battle Plan Recorder could not start: {error}")
+        format!("BattlePlan Recorder couldn’t start: {error}")
     }
 }
 
@@ -169,7 +169,7 @@ pub async fn recording_preferences() -> Result<RecordingPreferences, String> {
     blocking(|| {
         RecorderSettings::load()
             .map(|settings| preferences(&settings))
-            .map_err(|error| format!("Recorder settings could not be read: {error}"))
+            .map_err(|error| format!("Recorder settings couldn’t be read: {error}"))
     })
     .await
 }
@@ -184,17 +184,17 @@ pub async fn rename_recording(path: String, name: String) -> Result<String, Stri
 }
 
 fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
-    let failed = |error: std::io::Error| format!("The recording could not be renamed: {error}");
+    let failed = |error: std::io::Error| format!("The recording couldn’t be renamed: {error}");
     let stem = recording_files::file_stem(name)
         .ok_or("Choose a name with a letter or number Windows allows in file names.")?;
     if !path.is_file() || !recording_files::is_recording(path) {
-        return Err("Choose a .battleplan recording to rename.".into());
+        return Err("Choose a BattlePlan recording to rename.".into());
     }
     let folder = std::fs::canonicalize(path.parent().ok_or("This recording has no folder.")?)
         .map_err(failed)?;
     let _lock = NamesLock::try_now(&folder)
         .map_err(failed)?
-        .ok_or("Battle Plan Recorder is saving into this folder. Try again in a moment.")?;
+        .ok_or("BattlePlan Recorder is saving into this folder. Try again in a moment.")?;
     let campaign = recording_files::campaign_of(path)
         .map_err(failed)?
         .and_then(|id| String::from_utf8(id).ok());
@@ -217,7 +217,7 @@ fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
             });
         }
         if error.raw_os_error() == Some(32) {
-            "Battle Plan Recorder is recording into this file. Rename it once the session is saved."
+            "BattlePlan Recorder is recording into this file. Rename it once the session is saved."
                 .to_owned()
         } else {
             failed(error)
@@ -295,7 +295,7 @@ pub async fn set_campaign_flag(campaign_key: String, tag: Option<String>) -> Res
     blocking(move || {
         RecorderSettings::update(|settings| settings.campaigns.entry(id).or_default().flag = tag)
             .map(|_| ())
-            .map_err(|error| format!("Campaign flag could not be saved: {error}"))
+            .map_err(|error| format!("The campaign flag couldn’t be saved: {error}"))
     })
     .await
 }
@@ -529,7 +529,7 @@ mod tests {
             let mut runner = 0;
             let runner_held = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &raw mut runner) } != 0 && runner != 0;
             if !frees || (runner_held && line.starts_with("refused ")) {
-                assert!(line.contains("Start Battle Plan Recorder from the Start menu"), "nested {nested}: {line}");
+                assert!(line.contains("Start BattlePlan Recorder from the Start menu"), "nested {nested}: {line}");
                 close();
                 desktop.wait().unwrap();
                 continue;

@@ -2,7 +2,8 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react';
 import { Popover, usePopover } from '../../components/Popover';
 import { Icon } from '../../components/Icons';
-import { hsvToRgb, normalizeColor, parseColor, rgbToHsv, toHex } from './color';
+import { FailureLine } from '../../components/FailureLine';
+import { HEX_HINT, colorInput, hsvToRgb, normalizeColor, parseColor, rgbToHsv, toHex } from './color';
 import type { Hsv } from './color';
 
 declare global { interface Window { EyeDropper?: new () => { open(): Promise<{ sRGBHex: string }> } } }
@@ -41,29 +42,46 @@ export function ColorPicker({ value, onChange, swatches }: { value: string; onCh
     <input className="color-picker-hue" type="range" min={0} max={359} value={Math.round(hsv.h)} aria-label="Hue"
       onChange={event => emit({ ...hsv, h: Number(event.currentTarget.value) })} />
     {swatches.length > 0 && <div className="color-picker-swatches">{swatches.map(swatch => <button key={swatch} type="button" style={{ background: swatch }}
-      aria-label={`Use ${swatch}`} aria-pressed={swatch === value} onClick={() => { last.current = swatch; setHsv(rgbToHsv(parseColor(swatch)!)); onChange(swatch); }} />)}</div>}
+      aria-label={`Use ${swatch}`} aria-pressed={swatch === value} onClick={() => { if (swatch === value) return; last.current = swatch; setHsv(rgbToHsv(parseColor(swatch)!)); onChange(swatch); }} />)}</div>}
   </div>;
 }
 
-export default function ColorField({ label, value, onChange, swatches = [], help }: { label: string; value: string; onChange: (value: string) => void; swatches?: readonly string[]; help?: string }) {
+export default function ColorField({ label, value, onChange, swatches = [], help, fieldId, typed, onTyped, onPending }: {
+  label: string; value: string; onChange: (value: string) => void; swatches?: readonly string[]; help?: string; fieldId?: string; typed?: string; onTyped?: (text: string | null) => void;
+  onPending?: (pending: boolean) => void;
+}) {
   const id = useId();
   const menu = usePopover('start');
-  const [text, setText] = useState(value);
-  useEffect(() => setText(value), [value]);
-  const commit = () => { const next = normalizeColor(text); if (next) onChange(next); else setText(value); };
+  const [text, setText] = useState(typed ?? value);
+  const [invalid, setInvalid] = useState(typed !== undefined);
+  const pending = useRef(onPending);
+  pending.current = onPending;
+  useEffect(() => { setText(typed ?? value); setInvalid(typed !== undefined); pending.current?.(false); }, [value, typed]);
+  useEffect(() => () => pending.current?.(false), []);
+  const commit = () => {
+    pending.current?.(false);
+    const next = colorInput(text);
+    if (!next) { setInvalid(true); onTyped?.(text); return; }
+    setInvalid(false);
+    onTyped?.(null);
+    if (next !== normalizeColor(value)) onChange(next); else setText(value);
+  };
+  const pick = (next: string) => { onTyped?.(null); onChange(next); };
   const eyedropper = typeof window !== 'undefined' && window.EyeDropper;
   return <div className="color-field">
     <button ref={menu.trigger} type="button" className="color-swatch" style={{ background: value }} popoverTarget={id} aria-haspopup="dialog" aria-expanded={menu.open}
       aria-label={`Choose ${label.toLowerCase()} colour`} />
     <span className="color-field-label">{label}{help && <span className="folder-info" tabIndex={0} role="img" aria-label={`About ${label}`} data-tooltip={help}><Icon name="info" /></span>}</span>
-    <input className="color-hex" aria-label={`${label} hex value`} value={text} spellCheck={false} maxLength={9}
-      onChange={event => setText(event.currentTarget.value)} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } }} />
+    <input id={fieldId} className="color-hex" aria-label={`${label} hex value`} value={text} spellCheck={false} maxLength={9}
+      aria-invalid={invalid || undefined} aria-describedby={invalid ? `${id}-hint` : undefined}
+      onChange={event => { const next = event.currentTarget.value; setText(next); setInvalid(false); pending.current?.(next !== (typed ?? value)); }} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } }} />
+    {invalid && <div className="color-field-note" id={`${id}-hint`}><FailureLine message={HEX_HINT} /></div>}
     <Popover menu={menu} id={id} className="color-picker" aria-label={`${label} colour`}>
       <div className="ui-popover-heading"><strong>{label}</strong><div className="ui-popover-actions">
         {eyedropper && <button type="button" className="icon-button ui-popover-action" aria-label="Pick a colour from the screen" data-tooltip="Pick from screen"
-          onClick={() => { void new window.EyeDropper!().open().then(result => { const next = normalizeColor(result.sRGBHex); if (next) onChange(next); }).catch(() => {}); }}><Icon name="sparkle" /></button>}
+          onClick={() => { void new window.EyeDropper!().open().then(result => { const next = normalizeColor(result.sRGBHex); if (next) pick(next); }).catch(() => {}); }}><Icon name="sparkle" /></button>}
         <button type="button" className="icon-button ui-popover-action" aria-label="Close colour picker" onClick={menu.close}><Icon name="close" /></button></div></div>
-      {menu.open && <ColorPicker value={value} onChange={onChange} swatches={swatches} />}
+      {menu.open && <ColorPicker value={value} onChange={pick} swatches={swatches} />}
     </Popover>
   </div>;
 }

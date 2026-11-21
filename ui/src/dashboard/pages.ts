@@ -131,7 +131,7 @@ export function loadPages(storage?: PageStorage): PageEntry[] {
 
 export function savePages(pages: PageEntry[], storage?: PageStorage): string | null {
   try { (storage ?? localStorage).setItem(PAGE_LIST_KEY, JSON.stringify(pages)); return null; }
-  catch { return 'Your pages apply for this session. This device could not save them.'; }
+  catch { return 'Couldn’t save your pages on this device. They still apply for this session.'; }
 }
 
 export function keptPageStates<T>(states: ReadonlyMap<PageId, T>, shown: PageId, pages: readonly PageId[]): T[] {

@@ -61,7 +61,7 @@ export async function shareCampaignFlags(read: CampaignFlags | Promise<CampaignF
     for (const key of Object.keys(local)) if (!failed.includes(key)) settings = setCampaignFlag(settings, key, null);
     saveCampaignSettings(settings, storage);
   }
-  if (failed.length) throw new Error(`${failed.length} campaign flags could not be saved to the shared settings.`);
+  if (failed.length) throw new Error(`${failed.length} campaign flags couldn’t be saved to the shared settings.`);
 }
 
 export function useCampaignFlags(): CampaignFlags {
@@ -77,7 +77,7 @@ export function saveCampaignFlag(campaignKey: string, tag: string | null, report
     if (tag === null) delete flags[campaignKey]; else flags[campaignKey] = tag;
     shared = { ...shared, flags };
     notify();
-    void shared.save(campaignKey, tag).then(() => report?.(null), () => report?.('The campaign flag could not be saved; it applies until the app closes.'));
+    void shared.save(campaignKey, tag).then(() => report?.(null), () => report?.('Couldn’t save the campaign flag. It applies until the app closes.'));
     return null;
   }
   return saveCampaignSettings(setCampaignFlag(currentCampaignSettings(storage), campaignKey, tag), storage);

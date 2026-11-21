@@ -34,6 +34,25 @@ pub struct OmittedLoads {
 pub struct Problem {
     pub text: String,
     pub detail: String,
+    pub failed: bool,
+}
+
+impl Problem {
+    pub fn failure(text: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            detail: detail.into(),
+            failed: true,
+        }
+    }
+
+    pub fn caveat(text: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            detail: detail.into(),
+            failed: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -97,21 +116,21 @@ pub fn read_live(status: &Value) -> Live {
     let dropped = status["dropped_frames"].as_u64().unwrap_or(0);
     let stalled = status["dropped_spool_stalled"].as_u64().unwrap_or(0);
     let problem = if status["capture_failed"] == true {
-        Some(Problem {
-            text: "Recording stopped early. Recovering the captured part.".into(),
+        Some(Problem::failure(
+            "Recording stopped early. Recovering the captured part.",
             detail,
-        })
+        ))
     } else if dropped > 0 {
         let hours = |n: u64| if n == 1 { "1 hour".to_owned() } else { format!("{n} hours") };
-        let reason = if stalled > 0 {
-            format!(" ({} dropped: spool stalled)", hours(stalled))
+        let lost = format!("{} couldn’t be recorded", hours(dropped));
+        let text = if stalled >= dropped {
+            format!("{lost}: the recorder fell behind.")
+        } else if stalled > 0 {
+            format!("{lost}, {stalled} of them because the recorder fell behind.")
         } else {
-            String::new()
+            format!("{lost}.")
         };
-        Some(Problem {
-            text: format!("{} couldn't be recorded{reason}", hours(dropped)),
-            detail,
-        })
+        Some(Problem::caveat(text, detail))
     } else {
         None
     };
@@ -180,15 +199,15 @@ mod tests {
         assert_eq!((live.hours, live.spool_bytes), (Some(12), Some(4096)));
         assert_eq!(
             live.problem,
-            Some(Problem {
-                text: "2 hours couldn't be recorded".into(),
-                detail: "queue full".into()
-            })
+            Some(Problem::caveat(
+                "2 hours couldn’t be recorded.",
+                "queue full"
+            ))
         );
         let one = read_live(
             &json!({"campaign": CAMPAIGN, "hours": 3, "last_hour": 1, "dropped_frames": 1}),
         );
-        assert_eq!(one.problem.unwrap().text, "1 hour couldn't be recorded");
+        assert_eq!(one.problem.unwrap().text, "1 hour couldn’t be recorded.");
         let stalled = |dropped: u64, stalled: u64| {
             read_live(&json!({
                 "campaign": CAMPAIGN, "hours": 3, "last_hour": 1,
@@ -198,9 +217,15 @@ mod tests {
             .unwrap()
             .text
         };
-        assert_eq!(stalled(5, 3), "5 hours couldn't be recorded (3 hours dropped: spool stalled)");
-        assert_eq!(stalled(1, 1), "1 hour couldn't be recorded (1 hour dropped: spool stalled)");
-        assert_eq!(stalled(2, 0), "2 hours couldn't be recorded");
+        assert_eq!(
+            stalled(5, 3),
+            "5 hours couldn’t be recorded, 3 of them because the recorder fell behind."
+        );
+        assert_eq!(
+            stalled(1, 1),
+            "1 hour couldn’t be recorded: the recorder fell behind."
+        );
+        assert_eq!(stalled(2, 0), "2 hours couldn’t be recorded.");
     }
 
     #[test]
@@ -251,10 +276,10 @@ mod tests {
         );
         assert_eq!(
             live.problem,
-            Some(Problem {
-                text: "Recording stopped early. Recovering the captured part.".into(),
-                detail: "collector allocation failed".into()
-            })
+            Some(Problem::failure(
+                "Recording stopped early. Recovering the captured part.",
+                "collector allocation failed"
+            ))
         );
     }
 
@@ -273,10 +298,7 @@ mod tests {
             snapshot.phase = phase;
             assert_eq!(snapshot.light(), light, "{phase:?}");
         }
-        snapshot.problem = Some(Problem {
-            text: "2 hours couldn't be recorded".into(),
-            detail: String::new(),
-        });
+        snapshot.problem = Some(Problem::caveat("2 hours couldn’t be recorded.", ""));
         for phase in [Phase::Waiting, Phase::Recording, Phase::Saving] {
             snapshot.phase = phase;
             assert_eq!(snapshot.light(), Light::Problem, "{phase:?}");

@@ -2,8 +2,9 @@ import { type Failure, asFailure, failureText } from './queryError.ts';
 import { useId, useState } from 'react';
 import { Popover, usePopover } from '../components/Popover';
 import { Icon } from '../components/Icons';
+import { FailureLine } from '../components/FailureLine';
 import { sameCampaignPath } from './campaigns';
-import { recordingDisplayName, recordingFilename, recordingNameMatches } from './recordingNames';
+import { recordingDisplayName, recordingNameMatches } from './recordingNames';
 import type { DashboardTemplate, WidgetSpec } from './model';
 import type { WidgetRuntime } from './definitions';
 
@@ -33,24 +34,24 @@ export default function CampaignPicker({ widget, template, runtime }: { widget: 
     <button ref={menu.trigger} type="button" className="widget-country-trigger" popoverTarget={id} aria-haspopup="dialog" aria-expanded={menu.open} aria-label={`Widget campaign: ${label}`}>
       <Icon name={widget.campaign === 'default' ? 'star' : 'file'} /><span>{label}</span><Icon name="chevron-down" />
     </button>
-    {error && <p className="map-menu-error" role="alert" data-detail={error.message}>{failureText(error, "Couldn’t load campaign.")}</p>}
-    <Popover menu={menu} portal={false} id={id} className="campaign-picker" aria-label="Choose the widget's campaign" onToggle={event => { if (event.newState === 'closed') setQuery(''); }}>
+    {error && <FailureLine className="campaign-picker-failure" detail={error.message} message={failureText(error, 'Couldn’t load campaign.')} />}
+    <Popover menu={menu} portal={false} id={id} className="campaign-picker" aria-label="Choose the widget’s campaign" onToggle={event => { if (event.newState === 'closed') setQuery(''); }}>
       <button type="button" className="menu-item" aria-pressed={widget.campaign === 'default'} onClick={() => choose(null)}>
         <Icon name="star" /><span className="menu-item-label">Default campaign<small>{defaultCampaign ? `Now ${displayName(defaultCampaign.path)}` : 'Current campaign'}</small></span>
         {widget.campaign === 'default' && <Icon name="check" />}
       </button>
-      {open.length > 0 && <div className="popover-label">Open</div>}
-      {open.map(campaign => <button key={campaign.id} type="button" className="menu-item" data-tooltip={recordingFilename(campaign.path)} aria-pressed={widget.campaign !== 'default' && roleId === campaign.id} onClick={() => choose(campaign.id)}>
-        <Icon name="file" /><span className="menu-item-label">{displayName(campaign.path)}</span>
+      {open.length > 0 && <div className="group-label">Open</div>}
+      {open.map(campaign => <button key={campaign.id} type="button" className="menu-item" data-tooltip-overflow={displayName(campaign.path)} aria-pressed={widget.campaign !== 'default' && roleId === campaign.id} onClick={() => choose(campaign.id)}>
+        <Icon name="file" /><span className="menu-item-label" data-overflow-label>{displayName(campaign.path)}</span>
         {widget.campaign !== 'default' && roleId === campaign.id && <Icon name="check" />}
       </button>)}
       {loading.map(campaign => <div key={campaign.id} className="menu-item is-loading" role="status"><span className="spinner" /><span className="menu-item-label">Loading {displayName(campaign.path)}…</span></div>)}
       {runtime.recordings.length > 0 && <>
-        <div className="popover-label">Open another recording</div>
+        <div className="group-label">Open another recording</div>
         {runtime.recordings.length > 6 && <label className="search-field campaign-picker-search"><Icon name="search" />
-          <input value={query} placeholder="Find a recording…" aria-label="Find a recording" onChange={event => setQuery(event.currentTarget.value)} /></label>}
-        <div className="campaign-picker-library">{library.map(file => <button key={file.path} type="button" className="menu-item" data-tooltip={recordingFilename(file.path)} onClick={() => choose(file.path)}>
-          <Icon name="folder-open" /><span className="menu-item-label">{displayName(file.path)}{file.folder && <small>{file.folder}</small>}</span>
+          <input type="search" value={query} placeholder="Find a recording" aria-label="Find a recording" onChange={event => setQuery(event.currentTarget.value)} /></label>}
+        <div className="campaign-picker-library">{library.map(file => <button key={file.path} type="button" className="menu-item" data-tooltip-overflow={displayName(file.path)} onClick={() => choose(file.path)}>
+          <Icon name="folder-open" /><span className="menu-item-label" data-overflow-label>{displayName(file.path)}{file.folder && <small>{file.folder}</small>}</span>
         </button>)}
           {!library.length && <p className="field-hint">{words ? 'No matching recordings.' : 'Every recording in your folder is already open.'}</p>}</div>
       </>}

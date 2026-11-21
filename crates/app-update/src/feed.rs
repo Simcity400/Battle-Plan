@@ -37,7 +37,7 @@ pub fn client(current: &str) -> Result<reqwest::Client, String> {
         .connect_timeout(FEED_TIMEOUT)
         .read_timeout(STALL_TIMEOUT)
         .build()
-        .map_err(|error| format!("The update client could not start: {error}"))
+        .map_err(|error| format!("The update client couldn’t start: {error}"))
 }
 
 pub async fn newer(
@@ -51,7 +51,7 @@ pub async fn newer(
         .timeout(FEED_TIMEOUT)
         .send()
         .await
-        .map_err(|error| format!("it could not be reached: {error}"))?;
+        .map_err(|error| format!("it couldn’t be reached: {error}"))?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("it answered HTTP {status}"));
@@ -61,9 +61,9 @@ pub async fn newer(
         .await
         .map_err(|error| format!("its answer was cut off: {error}"))?;
     let manifest: Manifest =
-        serde_json::from_slice(&body).map_err(|error| format!("it is not a release: {error}"))?;
+        serde_json::from_slice(&body).map_err(|error| format!("it isn’t a release: {error}"))?;
     let version = semver::Version::parse(&manifest.version)
-        .map_err(|error| format!("its version {} is not valid: {error}", manifest.version))?;
+        .map_err(|error| format!("its version {} isn’t valid: {error}", manifest.version))?;
     if version <= *current {
         return Ok(None);
     }
@@ -90,7 +90,7 @@ pub async fn download(
         .header(reqwest::header::ACCEPT, "application/octet-stream")
         .send()
         .await
-        .map_err(|error| format!("the download could not start: {error}"))?;
+        .map_err(|error| format!("the download couldn’t start: {error}"))?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("the download answered HTTP {status}"));
@@ -114,14 +114,14 @@ fn minisign_text(encoded: &str, what: &str) -> Result<String, String> {
         .decode(encoded.trim())
         .ok()
         .and_then(|text| String::from_utf8(text).ok())
-        .ok_or_else(|| format!("its {what} is not a Tauri {what}"))
+        .ok_or_else(|| format!("its {what} isn’t a Tauri {what}"))
 }
 
 fn verify(package: &[u8], signature: &str, version: &str) -> Result<(), String> {
     let key = PublicKey::decode(&minisign_text(PUBLIC_KEY, "public key")?)
-        .map_err(|error| format!("this build's updater key is not valid: {error}"))?;
+        .map_err(|error| format!("this build’s updater key isn’t valid: {error}"))?;
     let signature = Signature::decode(&minisign_text(signature, "signature")?)
-        .map_err(|error| format!("its signature is not valid: {error}"))?;
+        .map_err(|error| format!("its signature isn’t valid: {error}"))?;
     key.verify(package, &signature, true)
         .map_err(|error| format!("it failed signature verification: {error}"))?;
     let signed = signature

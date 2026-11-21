@@ -284,6 +284,15 @@ fn queries_match_names_titles_and_references_without_case_and_pages_slice_them()
             "missing_plane_entity"
         ]
     );
+    assert_eq!(
+        names(&page(&built, AircraftScope::Aircraft, "Ghost plane", 0, 10)),
+        ["ghost_plane_entity"],
+        "the readable label made from a name finds its model"
+    );
+    assert_eq!(
+        names(&page(&built, AircraftScope::Aircraft, "eng fighter equipment 1", 0, 10)),
+        ["ENG_fighter_equipment_1_entity"]
+    );
     let all = page(&built, AircraftScope::All, "", 0, 100);
     for name in ["bare_mesh", "fighter_mesh", "rifle_entity"] {
         let entry = all.entries.iter().find(|entry| entry.name == name).unwrap();

@@ -22,7 +22,7 @@ pub fn log_map_frames(prefix: &std::path::Path) {
     crate::perf_log::log_to(prefix);
 }
 
-pub const MAP_WINDOW_TITLE: &str = "Battle Plan map";
+pub const MAP_WINDOW_TITLE: &str = "BattlePlan map";
 
 pub fn create_window(parent: usize) -> io::Result<(Window, Inputs)> {
     Window::create(Some(parent), [1, 1], MAP_WINDOW_TITLE)
@@ -67,7 +67,7 @@ impl Lost {
         let lost = self.clone();
         device.set_device_lost_callback(move |reason, message| {
             let detail = if message.is_empty() { String::new() } else { format!(": {message}") };
-            lost.lose(format!("The map's GPU device was lost ({reason:?}{detail})"));
+            lost.lose(format!("The map lost its graphics device: {reason:?}{detail}"));
             wake();
         });
         let lost = self.clone();
@@ -146,7 +146,7 @@ pub(crate) fn run<T: Send + 'static>(
     spawn(name, run, move |result| {
         let _ = sent.send(result);
     })?;
-    ended.recv().map_err(|_| io::Error::other("The map's thread ended without saying how"))
+    ended.recv().map_err(|_| io::Error::other("The map’s thread ended without saying how"))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,7 +217,7 @@ pub(crate) fn dump_window(
     options: Options,
     config_error: Option<String>,
 ) -> io::Result<()> {
-    let (window, inputs) = Window::create(None, options.size, "Battle Plan")?;
+    let (window, inputs) = Window::create(None, options.size, "BattlePlan")?;
     if crate::background_window(std::env::var_os("BATTLE_PLAN_VIEWER_PROFILE_BACKGROUND").or_else(|| std::env::var_os("HOI4_VIEWER_PROFILE_BACKGROUND")).as_deref()) {
         window.send_to_back();
     }
@@ -247,7 +247,7 @@ pub(crate) fn dump_window(
     window::pump();
     ended
         .recv()
-        .map_err(|_| io::Error::other("The map's thread ended without saying how"))?
+        .map_err(|_| io::Error::other("The map’s thread ended without saying how"))?
         .map_err(Ending::into_error)
 }
 
@@ -255,7 +255,7 @@ pub(crate) fn paced_window(
     size: [u32; 2],
     job: impl FnOnce(&Window, Inputs) -> io::Result<()> + Send + 'static,
 ) -> io::Result<()> {
-    let (window, inputs) = Window::create(None, size, "Battle Plan map (paced)")?;
+    let (window, inputs) = Window::create(None, size, "BattlePlan map (paced)")?;
     let (sent, ended) = mpsc::sync_channel(1);
     let closing = window.clone();
     let drawn = window.clone();
@@ -273,7 +273,7 @@ pub(crate) fn paced_window(
     window::pump();
     ended
         .recv()
-        .map_err(|_| io::Error::other("The map's thread ended without saying how"))?
+        .map_err(|_| io::Error::other("The map’s thread ended without saying how"))?
         .map_err(Ending::into_error)
 }
 
@@ -302,7 +302,7 @@ fn embedded_map(
     let parent = embedded::Parent::new(window.clone(), commands, events, service);
     driver::run(&window, inputs, lost, move |ctx, state| {
         let _generation = content_reader_core::content::Generation::enter();
-        let embedding = parent.attach(ctx).map_err(|error| format!("The map's window: {error}"))?;
+        let embedding = parent.attach(ctx).map_err(|error| format!("Couldn’t show the map in its window: {error}"))?;
         let failure = Arc::new(Mutex::new(None));
         Ok(app::Viewer::new(ctx, Some(state), config, options, None, failure, Some(embedding)))
     })
@@ -316,12 +316,12 @@ mod tests {
     fn a_panic_in_the_map_ends_it_by_name_and_where_and_the_next_map_starts() {
         let at = line!() + 2;
         let failed = run("map (test)", |_: &Lost| -> Result<(), String> {
-            panic!("the picture's layer list is empty")
+            panic!("the picture’s layer list is empty")
         })
         .unwrap();
         assert_eq!(
             failed,
-            Err(Ending::Failed(format!("The map stopped: the picture's layer list is empty (at {}:{at})", file!())))
+            Err(Ending::Failed(format!("The map stopped: the picture’s layer list is empty (at {}:{at})", file!())))
         );
         let reason = String::from("formatted: 3 layers");
         let at = line!() + 1;
@@ -337,8 +337,8 @@ mod tests {
     #[test]
     fn a_map_whose_device_was_lost_ends_for_the_loss_whatever_followed_it() {
         let lost = Lost::default();
-        lost.lose("The map's GPU device was lost (Unknown: removed)".into());
-        let expected = Err(Ending::DeviceLost("The map's GPU device was lost (Unknown: removed)".into()));
+        lost.lose("The map lost its graphics device: Unknown".into());
+        let expected = Err(Ending::DeviceLost("The map lost its graphics device: Unknown".into()));
         assert_eq!(contain(&lost, || -> Result<(), String> { panic!("wgpu error: Parent device is lost") }), expected);
         assert_eq!(contain(&lost, || Ok::<(), String>(())), expected);
         lost.lose("later".into());
@@ -381,7 +381,7 @@ mod tests {
         device.destroy();
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
         woken.recv().unwrap();
-        assert!(lost.reason().is_some_and(|reason| reason.starts_with("The map's GPU device was lost (Destroyed")));
+        assert!(lost.reason().is_some_and(|reason| reason.starts_with("The map lost its graphics device: Destroyed")));
         let _ = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: 4,

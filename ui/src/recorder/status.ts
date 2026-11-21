@@ -3,7 +3,7 @@ import { formatMegabytes } from '../charts/numberFormat.ts';
 import type { Compression } from './compression';
 
 export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded' | 'unsaved';
-export interface Problem { text: string; detail: string }
+export interface Problem { text: string; detail: string; failed: boolean }
 export interface OmittedLoads { loads: number; reason: 'off' | 'elsewhere' | 'settings' | 'notAdmitted' | null }
 export interface FlagImage { width: number; height: number; pixels: number[] }
 
@@ -25,7 +25,6 @@ export interface Snapshot {
   captureMode: CaptureMode | null;
   flag: FlagImage | null;
   omitted?: OmittedLoads | null;
-  buildWarning?: string | null;
   preparation?: Preparation | null;
 }
 
@@ -81,17 +80,23 @@ export function compressOffered(settings: Pick<RecorderSettings, 'liveCompressio
 
 export function compressText(job: CompressJob | null): string | null {
   if (!job) return null;
-  if (job.state === 'queued') return 'Compress waiting';
+  if (job.state === 'queued') return 'Waiting to compress';
   if (job.state === 'compressing') return `Compressing ${Math.floor(job.units * 100 / Math.max(job.total, 1))}%`;
-  if (job.state === 'unconfirmed') return `Compress not confirmed: ${job.reason}`;
-  return `Kept as recorded: ${job.reason}`;
+  if (job.state === 'unconfirmed') return `Compression not confirmed: ${keptClause(job.reason).replace(/\.$/u, '')}`;
+  return `Kept as recorded: ${keptClause(job.reason).replace(/\.$/u, '')}`;
 }
 
-export interface Recordings { unsaved: UnsavedRecording[]; saved: SavedRecording[] }
+const keptClause = (reason: string) => reason.split(': ', 1)[0];
+
+export function compressDetail(job: CompressJob | null): string | undefined {
+  return (job?.state === 'kept' || job?.state === 'unconfirmed') && keptClause(job.reason) !== job.reason ? job.reason : undefined;
+}
+
+export interface Recordings { unsaved: UnsavedRecording[]; saved: SavedRecording[]; unreadable?: { whole: boolean; detail: string } | null }
 export interface RecordingsView { panel: string; visit: number; open: boolean }
 
 export type Dot = 'red' | 'grey' | 'green' | 'spin';
-export type HeadAction = 'stop' | 'record' | 'open' | 'recordings';
+export type HeadAction = 'stop' | 'record' | 'open';
 
 export interface Head {
   glyph: boolean;
@@ -104,6 +109,7 @@ export interface Head {
   action: HeadAction | null;
   campaign: boolean;
   busy?: boolean;
+  problem?: Problem;
 }
 
 const joined = (parts: readonly (string | null)[]) => parts.filter(part => part).join(' · ') || null;
@@ -144,9 +150,9 @@ export function omittedText(omitted: OmittedLoads | null | undefined): string | 
   const one = omitted.loads === 1;
   const count = `${omitted.loads} ${one ? 'load' : 'loads'} not recorded`;
   switch (omitted.reason) {
-    case 'off': return `${count} (Record automatically was off)`;
+    case 'off': return `${count} (Auto record was off)`;
     case 'elsewhere': return `${count} (${one ? 'it belongs' : 'they belong'} in another file)`;
-    case 'settings': return `${count} (the recorder's settings couldn't be read)`;
+    case 'settings': return `${count} (the recorder’s settings couldn’t be read)`;
     case 'notAdmitted': return `${count} (${one ? 'it was' : 'they were'} not identified)`;
     default: return count;
   }
@@ -154,6 +160,12 @@ export function omittedText(omitted: OmittedLoads | null | undefined): string | 
 
 export function recordingName(name: string | null): string {
   return name ?? 'New recording';
+}
+
+export function firstSentence(text: string): [string, string] {
+  const end = /[.!?](?:\s+|$)/u.exec(text);
+  if (!end) return [text, ''];
+  return [text.slice(0, end.index), text.slice(end.index + end[0].length)];
 }
 
 export function campaignTitle(snapshot: Snapshot): string {
@@ -165,9 +177,18 @@ export function head(snapshot: Snapshot): Head {
   const named = title !== '';
   const plain = { glyph: false, flag: named ? snapshot.flag : null, title, dot: null, label: null, detail: null, action: null, campaign: false } as const;
   const omitted = omittedText(snapshot.omitted);
+  const problem = snapshot.problem;
+  if (problem && (snapshot.phase === 'waiting' || (snapshot.phase === 'notRecording' && !named))) {
+    const action = snapshot.phase === 'waiting' ? null : 'record';
+    if (problem.failed) {
+      const [headline, rest] = firstSentence(problem.text);
+      return { ...plain, glyph: true, flag: null, title: headline, problem: { ...problem, text: rest }, action };
+    }
+    return { ...plain, glyph: true, flag: null, title: action ? 'Couldn’t connect to the game' : 'Waiting for the game', problem, action };
+  }
   switch (snapshot.phase) {
     case 'waiting':
-      return { ...plain, glyph: true, flag: null, title: 'Waiting for the game', detail: snapshot.automatic ? 'Records when you load a campaign' : 'Auto record is off' };
+      return { ...plain, glyph: true, flag: null, title: 'Waiting for the game', detail: snapshot.automatic ? 'Records when you load a campaign.' : 'Auto record is off.' };
     case 'notRecording':
       return named
         ? { ...plain, dot: 'grey', detail: omitted ?? joined(['Not recording', dateText(snapshot.hour)]), action: 'record', campaign: snapshot.campaign != null }
@@ -183,8 +204,7 @@ export function head(snapshot: Snapshot): Head {
     case 'discarded':
       return { ...plain, glyph: !named, dot: 'grey', detail: 'Session discarded', action: 'record' };
     case 'unsaved':
-      return { ...plain, glyph: !named, dot: 'grey', label: 'Not saved yet', detail: omitted ?? dateText(snapshot.hour), sizes: spoolText(snapshot.spoolBytes),
-        action: 'recordings' };
+      return { ...plain, glyph: !named, dot: 'grey', label: 'Not saved yet', detail: omitted ?? dateText(snapshot.hour), sizes: spoolText(snapshot.spoolBytes) };
   }
 }
 
@@ -201,24 +221,33 @@ export function untilNextMinute(startedAt: number | null, now: number): number {
 }
 
 export function discardConsequence(continued: boolean): string {
-  return continued ? 'The earlier recording in this file is kept.' : "This can't be undone.";
+  return continued ? 'The earlier recording in this file is kept.' : 'This can’t be undone.';
 }
 
-export function discardDetail(name: string | null, startedAt: number | null, now: number, continued: boolean): string {
-  return `Deletes this session's ${sessionLength(startedAt, now)}${name ? ` of ${name}` : ''}. ${discardConsequence(continued)}`;
+export function discardDetail(name: string | null, startedAt: number | null, now: number): string {
+  return `Deletes this session’s ${sessionLength(startedAt, now)}${name ? ` of ${name}` : ''}.`;
 }
 
 export function waitingDiscardQuestion(continued: boolean): string {
-  return `${continued ? 'Discard these hours?' : 'Discard this recording?'} ${discardConsequence(continued)}`;
+  return continued ? 'Discard these hours?' : 'Discard this recording?';
 }
 
 export function promptTitle(quitting: boolean, discarding: boolean): string {
   if (discarding) return quitting ? 'Discard and quit?' : 'Discard this session?';
-  return quitting ? 'Quit Battle Plan Recorder?' : 'Stop recording?';
+  return quitting ? 'Quit BattlePlan Recorder?' : 'Stop recording?';
 }
 
 export function stopQuestion(name: string | null, startedAt: number | null, now: number): string {
-  return `Keep this session's ${sessionLength(startedAt, now)}${name ? ` of ${name}` : ''}?`;
+  return `Save this session${name ? ` of ${name}` : ''} (${sessionLength(startedAt, now)})?`;
+}
+
+export function askQuestion(quitting: boolean, discarding: boolean, length: string): string {
+  if (discarding) return `Discard this session (${length})${quitting ? ' and quit' : ''}?`;
+  return `Save this session (${length})${quitting ? ' before quitting' : ''}?`;
+}
+
+export function panelStage(snapshot: Snapshot | null, compact: boolean | null): 'panel' | 'pending' {
+  return snapshot && compact != null ? 'panel' : 'pending';
 }
 
 export function stopPromptVisible(asking: boolean, snapshot: Snapshot): boolean {
@@ -242,15 +271,26 @@ export function settingsQueue<T>(read: () => Promise<T>, show: (value: T) => voi
   };
 }
 
-export function followStatus<T, Stop>(listen: (show: (value: T) => void) => Promise<Stop>, read: () => Promise<T>, show: (value: T) => void) {
-  let published = 0;
-  const listening = listen(value => { published += 1; show(value); });
-  const first = listening.then(async () => {
-    const before = published;
-    const value = await read();
-    if (before === published) show(value);
-  });
-  return { listening, first };
+export function followStatus<T>(listen: (show: (value: T) => void) => Promise<() => void>, read: () => Promise<T>, show: (value: T) => void, failed: (cause: unknown) => void) {
+  let attempt = 0, listening: Promise<() => void> | null = null;
+  const stop = () => {
+    attempt += 1;
+    void listening?.then(unlisten => unlisten(), () => {});
+    listening = null;
+  };
+  const start = () => {
+    stop();
+    const own = attempt;
+    let published = 0;
+    listening = listen(value => { if (own !== attempt) return; published += 1; show(value); });
+    return listening.then(async () => {
+      const before = published;
+      const value = await read();
+      if (own === attempt && before === published) show(value);
+    }).catch((cause: unknown) => { if (own === attempt) failed(cause); });
+  };
+  const first = start();
+  return { first, retry: () => { void start(); }, stop };
 }
 
 export function recordsAutomatically(settings: RecorderSettings, campaign: string): boolean {

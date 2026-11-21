@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AircraftCatalogueReply, AircraftEntry } from '../generated/dashboard.ts';
-import { AIRCRAFT_PAGE, AircraftPages, pagesFor, referenceText, refusalLine } from './aircraftCatalogue.ts';
+import { AIRCRAFT_PAGE, AircraftPages, pagesFor, refusalLine, refusalText } from './aircraftCatalogue.ts';
 
 const entry = (name: string): AircraftEntry => ({ name, kind: 'entity', titles: [], references: [], refusal: null });
 
@@ -59,16 +59,18 @@ test('a page answered for other rows is refused, and a failed page waits for a r
   assert.ok(!pages.loading());
 });
 
-test('references and counted refusals read as sentences', () => {
-  assert.equal(referenceText({ kind: 'pool', bucket: 'GER', equipment: 'small_plane_airframe', file: 'gfx/a.txt' }), 'GER pool for small_plane_airframe');
-  assert.equal(referenceText({ kind: 'ladder', key: 'fighter_equipment_1', prefix: 'ENG' }), 'ENG fighter_equipment_1 model');
-  assert.equal(referenceText({ kind: 'ladder', key: 'fighter_equipment_1', prefix: null }), 'fighter_equipment_1 model');
-  assert.equal(referenceText({ kind: 'design', equipment: 'fighter_equipment_1' }), 'saved model of a fighter_equipment_1 design');
-  assert.equal(referenceText({ kind: 'cloneOf', of: 'light_plane_entity' }), 'clone of light_plane_entity');
-  assert.equal(referenceText({ kind: 'clonedBy', by: 'skin_entity' }), 'cloned by skin_entity');
+test('counted refusals read as one plain total, a plain tooltip by consequence, and the raw reasons only as detail', () => {
   assert.equal(refusalLine([]), null);
-  assert.equal(refusalLine([
+  assert.equal(refusalLine([{ kind: 'noGeometry', label: 'no geometry to draw', count: 0 }]), null);
+  assert.deepEqual(refusalLine([{ kind: 'noGeometry', label: 'no geometry to draw', count: 1 }]),
+    { text: '1 model can’t be flown', tooltip: '1 with a missing 3D model', detail: '1: no geometry to draw' });
+  assert.deepEqual(refusalLine([
     { kind: 'unregistered', label: 'not registered by any descriptor', count: 1200 },
+    { kind: 'declaration', label: 'a declaration it uses cannot be played', count: 2 },
     { kind: 'noGeometry', label: 'no geometry to draw', count: 3 },
-  ]), `Not flyable: ${(1200).toLocaleString()} not registered by any descriptor, 3 no geometry to draw`);
+  ]), { text: `${(1205).toLocaleString()} models can’t be flown`, tooltip: `${(1203).toLocaleString()} with a missing 3D model\n2 that BattlePlan can’t read`,
+    detail: `${(1200).toLocaleString()}: not registered by any descriptor\n2: a declaration it uses cannot be played\n3: no geometry to draw` });
+  assert.equal(refusalText('unregistered'), 'Can’t be flown: its 3D model is missing.');
+  assert.equal(refusalText('noGeometry'), 'Can’t be flown: its 3D model is missing.');
+  assert.equal(refusalText('declaration'), 'Can’t be flown: BattlePlan can’t read this model.', 'a declaration BattlePlan can’t read says nothing about the game');
 });

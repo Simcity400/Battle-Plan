@@ -177,7 +177,7 @@ fn builder(
     shared: Option<PathBuf>,
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("recorder.html".into()))
-        .title("Battle Plan Recorder")
+        .title("BattlePlan Recorder")
         .inner_size(WIDTH, 120.0)
         .resizable(false)
         .maximizable(false)

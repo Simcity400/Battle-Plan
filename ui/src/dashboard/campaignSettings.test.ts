@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyColourSet, chosenColour, factionIdentity, factionStylesKey, loadCampaignSettings, MAX_CAMPAIGN_SETTINGS_STORAGE, parseCampaignSettings, saveCampaignSettings, saveColourSet,
-  setCampaignFlag, setFactionColour, setFactionStyle } from './campaignSettings.ts';
+import { applyColourSet, chosenColour, counterCountries, factionIdentity, factionStylesKey, loadCampaignSettings, MAX_CAMPAIGN_SETTINGS_STORAGE, parseCampaignSettings, saveCampaignSettings, saveColourSet,
+  setCampaignFlag, setCounterCountries, setFactionColour, setFactionStyle } from './campaignSettings.ts';
 import { FACTION_APART, factionColours } from '../charts/factionColours.ts';
 import { parseColor, rgbToOklch } from '../shell/appearance/color.ts';
 import { categoricalPalette, distance } from '../charts/palette.ts';
@@ -23,6 +23,27 @@ test('campaign flags preserve opaque recorded tags and faction settings through 
   settings = setCampaignFlag(settings, 'ab', null);
   assert.equal(settings.campaigns.ab.flag, undefined);
   assert.deepEqual(settings.campaigns.ab.factions, { 3: { colour: '#123456', name: 'Friends' }, 4: { colour: '#abcdef' } });
+});
+
+test('chosen counter countries keep per campaign and map scope through save and reload, alongside flags and factions', () => {
+  let settings = setFactionStyle(setCampaignFlag(parseCampaignSettings(undefined), 'ab', 'GER'), 'ab', '3', { colour: '#123456' });
+  settings = setCounterCountries(settings, 'ab', 'campaign', ['GER', 'ITA', 'GER']);
+  settings = setCounterCountries(settings, 'ab', 'widget:map-1', []);
+  settings = setCounterCountries(settings, 'cd', 'campaign', ['mod country tag']);
+  const storage = memory();
+  assert.equal(saveCampaignSettings(settings, storage), null);
+  const loaded = loadCampaignSettings(storage);
+  assert.deepEqual(counterCountries(loaded, 'ab', 'campaign'), ['GER', 'ITA']);
+  assert.deepEqual(counterCountries(loaded, 'ab', 'widget:map-1'), [], 'an emptied list is a choice, not a missing one');
+  assert.equal(counterCountries(loaded, 'ab', 'widget:map-2'), undefined);
+  assert.deepEqual(counterCountries(loaded, 'cd', 'campaign'), ['mod country tag']);
+  assert.equal(loaded.campaigns.ab.flag, 'GER');
+  assert.deepEqual(loaded.campaigns.ab.factions, { 3: { colour: '#123456' } });
+  const tags = Array.from({ length: 1500 }, (_, index) => `T${index}`);
+  assert.equal(saveCampaignSettings(setCounterCountries(loaded, 'ab', 'campaign', tags), storage), null);
+  assert.deepEqual(counterCountries(loadCampaignSettings(storage), 'ab', 'campaign'), tags);
+  const parsed = parseCampaignSettings({ version: 1, campaigns: { ab: { factions: {}, counterCountries: { campaign: ['GER', '', 3, 'a\0b'], __proto__: ['X'], 'widget:x': 'GER' } } } });
+  assert.deepEqual(parsed.campaigns.ab.counterCountries, { campaign: ['GER'] });
 });
 
 test('campaign flag validation drops malformed flags while preserving factions', () => {

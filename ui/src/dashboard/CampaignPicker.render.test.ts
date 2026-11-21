@@ -6,7 +6,7 @@ import { createServer } from 'vite';
 import type { DashboardTemplate, WidgetSpec } from './model';
 import type { WidgetRuntime } from './definitions';
 
-test('widget campaign choices show recordings by file name while preserving paths and layout labels', async () => {
+test('widget campaign choices show recordings by name without extension while preserving paths and layout labels', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'campaign-picker-fixture', enforce: 'pre',
       transform(_source, id) {
@@ -25,11 +25,12 @@ test('widget campaign choices show recordings by file name while preserving path
     const markup = () => renderToStaticMarkup(createElement(Picker, { template, widget, runtime }));
     assert.match(markup(), /aria-label="Widget campaign: Germany 1936–1941"/);
     assert.match(markup(), /Now Germany 1936–1941/);
-    assert.match(markup(), />Germany 1936–1941<\/span>/);
+    assert.match(markup(), /data-overflow-label="true">Germany 1936–1941<\/span>/);
     assert.match(markup(), /Loading Italy 1936/);
     assert.match(markup(), /Japan 1936–1945 \(Multiplayer\)<small>Past<\/small>/);
-    assert.match(markup(), /data-tooltip="Germany 1936–1941.battleplan"/);
-    assert.match(markup(), /data-tooltip="Japan 1936–1945 \(Multiplayer\).battleplan"/);
+    assert.match(markup(), /data-tooltip-overflow="Germany 1936–1941"/, 'a clipped name shows in full on hover');
+    assert.match(markup(), /data-tooltip-overflow="Japan 1936–1945 \(Multiplayer\)"/);
+    assert.doesNotMatch(markup(), /\.battleplan/, 'no file extension is shown');
     assert.deepEqual({ template, widget, campaigns: runtime.campaigns, recordings: runtime.recordings }, before);
   } finally { await vite.close(); }
 });

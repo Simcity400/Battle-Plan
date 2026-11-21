@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Battle Plan Recorder",
+  "productName": "BattlePlan Recorder",
   "identifier": "local.hoi4.recorder",
   "build": {
     "devUrl": "http://127.0.0.1:1420",

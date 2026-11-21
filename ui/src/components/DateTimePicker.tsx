@@ -3,6 +3,7 @@ import { Select } from './Select';
 import { useId, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Icon } from './Icons';
+import { FailureLine } from './FailureLine';
 import {
   engineHour, firstHourOfMonth, formatDate, formatDateTime, formatTime, gameDate, HOUR_EPOCH,
   monthAt, monthIndex, monthLengths, monthNames,
@@ -21,6 +22,9 @@ interface Props {
   describedBy?: string;
   id?: string;
   onChange: (hour: number) => void;
+  onCommit?: (hour: number) => void;
+  onCancel?: () => void;
+  commitLabel?: string;
   live?: LiveValue;
 }
 
@@ -40,12 +44,14 @@ function showText(element: HTMLElement, text: string): void {
   if (node instanceof Text && node === element.lastChild) { if (node.data !== text) node.data = text; } else element.textContent = text;
 }
 
-export default function DateTimePicker({ label, hideLabel = false, value, min, max, otherValue, disabled, invalid, describedBy = 'date-range-help range-error', id: suppliedId, onChange, live }: Props) {
+export default function DateTimePicker({ label, hideLabel = false, value, min, max, otherValue, disabled, invalid, describedBy = 'date-range-help range-error', id: suppliedId, onChange, onCommit, onCancel, commitLabel, live }: Props) {
   const generatedId = useId();
   const id = suppliedId ?? generatedId;
   const menu = usePopover('start');
   const { trigger, popup, open } = menu;
   const focusDay = useRef(false);
+  const picked = useRef<number | null>(null);
+  const [armed, setArmed] = useState(false);
   const [held, setHeld] = useState<{ hour: number; following: boolean } | null>(null);
   const shownValue = live && held ? held.hour : value;
   const selected = shownValue == null ? null : gameDate(shownValue);
@@ -57,6 +63,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
   const [viewMonth, setViewMonth] = useState(() => initial ? monthIndex(initial) : 0);
   const [focusedDay, setFocusedDay] = useState(initial?.day ?? 1);
   const [yearInput, setYearInput] = useState(String(initial?.year ?? 0));
+  const [yearRefused, setYearRefused] = useState(false);
   const view = monthAt(viewMonth);
   const firstMonth = minimum ? monthIndex(minimum) : viewMonth;
   const lastMonth = maximum ? monthIndex(maximum) : viewMonth;
@@ -128,10 +135,17 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
     popup.current?.querySelector<HTMLButtonElement>(`[data-day="${activeDay}"]`)?.focus({ preventScroll: true });
   }, [open, viewMonth, activeDay, focusRequest]);
 
-  function showMonth(index: number, focus = false) {
+  function pick(hour: number | null) {
+    picked.current = hour;
+    setArmed(hour != null);
+  }
+
+  function showMonth(index: number, focus = false, resetYear = false) {
     const next = clamp(index, firstMonth, lastMonth);
+    const pickedDate = picked.current == null ? null : gameDate(picked.current);
+    if (pickedDate && monthIndex(pickedDate) !== next) { pick(null); onCancel?.(); }
     setViewMonth(next);
-    setYearInput(String(monthAt(next).year));
+    if (resetYear || !yearRefused) { setYearInput(String(monthAt(next).year)); setYearRefused(false); }
     focusDay.current = focus;
     if (focus) setFocusRequest((request) => request + 1);
   }
@@ -140,9 +154,16 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
     const next = gameDate(hour);
     if (!next || hour < min || hour > max) return;
     setHeld(null);
+    pick(hour);
     onChange(hour);
     setFocusedDay(next.day);
-    showMonth(monthIndex(next));
+    showMonth(monthIndex(next), false, true);
+  }
+
+  function finish(hour = picked.current) {
+    pick(null);
+    if (hour != null) onCommit?.(hour);
+    menu.close();
   }
 
   function current(): { hour: number; date: NonNullable<ReturnType<typeof gameDate>> } | null {
@@ -151,9 +172,14 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
     return hour != null && date ? { hour, date } : null;
   }
 
-  function chooseDay(day: number) {
+  function dayHour(day: number) {
     const start = engineHour({ ...view, day, hour: 1 });
-    if (start != null) choose(clamp(start + (current()?.date.hour ?? 1) - 1, min, max));
+    return start == null ? null : clamp(start + (current()?.date.hour ?? 1) - 1, min, max);
+  }
+
+  function chooseDay(day: number) {
+    const hour = dayHour(day);
+    if (hour != null) choose(hour);
   }
 
   function chooseTime(time: number) {
@@ -161,19 +187,27 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
     choose((shown ? shown.hour - shown.date.hour + 1 : min) + time - 1);
   }
 
+  const yearAccepted = (text: string) => minimum != null && maximum != null && /^\d+$/.test(text.trim())
+    && Number(text) >= minimum.year && Number(text) <= maximum.year;
+  const yearInvalid = yearRefused && !yearAccepted(yearInput);
+  const yearHint = minimum && maximum ? minimum.year === maximum.year ? `Use ${minimum.year}.` : `Use a year from ${minimum.year} to ${maximum.year}.` : null;
+
   function commitYear(focus = false) {
-    const year = Number(yearInput);
-    if (/^-?\d+$/.test(yearInput) && Number.isSafeInteger(year) && minimum && maximum) {
-      if (year !== view.year) hold();
-      showMonth(clamp(year, minimum.year, maximum.year) * 12 + view.month - 1, focus);
-    } else {
-      setYearInput(String(view.year));
-    }
+    if (!yearAccepted(yearInput)) { setYearRefused(true); return; }
+    setYearRefused(false);
+    showMonth(Number(yearInput) * 12 + view.month - 1, focus);
   }
 
   function moveFocus(event: KeyboardEvent<HTMLButtonElement>, day: number) {
     let step: number;
     switch (event.key) {
+      case 'Enter': {
+        if (!onCommit) return;
+        event.preventDefault();
+        const hour = dayHour(day);
+        if (hour != null) { choose(hour); finish(hour); }
+        return;
+      }
       case 'ArrowLeft': step = -1; break;
       case 'ArrowRight': step = 1; break;
       case 'ArrowUp': step = -7; break;
@@ -214,11 +248,13 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
     <Popover menu={menu} id={`${id}-popup`} className="date-time-popover"
       aria-label={`${label} date and time`} onToggle={(event) => {
         const isOpen = event.newState === 'open';
+        if (!isOpen && picked.current != null) onCancel?.();
+        pick(null);
         const shown = live ? live.read() : value;
         const opening = (shown == null ? null : gameDate(shown)) ?? minimum;
         setHeld(isOpen && live && shown != null ? { hour: shown, following: true } : null);
         if (isOpen && opening) {
-          showMonth(monthIndex(opening), true);
+          showMonth(monthIndex(opening), true, true);
           setFocusedDay(opening.day);
         }
       }}>
@@ -231,16 +267,15 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
               disabled: view.year * 12 + index < firstMonth || view.year * 12 + index > lastMonth }))} />
           <label className="sr-only" htmlFor={`${id}-year`}>Year</label>
           <input id={`${id}-year`} className="calendar-year" type="number" step="1" min={minimum?.year} max={maximum?.year}
-            value={yearInput} onChange={(event) => setYearInput(event.currentTarget.value)} onBlur={() => commitYear()}
+            value={yearInput} aria-invalid={yearInvalid || undefined} aria-describedby={yearInvalid ? `${id}-year-hint` : undefined}
+            onFocus={hold} onChange={(event) => { hold(); setYearInput(event.currentTarget.value); if (picked.current != null) { pick(null); onCancel?.(); } }} onBlur={() => commitYear()}
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitYear(true); } }} />
           <button type="button" className="calendar-arrow" aria-label="Next month" disabled={viewMonth >= lastMonth}
             onClick={() => { hold(); showMonth(viewMonth + 1); }}><Icon name="chevron-right" /></button>
         </div>
-        { }
+        {yearInvalid && yearHint && <FailureLine className="calendar-year-hint" id={`${id}-year-hint`} message={yearHint} />}
         <p className="sr-only" aria-live={following ? 'off' : 'polite'}>{monthNames[view.month - 1]} {view.year}</p>
         <p id={`${id}-keys`} className="sr-only">Use arrow keys to move between days. Page Up and Page Down change the month; hold Shift to change the year.</p>
-        {
-}
         <div className="calendar-grid" role="grid" aria-label={`${monthNames[view.month - 1]} ${view.year}`}
           aria-describedby={`${id}-keys`}>
           {Array.from({ length: Math.ceil(daysInMonth / 7) }, (_, row) => <div className="calendar-week" role="row" key={row}>
@@ -262,7 +297,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
         </div>
         <div className="calendar-time">
           <label htmlFor={`${id}-time`}><Icon name="clock" /><span>Time<span className="sr-only"> · Game time, hourly</span></span></label>
-          <Select id={`${id}-time`} label="Time" value={String(selected?.hour ?? 1)} disabled={!selected}
+          <Select id={`${id}-time`} label="Time" value={String(selected?.hour ?? 1)} disabled={!selected} repick onOpen={hold}
             onChange={value => chooseTime(Number(value))}
             options={Array.from({ length: 24 }, (_, index) => ({ value: String(index + 1), label: formatTime(index + 1),
               disabled: selectedDayStart + index < min || selectedDayStart + index > max }))} />
@@ -272,7 +307,7 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
             <button type="button" className="text-button" data-tooltip="Select the first available date" onClick={() => choose(Math.max(min, HOUR_EPOCH))}>First date</button>
             <button type="button" className="text-button" data-tooltip="Select the last available date" onClick={() => choose(max)}>Last date</button>
           </div>
-          <button type="button" className="button primary small" onClick={menu.close}>Done</button>
+          <button type="button" className="button primary small" disabled={(!!onCommit && !armed) || !yearAccepted(yearInput)} onClick={() => onCommit ? finish() : menu.close()}>{commitLabel ?? 'Done'}</button>
         </div>
         <span className="sr-only" aria-live={following ? 'off' : 'polite'}>{shownValue != null ? formatDateTime(shownValue) : 'Choose a date'}</span>
       </>}</PopoverBody>

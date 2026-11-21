@@ -76,7 +76,7 @@ const META: WidgetMeta = { kind: 'test-options', version: 2, title: 'Test', icon
 registerWidgets([META]);
 
 test('a content set stores distinct tokens and empties back to automatic', () => {
-  assert.equal(UNSTORABLE, 'This choice cannot be saved.');
+  assert.equal(UNSTORABLE, 'This choice can’t be saved.');
   const fields: readonly OptionField[] = [{ key: 'picked', section: 'options', label: 'Picked', kind: 'content-set', automatic: 'Automatic', default: '' }];
   assert.deepEqual(resolveOptions(fields, { picked: 'steel mod_ore' }), { picked: 'steel mod_ore' });
   for (const bad of ['steel steel', 'steel  oil', ' steel', 'steel,oil', 3]) {

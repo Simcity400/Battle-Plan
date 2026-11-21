@@ -81,7 +81,7 @@ use {
     viewer_world::map::scene::Request,
 };
 
-const USAGE: &str = "viewer is the development harness and tooling around Battle Plan's map; the desktop
+const USAGE: &str = "viewer is the development harness and tooling around BattlePlan's map; the desktop
 app (replay-desktop.exe) shows maps itself. It runs:
 viewer --playback-cost <replay> --from-hour H --hours N --speed max --out <directory>
          with --paced S, --flight <x,z[,height]> flies the camera: tilted, east, a turn, a climb
