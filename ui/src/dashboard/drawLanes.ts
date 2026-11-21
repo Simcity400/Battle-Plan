@@ -20,14 +20,15 @@ function painted(message: ToWorker): number {
 }
 
 export class DrawLanes {
-  private readonly owner = new Map<number, { lane: number; weight: number }>();
+  private readonly owner = new Map<number, { lane: number; weight: number; table: boolean }>();
   private readonly lanes: readonly DrawLane[];
   private readonly emit: (message: FromWorker) => void;
   private readonly load: number[];
+  private readonly tables: number[];
   private audit?: { waiting: number; records: DrawSample[]; done: boolean };
 
   constructor(lanes: readonly DrawLane[], emit: (message: FromWorker) => void) {
-    this.lanes = lanes; this.emit = emit; this.load = lanes.map(() => 0);
+    this.lanes = lanes; this.emit = emit; this.load = lanes.map(() => 0); this.tables = lanes.map(() => 0);
   }
 
   get count() { return this.lanes.length; }
@@ -40,14 +41,22 @@ export class DrawLanes {
         if (message.type !== 'surface' && message.type !== 'table' && message.type !== 'dateFace' && message.type !== 'race') {
           this.lanes[0]!.postMessage(message, transfer); return;
         }
-        held = { lane: this.load.indexOf(Math.min(...this.load)), weight: 0 };
-        this.owner.set(message.id, held);
+        const table = message.type === 'table';
+        let lane = 0;
+        for (let at = 1; at < this.lanes.length; at++) {
+          const fewer = table && this.tables[at]! !== this.tables[lane]! ? this.tables[at]! < this.tables[lane]! : this.load[at]! < this.load[lane]!;
+          if (fewer) lane = at;
+        }
+        held = { lane, weight: 0, table };
+        this.owner.set(message.id, held); if (table) this.tables[lane]!++;
       }
       if (message.type === 'surface' || message.type === 'table' || message.type === 'race' || message.type === 'dateFace') {
         const weight = painted(message);
         this.load[held.lane]! += weight - held.weight; held.weight = weight;
       }
-      if (message.type === 'detach' || message.type === 'closeRace') { this.owner.delete(message.id); this.load[held.lane]! -= held.weight; }
+      if (message.type === 'detach' || message.type === 'closeRace') {
+        this.owner.delete(message.id); this.load[held.lane]! -= held.weight; if (held.table) this.tables[held.lane]!--;
+      }
       this.lanes[held.lane]!.postMessage(message, transfer);
       return;
     }

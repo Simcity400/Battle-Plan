@@ -38,6 +38,14 @@ test('a lane weighs what its surfaces paint, so a large table draws beside fewer
   assert.equal(types(0).at(-1), 'table', 'a table drawn again goes where its cells were freed');
 });
 
+test('a table not yet laid out still draws on a lane with no table', () => {
+  const { draw, types } = lanes(2);
+  draw.post(sized(1, 8, 20));
+  for (let id = 2; id <= 9; id++) draw.post(panel(id, 20));
+  draw.post(sized(10, 0, 0));
+  assert.deepEqual([types(0).includes('table') && types(1).includes('table'), types(1).at(-1)], [true, 'table']);
+});
+
 test('a surface drawn again with more cells weighs its new picture', () => {
   const { draw, types } = lanes(2);
   draw.post(panel(1, 10)); draw.post(panel(2, 10));
