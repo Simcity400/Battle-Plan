@@ -770,8 +770,7 @@ mod tests {
 
     #[test]
     fn copied_type_index_distinguishes_later_rejected_names_and_preserves_original_spelling() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { Custom_Destroyer = {} 1rejected = {} }",
@@ -816,8 +815,7 @@ mod tests {
 
     #[test]
     fn nul_declaration_keys_refuse_index_derivation_instead_of_selecting_a_later_prefix() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { \"custom\0tail\" = {} custom = {} }",
@@ -928,8 +926,7 @@ mod tests {
 
     #[test]
     fn current_variant_depth_orders_exact_modded_composition() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let content = viewer_foundation::map::test_support::equipment_from_documents(&[br"
             equipments = {
                 mod_root = { is_archetype = yes type = destroyer }

@@ -10,6 +10,8 @@ mod naval;
 mod railway;
 #[path = "division_eta/classes/task_force.rs"]
 mod task_force;
+#[cfg(test)]
+pub(super) mod test_support;
 use replay_frame::frame::DecodedFrame;
 use std::{cell::OnceCell, sync::Arc};
 

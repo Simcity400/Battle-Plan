@@ -356,8 +356,7 @@ mod tests {
 
     #[test]
     fn unbound_port_authored_fallback_keeps_raw_lookup_and_bound_localisation_distinct() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let frame = test_frame(0);
         let gui = content_reader_core::gui::native::read(
             br#"guiTypes = {
@@ -391,8 +390,7 @@ mod tests {
 
     #[test]
     fn port_callback_handled_empty_controls_suppress_authored_fallback() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = content_reader_core::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
@@ -432,8 +430,7 @@ mod tests {
 
     #[test]
     fn port_callback_false_allows_fallback_but_unknown_admission_does_not() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = content_reader_core::gui::native::read(
             b"guiTypes = { guiButtonType = { name = authored pdx_tooltip = RAW } }",
         );
@@ -466,8 +463,7 @@ mod tests {
 
     #[test]
     fn authored_fallback_replaces_only_present_hash_fields_and_appends_unscoped_bound() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let gui = content_reader_core::gui::native::read(
             br#"guiTypes = {
             guiButtonType = { name = absent pdx_tooltip = MISSING pdx_tooltip_delayed = BODY }

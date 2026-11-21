@@ -150,7 +150,7 @@ fn transcript(branched: bool) -> Vec<String> {
 
 #[test]
 fn branched_counters_draw_every_frame_as_the_plain_draw() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let serial = transcript(false);
     let branched = transcript(true);
     assert_eq!(serial.len(), branched.len());

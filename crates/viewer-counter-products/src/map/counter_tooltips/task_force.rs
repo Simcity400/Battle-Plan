@@ -302,8 +302,7 @@ pub(super) mod tests {
 
     #[test]
     fn task_force_handled_empty_suppresses_authored_text_and_dangling_first_falls_back() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let loc: Localisation = [
             ("TITLE".into(), "authored title".into()),
             ("BODY".into(), "authored body".into()),
@@ -358,13 +357,12 @@ pub(super) mod tests {
 
     #[test]
     fn task_force_detailed_fallback_follows_eta_handled_flag_not_summary_text() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use replay_data::{
             rows::CountryAppearanceRow, rows::CountryRow, rows::PoliticsRow,
             rows::TaskForceCounterInputRow,
         };
-        let loc: Localisation = [
+        let mut loc: Localisation = [
             ("TITLE".into(), "authored title".into()),
             ("BODY".into(), "authored body".into()),
             ("UNIT_MOVING_HOURS".into(), "own $HOURS$h".into()),
@@ -376,6 +374,7 @@ pub(super) mod tests {
         ]
         .into_iter()
         .collect();
+        loc.language = "english".into();
         let gui = content_reader_core::gui::native::read(
             br#"guiTypes = { iconType = {
             name = control pdx_tooltip = TITLE pdx_tooltip_delayed = BODY

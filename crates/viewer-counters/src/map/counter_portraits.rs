@@ -326,8 +326,7 @@ mod tests {
 
     #[test]
     fn portrait_sprite_uses_the_native_decoder_and_client_setting() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use super::*;
         let root = std::env::temp_dir().join(format!(
             "hoi4_counter_portrait_native_texture_{}",
