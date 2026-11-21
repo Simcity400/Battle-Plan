@@ -8,6 +8,12 @@
     python tools/boat.py test -p replay-columnar --lib -- <test name>... [--exact] [--nocapture]
     python tools/boat.py reconcile
     python tools/boat.py snapshot
+    python tools/boat.py wake check -p <crate>... --all-targets
+
+`wake`, given the arguments of the run that follows, starts resuming the VM that run would take, or clones
+one, without claiming it or waiting for its disk, so a caller with local work to do first overlaps the resume
+with that work. A clone returns once Boat has created the VM. start_waking() runs `wake` in the background and
+returns at once. A woken VM nobody takes stops when its 15-minute lifetime ends.
 
 Run it inside the worktree. Its tracked and unignored files, uncommitted changes included, are
 synchronized to a VM cloned from the SNAPSHOT image and compiled with cargo-xwin for
@@ -106,12 +112,17 @@ IDLE_SECONDS = 300
 START_SECONDS = 420
 HYDRATION_SECONDS = 1800
 STALL_SECONDS = 180
+STALL_FRACTION = 0.005
 POLL_SECONDS = 10
+FINAL_POLL_SECONDS = 2
+FINAL_STAGES = {"reconciling", "settling"}
+FINAL_PERCENT = 90
 STARTED = {"ready", "idle", "running"}
 COOLDOWN_SECONDS = 1800
 CREATE_SPACING_SECONDS = 5.1
 UNAVAILABLE = 75
-USABLE = {"ready", "idle", "running", "stopped"}
+USABLE = {"ready", "idle", "running", "starting", "resuming", "stopped"}
+BROKEN_TOOLCHAIN = 72
 REMOTE_CLAIMED = 73
 RETRY_SECONDS = (2, 5, 10, 20, 40, 60)
 LAUNCH_FAILED = 0xC0000142
@@ -372,6 +383,27 @@ class State:
     def allocator(self):
         return Lock(self.claims / "allocator.lock", wait=True)
 
+    def waking(self, lane, wait=False):
+        """Held by a worktree's wake while it starts a VM, so the worktree's run waits for that VM rather than cloning its own."""
+        return Lock(self.lanes / (lane + ".waking"), wait)
+
+    def running(self, lane, token):
+        """Held by each run of a worktree from allocation to its end, so a late wake of the worktree starts nothing."""
+        return Lock(self.lanes / f"{lane}.running-{token}")
+
+    def run_active(self, lane):
+        """Whether a run of the worktree holds its marker; removes those runs that ended left."""
+        for path in self.lanes.glob(f"{lane}.running-*"):
+            try:
+                Lock(path).close()
+            except OSError:
+                return True
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        return False
+
     def registered(self):
         return sorted(path.stem for path in self.pool.glob("*.json"))
 
@@ -417,7 +449,7 @@ def rank(registered, states, lane_vm, size, cooling, used=lambda vmid: 0, rebuil
         stopped = vm["state"] == "stopped"
         if size == "large" and vm.get("type") != "large" and not stopped:
             continue
-        ranked.append((stopped, not stopped and vm.get("hydrated") is False, rebuilds(vmid), vmid != lane_vm, vm.get("type") != size, used(vmid), vmid))
+        ranked.append((stopped, not stopped and (vm["state"] not in STARTED or vm.get("hydrated") is False), rebuilds(vmid), vmid != lane_vm, vm.get("type") != size, used(vmid), vmid))
     return [row[-1] for row in sorted(ranked)]
 
 
@@ -662,58 +694,156 @@ def choose(state, lane, size, passed=(), rebuilds=lambda vmid: (0, 0)):
                 return vmid, states[vmid], state.lock(vmid), False
             except OSError:
                 continue
-        say(f"No free prepared VM: cloning a {size} VM from {SNAPSHOT}")
-        schedule = state.claims / "create-schedule.json"
-        slot = max(now, json.loads(schedule.read_text()).get("next", now) if schedule.exists() else now)
-        atomic_json(schedule, {"next": slot + CREATE_SPACING_SECONDS})
-        allocator.close()
-        if slot > now:
-            time.sleep(slot - now)
-        creation, events = boat("new", "--from", SNAPSHOT, "--type", size, "--name", "hoi4-check-pool-" + lane[:10], "--ttl", str(LEASE_SECONDS), "--no-env", check=False)
-        vmid = next((event["id"] for event in events if event.get("event") == "created"), None)
-        if creation.returncode or not vmid:
-            if vmid:
-                boat("extend", vmid, "--ttl", str(IDLE_SECONDS), check=False)
-                atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
-            raise Failure(f"Boat could not clone {SNAPSHOT} ({creation.returncode}), sandbox {vmid}: {creation.stderr.strip()}")
-        lock = state.lock(vmid)
-        atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
-        return vmid, {"state": "ready", "type": size}, lock, True
+        try:
+            waking = state.waking(lane)
+        except OSError:
+            allocator.close()
+            say("Waiting for the VM this worktree's wake is starting")
+            state.waking(lane, wait=True).close()
+            return choose(state, lane, size, passed, rebuilds)
+        try:
+            say(f"No free prepared VM: cloning a {size} VM from {SNAPSHOT}")
+            vmid, lock, cloned = clone(state, lane, size, allocator)
+        finally:
+            waking.close()
+        return vmid, {"state": "ready", "type": cloned}, lock, True
     finally:
         allocator.close()
 
 
-def wait_ready(vmid, clock=time.monotonic, pause=time.sleep):
-    """Waits until the VM runs and holds all its files; Failure once it stops getting there."""
-    started = running = moved = clock()
-    progress = None
+def clone(state, lane, size, allocator, **fields):
+    """Clones a VM from SNAPSHOT, each create spaced from every other, letting the allocator go while it creates; returns (vmid, its lock, its size)."""
+    for size in dict.fromkeys((size, "large")):
+        allocator = allocator or state.allocator()
+        now = time.time()
+        schedule = state.claims / "create-schedule.json"
+        slot = max(now, json.loads(schedule.read_text()).get("next", now) if schedule.exists() else now)
+        atomic_json(schedule, {"next": slot + CREATE_SPACING_SECONDS})
+        allocator.close()
+        allocator = None
+        if slot > now:
+            time.sleep(slot - now)
+        creation, events = boat("new", "--from", SNAPSHOT, "--type", size, "--name", "hoi4-check-pool-" + lane[:10], "--ttl", str(LEASE_SECONDS), "--no-env", check=False)
+        vmid = next((event["id"] for event in events if event.get("event") == "created"), None)
+        reason = "; ".join(event["error"] for event in events if event.get("error")) or creation.stderr.strip()
+        if vmid or "does not fit" not in reason:
+            break
+        say(f"{SNAPSHOT} does not fit a {size} VM ({reason}); cloning a large one")
+    if creation.returncode or not vmid:
+        if vmid:
+            boat("extend", vmid, "--ttl", str(IDLE_SECONDS), check=False)
+            atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT})
+        raise Failure(f"Boat could not clone {SNAPSHOT} as a {size} VM ({creation.returncode}), sandbox {vmid}: {reason}")
+    lock = state.lock(vmid)
+    atomic_json(state.pool / (vmid + ".json"), {"id": vmid, "snapshot": SNAPSHOT, **fields})
+    return vmid, lock, size
+
+
+def wake(state, lane, size, rebuilds=lambda vmid: (0, 0)):
+    """Starts resuming, or clones, the VM a run would take now, without claiming it or waiting for its disk; returns (vmid, what it found)."""
+    try:
+        waking = state.waking(lane)
+    except OSError:
+        return None, "another wake of this worktree is under way"
+    allocator = None
+    try:
+        allocator = state.allocator()
+        if state.run_active(lane):
+            return None, "a run of this worktree is under way"
+        states = listing()
+        now = time.time()
+        for vmid in rank(state.registered(), states, state.lane_vm(lane), size, lambda vmid: state.cooling(vmid, now), lambda vmid: state.entry(vmid).get("used", 0), rebuilds):
+            try:
+                state.lock(vmid).close()
+            except OSError:
+                continue
+            vm = states[vmid]
+            if vm["state"] != "stopped":
+                boat("extend", vmid, "--ttl", str(LEASE_SECONDS), idempotent=False)
+                return vmid, vm["state"]
+            grow = resume_type(vm.get("type"), size)
+            boat("resume", vmid, "--ttl", str(LEASE_SECONDS), "--no-wait", *(["--type", grow] if grow else []))
+            state.update(vmid, woken=now)
+            return vmid, "resuming"
+        vmid, lock, _ = clone(state, lane, size, allocator, woken=now)
+        lock.close()
+        return vmid, "cloned"
+    finally:
+        if allocator:
+            allocator.close()
+        waking.close()
+
+
+def start_waking(args, cwd=None):
+    """Runs `boat.py wake <args>` in the background and returns its process at once.
+
+    A caller with local work to do before `boat.py <args>` calls this first, so the VM that run takes resumes meanwhile.
+    """
+    return subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "wake", *args], cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_CONSOLE)
+
+
+def wait_ready(vmid, spent=None, clock=time.monotonic, pause=time.sleep):
+    """Waits until the VM runs and holds all its files; Failure once it stops getting there.
+
+    `spent` gets the seconds in each stage Boat reported: `boot` until the VM runs, then each hydration phase.
+    """
+    started = running = moved = last = clock()
+    spent = {} if spent is None else spent
+    mark, stage = None, "boot"
     while True:
         vm = info(vmid)
         now = clock()
+        spent[stage] = round(spent.get(stage, 0) + now - last, 2)
+        last = now
+        hydration = vm.get("hydration") or {}
         if vm.get("state") == "error":
             raise Failure(f"{vmid}: Boat reports an error: {vm.get('error')}")
         if vm.get("state") not in STARTED:
             running = moved = now
+            stage = hydration.get("phase") or "boot"
             if now - started >= START_SECONDS:
                 raise Failure(f"{vmid}: not running {START_SECONDS} s after its start ({vm.get('state')}; {vm.get('error')})")
         elif vm.get("hydrated") is not False:
             return vm
-        elif vm.get("hydration") != progress:
-            progress, moved = vm.get("hydration"), now
-        elif now - moved >= STALL_SECONDS:
-            raise Failure(f"{vmid}: hydration stalled for {STALL_SECONDS} s at {json.dumps(progress)}")
+        else:
+            stage = hydration.get("phase") or "settling"
+            done, total = hydration.get("entriesDone") or 0, hydration.get("entriesTotal") or 0
+            if total:
+                spent["entries"] = total
+            if mark is None or stage != mark[0] or done - mark[1] >= max(1, total * STALL_FRACTION):
+                mark, moved = (stage, done), now
+            elif now - moved >= STALL_SECONDS:
+                raise Failure(f"{vmid}: hydration stalled: {max(0, done - mark[1])} entries in {STALL_SECONDS} s, under {STALL_FRACTION:.1%} of {total or 'its unknown total'}, in its {stage} phase at {done}")
         if now - running >= HYDRATION_SECONDS:
-            raise Failure(f"{vmid}: filesystem hydration did not finish within {HYDRATION_SECONDS} s")
-        pause(POLL_SECONDS)
+            raise Failure(f"{vmid}: filesystem hydration did not finish within {HYDRATION_SECONDS} s ({stage} phase, {json.dumps(hydration)})")
+        pause(FINAL_POLL_SECONDS if stage in FINAL_STAGES or (hydration.get("percent") or 0) >= FINAL_PERCENT else POLL_SECONDS)
 
 
-def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0)):
-    """Claims a VM locally and remotely; returns (vmid, lock, lease, remote source manifest)."""
-    passed = set()
-    for _ in range(3):
+def toolchain_channel(worktree):
+    """The Rust channel the worktree's rust-toolchain.toml names, or "" when it names none."""
+    try:
+        return str(tomllib.loads((worktree / "rust-toolchain.toml").read_text(encoding="utf-8"))["toolchain"]["channel"])
+    except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+        return ""
+
+
+def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0), channel=""):
+    """Claims a VM locally and remotely; returns (vmid, lock, lease, remote source manifest).
+
+    Three VMs that fail to get ready or to initialize end the run; quarantined and busy pool VMs are passed by without counting.
+    """
+    passed, attempts = set(), 0
+    while attempts < 3:
         vmid, vm, lock, created = choose(state, lane, size, passed, rebuilds)
         record.update(vm=vmid, vm_type=vm.get("type"), vm_state=vm.get("state"), created=created)
-        record.pop("resumed", None)
+        for field in ("resumed", "woken", "ready_seconds"):
+            record.pop(field, None)
+        woken = state.entry(vmid).get("woken")
+        if woken:
+            state.update(vmid, woken=None)
+            if not created and vm.get("state") != "stopped" and time.time() - woken < LEASE_SECONDS:
+                record["woken"] = round(time.time() - woken, 1)
+        readiness = record["readiness"] = {}
         say(f"Boat VM {vmid} ({vm.get('type')}, {vm.get('state')}), lane {lane[:10]}")
         lease = None
         try:
@@ -724,42 +854,56 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0)):
                     grow = resume_type(vm.get("type"), size)
                     boat("resume", vmid, "--ttl", str(LEASE_SECONDS), "--no-wait", *(["--type", grow] if grow else []))
                     record["resumed"] = True
+                    readiness["resume_call"] = round(time.monotonic() - started, 2)
                 elif not created:
                     boat("extend", vmid, "--ttl", str(LEASE_SECONDS))
                 lease = Lease(vmid)
-                if vm["state"] == "stopped" or created or vm.get("hydrated") is False:
+                if vm["state"] not in STARTED or created or vm.get("hydrated") is False:
                     waited = True
-                    wait_ready(vmid)
+                    wait_ready(vmid, readiness)
             except Failure as error:
-                if waited:
-                    state.cool(vmid, str(error))
-                passed.add(vmid)
-                record.setdefault("passed_over", []).append({"vm": vmid, "reason": str(error)})
-                say(f"{error}; passing it by")
-                if lease:
-                    lease.end()
-                lock.close()
-                continue
-            record["ready_seconds"] = round(time.monotonic() - started, 2)
-            install_runner(state, vmid)
-            status, manifest = quick(vmid, "acquire", token)
-            if status == 0:
-                return vmid, lock, lease, json.loads(manifest)
-            if status != REMOTE_CLAIMED:
-                quick(vmid, "release", token)
-                raise Failure(f"{vmid}: initialization failed ({status}); see the remote output above")
-            if manifest.strip() == "busy":
-                passed.add(vmid)
-                say(f"{vmid} is still finishing a job whose run ended; passing it by")
+                reason, outcome = str(error), "cool" if waited else "pass"
             else:
+                record["ready_seconds"] = round(time.monotonic() - started, 2)
+                try:
+                    install_runner(state, vmid)
+                    status, manifest = quick(vmid, "acquire", token, *([channel] if channel else []))
+                    if status == 0:
+                        tree = json.loads(manifest)
+                        if not isinstance(tree, dict):
+                            raise ValueError(f"the claim answered {manifest[:100]!r}, not the VM's source manifest")
+                        return vmid, lock, lease, tree
+                except (Failure, ValueError) as error:
+                    status, manifest = None, str(error)
+                finally:
+                    readiness["claim"] = round(time.monotonic() - started - record["ready_seconds"], 2)
+                if status == BROKEN_TOOLCHAIN:
+                    reason, outcome = f"{vmid}: its toolchain does not run (see the remote output above)", "quarantine"
+                elif status == REMOTE_CLAIMED and manifest.strip() == "busy":
+                    reason, outcome = f"{vmid} is still finishing a job whose run ended", "free"
+                elif status == REMOTE_CLAIMED:
+                    reason, outcome = f"{vmid} holds processes a job could not stop", "quarantine"
+                else:
+                    try:
+                        quick(vmid, "release", token)
+                    except Failure as error:
+                        say(f"{vmid}: could not release its claim ({error}); the next acquire takes it over")
+                    reason, outcome = f"{vmid}: initialization failed ({manifest[:300] if status is None else status}); see the remote output above", "cool"
+            passed.add(vmid)
+            record.setdefault("passed_over", []).append({"vm": vmid, "reason": reason, "readiness": readiness})
+            if outcome == "cool":
+                state.cool(vmid, reason)
+            elif outcome == "quarantine":
                 state.quarantine(vmid)
-                say(f"{vmid} holds processes a job could not stop; quarantined")
+            attempts += outcome in {"cool", "pass"} or created
+            say(f"{reason}; {'quarantined' if outcome == 'quarantine' else 'passing it by'}")
         except BaseException:
             if lease:
                 lease.end()
             lock.close()
             raise
-        lease.end()
+        if lease:
+            lease.end()
         lock.close()
     raise Failure("Could not claim a VM after three attempts")
 
@@ -1194,7 +1338,7 @@ def make_snapshot(state, worktree, revision):
 
 
 class Refused(Exception):
-    """A test run boat.py will not start, named with why."""
+    """A run boat.py will not start, named with why."""
 
 
 class TestRun:
@@ -1246,7 +1390,7 @@ def parse_test(rest):
 def parse(argv):
     """Returns (mode, cargo arguments, output directory, the test run)."""
     if not argv or argv[0] not in {"check", "build", "test", "ui", "reconcile", "snapshot"}:
-        raise Failure("Usage: boat.py check <cargo args> | build --out <dir> --release|--profile <name> <cargo args> | test [--out <dir>] [--pdb] [--no-fail-fast] -p <crate> <cargo test args> [-- <test args>] | ui | reconcile | snapshot")
+        raise Failure("Usage: boat.py check <cargo args> | build --out <dir> --release|--profile <name> <cargo args> | test [--out <dir>] [--pdb] [--no-fail-fast] -p <crate> <cargo test args> [-- <test args>] | ui | reconcile | snapshot | wake <arguments of the run that follows>")
     mode, rest = argv[0], list(argv[1:])
     outdir, run = None, None
     if mode in {"ui", "reconcile", "snapshot"}:
@@ -1280,8 +1424,36 @@ def machine_size(mode, cargo):
     return "default" if mode == "ui" or (mode == "check" and packages == 1 and "--workspace" not in cargo) else "large"
 
 
+def wake_command(argv):
+    """`wake <arguments of a check, build, test or ui run>`: starts resuming the VM that run would take."""
+    try:
+        mode, cargo, _, _ = parse(argv)
+    except Failure as error:
+        raise Refused(str(error)) from None
+    if mode in {"reconcile", "snapshot"}:
+        raise Refused("wake takes the arguments of the check, build, test or ui run it comes before")
+    worktree = Path(git(Path.cwd(), "rev-parse", "--show-toplevel")).resolve()
+    state = State.for_worktree(worktree)
+    lane = hashlib.sha256(os.path.normcase(str(worktree)).encode()).hexdigest()
+    try:
+        cargo = member_features(worktree, cargo)
+        size = machine_size(mode, cargo)
+    except Failure as error:
+        raise Refused(str(error)) from None
+    plan = Plan(worktree, source_manifest(worktree), cargo) if mode != "ui" else None
+    try:
+        vmid, found = wake(state, lane, size, (lambda vmid: plan.rebuilds(state.entry(vmid))) if plan else (lambda vmid: (0, 0)))
+    except Failure as error:
+        say(f"Boat wake started no VM: {error}; the run chooses one itself")
+        return UNAVAILABLE
+    say(f"Boat wake: {vmid or 'no VM'} {found}")
+    return 0
+
+
 def run(argv):
     started = time.monotonic()
+    if argv[:1] == ["wake"]:
+        return wake_command(argv[1:])
     mode, cargo, outdir, tests = parse(argv)
     worktree = Path(git(Path.cwd(), "rev-parse", "--show-toplevel")).resolve()
     state = State.for_worktree(worktree)
@@ -1318,7 +1490,7 @@ def run(argv):
         record["phases"][phase] = round(time.monotonic() - mark, 2)
         phase, mark = name, time.monotonic()
 
-    lock = lease = stage = vmid = None
+    lock = lease = stage = vmid = active = None
     claimed = running = False
     changed, cached = {}, {}
     cargo_exit = None
@@ -1329,7 +1501,8 @@ def run(argv):
         stage.mkdir()
         plan = Plan(worktree, manifest, cargo) if mode != "ui" else None
         rebuilds = (lambda vmid: plan.rebuilds(state.entry(vmid))) if plan else (lambda vmid: (0, 0))
-        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record, rebuilds)
+        active = state.running(lane, token)
+        vmid, lock, lease, old = acquire(state, lane, machine_size(mode, cargo), token, record, rebuilds, toolchain_channel(worktree))
         record["rebuilds"] = rebuilds(vmid)
         claimed = True
         enter("sync")
@@ -1383,6 +1556,9 @@ def run(argv):
             lock.close()
         if stage:
             remove_stage(state, stage)
+        if active:
+            active.close()
+            (state.lanes / f"{lane}.running-{token}").unlink(missing_ok=True)
         enter("done")
         elapsed = time.monotonic() - started
         record.update(time=time.strftime("%Y-%m-%dT%H:%M:%S%z"), seconds=round(elapsed, 2), cargo_exit=cargo_exit)
@@ -1411,7 +1587,7 @@ def main(argv):
         say("Interrupted; a surviving remote job keeps its claim, and the VM stops when its lease ends.")
         return 130
     except Refused as error:
-        say(f"boat.py test refused: {error}")
+        say(f"boat.py {argv[0] if argv else ''} refused: {error}")
         return 2
     except Exception as error:
         say(f"BOAT UNAVAILABLE: {error}\nRun it on Boat again; never compile locally.")

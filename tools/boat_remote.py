@@ -15,6 +15,7 @@ import tarfile
 import time
 
 ROOT = Path('/home/user/hoi4')
+HOST = 'x86_64-unknown-linux-gnu'
 SRC = ROOT / 'src'
 CLAIM = ROOT / 'claim'
 STRANDED = ROOT / 'stranded'
@@ -182,6 +183,18 @@ def restore_metadata():
                     pass
         BOOT_MARKER.write_text(boot)
         print(f'Restored {len(mtimes)} cached mtimes after clone/resume', file=sys.stderr)
+
+def toolchain_fault(channel):
+    """Why the installed toolchain of `channel`, the incoming tree's, does not run Cargo, or None; a toolchain the VM lacks is rustup's to install."""
+    if not channel:
+        return None
+    if not (Path(os.environ.get('RUSTUP_HOME', '/usr/local/rustup')) / 'toolchains' / f'{channel}-{HOST}').is_dir():
+        return None
+    try:
+        result = subprocess.run(['cargo', '--version'], cwd=ROOT, env={**os.environ, 'RUSTUP_TOOLCHAIN': channel, 'RUSTUP_AUTO_INSTALL': '0'}, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return repr(error)
+    return ((result.stderr or result.stdout).strip() or f'exit {result.returncode}') if result.returncode else None
 
 def manifest():
     if MANIFEST.exists():
@@ -365,6 +378,11 @@ elif mode == 'acquire':
         else:
             leftover.unlink()
     restore_metadata()
+    broken = toolchain_fault(sys.argv[3] if len(sys.argv) > 3 else '')
+    if broken:
+        print(f'The toolchain does not run: {broken}', file=sys.stderr)
+        shutil.rmtree(CLAIM)
+        sys.exit(72)
     print(json.dumps(manifest()))
 elif mode == 'release':
     token = sys.argv[2]
