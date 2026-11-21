@@ -1,9 +1,11 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
 };
 
-use battleplan_fuzz::{fixtures, raw_seed};
+use battleplan_fuzz::{fixtures, raw_recording, raw_seed};
+use dashboard_base::metadata;
 use replay_columnar::envelope;
 
 fn main() -> io::Result<()> {
@@ -33,6 +35,22 @@ fn main() -> io::Result<()> {
     ];
     let raw_frame = raw_seed(false)?;
     let raw_sequence = raw_seed(true)?;
+    let dashboard = metadata::read(
+        &Arc::new(raw_recording(&raw_sequence)?),
+        Path::new("synthetic.battleplan"),
+        &AtomicBool::new(false),
+    )
+    .map_err(io::Error::other)?;
+    if dashboard
+        .branches
+        .first()
+        .and_then(|branch| branch.catalogue_hour)
+        != Some(1)
+    {
+        return Err(io::Error::other(
+            "the dashboard seed must reach the country change at hour 1",
+        ));
+    }
     for target in [
         "open_recording",
         "partial_trailer",

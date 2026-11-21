@@ -61,11 +61,15 @@ pub fn recording_sequence(partial: bool, sequence: bool) -> io::Result<Replay> {
             tag: b"SYN".to_vec(),
             ..Default::default()
         }]));
-    frame.tables[TableId::CountryLinks.index()] =
+    let country_links = || {
         TableUpdate::Snapshot(TableRows::CountryLinks(vec![CountryLinkRow {
             id: 1,
             canonical_slot: 1,
-        }]));
+        }]))
+    };
+    if !sequence {
+        frame.tables[TableId::CountryLinks.index()] = country_links();
+    }
     let mut records = vec![
         Record::SessionStart(session),
         Record::BranchStart(BranchStart {
@@ -101,7 +105,7 @@ pub fn recording_sequence(partial: bool, sequence: bool) -> io::Result<Replay> {
             changed: vec![row.delta(Some(&before))?.unwrap()],
             deleted: vec![],
         };
-        next.tables[TableId::CountryLinks.index()] = TableUpdate::Unchanged { baseline: 0 };
+        next.tables[TableId::CountryLinks.index()] = country_links();
         records.push(Record::Frame(next));
     }
     if partial {
