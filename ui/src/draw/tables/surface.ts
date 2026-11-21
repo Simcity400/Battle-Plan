@@ -364,15 +364,34 @@ function hatch(ctx: TableCanvasContext, x: number, y: number, width: number, hei
   for (let at = x - height; at < x + width; at += theme.hatchSpacing) { ctx.beginPath(); ctx.moveTo(at, y + height); ctx.lineTo(at + height, y); ctx.stroke(); }
   ctx.restore();
 }
+const fontsAs = new Map<string, string>();
+function useFont(ctx: Pick<TableCanvasContext, 'font'>, value: string): void {
+  const known = fontsAs.get(value);
+  if (known !== undefined && ctx.font === known) return;
+  ctx.font = value;
+  if (fontsAs.size > 256) fontsAs.clear();
+  fontsAs.set(value, ctx.font);
+}
+const widths = new Map<string, number>();
+function widthOf(ctx: Pick<TableCanvasContext, 'measureText' | 'font'>, text: string): number {
+  const key = `${ctx.font}\u0000${text}`;
+  let width = widths.get(key);
+  if (width === undefined) {
+    width = ctx.measureText(text).width;
+    if (widths.size > 8192) widths.clear();
+    widths.set(key, width);
+  }
+  return width;
+}
 const fittedTexts = new Map<string, string>();
 export function fitText(ctx: Pick<TableCanvasContext, 'measureText' | 'font'>, text: string, width: number): string {
   if (width <= 0) return '';
-  if (ctx.measureText(text).width <= width) return text;
+  if (widthOf(ctx, text) <= width) return text;
   const key = `${ctx.font}\u0000${Math.floor(width)}\u0000${text}`;
   let fitted = fittedTexts.get(key);
   if (fitted === undefined) {
     let low = 0, high = text.length;
-    while (low < high) { const mid = Math.ceil((low + high) / 2); if (ctx.measureText(`${text.slice(0, mid).trimEnd()}…`).width <= width) low = mid; else high = mid - 1; }
+    while (low < high) { const mid = Math.ceil((low + high) / 2); if (widthOf(ctx, `${text.slice(0, mid).trimEnd()}…`) <= width) low = mid; else high = mid - 1; }
     fitted = low ? `${text.slice(0, low).trimEnd()}…` : '…';
     if (fittedTexts.size > 4096) fittedTexts.clear();
     fittedTexts.set(key, fitted);
@@ -398,16 +417,16 @@ function drawCell(ctx: TableCanvasContext, cell: TableCellModel, column: TableCo
     textX = left + ICON_LANE;
   }
   if (made.missing) {
-    ctx.font = `italic ${font(theme, theme.fontSize.small, LABEL_WEIGHT)}`;
+    useFont(ctx, `italic ${font(theme, theme.fontSize.small, LABEL_WEIGHT)}`);
     const barred = display === 'track' || display === 'meterAfter' || display === 'meterBefore' || display === 'underline';
-    const boxWidth = barred ? right - textX : Math.min(right - textX, ctx.measureText(made.text).width + 12), boxHeight = Math.min(16, height - 8);
+    const boxWidth = barred ? right - textX : Math.min(right - textX, widthOf(ctx, made.text) + 12), boxHeight = Math.min(16, height - 8);
     const boxX = endAligned(column) && !barred ? right - boxWidth : textX;
     hatch(ctx, boxX, middle - boxHeight / 2, boxWidth, boxHeight, theme);
     ctx.fillStyle = theme.muted; ctx.textAlign = barred ? 'center' : 'left';
     ctx.fillText(fitText(ctx, made.text, boxWidth - 12), barred ? boxX + boxWidth / 2 : boxX + 6, middle);
     return;
   }
-  ctx.font = font(theme, theme.fontSize.body, VALUE_WEIGHT);
+  useFont(ctx, font(theme, theme.fontSize.body, VALUE_WEIGHT));
   const bar = (barX: number, barWidth: number, barHeight: number) => {
     if (barWidth <= 0 || fraction === null) return;
     const barY = middle - barHeight / 2;
@@ -432,7 +451,7 @@ function drawCell(ctx: TableCanvasContext, cell: TableCellModel, column: TableCo
       case 'meterAfter': bar(right - METER_WIDTH, METER_WIDTH, METER_HEIGHT); text(right - METER_WIDTH - BAR_GAP, 'right', right - left - METER_WIDTH - BAR_GAP); return;
       case 'underline': {
         text(right, 'right', right - left);
-        const lineWidth = Math.min(right - left, ctx.measureText(made.text).width), lineY = middle + 8;
+        const lineWidth = Math.min(right - left, widthOf(ctx, made.text)), lineY = middle + 8;
         ctx.fillStyle = theme.lineSoft; ctx.fillRect(right - lineWidth, lineY, lineWidth, 2);
         if (fraction) { ctx.fillStyle = fill; ctx.fillRect(right - lineWidth, lineY, lineWidth * fraction, 2); }
         return;
@@ -444,7 +463,7 @@ function drawCell(ctx: TableCanvasContext, cell: TableCellModel, column: TableCo
   if (status === 'dot') {
     ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(textX + 3, middle, 3, 0, Math.PI * 2); ctx.fill(); textX += DOT_LANE;
   } else if (status === 'outline' || status === 'fill') {
-    const pillWidth = Math.min(right - textX, ctx.measureText(made.text).width + 16), pillHeight = Math.min(20, height - 6);
+    const pillWidth = Math.min(right - textX, widthOf(ctx, made.text) + 16), pillHeight = Math.min(20, height - 6);
     ctx.beginPath(); ctx.roundRect(textX, middle - pillHeight / 2, pillWidth, pillHeight, pillHeight / 2);
     if (status === 'fill') { ctx.fillStyle = fill; ctx.globalAlpha = 0.18; ctx.fill(); ctx.globalAlpha = 1; }
     ctx.strokeStyle = fill; ctx.globalAlpha = 0.7; ctx.stroke(); ctx.globalAlpha = 1;
@@ -472,11 +491,11 @@ export function cellBar(cell: TableCellModel, number: number | null, top: number
 }
 
 function trackSlot(ctx: TableCanvasContext, rows: readonly TableRowModel[], key: string, first: number, last: number, values: TableValues | null, theme: TableTheme): number {
-  ctx.font = font(theme, theme.fontSize.body, VALUE_WEIGHT);
+  useFont(ctx, font(theme, theme.fontSize.body, VALUE_WEIGHT));
   let widest = 0;
   for (let index = first; index < last; index++) {
     const cell = rows[index]?.cells[key];
-    if (cell) { const made = valueText(cell, values); if (!made.missing) widest = Math.max(widest, ctx.measureText(made.text).width); }
+    if (cell) { const made = valueText(cell, values); if (!made.missing) widest = Math.max(widest, widthOf(ctx, made.text)); }
   }
   return Math.ceil(widest);
 }
@@ -502,11 +521,11 @@ function barSpan(column: TableColumnLayout, slot: number): number {
 }
 
 function drawEmpty(ctx: TableCanvasContext, text: string, width: number, height: number, theme: TableTheme): void {
-  ctx.font = font(theme, theme.fontSize.body, LABEL_WEIGHT); ctx.fillStyle = theme.muted; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  useFont(ctx, font(theme, theme.fontSize.body, LABEL_WEIGHT)); ctx.fillStyle = theme.muted; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const room = Math.max(1, width - 2 * CELL_INSET * 2), lines: string[] = [];
   for (const word of text.split(' ')) {
     const last = lines.at(-1);
-    if (last !== undefined && ctx.measureText(`${last} ${word}`).width <= room) lines[lines.length - 1] = `${last} ${word}`; else lines.push(word);
+    if (last !== undefined && widthOf(ctx, `${last} ${word}`) <= room) lines[lines.length - 1] = `${last} ${word}`; else lines.push(word);
   }
   const lineHeight = theme.fontSize.body * 1.4, top = height / 2 - (lines.length - 1) * lineHeight / 2;
   lines.forEach((line, index) => ctx.fillText(line, width / 2, top + index * lineHeight, room));
@@ -527,8 +546,8 @@ export function drawTable(ctx: TableCanvasContext, state: TableSurfaceState, now
   const rankCell = (index: number, x: number, y: number) => {
     const row = rows[index]!, middle = y + rowHeight / 2;
     cellGround(ctx, theme, x, y, rank, rowHeight, index % 2 === 1, false, state.hoverKey === row.key, false);
-    ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.font = font(theme, theme.fontSize.small, LABEL_WEIGHT);
-    const label = String(index + 1), labelWidth = ctx.measureText(label).width;
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; useFont(ctx, font(theme, theme.fontSize.small, LABEL_WEIGHT));
+    const label = String(index + 1), labelWidth = widthOf(ctx, label);
     ctx.fillStyle = theme.muted; ctx.fillText(label, x + CELL_INSET, middle);
     const marker = state.markers?.get(row.key);
     if (marker && marker.until > now) {
