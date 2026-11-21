@@ -610,6 +610,8 @@ def ci_state(repo, commit):
 def resolve(args):
     """Whether a release of the channel is due, from which commit, and which artifact holds its
     candidate. A stable candidate can be prepared ahead (`--prepare`), so its release only promotes."""
+    if args.prepare and args.channel != "stable":
+        raise Refused(f"Only a stable candidate is prepared ahead; a {args.channel} release takes its candidate from main's CI.")
     repo = repository()
     git("fetch", "--quiet", "origin", "main")
     found = {"due": "false", "commit": "", "version": "", "artifact": "", "candidate_run": "", "build": "false",
@@ -922,7 +924,7 @@ def finalize(args):
         pull = run(["gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch,
                     "--title", f"Release: v{args.version} is the workspace version",
                     "--body", f"v{args.version} is released, so the nightlies now preview the version after it."]).stdout.strip()
-    merged = run(["gh", "pr", "merge", pull, "--repo", repo, "--merge", "--delete-branch", "--match-head-commit", head], check=False)
+    merged = run(["gh", "pr", "merge", pull, "--repo", repo, "--squash", "--delete-branch", "--match-head-commit", head], check=False)
     if merged.returncode != 0:
         say(f"::warning::{pull} could not be merged ({merged.stderr.strip()}); merge it to finish v{args.version}.")
         return 1

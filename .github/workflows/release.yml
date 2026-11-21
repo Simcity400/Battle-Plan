@@ -96,7 +96,7 @@ jobs:
   publish:
     name: Publish
     needs: [resolve, build]
-    if: always() && needs.resolve.outputs.publish == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    if: ${{ !cancelled() && needs.resolve.outputs.publish == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: windows-latest
     timeout-minutes: 30
     environment: ${{ inputs.channel == 'stable' && 'release-stable' || 'release' }}

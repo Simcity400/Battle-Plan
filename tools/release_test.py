@@ -252,6 +252,16 @@ class Resolve(unittest.TestCase):
                          ("true", "b" * 40, "candidate-nightly-" + "b" * 40, "9", "false"))
 
 
+    def test_only_a_stable_candidate_is_prepared(self):
+        for channel in ("nightly", "preview"):
+            args = argparse.Namespace(channel=channel, sha="", version="", scheduled=False, draft=False, prepare=True,
+                                      github_output=False)
+            with mock.patch.multiple(release, repository=mock.DEFAULT, git=mock.DEFAULT, outputs=mock.DEFAULT):
+                with self.assertRaisesRegex(release.Refused, "Only a stable candidate is prepared"):
+                    release.resolve(args)
+                release.repository.assert_not_called()
+
+
 class Finalize(unittest.TestCase):
     def test_an_older_release_never_sets_mains_workspace_version_back(self):
         main = '[workspace.package]\nversion = "1.4.4"\n'
