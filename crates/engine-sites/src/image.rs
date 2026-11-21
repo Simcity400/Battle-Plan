@@ -22,7 +22,7 @@ pub struct OwnedImage {
     pointer_base: u64,
 }
 
-const PAGE: usize = 0x1000;
+const WORD: usize = 8;
 
 fn zeroed(len: usize) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -54,6 +54,9 @@ fn header(read: impl Fn(usize, usize) -> Option<Vec<u8>>) -> Verified<Header> {
         .ok_or_else(malformed)?;
     let image_size = u64::from(u32_at(pe + 24 + 56).ok_or_else(malformed)?);
     let table = pe + 24 + optional;
+    if (table + 40 * count) as u64 > image_size {
+        return Err(malformed());
+    }
     let mut sections = Vec::with_capacity(count);
     for index in 0..count {
         let row = read(table + 40 * index, 40).ok_or_else(malformed)?;
@@ -194,6 +197,10 @@ impl<'a> Image<'a> {
         u32::try_from(value.checked_sub(self.pointer_base)?).ok()
     }
 
+    pub(crate) fn begin(&self) {
+        self.unreadable.set(false);
+    }
+
     pub(crate) fn unreadable(&self) -> bool {
         self.unreadable.get()
     }
@@ -211,12 +218,19 @@ impl<'a> Image<'a> {
             let end = tail.iter().position(|&b| b == 0)?;
             return Some(Cow::Borrowed(&tail[..end]));
         }
+        let copy = self.live?;
         let mut name = Vec::new();
         while name.len() < limit {
-            let at = start + name.len();
-            let address = self.base.checked_add(s.rva as usize)?.checked_add(at)?;
-            let chunk = (PAGE - address % PAGE).min(limit - name.len());
-            let bytes = self.read(s, at, chunk)?;
+            let address = self
+                .base
+                .checked_add(s.rva as usize)?
+                .checked_add(start + name.len())?;
+            let mut word = [0; WORD];
+            let bytes = &mut word[..(WORD - address % WORD).min(limit - name.len())];
+            if !copy(address, bytes) {
+                self.unreadable.set(true);
+                return None;
+            }
             let end = bytes.iter().position(|&b| b == 0);
             let kept = &bytes[..end.unwrap_or(bytes.len())];
             if name.try_reserve(kept.len()).is_err() {

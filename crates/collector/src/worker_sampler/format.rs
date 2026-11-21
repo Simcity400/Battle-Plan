@@ -72,7 +72,7 @@ impl Header {
         if !(64..=1024 * 1024).contains(&pe) {
             return Err("worker_sampler collector PE offset invalid".into());
         }
-        let nt = copy(pe, 24 + 112 + 7 * 8).ok_or("worker_sampler collector PE64 header unreadable")?;
+        let nt = copy(pe, 84).ok_or("worker_sampler collector PE64 header unreadable")?;
         if &nt[..4] != b"PE\0\0" || u16::from_le_bytes(nt[24..26].try_into().unwrap()) != 0x20b {
             return Err("worker_sampler collector PE64 header invalid".into());
         }
@@ -84,10 +84,8 @@ impl Header {
                 .filter(|&end| end <= image_size as usize)
                 .and_then(|_| copy(start, len))
         };
-        if pe + 24 + 112 + 7 * 8 > image_size as usize {
-            return Err("worker_sampler collector debug directory missing".into());
-        }
-        let directory = &nt[24 + 112 + 6 * 8..];
+        let directory = within(pe + 24 + 112 + 6 * 8, 8)
+            .ok_or("worker_sampler collector debug directory missing")?;
         let rva = u32::from_le_bytes(directory[..4].try_into().unwrap()) as usize;
         let size = u32::from_le_bytes(directory[4..8].try_into().unwrap()) as usize;
         if rva.checked_add(size).is_none_or(|end| end > image_size as usize) {

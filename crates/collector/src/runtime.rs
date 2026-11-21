@@ -691,9 +691,9 @@ fn run(
             sites.functions_found,
             sites.functions,
             match (sites.layout_checked, sites.layout_verified) {
-                (true, _) => "checked",
+                (true, true) => "checked",
                 (false, true) => "witnessed",
-                (false, false) => "unverified",
+                (_, false) => "unverified",
             },
             sites.elapsed.as_micros(),
         ),

@@ -162,6 +162,7 @@ fn slice<'a>(table: &'a [u32], (start, count): (u32, u32)) -> &'a [u32] {
 impl Located {
     pub fn locate(image: &Image<'_>, layout_checked: bool) -> Self {
         let started = Instant::now();
+        image.begin();
         let pdata = pdata(image);
         let ends: HashMap<u32, u32> = pdata.iter().copied().collect();
         let mut functions: Vec<Result<u32, Reason>> = vec![Err(Reason::Unreached); FUNCTIONS.len()];
@@ -384,19 +385,15 @@ impl Located {
             })
             .collect::<Vec<_>>();
 
-        let (functions, vtables, data, by_live, originals, layout) = if image.unreadable() {
-            let withheld = Err(Reason::Unreadable);
-            (
-                vec![withheld; FUNCTIONS.len()],
-                vec![withheld; VTABLES.len()],
-                vec![withheld; DATA.len()],
-                Vec::new(),
-                vec![([0; ORIGINAL], 0); originals.len()],
-                Err(Reason::Unreadable),
-            )
-        } else {
-            (functions, vtables, data, by_live, originals, layout)
-        };
+        let (mut functions, mut data, mut originals) = (functions, data, originals);
+        if image.unreadable() {
+            functions.fill(Err(Reason::Unreadable));
+            vtables.fill(Err(Reason::Unreadable));
+            data.fill(Err(Reason::Unreadable));
+            by_live.clear();
+            originals.fill(([0; ORIGINAL], 0));
+            layout = Err(Reason::Unreadable);
+        }
         let mut located = Self {
             base: image.base,
             identity: None,
