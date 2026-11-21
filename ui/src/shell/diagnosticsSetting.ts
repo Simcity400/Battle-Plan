@@ -13,19 +13,22 @@ export function useMapDiagnostics() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [take] = useState(() => newestSwitch(setEnabled));
+  const [reads, setReads] = useState(0);
+  const [pending, setPending] = useState(false);
   useEffect(() => {
     if (!desktopAvailable) return;
     let live = true;
     const changed = listen<MapSwitch>('map-diagnostics', event => { if (take(event.payload)) setError(null); });
     const failed = listen<string>('map-diagnostics-error', event => setError(event.payload));
-    void Promise.all([changed, failed]).then(() => invoke<MapSwitch>('map_diagnostics')).then(value => { if (live) take(value); }, cause => { if (live) setError(errorMessage(cause)); });
+    void Promise.all([changed, failed]).then(() => invoke<MapSwitch>('map_diagnostics')).then(value => { if (live) { take(value); setError(null); } }, cause => { if (live) setError(errorMessage(cause)); })
+      .finally(() => { if (live) setPending(false); });
     return () => { live = false; void changed.then(stop => stop(), () => {}); void failed.then(stop => stop(), () => {}); };
-  }, [take]);
+  }, [take, reads]);
   const set = (value: boolean) => {
-    setError(null);
-    void setMapDiagnostics(value).then(take, cause => setError(errorMessage(cause)));
+    setError(null); setPending(true);
+    void setMapDiagnostics(value).then(take, cause => setError(errorMessage(cause))).finally(() => setPending(false));
   };
-  return { enabled, error, set };
+  return { enabled, error, pending, set, reread: () => { setPending(true); setReads(count => count + 1); } };
 }
 
 export function useDiagnosticsShortcut() {

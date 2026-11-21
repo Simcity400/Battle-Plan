@@ -1,4 +1,4 @@
-"""Release steps for Battle Plan and Battle Plan Recorder, which share one version (Python 3.11+).
+"""Release steps for BattlePlan and BattlePlan Recorder, which share one version (Python 3.11+).
 
 The workspace version in Cargo.toml is the last stable release. A stable release is its tag,
 `v<version>`. Nightly and preview builds are the next patch with a dated prerelease suffix,
@@ -69,7 +69,7 @@ def version(args):
         major, minor, patch = STABLE.match(base).groups()
         resolved = f"{major}.{minor}.{int(patch) + 1}-{args.channel}.{args.date}.{int(args.run)}"
     label = {"stable": "", "nightly": " Nightly", "preview": " Preview (pipeline test, do not install)"}[args.channel]
-    outputs({"version": resolved, "tag": f"v{resolved}", "name": f"Battle Plan{label} {resolved}"}, args.github_output)
+    outputs({"version": resolved, "tag": f"v{resolved}", "name": f"BattlePlan{label} {resolved}"}, args.github_output)
 
 
 def stamp(args):

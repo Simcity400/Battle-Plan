@@ -49,7 +49,7 @@ export interface MapView {
 
 function requireDesktop(): void {
   if (!desktopAvailable) {
-    throw new Error('Open Battle Plan in the desktop app to use local recordings and the native map.');
+    throw new Error('Open BattlePlan in the desktop app to use your recordings and the map.');
   }
 }
 
@@ -81,6 +81,21 @@ export function selectNativeView(dashboard: boolean): Promise<void> {
 export function seekMap(path: string, revision: string, branch: string, hour: number, playback?: MapPlayback): Promise<void> {
   requireDesktop();
   return invoke<void>('seek_map', { path, revision, branch, hour, playback });
+}
+
+export function setUnsavedWork(unsaved: boolean): Promise<void> {
+  if (!desktopAvailable) return Promise.resolve();
+  return invoke<void>('set_unsaved_work', { unsaved });
+}
+
+export function onCloseRequested(callback: () => void): Promise<() => void> {
+  if (!desktopAvailable) return Promise.resolve(() => {});
+  return listen('close-requested', () => callback());
+}
+
+export function closeDiscardingUnsavedWork(): Promise<void> {
+  requireDesktop();
+  return invoke<void>('close_discarding_unsaved_work');
 }
 
 export { errorMessage } from './errors';

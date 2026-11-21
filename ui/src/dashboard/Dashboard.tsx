@@ -1,9 +1,9 @@
-import { asFailure, type Failure } from './queryError.ts';
+import { actionFailure, asFailure, type Failure, type PlainFailure } from './queryError.ts';
 import { Popover, usePopover } from '../components/Popover';
-import { Select } from '../components/Select';
+import { ConfirmStep } from '../components/ContextMenu';
 import { newId } from '../shell/ids.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { desktopAvailable, errorMessage, recordingName, seekMap, mapAction } from '../shell/api';
 import { configurePopout, popoutClockKey, popoutConfigKey, popoutProblem, popoutStopped, popoutUnloaded, seekPopout, setPopoutFlyAircraft, usePopout } from '../shell/popout';
 import type { MapOptions, ReplayMetadata } from '../shell/api';
@@ -12,14 +12,14 @@ import CameraModeControl from '../components/CameraModeControl';
 import AircraftPicker from '../components/AircraftPicker';
 import type { CameraMode, FlyAircraftStatus } from '../generated/dashboard';
 import { loadAircraftChoice, saveAircraftChoice } from './aircraftChoice';
+import type { AircraftChoice } from './aircraftChoice';
 import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
 import { addGridItem, addGridItemBelow, bindTracks, clockBounds, createWidget, defaultTemplate, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
-import { keptPageStates } from './pages';
 import type { PageEntry, PageId } from './pages';
-import { droppedTagWarning, layoutsUnsaved, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseTemplate, parseTemplateWithNotes, saveLayouts } from './storage';
-import type { LayoutLibrary } from './storage';
+import { doneEditing, droppedTagWarning, layoutSaveAllowed, layoutSaveCheck, loadLayouts, unsavedLayoutPages, parseLayoutLibrary, parseTemplate, parseTemplateWithNotes, saveLayouts } from './storage';
+import type { LayoutLibrary, LayoutSaveAction } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
@@ -28,7 +28,9 @@ import { CAMPAIGN_MAP_VIEW, campaignToggled, MapViewsStore, toggleMapSetting } f
 import { DEFAULT_MAP_OPTIONS, observedRole, observedSwitches } from './mapPicker';
 import type { CountryChoice } from './mapPicker';
 import { useSourceRoles } from './sources';
-import { PlaybackCountryPicker, PlaybackStrip } from './controls';
+import { LayoutMenu, PlaybackCountryPicker, PlaybackStrip } from './controls';
+import EmptyState from '../components/EmptyState';
+import { DismissButton, FailureLine } from '../components/FailureLine';
 import { useSlotTags } from './countrySlots.ts';
 import ReplayLibraryMenu from './ReplayLibraryMenu';
 import type { ReplayLibraryState } from './replayLibrary';
@@ -41,7 +43,7 @@ import WidgetPicker from './WidgetPicker';
 import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, recordingKey, sameCampaignPath } from './campaigns';
 import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
 import type { Campaign, Relocation } from './campaigns';
-import { recordingFilename } from './recordingNames';
+import { recordingDisplayName, recordingFilename } from './recordingNames';
 import { followMapPlayback, mapCommands } from './mapPlayback';
 import { LiveMotion } from '../charts/liveMotion.ts';
 import { commitZone } from '../shell/commitCount';
@@ -51,14 +53,15 @@ interface Props { page: PageId; resetToken: number; library: ReplayLibraryState;
   onBranch?: (branch: BranchChoice | null) => void;
   onMapError?: (operation: string, error: string | null) => void;
   mapRetry?: number;
-  onUnsaved?: (unsaved: boolean) => void;
+  onUnsaved?: (pages: readonly PageId[]) => void;
+  saveRequest?: number;
   pages?: readonly PageEntry[]; playbackHost?: HTMLElement | null; campaignHost?: HTMLElement | null; onOpenReady?: (open: (() => void) | null) => void;
   flyAircraft?: FlyAircraftStatus | null;
   sideHost?: HTMLElement | null }
 
 export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
-export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, mapRetry = 0, onUnsaved, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
+export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, mapRetry = 0, onUnsaved, saveRequest = 0, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
   useEffect(() => {
     const shown = restored.library.layouts.find(entry => entry.id === restored.library.activeId);
@@ -113,6 +116,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }, [saved, savedTemplate]);
   const [editing, setEditing] = useState(false);
   const saveMenu = usePopover();
+  const discardMenu = usePopover();
+  const resetMenu = usePopover();
   const pageStates = useRef(new Map<PageId, { library: LayoutLibrary; template: DashboardTemplate; editing: boolean }>());
   const resetSeen = useRef(resetToken);
   useLayoutEffect(() => {
@@ -133,24 +138,26 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }, [page, shownPage, editing, saveMenu.popup, resetToken]);
   const saving = saveMenu.open;
   const [layoutName, setLayoutName] = useState('');
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<{ text: string; action: LayoutSaveAction } | null>(null);
   const saveButton = saveMenu.trigger;
   const editButton = useRef<HTMLButtonElement>(null);
-  const dirty = useMemo(() => stableJson(includeCampaigns(draftTemplate, campaigns)) !== stableJson(includeCampaigns(selectedLayout.template, campaigns)), [draftTemplate, selectedLayout.template, campaigns]);
+  const dirty = useMemo(() => doneEditing({ library, template: draftTemplate }, template => includeCampaigns(template, campaigns)) === 'save', [library, draftTemplate, campaigns]);
   const pageList = pages?.map(entry => entry.id).join('\n');
   useEffect(() => {
     if (pageList === undefined) return;
     const existing = pageList.split('\n');
     for (const id of [...pageStates.current.keys()]) if (!existing.includes(id)) pageStates.current.delete(id);
   }, [pageList]);
-  const unsaved = useMemo(() => layoutsUnsaved([{ library, template: draftTemplate },
-    ...keptPageStates(pageStates.current, shownPage, pageList?.split('\n') ?? [...pageStates.current.keys()])], template => includeCampaigns(template, campaigns)),
-  [library, draftTemplate, shownPage, campaigns, pageList]);
-  useEffect(() => { onUnsaved?.(unsaved); }, [unsaved, onUnsaved]);
-  useEffect(() => () => onUnsaved?.(false), [onUnsaved]);
+  const unsavedKey = useMemo(() => {
+    const existing = pageList?.split('\n') ?? [...pageStates.current.keys()];
+    const kept = [...pageStates.current].filter(([id]) => id !== shownPage && existing.includes(id));
+    return unsavedLayoutPages([[shownPage, { library, template: draftTemplate }], ...kept], template => includeCampaigns(template, campaigns)).join('\n');
+  }, [library, draftTemplate, shownPage, campaigns, pageList]);
+  useEffect(() => { onUnsaved?.(unsavedKey ? unsavedKey.split('\n') as PageId[] : []); }, [unsavedKey, onUnsaved]);
+  useEffect(() => () => onUnsaved?.([]), [onUnsaved]);
   const layoutAtDefault = useMemo(() => stableJson(includeCampaigns(draftTemplate, campaigns))
     === stableJson(includeCampaigns({ ...defaultTemplate(shownPage), name: draftTemplate.name }, campaigns)), [draftTemplate, campaigns, shownPage]);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<PlainFailure | null>(null);
   const viewport = useRef<HTMLDivElement>(null);
   const mounted = useRef(false);
   const roles = useSourceRoles(client);
@@ -197,6 +204,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }), []);
   const popoutViewer = popout.open ? `${popout.generation}:${popout.viewer}` : null;
   const popoutIssue = popoutProblem(popout) ?? popoutFailures.find(failure => failure.viewer === popoutViewer)?.message ?? null;
+  const [popoutRetry, setPopoutRetry] = useState(0);
+  const retryPopout = popoutProblem(popout) == null && popoutIssue != null ? () => setPopoutRetry(count => count + 1) : undefined;
   useLayoutEffect(() => { if (!active && !mapActive && !popout.open) clock.stop(); }, [active, mapActive, popout.open, clock]);
   const mapChoice = defaultRoleId ? selectedCountries[defaultRoleId] ?? null : null;
   const mapCountry = mapChoice?.tag ?? null, mapCountrySlot = mapChoice?.slot ?? null, mapObserved = observed[CAMPAIGN_MAP_VIEW] ?? null;
@@ -243,7 +252,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     void configurePopout(popout.generation, { ...mapOptions, country: mapCountry, countrySlot: mapCountrySlot, observed: mapObserved })
       .then(() => { if (current) reportPopout(popoutConfig, 'configure', null); }, cause => { if (current) reportPopout(popoutConfig, 'configure', errorMessage(cause)); });
     return () => { current = false; };
-  }, [popoutConfig, popout.generation, defaultLoading, mapOptions, mapCountry, mapCountrySlot, mapObserved, reportPopout]);
+  }, [popoutConfig, popout.generation, defaultLoading, mapOptions, mapCountry, mapCountrySlot, mapObserved, reportPopout, popoutRetry]);
   const popoutClock = popoutClockKey(popout);
   useLayoutEffect(() => {
     const reference = tracks.find(track => track.roleId === defaultRoleId);
@@ -251,7 +260,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     const generation = popout.generation;
     const seek: Parameters<typeof followMapPlayback>[2] = (path, revision, branch, hour, playback) => seekPopout(generation, path, revision, branch, hour, playback);
     return followMapPlayback(clock, reference, seek, error => reportPopout(popoutClock, 'seek', error == null ? null : errorMessage(error)));
-  }, [clock, tracks, defaultRoleId, defaultLoading, popoutClock, popout.generation, reportPopout]);
+  }, [clock, tracks, defaultRoleId, defaultLoading, popoutClock, popout.generation, reportPopout, popoutRetry]);
   useLayoutEffect(() => active && viewport.current ? maps.start(viewport.current) : undefined, [maps, active]);
   useLayoutEffect(() => { maps.setHidden(nativeHidden || hasMapOverlay()); maps.schedule(); }, [maps, nativeHidden, template.layouts]);
   useEffect(() => {
@@ -308,21 +317,20 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }, [editing]);
 
   const closeSave = saveMenu.close;
-  const persistLayout = (asNew: boolean) => {
+  const saveCheck = layoutSaveCheck(library, layoutName);
+  const persistLayout = (action: LayoutSaveAction | null) => {
+    const check = layoutSaveCheck(library, layoutName);
+    if (!action || !layoutSaveAllowed(check, action)) return;
+    const asNew = action === 'new';
     const name = layoutName.trim();
-    if (!name || name.length > 160) { setSaveError('Enter a layout name (up to 160 characters).'); return; }
-    if (library.layouts.some((entry) => (asNew || entry.id !== library.activeId) && entry.template.name.toLowerCase() === name.toLowerCase())) {
-      setSaveError('A layout already has that name. Choose a different name.'); return;
-    }
-    if (asNew && library.layouts.length >= MAX_LAYOUTS) { setSaveError(`You can save up to ${MAX_LAYOUTS} layouts.`); return; }
     const parsed = parseTemplateWithNotes({ ...includeCampaigns(draftTemplate, campaigns), name });
-    if (!parsed) { setSaveError('This layout could not be saved. Your changes are still available.'); return; }
+    if (!parsed) { setSaveError({ text: 'Couldn’t save this layout. Your changes are still here.', action }); return; }
     const { template: clean, droppedTags } = parsed;
     const id = asNew ? newId() : library.activeId;
     const entry = { id, template: clean };
     const next = { ...library, activeId: id, layouts: asNew ? [...library.layouts, entry] : library.layouts.map((item) => item.id === id ? entry : item) };
     const error = saveLayouts(next, undefined, shownPage);
-    setSaveError(error);
+    setSaveError(error ? { text: error, action } : null);
     if (error) return;
     setLibrary(next); setTemplate(clean); setSavedTemplate(clean); saveMenu.popup.current?.hidePopover(); setEditing(false); setWarning(droppedTagWarning(droppedTags));
     editButton.current?.focus();
@@ -347,7 +355,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     if (known?.loading) return null;
     const slots = campaignSlots(templateRef.current, campaignsRef.current);
     const slot = slotId === 'new' ? undefined : slotId ? slots.empty.find(role => role.id === slotId) : slots.empty[0];
-    if (slotId && slotId !== 'new' && !slot) { setActionError('That campaign slot is now occupied. Choose another slot.'); return null; }
+    if (slotId && slotId !== 'new' && !slot) { setActionError({ text: 'That campaign slot is now occupied. Choose another slot.' }); return null; }
     if (reconnect) clock.stop();
     const id = known?.id ?? slot?.id ?? newId();
     const campaign = { id, path: chosen, label: label.slice(0, 160), loading: true };
@@ -413,7 +421,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     if (failure) throw failure;
     throw new Error(campaignsRef.current.some(item => item.loading && sameCampaignPath(item.path, chosen))
       ? 'That recording is still opening. Choose it again once it has loaded.'
-      : 'That recording could not be opened. The notice above the dashboard or the sidebar shows why.');
+      : 'That recording couldn’t be opened. The notice above the dashboard or the sidebar shows why.');
   }, [update, openCampaign, persistView]);
 
   const bindingsRef = useRef(roles.bindings);
@@ -467,12 +475,13 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         if (mounted.current && campaignsRef.current.includes(retiring)) {
           campaignsRef.current = campaignsRef.current.map(item => item === retiring ? campaign : item);
           setCampaigns(campaignsRef.current);
-          setActionError(errorMessage(cause));
+          setActionError(actionFailure(`Couldn’t unload ${recordingDisplayName(campaign.path)}.`, errorMessage(cause)));
         }
         return;
       }
     }
     if (!mounted.current || !campaignsRef.current.includes(retiring)) return;
+    setActionError(null);
     setDefaultRoleId(current => defaultAfterUnload(current, id, campaignsRef.current.filter(campaign => !campaign.loading).map(campaign => campaign.id)));
     roles.remove(id);
     campaignsRef.current = campaignsRef.current.filter(campaign => campaign.id !== id);
@@ -530,24 +539,25 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }, [campaigns, roles.bindings]);
   useEffect(() => { if (hasOpened.current && (defaultSource?.path ?? null) !== path) onPrimaryPath?.(defaultSource?.path ?? null); }, [defaultSource, path, onPrimaryPath, campaigns.length]);
   const aircraftRecording = defaultSource ? recordingKey(defaultSource.path, defaultSource.metadata.campaignKey) : null;
-  const [aircraft, setAircraft] = useState<string | null>(null);
+  const [aircraft, setAircraft] = useState<AircraftChoice | null>(null);
+  const aircraftName = aircraft?.name ?? null;
   useEffect(() => setAircraft(aircraftRecording ? loadAircraftChoice(aircraftRecording) : null), [aircraftRecording]);
-  const chooseAircraft = useCallback((name: string | null) => {
-    setAircraft(name);
-    if (aircraftRecording) saveAircraftChoice(aircraftRecording, name);
+  const chooseAircraft = useCallback((choice: AircraftChoice | null) => {
+    setAircraft(choice);
+    if (aircraftRecording) saveAircraftChoice(aircraftRecording, choice);
   }, [aircraftRecording]);
   useEffect(() => {
     if (!mapActive || !mapReady || !desktopAvailable) return;
-    commands.send('aircraft', () => mapAction({ kind: 'flyAircraft', aircraft }));
+    commands.send('aircraft', () => mapAction({ kind: 'flyAircraft', aircraft: aircraftName }));
     return () => commands.forget('aircraft');
-  }, [mapActive, mapReady, aircraft, commands]);
+  }, [mapActive, mapReady, aircraftName, commands]);
   useEffect(() => {
     if (popoutConfig == null) return;
     let current = true;
-    void setPopoutFlyAircraft(popout.generation, aircraft)
+    void setPopoutFlyAircraft(popout.generation, aircraftName)
       .then(() => { if (current) reportPopout(popoutConfig, 'aircraft', null); }, cause => { if (current) reportPopout(popoutConfig, 'aircraft', errorMessage(cause)); });
     return () => { current = false; };
-  }, [popoutConfig, popout.generation, aircraft, reportPopout]);
+  }, [popoutConfig, popout.generation, aircraftName, reportPopout, popoutRetry]);
 
   const onMapBranch = useCallback((trackId: string, branchId: string) => {
     const source = tracks.find(track => track.id === trackId)?.source;
@@ -592,6 +602,30 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return { id, template: paged, runtime: { ...runtime, client: laneClient, tracks: bound, campaignTracks: paged.tracks, alignment: paged.alignment } };
   }), [pageOrder, shownPage, draftTemplate, campaigns, selectedCountries, observed, sourceMap, selectedBranches, runtime, laneClient]);
 
+  const [discarding, setDiscarding] = useState(false);
+  const openSave = () => {
+    setLayoutName(selectedLayout.template.name); setSaveError(null); setDiscarding(false);
+    const popup = saveMenu.popup.current;
+    if (!popup || popup.matches(':popover-open')) return;
+    saveMenu.opener.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    popup.showPopover();
+  };
+  const keepChanges = () => {
+    flushSync(() => setDiscarding(false));
+    saveMenu.popup.current?.querySelector<HTMLElement>('.layout-save-discard')?.focus();
+  };
+  const askedSave = useRef(saveRequest);
+  useEffect(() => {
+    if (saveRequest === askedSave.current || !active || page !== shownPage) return;
+    askedSave.current = saveRequest;
+    if (dirty) openSave();
+  });
+  const discardLayout = () => {
+    setTemplate(selectedLayout.template); setEditing(false); saveMenu.popup.current?.hidePopover(); editButton.current?.focus();
+  };
+  const resetLayout = () => {
+    update(() => ({ ...defaultTemplate(shownPage), name: template.name })); saveMenu.popup.current?.hidePopover(); editButton.current?.focus();
+  };
   const reconnect = async (campaign: Campaign) => {
     const source = bindingsRef.current[campaign.id]?.source;
     const [located] = source && client.locateRecordings
@@ -624,57 +658,89 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
         await client.chooseHistory!(defaultSource.path, segmentId, parentId, new AbortController().signal);
         await openCampaign(campaign.path, campaign.label, undefined, true, campaign.id);
       } : undefined}
-      options={mapOptions} onOptions={setMapOptions} poppedOut={popout.open} popoutGeneration={popout.generation} popoutProblem={popoutIssue} popoutStopped={popoutStopped(popout)}
+      options={mapOptions} onOptions={setMapOptions} poppedOut={popout.open} popoutGeneration={popout.generation} popoutProblem={popoutIssue} onPopoutRetry={retryPopout} popoutStopped={popoutStopped(popout)}
       popoutCameraMode={popout.status?.running ? popout.status.cameraMode : null}
       popoutCameraOverlays={popout.status?.running ? popout.status.cameraOverlays : false}
       aircraft={aircraft} onAircraft={chooseAircraft} popoutFlyAircraft={popout.status?.flyAircraft ?? null} aircraftHost={sideHost} />}
     {active && <>
       { }
       <div className="toolbar-swap" data-editing={editing || dirty || undefined}>
-      <div className="header-layout"><Icon name="layers" />
-        <Select label="Saved layout" value={library.activeId} disabled={editing || dirty || campaigns.some(campaign => campaign.loading)}
-          onChange={selectLayout} options={library.layouts.map(entry => ({ value: entry.id, label: entry.template.name }))} /></div>
+      <LayoutMenu layouts={library.layouts.map(entry => ({ id: entry.id, name: entry.template.name }))} activeId={library.activeId}
+        disabled={editing || dirty || campaigns.some(campaign => campaign.loading)} onChoose={selectLayout} onEdit={() => {
+          saveMenu.popup.current?.hidePopover();
+          flushSync(() => setEditing(true));
+          editButton.current?.focus();
+        }} />
       <div className="dash-toolbar" role="toolbar" aria-label="Layout changes">
         <span className="toolbar-slot" data-shown={editing || undefined}><WidgetPicker runtime={runtime} placed={template.widgets} disabled={!editing} onOpen={() => saveMenu.popup.current?.hidePopover()} onAdd={(kind, initial) => {
           const widget = { ...createWidget(kind, template.tracks[0].id), ...initial };
           update((previous) => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItem(previous.layouts, widget) }));
         }} /></span>
-        {!layoutAtDefault && <button type="button" className="icon-button header-reset toolbar-slot" data-shown={editing || undefined} aria-label="Reset layout" data-tooltip="Reset arrangement to default" onClick={() => {
-          update(() => ({ ...defaultTemplate(shownPage), name: template.name })); saveMenu.popup.current?.hidePopover();
-        }}><Icon name="refresh" /></button>}
-        <button type="button" className="icon-button" aria-label="Cancel layout changes" data-tooltip="Discard layout changes" onClick={() => {
-          setTemplate(selectedLayout.template); setEditing(false); saveMenu.popup.current?.hidePopover(); editButton.current?.focus();
-        }}><Icon name="close" /></button>
+        {!layoutAtDefault && <button ref={resetMenu.trigger} type="button" className="icon-button header-reset toolbar-slot" data-shown={editing || undefined} aria-label="Reset layout" data-tooltip="Reset arrangement to default"
+          aria-haspopup={dirty ? 'dialog' : undefined} aria-expanded={dirty ? resetMenu.open : undefined} popoverTarget={dirty ? 'layout-reset-menu' : undefined}
+          onClick={() => { if (!dirty) resetLayout(); else saveMenu.popup.current?.hidePopover(); }}><Icon name="refresh" /></button>}
+        <Popover menu={resetMenu} id="layout-reset-menu" className="layout-reset-menu" aria-label="Reset to the default arrangement?">
+          {resetMenu.open && <ConfirmStep confirmation={{ title: 'Reset to the default arrangement?', detail: 'Your unsaved changes to this layout are lost.', action: 'Reset' }}
+            onCancel={resetMenu.close} onConfirm={() => { resetMenu.popup.current?.hidePopover(); resetLayout(); }} />}
+        </Popover>
+        <button ref={discardMenu.trigger} type="button" className="icon-button" aria-label="Discard layout changes" data-tooltip="Discard layout changes"
+          aria-haspopup={dirty ? 'dialog' : undefined} aria-expanded={dirty ? discardMenu.open : undefined} popoverTarget={dirty ? 'layout-discard-menu' : undefined}
+          onClick={() => { if (!dirty) discardLayout(); else saveMenu.popup.current?.hidePopover(); }}><Icon name="close" /></button>
+        <Popover menu={discardMenu} id="layout-discard-menu" className="layout-discard-menu" aria-label="Discard layout changes?">
+          {discardMenu.open && <ConfirmStep confirmation={{ title: 'Discard layout changes?', detail: 'Your unsaved arrangement is lost.', action: 'Discard' }}
+            onCancel={discardMenu.close} onConfirm={() => { discardMenu.popup.current?.hidePopover(); discardLayout(); }} />}
+        </Popover>
         <button ref={saveButton} type="button" className={`icon-button toolbar-save${dirty ? ' is-dirty' : ''}`} aria-label="Save layout" data-tooltip="Save layout" aria-expanded={saving} aria-haspopup="dialog" popoverTarget="layout-save-menu" onClick={() => {
-          setLayoutName(template.name); setSaveError(null);
+          setLayoutName(selectedLayout.template.name); setSaveError(null); setDiscarding(false);
         }}><Icon name="save" /></button>
       </div>
       </div>
-      <button ref={editButton} type="button" className={`button toolbar-edit${editing ? ' primary' : ''}`} aria-label={editing ? 'Done arranging' : 'Edit layout'} data-tooltip={editing ? 'Done arranging' : 'Arrange widgets'} aria-pressed={editing} onClick={() => {
+      <button ref={editButton} type="button" className={`button toolbar-edit${editing ? ' primary' : ''}`} aria-label={editing ? 'Done editing' : 'Edit layout'} data-tooltip={editing ? 'Done editing' : 'Edit layout'} aria-pressed={editing}
+        aria-haspopup={editing && dirty ? 'dialog' : undefined} aria-expanded={editing && dirty ? saving : undefined} onClick={() => {
+          if (editing && dirty) { openSave(); return; }
           saveMenu.popup.current?.hidePopover();
-          setEditing(!editing);
+          flushSync(() => setEditing(!editing));
+          if (!editButton.current?.checkVisibility()) editButton.current?.parentElement?.querySelector<HTMLElement>('.header-layout-trigger')?.focus();
         }}><Icon name={editing ? 'check' : 'edit'} /><span className="toolbar-label">{editing ? 'Done' : 'Edit'}</span></button>
       <Popover menu={saveMenu} id="layout-save-menu" className="layout-save-menu" aria-label="Save layout options">
-      {saving && <form onSubmit={event => { event.preventDefault(); persistLayout(false); }}>
+      {saving && discarding && <div onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); keepChanges(); } }}>
+        <ConfirmStep confirmation={{ title: 'Discard layout changes?', detail: 'Your unsaved arrangement is lost.', action: 'Discard' }}
+          onCancel={keepChanges} onConfirm={() => { setDiscarding(false); discardLayout(); }} /></div>}
+      {saving && !discarding && <form onSubmit={event => { event.preventDefault(); persistLayout(saveCheck.submit); }}>
         <div className="ui-popover-heading"><strong>Save layout</strong><button type="button" className="icon-button ui-popover-action" aria-label="Close save options" onClick={closeSave}><Icon name="close" /></button></div>
-        <label className="field"><span>Layout name</span><input data-popover-autofocus aria-label="Layout name" value={layoutName} maxLength={160} onChange={(event) => { setLayoutName(event.currentTarget.value); setSaveError(null); }} /></label>
-        <p className="field-hint">Update this layout, or keep it and save your changes as a new one.</p>
-        {saveError && <p className="layout-save-error" role="alert">{saveError}</p>}
-        <div className="layout-save-actions"><button type="submit" className="button" disabled={!layoutName.trim()}>Update layout</button>
-          <button type="button" className="button primary" disabled={!layoutName.trim() || library.layouts.length >= MAX_LAYOUTS} onClick={() => persistLayout(true)}>Save as new</button></div>
+        <label className="field"><span>Layout name</span><input data-popover-autofocus aria-label="Layout name" value={layoutName} maxLength={160}
+          aria-invalid={saveCheck.problem ? true : undefined} aria-describedby="layout-save-hint"
+          onChange={(event) => { setLayoutName(event.currentTarget.value); setSaveError(null); }} /></label>
+        {saveError ? <FailureLine className="is-top" id="layout-save-hint" message={saveError.text} onRetry={() => persistLayout(saveError.action)} retryDisabled={!layoutSaveAllowed(saveCheck, saveError.action)} />
+          : saveCheck.problem ? <FailureLine className="is-top" id="layout-save-hint" message={saveCheck.problem} alert={false} />
+          : <p className="field-hint" id="layout-save-hint">{saveCheck.submit === 'new' ? `Saves a new layout and keeps “${selectedLayout.template.name}” as it was.`
+            : 'Saves your changes to this layout. Enter a new name to keep it and save a new layout instead.'}</p>}
+        <div className="layout-save-actions">
+          {dirty && <button type="button" className="button layout-save-discard" onClick={() => setDiscarding(true)}>Discard changes</button>}
+          <button type={saveCheck.submit === 'update' ? 'submit' : 'button'} className={`button${saveCheck.submit === 'update' ? ' primary' : ''}`} disabled={!saveCheck.update}
+            onClick={saveCheck.submit === 'update' ? undefined : () => persistLayout('update')}>{saveCheck.renames && saveCheck.submit !== 'update' ? 'Rename and update' : 'Update layout'}</button>
+          <button type={saveCheck.submit === 'new' ? 'submit' : 'button'} className={`button${saveCheck.submit === 'new' ? ' primary' : ''}`} disabled={!saveCheck.asNew}
+            onClick={saveCheck.submit === 'new' ? undefined : () => persistLayout('new')}>Save as new</button></div>
       </form>}
       </Popover>
     </>}
     </div>
     </div>, playbackHost)}
-    {(warning || actionError) && <div className="dash-banner" role="alert"><Icon name="alert" /><span>{actionError ?? warning}</span>
-      <button type="button" className="icon-button small" aria-label="Dismiss notice" onClick={() => { setActionError(null); setWarning(null); }}><Icon name="close" /></button></div>}
+    {(warning || actionError) && <div className={`notice dash-banner ${actionError ? 'error' : 'warning'}`} role="alert" data-detail={actionError?.detail}>
+      <Icon name="alert" /><span>{actionError ? actionError.text : warning}</span>
+      <DismissButton onDismiss={() => { setActionError(null); setWarning(null); }} /></div>}
     {saved && savedVisible && <div className="layout-saved" role="status"><Icon name="check" />{saved}</div>}
     <div className={`dash-grid-scroll${editing ? ' is-editing' : ''}`} ref={viewport}>
-      {active && <LiveMotion.Provider value={clock.getMotion}><DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} /></LiveMotion.Provider>}
+      {template.widgets.length === 0 ? <div className="dash-empty-dashboard"><EmptyState icon="grid" title="This page has no widgets yet">
+        <p>{defaultTemplate(shownPage).widgets.length ? 'Add widgets, or reset the page to its default arrangement from Edit.' : 'Add widgets to build your own view of the campaign.'}</p>
+        <button type="button" className="button primary" onClick={() => {
+          saveMenu.popup.current?.hidePopover();
+          flushSync(() => setEditing(true));
+          playbackHost?.querySelector<HTMLButtonElement>('.header-add-widget')?.click();
+        }}><Icon name="plus" />Add widgets</button></EmptyState></div>
+        : active && <LiveMotion.Provider value={clock.getMotion}><DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} /></LiveMotion.Provider>}
       <PreparedPages pages={preparedPages} clock={clock} client={client} viewport={viewportBox}
         enabled={active && !editing && !saving && client.available && campaigns.some(campaign => !campaign.loading)} draw={drawPrepared} mounting={bodiesWaiting} />
-      {template.widgets.length === 0 && <div className="dash-empty dash-empty-dashboard"><span className="empty-icon"><Icon name="grid" /></span><strong>Make room for your campaign</strong><p>Choose Edit, then add widgets, or reset this page to its default arrangement.</p></div>}
     </div>
   </div>;
 }

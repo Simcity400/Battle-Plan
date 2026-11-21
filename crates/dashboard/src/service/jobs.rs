@@ -67,7 +67,7 @@ fn recording_open_error(error: std::io::Error) -> String {
         error.kind(),
         std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
     ) {
-        "This recording is damaged or isn't a Battle Plan recording."
+        "This recording is damaged or isn't a BattlePlan recording."
     } else {
         return error.to_string();
     };
@@ -918,7 +918,7 @@ mod recording_error_tests {
         for kind in [io::ErrorKind::InvalidData, io::ErrorKind::UnexpectedEof] {
             assert_eq!(
                 recording_open_error(io::Error::new(kind, "synthetic reason")),
-                "This recording is damaged or isn't a Battle Plan recording. Details: synthetic reason"
+                "This recording is damaged or isn't a BattlePlan recording. Details: synthetic reason"
             );
         }
         let error = recording_open_error(io::Error::from(io::ErrorKind::OutOfMemory));

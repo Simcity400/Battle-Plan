@@ -49,7 +49,7 @@ fn update(
     change: impl FnOnce(&mut RecorderSettings) + Send + 'static,
 ) -> Result<SettingsView, String> {
     RecorderSettings::update(change)
-        .map_err(|error| format!("Recorder settings could not be saved: {error}"))
+        .map_err(|error| format!("Recorder settings couldn’t be saved: {error}"))
         .and_then(|(settings, ())| view(settings))
 }
 
@@ -111,7 +111,7 @@ pub fn cancel_stop_prompt(recorder: State<'_, Arc<Recorder>>) {
 pub async fn recorder_settings() -> Result<SettingsView, String> {
     blocking(|| {
         RecorderSettings::load()
-            .map_err(|error| format!("Recorder settings could not be read: {error}"))
+            .map_err(|error| format!("Recorder settings couldn’t be read: {error}"))
             .and_then(view)
     })
     .await
@@ -259,21 +259,25 @@ pub async fn set_user_folder(
     .await
 }
 
-fn open_in_explorer(folder: &Path) -> Result<(), String> {
+fn open_in_explorer(folder: &Path, what: &str) -> Result<(), String> {
     Command::new("explorer")
         .arg(folder)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("Could not open {}: {error}", folder.display()))
+        .map_err(|error| format!("Couldn’t open {what}: {}: {error}", folder.display()))
 }
 
 #[tauri::command]
 pub async fn open_recordings_folder() -> Result<(), String> {
     blocking(|| {
         let folder = save_folder(&RecorderSettings::load().unwrap_or_default());
-        std::fs::create_dir_all(&folder)
-            .map_err(|error| format!("Could not open {}: {error}", folder.display()))?;
-        open_in_explorer(&folder)
+        std::fs::create_dir_all(&folder).map_err(|error| {
+            format!(
+                "Couldn’t open the recordings folder: {}: {error}",
+                folder.display()
+            )
+        })?;
+        open_in_explorer(&folder, "the recordings folder")
     })
     .await
 }
@@ -288,7 +292,7 @@ pub async fn recordings(
     let view = app.state::<Library>().view(&panel, visit, open);
     blocking(move || {
         let settings = RecorderSettings::load()
-            .map_err(|error| format!("Recorder settings could not be read: {error}"))?;
+            .map_err(|error| format!("Recorder settings couldn’t be read: {error}"))?;
         let recorder = app.state::<Arc<Recorder>>();
         let snapshot = recorder.snapshot();
         let (session, set_aside, names) = recorder.set_aside();
@@ -333,9 +337,9 @@ fn waiting_part(
 ) -> Result<(PathBuf, Option<PathBuf>), String> {
     let session = PathBuf::from(session)
         .canonicalize()
-        .map_err(|error| format!("Unknown recording: {error}"))?;
+        .map_err(|error| format!("Couldn’t find that recording: {error}"))?;
     if !is_campaign_uuid(campaign.as_bytes()) {
-        return Err("Unknown recording".into());
+        return Err("Couldn’t find that recording.".into());
     }
     if let Some(target) = recorder.live_target(&session) {
         return Ok((session, Some(target)));
@@ -347,7 +351,7 @@ fn waiting_part(
             .is_ok_and(|sessions| session.parent() == Some(sessions.as_path()))
     });
     if !known {
-        return Err("Unknown recording".into());
+        return Err("Couldn’t find that recording.".into());
     }
     Ok((session, None))
 }
@@ -381,9 +385,11 @@ pub async fn act_on_waiting(
                 if let Some(path) = &saved.recording {
                     jobs.saved(path);
                 }
-                saved
-                    .by_tag
-                    .map(|why| format!("Saved. Its countries are named by tag: {why}"))
+                saved.by_tag.map(|why| {
+                    format!(
+                        "Saved. Country names couldn’t be read, so countries show by tag: {why}"
+                    )
+                })
             })
         }
     })
@@ -400,7 +406,13 @@ pub async fn reveal_recording(path: String) -> Result<(), String> {
             .raw_arg(format!("/select,\"{}\"", path.display()))
             .spawn()
             .map(|_| ())
-            .map_err(|error| format!("Could not show {}: {error}", path.display()))
+            .map_err(|error| {
+                format!(
+                    "Couldn’t show {} in its folder: {}: {error}",
+                    recording_name(&path),
+                    path.display()
+                )
+            })
     })
     .await
 }
@@ -408,15 +420,22 @@ pub async fn reveal_recording(path: String) -> Result<(), String> {
 fn recording_file(path: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(path)
         .canonicalize()
-        .map_err(|error| format!("Cannot open recording: {error}"))?;
+        .map_err(|error| format!("Couldn’t find that recording: {path}: {error}"))?;
     if !path.is_file()
         || !path
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
     {
-        return Err("Choose a .battleplan recording".into());
+        return Err("Choose a BattlePlan recording.".into());
     }
     Ok(plain_path(path))
+}
+
+fn recording_name(path: &Path) -> String {
+    path.file_stem().map_or_else(
+        || path.display().to_string(),
+        |stem| stem.to_string_lossy().into_owned(),
+    )
 }
 
 fn plain_path(path: PathBuf) -> PathBuf {
@@ -428,14 +447,13 @@ fn plain_path(path: PathBuf) -> PathBuf {
 }
 
 #[tauri::command]
-pub async fn open_details(recorder: State<'_, Arc<Recorder>>) -> Result<(), String> {
+pub async fn show_session_files(recorder: State<'_, Arc<Recorder>>) -> Result<(), String> {
     let session = recorder.snapshot().session;
-    blocking(move || {
-        let folder = match session {
-            Some(session) if Path::new(&session).is_dir() => PathBuf::from(session),
-            _ => save_folder(&RecorderSettings::load().unwrap_or_default()),
-        };
-        open_in_explorer(&folder)
+    blocking(move || match session {
+        Some(session) if Path::new(&session).is_dir() => {
+            open_in_explorer(Path::new(&session), "the session’s files")
+        }
+        _ => Err("This session’s files are no longer on disk.".into()),
     })
     .await
 }
@@ -446,7 +464,7 @@ pub fn launch_replay(recording: Option<&Path>) -> Result<(), String> {
         .with_file_name("replay-desktop.exe");
     if !executable.is_file() {
         return Err(format!(
-            "Battle Plan was not found at {}",
+            "Couldn’t find BattlePlan: {} is missing.",
             executable.display()
         ));
     }
@@ -461,7 +479,7 @@ pub fn launch_replay(recording: Option<&Path>) -> Result<(), String> {
         .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("Could not start Battle Plan: {error}"))
+        .map_err(|error| format!("Couldn’t start BattlePlan: {error}"))
 }
 
 #[tauri::command]

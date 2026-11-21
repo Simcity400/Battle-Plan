@@ -14,7 +14,6 @@
 .ui-popover-actions { display: flex; align-items: center; gap: 1px; }
 .ui-popover-action { width: 28px; height: 28px; }
 .ui-popover-action.is-danger:hover:not(:disabled) { color: var(--error); background: var(--error-soft); }
-.popover-label { padding: 2px 4px 4px; color: var(--muted); font-size: 0.6875rem; font-weight: 600; }
 .menu-item {
   display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 6px 8px; border: 0; border-radius: var(--r-sm);
   background: transparent; color: var(--text); font-size: 0.8125rem; text-align: left; transition: background var(--t-fast) var(--ease);
@@ -23,5 +22,17 @@
 .menu-item:focus-visible { outline-offset: -2px; }
 .menu-item > svg { width: 16px; height: 16px; color: var(--muted); }
 .menu-item > .menu-item-label { flex: 1; min-width: 0; }
+.menu-item-icon-slot { flex: none; width: 16px; height: 16px; }
+.menu-item-label > small { display: block; color: var(--muted); font-size: 0.75rem; line-height: 1.35; }
+.menu-item:disabled:has(.menu-item-label > small) { opacity: 1; }
+.menu-item:disabled:has(.menu-item-label > small) > svg, .menu-item:disabled .menu-item-label > span { opacity: .42; }
+.menu-item.is-danger { color: var(--error-ink); }
+.menu-item.is-danger > svg { color: var(--error); }
+.menu-item.is-danger:hover:not(:disabled), .menu-item.is-danger:focus-visible { background: var(--error-soft); }
+.menu-separator { margin: 4px 2px; border: 0; border-top: 1px solid var(--menu-line); }
+.menu-confirm { display: grid; gap: 4px; width: 260px; padding: 4px 4px 2px; }
+.menu-confirm > strong { font-size: 0.8125rem; font-weight: 600; }
+.menu-confirm > p { margin: 0; color: var(--muted); font-size: 0.75rem; line-height: 1.45; }
+.menu-confirm-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .menu-item[aria-pressed='true'], .menu-item[aria-checked='true'] { background: var(--selection-soft); }
 .menu-item[aria-pressed='true'] > svg:last-child, .menu-item[aria-checked='true'] > svg:last-child { color: var(--selection); }

@@ -13,7 +13,7 @@ pub struct NotSaved;
 impl fmt::Display for NotSaved {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(
-            "This recording has not been saved yet: its hours wait to be saved or discarded in Battle Plan Recorder.",
+            "This recording has not been saved yet: its hours wait to be saved or discarded in BattlePlan Recorder.",
         )
     }
 }

@@ -15,13 +15,13 @@ pub(crate) fn map_device(window: Option<&Window>) -> Result<(egui_wgpu::RenderSt
     let configuration = render::configuration();
     let surface_config = configuration.surface;
     let egui_wgpu::WgpuSetup::CreateNew(setup) = configuration.wgpu_setup else {
-        return Err("The map's device setup is not its own".into());
+        return Err("The map’s device setup isn’t its own".into());
     };
     let lifecycle = shader_pipeline::gpu::device_lifecycle();
     let instance = shader_pipeline::gpu::instance();
     let surface = match window {
         Some(window) => {
-            let handle = std::num::NonZeroIsize::new(window.hwnd() as isize).ok_or("The map's window has no handle")?;
+            let handle = std::num::NonZeroIsize::new(window.hwnd() as isize).ok_or("The map’s window has no handle")?;
             Some(
                 unsafe {
                     instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
@@ -29,7 +29,7 @@ pub(crate) fn map_device(window: Option<&Window>) -> Result<(egui_wgpu::RenderSt
                         raw_window_handle: RawWindowHandle::Win32(Win32WindowHandle::new(handle)),
                     })
                 }
-                .map_err(|error| format!("The map's surface: {error}"))?,
+                .map_err(|error| format!("Couldn’t draw in the map’s window: {error}"))?,
             )
         }
         None => None,
@@ -43,11 +43,11 @@ pub(crate) fn map_device(window: Option<&Window>) -> Result<(egui_wgpu::RenderSt
         let (device, queue) = adapter
             .request_device(&(setup.device_descriptor)(&adapter))
             .await
-            .map_err(|error| format!("The map's device: {error}"))?;
+            .map_err(|error| format!("Couldn’t use the graphics device: {error}"))?;
         drop(lifecycle);
         let target_format = match &surface {
             Some(surface) => egui_wgpu::preferred_framebuffer_format(&surface.get_capabilities(&adapter).formats)
-                .map_err(|error| error.to_string())?,
+                .map_err(|error| format!("Couldn’t draw in the map’s window: {error}"))?,
             None => viewer_foundation::map::gpu_contract::OUTPUT_FORMAT,
         };
         let renderer = egui_wgpu::Renderer::new(&device, target_format, Default::default());
@@ -98,7 +98,7 @@ pub(crate) fn run(
     let _followed = viewer_foundation::map::display_refresh::follow_window(window.hwnd());
     let (state, surface) = map_device(Some(window))?;
     let state = Released(Some(state));
-    let mut surface = Released(Some(renderer_host::WindowSurface::new(surface.ok_or("The map's window gave no surface")?)));
+    let mut surface = Released(Some(renderer_host::WindowSurface::new(surface.ok_or("The map’s window gave no surface")?)));
     renderer_host::bind(&state);
     let ctx = egui::Context::default();
     let link = Arc::clone(window.link());

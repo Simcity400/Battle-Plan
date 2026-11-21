@@ -96,7 +96,17 @@ export function useAppearance() {
     setNotice(saveAppearance(next));
   }, []);
 
-  return { settings, resolved, update, notice, preview, setPreview, backdropImage, workspaceImage };
+  const commit = useCallback((change: (previous: AppearanceSettings) => AppearanceSettings): string | null => {
+    const next = change(latest.current);
+    const failed = saveAppearance(next);
+    if (failed) return failed;
+    latest.current = next;
+    setSettings(next);
+    setNotice(null);
+    return null;
+  }, []);
+
+  return { settings, resolved, update, commit, notice, preview, setPreview, backdropImage, workspaceImage };
 }
 
 export type Appearance = ReturnType<typeof useAppearance>;

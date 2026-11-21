@@ -84,8 +84,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let title = match arguments.get(1).map(String::as_str) {
             Some("game") => "Choose your game installation",
             Some("user") => "Choose your Paradox user folder",
-            Some("replay") => "Choose your replay folder",
-            _ => return Err("Choose a game, user or replay folder".into()),
+            Some("replay") => "Choose your recordings folder",
+            _ => return Err("Choose a game, user or recordings folder".into()),
         };
         if arguments.len() > 3 {
             return Err("Unexpected folder picker arguments".into());

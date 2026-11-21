@@ -1,12 +1,16 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import {
+  closeDiscardingUnsavedWork,
   desktopAvailable,
   errorMessage,
+  onCloseRequested,
   openReplay,
   selectNativeView,
+  setUnsavedWork,
 } from './api.ts';
 import { Icon } from '../components/Icons';
+import EmptyState from '../components/EmptyState';
 import type { IconName } from '../components/Icons';
 import { loadable } from '../components/loadable';
 import { defaultPages, loadPages, savePages } from '../dashboard/pages';
@@ -15,6 +19,8 @@ import { clearLayouts, layoutsAtDefault } from '../dashboard/storage';
 import { widgetDefinitions } from '../dashboard/definitions';
 import { stableJson } from '../dashboard/model';
 import { sameCampaignPath } from '../dashboard/campaigns';
+import { actionFailure, type PlainFailure } from '../dashboard/queryError.ts';
+import { FailureLine } from '../components/FailureLine';
 import AnalyticsNav from './AnalyticsNav';
 import BrandMark from '../components/BrandMark';
 import { useDesktopState, useMapSurface } from './useNativeViewer';
@@ -23,6 +29,7 @@ import { browserDashboardClient } from '../dashboard/browserClient';
 import type { BranchChoice } from '../dashboard/Dashboard';
 import { settingsSections } from './settingsMetadata';
 import type { SettingsSection, SettingsTarget } from './settingsMetadata';
+import type { ThemeEditing } from './Settings';
 import { useAppearance } from './appearance/useAppearance';
 import { useSidebarIconMenu } from './appearance/SidebarIconMenu';
 import { StyledIcon } from './appearance/StyledIcon';
@@ -34,9 +41,12 @@ import { contentRevision } from '../dashboard/contentRevision';
 import type { ContentFolders, ReplayMetadata } from './api';
 import { hasMapOverlay, isMapOverlay } from './mapOverlays';
 import { useDiagnosticsShortcut } from './diagnosticsSetting';
-import { BuildNotice, RecordingNotice } from './recordingNotice';
+import { RecordingNotice } from './recordingNotice';
 import { commitZone } from './commitCount';
-import { UpdateButton } from '../update/UpdateControl';
+import { RestartGuardContext, UpdateButton } from '../update/UpdateControl';
+import type { RestartGuard } from '../update/UpdateControl';
+import { leavePrompt, unsavedDetail } from './unsaved';
+import type { LeavePrompt, Leaving } from './unsaved';
 import { useUpdateState } from '../update/useUpdateState';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
@@ -46,7 +56,7 @@ const Dashboard = memo(loadable(() => import('../dashboard/Dashboard').then(modu
 const Settings = loadable(() => import('./Settings').then(module => module.default), () => <p role="status">Loading settings…</p>);
 const SettingsNav = loadable(() => import('./Settings').then(module => module.SettingsNav));
 type Tab = 'map' | 'analytics' | 'settings';
-const TAB_NAMES: Record<Tab, string> = { map: 'The campaign map', analytics: 'Analytics', settings: 'Settings' };
+const TAB_NAMES: Record<Tab, string> = { map: 'the campaign map', analytics: 'Analytics', settings: 'Settings' };
 const PAGE_KEY = 'hoi4-replay.analytics-page.v1';
 const SIDEBAR_KEY = 'hoi4-replay.sidebar.v1';
 const SIDEBAR_WIDTH_KEY = 'hoi4-replay.sidebar-width.v1';
@@ -131,7 +141,7 @@ function useSidebarState() {
     const key = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'b') return;
       const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+      if (target?.closest('input:not([type="search"]), textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
       event.preventDefault();
       toggle();
     };
@@ -146,13 +156,42 @@ function SidebarUpdate() {
   return <UpdateButton state={state} />;
 }
 
-function MapState({ icon = 'map', eyebrow, title, children, busy = false, alert = false }: { icon?: IconName; eyebrow: string; title: string; children?: ReactNode; busy?: boolean; alert?: boolean }) {
-  return <div className={`map-state${alert ? ' is-error' : ''}`} role={alert ? 'alert' : 'status'}>
-    <div className="map-state-icon">{busy ? <span className="spinner" /> : <Icon name={icon} />}</div>
-    <span className="eyebrow">{eyebrow}</span>
-    <h1>{title}</h1>
-    {children}
-  </div>;
+function LeaveConfirm({ prompt, onCancel, onSave, onDiscard }: { prompt: LeavePrompt | null; onCancel: () => void; onSave: () => void; onDiscard: () => Promise<void> }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const [failure, setFailure] = useState<PlainFailure | null>(null);
+  const [pending, setPending] = useState(false);
+  useLayoutEffect(() => {
+    const element = dialog.current;
+    if (!prompt || !element) return;
+    setFailure(null);
+    if (!element.open) element.showModal();
+    cancel.current?.focus({ preventScroll: true });
+    return () => { if (element.open) element.close(); };
+  }, [!!prompt]);
+  const discard = () => {
+    if (!prompt) return;
+    setPending(true); setFailure(null);
+    void onDiscard().catch(cause => setFailure(actionFailure(prompt.failed, errorMessage(cause)))).finally(() => setPending(false));
+  };
+  return <dialog ref={dialog} role="alertdialog" aria-labelledby="leave-confirm-title" aria-describedby="leave-confirm-detail" className="leave-confirm"
+    onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation(); }}
+    onCancel={event => { event.preventDefault(); onCancel(); }} onClose={() => { if (prompt) onCancel(); }}>
+    {prompt && <div className="menu-confirm">
+      <strong id="leave-confirm-title">{prompt.title}</strong>
+      <p id="leave-confirm-detail">{prompt.detail}</p>
+      {failure && <FailureLine className="is-top" message={failure.text} detail={failure.detail} onRetry={discard} retryDisabled={pending} />}
+      <div className="menu-confirm-actions">
+        <button ref={cancel} type="button" className="button small quiet" onClick={onCancel}>Cancel</button>
+        <button type="button" className="button small is-danger" disabled={pending} onClick={discard}>{prompt.discard}</button>
+        <button type="button" className="button small primary" disabled={pending} onClick={onSave}>Save…</button>
+      </div>
+    </div>}
+  </dialog>;
+}
+
+function MapState({ icon = 'map', title, children, busy = false, alert = false }: { icon?: IconName; title: string; children?: ReactNode; busy?: boolean; alert?: boolean }) {
+  return <EmptyState icon={icon} title={title} busy={busy} tone={alert ? 'error' : undefined} role={alert ? 'alert' : 'status'}>{children}</EmptyState>;
 }
 
 export default function App() {
@@ -170,6 +209,7 @@ export default function App() {
   useDiagnosticsShortcut();
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('folders');
   const [settingsTarget, setSettingsTarget] = useState<SettingsTarget | null>(null);
+  const [themeEditing, setThemeEditing] = useState<ThemeEditing | null>(null);
   const lastView = useRef<Tab>(desktopAvailable ? 'map' : 'analytics');
   const clearSettingsTarget = useCallback(() => setSettingsTarget(null), []);
   const client = browserRecordings ? browserDashboardClient : nativeDashboardClient;
@@ -198,7 +238,10 @@ export default function App() {
     setLayoutReset(count => count + 1);
   };
   const [widgetsLoading, setWidgetsLoading] = useState<'loading' | 'loaded' | 'failed'>('loading');
-  const [layoutsUnsaved, setLayoutsUnsaved] = useState(false);
+  const [unsavedPages, setUnsavedPages] = useState<readonly PageId[]>([]);
+  const layoutsUnsaved = unsavedPages.length > 0;
+  const [saveRequest, setSaveRequest] = useState(0);
+  const [leaving, setLeaving] = useState<{ kind: Leaving; opener: Element | null; restart?: () => Promise<boolean> } | null>(null);
   useEffect(() => {
     if (tab !== 'settings' || widgetDefinitions().length) return;
     import('../widgets/definitions').then(() => setWidgetsLoading('loaded'), () => setWidgetsLoading('failed'));
@@ -214,6 +257,7 @@ export default function App() {
   const [branch, setBranch] = useState<BranchChoice | null>(null);
   const [folders, setFolders] = useState<ContentFolders | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
+  const [folderReads, setFolderReads] = useState(0);
   const setupChecked = useRef(false);
   const openCampaign = useRef<(() => void) | null>(null);
   const registerOpen = useCallback((open: (() => void) | null) => { openCampaign.current = open; }, []);
@@ -252,22 +296,24 @@ export default function App() {
   useEffect(() => {
     if (!client.contentFolders) return;
     const controller = new AbortController();
-    void client.contentFolders(controller.signal).then(value => { if (!controller.signal.aborted) setFolders(value); })
-      .catch(cause => { if (!controller.signal.aborted) setFolderError(errorMessage(cause)); });
+    void client.contentFolders(controller.signal).then(value => { if (!controller.signal.aborted) { setFolders(value); setFolderError(null); } })
+      .catch(cause => { if (!controller.signal.aborted) setFolderError(`Couldn’t read the folder settings: ${errorMessage(cause)}`); });
     return () => controller.abort();
-  }, [client]);
+  }, [client, folderReads]);
   useEffect(() => {
     if (!folders || setupChecked.current) return;
     setupChecked.current = true;
     if (folders.contentReady) return;
     let current = true;
+    setSettingsSection('folders');
     void selectNativeView(true).then(() => {
-      if (current) { setSettingsSection('folders'); setSwitchFailure(null); setTab('settings'); }
-    }).catch(cause => { if (current) setFolderError(errorMessage(cause)); });
+      if (current) { setSwitchFailure(null); setTab('settings'); }
+    }).catch(cause => { if (current) setSwitchFailure({ tab: 'settings', message: errorMessage(cause) }); });
     return () => { current = false; };
   }, [folders?.contentReady]);
   const shellError = actionError ?? native.error;
-  const boundsError = useMapSurface(content, tab === 'map' && !!path && !shellError && !popoverOpen && !sidebar.peek, retry, tab === 'map');
+  const mapSurface = tab === 'map' && !!path && !shellError && !sidebar.peek;
+  const boundsError = useMapSurface(content, mapSurface && !popoverOpen && !leaving, retry, tab === 'map');
   const nativePath = native.state?.viewer.path ?? null;
   const mapError = actionError ?? boundsError ?? native.error ?? native.state?.error ?? null;
 
@@ -331,8 +377,69 @@ export default function App() {
     setRetry(value => value + 1);
   }
 
+  const themeUnsaved = !!themeEditing && JSON.stringify([themeEditing.draft.name, themeEditing.draft.variants]) !== JSON.stringify([themeEditing.original.name, themeEditing.original.variants]);
+  const unsavedWork = layoutsUnsaved || themeUnsaved;
+  useEffect(() => { void setUnsavedWork(unsavedWork).catch(() => {}); }, [unsavedWork]);
+  useEffect(() => {
+    if (!unsavedWork) { setLeaving(null); return; }
+    if (desktopAvailable) return;
+    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    return () => window.removeEventListener('beforeunload', guard);
+  }, [unsavedWork]);
+  useEffect(() => {
+    let stop: (() => void) | null = null, live = true;
+    void onCloseRequested(() => setLeaving(previous => previous ?? { kind: 'close', opener: document.activeElement })).then(unlisten => { if (live) stop = unlisten; else unlisten(); }, () => {});
+    return () => { live = false; stop?.(); };
+  }, []);
+  const unsavedNames = unsavedDetail(unsavedPages.map(id => pages.find(entry => entry.id === id)?.label ?? id), themeUnsaved ? themeEditing!.draft.name.trim() : null);
+  const prompt = leaving ? leavePrompt(leaving.kind, unsavedNames) : null;
+  const unsavedRef = useRef(unsavedNames);
+  unsavedRef.current = unsavedNames;
+  const guardRestart = useCallback<RestartGuard>((restart, opener) => {
+    if (!unsavedRef.current) { void restart(); return; }
+    setLeaving({ kind: 'update', opener, restart });
+  }, []);
+  const stayHere = () => {
+    const back = leaving?.opener;
+    setLeaving(null);
+    if (back instanceof HTMLElement && back.isConnected) requestAnimationFrame(() => back.focus({ preventScroll: true }));
+  };
+  const discardAndLeave = async () => {
+    if (leaving?.kind !== 'update' || !leaving.restart) return closeDiscardingUnsavedWork();
+    const { restart } = leaving;
+    await setUnsavedWork(false);
+    if (await restart()) return;
+    await setUnsavedWork(true).catch(() => {});
+    stayHere();
+  };
+  const saveBeforeClose = () => {
+    setLeaving(null);
+    if (unsavedPages.length) {
+      choosePage(unsavedPages[0]);
+      setSaveRequest(count => count + 1);
+      void changeTab('analytics');
+      return;
+    }
+    setThemeEditing(previous => previous && { ...previous, focus: true });
+    openSettings('appearance');
+  };
+  const everReady = useRef(false);
+
   const workspaceBackdrop = appearance.settings.workspaceBackdrop;
   const nativeReady = native.state?.ready && native.state.running;
+  if (nativeReady) everReady.current = true;
+  const mapOperation = Object.keys(mapFailures)[0];
+  const titledFailure = (title: string, sentence: string, raw: string) => {
+    const failure = actionFailure(sentence, raw);
+    const repeated = failure.text.replace(/\.$/u, '').toLowerCase() === title.toLowerCase();
+    return { title, failure: repeated ? { text: sentence, detail: raw } : failure };
+  };
+  const mapProblem = !mapError ? null
+    : mapFailures.open != null ? titledFailure('The map couldn’t open this campaign', 'Couldn’t open the recording.', mapFailures.open)
+    : titledFailure(everReady.current ? 'The map stopped' : 'The map couldn’t be prepared',
+      mapOperation === 'seek' ? 'Couldn’t move the map to this hour.' : mapOperation ? 'Couldn’t apply the last map change.'
+        : everReady.current ? 'The map closed unexpectedly.' : 'The map couldn’t start.', mapError);
 
   const openSettings = (section: SettingsSection, target: SettingsTarget | null = null) => {
     setSettingsSection(section);
@@ -343,11 +450,12 @@ export default function App() {
 
   return (
     <div className={`app-shell${sidebar.resizing ? ' is-resizing' : ''}`} data-sidebar={sidebar.peek ? 'peek' : sidebar.hidden ? 'hidden' : 'shown'} data-tab={tab}
+      data-native-map={desktopAvailable && mapSurface || undefined}
       style={{ '--sidebar-width': sidebar.hidden ? '0px' : `${sidebar.width}px`, '--sidebar-peek-width': `${sidebar.width}px` } as CSSProperties}>
       <Backdrop backdrop={appearance.settings.backdrop} image={appearance.backdropImage} />
       <div ref={peekOverlay} popover="manual" className="sidebar-peek-overlay" aria-hidden="true" />
       {sidebar.hidden && <div className="sidebar-edge" aria-hidden="true" onPointerEnter={sidebar.openPeek} />}
-      <aside ref={sidebar.aside} className="sidebar" aria-label="Battle Plan navigation" inert={sidebar.hidden && !sidebar.peek}
+      <aside ref={sidebar.aside} className="sidebar" aria-label="BattlePlan navigation" inert={sidebar.hidden && !sidebar.peek}
         onContextMenu={iconMenu.onContextMenu} onKeyDown={iconMenu.onKeyDown}>
         <div className="sidebar-header">
           <BrandMark size={30} /><span className="sidebar-wordmark">BattlePlan</span>
@@ -358,69 +466,70 @@ export default function App() {
         {tab === 'settings'
           ? <SettingsNav section={settingsSection} icons={appearance.settings.sidebarIcons} onBack={() => void changeTab(lastView.current)} onSection={section => openSettings(section)}
             onTarget={target => openSettings(target.section, target)} disabled={switching} />
-          : <nav className="sidebar-menu" aria-label="Views">
+          : <nav className="sidebar-menu sidebar-views" aria-label="Views">
+            <button id="tab-map" type="button" className="sidebar-row" data-sidebar-icon="map" aria-current={tab === 'map' ? 'page' : undefined}
+              disabled={switching} onClick={() => void changeTab('map')}><StyledIcon icon={iconMenu.icon('map')} fallback="map" colour={iconMenu.custom('map')} /><span>Campaign map</span></button>
             <AnalyticsNav pages={pages} page={page} active={tab === 'analytics'} disabled={switching} onPages={changePages} onDelete={deletePage} iconMenu={iconMenu}
               onChoose={id => { choosePage(id); void changeTab('analytics'); }} />
-            <button id="tab-map" type="button" className="sidebar-row" data-sidebar-icon="map" aria-current={tab === 'map' ? 'page' : undefined}
-              disabled={switching} onClick={() => void changeTab('map')}><StyledIcon icon={iconMenu.icon('map')} fallback="map" colour="var(--sidebar-icon-map)" /><span>Campaign map</span></button>
           </nav>}
+        {tab !== 'settings' && folders && !folders.contentReady && <button type="button" className="sidebar-setup-note" disabled={switching}
+          onClick={() => openSettings('folders')}><Icon name="folder" /><span>Choose your game folders to see flags and art</span><Icon name="chevron-right" /></button>}
         <div className="sidebar-campaign-host" ref={setCampaignHost} hidden={tab === 'settings'} />
         <div className="sidebar-footer">
           {tab !== 'settings' && <button id="tab-settings" type="button" className="icon-button sidebar-utility" data-sidebar-icon="settings" disabled={switching} aria-label="Settings" data-tooltip="Settings"
-            onClick={() => void changeTab('settings')}><StyledIcon icon={iconMenu.icon('settings')} fallback="settings" colour="var(--sidebar-icon-settings)" /></button>}
-          <SidebarUpdate />
+            onClick={() => void changeTab('settings')}><StyledIcon icon={iconMenu.icon('settings')} fallback="settings" colour={iconMenu.custom('settings')} /></button>}
+          <RestartGuardContext.Provider value={guardRestart}><SidebarUpdate /></RestartGuardContext.Provider>
         </div>
         </div>
-        {!sidebar.hidden && <div className="sidebar-rail" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" data-tooltip="Drag to resize · double-click to reset"
+        {!sidebar.hidden && <div className="sidebar-rail" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"
           tabIndex={0} aria-valuenow={sidebar.width} aria-valuemin={SIDEBAR_WIDTH.min} aria-valuemax={clampWidth(SIDEBAR_WIDTH.max)}
           onPointerDown={sidebar.startResize} onDoubleClick={sidebar.resetWidth} onKeyDown={sidebar.resizeByKey} />}
       </aside>
       {iconMenu.menu}
       {widgetIconMenu.menu}
       <header ref={header} className="shell-header">
+        {sidebar.hidden && <button type="button" className="icon-button shell-sidebar-show" aria-label="Show sidebar" data-tooltip="Show sidebar · Ctrl+B"
+          onClick={sidebar.toggle}><Icon name="sidebar" /></button>}
         <div className="shell-campaign-controls" ref={setPlaybackHost} hidden={tab === 'settings'} />
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
-        {tab !== 'settings' && <BuildNotice warnings={metadata?.buildWarnings} />}
         {tab !== 'settings' && <RecordingNotice partial={metadata?.partial} damaged={metadata?.damaged} path={metadata?.path} />}
-        {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status">{pageStorageWarning}</div>}
-        {switchFailure && <div className="notice warning shell-switch-failure" role="alert"><Icon name="alert" />
-          <span>{`${TAB_NAMES[switchFailure.tab]} could not be shown: ${switchFailure.message}`}</span>
-          <button type="button" className="button small" disabled={switching} onClick={() => void changeTab(switchFailure.tab)}>
-            <Icon name="refresh" />Retry</button></div>}
+        {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status"><Icon name="alert" /><span>{pageStorageWarning}</span></div>}
+        {switchFailure && <FailureLine className="shell-switch-failure" message={`Couldn’t show ${TAB_NAMES[switchFailure.tab]}.`}
+          detail={switchFailure.message} retryDisabled={switching} onRetry={() => void changeTab(switchFailure.tab)} />}
       </header>
 
       <main className="workspace" ref={content}>
         {workspaceBackdrop.kind !== 'same' && <Backdrop className="is-workspace" backdrop={{ ...workspaceBackdrop, kind: workspaceBackdrop.kind }} image={appearance.workspaceImage} />}
         <section id="panel-settings" aria-label="Settings" tabIndex={-1} className="settings-panel" hidden={tab !== 'settings'}>
-          {tab === 'settings' && <Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
-            onResetPages={pagesReset()} />}
+          {tab === 'settings' && <RestartGuardContext.Provider value={guardRestart}><Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersRetry={() => setFolderReads(count => count + 1)} onFoldersChange={value => { setFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
+            onResetPages={pagesReset()} themeEditing={themeEditing} onThemeEditing={setThemeEditing} /></RestartGuardContext.Provider>}
         </section>
         <section id="panel-map" aria-labelledby="tab-map" tabIndex={-1}
           className="map-panel" hidden={tab !== 'map'}>
           <div className="map-placeholder">
             {!desktopAvailable ? (
-              <MapState icon="globe" eyebrow="Desktop feature" title="The map lives in the desktop app">
-                <p>Open Battle Plan on your desktop to load a recording and explore its native campaign map.</p>
+              <MapState title="The map is in the desktop app">
+                <p>Open BattlePlan on your desktop to explore a campaign on its map.</p>
               </MapState>
-            ) : mapError ? (
-              <MapState icon="alert" eyebrow="Map unavailable" title="The map could not be prepared" alert>
-                <p className="error-copy">{mapError}</p>
+            ) : mapProblem ? (
+              <MapState icon="alert" title={mapProblem.title} alert>
+                <p className="error-copy" data-detail={mapProblem.failure.detail}>{mapProblem.failure.text}</p>
                 <div className="button-row centered">
-                  <button type="button" className="button primary" onClick={retryMap}><Icon name="refresh" />Retry map</button>
+                  <button type="button" className="button primary" onClick={retryMap}><Icon name="refresh" />Try again</button>
                   <button type="button" className="button" disabled={opening} onClick={() => void openRecording()}>
-                    <Icon name="folder-open" />Open recording
+                    <Icon name="folder-open" />Open a recording…
                   </button>
                 </div>
               </MapState>
             ) : !nativeReady ? (
-              <MapState eyebrow="Native viewer" title="Preparing the map" busy>
-                <p>Your map and playback controls will appear here.</p>
+              <MapState title="Preparing the map" busy>
+                <p>The map and playback controls appear here when it’s ready.</p>
               </MapState>
             ) : path && nativePath && sameCampaignPath(path, nativePath) && native.state?.viewer.hour != null ? null : (
-              <MapState icon={path ? 'map' : 'folder-open'} eyebrow="Battle Plan" title={path ? 'Opening your recording' : 'Open a recording'} busy={!!path}>
-                <p>{path ? 'The native viewer is preparing the recorded map.' : 'Choose a campaign from your replay folder to explore it hour by hour.'}</p>
+              <MapState title={path ? 'Opening the campaign' : 'No campaign open'} busy={!!path}>
+                <p>{path ? 'The map appears here as soon as it’s ready.' : 'Choose a campaign from the library in the sidebar to explore it hour by hour.'}</p>
                 {!path && <button type="button" className="button primary" disabled={opening} onClick={() => void openRecording()}>
-                  <Icon name="folder-open" />Open recording
+                  <Icon name="folder-open" />Open a recording…
                 </button>}
               </MapState>
             )}
@@ -429,10 +538,11 @@ export default function App() {
 
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
-          <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} mapRetry={retry} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
+          <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} mapRetry={retry} onUnsaved={setUnsavedPages} saveRequest={saveRequest} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
         </section>
       </main>
       <aside className="workspace-side" ref={setSideHost} aria-label="Map tools" hidden={tab !== 'map'} />
+      <LeaveConfirm prompt={prompt} onCancel={stayHere} onSave={saveBeforeClose} onDiscard={discardAndLeave} />
     </div>
   );
 }

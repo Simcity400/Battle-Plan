@@ -38,7 +38,7 @@ pub fn start_recorder() {
     };
     let detached = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
     if let Err(error) = spawn(detached | CREATE_BREAKAWAY_FROM_JOB).or_else(|_| spawn(detached)) {
-        eprintln!("Battle Plan Recorder could not start: {error}");
+        eprintln!("BattlePlan Recorder couldn’t start: {error}");
     }
 }
 
@@ -117,7 +117,7 @@ pub async fn recording_preferences() -> Result<RecordingPreferences, String> {
     blocking(|| {
         RecorderSettings::load()
             .map(|settings| preferences(&settings))
-            .map_err(|error| format!("Recorder settings could not be read: {error}"))
+            .map_err(|error| format!("Recorder settings couldn’t be read: {error}"))
     })
     .await
 }
@@ -132,17 +132,17 @@ pub async fn rename_recording(path: String, name: String) -> Result<String, Stri
 }
 
 fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
-    let failed = |error: std::io::Error| format!("The recording could not be renamed: {error}");
+    let failed = |error: std::io::Error| format!("The recording couldn’t be renamed: {error}");
     let stem = recording_files::file_stem(name)
         .ok_or("Choose a name with a letter or number Windows allows in file names.")?;
     if !path.is_file() || !recording_files::is_recording(path) {
-        return Err("Choose a .battleplan recording to rename.".into());
+        return Err("Choose a BattlePlan recording to rename.".into());
     }
     let folder = std::fs::canonicalize(path.parent().ok_or("This recording has no folder.")?)
         .map_err(failed)?;
     let _lock = NamesLock::try_now(&folder)
         .map_err(failed)?
-        .ok_or("Battle Plan Recorder is saving into this folder. Try again in a moment.")?;
+        .ok_or("BattlePlan Recorder is saving into this folder. Try again in a moment.")?;
     let campaign = recording_files::campaign_of(path)
         .map_err(failed)?
         .and_then(|id| String::from_utf8(id).ok());
@@ -165,7 +165,7 @@ fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
             });
         }
         if error.raw_os_error() == Some(32) {
-            "Battle Plan Recorder is recording into this file. Rename it once the session is saved."
+            "BattlePlan Recorder is recording into this file. Rename it once the session is saved."
                 .to_owned()
         } else {
             failed(error)
@@ -243,7 +243,7 @@ pub async fn set_campaign_flag(campaign_key: String, tag: Option<String>) -> Res
     blocking(move || {
         RecorderSettings::update(|settings| settings.campaigns.entry(id).or_default().flag = tag)
             .map(|_| ())
-            .map_err(|error| format!("Campaign flag could not be saved: {error}"))
+            .map_err(|error| format!("The campaign flag couldn’t be saved: {error}"))
     })
     .await
 }

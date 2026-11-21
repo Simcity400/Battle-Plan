@@ -42,6 +42,34 @@ export function failureWire(error: Failure): QueryError {
 ${error.message}` : error.message };
 }
 
+export interface PlainFailure { text: string; detail?: string }
+
+const productLead = (text: string) => /^\p{Lu}/u.test(text) && /\s/u.test(text) && !/[\\/]|\.\p{L}/u.test(text);
+
+const productSentence = (text: string) => productLead(text) && /[.!?]$/u.test(text) && !/[:()[\]]/u.test(text);
+
+export function plainFailure(message: string): PlainFailure {
+  let depth = 0;
+  for (let at = 0; at < message.length - 1; at++) {
+    const char = message[at];
+    if (char === '(' || char === '[') depth++;
+    else if ((char === ')' || char === ']') && depth > 0) depth--;
+    else if (char === ':' && message[at + 1] === ' ' && depth === 0 && at > 0) {
+      const head = message.slice(0, at).trimEnd().replace(/\.+$/u, '');
+      return productLead(head) ? { text: `${head}.`, detail: message } : { text: message };
+    }
+  }
+  return { text: message };
+}
+
+export function actionFailure(title: string, raw: string): PlainFailure {
+  const message = raw.trim();
+  const plain = plainFailure(message);
+  if (plain.detail) return plain;
+  if (productSentence(message)) return { text: message };
+  return { text: `${title.trim().replace(/\.+$/u, '')}.`, detail: raw };
+}
+
 export function failureKey(error: Failure): string {
   return JSON.stringify(failureWire(error));
 }

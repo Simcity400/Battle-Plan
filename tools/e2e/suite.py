@@ -1,4 +1,4 @@
-"""Battle Plan's acceptance suite: the release desktop app on a copy of a real recording.
+"""BattlePlan's acceptance suite: the release desktop app on a copy of a real recording.
 
     python tools/e2e/suite.py build --out <app dir> [--shell]
     python tools/e2e/suite.py run --app <app dir> | --shell <shell dir> --ui <bundle dir>
@@ -21,7 +21,7 @@ session for iterating: every page at mid-recording, the heaviest pages played at
 catalogue cards and one setting of each widget kind. `--history` (by default in the state folder) holds every step that
 ever failed, each marked as the product's or the suite's own; the report adds this run's, and no case in it is left out
 as a repeat (with `--pin product`, no case the product failed). The header records the machine's CPU and memory load
-before the first app starts and before the last one closes, beside the Battle Plan apps running then: this run's, other
+before the first app starts and before the last one closes, beside the BattlePlan apps running then: this run's, other
 suite runs' (each notes the app it started) and every replay-desktop process on the machine, so a number taken beside
 other apps is read as such. `--record-replies` has the sweep record every reply and followed message the page receives to
 that file (one file a session, named for it when more than one runs). Exits 0 when everything passed, 1 when anything
@@ -239,7 +239,7 @@ class App:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             for hwnd, title in self.windows():
-                if title == "Battle Plan":
+                if title == "BattlePlan":
                     return hwnd
             if not self.running():
                 raise RuntimeError(f"the app exited with {self.exit_code()} before showing its window")
@@ -279,7 +279,7 @@ class App:
         try:
             if self.running():
                 for hwnd, title in self.windows():
-                    if title == "Battle Plan":
+                    if title == "BattlePlan":
                         u.PostMessageW(hwnd, WM_CLOSE, 0, 0)
                 if k.WaitForSingleObject(self.info.process, CLOSE_SECONDS * 1000) != STILL_ACTIVE:
                     code = self.exit_code()
@@ -330,7 +330,7 @@ def alive(pid, creation):
 
 
 def running_apps(own):
-    """Battle Plan apps running now: this run's, other suite runs' (by their notes) and every replay-desktop process
+    """BattlePlan apps running now: this run's, other suite runs' (by their notes) and every replay-desktop process
     on the machine (counted by name, only read)."""
     noted = 0
     for note in APPS.glob("*.json") if APPS.is_dir() else ():

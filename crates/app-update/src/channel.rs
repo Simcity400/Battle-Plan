@@ -30,7 +30,7 @@ struct Saved {
 fn path() -> Result<PathBuf, String> {
     let local = std::env::var_os("LOCALAPPDATA")
         .filter(|path| !path.is_empty())
-        .ok_or("LOCALAPPDATA is not set, so the update channel has nowhere to be saved.")?;
+        .ok_or("LOCALAPPDATA isn’t set, so the update channel has nowhere to be saved.")?;
     Ok(Path::new(&local).join("HOI4Replay").join("updates.json"))
 }
 
@@ -39,9 +39,9 @@ pub fn load() -> Result<Option<Channel>, String> {
     match fs::read(&path) {
         Ok(bytes) => serde_json::from_slice::<Saved>(&bytes)
             .map(|saved| saved.channel)
-            .map_err(|error| format!("{} could not be read: {error}", path.display())),
+            .map_err(|error| format!("{} couldn’t be read: {error}", path.display())),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("{} could not be read: {error}", path.display())),
+        Err(error) => Err(format!("{} couldn’t be read: {error}", path.display())),
     }
 }
 
@@ -60,5 +60,5 @@ pub fn save(channel: Channel) -> Result<(), String> {
         fs::write(&temporary, bytes)?;
         fs::rename(&temporary, &path)
     };
-    write().map_err(|error| format!("{} could not be saved: {error}", path.display()))
+    write().map_err(|error| format!("{} couldn’t be saved: {error}", path.display()))
 }

@@ -8,16 +8,18 @@ export function useMapMuted() {
   const [muted, setMuted] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [take] = useState(() => newestSwitch(setMuted));
+  const [reads, setReads] = useState(0);
   useEffect(() => {
     if (!desktopAvailable) return;
     let live = true;
     const changed = listen<MapSwitch>('map-muted', event => { if (take(event.payload)) setError(null); });
-    void changed.then(() => invoke<MapSwitch>('map_muted')).then(value => { if (live) take(value); }, cause => { if (live) setError(errorMessage(cause)); });
+    void changed.then(() => invoke<MapSwitch>('map_muted')).then(value => { if (live) { take(value); setError(null); } }, cause => { if (live) setError(errorMessage(cause)); });
     return () => { live = false; void changed.then(stop => stop(), () => {}); };
-  }, [take]);
+  }, [take, reads]);
   const set = (value: boolean) => {
     setError(null);
     void invoke<MapSwitch>('set_map_muted', { muted: value }).then(take, cause => setError(errorMessage(cause)));
   };
-  return { muted, error, set };
+  const retry = () => setReads(count => count + 1);
+  return { muted, error, set, retry };
 }

@@ -30,7 +30,7 @@ const unicodeScalar = (point: number) => point <= 0x10ffff && (point < 0xd800 ||
 const validEscapes = (token: string) => [...token.matchAll(ESCAPED_POINT)].every(([, hex]) => unicodeScalar(parseInt(hex, 16)));
 
 export const storableToken = (token: string) => setTokenText(token) && validEscapes(token);
-export const UNSTORABLE = 'This choice cannot be saved.';
+export const UNSTORABLE = 'This choice can’t be saved.';
 
 export const setToken = (key: string) => key.replace(/[^\w.-]/gu, character => `:${character.codePointAt(0)!.toString(16)}:`);
 export const contentKey = (token: string) => token.replace(ESCAPED_POINT, (escape, hex: string) => {

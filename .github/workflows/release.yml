@@ -254,7 +254,7 @@ jobs:
           set -euo pipefail
           if ! gh release view "$CHANNEL" > /dev/null 2>&1; then
             gh release create "$CHANNEL" --target "$COMMIT" --title "${CHANNEL^} update feed" --latest=false \
-              --notes "latest.json, which Battle Plan and Battle Plan Recorder on the $CHANNEL channel check for updates. Not an installer."
+              --notes "latest.json, which BattlePlan and BattlePlan Recorder on the $CHANNEL channel check for updates. Not an installer."
           fi
           gh release upload "$CHANNEL" latest.json --clobber
           echo "The $CHANNEL feed now offers $VERSION."

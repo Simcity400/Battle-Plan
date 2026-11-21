@@ -48,7 +48,7 @@ async function dashboard(run: (view: any) => Promise<void>) {
         const file = id.replaceAll('\\', '/');
         if (file.endsWith('/dashboard/Dashboard.tsx') || file.endsWith('/dashboard/sources.ts')) return code
           .replace(/import \{[^\n]+\} from 'react';/, 'const { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } = globalThis.__renameFixture;')
-          .replace("import { createPortal } from 'react-dom';", 'const createPortal = value => value;')
+          .replace("import { createPortal, flushSync } from 'react-dom';", 'const createPortal = value => value; const flushSync = run => run();')
           .replace("import { useSlotTags } from './countrySlots.ts';", 'const useSlotTags = () => undefined;');
         return Object.entries(replacements).find(([suffix]) => file.endsWith(suffix))?.[1];
       },
@@ -85,7 +85,7 @@ async function dashboard(run: (view: any) => Promise<void>) {
     };
     render(); sidebar().props.onLoad(next.path, 'Germany 1936.battleplan', 'new');
     await settle(); render(); render();
-    saveAircraftChoice(recordingKey(next.path, CAMPAIGN_KEY), 'jet_mesh');
+    saveAircraftChoice(recordingKey(next.path, CAMPAIGN_KEY), { name: 'jet_mesh', title: 'Jet' });
     const poll = async () => { polls.at(-1)?.(); await settle(); render(); render(); };
     await run({ props, render, sidebar, layout, reconnect, poll, opened, releases: () => releases, storage, recordingKey, loadAircraftChoice,
       metadata: () => metadata, refreshed: () => refreshed, locate: (path: string | null) => { located = path; },
@@ -114,14 +114,14 @@ test("renaming an open recording's file reopens its source there once, the layou
   assert.equal(view.releases(), 1);
   assert.equal(view.sidebar().props.campaigns[0].id, id);
   assert.deepEqual(shown(view), { path: barbarossa, source: barbarossa, metadata: barbarossa, loading: false });
-  assert.equal(view.loadAircraftChoice(view.recordingKey(barbarossa, CAMPAIGN_KEY)), 'jet_mesh');
+  assert.deepEqual(view.loadAircraftChoice(view.recordingKey(barbarossa, CAMPAIGN_KEY)), { name: 'jet_mesh', title: 'Jet' });
   assert.deepEqual(view.layout(), before, 'the authored layout keeps no path');
   view.sidebar().props.onRenamed('C:/recordings/Italy 1936.battleplan', 'C:/recordings/Italy 1936–1937.battleplan');
   view.render();
   assert.equal(shown(view).path, barbarossa);
 }));
 
-test('a recording Battle Plan Recorder renames while open shows its new name, and opens by it again', () => dashboard(async view => {
+test('a recording BattlePlan Recorder renames while open shows its new name, and opens by it again', () => dashboard(async view => {
   view.locate('C:/recordings/Germany 1936.battleplan');
   await view.poll();
   assert.equal(view.refreshed(), 0);

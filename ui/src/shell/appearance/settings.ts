@@ -152,14 +152,14 @@ export function loadAppearance(storage?: Storage): { settings: AppearanceSetting
     const legacy = target.getItem(LEGACY_KEY);
     if (legacy !== null) return { settings: migrateLegacy(JSON.parse(legacy)) ?? structuredClone(DEFAULT_APPEARANCE), warning: null };
   } catch {
-    return { settings: structuredClone(DEFAULT_APPEARANCE), warning: 'Saved appearance could not be restored. The default theme is in use.' };
+    return { settings: structuredClone(DEFAULT_APPEARANCE), warning: 'Saved appearance couldn’t be restored. The default theme is in use.' };
   }
   return { settings: structuredClone(DEFAULT_APPEARANCE), warning: null };
 }
 
 export function saveAppearance(settings: AppearanceSettings, storage?: Storage): string | null {
   try { (storage ?? localStorage).setItem(APPEARANCE_KEY, JSON.stringify(settings)); return null; }
-  catch { return 'Appearance is applied for this session. This device could not save it.'; }
+  catch { return 'Appearance is applied for this session. This device couldn’t save it.'; }
 }
 
 export interface ResolvedAppearance { mode: ThemeMode; theme: ThemeDefinition; colors: ThemeColors; reducedMotion: boolean }

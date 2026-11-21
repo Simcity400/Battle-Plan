@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
-test('a live calendar edits the day it shows: a time picked after playback moved to the next day is of that day', async () => {
+test('a live calendar edits the day it shows, and commits a pick only by its footer button or Enter', async () => {
   await withNativePage('date-picker', '/ui/src/components/DateTimePicker.dom.fixture.tsx', page => page.stage('date picker', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.datePicker.${expression}`);
     assert.equal(await act('ready()'), true);
@@ -12,5 +12,45 @@ test('a live calendar edits the day it shows: a time picked after playback moved
     assert.equal(await act('selectedDay()'), '2', 'the calendar follows the live day');
     const { chosen, wanted } = await act<{ chosen: number | null; wanted: number }>('pickTime(12)');
     assert.equal(chosen, wanted, 'the time is set on the day highlighted, not the day it opened on');
+    const done = await act<{ committed: number[]; cancelled: number; open: boolean }>('commit()');
+    assert.deepEqual(done, { committed: [wanted], cancelled: 0, open: false }, 'the footer button commits the picked hour and closes');
+    await act('open()');
+    assert.deepEqual(await act('pickDayThenDismiss(9)'), { committed: [wanted], cancelled: 1 }, 'closing without committing discards the pick');
+    await act('open()');
+    const entered = await act<{ committed: number[]; chosen: number | null; open: boolean }>('enterOnDay(10)');
+    assert.equal(entered.committed.length, 2);
+    assert.equal(entered.committed[1], entered.chosen, 'Enter on a day picks it and commits it at once');
+    assert.equal(entered.open, false);
+    await act('open()');
+    await act('play(1)');
+    const shown = await act<{ button: string; checked: string; drafted: number | null; live: number }>('pickShownTime()');
+    assert.equal(shown.checked, shown.button, 'the open time list checks the hour its button shows');
+    assert.equal(shown.drafted, shown.live - 1, 'choosing the hour shown when the list opened sets it as the pick');
+    type State = { value: string; invalid: string | null; hint: string | null; hintRole: string | null; month: string | null;
+      go: boolean; committed: number[]; cancelled: number; open: boolean };
+    const hint = 'Use a year from 0 to 1.';
+    const refused = await act<State>('enterYear("5")');
+    assert.deepEqual([refused.value, refused.invalid, refused.hint, refused.hintRole], ['5', 'true', hint, 'alert'],
+      'a year outside the recording stays as typed, says which years it holds and is announced');
+    assert.equal(refused.go, true, 'a refused year leaves the pick on the month shown');
+    assert.equal((await act<State>('enterYear("")')).invalid, 'true', 'an empty year is not put back silently');
+    const corrected = await act<State>('enterYear("1")');
+    assert.deepEqual([corrected.value, corrected.invalid, corrected.hint], ['1', null, null]);
+    assert.match(corrected.month!, / 1$/);
+    assert.deepEqual([corrected.go, corrected.cancelled], [false, 2], 'browsing to another year drops the earlier pick');
+    assert.equal((await act<State>('pickDay(1)')).go, true, 'a day picked in the month shown can be gone to');
+    const browsed = await act<State>('browse("Previous")');
+    assert.deepEqual([browsed.go, browsed.cancelled], [false, 3], 'browsing to another month drops the earlier pick');
+    const pressed = await act<State>('commit()');
+    assert.deepEqual([pressed.committed.length, pressed.open], [2, true], 'Go to date never closes without going');
+    await act('enterYear("9")');
+    const kept = await act<State>('browse("Previous")');
+    assert.deepEqual([kept.value, kept.invalid, kept.hint], ['9', 'true', hint], 'an invalid year stays in view until corrected');
+    await act('dismiss()');
+    await act('open()');
+    await act('enterYear("8")');
+    await act('play(24 * 40)');
+    const typing = await act<State>('state()');
+    assert.deepEqual([typing.value, typing.hint], ['8', hint], 'playback stops replacing the year once the year field is used');
   }));
 });

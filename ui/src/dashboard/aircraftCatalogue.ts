@@ -1,6 +1,6 @@
 import { asFailure } from './queryError.ts';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AircraftCatalogueParams, AircraftCatalogueReply, AircraftEntry, AircraftReference, AircraftRefusalCount, AircraftScope } from '../generated/dashboard.ts';
+import type { AircraftCatalogueParams, AircraftCatalogueReply, AircraftEntry, AircraftRefusalCount, AircraftRefusalKind, AircraftScope } from '../generated/dashboard.ts';
 import type { DashboardClient, DashboardSource } from './client';
 import { useContentRevision } from './contentRevision.ts';
 import { loadTransientProduct } from './products.ts';
@@ -74,20 +74,24 @@ export function aircraftRowInteractive(pages: AircraftPages, index: number): boo
   return !!entry && !entry.refusal;
 }
 
-export function referenceText(reference: AircraftReference): string {
-  switch (reference.kind) {
-    case 'pool': return `${reference.bucket} pool for ${reference.equipment}`;
-    case 'ladder': return `${reference.prefix ? `${reference.prefix} ` : ''}${reference.key} model`;
-    case 'design': return `saved model of a ${reference.equipment} design`;
-    case 'cloneOf': return `clone of ${reference.of}`;
-    case 'clonedBy': return `cloned by ${reference.by}`;
-  }
+const unplayable = (kind: AircraftRefusalKind) => kind === 'declaration';
+
+export function refusalText(kind: AircraftRefusalKind): string {
+  return unplayable(kind) ? 'Can’t be flown: the game can’t play its model.' : 'Can’t be flown: its 3D model is missing.';
 }
 
-export function refusalLine(refusals: readonly AircraftRefusalCount[]): string | null {
-  if (!refusals.length) return null;
-  return `Not flyable: ${refusals.map(refusal => `${refusal.count.toLocaleString()} ${refusal.label}`).join(', ')}`;
+export function refusalLine(refusals: readonly AircraftRefusalCount[]): { text: string; tooltip: string; detail: string } | null {
+  const counted = refusals.filter(refusal => refusal.count > 0);
+  const total = counted.reduce((sum, refusal) => sum + refusal.count, 0);
+  if (!total) return null;
+  const missing = counted.filter(refusal => !unplayable(refusal.kind)).reduce((sum, refusal) => sum + refusal.count, 0);
+  const tooltip = [missing ? `${missing.toLocaleString()} with a missing 3D model` : '',
+    total - missing ? `${(total - missing).toLocaleString()} the game can’t play` : ''].filter(Boolean).join('\n');
+  return { text: `${total.toLocaleString()} ${total === 1 ? 'model' : 'models'} can’t be flown`, tooltip,
+    detail: counted.map(refusal => `${refusal.count.toLocaleString()}: ${refusal.label}`).join('\n') };
 }
+
+export const CATALOGUE_NOTE = 'Some game files couldn’t be read, so this list may be incomplete.';
 
 export interface AircraftCatalogueState {
   pages: AircraftPages | null;

@@ -70,7 +70,7 @@ async function request<T>(
   releaseLate?: (result: T) => Promise<void>,
   asksFrom?: number,
 ): Promise<T> {
-  if (!desktopAvailable) throw new Error('Open the desktop app to read recordings and display native maps.');
+  if (!desktopAvailable) throw new Error('Open BattlePlan in the desktop app to read recordings and show the map.');
   if (signal.aborted) throw cancelled();
   const done = busy('requests');
   try {

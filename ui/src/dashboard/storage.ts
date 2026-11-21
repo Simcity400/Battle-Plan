@@ -171,8 +171,29 @@ function migrateDefaultName(library: LayoutLibrary): LayoutLibrary {
 }
 
 export function droppedTagWarning(count: number): string | null {
-  return count ? `${count} country tag ${count === 1 ? 'entry was' : 'entries were'} left out of the saved layout because ${count === 1 ? 'it' : 'they'} could not be stored.` : null;
+  return count ? `${count} country tag ${count === 1 ? 'entry was' : 'entries were'} left out of the saved layout because ${count === 1 ? 'it' : 'they'} couldn’t be stored.` : null;
 }
+
+export type LayoutSaveAction = 'update' | 'new';
+export interface LayoutSaveCheck { submit: LayoutSaveAction | null; update: boolean; asNew: boolean; renames: boolean; problem: string | null }
+
+export function layoutSaveCheck(library: LayoutLibrary, typed: string): LayoutSaveCheck {
+  const name = typed.trim();
+  const current = library.layouts.find(entry => entry.id === library.activeId);
+  const blocked = (problem: string | null): LayoutSaveCheck => ({ submit: null, update: false, asNew: false, renames: false, problem });
+  if (!name) return blocked('Enter a layout name.');
+  if (name.length > 160) return blocked('Use 160 characters or fewer.');
+  const taken = library.layouts.find(entry => entry.id !== library.activeId && entry.template.name.toLowerCase() === name.toLowerCase());
+  if (taken) return blocked(`“${taken.template.name}” is already a layout. Choose another name.`);
+  if (current && current.template.name.toLowerCase() === name.toLowerCase()) {
+    return { submit: 'update', update: true, asNew: false, renames: current.template.name !== name, problem: null };
+  }
+  const room = library.layouts.length < MAX_LAYOUTS;
+  return { submit: room ? 'new' : null, update: !!current, asNew: room, renames: !!current,
+    problem: room ? null : `You can keep up to ${MAX_LAYOUTS} layouts. Update this one instead.` };
+}
+
+export const layoutSaveAllowed = (check: LayoutSaveCheck, action: LayoutSaveAction) => action === 'new' ? check.asNew : check.update;
 
 const libraryKey = (page: PageId) => page === 'overview' ? LIBRARY_KEY : `${LIBRARY_KEY}.${page}`;
 
@@ -184,13 +205,25 @@ export function layoutsAtDefault(page: PageId, storage?: LayoutStorage): boolean
   return warning === null && stableJson(library) === stableJson(parseLayoutLibrary(defaultLibrary(page)));
 }
 
-export function layoutsUnsaved(pages: Iterable<{ library: LayoutLibrary; template: DashboardTemplate }>,
-  merge: (template: DashboardTemplate) => DashboardTemplate = template => template): boolean {
-  for (const { library, template } of pages) {
-    const active = library.layouts.find(entry => entry.id === library.activeId)?.template;
-    if (!active || stableJson(merge(template)) !== stableJson(merge(active))) return true;
-  }
+interface PageDraft { library: LayoutLibrary; template: DashboardTemplate }
+type Merge = (template: DashboardTemplate) => DashboardTemplate;
+
+function draftUnsaved({ library, template }: PageDraft, merge: Merge): boolean {
+  const active = library.layouts.find(entry => entry.id === library.activeId)?.template;
+  return !active || stableJson(merge(template)) !== stableJson(merge(active));
+}
+
+export function layoutsUnsaved(pages: Iterable<PageDraft>, merge: Merge = template => template): boolean {
+  for (const page of pages) if (draftUnsaved(page, merge)) return true;
   return false;
+}
+
+export function unsavedLayoutPages<K>(pages: Iterable<readonly [K, PageDraft]>, merge: Merge = template => template): K[] {
+  return [...pages].filter(([, page]) => draftUnsaved(page, merge)).map(([id]) => id);
+}
+
+export function doneEditing(page: PageDraft, merge: Merge = template => template): 'save' | 'leave' {
+  return draftUnsaved(page, merge) ? 'save' : 'leave';
 }
 
 export function loadLayouts(storage?: LayoutStorage, page: PageId = 'overview'): { library: LayoutLibrary; warning: string | null; droppedTags: number } {
@@ -213,7 +246,7 @@ export function loadLayouts(storage?: LayoutStorage, page: PageId = 'overview'):
     }
     return { library: fallback, warning: null, droppedTags: 0 };
   } catch {
-    return { library: fallback, warning: 'Saved layouts could not be restored. A default layout is open; your recording is unaffected.', droppedTags: 0 };
+    return { library: fallback, warning: 'Couldn’t restore saved layouts. A default layout is open; your recording is unaffected.', droppedTags: 0 };
   }
 }
 
@@ -229,12 +262,12 @@ export function saveLayouts(library: LayoutLibrary, storage?: LayoutStorage, pag
   try {
     const parsed = parseLayoutLibraryWithNotes(library);
     if (!parsed) throw new Error('Invalid layouts');
-    if (parsed.droppedTags) return `${parsed.droppedTags} country tag entries could not be saved. Your current workspace is still available.`;
+    if (parsed.droppedTags) return `${parsed.droppedTags} country tag entries couldn’t be saved. Your current workspace is still available.`;
     const raw = JSON.stringify(parsed.library);
     if (raw.length > 4_000_000) throw new Error('Saved layouts are too large.');
     (storage ?? localStorage).setItem(libraryKey(page), raw);
     return null;
   } catch {
-    return 'This layout could not be saved on this device. Your current workspace is still available.';
+    return 'Couldn’t save this layout on this device. Your changes are still here.';
   }
 }

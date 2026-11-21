@@ -16,8 +16,8 @@ test('icon menus offer each change, reset only what differs from the default, an
       transform(source, id) {
         const file = id.replaceAll('\\', '/');
         if (file.endsWith('/appearance/IconStyleMenu.tsx')) return source
-          .replace("import { useCallback, useEffect, useRef, useState } from 'react';",
-            'const useCallback = callback => callback; const useEffect = () => {}; const useRef = value => ({ current: value }); const useState = value => [value, () => {}];')
+          .replace("import { useCallback, useEffect, useId, useRef, useState } from 'react';",
+            'const useCallback = callback => callback; const useEffect = () => {}; const useId = () => "hint"; const useRef = value => ({ current: value }); const useState = value => [value, () => {}];')
           .replace('useState<{ id: Id; label: string; part: Part } | null>(null)', 'useState(globalThis.__iconMenu.editing)');
         if (file.endsWith('/appearance/WidgetIconMenu.tsx')) return source.replace("import { createContext, useMemo } from 'react';",
           "import { createContext } from 'react'; const useMemo = make => make();");
@@ -44,10 +44,10 @@ test('icon menus offer each change, reset only what differs from the default, an
     fixture.editing = { id: 'map', label: 'Campaign map', part: 'colour' };
     const picker = (styles: AppearanceSettings['sidebarIcons']) => renderToStaticMarkup(useSidebarIconMenu(appearance({ sidebarIcons: styles })).menu);
     assert.doesNotMatch(picker({}), /Reset icon colour/, 'a default colour has nothing to reset');
-    assert.match(picker({ map: { colour: '#ff0000' } }), /aria-label="Reset icon colour"/);
+    assert.match(picker({ map: { colour: '#ff0000' } }), /aria-label="Reset icon colour" data-tooltip="Reset icon colour"/, 'the reset tooltip names what it resets');
     fixture.editing = { id: 'map', label: 'Campaign map', part: 'icon' };
     assert.doesNotMatch(picker({ map: { colour: '#ff0000' } }), /aria-label="Reset icon"/, 'a default icon has nothing to reset');
-    assert.match(picker({ map: { icon: 'globe' } }), /aria-label="Reset icon"/);
+    assert.match(picker({ map: { icon: 'globe' } }), /aria-label="Reset icon" data-tooltip="Reset icon"/);
     assert.match(picker({}), />Upload image…</);
     assert.match(picker({ map: { icon: image } }), /<img class="icon-image" src="data:image\/png;base64,iVBORw0KGgo=" alt="Your image"/);
     assert.match(picker({ map: { icon: image } }), />Replace image…</);

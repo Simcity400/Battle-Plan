@@ -17,8 +17,9 @@ use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::http::HeaderValue;
-use tauri::{Manager, State, WebviewWindow};
+use tauri::{Emitter, Manager, State, WebviewWindow};
 
 #[global_allocator]
 static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
@@ -109,6 +110,7 @@ async fn export_map(
         .await
         .map_err(|_| "The map stopped before the export finished".to_owned())?
         .map(Some)
+        .map_err(|error| format!("Couldn’t save the map image: {error}"))
 }
 
 #[tauri::command]
@@ -148,19 +150,19 @@ fn set_dashboard_maps(
 
 pub(crate) fn replay_path(path: &str) -> Result<String, String> {
     if path.is_empty() {
-        return Err("Replay path is empty".into());
+        return Err("The recording path is empty".into());
     }
     if path.len() > 32_000 {
-        return Err("Replay path is too long".into());
+        return Err("The recording path is too long".into());
     }
     if path.contains('\0') {
-        return Err("Replay path holds a NUL character".into());
+        return Err("The recording path holds a NUL character".into());
     }
     if !std::path::Path::new(path)
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
     {
-        return Err("Choose a .battleplan recording".into());
+        return Err("Choose a BattlePlan recording.".into());
     }
     Ok(path.to_owned())
 }
@@ -200,6 +202,43 @@ fn context() -> tauri::Context {
     context
 }
 
+#[derive(Default)]
+struct UnsavedWork {
+    unsaved: AtomicBool,
+    discarded: AtomicBool,
+}
+
+impl UnsavedWork {
+    const UPDATE_REFUSED: &'static str =
+        "BattlePlan has unsaved changes. Save or discard them in BattlePlan, then restart to update.";
+
+    fn kept(&self) -> bool {
+        self.unsaved.load(Ordering::Acquire) && !self.discarded.load(Ordering::Acquire)
+    }
+
+    fn update_refused(&self) -> Option<String> {
+        self.kept().then(|| Self::UPDATE_REFUSED.to_owned())
+    }
+}
+
+#[tauri::command]
+fn set_unsaved_work(work: State<'_, UnsavedWork>, unsaved: bool) {
+    work.unsaved.store(unsaved, Ordering::Release);
+}
+
+#[tauri::command]
+fn close_discarding_unsaved_work(window: WebviewWindow, work: State<'_, UnsavedWork>) -> Result<(), String> {
+    work.discarded.store(true, Ordering::Release);
+    window.close().map_err(|error| format!("Couldn’t close BattlePlan: {error}"))
+}
+
+fn ask_before_close(app: &tauri::AppHandle) -> bool {
+    if !app.state::<UnsavedWork>().kept() {
+        return false;
+    }
+    app.emit_to("main", "close-requested", ()).is_ok()
+}
+
 #[tauri::command]
 fn playback_pressure_merges() -> u64 { dashboard_follow::lead::pressure_merges() }
 
@@ -223,7 +262,7 @@ fn main() {
         };
         std::process::exit(code);
     }
-    if app_update::refused_during_setup("Battle Plan") {
+    if app_update::refused_during_setup("BattlePlan") {
         return;
     }
     let context = context();
@@ -240,7 +279,7 @@ fn main() {
     let artwork_origin = match HeaderValue::from_str(&page_origin) {
         Ok(origin) => origin,
         Err(error) => {
-            eprintln!("The dashboard origin {page_origin} is not a header value: {error}");
+            eprintln!("The dashboard origin {page_origin} isn’t a header value: {error}");
             std::process::exit(2);
         }
     };
@@ -290,6 +329,7 @@ fn main() {
         .manage(popout::PopOuts::default())
         .manage(DashboardService::default())
         .manage(follow_push::FollowPush::default())
+        .manage(UnsavedWork::default())
         .invoke_handler(tauri::generate_handler![
             video::video_settings,
             video::set_video_settings,
@@ -299,6 +339,8 @@ fn main() {
             video::set_map_muted,
             desktop_state,
             playback_pressure_merges,
+            set_unsaved_work,
+            close_discarding_unsaved_work,
             set_map_view,
             select_native_view,
             map_action,
@@ -349,8 +391,13 @@ fn main() {
             app_update::commands::app_update_open_release,
         ])
         .build(context)
-        .expect("Could not initialize the replay desktop");
+        .expect("Couldn’t start BattlePlan");
     app.run(|app, event| match event {
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" && ask_before_close(app) => api.prevent_close(),
         tauri::RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
@@ -432,7 +479,21 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::ExitOrder;
+    use super::{ExitOrder, UnsavedWork};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn unsaved_work_refuses_an_update_until_it_is_saved_or_discarded() {
+        let work = UnsavedWork::default();
+        assert_eq!(work.update_refused(), None, "nothing unsaved lets the update close the app");
+        work.unsaved.store(true, Ordering::Release);
+        assert_eq!(work.update_refused().as_deref(), Some(UnsavedWork::UPDATE_REFUSED));
+        work.discarded.store(true, Ordering::Release);
+        assert_eq!(work.update_refused(), None, "work the user chose to discard no longer holds the update");
+        work.discarded.store(false, Ordering::Release);
+        work.unsaved.store(false, Ordering::Release);
+        assert_eq!(work.update_refused(), None, "saved work no longer holds the update");
+    }
 
     #[test]
     fn a_close_stays_held_when_the_exit_cannot_start_and_the_fallback_ends_the_process() {

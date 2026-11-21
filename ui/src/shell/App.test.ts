@@ -13,7 +13,7 @@ function elements(value: any): Node[] {
 const scenarios = {
   peek: 'sidebar peek occludes both native-map paths until the sidebar is kept open',
   storage: 'page-save warnings survive view changes and reset until saving succeeds',
-  retry: 'Retry map sends each failed map operation again and shows its failure until that operation succeeds',
+  retry: 'Try again on the map sends each failed map operation again and shows its failure until that operation succeeds',
   switch: 'a switch to the map that cannot open its recording keeps the view shown, which offers the whole switch again',
   narrow: 'a window too narrow for the workspace keeps the sidebar at its minimum width, and its chosen width once widened again',
 } as const;
@@ -62,7 +62,7 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
     '/shell/useNativeViewer.ts': `export const useDesktopState = () => ({ state: { ready: true, running: true, viewer: { path: 'synthetic' } }, error: null });
       export const useMapSurface = (...args) => globalThis.__shellFixture.mapSurface(...args);`,
     '/shell/appearance/useAppearance.ts': 'export const useAppearance = () => ({ settings: { backdrop: { kind: "none" }, workspaceBackdrop: { kind: "same" } } });',
-    '/shell/appearance/SidebarIconMenu.tsx': 'export const useSidebarIconMenu = () => ({ menu: null, icon: () => undefined });',
+    '/shell/appearance/SidebarIconMenu.tsx': 'export const useSidebarIconMenu = () => ({ menu: null, icon: () => undefined, custom: () => undefined });',
     '/shell/appearance/WidgetIconMenu.tsx': `export const useWidgetIconMenu = () => ({ icons: null, menu: null });
       export const WidgetIconsContext = { Provider: ({ children }) => children };`,
     '/shell/appearance/Backdrop.tsx': 'export default () => null;',
@@ -106,38 +106,47 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
     assert.equal(mapVisible, true);
     assert.equal(hasMapOverlay(), false);
     if (scenario === 'peek') {
+      const showSidebar = () => nodes!.find(node => node.props['aria-label'] === 'Show sidebar');
+      assert.ok(showSidebar(), 'a hidden sidebar can be shown again without the shortcut');
       find(node => node.props.className === 'sidebar-edge').props.onPointerEnter(); render();
       assert.equal(mapVisible, false, 'standalone native map hides while peeking');
       assert.equal(hasMapOverlay(), true, 'dashboard native-map guard sees peek through the shared menu mechanism');
       find(node => node.props['aria-label'] === 'Keep sidebar open').props.onClick(); render();
       assert.equal(mapVisible, true);
       assert.equal(hasMapOverlay(), false, 'keeping the sidebar open removes its overlay');
+      assert.equal(showSidebar(), undefined);
 
     } else if (scenario === 'retry') {
       const settle = () => new Promise(resolve => setImmediate(resolve));
-      const retry = () => nodes.find(node => node.type === 'button' && [node.props.children].flat().includes('Retry map'));
-      const shown = () => nodes.find(node => node.props.className === 'error-copy')?.props.children;
+      const retry = () => nodes.find(node => node.type === 'button' && [node.props.children].flat().includes('Try again'));
+      const copy = () => nodes.find(node => node.props.className === 'error-copy');
+      const shown = () => copy()?.props.children;
+      const title = () => nodes.find(node => typeof node.props.title === 'string' && node.props.alert)?.props.title;
       fixture.openReplay = () => Promise.reject('Synthetic open refusal');
       dashboard().props.onPrimaryPath('elsewhere'); await settle(); render();
-      assert.equal(shown(), 'Synthetic open refusal');
+      assert.deepEqual([title(), shown(), copy()?.props['data-detail']], ['The map couldn’t open this campaign', 'Couldn’t open the recording.', 'Synthetic open refusal'],
+        'the failure is named by what failed, its raw reason kept as detail');
       assert.equal(mapVisible, false, 'the recovery panel shows instead of the native map');
       dashboard().props.onMapError('seek', 'Synthetic seek refusal'); render();
       const opened: string[] = [];
       fixture.openReplay = async (path: string) => { opened.push(path); };
       retry()!.props.onClick(); render();
-      assert.equal(shown(), 'Synthetic open refusal', 'a failure stays shown while its operation is sent again');
+      assert.equal(shown(), 'Couldn’t open the recording.', 'a failure stays shown while its operation is sent again');
       assert.equal(dashboard().props.mapRetry, 1, 'the dashboard is asked to send its failed commands again');
       await settle(); render();
       assert.deepEqual(opened, ['elsewhere']);
-      assert.equal(shown(), 'Synthetic seek refusal', 'a failed seek is the dashboard\'s to clear once its repeat succeeds');
-      dashboard().props.onMapError('seek', null); render();
+      assert.deepEqual([title(), shown(), copy()?.props['data-detail']], ['The map stopped', 'Couldn’t move the map to this hour.', 'Synthetic seek refusal'],
+        'a failed seek is the dashboard\'s to clear once its repeat succeeds, and a map that had been running says it stopped');
+      dashboard().props.onMapError('seek', null); dashboard().props.onMapError('apply', 'The map stopped: synthetic panic'); render();
+      assert.deepEqual([title(), shown(), copy()?.props['data-detail']], ['The map stopped', 'Couldn’t apply the last map change.', 'The map stopped: synthetic panic'],
+        'a reason that only repeats the title gives way to the action’s own sentence');
+      dashboard().props.onMapError('apply', null); render();
       assert.equal(retry(), undefined);
       assert.equal(mapVisible, true);
     } else if (scenario === 'switch') {
       const settle = () => new Promise(resolve => setImmediate(resolve));
       const shownTab = () => find(node => node.props.className === 'app-shell').props['data-tab'];
-      const failure = () => nodes.find(node => node.type === 'span' && String(node.props.children).includes('could not be shown'))?.props.children;
-      const retry = () => nodes.find(node => node.type === 'button' && [node.props.children].flat().includes('Retry'));
+      const failure = () => nodes.find(node => node.props.className === 'shell-switch-failure')?.props;
       const views: boolean[] = [];
       fixture.selectNativeView = async (dashboard: boolean) => { views.push(dashboard); };
       navigation().props.onChoose(navigation().props.pages[0].id); await settle(); render();
@@ -147,10 +156,10 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       find(node => node.props.id === 'tab-map').props.onClick(); await settle(); render();
       assert.equal(shownTab(), 'analytics');
       assert.deepEqual(views, [true, false, true], 'Analytics, still shown, takes its native view back from the map');
-      assert.equal(failure(), 'The campaign map could not be shown: Synthetic open refusal', 'the view still shown says why');
+      assert.deepEqual([failure()?.message, failure()?.detail], ['Couldn’t show the campaign map.', 'Synthetic open refusal'], 'the view still shown says why, its reason kept as detail');
       const opened: string[] = [];
       fixture.openReplay = async (path: string) => { opened.push(path); };
-      retry()!.props.onClick(); render();
+      failure()!.onRetry(); render();
       assert.ok(failure(), 'the failure stays shown while the switch is made again');
       await settle(); render();
       assert.deepEqual([views.slice(3), opened, shownTab()], [[false], ['elsewhere'], 'map'], 'the whole switch is made again: the map, then its recording');
@@ -173,23 +182,25 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       const notice = warning();
       assert.ok(notice, 'failed saves warn in the active view');
       assert.equal(notice.props.role, 'status');
-      assert.match(notice.props.children, /could not save/);
+      const noticeText = (node: any) => node.props.children[1].props.children;
+      assert.equal(notice.props.children[0].props.name, 'alert', 'the notice leads with the alert icon');
+      assert.match(noticeText(notice), /Couldn’t save your pages/);
       assert.ok(navigation().props.pages.some((entry: any) => entry.id === 'page-added'), 'session changes still apply');
       navigation().props.onPages(navigation().props.pages.map((entry: any) => entry.id === 'page-added' ? { ...entry, label: 'Renamed' } : entry)); render();
-      assert.equal(warning().props.children, notice.props.children, 'failed rename saves also warn');
+      assert.equal(noticeText(warning()), noticeText(notice), 'failed rename saves also warn');
       find(node => node.props.id === 'tab-settings').props.onClick();
       await new Promise(resolve => setImmediate(resolve)); render();
       assert.equal(find(node => node.props.className === 'app-shell').props['data-tab'], 'settings');
       assert.equal(find(node => 'onResetPages' in node.props).props.onResetPages, null);
       await vite.ssrLoadModule('/ui/src/widgets/definitions.ts'); render();
       assert.equal(typeof find(node => 'onResetPages' in node.props).props.onResetPages, 'function', 'an added page differs from the defaults');
-      assert.equal(warning().props.children, notice.props.children, 'changing tabs cannot clear the storage warning');
+      assert.equal(noticeText(warning()), noticeText(notice), 'changing tabs cannot clear the storage warning');
       find(node => 'onResetPages' in node.props).props.onResetPages(); render();
-      assert.equal(warning().props.children, notice.props.children, 'failed reset saves also warn');
+      assert.equal(noticeText(warning()), noticeText(notice), 'failed reset saves also warn');
       assert.equal(find(node => 'onResetPages' in node.props).props.onResetPages, undefined, 'default pages and layouts offer no reset');
-      dashboard().props.onUnsaved(true); render();
+      dashboard().props.onUnsaved(['overview']); render();
       assert.equal(typeof find(node => 'onResetPages' in node.props).props.onResetPages, 'function', 'an unsaved layout edit is not the default');
-      dashboard().props.onUnsaved(false); render();
+      dashboard().props.onUnsaved([]); render();
       find(node => 'onBack' in node.props).props.onBack();
       await new Promise(resolve => setImmediate(resolve)); render();
       assert.ok(warning());

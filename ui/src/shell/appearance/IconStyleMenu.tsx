@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { MenuItem } from '../../components/ContextMenu';
 import { useContextMenu } from '../../components/ContextMenu';
 import { Icon } from '../../components/Icons';
+import { FailureLine } from '../../components/FailureLine';
 import type { IconName } from '../../components/Icons';
 import { ICON_NAMES } from '../../components/iconNames';
 import { Popover, usePopover } from '../../components/Popover';
 import { ColorPicker } from './ColorField';
-import { normalizeColor } from './color';
+import { HEX_HINT, colorInput } from './color';
 import { ICON_IMAGE_TYPES, latestIconImage } from './iconImage';
 import { iconStyleOf, isIconImage, withIconStyle } from './iconStyle';
 import type { IconStyle, IconStyles } from './iconStyle';
@@ -86,10 +87,13 @@ export function useIconStyleMenu<Id extends string>(appearance: Appearance, sour
       ...own.colour ? [{ label: 'Reset icon colour', icon: 'refresh' as const, run: () => change(id, { colour: null }) }] : [],
     ];
   }, [change]);
+  const [invalid, setInvalid] = useState(false);
+  const hintId = useId();
+  useEffect(() => setInvalid(false), [value, editing]);
   const commit = () => {
-    const next = normalizeColor(text);
+    const next = colorInput(text);
+    setInvalid(!next);
     if (next && editing) change(editing.id, { colour: next });
-    else setText(value);
   };
   const upload = async (event: ChangeEvent<HTMLInputElement>) => {
     const input = event.currentTarget;
@@ -101,16 +105,15 @@ export function useIconStyleMenu<Id extends string>(appearance: Appearance, sour
     if (!drawn) return;
     const { image } = drawn;
     if (image) { setRefusal(null); change(id, { icon: image }); }
-    else setRefusal(`“${chosen.name}” could not be read as an image. The icon is unchanged.`);
+    else setRefusal(`“${chosen.name}” couldn’t be read as an image. The icon is unchanged.`);
   };
   const current = editing ? style(editing.id) : {};
   const shown = editing ? current.icon ?? source.defaultIcon(editing.id) : null;
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const matches = ICON_NAMES.filter(name => words.every(word => name.replaceAll('-', ' ').includes(word)));
-  const notice = refusal ?? appearance.notice;
   const heading = (part: Part) => editing && <div className="ui-popover-heading"><strong>{editing.label} icon</strong><div className="ui-popover-actions">
     {current[part] && <button type="button" className="icon-button ui-popover-action" aria-label={part === 'icon' ? 'Reset icon' : 'Reset icon colour'}
-      data-tooltip="Reset to default" onClick={() => change(editing.id, { [part]: null })}><Icon name="refresh" /></button>}
+      data-tooltip={part === 'icon' ? 'Reset icon' : 'Reset icon colour'} onClick={() => change(editing.id, { [part]: null })}><Icon name="refresh" /></button>}
     <button type="button" className="icon-button ui-popover-action" aria-label={part === 'icon' ? 'Close icon picker' : 'Close icon colour picker'} onClick={picker.close}><Icon name="close" /></button>
   </div></div>;
   const menu = <>
@@ -122,7 +125,9 @@ export function useIconStyleMenu<Id extends string>(appearance: Appearance, sour
         {heading('colour')}
         {picker.open && <ColorPicker value={value} onChange={colour => change(editing.id, { colour })} swatches={source.swatches} />}
         <label className="icon-style-hex"><span>Hex</span><input data-popover-autofocus className="color-hex" aria-label="Icon hex value" value={text} spellCheck={false} maxLength={9}
-          onChange={event => setText(event.currentTarget.value)} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } }} /></label>
+          aria-invalid={invalid || undefined} aria-describedby={invalid ? hintId : undefined}
+          onChange={event => { setText(event.currentTarget.value); setInvalid(false); }} onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } }} /></label>
+        {invalid && <div className="icon-style-note" id={hintId}><FailureLine message={HEX_HINT} /></div>}
       </>}
       {editing?.part === 'icon' && <>
         {heading('icon')}
@@ -140,7 +145,8 @@ export function useIconStyleMenu<Id extends string>(appearance: Appearance, sour
           <input ref={file} type="file" hidden accept={ICON_IMAGE_TYPES} onChange={event => void upload(event)} />
         </div>
       </>}
-      {editing && notice && <p className="dash-inline-warning" role="status">{notice}</p>}
+      {editing && refusal && <FailureLine className="icon-style-note" message={refusal} onRetry={() => file.current?.click()} />}
+      {editing && !refusal && appearance.notice && <div className="notice warning icon-style-note" role="status"><Icon name="alert" /><span>{appearance.notice}</span></div>}
     </Popover>
   </>;
   return { style, colour, items, resets, edit, change, open: actions.open, menu };

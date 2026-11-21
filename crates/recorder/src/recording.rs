@@ -2036,7 +2036,7 @@ pub(crate) fn capture(
                 });
             if let Err(withheld) = readable {
                 println!(
-                    "The loaded campaign can't be read on this build ({withheld}); attaching now."
+                    "The loaded campaign can’t be read on this build ({withheld}); connecting now."
                 );
             } else if !wait_for_loaded_campaign(&process, pid, control)? {
                 return Ok(CaptureOutcome {
@@ -2862,7 +2862,7 @@ fn dropped_by_discard(
 fn note_discards(directory: &Path, target: &Path, dropped: &[String]) -> Result<(), String> {
     for campaign in dropped {
         replay_io::note_discard(directory, target, campaign).map_err(|error| {
-            format!("Discard could not be recorded, so nothing was discarded: {error}")
+            format!("The discard couldn’t be recorded, so nothing was discarded: {error}")
         })?;
     }
     Ok(())

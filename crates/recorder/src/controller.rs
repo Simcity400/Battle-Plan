@@ -190,19 +190,19 @@ pub fn probe_withheld(error: &str) -> bool {
 
 pub fn problem_text(error: &str, started: bool) -> &'static str {
     if error.contains("withheld: the game build is unrecognised") {
-        "This game build isn't recognised, so nothing it holds could be checked for recording. Nothing recorded."
+        "This game build isn’t recognised. Nothing it holds could be checked, so nothing was recorded."
     } else if error == COLLECTOR_LOADED || error == GAME_CLAIMED {
-        "Another recorder is attached to this game."
+        "Another recorder is connected to this game. Close the other recorder to record here."
     } else if error.starts_with("recording completion is partial")
         || error.contains("spool retained")
     {
-        "Recording could not be finished. The captured data was kept."
+        "Recording couldn’t be finished. The captured data was kept."
     } else if error.contains("Paradox user folder") || error.contains("Paradox user directory") {
-        "The Paradox user folder was not found. Choose it in Settings."
+        "The Paradox user folder wasn’t found. Choose it in Settings."
     } else if started {
         "Recording stopped because of an error."
     } else {
-        "Recording could not start."
+        "Recording couldn’t start."
     }
 }
 
@@ -278,7 +278,7 @@ mod tests {
         for attached in [COLLECTOR_LOADED, GAME_CLAIMED] {
             assert_eq!(
                 problem_text(attached, false),
-                "Another recorder is attached to this game."
+                "Another recorder is connected to this game. Close the other recorder to record here."
             );
         }
         assert_eq!(
@@ -286,18 +286,18 @@ mod tests {
                 "recording completion is partial: replay finalization failed: synthetic; recoverable spool retained at x",
                 true
             ),
-            "Recording could not be finished. The captured data was kept."
+            "Recording couldn’t be finished. The captured data was kept."
         );
         assert_eq!(
             problem_text(
                 "detach timed out; collector may still be loaded; spool retained and not finalized",
                 true
             ),
-            "Recording could not be finished. The captured data was kept."
+            "Recording couldn’t be finished. The captured data was kept."
         );
         assert_eq!(
             problem_text("game exited before collector became ready", false),
-            "Recording could not start."
+            "Recording couldn’t start."
         );
         assert_eq!(
             problem_text("synthetic failure", true),

@@ -56,9 +56,9 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     assert.match(switchable, /Main history.*Showing/s, 'the history being played says so');
     assert.ok(switchable.includes(`aria-label="Show Left behind ${formatDate(gameDate(branch.firstHour + 24 * 10)!)}"`), 'another history can be played from its row');
     assert.doesNotMatch(markup(two, null), /Showing|aria-label="Show /, 'without a playing campaign there is nothing to switch');
-    assert.match(visible(null), /No recording open/);
+    assert.match(visible(null), /No campaign open/);
     assert.match(visible(null), /Technical overlay/);
-    assert.match(markup(metadata, null), /data-tooltip="GER 1936.battleplan/);
+    assert.match(markup(metadata, null), /data-tooltip="GER 1936\nC:\/recordings"/,'the tooltip names the recording and its folder, without the extension');
   } finally { await vite.close(); }
 });
 

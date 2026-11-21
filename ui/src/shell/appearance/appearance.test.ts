@@ -1,13 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { contrast, normalizeColor, oklchToRgb, parseColor, parseColorAlpha, rgbToOklch, toHex } from './color.ts';
-import { BUILT_IN_THEMES, contrastColors, contrastWarnings, cssVariable, deriveColors, themeRoles } from './themes.ts';
+import { HEX_HINT, colorInput, contrast, mixRgb, normalizeColor, oklchToRgb, parseColor, parseColorAlpha, rgbToOklch, toHex } from './color.ts';
+import { BUILT_IN_THEMES, colorsMode, contrastColors, contrastWarnings, cssVariable, customRoles, deriveColors, reseed, themeRoles } from './themes.ts';
+import type { ThemeColors } from './themes.ts';
 import { MAX_THEME_NAME, parseJsonc, parseThemeText, serializeTheme, uniqueThemeName } from './themeFile.ts';
 import { ICON_IMAGE_SIZE, fitIconImage, latestIconImage } from './iconImage.ts';
 import { iconStyleOf, withIconStyle } from './iconStyle.ts';
+import type { AppearanceSettings } from './settings.ts';
 import { APPEARANCE_KEY, DEFAULT_APPEARANCE, LIMITS, loadAppearance, migrateLegacy, parseAppearance, parseCustomTheme, resolveAppearance, saveAppearance } from './settings.ts';
 
 const hex = /^#[0-9a-f]{6}$/;
+function assertMutedOnFills(colors: ThemeColors, mode: 'dark' | 'light', name: string) {
+  const muted = parseColor(colors.muted)!, text = parseColor(colors.text)!;
+  for (const base of ['canvas', 'chrome', 'surface', 'overlay'] as const) {
+    const hovered = mixRgb(parseColor(colors[base])!, text, mode === 'light' ? 0.05 : 0.06);
+    assert.ok(contrast(muted, hovered) >= 4.5, `${name}: secondary text on a hovered ${base} row`);
+  }
+  assert.ok(contrast(muted, parseColor(colors.raised)!) >= 4.5, `${name}: secondary text on a control`);
+}
 function memoryStorage(entries: Record<string, string> = {}) {
   const values = new Map(Object.entries(entries));
   return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
@@ -23,6 +33,11 @@ test('colours parse from hex and rgb forms and composite translucency', () => {
   assert.equal(parseColor('#12345'), null);
   assert.equal(normalizeColor('#ffffff80', '#000000'), '#808080');
   assert.equal(normalizeColor('  #ABCDEF '), '#abcdef');
+  assert.equal(colorInput(' 346BF1 '), '#346bf1', 'a typed hex colour may leave out the #');
+  assert.equal(colorInput('#abc'), '#aabbcc');
+  for (const typo of ['#346bf', '346bfz', 'blue', '', '#'])
+    assert.equal(colorInput(typo), null, `“${typo}” is refused, so the field keeps it and explains the hex form`);
+  assert.match(HEX_HINT, /^Use a hex colour like #[0-9a-f]{6}\.$/);
 });
 
 test('OKLCH conversion round-trips sRGB colours', () => {
@@ -40,8 +55,24 @@ test('derived palettes are complete and readable for dark and light canvases', (
     for (const role of themeRoles) assert.match(colors[role], hex, role);
     assert.ok(contrast(parseColor(colors.text)!, parseColor(colors.canvas)!) >= 7);
     assert.ok(contrast(parseColor(colors.muted)!, parseColor(colors.surface)!) >= 4.5);
+    assertMutedOnFills(colors, colorsMode(colors), seeds.canvas);
     assert.ok(contrast(parseColor(colors.accentText)!, parseColor(colors.accent)!) >= 3);
   }
+});
+
+test('a base colour left as it was keeps every colour, and a new one keeps colours set by hand', () => {
+  const derived = deriveColors({ canvas: '#0a0f16', accent: '#5cb2ff', glow: '#2fc6c0' });
+  const edited = { ...derived, surface: '#202020', error: '#ff0000' };
+  assert.equal(reseed(edited, 'canvas', '#0a0f16', []), edited, 'an unchanged base colour changes nothing');
+  assert.equal(reseed(edited, 'canvas', '#0A0F16', []), edited, 'the same colour in other letters changes nothing');
+  assert.equal(reseed(edited, 'accent', 'rgb(92, 178, 255)', []), edited);
+  const moved = reseed(edited, 'canvas', '#1a1020', ['surface', 'error']);
+  assert.equal(moved.canvas, '#1a1020');
+  assert.equal(moved.surface, '#202020');
+  assert.equal(moved.error, '#ff0000');
+  assert.equal(moved.chrome, deriveColors({ canvas: '#1a1020', accent: '#5cb2ff', glow: '#2fc6c0' }).chrome);
+  assert.deepEqual(customRoles(derived), []);
+  assert.deepEqual(customRoles(edited).sort(), ['error', 'surface']);
 });
 
 test('every built-in theme variant passes the editor contrast checks', () => {
@@ -49,6 +80,7 @@ test('every built-in theme variant passes the editor contrast checks', () => {
     for (const mode of ['dark', 'light'] as const) {
       const colors = theme.variants[mode]!;
       assert.deepEqual(contrastWarnings(colors), [], `${theme.name} ${mode}`);
+      assertMutedOnFills(colors, mode, `${theme.name} ${mode}`);
     }
   }
   assert.equal(new Set(BUILT_IN_THEMES.map(theme => theme.id)).size, BUILT_IN_THEMES.length);
@@ -78,7 +110,7 @@ test('theme import rejects unreadable files', () => {
   assert.throws(() => parseThemeText('not json'), /valid theme/);
   assert.throws(() => parseThemeText('[]'), /valid theme/);
   assert.throws(() => parseThemeText(JSON.stringify({ name: 'x', canvas: 'blue' })), /no readable/);
-  assert.throws(() => parseThemeText(JSON.stringify({ format: 'other', canvas: '#000' })), /not an Battle Plan theme/);
+  assert.throws(() => parseThemeText(JSON.stringify({ format: 'other', canvas: '#000' })), /isn’t a BattlePlan theme/);
   assert.throws(() => parseThemeText(JSON.stringify({ version: 9, canvas: '#000' })), /version 9/);
   assert.throws(() => parseThemeText('x'.repeat(600 * 1024)), /512 KB/);
 });
@@ -162,6 +194,13 @@ test('contrast only softens text and borders below the unchanged 100% maximum', 
     }
     assert.equal(faded.border, `${colors.border}80`);
     for (const role of ['canvas', 'chrome', 'surface', 'raised', 'overlay', 'accent'] as const) assert.equal(faded[role], colors[role]);
+  }
+  for (const theme of BUILT_IN_THEMES) for (const [mode, colors] of Object.entries(theme.variants)) for (let percent = 50; percent < 100; percent += 5) {
+    const faded = contrastColors(colors, percent);
+    for (const role of ['text', 'muted'] as const) for (const fill of ['canvas', 'chrome', 'surface', 'raised', 'overlay'] as const) {
+      const ratio = contrast(parseColor(faded[role])!, parseColor(colors[fill])!);
+      assert.ok(ratio >= 4.5, `${theme.name} ${mode} at ${percent}%: ${role} on ${fill} is ${ratio.toFixed(2)}:1`);
+    }
   }
 });
 
@@ -248,8 +287,8 @@ test('appearance persists and resolves the system scheme', () => {
   assert.equal(light.mode, 'light');
   assert.equal(light.theme.id, 'field');
   assert.equal(light.reducedMotion, true);
-  assert.equal(loadAppearance(memoryStorage({ [APPEARANCE_KEY]: '{' })).warning?.includes('could not be restored'), true);
-  assert.match(saveAppearance(settings, { getItem: () => null, setItem: () => { throw new Error('full'); } })!, /could not save/);
+  assert.equal(loadAppearance(memoryStorage({ [APPEARANCE_KEY]: '{' })).warning?.includes('couldn’t be restored'), true);
+  assert.match(saveAppearance(settings, { getItem: () => null, setItem: () => { throw new Error('full'); } })!, /couldn’t save/);
 });
 
 test('HSV conversion round-trips for the colour picker', async () => {
@@ -350,4 +389,139 @@ test('of overlapping uploads and choices for an icon, only the newest lands, whi
   choices.set('folders', 1);
   d.finish(0, null);
   assert.deepEqual(await kept, { image: null }, 'an unreadable file still reports its refusal when nothing newer came');
+});
+
+test('Save theme keeps the editor and its draft when this device can’t store the theme, and saves it on the next try', async () => {
+  const { createServer } = await import('vite');
+  type Tree = { props?: Record<string, any> };
+  const nodes = (value: any): Tree[] => Array.isArray(value) ? value.flatMap(nodes)
+    : value && typeof value === 'object' && 'props' in value ? [value, ...nodes(value.props.children)] : [];
+  const hooks = { useState: (initial: unknown) => [typeof initial === 'function' ? initial() : initial, () => {}], useRef: (current: unknown) => ({ current }),
+    useCallback: (callback: unknown) => callback, useEffect() {}, useLayoutEffect() {}, useMemo: (make: () => unknown) => make() };
+  const host = globalThis as typeof globalThis & { __settingsHooks?: typeof hooks; requestAnimationFrame?: unknown };
+  host.__settingsHooks = hooks;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'settings-save-fixture', enforce: 'pre', transform(source, id) {
+      const name = id.replaceAll('\\', '/');
+      if (name.endsWith('/shell/Settings.tsx')) return source.replace(/import \{[^\n]+\} from 'react';/, 'const { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } = globalThis.__settingsHooks;');
+      if (name.endsWith('/shell/appearance/ThemeEditor.tsx')) return `export default function ThemeEditor() { return null; }
+        export const draftChanged = () => false; export const discardDraft = () => ({}); export const useConfirmPopover = () => ({ ask() {}, element: null });`;
+    } }] });
+  const frame = host.requestAnimationFrame;
+  host.requestAnimationFrame = () => 0;
+  try {
+    const { default: Settings } = await vite.ssrLoadModule('/ui/src/shell/Settings.tsx') as typeof import('../Settings');
+    let stored = false, settings: AppearanceSettings = structuredClone(DEFAULT_APPEARANCE);
+    const changes: unknown[] = [];
+    const appearance = { settings, resolved: resolveAppearance(settings, true, false), setPreview() {},
+      update(change: (previous: typeof settings) => typeof settings) { settings = change(settings); },
+      commit(change: (previous: typeof settings) => typeof settings) {
+        if (!stored) return 'Appearance is applied for this session. This device couldn’t save it.';
+        settings = change(settings); return null;
+      } };
+    const draft = { id: null, name: 'Dusk', mode: 'dark' as const, variants: { dark: deriveColors({ canvas: '#14121b', accent: '#f2a65a' }) } };
+    const editing = { draft, original: draft, session: 1 };
+    const editor = () => nodes(Settings({ section: 'appearance', target: null, onTargetShown() {}, folders: null, folderError: null, onFoldersChange() {}, native: null, metadata: null,
+      branch: null, library: {} as never, client: {} as never, appearance: appearance as never, themeEditing: editing, onThemeEditing: (change: unknown) => { changes.push(change); } } as never))
+      .find(node => typeof node.props?.onSave === 'function')!.props!;
+    const failed = editor().onSave(draft);
+    assert.deepEqual(failed, { text: 'Couldn’t save the theme on this device.', retry: true }, 'the editor is told the write failed, and that trying again can help');
+    assert.deepEqual(changes, [], 'the editor stays open with its draft, so closing BattlePlan still asks about it');
+    assert.equal(settings.custom.length, 0, 'a theme the device didn’t keep isn’t listed as saved');
+    stored = true;
+    assert.equal(editor().onSave(draft), null);
+    assert.deepEqual(changes, [null], 'a stored theme closes the editor');
+    assert.deepEqual(settings.custom.map(theme => theme.name), ['Dusk']);
+    assert.equal(settings.themes.dark, settings.custom[0].id);
+  } finally { host.requestAnimationFrame = frame; delete host.__settingsHooks; await vite.close(); }
+});
+
+test('an imported theme is announced only once this device stores it with its selection, and the import stays open to try again', async () => {
+  const { createServer } = await import('vite');
+  type Tree = { props?: Record<string, any> };
+  const nodes = (value: any): Tree[] => Array.isArray(value) ? value.flatMap(nodes)
+    : value && typeof value === 'object' && 'props' in value ? [value, ...nodes(value.props.children), ...nodes(value.props.actions)] : [];
+  const announced: unknown[] = [];
+  const hooks = { useState: (initial: unknown) => [typeof initial === 'function' ? initial() : initial, (next: unknown) => { announced.push(next); }],
+    useRef: (current: unknown) => ({ current }), useId: () => 'id', useEffect() {}, useLayoutEffect() {} };
+  const host = globalThis as typeof globalThis & { __appearanceHooks?: typeof hooks };
+  host.__appearanceHooks = hooks;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'appearance-import-fixture', enforce: 'pre', transform(source, id) {
+      if (id.replaceAll('\\', '/').endsWith('/shell/appearance/AppearanceSettings.tsx'))
+        return source.replace(/import \{[^\n]+\} from 'react';/, 'const { useEffect, useId, useLayoutEffect, useRef, useState } = globalThis.__appearanceHooks;');
+    } }] });
+  try {
+    const { default: AppearanceSettings } = await vite.ssrLoadModule('/ui/src/shell/appearance/AppearanceSettings.tsx') as typeof import('./AppearanceSettings');
+    let stored = false, settings: AppearanceSettings = structuredClone(DEFAULT_APPEARANCE);
+    const appearance = { resolved: resolveAppearance(settings, true, false), notice: null,
+      get settings() { return settings; },
+      update(change: (previous: AppearanceSettings) => AppearanceSettings) { settings = change(settings); },
+      commit(change: (previous: AppearanceSettings) => AppearanceSettings) {
+        if (!stored) return 'Appearance is applied for this session. This device couldn’t save it.';
+        settings = change(settings); return null;
+      } };
+    const importer = () => nodes(AppearanceSettings({ appearance: appearance as never, onEdit() {} }))
+      .find(node => typeof node.props?.onImport === 'function')!.props!.onImport as (text: string) => unknown;
+    const text = JSON.stringify({ name: 'Dusk', appearance: 'dark', canvas: '#14121b', accent: '#f2a65a' });
+    assert.deepEqual(importer()(text), { text: 'Couldn’t save the imported theme on this device.', retry: true },
+      'the import is told the write failed, so it keeps the pasted theme and offers Try again');
+    assert.equal(settings.custom.length, 0, 'a theme the device didn’t keep isn’t listed');
+    assert.equal(settings.themes.dark, DEFAULT_APPEARANCE.themes.dark, 'nor is it in use for the session only');
+    assert.ok(!announced.some(value => JSON.stringify(value ?? null).includes('Imported')), 'nothing announces the import');
+    stored = true;
+    assert.equal(importer()(text), null);
+    assert.deepEqual(settings.custom.map(theme => theme.name), ['Dusk']);
+    assert.equal(settings.themes.dark, settings.custom[0].id, 'the theme and its selection are stored together');
+    assert.ok(announced.some(value => JSON.stringify(value ?? null).includes('Imported “Dusk”.')));
+  } finally { delete host.__appearanceHooks; await vite.close(); }
+});
+
+test('Save theme with a colour typed in a form it can’t read keeps the editor open and takes the user to that field', async () => {
+  const { createServer } = await import('vite');
+  type Tree = { type?: unknown; props?: Record<string, any> };
+  const nodes = (value: any): Tree[] => Array.isArray(value) ? value.flatMap(nodes)
+    : value && typeof value === 'object' && 'props' in value ? [value, ...nodes(value.props.children)] : [];
+  const slots: unknown[] = [];
+  let cursor = 0;
+  const hooks = {
+    useState(initial: unknown) {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
+      return [slots[index], (next: unknown) => { slots[index] = typeof next === 'function' ? next(slots[index]) : next; }];
+    },
+    useRef: (current: unknown) => { const index = cursor++; return (slots[index] ??= { current }); },
+    useEffect() { cursor++; }, useMemo: (make: () => unknown) => { cursor++; return make(); },
+  };
+  const host = globalThis as typeof globalThis & { __editorHooks?: typeof hooks };
+  const page = globalThis as { document?: unknown };
+  host.__editorHooks = hooks;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'theme-editor-fixture', enforce: 'pre', transform(source, id) {
+      const name = id.replaceAll('\\', '/');
+      if (name.endsWith('/shell/appearance/ThemeEditor.tsx')) return source.replace(/import \{[^\n]+\} from 'react';/, 'const { useEffect, useMemo, useRef, useState } = globalThis.__editorHooks;');
+      if (name.endsWith('/components/Popover.tsx')) return 'export const usePopover = () => ({ openAt() {}, close() {} }); export const Popover = () => null;';
+    } }] });
+  const focused: string[] = [];
+  const frame = host.requestAnimationFrame;
+  host.requestAnimationFrame = (run: FrameRequestCallback) => { run(0); return 0; };
+  page.document = { getElementById: (id: string) => ({ focus: () => focused.push(id) }) };
+  try {
+    const { default: ThemeEditor } = await vite.ssrLoadModule('/ui/src/shell/appearance/ThemeEditor.tsx') as typeof import('./ThemeEditor');
+    const draft = { id: null, name: 'Dusk', mode: 'dark' as const, variants: { dark: deriveColors({ canvas: '#14121b', accent: '#f2a65a' }) } };
+    const saves: unknown[] = [];
+    const render = () => { cursor = 0; return nodes(ThemeEditor({ draft, original: draft, onDraft() {}, onSave: attempt => { saves.push(attempt); return null; }, onClose() {}, onPreview() {},
+      focusName: false, onFocused() {}, escape: { current: null } })); };
+    const field = (label: string) => render().find(node => node.props?.label === label)!.props!;
+    const save = () => render().find(node => node.type === 'button' && [node.props?.children].flat().includes('Save theme'))!.props!.onClick();
+    assert.equal(field('Canvas').fieldId, 'theme-colour-canvas');
+    field('Canvas').onTyped('#14121');
+    assert.equal(field('Canvas').typed, '#14121', 'the field keeps what was typed');
+    save();
+    assert.deepEqual(saves, [], 'the theme isn’t saved with the colour from before the typing');
+    assert.deepEqual(focused, ['theme-colour-canvas'], 'the field that needs correcting takes focus');
+    field('Canvas').onTyped(null);
+    save();
+    assert.equal(saves.length, 1, 'once corrected, the theme saves');
+  } finally { host.requestAnimationFrame = frame; delete page.document; delete host.__editorHooks; await vite.close(); }
 });

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
+import { askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, panelStage, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
   settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
-const PATH = `C:\\Users\\Example\\Battle Plan\\${CAMPAIGN}.battleplan`;
+const PATH = `C:\\Users\\Example\\BattlePlan\\${CAMPAIGN}.battleplan`;
 const hour = (year: number, month: number, day: number) => engineHour({ year, month, day, hour: 1 })!;
 const MB = 2 ** 20;
 
@@ -19,7 +19,7 @@ const recording = (change: Partial<Snapshot> = {}) => snapshot({ phase: 'recordi
 
 test('every panel state reads as the approved design', () => {
   assert.deepEqual(head(snapshot({})), { glyph: true, flag: null, title: 'Waiting for the game', dot: null, label: null,
-    detail: 'Records when you load a campaign', action: null, campaign: false });
+    detail: 'Records when you load a campaign.', action: null, campaign: false });
   assert.deepEqual(head(recording()), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'red', label: 'Recording',
     detail: '12 Jun 1943', sizes: '1.2 GB this session · 214 MB saved', action: 'stop', campaign: true });
   assert.deepEqual(head(recording({ phase: 'notRecording', hour: hour(1938, 2, 3), spoolBytes: null })), { glyph: false, flag: null,
@@ -31,7 +31,25 @@ test('every panel state reads as the approved design', () => {
   assert.deepEqual(head(recording({ phase: 'discarded' })), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'grey', label: null,
     detail: 'Session discarded', action: 'record', campaign: false });
   assert.deepEqual(head(recording({ phase: 'unsaved', recording: null, continued: false, savedBytes: null })), { glyph: false, flag: null,
-    title: 'Germany 1936–1943', dot: 'grey', label: 'Not saved yet', detail: '12 Jun 1943', sizes: '1.2 GB this session', action: 'recordings', campaign: false });
+    title: 'Germany 1936–1943', dot: 'grey', label: 'Not saved yet', detail: '12 Jun 1943', sizes: '1.2 GB this session', action: null, campaign: false });
+});
+
+test('a problem with no campaign to name becomes the status under a short headline, and the usual status returns once it clears', () => {
+  const problem = { text: 'Another recorder is connected to this game. Close the other recorder to record here.', detail: 'claimed', failed: true };
+  const next = { ...problem, text: 'Close the other recorder to record here.' };
+  assert.deepEqual(head(snapshot({ problem })), { glyph: true, flag: null, title: 'Another recorder is connected to this game', dot: null, label: null, detail: null,
+    action: null, campaign: false, problem: next });
+  assert.deepEqual(head(snapshot({ phase: 'notRecording', problem })), { glyph: true, flag: null, title: 'Another recorder is connected to this game', dot: null,
+    label: null, detail: null, action: 'record', campaign: false, problem: next });
+  const caveat = { text: '2 hours couldn’t be recorded.', detail: '', failed: false };
+  assert.equal(head(snapshot({ problem: caveat })).title, 'Waiting for the game', 'only a caveat keeps the idle headline');
+  assert.equal(head(snapshot({ phase: 'notRecording', problem: caveat })).title, 'Couldn’t connect to the game');
+  assert.equal(head(snapshot({ problem: null })).title, 'Waiting for the game');
+  for (const phase of ['notRecording', 'recording', 'saving', 'saved'] as const) {
+    const named = head(recording({ phase, problem }));
+    assert.equal(named.title, 'Germany 1936–1943', phase);
+    assert.equal(named.problem, undefined, phase);
+  }
 });
 
 test('a recording is named by its file, or the name its file will get, or a placeholder until known, never by its campaign id', () => {
@@ -39,10 +57,14 @@ test('a recording is named by its file, or the name its file will get, or a plac
   assert.equal(recordingName(null), 'New recording');
   assert.equal(head(recording({ recording: null, continued: false, savedBytes: null })).title, 'Germany 1936–1943');
   assert.equal(head(recording({ recording: null, continued: false, savedBytes: null })).sizes, '1.2 GB this session');
-  assert.equal(stopQuestion('Germany 1936–1943', 0, (2 * 60 + 14) * 60_000), 'Keep this session\'s 2 h 14 min of Germany 1936–1943?');
-  assert.equal(stopQuestion(null, 0, 5 * 60_000), 'Keep this session\'s 5 min?');
+  assert.equal(stopQuestion('Germany 1936–1943', 0, (2 * 60 + 14) * 60_000), 'Save this session of Germany 1936–1943 (2 h 14 min)?');
+  assert.equal(stopQuestion(null, 0, 5 * 60_000), 'Save this session (5 min)?');
+  assert.equal(askQuestion(false, false, '2 h 14 min'), 'Save this session (2 h 14 min)?');
+  assert.equal(askQuestion(true, false, '2 h 14 min'), 'Save this session (2 h 14 min) before quitting?');
+  assert.equal(askQuestion(false, true, '2 h 14 min'), 'Discard this session (2 h 14 min)?');
+  assert.equal(askQuestion(true, true, '2 h 14 min'), 'Discard this session (2 h 14 min) and quit?');
   assert.equal(promptTitle(false, false), 'Stop recording?');
-  assert.equal(promptTitle(true, false), 'Quit Battle Plan Recorder?');
+  assert.equal(promptTitle(true, false), 'Quit BattlePlan Recorder?');
   assert.equal(promptTitle(false, true), 'Discard this session?');
   assert.equal(promptTitle(true, true), 'Discard and quit?');
 });
@@ -64,15 +86,15 @@ test('sizes say whether they are this session\'s or saved, and the spool total n
 test('loads a session left out are said in one plain line, in place of the usual status text', () => {
   const saved = recording({ phase: 'saved', firstHour: hour(1936, 1, 1), savedBytes: 412 * MB, spoolBytes: null });
   assert.deepEqual(head({ ...saved, omitted: { loads: 1, reason: 'off' } }), { glyph: false, flag: null, title: 'Germany 1936–1943',
-    dot: 'green', label: 'Saved', detail: '1 load not recorded (Record automatically was off)', action: 'open', campaign: false });
+    dot: 'green', label: 'Saved', detail: '1 load not recorded (Auto record was off)', action: 'open', campaign: false });
   assert.equal(head({ ...saved, omitted: { loads: 2, reason: 'elsewhere' } }).detail, '2 loads not recorded (they belong in another file)');
   assert.equal(head({ ...saved, omitted: { loads: 1, reason: 'notAdmitted' } }).detail, '1 load not recorded (it was not identified)');
-  assert.equal(head({ ...saved, omitted: { loads: 1, reason: 'settings' } }).detail, "1 load not recorded (the recorder's settings couldn't be read)");
+  assert.equal(head({ ...saved, omitted: { loads: 1, reason: 'settings' } }).detail, '1 load not recorded (the recorder’s settings couldn’t be read)');
   assert.equal(head({ ...saved, omitted: { loads: 3, reason: null } }).detail, '3 loads not recorded');
   assert.equal(head(recording({ phase: 'notRecording', omitted: { loads: 1, reason: 'off' } })).detail,
-    '1 load not recorded (Record automatically was off)');
+    '1 load not recorded (Auto record was off)');
   assert.equal(head(snapshot({ phase: 'notRecording', omitted: { loads: 1, reason: 'off' } })).detail,
-    '1 load not recorded (Record automatically was off)');
+    '1 load not recorded (Auto record was off)');
   assert.equal(head({ ...saved, omitted: null }).detail, '1936 – Jun 1943 · 412 MB');
 });
 
@@ -92,7 +114,7 @@ test('unknown parts are left out rather than guessed', () => {
   assert.equal(head(recording({ phase: 'saving', progress: null })).bar, null);
   assert.deepEqual(head(snapshot({ phase: 'notRecording' })), { glyph: true, flag: null, title: 'Not recording', dot: null, label: null,
     detail: null, action: 'record', campaign: false });
-  assert.equal(head(snapshot({ automatic: false })).detail, 'Auto record is off');
+  assert.equal(head(snapshot({ automatic: false })).detail, 'Auto record is off.');
   assert.equal(head(recording({ stopping: true })).action, null);
   assert.equal(spanText(null, hour(1943, 6, 12)), '12 Jun 1943');
   assert.equal(spanText(null, null), null);
@@ -110,17 +132,23 @@ test('the Stop prompt asks about this session and says what Discard deletes', ()
   assert.equal(untilNextMinute(started, started + 3 * 3_600_000), 60_000);
   assert.equal(untilNextMinute(null, started), 60_000);
   assert.equal(discardConsequence(true), 'The earlier recording in this file is kept.');
-  assert.equal(discardConsequence(false), "This can't be undone.");
-  assert.equal(discardDetail('Germany 1936–1943', started, now, true),
-    "Deletes this session's 2 h 14 min of Germany 1936–1943. The earlier recording in this file is kept.");
-  assert.equal(discardDetail(null, started, now, false), "Deletes this session's 2 h 14 min. This can't be undone.");
-  assert.equal(waitingDiscardQuestion(true), 'Discard these hours? The earlier recording in this file is kept.');
-  assert.equal(waitingDiscardQuestion(false), "Discard this recording? This can't be undone.");
+  assert.equal(discardConsequence(false), 'This can’t be undone.');
+  assert.equal(discardDetail('Germany 1936–1943', started, now), 'Deletes this session’s 2 h 14 min of Germany 1936–1943.');
+  assert.equal(discardDetail(null, started, now), 'Deletes this session’s 2 h 14 min.');
+  assert.equal(waitingDiscardQuestion(true), 'Discard these hours?');
+  assert.equal(waitingDiscardQuestion(false), 'Discard this recording?');
   assert.equal(stopPromptVisible(true, recording()), true);
   assert.equal(stopPromptVisible(false, recording()), false);
   assert.equal(stopPromptVisible(true, recording({ stopping: true })), false);
   assert.equal(stopPromptVisible(true, recording({ phase: 'saving' })), false);
   assert.equal(stopPromptVisible(true, recording({ phase: 'notRecording' })), false);
+});
+
+test('every window, the compact stop prompt included, shows the connecting state until it knows the status and its kind', () => {
+  for (const compact of [true, false, null]) assert.equal(panelStage(null, compact), 'pending', String(compact));
+  assert.equal(panelStage(recording(), null), 'pending');
+  assert.equal(panelStage(recording(), true), 'panel');
+  assert.equal(panelStage(recording(), false), 'panel');
 });
 
 test('campaign choices follow the global default until set', () => {

@@ -319,7 +319,7 @@ pub fn set_video_settings(
     let status = host.status();
     if status.running && !status.ready {
         return Err(
-            "Wait for the native map to finish starting before changing display settings".into(),
+            "Wait for the map to start before changing display settings".into(),
         );
     }
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;

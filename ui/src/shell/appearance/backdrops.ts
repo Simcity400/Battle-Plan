@@ -51,11 +51,11 @@ function encode(bitmap: ImageBitmap, edge: number, quality: number): { url: stri
 }
 
 export async function importBackdrop(file: File): Promise<BackdropImage> {
-  if (!file.type.startsWith('image/')) throw new Error('Choose an image file (PNG, JPEG, WebP, GIF or BMP).');
+  if (!file.type.startsWith('image/')) throw new Error('Choose a PNG, JPEG, WebP, GIF or BMP image.');
   if (file.size > MAX_INPUT_BYTES) throw new Error('Choose an image smaller than 40 MB.');
   if ((await listBackdrops()).length >= MAX_BACKDROPS) throw new Error(`You can keep up to ${MAX_BACKDROPS} backgrounds. Remove one first.`);
   let bitmap: ImageBitmap;
-  try { bitmap = await createImageBitmap(file); } catch { throw new Error('This image could not be read.'); }
+  try { bitmap = await createImageBitmap(file); } catch { throw new Error('This image couldn’t be read.'); }
   try {
     const full = encode(bitmap, MAX_EDGE, 0.86);
     const thumb = encode(bitmap, THUMB_EDGE, 0.8);

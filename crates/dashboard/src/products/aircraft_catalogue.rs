@@ -508,12 +508,27 @@ fn refusal_label(kind: AircraftRefusalKind) -> &'static str {
     kind.label()
 }
 
+fn readable_name(name: &str) -> String {
+    let mut base = name;
+    while let Some(len) = ["_entity", "-entity", "_mesh", "-mesh"]
+        .iter()
+        .find(|suffix| base.to_ascii_lowercase().ends_with(*suffix))
+        .map(|suffix| base.len() - suffix.len())
+    {
+        base = &base[..len];
+    }
+    base.split(|c: char| matches!(c, '_' | '-' | '.') || c.is_whitespace())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn search_text(entry: &AircraftEntry) -> String {
     let mut text = entry.name.clone();
-    for title in &entry.titles {
-        text.push('\n');
-        text.push_str(title);
-    }
+    text.push('\n');
+    text.push_str(&readable_name(&entry.name));
+    text.push('\n');
+    text.push_str(&entry.titles.join(" / "));
     for reference in &entry.references {
         let parts: &[&str] = match reference {
             AircraftReference::Pool {

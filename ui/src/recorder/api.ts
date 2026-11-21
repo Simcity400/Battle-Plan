@@ -29,7 +29,7 @@ export const setCampaignChoice = (campaign: string, choice: { record?: boolean; 
 export const chooseSaveFolder = () => invoke<RecorderSettings | null>('choose_save_folder');
 export const setUserFolder = (choose: boolean) => invoke<RecorderSettings | null>('set_user_folder', { choose });
 export const openRecordingsFolder = () => invoke<void>('open_recordings_folder');
-export const openDetails = () => invoke<void>('open_details');
+export const showSessionFiles = () => invoke<void>('show_session_files');
 export const openReplay = (path: string | null) => invoke<void>('open_replay', { path });
 export const recordings = (view: RecordingsView) => invoke<Recordings>('recordings', { ...view });
 export const actOnWaiting = (session: string, campaign: string, discard: boolean) => invoke<string | null>('act_on_waiting', { session, campaign, discard });

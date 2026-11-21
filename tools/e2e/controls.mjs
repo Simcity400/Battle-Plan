@@ -23,9 +23,9 @@ export const CASES = [
   } },
   { id: 'header/play-pause', page: 'Overview', async run(s) {
     const was = (await s.timeline()).value;
-    await press(s, this.id, 'play', LABELLED('Play recording'), `document.querySelector('button[aria-label="Pause playback"]')`);
+    await press(s, this.id, 'play', 'button.header-play[aria-label="Play"]', `document.querySelector('button.header-play[aria-label="Pause"]')`);
     await s.until(`${Session.CLOCK_HOUR} > ${was}`, 4000);
-    await press(s, this.id, 'pause', LABELLED('Pause playback'), `document.querySelector('button[aria-label="Play recording"]')`);
+    await press(s, this.id, 'pause', 'button.header-play[aria-label="Pause"]', `document.querySelector('button.header-play[aria-label="Play"]')`);
   } },
   { id: 'header/speed-menu', page: 'Overview', async run(s) {
     const was = await s.app.evaluate(`document.querySelector('.header-speed').getAttribute('aria-label')`);
@@ -59,11 +59,10 @@ export const CASES = [
     const shownMonth = await s.app.evaluate(month);
     await press(s, this.id, 'previous month', arrow('Previous month'), `${month} !== ${JSON.stringify(shownMonth)}`);
     await press(s, this.id, 'choose the 15th', '.date-time-popover:popover-open .calendar-day[data-day="15"]', `document.querySelector('.header-date.has-date-draft')`);
-    await s.escape();
-    await press(s, this.id, 'go', '.header-date button.button.primary', `!document.querySelector('.header-date.has-date-draft') && ${shown} !== ${JSON.stringify(before)}`, { timeout: 10_000 });
+    await press(s, this.id, 'go', '.date-time-popover:popover-open .calendar-footer button.button.primary', `!document.querySelector('.header-date.has-date-draft') && ${shown} !== ${JSON.stringify(before)}`, { timeout: 10_000 });
   } },
   { id: 'header/country-picker', page: 'Overview', async run(s) {
-    const trigger = '.header-workspace-bar button[aria-label="Choose country"]';
+    const trigger = '.header-workspace-bar button[aria-label^="Choose country"]';
     const was = await s.app.evaluate(`document.querySelector(${JSON.stringify(trigger)})?.textContent.trim() ?? null`);
     if (was === null) throw new Error('no country picker');
     const listed = `Number(document.querySelector('.country-picker:popover-open [role=option]')?.getAttribute('aria-setsize') ?? 0)`;
@@ -102,11 +101,11 @@ export const CASES = [
     await s.escape();
   } },
   { id: 'header/saved-layout', page: 'Overview', async run(s) {
-    await press(s, this.id, 'open', '.header-layout .select-trigger', OPEN_POPOVER('.select-menu'));
-    await s.step('controls', this.id, 'close', () => s.escape(), { done: CLOSED_POPOVER('.select-menu') });
+    await press(s, this.id, 'open', '.header-layout-trigger', OPEN_POPOVER('.header-layout-menu'));
+    await s.step('controls', this.id, 'close', () => s.escape(), { done: CLOSED_POPOVER('.header-layout-menu') });
   } },
   { id: 'header/edit-catalogue-cancel', page: 'Overview', async run(s) {
-    await press(s, this.id, 'edit', LABELLED('Edit layout'), `document.querySelector('button[aria-label="Done arranging"]')`);
+    await press(s, this.id, 'edit', LABELLED('Edit layout'), `document.querySelector('button[aria-label="Done editing"]')`);
     await press(s, this.id, 'open catalogue', LABELLED('Add widget'), OPEN_POPOVER('.widget-catalogue'));
     const cards = `document.querySelectorAll('.widget-catalogue:popover-open .widget-card').length`;
     const every = await s.app.evaluate(cards);
@@ -114,7 +113,7 @@ export const CASES = [
     await s.step('controls', this.id, 'search catalogue', () => s.type('map'),
       { done: `(${cards}) > 0 && (${cards}) < ${every} && [...document.querySelectorAll('.widget-catalogue:popover-open .widget-card')].some(c => /map/i.test(c.textContent))` });
     await press(s, this.id, 'close catalogue', LABELLED('Close widget catalogue'), CLOSED_POPOVER('.widget-catalogue'));
-    await press(s, this.id, 'cancel', LABELLED('Cancel layout changes'), `document.querySelector('button[aria-label="Edit layout"]')`);
+    await press(s, this.id, 'cancel', LABELLED('Discard layout changes'), `document.querySelector('button[aria-label="Edit layout"]')`);
   } },
   { id: 'timeline/drag', page: 'Overview', async run(s) {
     const line = await s.timeline();
@@ -129,7 +128,7 @@ export const CASES = [
     }
   } },
   { id: 'layout/drag-resize', page: 'Overview', async run(s) {
-    await press(s, this.id, 'edit', LABELLED('Edit layout'), `document.querySelector('button[aria-label="Done arranging"]')`);
+    await press(s, this.id, 'edit', LABELLED('Edit layout'), `document.querySelector('button[aria-label="Done editing"]')`);
     await s.app.evaluate(`document.querySelector('.dash-grid-scroll').scrollTo({ top: 0 })`);
     await s.frames(2);
     const grip = await s.need('.dash-drag-grip', { index: 1 });
@@ -158,14 +157,13 @@ export const CASES = [
     await s.app.evaluate(`document.querySelector('.layout-save-menu:popover-open input[aria-label="Layout name"]').select()`);
     await s.type(name);
     await press(s, this.id, 'save as new', '.layout-save-menu:popover-open .layout-save-actions button.primary',
-      `document.querySelector('button[aria-label="Edit layout"]') && document.querySelector('.header-layout .select-trigger')?.textContent.trim() === ${JSON.stringify(name)}`);
+      `document.querySelector('button[aria-label="Edit layout"]') && document.querySelector('.header-layout-trigger .header-layout-name')?.textContent.trim() === ${JSON.stringify(name)}`);
     for (const [label, index] of [['switch to first layout', 0], ['switch to saved layout', -1]]) {
-      await press(s, this.id, `${label}: open`, '.header-layout .select-trigger', OPEN_POPOVER('.select-menu'));
-      const options = await s.app.evaluate(`Number(document.querySelector('.select-menu:popover-open [role=option]')?.getAttribute('aria-setsize') ?? 0)`);
+      await press(s, this.id, `${label}: open`, '.header-layout-trigger', OPEN_POPOVER('.header-layout-menu'));
+      const options = await s.app.evaluate(`document.querySelectorAll('.header-layout-menu:popover-open .header-layout-list [role=menuitemradio]').length`);
       if (options < 2) throw new Error(`saving as new left ${options} layouts`);
-      const at = index < 0 ? options - 1 : index;
-      if (!await s.app.evaluate(`__e2e.revealOption(${at})`)) throw new Error(`layout ${at + 1} of ${options} never showed in the list`);
-      await press(s, this.id, label, option(at), CLOSED_POPOVER('.select-menu'), { timeout: 8000 });
+      const at = index < 0 ? options : index + 1;
+      await press(s, this.id, label, `.header-layout-menu:popover-open .header-layout-list [role=menuitemradio]:nth-child(${at})`, CLOSED_POPOVER('.header-layout-menu'), { timeout: 8000 });
     }
   } },
   { id: 'widget/settings', page: '*', run: settingsSweep },
@@ -203,8 +201,7 @@ const CONTROL = {
   range: IN_MENU('input[type=range]'),
   check: IN_MENU('input[type=checkbox]:not([role=switch])'),
 };
-const DRAFT = `document.querySelector('.map-appearance-actions')`;
-const APPLY = IN_MENU('.map-appearance-actions button.button:not(.quiet)');
+const SAVING = `document.querySelector('.map-appearance[data-saving]')`;
 const MAP_EXPECTED = `[...document.querySelectorAll(${JSON.stringify(IN_MENU('[data-map-setting]'))})]
   .map(e => [e.getAttribute('data-map-setting'), e.getAttribute('data-map-value')]).filter(([setting, value]) => value !== 'null' || setting.startsWith('graphics.'))`;
 const shown = (selector, index) => `[...document.querySelectorAll(${JSON.stringify(selector)})].filter(e => e.getClientRects().length)[${index}]`;
@@ -254,7 +251,7 @@ const discover = s => s.app.evaluate(`(() => {
       ...(kind === 'check' ? { state: e.checked } : {}), ...(kind === 'country' ? { trigger: e.getAttribute('aria-label') } : {}) }));
   const handled = 'input[role=switch], input[type=range], .segmented button, .select-trigger, .option-number input[type=number], label.field input:not([type]), '
     + '.content-set-picker > button[aria-haspopup=dialog], .chip-set button.chip, [aria-label="Widget size"] button';
-  const frame = '.ui-popover-heading, summary, .map-option-inherit, .map-appearance-actions, .select-menu, .content-picker, .country-picker, .campaign-picker, .date-time-popover';
+  const frame = '.ui-popover-heading, summary, .map-option-inherit, .select-menu, .content-picker, .country-picker, .campaign-picker, .date-time-popover';
   all('button, input, select, textarea, [role=switch], [tabindex="0"]').filter(e => !e.matches(handled) && !claimed.has(e) && !e.closest(frame) && !e.matches('.folder-info'))
     .forEach(e => out.push({ kind: 'unsupported', label: label(e), what: e.tagName.toLowerCase() + (typeof e.className === 'string' && e.className ? '.' + e.className.split(' ')[0] : '') }));
   const seen = new Map();
@@ -376,7 +373,7 @@ async function putBack(s, target, current) {
     for (let step = 0; step < Math.abs(target.state - current.state); step++) await s.key(key);
   }
   await s.frames(2);
-  if (target.draft && await s.holds(DRAFT)) { await s.click(APPLY); await s.until(`!${DRAFT}`, 8000); }
+  if (target.draft) await s.until(`!${SAVING}`, 8000);
 }
 
 const widgetAt = key => `article.dash-widget[data-widget=${JSON.stringify(key)}]`;
@@ -437,12 +434,10 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
       else await s.fail('controls', 'widget/settings', `${label}: drawn`, 'its menu closed by itself, so the map could not be timed from its dismissal');
       return result;
     }
-    const drafted = await step(`${label}: draft`, action, { ...options, done: options.done ? `(${options.done}) && ${DRAFT}` : DRAFT });
-    if (!drafted.pass && drafted.reasons.some(reason => reason.startsWith('could not act') || reason.startsWith('never finished'))) return drafted;
-    await reopen(s, widget);
-    const saved = await step(`${label}: apply`, () => s.click(APPLY), { check: options.check, done: `!${DRAFT}`, timeout: 8000, control: options.control ?? name });
+    const saved = await step(label, action, { ...options, done: options.done ? `(${options.done}) && !${SAVING}` : `!${SAVING}`, timeout: 8000 });
     if (!saved.pass && saved.reasons.some(reason => reason.startsWith('could not act') || reason.startsWith('never finished'))) return saved;
     if (!widget.view) { await s.fail('controls', 'widget/settings', `${label}: drawn`, 'its menu saves map graphics, but its widget shows no map to draw them'); return saved; }
+    await reopen(s, widget);
     const expected = await s.app.evaluate(MAP_EXPECTED);
     await step(`${label}: drawn`, () => s.key('Escape'), { drew: { view: widget.view, expected }, timeout: 20_000, check: options.check, control: `${options.control ?? name}: drawn` });
     return saved;
@@ -459,7 +454,11 @@ async function exerciseOnce(s, page, widget, c, ctx, under) {
     if (await alreadyBack(label)) return;
     if (!c.draft || c.overridden || c.kind === 'select') return reverse();
     return set(label, async () => {
-      if (c.kind === 'check') { await s.click(IN_MENU('.map-mods-inherit')); return; }
+      if (c.kind === 'check') {
+        await s.click(IN_MENU('.map-mods-inherit'));
+        if (await s.holds(`document.querySelector(${JSON.stringify(IN_MENU('.map-mods-confirm'))})`)) await s.click(IN_MENU('.map-mods-confirm .is-danger'));
+        return;
+      }
       const at = await s.app.evaluate(`(() => { const e = ${shown(CONTROL[c.kind], c.index)}?.closest('.map-option-row')?.querySelector('.map-option-inherit');
         if (!e) return null; e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
       if (!at) throw new Error('its row offers no way back to inheriting');

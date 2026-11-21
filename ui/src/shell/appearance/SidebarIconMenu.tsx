@@ -16,13 +16,14 @@ export function defaultSidebarGlyph(id: SidebarIconId): IconName {
 
 export function useSidebarIconMenu(appearance: Appearance) {
   const mode = appearance.resolved.mode;
+  const muted = appearance.resolved.colors.muted;
   const menu = useIconStyleMenu<SidebarIconId>(appearance, {
     label: 'Sidebar icon',
     read: settings => settings.sidebarIcons,
     write: (settings, sidebarIcons) => ({ ...settings, sidebarIcons }),
     defaultIcon: defaultSidebarGlyph,
-    defaultColour: id => defaultSidebarIcon(id)[mode],
-    swatches: [...new Set(sidebarIconIds.map(id => defaultSidebarIcon(id)[mode]))],
+    defaultColour: () => muted,
+    swatches: [...new Set([muted, ...sidebarIconIds.map(id => defaultSidebarIcon(id)[mode])])],
   });
   const items = (id: SidebarIconId, button: HTMLButtonElement, name: string = defaultSidebarIcon(id).label) => menu.items(id, button, name);
   const open = (event: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {
@@ -36,7 +37,7 @@ export function useSidebarIconMenu(appearance: Appearance) {
     menu.open('clientX' in event ? event.clientX : box.left, 'clientY' in event ? event.clientY : box.bottom, items(id, button));
   };
   return {
-    colour: menu.colour, icon: (id: SidebarIconId) => menu.style(id).icon, items,
+    custom: (id: SidebarIconId) => menu.style(id).colour, icon: (id: SidebarIconId) => menu.style(id).icon, items,
     onContextMenu: open,
     onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
       if (!event.defaultPrevented && (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) open(event);

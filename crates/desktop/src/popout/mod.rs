@@ -261,7 +261,7 @@ impl Owner {
                     self.asking = Some(reply);
                     self.feed(Input::Open);
                     if let Some(reply) = self.asking.take() {
-                        let _ = reply.send(Err("The pop-out map could not open".into()));
+                        let _ = reply.send(Err("The pop-out map couldn’t open".into()));
                     }
                 }
                 Message::Close { generation, done } => {
@@ -514,7 +514,7 @@ impl Owner {
             Effect::RestartFailed(generation) => {
                 let error = self.errors.remove(&generation).unwrap_or_else(|| {
                     if generation == self.lifecycle.generation() {
-                        "The map is not popped out".into()
+                        "The map isn’t popped out".into()
                     } else {
                         CLOSED_WINDOW.into()
                     }
@@ -541,7 +541,7 @@ impl Owner {
             .shared
             .with(|at, popout| (at == generation).then(|| popout.host.clone()))
             .flatten()
-            .ok_or("The map is not popped out")?;
+            .ok_or("The map isn’t popped out")?;
         let window = self
             .app
             .get_webview_window("main")
@@ -640,7 +640,7 @@ fn running(popouts: &PopOuts, generation: Option<u64>) -> Result<NativeHost, Str
     let (current, host) = popouts
         .shared
         .current()
-        .ok_or("The map is not popped out")?;
+        .ok_or("The map isn’t popped out")?;
     if generation.is_some_and(|generation| generation != current) {
         return Err(CLOSED_WINDOW.into());
     }
@@ -697,7 +697,7 @@ pub fn popout_fly_aircraft(
 }
 
 pub fn export(popouts: &PopOuts, generation: Option<u64>, path: String) -> Result<tokio::sync::oneshot::Receiver<Result<String, String>>, String> {
-    let generation = generation.ok_or("The map is not popped out")?;
+    let generation = generation.ok_or("The map isn’t popped out")?;
     running(popouts, Some(generation))?.export(path, None)
 }
 

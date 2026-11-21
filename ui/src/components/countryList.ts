@@ -13,7 +13,7 @@ export function countryChoices(countries: readonly CountryOption[]): CountryChoi
   const byTag = new Map<string, CountryOption>();
   for (const country of countries) if (!byTag.has(country.tag)) byTag.set(country.tag, country);
   return [...byTag.values()]
-    .map(country => ({ country, label: country.name, search: `${country.name} ${country.tag}`.toLowerCase() }))
+    .map(country => ({ country, label: country.name.trim() || country.tag, search: `${country.name} ${country.tag}`.toLowerCase() }))
     .sort((a, b) => collator.compare(a.label, b.label))
     .map(({ country, search }) => ({ country, search }));
 }
@@ -30,9 +30,9 @@ export function allowedCountryChoices(countries: readonly CountryMetadata[], all
   });
 }
 
-export function filterChoices(choices: CountryChoice[], query: string): CountryChoice[] {
+export function filterChoices(choices: CountryChoice[], query: string, shown?: (choice: CountryChoice) => string): CountryChoice[] {
   const needle = query.trim().toLowerCase();
-  return needle ? choices.filter(choice => choice.search.includes(needle)) : choices;
+  return needle ? choices.filter(choice => choice.search.includes(needle) || !!shown?.(choice).toLowerCase().includes(needle)) : choices;
 }
 
 export function visibleRange(count: number, scrollTop: number, viewportHeight: number,

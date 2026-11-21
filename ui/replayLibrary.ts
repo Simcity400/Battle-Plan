@@ -20,7 +20,7 @@ export async function listReplayFolder(folder: string, signal?: AbortSignal): Pr
     signal?.throwIfAborted();
     const directory = pending.pop()!;
     for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (++visited > 50000) throw new Error('This folder is too large. Choose a folder containing only your replays.');
+      if (++visited > 50000) throw new Error('This folder is too large. Choose a folder that holds only your recordings.');
       if (entry.isSymbolicLink() || entry.name.startsWith('.')) continue;
       const full = path.join(directory, entry.name);
       if (entry.isDirectory()) pending.push(full);
@@ -35,7 +35,7 @@ export async function listReplayFolder(folder: string, signal?: AbortSignal): Pr
 
 export async function saveReplayFolder(folder: string): Promise<ReplayLibrary> {
   const library = await listReplayFolder(folder);
-  if (!library.folder) throw new Error('Choose a replay folder.');
+  if (!library.folder) throw new Error('Choose a recordings folder.');
   const settings = settingsPath();
   await mkdir(path.dirname(settings), { recursive: true });
   await writeFile(settings, JSON.stringify({ folder: library.folder }), 'utf8');

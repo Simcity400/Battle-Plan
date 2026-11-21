@@ -63,7 +63,7 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
         const byBranch = new Map([...founderReads(founders).keys()].map((branchId, index) => [branchId, read[index]]));
         const leaderColoursRead = leaderColours(founders, founder => byBranch.get(founder.branchId)?.get(nameKey(founder.hour, founder.tag)));
         const missing = [...leaderColoursRead.values()].filter(colour => !colour).length;
-        if (missing) warnings.push(`The leader's map colour of ${missing} ${missing === 1 ? 'faction' : 'factions'} was not recorded or could not be read in time; ${missing === 1 ? 'it takes' : 'they take'} a palette colour until the campaign is opened again.`);
+        if (missing) warnings.push(`The leader's map colour of ${missing} ${missing === 1 ? 'faction' : 'factions'} wasn’t recorded or couldn’t be read in time; ${missing === 1 ? 'it takes' : 'they take'} a palette colour until the campaign is opened again.`);
         setState({ key, factions, leaderColours: leaderColoursRead, founders: new Map([...founders].map(([id, founder]) => [id, founder.tag])), warnings });
       }).catch(error => { if (!controller.signal.aborted) setState({ key, warnings: [], error: asFailure(error) }); });
     return () => controller.abort();

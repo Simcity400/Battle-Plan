@@ -1,5 +1,5 @@
 """The release smoke, on the release runner (Python 3.11+): the installer's layout holds exactly the
-shipped files, and the installed Battle Plan opens a recording and draws its map.
+shipped files, and the installed BattlePlan opens a recording and draws its map.
 
     release_smoke.py --installer <setup.exe> --out <new folder> [--recording <file>] [--hour H]
         [--game-dir <folder>] [--user-dir <folder>]

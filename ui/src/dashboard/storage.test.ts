@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
-import { layoutsAtDefault, layoutsUnsaved, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
+import { doneEditing, layoutSaveAllowed, layoutSaveCheck, layoutsAtDefault, layoutsUnsaved, unsavedLayoutPages, loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
 import '../widgets/definitions.ts';
 
 function memoryStorage() {
@@ -33,6 +33,18 @@ test('a layout change not yet saved, on the shown page or one kept aside, counts
   assert.equal(layoutsUnsaved([{ library, template: edited }]), true, 'a widget removed in Edit without saving');
   assert.equal(layoutsUnsaved([{ library, template: saved }, { library, template: edited }]), true, 'another page kept its unsaved edit');
   assert.equal(layoutsUnsaved([{ library, template: { ...saved } }], template => ({ ...template, name: 'merged' })), false, 'merged the same way, equal');
+});
+
+test('Done with unsaved layout changes opens the save step, and with none just leaves Edit; a close names each page left unsaved', () => {
+  const { library } = loadLayouts(memoryStorage(), 'overview');
+  const saved = library.layouts[0].template;
+  const edited = { ...saved, widgets: saved.widgets.slice(1) };
+  assert.equal(doneEditing({ library, template: saved }), 'leave');
+  assert.equal(doneEditing({ library, template: edited }), 'save', 'a moved or removed widget is offered for saving');
+  assert.equal(doneEditing({ library, template: { ...edited, widgets: saved.widgets } }), 'leave', 'an edit undone by hand is no change');
+  assert.equal(doneEditing({ library, template: { ...saved } }, template => ({ ...template, name: 'merged' })), 'leave');
+  assert.deepEqual(unsavedLayoutPages([['overview', { library, template: saved }], ['politics', { library, template: edited }], ['added', { library, template: edited }]]),
+    ['politics', 'added']);
 });
 
 test('saved Territory faction counts follow its uncapped definition without changing shared validation', () => {
@@ -115,6 +127,36 @@ test('multiple layouts, updates and active selection survive reload independentl
   assert.equal(reloaded.layouts[1].template.name, 'Industry comparison');
 });
 
+test('saving a layout: Enter updates it under its own name, saves a new layout under a new name, and never takes a used name', () => {
+  const { library: first } = loadLayouts(memoryStorage(), 'overview');
+  const original = first.layouts[0];
+  const library = { ...first, layouts: [original, { id: 'other', template: { ...original.template, name: 'Air war' } }] };
+  const unchanged = layoutSaveCheck(library, original.template.name);
+  assert.equal(unchanged.submit, 'update', 'the prefilled name updates the layout');
+  assert.equal(unchanged.asNew, false, 'saving a copy under the same name is not offered');
+  assert.equal(unchanged.problem, null);
+  const renamed = layoutSaveCheck(library, '  Navy  ');
+  assert.equal(renamed.submit, 'new', 'a new name saves a new layout and keeps the original');
+  assert.equal(renamed.update, true, 'replacing the original stays an explicit choice');
+  assert.equal(renamed.renames, true);
+  assert.deepEqual([layoutSaveAllowed(renamed, 'update'), layoutSaveAllowed(renamed, 'new')], [true, true],
+    'a retry of Rename and update repeats the update, not the default for the name');
+  for (const used of ['Air war', 'AIR WAR ']) {
+    const check = layoutSaveCheck(library, used);
+    assert.equal(check.submit, null, `${used} belongs to another layout`);
+    assert.equal(check.update || check.asNew, false);
+    assert.match(check.problem!, /“Air war” is already a layout/);
+  }
+  assert.equal(layoutSaveCheck(library, '   ').submit, null);
+  assert.equal(layoutSaveCheck(library, 'x'.repeat(161)).submit, null);
+  const full = { ...library, layouts: Array.from({ length: MAX_LAYOUTS }, (_, at) => ({ id: `l${at}`, template: { ...original.template, name: `Layout ${at}` } })), activeId: 'l0' };
+  const crowded = layoutSaveCheck(full, 'Another');
+  assert.equal(crowded.submit, null, 'a full library never turns Enter into a rename');
+  assert.equal(crowded.asNew, false);
+  assert.equal(crowded.update, true);
+  assert.equal(layoutSaveCheck(full, 'Layout 0').submit, 'update');
+});
+
 test('layout library validates identity, unique names, bounds and strips runtime data', () => {
   const { library } = loadLayouts(memoryStorage());
   const entry = library.layouts[0];
@@ -137,7 +179,7 @@ test('failed storage preserves the saved library and unsaved draft', () => {
   const draft = structuredClone(previous);
   draft.layouts[0].template.name = 'Unsaved edits';
   const blocked = { getItem: storage.getItem, setItem: () => { throw new Error('Quota exceeded'); } };
-  assert.match(saveLayouts(draft, blocked)!, /could not be saved/);
+  assert.match(saveLayouts(draft, blocked)!, /Couldn’t save this layout/);
   assert.deepEqual(loadLayouts(storage).library, previous);
   assert.equal(draft.layouts[0].template.name, 'Unsaved edits');
   storage.setItem('hoi4-replay.workspace-layouts.v1', '{damaged');
@@ -212,7 +254,7 @@ for (const [label, count] of Object.entries({ zero: 0, negative: -1, fractional:
     const countries = { kind: 'group', group: { type: 'top', count }, membership: 'hour', aggregate: false };
     Object.assign(library.layouts[0].template.widgets[0], { countries });
     assert.equal(parseLayoutLibrary(library), null);
-    assert.match(saveLayouts(library, storage)!, /could not be saved/);
+    assert.match(saveLayouts(library, storage)!, /Couldn’t save this layout/);
   });
 }
 
@@ -251,7 +293,7 @@ test('modded, dynamic and unusual country tags survive saving and reloading', ()
   assert.match(loaded.warning!, /3 country tag entries were left out/);
   assert.deepEqual(loaded.library, parsed.library);
   const before = storage.getItem('hoi4-replay.workspace-layouts.v1');
-  assert.match(saveLayouts(raw, storage)!, /3 country tag entries could not be saved/);
+  assert.match(saveLayouts(raw, storage)!, /3 country tag entries couldn’t be saved/);
   assert.equal(storage.getItem('hoi4-replay.workspace-layouts.v1'), before);
   storage.values.delete('hoi4-replay.workspace-layouts.v1');
   storage.setItem('hoi4-replay.workspace-template.v1', JSON.stringify(raw.layouts[0].template));

@@ -31,7 +31,7 @@ export async function thirdPartyNotices(folder, components) {
     sections.push(`${RULE}\n${index + 1}. ${component.name}\n\n${component.use}\n${RULE}\n\n${texts.join("\n")}`);
   }
   const contents = components.map((component, index) => `${String(index + 1).padStart(2)}. ${component.name}`).join("\n");
-  return `Battle Plan third-party notices\n\nBattle Plan is free software under the MIT License, in LICENSE beside this file.\n`
+  return `BattlePlan third-party notices\n\nBattlePlan is free software under the MIT License, in LICENSE beside this file.\n`
     + `It includes or is adapted from the components below. Each section names the component,\n`
-    + `what Battle Plan uses it for, and its licence text, verbatim.\n\n${contents}\n\n${sections.join("\n")}`;
+    + `what BattlePlan uses it for, and its licence text, verbatim.\n\n${contents}\n\n${sections.join("\n")}`;
 }

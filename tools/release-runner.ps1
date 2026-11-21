@@ -2,7 +2,7 @@
 param(
     [Parameter(ParameterSetName = 'Install', Mandatory)][switch]$Install,
     [Parameter(ParameterSetName = 'Install', Mandatory)][string]$TokenFile,
-    [string]$Root = (Join-Path $env:LOCALAPPDATA 'Battle Plan release runner'),
+    [string]$Root = (Join-Path $env:LOCALAPPDATA 'BattlePlan release runner'),
     [string]$Repository = $env:GITHUB_REPOSITORY,
     [string]$PrepLock = $(if (Test-Path Env:BATTLE_PLAN_PREP_LOCK) { $env:BATTLE_PLAN_PREP_LOCK } else { $env:HOI4_PREP_LOCK }),
     [string]$GameLock = ((Join-Path $env:TEMP 'claude\hoi4_game.lock') -replace '\\', '/'),
@@ -14,7 +14,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $runner = Join-Path $Root 'runner'
-$task = 'Battle Plan release runner'
+$task = 'BattlePlan release runner'
 
 function Enter-Background {
     (Get-Process -Id $PID).PriorityClass = 'BelowNormal'
