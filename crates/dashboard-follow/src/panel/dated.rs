@@ -11,7 +11,6 @@ pub const DATA: u8 = 1;
 pub const STANDS: u8 = 3;
 pub const COMPLETED: u8 = 4;
 pub const WAITING: u8 = 5;
-const AFTER_RESET: u8 = 1;
 
 pub struct ProductBatch {
     bytes: Vec<u8>,
@@ -21,10 +20,6 @@ pub struct ProductBatch {
 impl ProductBatch {
     pub fn new((clock, route, seek): (i32, u32, u32)) -> Self {
         Self { bytes: head(0, clock, (route, seek)), count: 0 }
-    }
-
-    pub fn after_reset(&mut self) {
-        self.bytes[6] |= AFTER_RESET;
     }
 
     pub fn changed(&mut self, id: u32, hour: Hour, kind: u8, body: &[u8]) {
@@ -151,56 +146,25 @@ pub fn records(bytes: &[u8]) -> io::Result<Vec<Record<'_>>> {
     Ok(out)
 }
 
-#[derive(Default)]
-struct Kept<'a> {
-    before: Option<Record<'a>>,
-    reading: Option<Record<'a>>,
-    stands: Option<Record<'a>>,
-    after: Option<Record<'a>>,
-    late: Option<Record<'a>>,
-}
-
-impl<'a> Kept<'a> {
-    fn into_records(self) -> impl Iterator<Item = Record<'a>> {
-        [self.before, self.reading, self.stands, self.after, self.late].into_iter().flatten()
-    }
-}
-
 pub fn merge(older: &[u8], newer: &[u8]) -> io::Result<(Vec<u8>, u32)> {
-    let newer_bytes = newer;
     let stamp = stamp(older).filter(|s| Some(*s) == self::stamp(newer) && clock(older) == clock(newer))
         .ok_or_else(|| crate::invalid("Panel messages belong to different routes or seeks"))?;
-    let flags = older[6] | newer[6];
-    let reset = newer[6] & AFTER_RESET != 0;
-    let (older, newer) = (records(older)?, records(newer)?);
-    let older: Vec<Record<'_>> = older.into_iter().filter(|r| !(reset && r.kind == WAITING)).collect();
-    let mut products: BTreeMap<u32, Kept<'_>> = BTreeMap::new();
+    let mut readings = BTreeMap::new();
+    let mut stands = BTreeMap::new();
     let mut completed = None;
     let mut count = 0;
-    for r in older.into_iter().chain(newer) {
+    for r in records(older)?.into_iter().chain(records(newer)?) {
         count += 1;
-        if r.kind == COMPLETED { completed = Some(r); continue; }
-        let kept = products.entry(r.id).or_default();
         match r.kind {
-            DATA | REFUSED => {
-                kept.before = kept.before.take().or(kept.after.take());
-                kept.reading = Some(r);
-                kept.stands = None;
-                kept.after = None;
-            }
-            STANDS => {
-                if kept.after.is_none() { kept.stands = Some(r); } else { kept.late = Some(r); }
-            }
-            WAITING => {
-                if kept.reading.is_none() && kept.stands.is_none() { kept.before.get_or_insert(r); } else if kept.late.is_none() { kept.after.get_or_insert(r); }
-            }
+            DATA | REFUSED => { stands.remove(&r.id); readings.insert(r.id, r); }
+            STANDS => { stands.insert(r.id, r); }
+            COMPLETED => completed = Some(r),
+            WAITING => return Err(crate::invalid("A product waiting for its table keeps every message whole")),
             _ => return Err(crate::invalid("Unknown dated panel kind")),
         }
     }
-    let records: Vec<Record<'_>> = products.into_values().flat_map(Kept::into_records).chain(completed).collect();
-    let mut out = head(records.len(), clock(newer_bytes), stamp);
-    out[6] = flags;
-    for r in &records { out.extend_from_slice(r.bytes); }
-    let kept = records.len();
+    let kept = readings.len() + stands.len() + usize::from(completed.is_some());
+    let mut out = head(kept, clock(newer), stamp);
+    for r in readings.into_values().chain(stands.into_values()).chain(completed) { out.extend_from_slice(r.bytes); }
     Ok((out, (count - kept) as u32))
 }

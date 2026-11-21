@@ -1367,32 +1367,16 @@ fn dated_panel_merge_keeps_the_reading_and_its_confirmation_separate() {
 }
 
 #[test]
-fn a_product_waiting_at_a_step_stays_unconfirmed_from_that_hour_through_merges() {
+fn a_message_with_a_product_waiting_for_its_table_is_never_merged() {
     use crate::panel::dated;
     let step = |hour, records: &[(u32, u8)]| {
         let mut batch = dated::ProductBatch::new((0, 3, 9));
         for &(id, kind) in records { batch.changed(id, hour, kind, if kind == dated::DATA { b"x" } else { b"" }); }
         batch.finish(Some(hour))
     };
-    let (merged, _) = dated::merge(&step(34, &[(7, dated::WAITING)]), &step(58, &[(7, dated::WAITING)])).unwrap();
-    let (merged, _) = dated::merge(&merged, &step(82, &[(7, dated::DATA)])).unwrap();
-    let rows = dated::records(&merged).unwrap();
-    assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::WAITING, 34), (7, dated::DATA, 82), (0, dated::COMPLETED, 82)]);
-    let (merged, _) = dated::merge(&merged, &step(106, &[(7, dated::WAITING)])).unwrap();
-    let rows = dated::records(&merged).unwrap();
-    assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::WAITING, 34), (7, dated::DATA, 82), (7, dated::WAITING, 106), (0, dated::COMPLETED, 106)],
-        "a wait after the kept reading is kept after it");
-    let mut reset = dated::ProductBatch::new((0, 3, 9));
-    reset.after_reset();
-    reset.changed(8, 10, dated::DATA, b"y");
-    let (merged, _) = dated::merge(&merged, &reset.finish(Some(10))).unwrap();
-    let rows = dated::records(&merged).unwrap();
-    assert_eq!(rows.iter().map(|r| (r.id, r.kind, r.hour)).collect::<Vec<_>>(), [(7, dated::DATA, 82), (8, dated::DATA, 10), (0, dated::COMPLETED, 10)],
-        "after a native reset every product is read again, so a queued wait is dropped and every queued reading kept");
-    let (merged, _) = dated::merge(&step(10, &[(7, dated::STANDS)]), &step(20, &[(7, dated::WAITING)])).unwrap();
-    let (merged, _) = dated::merge(&merged, &step(30, &[(7, dated::DATA)])).unwrap();
-    let rows = dated::records(&merged).unwrap();
-    assert_eq!(rows.iter().map(|r| (r.kind, r.hour)).collect::<Vec<_>>(), [(dated::WAITING, 20), (dated::DATA, 30), (dated::COMPLETED, 30)], "a stands before the wait leaves the wait in place");
+    assert!(dated::merge(&step(10, &[(7, dated::DATA)]), &step(34, &[(7, dated::WAITING)])).is_err());
+    assert!(dated::merge(&step(34, &[(7, dated::WAITING)]), &step(58, &[(8, dated::DATA)])).is_err());
+    assert!(dated::merge(&step(10, &[(7, dated::DATA)]), &step(34, &[(8, dated::STANDS)])).is_ok());
 }
 
 #[test]
