@@ -1848,15 +1848,17 @@ pub(crate) unsafe fn synthetic_callback(
     complete
 }
 
-/// Reads one hour, every scheduled table when `full`. The caller guarantees that no command batch
-/// writes the simulation until it returns: the game thread is held, or every command-batch writer
-/// waits at the capture gate. False when hourly captures are not admitted, so nothing was read; an admitted
+/// Reads one hour, every scheduled table when `full`. The caller guarantees that no observed
+/// command batch writes the simulation until it returns: the game thread is held, or every
+/// command-batch writer waits at the capture gate. False when hourly captures are not admitted, so nothing was read; an admitted
 /// hour that is not recorded (recording stopped, or the collector's allocation failed) is
 /// consumed.
 ///
 /// # Safety
 /// One capture at a time, on the game thread or the capture thread. The caller holds the capture
-/// gate at the admitted write boundary and excludes command-batch writes for the whole native read.
+/// gate at the admitted write boundary and excludes every observed command batch for the whole
+/// native read. After an unproven publication, a batch already running when the hook was published
+/// is not observed; `publication_status` reports that mode, which accepts the gap.
 /// Portrait writers are not excluded: the caller holds a `PreImagesCapture` for the whole read, and
 /// the portrait reader reads live bytes, then accepts, replaces or withholds them by that log, so
 /// live portrait storage is never treated as fixed.
@@ -2142,8 +2144,10 @@ impl Drop for CallbackPriority {
 
 /// # Safety
 /// The requirements of [`acquire_with_memory`] apply, and the callback holds the live acquisition
-/// boundary: nothing writes the simulation until this returns, because the game is held at the hourly boundary or the capture runs beside it with
-/// every command-batch writer waiting at the capture gate. Portrait writers may proceed; the
+/// boundary: no observed command batch writes the simulation until this returns, because the game
+/// thread is held in its callback or the capture runs beside it with every command-batch writer
+/// waiting at the capture gate. A batch running when an unproven hook was published is not
+/// observed. Portrait writers may proceed; the
 /// capture's `PreImagesCapture` keeps their pre-images, and the portrait reader validates the live
 /// bytes it reads against them.
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
